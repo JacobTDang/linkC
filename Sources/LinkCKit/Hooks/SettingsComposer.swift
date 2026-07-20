@@ -32,9 +32,17 @@ public enum SettingsComposer {
         let user = try decodeSettingsObject(userSettings, label: "user")
         let project = try decodeSettingsObject(projectSettings, label: "project")
 
+        // Merge everything EXCEPT hooks with last-writer-wins (project over user). The
+        // `hooks` object is special-cased: a generic deep merge would let the project's
+        // array for an event replace the user's, silently dropping the user's hook for any
+        // event they both define. Instead, each event's arrays are concatenated so hooks
+        // from user, project, and linkC all survive.
+        let userHooks = user["hooks"] as? [String: Any] ?? [:]
+        let projectHooks = project["hooks"] as? [String: Any] ?? [:]
+
         var merged = deepMerge(user, overlay: project)
-        let existingHooks = merged["hooks"] as? [String: Any] ?? [:]
-        merged["hooks"] = appendLinkcHooks(linkcHooks(port: port), onto: existingHooks)
+        let userAndProjectHooks = concatHookArrays(base: userHooks, appending: projectHooks)
+        merged["hooks"] = concatHookArrays(base: userAndProjectHooks, appending: linkcHooks(port: port))
 
         guard JSONSerialization.isValidJSONObject(merged) else {
             throw LinkCError.parse("composed settings could not be represented as JSON")
@@ -101,15 +109,20 @@ public enum SettingsComposer {
         return result
     }
 
-    /// Folds linkC's own hook arrays into the user/project-merged `hooks` object,
-    /// APPENDING to any existing array for that event rather than replacing it —
-    /// this is what guarantees a linkC session still runs the user's own hooks.
-    private static func appendLinkcHooks(_ linkc: [String: Any], onto existing: [String: Any]) -> [String: Any] {
-        var result = existing
-        for (event, linkcEntries) in linkc {
-            guard let linkcArray = linkcEntries as? [Any] else { continue }
-            let existingArray = result[event] as? [Any] ?? []
-            result[event] = existingArray + linkcArray
+    /// Merge two `hooks` objects by CONCATENATING each event's arrays — `base` first, then
+    /// `appending` — rather than letting one replace the other. Used to fold user, project,
+    /// and linkC hooks together so a linkC session still runs every hook that was configured
+    /// for an event, no matter which layer defined it. A non-array value in `appending`
+    /// (unexpected shape) overwrites, matching last-writer-wins for malformed input.
+    private static func concatHookArrays(base: [String: Any], appending: [String: Any]) -> [String: Any] {
+        var result = base
+        for (event, value) in appending {
+            guard let appendArray = value as? [Any] else {
+                result[event] = value
+                continue
+            }
+            let baseArray = result[event] as? [Any] ?? []
+            result[event] = baseArray + appendArray
         }
         return result
     }

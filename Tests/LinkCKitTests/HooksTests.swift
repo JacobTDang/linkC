@@ -189,6 +189,36 @@ final class SettingsComposerTests: XCTestCase {
         XCTAssertTrue(linkcBlockAppended, "linkC's Stop hook must be appended")
     }
 
+    func testComposeConcatenatesUserAndProjectHooksForTheSameEventPlusLinkc() throws {
+        // Both user AND project define a Stop hook. A naive deep merge would let the
+        // project's Stop array clobber the user's; compose must keep BOTH, then append
+        // linkC's own — three Stop entries in total.
+        let userData = Data(#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user-stop"}]}]}}"#.utf8)
+        let projectData = Data(#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"project-stop"}]}]}}"#.utf8)
+
+        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: projectData, port: 4321)
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
+        let hooks = try XCTUnwrap(decoded["hooks"] as? [String: Any])
+        let stopBlocks = try XCTUnwrap(hooks["Stop"] as? [[String: Any]])
+
+        XCTAssertEqual(stopBlocks.count, 3, "user + project + linkC Stop hooks must all survive")
+
+        func hasCommand(_ command: String) -> Bool {
+            stopBlocks.contains { block in
+                guard let entries = block["hooks"] as? [[String: Any]] else { return false }
+                return entries.contains { $0["type"] as? String == "command" && $0["command"] as? String == command }
+            }
+        }
+        XCTAssertTrue(hasCommand("user-stop"), "user's Stop hook must survive when project also defines Stop")
+        XCTAssertTrue(hasCommand("project-stop"), "project's Stop hook must survive")
+
+        let linkcAppended = stopBlocks.contains { block in
+            guard let entries = block["hooks"] as? [[String: Any]] else { return false }
+            return entries.contains { $0["type"] as? String == "http" && $0["url"] as? String == "http://127.0.0.1:4321/hook" }
+        }
+        XCTAssertTrue(linkcAppended, "linkC's Stop hook must be appended alongside user + project")
+    }
+
     func testComposeWithNilSettingsStillProducesLinkcHooks() throws {
         let composed = try SettingsComposer.compose(userSettings: nil, projectSettings: nil, port: 1111)
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
@@ -285,5 +315,32 @@ final class HookServerTests: XCTestCase {
         XCTAssertEqual(http.statusCode, 200, "must never deny/block a Claude turn, even for an event we don't recognize")
         XCTAssertEqual(String(data: data, encoding: .utf8), "{}")
         XCTAssertTrue(box.all.isEmpty)
+    }
+
+    func testOversizedRequestIsDroppedInsteadOfBufferedUnbounded() async throws {
+        // Tight cap so the test needn't send a real megabyte. A request whose body (and
+        // declared Content-Length) exceeds the cap must be dropped — no response, no event —
+        // rather than buffered without bound.
+        let server = HookServer(port: 0, maxRequestBytes: 1024)
+        let box = EventBox()
+        server.onEvent = { box.record($0) }
+        try server.start()
+        defer { server.stop() }
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/hook")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("stop", forHTTPHeaderField: "X-LinkC-Event")
+        request.setValue("L1", forHTTPHeaderField: "X-LinkC-Session")
+        request.httpBody = Data(count: 4096) // 4 KiB body ≫ 1 KiB cap
+
+        do {
+            _ = try await URLSession.shared.data(for: request)
+            XCTFail("server must drop an oversized request, not respond to it")
+        } catch {
+            // expected: the server cancels the connection, so the client sees it drop.
+        }
+
+        XCTAssertTrue(box.all.isEmpty, "an oversized request must never decode into an event")
     }
 }

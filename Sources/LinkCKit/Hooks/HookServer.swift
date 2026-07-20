@@ -10,19 +10,33 @@ import Network
 /// pieces of state they touch (`listener`, `_resolvedPort`) are guarded by `stateLock`.
 public final class HookServer: @unchecked Sendable {
     private let requestedPort: UInt16
+    private let maxRequestBytes: Int
     private let queue = DispatchQueue(label: "com.linkc.hookserver")
     private let stateLock = NSLock()
     private var _resolvedPort: UInt16
     private var listener: NWListener?
+    /// Accepted connections still in flight, keyed by identity. Guarded by `stateLock` so
+    /// `stop()` can cancel them all; entries are removed as each connection completes.
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
+    private var _onEvent: (@Sendable (HookEvent) -> Void)?
 
     /// Called on each decoded event. The caller is responsible for hopping to the main actor.
     /// Invoked on the server's internal queue — keep it fast; it runs before the response
-    /// is sent, but the response path itself does no other work regardless.
-    public var onEvent: (@Sendable (HookEvent) -> Void)?
+    /// is sent, but the response path itself does no other work regardless. Guarded by
+    /// `stateLock` (like `listener`/`_resolvedPort`) since it is set on the caller's thread
+    /// and read on the dispatch queue.
+    public var onEvent: (@Sendable (HookEvent) -> Void)? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _onEvent }
+        set { stateLock.lock(); _onEvent = newValue; stateLock.unlock() }
+    }
 
-    public init(port: UInt16) {
+    /// - Parameter maxRequestBytes: hard cap on the total header+body bytes buffered for a
+    ///   single request. A connection that exceeds it (or declares a larger `Content-Length`)
+    ///   is dropped, bounding memory against a buggy/hostile local client.
+    public init(port: UInt16, maxRequestBytes: Int = 1 << 20) {
         self.requestedPort = port
         self._resolvedPort = port
+        self.maxRequestBytes = maxRequestBytes
     }
 
     /// The bound port. Equal to the requested port, except when constructed with `0`
@@ -97,38 +111,70 @@ public final class HookServer: @unchecked Sendable {
         }
     }
 
-    /// Cancels the listener. Idempotent; safe to call even if `start()` was never called
-    /// or already failed.
+    /// Cancels the listener and every in-flight connection. Idempotent; safe to call even
+    /// if `start()` was never called or already failed.
     public func stop() {
         stateLock.lock()
         let current = listener
         listener = nil
+        let liveConnections = Array(connections.values)
+        connections.removeAll()
         stateLock.unlock()
         current?.cancel()
+        for connection in liveConnections {
+            connection.cancel()
+        }
     }
 
     // MARK: - Connection handling
 
+    private func track(_ connection: NWConnection) {
+        stateLock.lock()
+        connections[ObjectIdentifier(connection)] = connection
+        stateLock.unlock()
+    }
+
+    private func untrack(_ connection: NWConnection) {
+        stateLock.lock()
+        connections.removeValue(forKey: ObjectIdentifier(connection))
+        stateLock.unlock()
+    }
+
     private func accept(_ connection: NWConnection) {
+        track(connection)
         connection.start(queue: queue)
         receive(on: connection, buffered: Data())
     }
 
     private func receive(on connection: NWConnection, buffered: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
+            guard let self else {
+                // Server deallocated mid-receive — don't leak the fd.
+                connection.cancel()
+                return
+            }
 
             var buffer = buffered
             if let data, !data.isEmpty {
                 buffer.append(data)
             }
 
-            if let request = Self.parseRequest(buffer) {
+            switch Self.parseRequest(buffer, maxBytes: self.maxRequestBytes) {
+            case .complete(let request):
                 self.respond(on: connection, request: request)
                 return
+            case .tooLarge:
+                // Bounded: reject an oversized request rather than buffering it. Never
+                // sends a response — this path is only reachable for buggy/hostile clients.
+                self.untrack(connection)
+                connection.cancel()
+                return
+            case .incomplete:
+                break
             }
 
             guard error == nil, !isComplete else {
+                self.untrack(connection)
                 connection.cancel()
                 return
             }
@@ -141,12 +187,14 @@ public final class HookServer: @unchecked Sendable {
     /// this path. Never withholds or delays the response for an unrecognized event, and
     /// never returns anything but success: this must never be able to deny a Claude tool.
     private func respond(on connection: NWConnection, request: ParsedRequest) {
+        let handler = onEvent // synchronized read (see `onEvent`)
         if let event = HookEventDecoder.decode(headers: request.headers, body: request.body) {
-            onEvent?(event)
+            handler?(event)
         }
 
         let response = Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".utf8)
-        connection.send(content: response, completion: .contentProcessed { _ in
+        connection.send(content: response, completion: .contentProcessed { [weak self] _ in
+            self?.untrack(connection)
             connection.cancel()
         })
     }
@@ -158,18 +206,27 @@ public final class HookServer: @unchecked Sendable {
         let body: Data
     }
 
-    /// Returns nil when more bytes are needed (incomplete headers, or body shorter than
-    /// `Content-Length`). Never throws — an unparsable request simply never completes,
+    private enum ParseResult {
+        case complete(ParsedRequest)
+        case incomplete   // more bytes needed
+        case tooLarge     // exceeds `maxBytes` — drop the connection
+    }
+
+    /// `.incomplete` when more bytes are needed (incomplete headers, or body shorter than
+    /// `Content-Length`); `.tooLarge` when the buffered bytes or a declared `Content-Length`
+    /// exceed `maxBytes`. Never throws — a merely unparsable request simply never completes,
     /// and the connection is dropped once the client stops sending / closes.
-    private static func parseRequest(_ buffer: Data) -> ParsedRequest? {
+    private static func parseRequest(_ buffer: Data, maxBytes: Int) -> ParseResult {
+        if buffer.count > maxBytes { return .tooLarge }
+
         let headerTerminator = Data("\r\n\r\n".utf8)
-        guard let terminatorRange = buffer.range(of: headerTerminator) else { return nil }
-        guard let headBlock = String(data: buffer[..<terminatorRange.lowerBound], encoding: .utf8) else { return nil }
+        guard let terminatorRange = buffer.range(of: headerTerminator) else { return .incomplete }
+        guard let headBlock = String(data: buffer[..<terminatorRange.lowerBound], encoding: .utf8) else { return .incomplete }
 
         // First line is the request line ("POST /hook HTTP/1.1") — the server treats
         // every path/method alike, so only the headers are extracted from it.
         var lines = headBlock.components(separatedBy: "\r\n")
-        guard !lines.isEmpty else { return nil }
+        guard !lines.isEmpty else { return .incomplete }
         lines.removeFirst()
 
         var headers: [String: String] = [:]
@@ -182,11 +239,13 @@ public final class HookServer: @unchecked Sendable {
 
         let contentLength = headers.first { $0.key.caseInsensitiveCompare("Content-Length") == .orderedSame }
             .flatMap { Int($0.value) } ?? 0
+        // Reject a declared body larger than the cap up front, before waiting to buffer it.
+        if contentLength > maxBytes { return .tooLarge }
 
         let bodyStart = terminatorRange.upperBound
-        guard buffer.distance(from: bodyStart, to: buffer.endIndex) >= contentLength else { return nil }
+        guard buffer.distance(from: bodyStart, to: buffer.endIndex) >= contentLength else { return .incomplete }
         let bodyEnd = buffer.index(bodyStart, offsetBy: contentLength)
-        return ParsedRequest(headers: headers, body: Data(buffer[bodyStart..<bodyEnd]))
+        return .complete(ParsedRequest(headers: headers, body: Data(buffer[bodyStart..<bodyEnd])))
     }
 
     /// `NWEndpoint.Port(rawValue: 0)` isn't a real bindable port — `.any` is the correct
