@@ -34,6 +34,13 @@ public final class AppCoordinator {
     private let userSettingsURL: URL
     private let frontmostBundleID: @Sendable () -> String?
 
+    /// Hook events are funneled through this single stream and drained by one consumer task
+    /// so `store.apply` runs strictly in arrival order — unstructured per-event tasks would
+    /// not preserve ordering, and the reducer is last-writer-wins.
+    private let eventStream: AsyncStream<HookEvent>
+    private let eventContinuation: AsyncStream<HookEvent>.Continuation
+    private var consumerTask: Task<Void, Never>?
+
     public static let kittyBundleID = "net.kovidgoyal.kitty"
 
     /// Designated initializer — all collaborators injected (used by tests).
@@ -53,6 +60,7 @@ public final class AppCoordinator {
         self.settingsDir = settingsDir
         self.userSettingsURL = userSettingsURL
         self.frontmostBundleID = frontmostBundleID
+        (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
     }
 
     /// Production initializer — builds real collaborators from resolved binary paths.
@@ -73,8 +81,16 @@ public final class AppCoordinator {
         notifications.onActivate = { [weak self] id in
             Task { @MainActor in await self?.focusSession(id) }
         }
-        hookServer.onEvent = { [weak self] event in
-            Task { @MainActor in await self?.handle(event) }
+        // Funnel every hook event into the serial stream; a single consumer drains it in
+        // arrival order (see `eventStream`). The server's callback just enqueues — no
+        // per-event task, so no reordering.
+        hookServer.onEvent = { [eventContinuation] event in
+            eventContinuation.yield(event)
+        }
+        consumerTask = Task { [weak self, eventStream] in
+            for await event in eventStream {
+                await self?.handle(event)
+            }
         }
         // Start receiving hooks immediately — do NOT gate this on the notification
         // permission dialog, which can block indefinitely on first launch.
@@ -82,8 +98,11 @@ public final class AppCoordinator {
         Task { await notifications.requestAuthorization() }
     }
 
-    /// Stops the hook server. Called at app termination (and by tests).
+    /// Stops the hook server and the event consumer. Called at app termination (and by tests).
     public func shutdown() {
+        eventContinuation.finish()
+        consumerTask?.cancel()
+        consumerTask = nil
         hookServer.stop()
     }
 
@@ -91,7 +110,16 @@ public final class AppCoordinator {
 
     func handle(_ event: HookEvent) async {
         let outcome = store.apply(event)
-        guard outcome.shouldConsiderNotifying, let session = outcome.session else { return }
+        guard let session = outcome.session else { return } // unknown / external session
+
+        // A terminated session is pruned (store row, its settings file, its dedupe entry)
+        // instead of lingering forever as a dead menu entry. No notification for an end.
+        if session.state == .ended {
+            cleanup(sessionId: session.id)
+            return
+        }
+
+        guard outcome.shouldConsiderNotifying else { return }
         let kittyFrontmost = frontmostBundleID() == Self.kittyBundleID
         let focused = (try? await kitty.focusedLinkcSession()) ?? nil
         if FocusPolicy.shouldNotify(
@@ -102,6 +130,15 @@ public final class AppCoordinator {
         ) {
             notifications.post(session: session)
         }
+    }
+
+    /// Remove a session everywhere it leaves state behind: the store, its per-session
+    /// settings file on disk, and its notification dedupe entry. Idempotent.
+    private func cleanup(sessionId: String) {
+        store.remove(id: sessionId)
+        let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
+        try? FileManager.default.removeItem(at: settingsFile)
+        notifications.forget(sessionId)
     }
 
     // MARK: - UI commands
@@ -124,7 +161,7 @@ public final class AppCoordinator {
             activateKitty()
             return session
         } catch {
-            store.remove(id: session.id) // fail loud: no ghost session
+            cleanup(sessionId: session.id) // fail loud: no ghost session or orphaned settings file
             throw error
         }
     }
@@ -136,7 +173,7 @@ public final class AppCoordinator {
 
     public func stopSession(_ id: String) async {
         try? await kitty.close(linkcSessionId: id)
-        store.remove(id: id)
+        cleanup(sessionId: id)
     }
 
     public var hookPort: UInt16 { hookServer.port }

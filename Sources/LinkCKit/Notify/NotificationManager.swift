@@ -140,4 +140,10 @@ public final class NotificationManager {
         lastDelivery[session.id] = (state: session.state, at: timestamp)
         sink.deliver(id: session.id, title: "linkC", body: body)
     }
+
+    /// Drop a session's dedupe entry. Called when a session is removed/ended so the
+    /// `lastDelivery` map doesn't grow unbounded over the app's lifetime.
+    public func forget(_ id: String) {
+        lastDelivery.removeValue(forKey: id)
+    }
 }

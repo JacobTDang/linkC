@@ -25,6 +25,103 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         }
     }
 
+    /// Builds a coordinator wired to fakes for kitty and the notification center.
+    private func makeCoordinator(sink: NotificationSink) -> AppCoordinator {
+        AppCoordinator(
+            kitty: KittyController(kittyPath: "/x", kittenPath: "/x", socketPath: "unix:/tmp/x.sock", runner: MockRunner()),
+            hookServer: HookServer(port: 0),
+            notifications: NotificationManager(sink: sink, now: { Date() }),
+            claudePath: "/x/claude",
+            settingsDir: FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-\(UUID().uuidString)"),
+            userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-settings.json"),
+            frontmostBundleID: { nil } // user is NOT watching kitty → notifiable states would notify
+        )
+    }
+
+    /// Fires one hook at the live server and waits for its 200 — so by the time it returns,
+    /// the event has been enqueued onto the coordinator's serial stream (respond enqueues
+    /// before it replies). Awaiting each in turn thus fixes enqueue order.
+    private func fireHook(port: UInt16, event: String, session: String) async throws {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/hook")!)
+        request.httpMethod = "POST"
+        request.setValue(event, forHTTPHeaderField: "X-LinkC-Event")
+        request.setValue(session, forHTTPHeaderField: "X-LinkC-Session")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data(#"{"session_id":"c1","cwd":"/tmp"}"#.utf8)
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    /// Polls until `predicate` holds (or times out). Used to await async event propagation.
+    private func waitUntil(_ predicate: () -> Bool, iterations: Int = 100) async throws -> Bool {
+        for _ in 0..<iterations {
+            if predicate() { return true }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return predicate()
+    }
+
+    /// I1: a SessionEnd hook prunes the session from the store — dead entries must not
+    /// accumulate — and ending a session posts no notification.
+    func testSessionEndPrunesSessionFromStore() async throws {
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+
+        _ = coordinator.store.create(cwd: "/tmp", title: "api", id: "L1")
+        XCTAssertNotNil(coordinator.store.session(id: "L1"))
+
+        try await fireHook(port: coordinator.hookPort, event: "session_end", session: "L1")
+
+        let removed = try await waitUntil { coordinator.store.session(id: "L1") == nil }
+        XCTAssertTrue(removed, "a SessionEnd hook must prune the session from the store")
+        XCTAssertTrue(sink.deliveries.isEmpty, "ending a session must not post a notification")
+    }
+
+    /// I3: events are applied strictly in arrival order. A userPromptSubmit → stop →
+    /// sessionEnd sequence must settle on the terminal end (session pruned), never stick on
+    /// an earlier .working/.finished state as reordered unstructured tasks could.
+    func testSerialEventSequenceSettlesOnTerminalEnd() async throws {
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+
+        _ = coordinator.store.create(cwd: "/tmp", title: "api", id: "L1")
+
+        try await fireHook(port: coordinator.hookPort, event: "user_prompt_submit", session: "L1")
+        try await fireHook(port: coordinator.hookPort, event: "stop", session: "L1")
+        try await fireHook(port: coordinator.hookPort, event: "session_end", session: "L1")
+
+        let removed = try await waitUntil { coordinator.store.session(id: "L1") == nil }
+        XCTAssertTrue(removed, "the terminal SessionEnd must win — the session must not be stuck working/finished")
+    }
+
+    /// M3: the per-session settings file written by newSession is deleted when the session
+    /// is stopped, and the session is removed from the store.
+    func testStopSessionDeletesSettingsFileAndRemovesSession() async throws {
+        let runner = RecordingRunner()
+        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cleanup-\(UUID().uuidString)")
+        let coordinator = AppCoordinator(
+            kitty: KittyController(kittyPath: "/x", kittenPath: "/x", socketPath: "unix:/tmp/x.sock", runner: runner),
+            hookServer: HookServer(port: 0),
+            notifications: NotificationManager(sink: RecordingSink(), now: { Date() }),
+            claudePath: "/usr/bin/claude",
+            settingsDir: settingsDir,
+            userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("nope.json"),
+            frontmostBundleID: { nil }
+        )
+        let session = try await coordinator.newSession(cwd: "/tmp", mode: .new)
+        let settingsFile = settingsDir.appendingPathComponent("session-\(session.id).json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: settingsFile.path), "newSession must write the per-session settings file")
+
+        await coordinator.stopSession(session.id)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settingsFile.path), "stopSession must delete the per-session settings file")
+        XCTAssertNil(coordinator.store.session(id: session.id), "stopSession must remove the session")
+    }
+
     func testHookPostDrivesStoreAndNotification() async throws {
         let sink = RecordingSink()
         let coordinator = AppCoordinator(
