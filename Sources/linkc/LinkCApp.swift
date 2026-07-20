@@ -2,16 +2,13 @@ import SwiftUI
 import AppKit
 import LinkCKit
 
-/// Menu bar shell. Wiring of KittyController / HookServer / NotificationManager is
-/// completed in the App-integration task; this compiles against the current contracts
-/// and renders live aggregate status from the store.
 @main
 struct LinkCApp: App {
-    @State private var store = SessionStore()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         MenuBarExtra {
-            LinkCMenu(store: store)
+            LinkCMenu(model: appDelegate.model)
         } label: {
             Image(systemName: "square.stack.3d.up.fill")
         }
@@ -19,22 +16,108 @@ struct LinkCApp: App {
     }
 }
 
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let model = AppModel()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Menu-bar utility: no Dock icon, no main window.
+        NSApp.setActivationPolicy(.accessory)
+        Task { await model.start() }
+    }
+}
+
+/// Observable app state backing the menu. Holds the coordinator once preflight succeeds,
+/// or a setup error to show the user.
+@MainActor
+@Observable
+final class AppModel {
+    private(set) var coordinator: AppCoordinator?
+    private(set) var setupError: String?
+
+    var sessions: [Session] { coordinator?.store.sessions ?? [] }
+    var activeCount: Int { coordinator?.store.activeCount ?? 0 }
+    var needsYouCount: Int { coordinator?.store.needsYouCount ?? 0 }
+
+    func start() async {
+        do {
+            let preflight = try Preflight.resolve()
+            let coordinator = AppCoordinator(
+                kittyPath: preflight.kittyPath,
+                kittenPath: preflight.kittenPath,
+                socketPath: preflight.socketPath,
+                claudePath: preflight.claudePath
+            )
+            try await coordinator.start()
+            self.coordinator = coordinator
+        } catch {
+            setupError = error.localizedDescription
+        }
+    }
+
+    func newSession() {
+        guard let coordinator else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Start session"
+        panel.message = "Choose a folder to start a Claude Code session in"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { try? await coordinator.newSession(cwd: url.path) }
+    }
+
+    func focus(_ id: String) { Task { await coordinator?.focusSession(id) } }
+    func stop(_ id: String) { Task { await coordinator?.stopSession(id) } }
+}
+
 struct LinkCMenu: View {
-    let store: SessionStore
+    let model: AppModel
 
     var body: some View {
-        Text("linkC")
-        Text("\(store.activeCount) running · \(store.needsYouCount) waiting")
-            .font(.caption)
-        Divider()
-        if store.sessions.isEmpty {
-            Text("No sessions yet").foregroundStyle(.secondary)
+        if let error = model.setupError {
+            Text("Setup needed").font(.headline)
+            Text(error).font(.caption)
+            Divider()
         } else {
-            ForEach(store.sessions) { session in
-                Text("\(session.title) — \(session.state.rawValue)")
+            Text("\(model.activeCount) running · \(model.needsYouCount) waiting")
+                .font(.caption)
+            Divider()
+            if model.sessions.isEmpty {
+                Text("No sessions").foregroundStyle(.secondary)
+            } else {
+                ForEach(model.sessions) { session in
+                    Menu("\(statusDot(session.state)) \(session.title) — \(label(session.state))") {
+                        Button("Focus") { model.focus(session.id) }
+                        Button("Stop") { model.stop(session.id) }
+                    }
+                }
             }
+            Divider()
+            Button("New session…") { model.newSession() }
         }
-        Divider()
         Button("Quit linkC") { NSApplication.shared.terminate(nil) }
+    }
+
+    private func statusDot(_ state: SessionState) -> String {
+        switch state.bucket {
+        case .active: return "🟢"
+        case .needsYou: return "🟠"
+        case .idle: return "⚪️"
+        }
+    }
+
+    private func label(_ state: SessionState) -> String {
+        switch state {
+        case .starting: return "starting"
+        case .ready: return "ready"
+        case .working: return "working"
+        case .waitingPermission: return "needs permission"
+        case .waitingIdle: return "waiting for input"
+        case .finished: return "finished"
+        case .error: return "error"
+        case .ended: return "ended"
+        }
     }
 }

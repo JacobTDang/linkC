@@ -1,0 +1,144 @@
+import Foundation
+import AppKit
+
+/// Wires the modules together: hook events drive the store and (focus-aware) notifications;
+/// UI commands create / focus / stop sessions through kitty. The pure logic it orchestrates
+/// (state machine, focus policy, settings merge, ls parsing) is unit-tested; this glue is
+/// covered by AppCoordinatorIntegrationTests via injected doubles.
+@MainActor
+public final class AppCoordinator {
+    public let store = SessionStore()
+
+    private let kitty: KittyController
+    private let hookServer: HookServer
+    private let notifications: NotificationManager
+    private let claudePath: String
+    private let settingsDir: URL
+    private let userSettingsURL: URL
+    private let frontmostBundleID: @Sendable () -> String?
+
+    public static let kittyBundleID = "net.kovidgoyal.kitty"
+
+    /// Designated initializer — all collaborators injected (used by tests).
+    public init(
+        kitty: KittyController,
+        hookServer: HookServer,
+        notifications: NotificationManager,
+        claudePath: String,
+        settingsDir: URL,
+        userSettingsURL: URL,
+        frontmostBundleID: @escaping @Sendable () -> String?
+    ) {
+        self.kitty = kitty
+        self.hookServer = hookServer
+        self.notifications = notifications
+        self.claudePath = claudePath
+        self.settingsDir = settingsDir
+        self.userSettingsURL = userSettingsURL
+        self.frontmostBundleID = frontmostBundleID
+    }
+
+    /// Production initializer — builds real collaborators from resolved binary paths.
+    public convenience init(kittyPath: String, kittenPath: String, socketPath: String, claudePath: String) {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        self.init(
+            kitty: KittyController(kittyPath: kittyPath, kittenPath: kittenPath, socketPath: socketPath, runner: ProcessCommandRunner()),
+            hookServer: HookServer(port: 0),
+            notifications: NotificationManager(),
+            claudePath: claudePath,
+            settingsDir: support.appendingPathComponent("linkC", isDirectory: true),
+            userSettingsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/settings.json"),
+            frontmostBundleID: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
+        )
+    }
+
+    public func start() async throws {
+        await notifications.requestAuthorization()
+        notifications.onActivate = { [weak self] id in
+            Task { @MainActor in await self?.focusSession(id) }
+        }
+        hookServer.onEvent = { [weak self] event in
+            Task { @MainActor in await self?.handle(event) }
+        }
+        try hookServer.start()
+    }
+
+    /// Stops the hook server. Called at app termination (and by tests).
+    public func shutdown() {
+        hookServer.stop()
+    }
+
+    // MARK: - Hook events → store → focus-aware notification
+
+    func handle(_ event: HookEvent) async {
+        let outcome = store.apply(event)
+        guard outcome.shouldConsiderNotifying, let session = outcome.session else { return }
+        let kittyFrontmost = frontmostBundleID() == Self.kittyBundleID
+        let focused = (try? await kitty.focusedLinkcSession()) ?? nil
+        if FocusPolicy.shouldNotify(
+            session: session,
+            enteredNotifiable: true,
+            kittyIsFrontmost: kittyFrontmost,
+            focusedLinkcSession: focused
+        ) {
+            notifications.post(session: session)
+        }
+    }
+
+    // MARK: - UI commands
+
+    @discardableResult
+    public func newSession(cwd: String) async throws -> Session {
+        let title = URL(fileURLWithPath: cwd).lastPathComponent
+        let session = store.create(cwd: cwd, title: title)
+        do {
+            try await kitty.ensureWorkspaceRunning()
+            let settingsPath = try writeSettings(for: session)
+            let windowId = try await kitty.launchSession(
+                command: [claudePath, "--settings", settingsPath],
+                cwd: cwd,
+                title: title,
+                linkcSessionId: session.id,
+                extraEnv: [:]
+            )
+            store.setKittyWindow(windowId, for: session.id)
+            activateKitty()
+            return session
+        } catch {
+            store.remove(id: session.id) // fail loud: no ghost session
+            throw error
+        }
+    }
+
+    public func focusSession(_ id: String) async {
+        try? await kitty.focus(linkcSessionId: id)
+        activateKitty()
+    }
+
+    public func stopSession(_ id: String) async {
+        try? await kitty.close(linkcSessionId: id)
+        store.remove(id: id)
+    }
+
+    public var hookPort: UInt16 { hookServer.port }
+
+    // MARK: - Helpers
+
+    private func writeSettings(for session: Session) throws -> String {
+        let user = try? Data(contentsOf: userSettingsURL)
+        let projectURL = URL(fileURLWithPath: session.cwd).appendingPathComponent(".claude/settings.json")
+        let project = try? Data(contentsOf: projectURL)
+        let data = try SettingsComposer.compose(userSettings: user, projectSettings: project, port: hookServer.port)
+        try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+        let path = settingsDir.appendingPathComponent("session-\(session.id).json")
+        try data.write(to: path)
+        return path.path
+    }
+
+    private func activateKitty() {
+        NSRunningApplication
+            .runningApplications(withBundleIdentifier: Self.kittyBundleID)
+            .first?
+            .activate()
+    }
+}
