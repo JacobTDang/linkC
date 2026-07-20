@@ -1,6 +1,23 @@
 import Foundation
 import AppKit
 
+/// How to start `claude` in a new tab: fresh, continue the most recent conversation in the
+/// folder, or resume (claude shows its own session picker in the tab). `--continue`/`--resume`
+/// use claude's own per-directory history, so they also work for sessions started outside linkC.
+public enum LaunchMode: String, Sendable, CaseIterable {
+    case new
+    case continueLast
+    case resume
+
+    var claudeArgs: [String] {
+        switch self {
+        case .new: return []
+        case .continueLast: return ["--continue"]
+        case .resume: return ["--resume"]
+        }
+    }
+}
+
 /// Wires the modules together: hook events drive the store and (focus-aware) notifications;
 /// UI commands create / focus / stop sessions through kitty. The pure logic it orchestrates
 /// (state machine, focus policy, settings merge, ls parsing) is unit-tested; this glue is
@@ -90,14 +107,14 @@ public final class AppCoordinator {
     // MARK: - UI commands
 
     @discardableResult
-    public func newSession(cwd: String) async throws -> Session {
+    public func newSession(cwd: String, mode: LaunchMode = .new) async throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
         let session = store.create(cwd: cwd, title: title)
         do {
             try await kitty.ensureWorkspaceRunning()
             let settingsPath = try writeSettings(for: session)
             let windowId = try await kitty.launchSession(
-                command: [claudePath, "--settings", settingsPath],
+                command: [claudePath] + mode.claudeArgs + ["--settings", settingsPath],
                 cwd: cwd,
                 title: title,
                 linkcSessionId: session.id,

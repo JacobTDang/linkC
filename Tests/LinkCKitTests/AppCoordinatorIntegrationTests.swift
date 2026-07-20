@@ -68,4 +68,48 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(deliveries.first?.id, "L1")
         XCTAssertTrue(deliveries.first?.body.contains("finished") ?? false)
     }
+
+    /// Records every command it's asked to run so we can assert the launch argv.
+    private final class RecordingRunner: CommandRunner, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _calls: [(exe: String, args: [String])] = []
+        var calls: [(exe: String, args: [String])] {
+            lock.lock(); defer { lock.unlock() }; return _calls
+        }
+        func run(executable: String, arguments: [String], environment: [String: String]?) async throws -> CommandResult {
+            lock.lock(); _calls.append((executable, arguments)); lock.unlock()
+            // Non-empty integer stdout so `ls` probes read as reachable and `launch` yields a window id.
+            return CommandResult(stdout: "7", stderr: "", exitCode: 0)
+        }
+    }
+
+    func testLaunchModeInjectsClaudeFlag() async throws {
+        func launchArgs(for mode: LaunchMode) async throws -> [String] {
+            let runner = RecordingRunner()
+            let coordinator = AppCoordinator(
+                kitty: KittyController(kittyPath: "/x", kittenPath: "/x", socketPath: "unix:/tmp/x.sock", runner: runner),
+                hookServer: HookServer(port: 0),
+                notifications: NotificationManager(sink: RecordingSink(), now: { Date() }),
+                claudePath: "/usr/bin/claude",
+                settingsDir: FileManager.default.temporaryDirectory.appendingPathComponent("linkc-mode-\(UUID().uuidString)"),
+                userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("nope.json"),
+                frontmostBundleID: { nil }
+            )
+            _ = try await coordinator.newSession(cwd: "/tmp", mode: mode)
+            return try XCTUnwrap(runner.calls.first { $0.args.contains("launch") }).args
+        }
+
+        let newArgs = try await launchArgs(for: .new)
+        XCTAssertTrue(newArgs.contains("/usr/bin/claude"))
+        XCTAssertFalse(newArgs.contains("--continue"))
+        XCTAssertFalse(newArgs.contains("--resume"))
+
+        let continueArgs = try await launchArgs(for: .continueLast)
+        XCTAssertTrue(continueArgs.contains("--continue"))
+        XCTAssertFalse(continueArgs.contains("--resume"))
+
+        let resumeArgs = try await launchArgs(for: .resume)
+        XCTAssertTrue(resumeArgs.contains("--resume"))
+        XCTAssertFalse(resumeArgs.contains("--continue"))
+    }
 }

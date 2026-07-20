@@ -55,17 +55,26 @@ final class AppModel {
         }
     }
 
-    func newSession() {
+    func newSession(mode: LaunchMode = .new) {
         guard let coordinator else { return }
         NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Start session"
-        panel.message = "Choose a folder to start a Claude Code session in"
+        switch mode {
+        case .new:
+            panel.prompt = "Start"
+            panel.message = "Choose a folder to start a new Claude Code session in"
+        case .continueLast:
+            panel.prompt = "Continue"
+            panel.message = "Choose a folder — continues its most recent Claude Code session"
+        case .resume:
+            panel.prompt = "Resume"
+            panel.message = "Choose a folder — then pick a past session to resume in the tab"
+        }
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { try? await coordinator.newSession(cwd: url.path) }
+        Task { try? await coordinator.newSession(cwd: url.path, mode: mode) }
     }
 
     func focus(_ id: String) { Task { await coordinator?.focusSession(id) } }
@@ -85,7 +94,7 @@ struct LinkCMenu: View {
                 .font(.caption)
             Divider()
             if model.sessions.isEmpty {
-                Text("No sessions").foregroundStyle(.secondary)
+                Text("No sessions yet — start one below").foregroundStyle(.secondary)
             } else {
                 ForEach(model.sessions) { session in
                     Menu("\(statusDot(session.state)) \(session.title) — \(label(session.state))") {
@@ -95,7 +104,9 @@ struct LinkCMenu: View {
                 }
             }
             Divider()
-            Button("New session…") { model.newSession() }
+            Button("New session…") { model.newSession(mode: .new) }
+            Button("Continue last…") { model.newSession(mode: .continueLast) }
+            Button("Resume…") { model.newSession(mode: .resume) }
         }
         Button("Quit linkC") { NSApplication.shared.terminate(nil) }
     }
