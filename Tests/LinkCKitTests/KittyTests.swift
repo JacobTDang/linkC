@@ -131,6 +131,25 @@ final class ProcessCommandRunnerTests: XCTestCase {
             XCTFail("expected LinkCError.process, got \(error)")
         }
     }
+
+    func testRunDetachedThrowsProcessErrorForMissingExecutable() {
+        let runner = ProcessCommandRunner()
+        XCTAssertThrowsError(try runner.runDetached(executable: "/no/such/binary-linkc-test", arguments: [], environment: nil)) { error in
+            guard case LinkCError.process = error else {
+                return XCTFail("expected LinkCError.process, got \(error)")
+            }
+        }
+    }
+
+    func testRunDetachedSpawnsWithoutWaitingForExit() throws {
+        // A long-running child returns control immediately (no waitUntilExit), and nothing
+        // is captured. `/bin/sleep 5` would block the old capture path for 5s; here it must
+        // return in well under that.
+        let runner = ProcessCommandRunner()
+        let start = Date()
+        try runner.runDetached(executable: "/bin/sleep", arguments: ["5"], environment: nil)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0, "runDetached must not wait for the child to exit")
+    }
 }
 
 // MARK: - KittyController
@@ -360,23 +379,24 @@ final class KittyControllerTests: XCTestCase {
         }
     }
 
-    func testEnsureWorkspaceRunningSurfacesFastLaunchFailureInsteadOfGenericTimeout() async {
-        // kitty itself exits immediately (e.g. bad flags) — the background launch never
-        // discards that outcome, so it should surface instead of a generic timeout once
-        // the poll loop next checks in, well before attempts are exhausted.
-        let mock = MockCommandRunner { calls in
-            let current = calls.last!
-            if current.executable == "/opt/kitten" {
-                return CommandResult(stdout: "", stderr: "connection refused", exitCode: 1)
+    func testEnsureWorkspaceRunningSurfacesDetachedLaunchSpawnFailure() async {
+        // The kitty GUI is spawned detached — a spawn failure (e.g. missing binary) is the
+        // one launch outcome we can observe synchronously, and it must surface as a kitty
+        // error rather than a generic timeout.
+        struct FailingLaunchRunner: CommandRunner {
+            func run(executable: String, arguments: [String], environment: [String: String]?) async throws -> CommandResult {
+                CommandResult(stdout: "", stderr: "connection refused", exitCode: 1) // ls probes never reachable
             }
-            return CommandResult(stdout: "", stderr: "unrecognized option --listen-on", exitCode: 1)
+            func runDetached(executable: String, arguments: [String], environment: [String: String]?) throws {
+                throw LinkCError.process("no such file: \(executable)")
+            }
         }
-        let controller = makeController(runner: mock, maxReadinessAttempts: 25, readinessPollInterval: .milliseconds(4))
+        let controller = makeController(runner: FailingLaunchRunner(), maxReadinessAttempts: 5, readinessPollInterval: .milliseconds(1))
         do {
             try await controller.ensureWorkspaceRunning()
             XCTFail("expected throw")
         } catch LinkCError.kitty(let message) {
-            XCTAssertTrue(message.contains("unrecognized option"), "expected the real launch failure to surface, got: \(message)")
+            XCTAssertTrue(message.contains("failed to launch kitty"), "expected the spawn failure to surface, got: \(message)")
         } catch {
             XCTFail("expected LinkCError.kitty, got \(error)")
         }

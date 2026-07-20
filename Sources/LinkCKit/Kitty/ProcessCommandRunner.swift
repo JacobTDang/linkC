@@ -57,6 +57,24 @@ public struct ProcessCommandRunner: CommandRunner {
             }
         }
     }
+
+    /// Spawn a long-lived process without capturing output or awaiting exit. stdout/stderr
+    /// go to `/dev/null` so nothing is buffered, and no thread is parked on `waitUntilExit`.
+    public func runDetached(executable: String, arguments: [String], environment: [String: String]?) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        if let environment {
+            process.environment = environment
+        }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            throw LinkCError.process("failed to launch \(executable): \(error)")
+        }
+    }
 }
 
 /// Mutable box so the two drain closures above can write into shared storage.

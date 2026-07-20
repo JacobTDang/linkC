@@ -11,12 +11,6 @@ public actor KittyController {
     private let runner: CommandRunner
     private let maxReadinessAttempts: Int
     private let readinessPollInterval: Duration
-    /// Set by the backgrounded kitty launch in `ensureWorkspaceRunning` if it fails fast
-    /// (e.g. bad flags, already running with a conflicting config). We can't propagate it
-    /// synchronously — the launch is intentionally fire-and-forget since kitty is a
-    /// long-lived process — but we must not silently discard it either, so it's folded
-    /// into the eventual thrown error instead of a generic timeout message.
-    private var lastLaunchFailure: String?
 
     public init(kittyPath: String, kittenPath: String, socketPath: String, runner: CommandRunner) {
         self.init(
@@ -51,38 +45,22 @@ public actor KittyController {
     public func ensureWorkspaceRunning() async throws {
         if try await probeReachable() { return }
 
-        lastLaunchFailure = nil
-
-        // kitty is a long-lived GUI process — we must not await its exit here. Fire the
-        // launch in the background and poll `ls` until the control socket answers. Any
-        // failure it reports is captured (not discarded) so it can surface below.
-        let backgroundRunner = runner
-        let path = kittyPath
-        let launchArgv = Self.workspaceLaunchArgv(socketPath: socketPath)
-        Task { [weak self] in
-            do {
-                let result = try await backgroundRunner.run(executable: path, arguments: launchArgv, environment: nil)
-                if !result.succeeded {
-                    await self?.recordLaunchFailure("kitty exited immediately (status \(result.exitCode)): \(result.stderr)")
-                }
-            } catch {
-                await self?.recordLaunchFailure("failed to launch kitty at \(path): \(error)")
-            }
+        // kitty is a long-lived GUI process — we must not await its exit or hold its pipes,
+        // or a dispatch thread would stay parked (and its output buffered) for the whole app
+        // lifetime. `runDetached` spawns it and returns; readiness comes from polling `ls`.
+        // A spawn failure (e.g. missing binary) throws here and surfaces immediately.
+        do {
+            try runner.runDetached(executable: kittyPath, arguments: Self.workspaceLaunchArgv(socketPath: socketPath), environment: nil)
+        } catch {
+            throw LinkCError.kitty("failed to launch kitty at \(kittyPath): \(error)")
         }
 
         for _ in 0..<maxReadinessAttempts {
             try await Task.sleep(for: readinessPollInterval)
             if try await probeReachable() { return }
-            if let failure = lastLaunchFailure {
-                throw LinkCError.kitty("kitty failed to start: \(failure)")
-            }
         }
 
         throw LinkCError.kitty("kitty did not start listening on \(socketPath) in time")
-    }
-
-    private func recordLaunchFailure(_ message: String) {
-        lastLaunchFailure = message
     }
 
     /// Launch a session tab running `command` (e.g. ["claude", "--settings", path]);
