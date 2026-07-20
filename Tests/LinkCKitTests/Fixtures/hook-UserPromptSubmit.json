@@ -1,0 +1,9 @@
+{
+  "session_id": "7a29becc-2776-461b-a720-4c6ed80bb560",
+  "transcript_path": "/Users/jacobdang/.claude/projects/-Users-jacobdang-Desktop-projects-linkC/7a29becc-2776-461b-a720-4c6ed80bb560.jsonl",
+  "cwd": "/Users/jacobdang/Desktop/projects/linkC",
+  "prompt_id": "d69e528b-80e3-445f-9dd3-6aff20d3c0bd",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Reply with exactly the word: pong"
+}
