@@ -52,15 +52,17 @@ public final class AppCoordinator {
         )
     }
 
-    public func start() async throws {
-        await notifications.requestAuthorization()
+    public func start() throws {
         notifications.onActivate = { [weak self] id in
             Task { @MainActor in await self?.focusSession(id) }
         }
         hookServer.onEvent = { [weak self] event in
             Task { @MainActor in await self?.handle(event) }
         }
+        // Start receiving hooks immediately — do NOT gate this on the notification
+        // permission dialog, which can block indefinitely on first launch.
         try hookServer.start()
+        Task { await notifications.requestAuthorization() }
     }
 
     /// Stops the hook server. Called at app termination (and by tests).

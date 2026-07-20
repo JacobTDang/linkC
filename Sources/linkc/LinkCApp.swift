@@ -48,7 +48,7 @@ final class AppModel {
                 socketPath: preflight.socketPath,
                 claudePath: preflight.claudePath
             )
-            try await coordinator.start()
+            try coordinator.start()
             self.coordinator = coordinator
         } catch {
             setupError = error.localizedDescription

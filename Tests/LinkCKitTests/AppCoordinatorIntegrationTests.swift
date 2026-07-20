@@ -36,7 +36,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-settings.json"),
             frontmostBundleID: { nil } // user is NOT watching kitty → should notify
         )
-        try await coordinator.start()
+        try coordinator.start()
         defer { coordinator.shutdown() }
 
         // Seed a session the way newSession would (without launching real kitty).
