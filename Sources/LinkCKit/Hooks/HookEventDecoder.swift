@@ -6,7 +6,7 @@ import Foundation
 /// from Claude's body — so decoding never depends on the shape of Claude's payload beyond
 /// the two fields we actually use. Real payloads carry many other fields (`permission_mode`,
 /// `prompt_id`, `transcript_path`, ...); `HookBody` only declares what we read, and
-/// `JSONDecoder` simply ignores the rest, matching the KittyLsParser convention.
+/// `JSONDecoder` simply ignores the rest.
 public enum HookEventDecoder {
     /// Returns nil if the event kind is unknown (or the header is missing). Header lookup
     /// is case-insensitive. A malformed/unexpected body never fails decoding outright —
@@ -40,7 +40,7 @@ public enum HookEventDecoder {
 }
 
 /// The subset of Claude's hook JSON body we care about. Every other real key
-/// (`hook_event_name`, `permission_mode`, `prompt_id`, `transcript_path`, ...) is ignored.
+/// (`hook_event_name`, `permission_mode`, `prompt_id`, `transcript_path`, ...) is ignored by the decoder.
 private struct HookBody: Decodable {
     let sessionId: String?
     let cwd: String?

@@ -3,16 +3,9 @@ import XCTest
 
 /// End-to-end wiring test: a real HTTP hook POST flows through the real HookServer, the
 /// decoder, the store, the focus policy, and into a recording notification sink — exercising
-/// the actual AppCoordinator glue with only kitty and the UN center faked out.
+/// the actual AppCoordinator glue with only the terminal spawn and the UN center faked out.
 @MainActor
 final class AppCoordinatorIntegrationTests: XCTestCase {
-
-    /// Mock kitty: `focusedLinkcSession()` triggers an `ls`; return an empty tree.
-    private struct MockRunner: CommandRunner {
-        func run(executable: String, arguments: [String], environment: [String: String]?) async throws -> CommandResult {
-            CommandResult(stdout: "[]", stderr: "", exitCode: 0)
-        }
-    }
 
     private final class RecordingSink: NotificationSink, @unchecked Sendable {
         private let lock = NSLock()
@@ -25,16 +18,21 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         }
     }
 
-    /// Builds a coordinator wired to fakes for kitty and the notification center.
-    private func makeCoordinator(sink: NotificationSink) -> AppCoordinator {
+    /// Builds a coordinator wired to a real (but un-spawned) terminal manager and a fake
+    /// notification center. `isWatching` returns false so notifiable states would notify.
+    private func makeCoordinator(
+        sink: NotificationSink,
+        claudePath: String = "/x/claude",
+        settingsDir: URL = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-\(UUID().uuidString)")
+    ) -> AppCoordinator {
         AppCoordinator(
-            kitty: KittyController(kittyPath: "/x", kittenPath: "/x", socketPath: "unix:/tmp/x.sock", runner: MockRunner()),
+            terminals: TerminalSessionManager(),
             hookServer: HookServer(port: 0),
             notifications: NotificationManager(sink: sink, now: { Date() }),
-            claudePath: "/x/claude",
-            settingsDir: FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-\(UUID().uuidString)"),
+            claudePath: claudePath,
+            settingsDir: settingsDir,
             userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-settings.json"),
-            frontmostBundleID: { nil } // user is NOT watching kitty → notifiable states would notify
+            isWatching: { _ in false }
         )
     }
 
@@ -98,45 +96,15 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertTrue(removed, "the terminal SessionEnd must win — the session must not be stuck working/finished")
     }
 
-    /// M3: the per-session settings file written by newSession is deleted when the session
-    /// is stopped, and the session is removed from the store.
-    func testStopSessionDeletesSettingsFileAndRemovesSession() async throws {
-        let runner = RecordingRunner()
-        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cleanup-\(UUID().uuidString)")
-        let coordinator = AppCoordinator(
-            kitty: KittyController(kittyPath: "/x", kittenPath: "/x", socketPath: "unix:/tmp/x.sock", runner: runner),
-            hookServer: HookServer(port: 0),
-            notifications: NotificationManager(sink: RecordingSink(), now: { Date() }),
-            claudePath: "/usr/bin/claude",
-            settingsDir: settingsDir,
-            userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("nope.json"),
-            frontmostBundleID: { nil }
-        )
-        let session = try await coordinator.newSession(cwd: "/tmp", mode: .new)
-        let settingsFile = settingsDir.appendingPathComponent("session-\(session.id).json")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: settingsFile.path), "newSession must write the per-session settings file")
-
-        await coordinator.stopSession(session.id)
-
-        XCTAssertFalse(FileManager.default.fileExists(atPath: settingsFile.path), "stopSession must delete the per-session settings file")
-        XCTAssertNil(coordinator.store.session(id: session.id), "stopSession must remove the session")
-    }
-
+    /// A real Stop hook POST drives the store to `.finished`, binds the claude id, and — since
+    /// the user is not watching (isWatching == false) — posts exactly one notification.
     func testHookPostDrivesStoreAndNotification() async throws {
         let sink = RecordingSink()
-        let coordinator = AppCoordinator(
-            kitty: KittyController(kittyPath: "/x", kittenPath: "/x", socketPath: "unix:/tmp/x.sock", runner: MockRunner()),
-            hookServer: HookServer(port: 0),
-            notifications: NotificationManager(sink: sink, now: { Date() }),
-            claudePath: "/x/claude",
-            settingsDir: FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-\(UUID().uuidString)"),
-            userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-settings.json"),
-            frontmostBundleID: { nil } // user is NOT watching kitty → should notify
-        )
+        let coordinator = makeCoordinator(sink: sink)
         try coordinator.start()
         defer { coordinator.shutdown() }
 
-        // Seed a session the way newSession would (without launching real kitty).
+        // Seed a session the way newSession would (without launching a real terminal).
         _ = coordinator.store.create(cwd: "/tmp", title: "api", id: "L1")
 
         // Fire a real Stop hook at the live server.
@@ -150,63 +118,47 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertEqual(String(data: respData, encoding: .utf8), "{}")
 
-        // Let the async onEvent → handle → store/notify propagate.
-        var finished = false
-        for _ in 0..<100 {
-            if coordinator.store.session(id: "L1")?.state == .finished { finished = true; break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        let finished = try await waitUntil { coordinator.store.session(id: "L1")?.state == .finished }
         XCTAssertTrue(finished, "Stop hook should have driven session L1 to .finished")
         XCTAssertEqual(coordinator.store.session(id: "L1")?.claudeSessionId, "c1")
 
-        // A finished session while not watching kitty should have posted exactly one notification.
+        // A finished session while not watching should have posted exactly one notification.
         let deliveries = sink.deliveries
         XCTAssertEqual(deliveries.count, 1)
         XCTAssertEqual(deliveries.first?.id, "L1")
         XCTAssertTrue(deliveries.first?.body.contains("finished") ?? false)
     }
 
-    /// Records every command it's asked to run so we can assert the launch argv.
-    private final class RecordingRunner: CommandRunner, @unchecked Sendable {
-        private let lock = NSLock()
-        private var _calls: [(exe: String, args: [String])] = []
-        var calls: [(exe: String, args: [String])] {
-            lock.lock(); defer { lock.unlock() }; return _calls
-        }
-        func run(executable: String, arguments: [String], environment: [String: String]?) async throws -> CommandResult {
-            lock.lock(); _calls.append((executable, arguments)); lock.unlock()
-            // Non-empty integer stdout so `ls` probes read as reachable and `launch` yields a window id.
-            return CommandResult(stdout: "7", stderr: "", exitCode: 0)
-        }
+    /// newSession writes the per-session settings file and launches a terminal; stopSession
+    /// kills that terminal, deletes the settings file, and removes the session from the store.
+    /// Uses `/bin/cat` as a stand-in for claude — a real but harmless PTY child that blocks on
+    /// its input rather than exiting on its own, so the "file exists after launch" assertion
+    /// isn't raced by the auto-prune that a self-exiting child would trigger.
+    func testStopSessionLaunchesThenCleansUpSettingsAndSession() async throws {
+        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cleanup-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: settingsDir)
+
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        let settingsFile = settingsDir.appendingPathComponent("session-\(session.id).json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: settingsFile.path), "newSession must write the per-session settings file")
+        XCTAssertNotNil(coordinator.terminals.session(id: session.id), "newSession must register a terminal")
+        XCTAssertEqual(coordinator.terminals.selectedId, session.id, "the new session must be selected")
+
+        coordinator.stopSession(session.id)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settingsFile.path), "stopSession must delete the per-session settings file")
+        XCTAssertNil(coordinator.store.session(id: session.id), "stopSession must remove the session from the store")
+        XCTAssertNil(coordinator.terminals.session(id: session.id), "stopSession must remove the terminal")
     }
 
-    func testLaunchModeInjectsClaudeFlag() async throws {
-        func launchArgs(for mode: LaunchMode) async throws -> [String] {
-            let runner = RecordingRunner()
-            let coordinator = AppCoordinator(
-                kitty: KittyController(kittyPath: "/x", kittenPath: "/x", socketPath: "unix:/tmp/x.sock", runner: runner),
-                hookServer: HookServer(port: 0),
-                notifications: NotificationManager(sink: RecordingSink(), now: { Date() }),
-                claudePath: "/usr/bin/claude",
-                settingsDir: FileManager.default.temporaryDirectory.appendingPathComponent("linkc-mode-\(UUID().uuidString)"),
-                userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("nope.json"),
-                frontmostBundleID: { nil }
-            )
-            _ = try await coordinator.newSession(cwd: "/tmp", mode: mode)
-            return try XCTUnwrap(runner.calls.first { $0.args.contains("launch") }).args
-        }
-
-        let newArgs = try await launchArgs(for: .new)
-        XCTAssertTrue(newArgs.contains("/usr/bin/claude"))
-        XCTAssertFalse(newArgs.contains("--continue"))
-        XCTAssertFalse(newArgs.contains("--resume"))
-
-        let continueArgs = try await launchArgs(for: .continueLast)
-        XCTAssertTrue(continueArgs.contains("--continue"))
-        XCTAssertFalse(continueArgs.contains("--resume"))
-
-        let resumeArgs = try await launchArgs(for: .resume)
-        XCTAssertTrue(resumeArgs.contains("--resume"))
-        XCTAssertFalse(resumeArgs.contains("--continue"))
+    /// The launch mode maps to the right claude flag (pure mapping — no spawn needed).
+    func testLaunchModeClaudeArgs() {
+        XCTAssertEqual(LaunchMode.new.claudeArgs, [])
+        XCTAssertEqual(LaunchMode.continueLast.claudeArgs, ["--continue"])
+        XCTAssertEqual(LaunchMode.resume.claudeArgs, ["--resume"])
     }
 }

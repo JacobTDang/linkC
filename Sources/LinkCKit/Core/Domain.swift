@@ -98,38 +98,3 @@ public struct Session: Sendable, Identifiable, Equatable {
         self.lastEventAt = lastEventAt
     }
 }
-
-/// Result of running an external command.
-public struct CommandResult: Sendable, Equatable {
-    public let stdout: String
-    public let stderr: String
-    public let exitCode: Int32
-    public init(stdout: String, stderr: String, exitCode: Int32) {
-        self.stdout = stdout
-        self.stderr = stderr
-        self.exitCode = exitCode
-    }
-    public var succeeded: Bool { exitCode == 0 }
-}
-
-/// Abstraction over process execution so kitty orchestration is unit-testable with a mock.
-public protocol CommandRunner: Sendable {
-    func run(executable: String, arguments: [String], environment: [String: String]?) async throws -> CommandResult
-
-    /// Fire-and-forget launch of a long-lived process (e.g. the kitty GUI). Returns as soon
-    /// as the process is spawned — its stdout/stderr are NOT captured and its exit is NOT
-    /// awaited, so no thread is parked and no output is buffered for the process's lifetime.
-    /// Throws only if the spawn itself fails (fail loud); a later non-zero exit is not observed.
-    func runDetached(executable: String, arguments: [String], environment: [String: String]?) throws
-}
-
-public extension CommandRunner {
-    /// Default best-effort implementation so test doubles need not implement it: run in a
-    /// background task and discard the result. Concrete production runners override this to
-    /// spawn without capturing or waiting.
-    func runDetached(executable: String, arguments: [String], environment: [String: String]?) throws {
-        Task { [self] in
-            _ = try? await run(executable: executable, arguments: arguments, environment: environment)
-        }
-    }
-}

@@ -34,8 +34,7 @@ final class FocusPolicyTests: XCTestCase {
         XCTAssertFalse(FocusPolicy.shouldNotify(
             session: session(),
             enteredNotifiable: false,
-            kittyIsFrontmost: false,
-            focusedLinkcSession: nil
+            isWatchingThisSession: false
         ))
     }
 
@@ -43,35 +42,24 @@ final class FocusPolicyTests: XCTestCase {
         XCTAssertTrue(FocusPolicy.shouldNotify(
             session: session(),
             enteredNotifiable: true,
-            kittyIsFrontmost: false,
-            focusedLinkcSession: nil
+            isWatchingThisSession: false
         ))
     }
 
-    func testNotifiableAndKittyFrontmostFocusedOnThisSessionSuppresses() {
+    func testNotifiableButWatchingThisSessionSuppresses() {
         XCTAssertFalse(FocusPolicy.shouldNotify(
-            session: session(id: "L1"),
+            session: session(),
             enteredNotifiable: true,
-            kittyIsFrontmost: true,
-            focusedLinkcSession: "L1"
+            isWatchingThisSession: true
         ))
     }
 
-    func testNotifiableAndKittyFrontmostFocusedOnOtherSessionNotifies() {
-        XCTAssertTrue(FocusPolicy.shouldNotify(
-            session: session(id: "L1"),
-            enteredNotifiable: true,
-            kittyIsFrontmost: true,
-            focusedLinkcSession: "L2"
-        ))
-    }
-
-    func testNotifiableAndKittyNotFrontmostNotifiesEvenIfFocusedMatches() {
-        XCTAssertTrue(FocusPolicy.shouldNotify(
-            session: session(id: "L1"),
-            enteredNotifiable: true,
-            kittyIsFrontmost: false,
-            focusedLinkcSession: "L1"
+    func testEnteredNotifiableGatesFirstEvenWhenWatching() {
+        // enteredNotifiable == false wins regardless of the watch state.
+        XCTAssertFalse(FocusPolicy.shouldNotify(
+            session: session(),
+            enteredNotifiable: false,
+            isWatchingThisSession: true
         ))
     }
 }
