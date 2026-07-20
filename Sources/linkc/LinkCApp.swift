@@ -6,23 +6,22 @@ import LinkCKit
 struct LinkCApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    // The status item and panel are built by the AppDelegate/StatusPanelController, not by
+    // SwiftUI. This scene exists only to satisfy `App`; an accessory app never shows it.
     var body: some Scene {
-        MenuBarExtra {
-            PanelView(model: appDelegate.model)
-        } label: {
-            Image(systemName: "square.stack.3d.up.fill")
-        }
-        .menuBarExtraStyle(.window)
+        Settings { EmptyView() }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
+    private var panelController: StatusPanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar utility: no Dock icon, no main window.
         NSApp.setActivationPolicy(.accessory)
+        panelController = StatusPanelController(model: model)
         Task { await model.start() }
     }
 

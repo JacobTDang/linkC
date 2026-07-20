@@ -37,7 +37,7 @@ struct PanelView: View {
         VStack(spacing: 0) {
             content
         }
-        .frame(width: 760, height: 520)
+        .frame(minWidth: 320, maxWidth: .infinity, minHeight: 380, maxHeight: .infinity)
         .background(Theme.bg)
         .environment(\.colorScheme, .dark)
         .onAppear { model.panelVisible = true }
