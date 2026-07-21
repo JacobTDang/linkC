@@ -31,7 +31,7 @@ struct PanelView: View {
                 }
             }
         }
-        .frame(minWidth: 320, maxWidth: .infinity, minHeight: 380, maxHeight: .infinity)
+        .frame(minWidth: 300, maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
         .environment(\.colorScheme, .dark)
         .onAppear { model.panelVisible = true }
         .onDisappear { model.panelVisible = false }

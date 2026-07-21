@@ -8,18 +8,33 @@ import SwiftUI
 /// receives keystrokes.
 final class StatusPanel: NSPanel {
     override var canBecomeKey: Bool { true }
+
+    /// Keep the whole panel on-screen — you can't drag it off any edge. AppKit calls this on every
+    /// move/resize; we clamp the frame to the screen's visible area (below AppKit's default, which
+    /// only keeps the title bar reachable).
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        var r = super.constrainFrameRect(frameRect, to: screen)
+        guard let visible = (screen ?? self.screen ?? NSScreen.main)?.visibleFrame else { return r }
+        if r.width <= visible.width {
+            if r.maxX > visible.maxX { r.origin.x = visible.maxX - r.width }
+            if r.minX < visible.minX { r.origin.x = visible.minX }
+        }
+        if r.height <= visible.height {
+            if r.maxY > visible.maxY { r.origin.y = visible.maxY - r.height }
+            if r.minY < visible.minY { r.origin.y = visible.minY }
+        }
+        return r
+    }
 }
 
 /// Owns the menu-bar `NSStatusItem` and the frosted `StatusPanel` that hosts `PanelView`,
 /// replacing SwiftUI's `MenuBarExtra(.window)` so we control the panel's glass, position, and
 /// size.
 ///
-/// Placement: a tall panel pinned to the top-right SIDE of the screen — right edge just inside
-/// the screen edge, top just under the menu bar, running nearly the full visible height. Sizing:
-/// compact (380) when no session is selected, expanded (760) when one is, animating the width on
-/// the `selectedId` flip while keeping the right edge fixed so it grows left. It is `AppModel`
-/// that stays the source of truth — this controller only reflects `selectedId` into the width
-/// and mirrors show/hide into `panelVisible`.
+/// Placement: a compact rectangle stuck in the screen's top-right corner. One consistent size
+/// regardless of selection: the user's dragged size (persisted) or a small, short default. Movable
+/// (drag the body) and resizable (drag edges), always clamped fully on-screen. `AppModel` stays the
+/// source of truth — this controller mirrors show/hide into `panelVisible`.
 @MainActor
 final class StatusPanelController: NSObject, NSWindowDelegate {
     private let model: AppModel
@@ -33,13 +48,16 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     /// Widths: compact when nothing is selected, expanded when a session is. Height is derived
     /// from the screen (nearly full), so only the width is a stored preference.
-    private let compactWidth: CGFloat = 380
-    private let defaultExpandedWidth: CGFloat = 760
-    private let panelMinSize = CGSize(width: 320, height: 320)
-    /// Gap between the panel and the screen edges (right/top/bottom).
-    private let edgeGap: CGFloat = 12
+    /// One consistent size — a wide rectangle hanging from the icon — regardless of selection. The
+    /// user's dragged size is persisted and wins; otherwise a wide default proportional to the screen.
+    private let panelMinSize = CGSize(width: 340, height: 220)
+    /// Gap below the menu bar / in from the screen edge.
+    private let edgeGap: CGFloat = 8
 
-    private enum WidthKey { static let expanded = "StatusPanel.expandedWidth" }
+    private enum SizeKey {
+        static let width = "StatusPanel.width"
+        static let height = "StatusPanel.height"
+    }
 
     init(model: AppModel) {
         self.model = model
@@ -65,7 +83,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     private func setupPanel() {
         let panel = StatusPanel(
-            contentRect: NSRect(origin: .zero, size: CGSize(width: compactWidth, height: 600)),
+            contentRect: NSRect(origin: .zero, size: CGSize(width: 960, height: 540)),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -73,7 +91,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         panel.title = ""
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.isMovableByWindowBackground = true
+        panel.isMovableByWindowBackground = true    // drag the body to MOVE; drag edges/corners to RESIZE
         panel.level = .floating
         panel.hidesOnDeactivate = false        // stays open while the user works elsewhere
         panel.becomesKeyOnlyIfNeeded = false   // full key so the terminal gets keystrokes
@@ -126,7 +144,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     /// selection. Used both by the icon toggle and programmatically (e.g. a notification click
     /// that focuses a session while the panel is hidden).
     func present(activating: Bool) {
-        panel.setFrame(anchoredFrame(width: desiredWidth()), display: false)
+        panel.setFrame(anchoredFrame(), display: false)
         model.panelVisible = true
         if activating { NSApp.activate(ignoringOtherApps: true) }
         panel.makeKeyAndOrderFront(nil)
@@ -167,17 +185,15 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// A session was selected/deselected. While the panel is open, animate the width between
-    /// compact and expanded (keeping the right edge fixed). While it is hidden, a new selection
-    /// means a programmatic focus (notification click) — open the panel to reveal it.
+    /// A session was selected. If the panel is open, raise it + focus its terminal; if hidden (a
+    /// programmatic focus, e.g. a notification click), open it to reveal the session. No resize —
+    /// the panel keeps its one consistent size.
     private func selectionDidChange(to id: String?) {
+        guard id != nil else { return }
         if panel.isVisible {
-            applyWidth(animated: true)
-            if id != nil {
-                panel.makeKeyAndOrderFront(nil)   // raise on programmatic focus
-                focusTerminalIfNeeded()
-            }
-        } else if id != nil {
+            panel.makeKeyAndOrderFront(nil)   // raise on programmatic focus
+            focusTerminalIfNeeded()
+        } else {
             present(activating: true)
         }
     }
@@ -197,54 +213,43 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     // MARK: - Sizing
 
-    private func desiredWidth() -> CGFloat {
-        model.selectedId != nil ? expandedWidth : compactWidth
+    /// One consistent size: the user's persisted (dragged) size, else a wide default proportional
+    /// to the screen — never below the min.
+    /// One consistent size: the user's persisted (dragged) size, else a small, short default —
+    /// resize when you want more room to work; it persists.
+    private func panelSize() -> CGSize {
+        let defaultWidth: CGFloat = 480
+        let defaultHeight: CGFloat = 300
+        let w = UserDefaults.standard.double(forKey: SizeKey.width)
+        let h = UserDefaults.standard.double(forKey: SizeKey.height)
+        return CGSize(
+            width: max(w > 0 ? w : defaultWidth, panelMinSize.width),
+            height: max(h > 0 ? h : defaultHeight, panelMinSize.height)
+        )
     }
 
-    /// The expanded width — the user's persisted preference, or the default, never below the min.
-    private var expandedWidth: CGFloat {
-        let stored = UserDefaults.standard.double(forKey: WidthKey.expanded)
-        return max(stored > 0 ? stored : defaultExpandedWidth, panelMinSize.width)
-    }
-
-    /// Resize the *visible* panel to `desiredWidth()`, keeping its current top-right corner fixed
-    /// so it grows left instead of drifting. Height is preserved.
-    private func applyWidth(animated: Bool) {
-        let current = panel.frame
-        let target = clampToScreen(NSRect(
-            x: current.maxX - desiredWidth(),
-            y: current.minY,
-            width: desiredWidth(),
-            height: current.height
-        ))
-        if animated {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.25
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                panel.animator().setFrame(target, display: true)
-            }
-        } else {
-            panel.setFrame(target, display: true)
-        }
-    }
-
-    /// A tall frame pinned to the top-right of the target screen's visible area: right edge at
-    /// `visibleFrame.maxX - edgeGap`, top at `visibleFrame.maxY - edgeGap`, height nearly the
-    /// full visible height. Uses the screen showing the status-item icon, falling back to the
-    /// main screen (e.g. when the icon is in the menu-bar overflow) — never centered.
-    private func anchoredFrame(width: CGFloat) -> NSRect {
+    /// A rectangle stuck in the screen's top-right corner — right + top edges pinned to the corner,
+    /// just inside the menu bar. Uses the screen showing the status-item icon (multi-monitor),
+    /// never centered.
+    private func anchoredFrame() -> NSRect {
         let screen = statusItemScreen() ?? NSScreen.main ?? NSScreen.screens[0]
+        let size = panelSize()
         let visible = screen.visibleFrame
-        let height = visible.height - edgeGap * 2
-        let rightX = visible.maxX - edgeGap
+        let rightX = visible.maxX - edgeGap    // stuck in the top-right corner, not under the icon
         let topY = visible.maxY - edgeGap
-        return clampToScreen(NSRect(x: rightX - width, y: topY - height, width: width, height: height))
+        return clampToScreen(NSRect(x: rightX - size.width, y: topY - size.height, width: size.width, height: size.height))
+    }
+
+    /// The status-item icon's rect in screen coordinates (nil if it has no window yet — e.g. it's
+    /// in the menu-bar overflow).
+    private func iconScreenRect() -> NSRect? {
+        guard let button = statusItem.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.convert(button.bounds, to: nil))
     }
 
     private func statusItemScreen() -> NSScreen? {
-        guard let button = statusItem.button, let window = button.window else { return nil }
-        let iconInScreen = window.convertToScreen(button.convert(button.bounds, to: nil))
-        return NSScreen.screens.first { $0.frame.intersects(iconInScreen) }
+        guard let icon = iconScreenRect() else { return nil }
+        return NSScreen.screens.first { $0.frame.intersects(icon) }
     }
 
     /// Keep a frame fully within its screen's visible area. Prefers holding the top and right
@@ -286,9 +291,9 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        // Only user drags fire this (programmatic animation does not). Persist the width when
-        // expanded — the compact width is fixed and the height is screen-derived.
-        guard model.selectedId != nil else { return }
-        UserDefaults.standard.set(Double(panel.frame.width), forKey: WidthKey.expanded)
+        // User drags fire this (programmatic frame changes don't). Persist the size so it becomes
+        // the consistent default on the next open.
+        UserDefaults.standard.set(Double(panel.frame.width), forKey: SizeKey.width)
+        UserDefaults.standard.set(Double(panel.frame.height), forKey: SizeKey.height)
     }
 }
