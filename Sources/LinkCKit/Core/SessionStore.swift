@@ -22,7 +22,6 @@ public enum SessionReducer {
         let old = s.state
         s.state = nextState(current: old, event: event.kind)
         if let cid = event.claudeSessionId { s.claudeSessionId = cid }
-        s.lastEventAt = event.receivedAt
         let entered = s.state.isNotifiable && s.state != old
         return (s, entered)
     }
@@ -72,5 +71,4 @@ public final class SessionStore {
 
     public var activeCount: Int { sessions.filter { $0.state.bucket == .active }.count }
     public var needsYouCount: Int { sessions.filter { $0.state.bucket == .needsYou }.count }
-    public var idleCount: Int { sessions.filter { $0.state.bucket == .idle }.count }
 }

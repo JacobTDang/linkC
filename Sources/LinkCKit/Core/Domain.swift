@@ -50,20 +50,17 @@ public struct HookEvent: Sendable, Equatable {
     public let linkcSessionId: String?
     public let claudeSessionId: String?
     public let cwd: String?
-    public let receivedAt: Date
 
     public init(
         kind: HookEventKind,
         linkcSessionId: String?,
         claudeSessionId: String?,
-        cwd: String?,
-        receivedAt: Date = Date()
+        cwd: String?
     ) {
         self.kind = kind
         self.linkcSessionId = (linkcSessionId?.isEmpty ?? true) ? nil : linkcSessionId
         self.claudeSessionId = claudeSessionId
         self.cwd = cwd
-        self.receivedAt = receivedAt
     }
 }
 
@@ -75,21 +72,18 @@ public struct Session: Sendable, Identifiable, Equatable {
     public var cwd: String
     public var title: String
     public var state: SessionState
-    public var lastEventAt: Date
 
     public init(
         id: String,
         cwd: String,
         title: String,
         state: SessionState = .starting,
-        claudeSessionId: String? = nil,
-        lastEventAt: Date = Date()
+        claudeSessionId: String? = nil
     ) {
         self.id = id
         self.cwd = cwd
         self.title = title
         self.state = state
         self.claudeSessionId = claudeSessionId
-        self.lastEventAt = lastEventAt
     }
 }

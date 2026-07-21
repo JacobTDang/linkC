@@ -27,8 +27,7 @@ public enum HookEventDecoder {
             kind: kind,
             linkcSessionId: linkcSessionId,
             claudeSessionId: parsedBody?.sessionId,
-            cwd: parsedBody?.cwd,
-            receivedAt: Date()
+            cwd: parsedBody?.cwd
         )
     }
 
