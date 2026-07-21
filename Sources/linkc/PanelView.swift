@@ -18,12 +18,12 @@ struct PanelView: View {
                 VStack(spacing: 0) {
                     PanelHeader(model: model)
                     Divider().overlay(Theme.hairline)
-                    if model.sessions.isEmpty {
-                        EmptyStateView(model: model)
-                    } else if model.selectedId == nil {
-                        HomeView(model: model)
-                    } else {
+                    if model.selectedId != nil {
                         TerminalHero(model: model)
+                    } else if model.sessions.isEmpty && model.restorables.isEmpty {
+                        EmptyStateView(model: model)
+                    } else {
+                        HomeView(model: model)
                     }
                     if let error = model.lastError {
                         ErrorBar(message: error)
@@ -134,22 +134,153 @@ private struct HomeView: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            TimelineView(.periodic(from: .now, by: 1.0)) { _ in
-                VStack(spacing: 6) {
-                    ForEach(model.sessions) { session in
-                        HomeCard(
-                            session: session,
-                            preview: model.recentOutput(session.id, lines: 3),
-                            onOpen: { model.focus(session.id) },
-                            onClose: { model.stop(session.id) }
-                        )
+            VStack(spacing: 10) {
+                // Live cards refresh their terminal previews about once a second — and only while
+                // home is on screen, since this view exists only then. Restorable cards have no
+                // live output, so they sit outside the timeline.
+                TimelineView(.periodic(from: .now, by: 1.0)) { _ in
+                    VStack(spacing: 6) {
+                        ForEach(model.sessions) { session in
+                            HomeCard(
+                                session: session,
+                                preview: model.recentOutput(session.id, lines: 3),
+                                onOpen: { model.focus(session.id) },
+                                onClose: { model.stop(session.id) }
+                            )
+                        }
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 12)
+                if !model.restorables.isEmpty {
+                    EarlierSection(model: model)
+                }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Earlier (restorable sessions)
+
+/// Previous sessions from an earlier run, shown below the live cards: a quiet section header with
+/// a "Restore all" affordance, then one dimmed card per restorable session.
+private struct EarlierSection: View {
+    let model: AppModel
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Text("EARLIER")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+                Button(action: { model.restoreAll() }) {
+                    Text("Restore all")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.accent)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Restore every previous session")
+            }
+            .padding(.horizontal, 4)
+            ForEach(model.restorables) { session in
+                RestorableCard(
+                    session: session,
+                    onRestore: { model.restore(session) },
+                    onDismiss: { model.dismiss(session) }
+                )
+            }
+        }
+    }
+}
+
+/// A dimmed card for one previous session: an idle-grey dot, its title and folder, when it ended,
+/// and a Restore action. No output preview — there is no live terminal behind it. A hover-only x
+/// dismisses it for good.
+private struct RestorableCard: View {
+    let session: RestorableSession
+    let onRestore: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var hovering = false
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    private var endedText: String? {
+        guard let endedAt = session.endedAt else { return nil }
+        return "ended " + Self.relativeFormatter.localizedString(for: endedAt, relativeTo: Date())
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                StatusDot(state: .ended)
+                Text(session.title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                Text((session.cwd as NSString).abbreviatingWithTildeInPath)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let endedText {
+                    Text(endedText)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize()
+                }
+            }
+            .opacity(0.75) // the whole card reads dimmer than a live one
+
+            Spacer(minLength: 8)
+
+            Button(action: onRestore) {
+                Text("Restore")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                            .strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Resume this session")
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering ? 1 : 0)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .fill(hovering ? Theme.hover : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1)
+        )
+        .onHover { hovering = $0 }
     }
 }
 
