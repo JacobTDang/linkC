@@ -33,6 +33,12 @@ public final class TerminalSessionManager {
         selectedId = id
     }
 
+    /// Return to the home overview by clearing the selection. Keeps every terminal alive; the
+    /// panel controller treats a nil selection as a no-op, so this never closes the panel.
+    public func deselect() {
+        selectedId = nil
+    }
+
     /// Kill `id`'s child process and drop the session. Selection falls back to the last
     /// remaining terminal (or nil). Idempotent.
     public func terminate(_ id: String) {

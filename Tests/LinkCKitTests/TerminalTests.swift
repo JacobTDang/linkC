@@ -65,6 +65,17 @@ final class TerminalSessionManagerTests: XCTestCase {
         XCTAssertEqual(manager.selectedId, "L2", "removing a non-selected session must not change the selection")
     }
 
+    func testDeselectClearsSelectionWithoutRemovingSessions() {
+        // Returning to the home overview clears the selection but keeps every terminal alive.
+        let manager = TerminalSessionManager()
+        manager.makeSession(id: "L1", cwd: "/a", title: "a")
+        manager.makeSession(id: "L2", cwd: "/b", title: "b") // selected
+
+        manager.deselect()
+        XCTAssertNil(manager.selectedId, "deselect must clear the selection (return to home overview)")
+        XCTAssertEqual(manager.sessions.map(\.id), ["L1", "L2"], "deselect must not remove any session")
+    }
+
     func testTerminateNeverStartedSessionRemovesItWithoutSpawning() {
         // terminate() on a session whose PTY was never started is a no-op kill followed by a
         // plain removal — no view, no process, no crash.
@@ -91,5 +102,13 @@ final class TerminalSessionTests: XCTestCase {
         XCTAssertEqual(session.id, "L1")
         XCTAssertEqual(session.cwd, "/tmp")
         XCTAssertEqual(session.title, "api")
+    }
+
+    func testRecentOutputBeforeStartIsEmpty() {
+        // A session whose PTY was never started has no buffer to read. Reading it must return
+        // "" — and, like terminate(), must not force the lazy view/PTY into existence.
+        let session = TerminalSession(id: "L1", cwd: "/tmp", title: "api")
+        XCTAssertEqual(session.recentOutput(lines: 3), "")
+        session.terminate() // still a safe no-op — proves recentOutput didn't spawn a view
     }
 }

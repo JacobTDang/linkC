@@ -125,4 +125,13 @@ final class AppModel {
 
     func focus(_ id: String) { coordinator?.focusSession(id) }
     func stop(_ id: String) { coordinator?.stopSession(id) }
+
+    /// Return to the home overview (no session selected). Keeps every terminal alive.
+    func goHome() { coordinator?.terminals.deselect() }
+
+    /// The last `lines` rows of `id`'s live terminal output, for the home overview's preview.
+    /// "" when the session has no terminal yet (never started).
+    func recentOutput(_ id: String, lines: Int) -> String {
+        coordinator?.terminals.session(id: id)?.recentOutput(lines: lines) ?? ""
+    }
 }

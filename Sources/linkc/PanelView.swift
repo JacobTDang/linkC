@@ -20,9 +20,9 @@ struct PanelView: View {
                     Divider().overlay(Theme.hairline)
                     if model.sessions.isEmpty {
                         EmptyStateView(model: model)
+                    } else if model.selectedId == nil {
+                        HomeView(model: model)
                     } else {
-                        SessionStrip(model: model)
-                        Divider().overlay(Theme.hairline)
                         TerminalHero(model: model)
                     }
                     if let error = model.lastError {
@@ -45,6 +45,9 @@ private struct PanelHeader: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
+            if model.selectedId != nil {
+                BackButton { model.goHome() }
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text("linkC")
                     .font(.system(size: 15, weight: .semibold))
@@ -60,6 +63,31 @@ private struct PanelHeader: View {
         .padding(.horizontal, 16)
         .padding(.top, 6)
         .padding(.bottom, 10)
+    }
+}
+
+/// The back chevron shown in the header while a session's terminal is on screen — returns to the
+/// home overview. Styled to match the `+` launcher chrome button.
+private struct BackButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+                .frame(width: 30, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                        .fill(Theme.hover)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Back to overview")
     }
 }
 
@@ -95,90 +123,104 @@ private struct LauncherMenu: View {
     }
 }
 
-// MARK: - Session strip
+// MARK: - Home overview
 
-private struct SessionStrip: View {
+/// The overview shown when no session is selected: every session as a compact card with a live
+/// preview of its recent terminal output. `TimelineView(.periodic)` refreshes the previews about
+/// once a second — and only while home is on screen, since this view exists only then, so no
+/// manual timer is needed. Tapping a card opens that session's full terminal.
+private struct HomeView: View {
     let model: AppModel
-
-    /// Hug the rows up to a cap, then scroll — so the terminal keeps the tall remaining height.
-    private var height: CGFloat {
-        let rowHeight: CGFloat = 46
-        let spacing: CGFloat = 4
-        let vpad: CGFloat = 16
-        let n = CGFloat(model.sessions.count)
-        let content = n * rowHeight + max(0, n - 1) * spacing + vpad
-        return min(content, 232)
-    }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 4) {
-                ForEach(model.sessions) { session in
-                    SessionRow(
-                        session: session,
-                        isSelected: model.selectedId == session.id,
-                        onSelect: { model.focus(session.id) },
-                        onClose: { model.stop(session.id) }
-                    )
+            TimelineView(.periodic(from: .now, by: 1.0)) { _ in
+                VStack(spacing: 6) {
+                    ForEach(model.sessions) { session in
+                        HomeCard(
+                            session: session,
+                            preview: model.recentOutput(session.id, lines: 3),
+                            onOpen: { model.focus(session.id) }
+                        )
+                    }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
         }
-        .frame(height: height)
-        .animation(.easeInOut(duration: 0.15), value: model.selectedId)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
-private struct SessionRow: View {
+/// A single session card: a status · title · path · state header line above a dim, monospaced
+/// preview of the session's last few terminal rows. The whole card is the tap target.
+private struct HomeCard: View {
     let session: Session
-    let isSelected: Bool
-    let onSelect: () -> Void
-    let onClose: () -> Void
+    let preview: String
+    let onOpen: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            StatusDot(state: session.state)
-            VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                StatusDot(state: session.state)
                 Text(session.title)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
+                    .layoutPriority(1)
                 Text((session.cwd as NSString).abbreviatingWithTildeInPath)
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                Spacer(minLength: 8)
+                Text(statusLabel(session.state).uppercased())
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(Theme.statusColor(session.state))
+                    .fixedSize()
             }
-            Spacer(minLength: 8)
-            Text(statusLabel(session.state).uppercased())
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(0.6)
-                .foregroundStyle(Theme.statusColor(session.state))
-                .fixedSize()
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Theme.textTertiary)
-                    .frame(width: 16, height: 16)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .opacity(hovering ? 1 : 0)
-            .help("Close session")
+            PreviewText(text: preview)
         }
-        .padding(.horizontal, 10)
-        .frame(height: 46)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                .fill(isSelected ? Theme.selection : (hovering ? Theme.hover : Color.clear))
+                .fill(hovering ? Theme.hover : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1)
         )
         .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
+        .onTapGesture(perform: onOpen)
         .onHover { hovering = $0 }
-        .help(statusLabel(session.state))
+        .help("Open \(session.title)")
+    }
+}
+
+/// The card's monospaced output preview. Falls back to a dim placeholder when there's nothing to
+/// show yet (not started / no output), so a fresh card never reads as blank or broken.
+private struct PreviewText: View {
+    let text: String
+
+    var body: some View {
+        Group {
+            if text.isEmpty {
+                Text("starting…").foregroundStyle(Theme.textTertiary.opacity(0.7))
+            } else {
+                Text(text).foregroundStyle(Theme.textTertiary)
+            }
+        }
+        .font(.system(size: 11, design: .monospaced))
+        .lineLimit(3)
+        .truncationMode(.tail)
+        .multilineTextAlignment(.leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
