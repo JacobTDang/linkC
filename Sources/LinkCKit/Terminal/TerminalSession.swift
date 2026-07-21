@@ -13,9 +13,7 @@ public final class TerminalSession {
     /// linkC's own session id — the correlation key shared with the store and hook events.
     public let id: String
     public let cwd: String
-    /// The terminal's self-reported (OSC) title. Best-effort/informational: the tab UI uses
-    /// the store's folder-derived title, which is stable.
-    public private(set) var title: String
+    public let title: String
 
     /// Fired on the main actor when the child process exits — for ANY reason, including being
     /// killed by `terminate()`. Carries the exit code (nil when the exit was an IO error).
@@ -62,9 +60,6 @@ public final class TerminalSession {
             // property doc) — the main-queue hop below is only for the cleanup callback.
             liveness.withLock { $0 = false }
             DispatchQueue.main.async { self?.handleTerminated(code) }
-        }
-        processDelegate.onTitle = { [weak self] title in
-            DispatchQueue.main.async { self?.title = title }
         }
 
         _terminalView = view
@@ -124,13 +119,16 @@ public final class TerminalSession {
         // Give SIGTERM a real grace window (claude flushes and tears down MCP children), then
         // escalate to SIGKILL — but ONLY if the child hasn't exited-and-been-reaped meanwhile
         // (the liveness gate is what makes signalling here safe against pid recycling).
+        // Capture the lock, pid, and id DIRECTLY — not via self: stopSession drops this
+        // session's last strong reference right after terminate(), and a weak-self escalation
+        // would die with it, leaving a SIGTERM-ignoring child alive as an invisible orphan.
         let pid = childPid
-        Task { @MainActor [weak self] in
+        let sessionId = id
+        Task { [liveness] in
             try? await Task.sleep(for: .milliseconds(400))
-            guard let self, self.childPid == pid else { return }
-            guard self.liveness.withLock({ $0 }) else { return }
+            guard liveness.withLock({ $0 }) else { return }
             if kill(pid, SIGKILL) != 0, errno != ESRCH {
-                NSLog("linkC: failed to kill terminal child pid %d for session %@: %s", pid, self.id, strerror(errno))
+                NSLog("linkC: failed to kill terminal child pid %d for session %@: %s", pid, sessionId, strerror(errno))
             }
         }
     }
@@ -169,10 +167,9 @@ public final class TerminalSession {
 /// the main actor.
 private final class ProcessDelegate: NSObject, LocalProcessTerminalViewDelegate {
     var onExit: (@Sendable (Int32?) -> Void)?
-    var onTitle: (@Sendable (String) -> Void)?
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
-    func setTerminalTitle(source: LocalProcessTerminalView, title: String) { onTitle?(title) }
+    func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
     func processTerminated(source: TerminalView, exitCode: Int32?) { onExit?(exitCode) }
 }
