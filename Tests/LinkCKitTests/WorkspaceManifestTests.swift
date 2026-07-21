@@ -118,3 +118,18 @@ final class WorkspaceManifestTests: XCTestCase {
         XCTAssertEqual(WorkspaceManifest(directory: dir).entries.map(\.linkcId), ["L2"])
     }
 }
+
+extension WorkspaceManifestTests {
+    /// M2: markEnded is idempotent — the first timestamp wins; a second call neither bumps the
+    /// date nor rewrites the file.
+    func testMarkEndedKeepsFirstTimestamp() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-manifest-\(UUID().uuidString)")
+        let manifest = WorkspaceManifest(directory: dir)
+        manifest.upsert(RestorableSession(linkcId: "X", cwd: "/tmp", title: "x"))
+        let first = Date(timeIntervalSince1970: 1_000)
+        manifest.markEnded(linkcId: "X", at: first)
+        manifest.markEnded(linkcId: "X", at: Date(timeIntervalSince1970: 2_000))
+        XCTAssertEqual(manifest.entries.first?.endedAt, first, "the first endedAt must win")
+        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first?.endedAt, first, "and must be what was persisted")
+    }
+}
