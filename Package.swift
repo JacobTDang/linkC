@@ -8,14 +8,18 @@ let package = Package(
         .executable(name: "linkc", targets: ["linkc"]),
         .library(name: "LinkCKit", targets: ["LinkCKit"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.0.0"),
+    ],
     targets: [
         .target(
             name: "LinkCKit",
+            dependencies: ["SwiftTerm"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
             name: "linkc",
-            dependencies: ["LinkCKit"],
+            dependencies: ["LinkCKit", "SwiftTerm"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(
