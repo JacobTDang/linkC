@@ -112,3 +112,40 @@ final class TerminalSessionTests: XCTestCase {
         session.terminate() // still a safe no-op — proves recentOutput didn't spawn a view
     }
 }
+
+/// The preview cleaner turns raw terminal rows into home-card content: chrome rows — box-drawing
+/// frames, horizontal rules, bare prompt markers, blanks — are dropped so the 3-line preview
+/// shows what the session is actually saying, not its furniture.
+final class TerminalPreviewTests: XCTestCase {
+
+    func testDropsBoxDrawingFrameRows() {
+        let rows = ["Build complete!", "╭──────────╮", "│ >        │", "╰──────────╯"]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "Build complete!")
+    }
+
+    func testDropsRulesAndBlankRows() {
+        let rows = ["one", "", "────────────", "two"]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "one\ntwo")
+    }
+
+    func testKeepsLastNContentRowsInOrder() {
+        let rows = ["a", "b", "c", "d"]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "b\nc\nd")
+    }
+
+    func testBarePromptDroppedButPromptWithCommandKept() {
+        let rows = ["❯", "❯ swift test"]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "❯ swift test")
+    }
+
+    func testTextInsideBoxFrameIsKept() {
+        // A framed row with real words keeps its words; only the frame glyphs go.
+        let rows = ["│ Claude is thinking… │"]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "│ Claude is thinking… │")
+    }
+
+    func testEmptyAndChromeOnlyInputGivesEmptyString() {
+        XCTAssertEqual(TerminalPreview.excerpt(rows: [], lines: 3), "")
+        XCTAssertEqual(TerminalPreview.excerpt(rows: ["────", "", "❯"], lines: 3), "")
+    }
+}

@@ -133,9 +133,11 @@ public final class TerminalSession {
         }
     }
 
-    /// The last `lines` non-blank rows of the terminal's visible screen, as plain text — for the
-    /// home overview's live preview. Returns "" when the PTY was never started. Reads the private
-    /// backing store (not `terminalView`) so a never-shown session is never forced to spawn a view.
+    /// The last `lines` content rows of the terminal's visible screen, as plain text — for the
+    /// home overview's live preview. `TerminalPreview` drops chrome-only rows (frames, rules,
+    /// bare prompts) so the preview shows output, not furniture. Returns "" when the PTY was
+    /// never started. Reads the private backing store (not `terminalView`) so a never-shown
+    /// session is never forced to spawn a view.
     public func recentOutput(lines: Int) -> String {
         guard let view = _terminalView else { return "" }
         let terminal = view.getTerminal()
@@ -143,8 +145,7 @@ public final class TerminalSession {
         for row in 0..<terminal.rows {
             rows.append(terminal.getLine(row: row)?.translateToString(trimRight: true) ?? "")
         }
-        while let last = rows.last, last.trimmingCharacters(in: .whitespaces).isEmpty { rows.removeLast() }
-        return rows.suffix(lines).joined(separator: "\n")
+        return TerminalPreview.excerpt(rows: rows, lines: lines)
     }
 
     private func handleTerminated(_ code: Int32?) {
