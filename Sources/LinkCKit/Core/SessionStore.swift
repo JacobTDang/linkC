@@ -55,12 +55,6 @@ public final class SessionStore {
 
     public func session(id: String) -> Session? { sessions.first { $0.id == id } }
 
-    public func setKittyWindow(_ windowId: Int, for linkcId: String) {
-        if let i = sessions.firstIndex(where: { $0.id == linkcId }) {
-            sessions[i].kittyWindowId = windowId
-        }
-    }
-
     public func remove(id: String) { sessions.removeAll { $0.id == id } }
 
     /// Apply an incoming hook event. Binds by linkC id, else by Claude session id.
