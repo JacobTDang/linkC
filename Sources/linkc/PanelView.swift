@@ -1,138 +1,68 @@
 import SwiftUI
+import AppKit
 import LinkCKit
-
-// MARK: - Theme
-
-/// A small, self-contained dark palette so the panel reads as one cohesive surface
-/// regardless of the system appearance.
-private enum Theme {
-    static let bg = Color(red: 0.086, green: 0.090, blue: 0.106)
-    static let surface = Color.white.opacity(0.05)
-    static let surfaceHover = Color.white.opacity(0.09)
-    static let selected = Color.white.opacity(0.11)
-    static let hairline = Color.white.opacity(0.08)
-    static let textPrimary = Color.white.opacity(0.92)
-    static let textSecondary = Color.white.opacity(0.5)
-    static let accent = Color(red: 0.36, green: 0.62, blue: 0.98)
-
-    static let idleDot = Color.white.opacity(0.35)
-    static let activeDot = Color(red: 0.20, green: 0.83, blue: 0.60)
-    static let needsYouDot = Color(red: 0.98, green: 0.75, blue: 0.14)
-
-    static func dot(_ bucket: SessionState.Bucket) -> Color {
-        switch bucket {
-        case .idle: return idleDot
-        case .active: return activeDot
-        case .needsYou: return needsYouDot
-        }
-    }
-}
 
 // MARK: - Panel
 
+/// The panel content: a header, a scrollable session strip, and the selected session's terminal
+/// as the hero. Draws no opaque background of its own — the frosted `NSVisualEffectView` behind
+/// it (set up in `StatusPanelController`) shows through as glass.
 struct PanelView: View {
     let model: AppModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            content
+        Group {
+            if let error = model.setupError {
+                SetupErrorView(message: error)
+            } else {
+                VStack(spacing: 0) {
+                    PanelHeader(model: model)
+                    Divider().overlay(Theme.hairline)
+                    if model.sessions.isEmpty {
+                        EmptyStateView(model: model)
+                    } else {
+                        SessionStrip(model: model)
+                        Divider().overlay(Theme.hairline)
+                        TerminalHero(model: model)
+                    }
+                    if let error = model.lastError {
+                        ErrorBar(message: error)
+                    }
+                }
+            }
         }
         .frame(minWidth: 320, maxWidth: .infinity, minHeight: 380, maxHeight: .infinity)
-        .background(Theme.bg)
         .environment(\.colorScheme, .dark)
         .onAppear { model.panelVisible = true }
         .onDisappear { model.panelVisible = false }
     }
-
-    @ViewBuilder private var content: some View {
-        if let error = model.setupError {
-            SetupErrorView(message: error)
-        } else if model.sessions.isEmpty {
-            EmptyStateView(model: model)
-        } else {
-            SessionTabStrip(model: model)
-            Divider().overlay(Theme.hairline)
-            TerminalContainer(session: model.selectedTerminal)
-                .background(Theme.bg)
-            StatusBar(model: model)
-        }
-    }
 }
 
-// MARK: - Tab strip
+// MARK: - Header
 
-private struct SessionTabStrip: View {
+private struct PanelHeader: View {
     let model: AppModel
 
     var body: some View {
-        HStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(model.sessions) { session in
-                        SessionTab(
-                            session: session,
-                            isSelected: model.selectedId == session.id,
-                            onSelect: { model.focus(session.id) },
-                            onClose: { model.stop(session.id) }
-                        )
-                    }
-                }
-                .padding(.vertical, 8)
-                .padding(.leading, 10)
-            }
-            LauncherMenu(model: model)
-                .padding(.trailing, 10)
-        }
-        .frame(height: 44)
-        .animation(.easeInOut(duration: 0.15), value: model.selectedId)
-    }
-}
-
-private struct SessionTab: View {
-    let session: Session
-    let isSelected: Bool
-    let onSelect: () -> Void
-    let onClose: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Circle()
-                .fill(Theme.dot(session.state.bucket))
-                .frame(width: 7, height: 7)
-            Text(session.title)
-                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
-                .lineLimit(1)
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("linkC")
+                    .font(.system(size: 15, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(Theme.textPrimary)
+                Text("\(model.activeCount) running · \(model.needsYouCount) waiting")
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Theme.textSecondary)
-                    .frame(width: 14, height: 14)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .opacity(hovering || isSelected ? 1 : 0)
+            Spacer(minLength: 8)
+            LauncherMenu(model: model)
         }
-        .padding(.leading, 11)
-        .padding(.trailing, 7)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isSelected ? Theme.selected : (hovering ? Theme.surfaceHover : Theme.surface))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isSelected ? Theme.accent.opacity(0.55) : Color.clear, lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
-        .onHover { hovering = $0 }
-        .help(statusLabel(session.state))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 }
 
+/// The `+` launcher — new / continue / resume are the existing `AppModel` actions.
 private struct LauncherMenu: View {
     let model: AppModel
 
@@ -145,41 +75,148 @@ private struct LauncherMenu: View {
             Button("Quit linkC") { NSApplication.shared.terminate(nil) }
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
                 .frame(width: 30, height: 28)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.surface)
+                    RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                        .fill(Theme.hover)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                        .strokeBorder(Theme.hairline, lineWidth: 1)
                 )
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .help("New session")
     }
 }
 
-// MARK: - Status bar
+// MARK: - Session strip
 
-private struct StatusBar: View {
+private struct SessionStrip: View {
+    let model: AppModel
+
+    /// Hug the rows up to a cap, then scroll — so the terminal keeps the tall remaining height.
+    private var height: CGFloat {
+        let rowHeight: CGFloat = 46
+        let spacing: CGFloat = 4
+        let vpad: CGFloat = 16
+        let n = CGFloat(model.sessions.count)
+        let content = n * rowHeight + max(0, n - 1) * spacing + vpad
+        return min(content, 232)
+    }
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 4) {
+                ForEach(model.sessions) { session in
+                    SessionRow(
+                        session: session,
+                        isSelected: model.selectedId == session.id,
+                        onSelect: { model.focus(session.id) },
+                        onClose: { model.stop(session.id) }
+                    )
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .frame(height: height)
+        .animation(.easeInOut(duration: 0.15), value: model.selectedId)
+    }
+}
+
+private struct SessionRow: View {
+    let session: Session
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            StatusDot(state: session.state)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                Text((session.cwd as NSString).abbreviatingWithTildeInPath)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            Text(statusLabel(session.state).uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(Theme.statusColor(session.state))
+                .fixedSize()
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering ? 1 : 0)
+            .help("Close session")
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 46)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .fill(isSelected ? Theme.selection : (hovering ? Theme.hover : Color.clear))
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .onHover { hovering = $0 }
+        .help(statusLabel(session.state))
+    }
+}
+
+// MARK: - Terminal (hero)
+
+private struct TerminalHero: View {
     let model: AppModel
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text("\(model.activeCount) running · \(model.needsYouCount) waiting")
-                .font(.system(size: 11))
-                .foregroundStyle(Theme.textSecondary)
-            if let error = model.lastError {
-                Text(error)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.needsYouDot)
-                    .lineLimit(1)
+        ZStack {
+            TerminalContainer(session: model.selectedTerminal)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
+            if model.selectedTerminal == nil {
+                Text("Select a session")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textTertiary)
             }
-            Spacer()
         }
-        .padding(.horizontal, 14)
-        .frame(height: 28)
-        .background(Theme.bg)
-        .overlay(Divider().overlay(Theme.hairline), alignment: .top)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1)
+        )
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: model.selectedId, initial: true) { _, _ in
+            styleTerminal(model.selectedTerminal)
+        }
+    }
+
+    /// Restyle the live terminal to the tokens from the panel side (the Terminal module is left
+    /// untouched): SF Mono at 12.5 and a dark, glass-toned background. Note SwiftTerm drops the
+    /// alpha when it converts to a cell color, so the terminal body renders opaque-dark; the
+    /// glass reads at the inset margins around it rather than through the text.
+    private func styleTerminal(_ session: TerminalSession?) {
+        guard let view = session?.terminalView else { return }
+        view.font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
+        view.nativeBackgroundColor = NSColor(red: 0, green: 0, blue: 0, alpha: 0.22)
     }
 }
 
@@ -191,7 +228,7 @@ private struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "square.stack.3d.up.fill")
-                .font(.system(size: 40, weight: .regular))
+                .font(.system(size: 42, weight: .regular))
                 .foregroundStyle(Theme.accent.opacity(0.9))
             VStack(spacing: 5) {
                 Text("No sessions yet")
@@ -200,37 +237,14 @@ private struct EmptyStateView: View {
                 Text("Start a Claude Code session and it runs right here.")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textSecondary)
+                    .multilineTextAlignment(.center)
             }
-            HStack(spacing: 10) {
-                Button("New session…") { model.newSession(mode: .new) }
-                    .buttonStyle(PrimaryButtonStyle())
-                Menu {
-                    Button("Continue last…") { model.newSession(mode: .continueLast) }
-                    Button("Resume…") { model.newSession(mode: .resume) }
-                } label: {
-                    Text("More")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .foregroundStyle(Theme.textSecondary)
-            }
-            .padding(.top, 4)
-            if let error = model.lastError {
-                Text(error)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.needsYouDot)
-            }
+            Button("New session") { model.newSession(mode: .new) }
+                .buttonStyle(PrimaryButtonStyle())
+                .padding(.top, 4)
         }
+        .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.bg)
-        .overlay(alignment: .topTrailing) {
-            Button("Quit") { NSApplication.shared.terminate(nil) }
-                .buttonStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundStyle(Theme.textSecondary)
-                .padding(12)
-        }
     }
 }
 
@@ -243,7 +257,7 @@ private struct SetupErrorView: View {
         VStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 34))
-                .foregroundStyle(Theme.needsYouDot)
+                .foregroundStyle(Theme.statusError)
             Text("Setup needed")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
@@ -256,8 +270,31 @@ private struct SetupErrorView: View {
                 .buttonStyle(PrimaryButtonStyle())
                 .padding(.top, 4)
         }
+        .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.bg)
+    }
+}
+
+// MARK: - Error bar
+
+/// A slim strip surfacing a one-off action failure without tearing down the panel. Fail loud.
+private struct ErrorBar: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+            Text(message)
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+        }
+        .foregroundStyle(Theme.statusError)
+        .padding(.horizontal, 16)
+        .frame(height: 30)
+        .overlay(Divider().overlay(Theme.hairline), alignment: .top)
     }
 }
 
@@ -266,13 +303,13 @@ private struct SetupErrorView: View {
 private struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 9)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Theme.accent.opacity(configuration.isPressed ? 0.75 : 1))
+                RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                    .fill(Theme.accent.opacity(configuration.isPressed ? 0.78 : 1))
             )
             .contentShape(Rectangle())
     }
