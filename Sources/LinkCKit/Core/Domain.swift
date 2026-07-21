@@ -2,8 +2,6 @@ import Foundation
 
 /// Errors surfaced across linkC modules. Fail loud — never swallow these.
 public enum LinkCError: Error, Sendable, Equatable {
-    case unimplemented(String)
-    case kitty(String)
     case parse(String)
     case process(String)
     case server(String)
@@ -74,7 +72,6 @@ public struct Session: Sendable, Identifiable, Equatable {
     /// linkC's own id (UUID string), injected as `LINKC_SESSION` and the kitty `linkc_session` user var.
     public let id: String
     public var claudeSessionId: String?
-    public var kittyWindowId: Int?
     public var cwd: String
     public var title: String
     public var state: SessionState
@@ -86,7 +83,6 @@ public struct Session: Sendable, Identifiable, Equatable {
         title: String,
         state: SessionState = .starting,
         claudeSessionId: String? = nil,
-        kittyWindowId: Int? = nil,
         lastEventAt: Date = Date()
     ) {
         self.id = id
@@ -94,7 +90,6 @@ public struct Session: Sendable, Identifiable, Equatable {
         self.title = title
         self.state = state
         self.claudeSessionId = claudeSessionId
-        self.kittyWindowId = kittyWindowId
         self.lastEventAt = lastEventAt
     }
 }

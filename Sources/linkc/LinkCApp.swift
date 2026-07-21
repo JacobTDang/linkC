@@ -25,6 +25,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await model.start() }
     }
 
+    /// Guard against losing running sessions: quitting linkC ends the claude processes it hosts.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let count = model.sessions.count
+        guard count > 0 else { return .terminateNow }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = count == 1 ? "Quit linkC and end 1 session?" : "Quit linkC and end \(count) sessions?"
+        alert.informativeText = "Quitting ends the Claude Code \(count == 1 ? "session" : "sessions") running in linkC. "
+            + "You can reopen \(count == 1 ? "it" : "them") later with Continue or Resume."
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         model.shutdown()
     }
