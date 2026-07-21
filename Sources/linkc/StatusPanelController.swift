@@ -142,18 +142,60 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     /// Show the panel pinned to the top-right side of the screen, sized for the current
     /// selection. Used both by the icon toggle and programmatically (e.g. a notification click
-    /// that focuses a session while the panel is hidden).
+    /// that focuses a session while the panel is hidden). A fresh appearance settles in with a
+    /// short fade + drop from the menu bar; re-presenting an already-visible panel (or Reduce
+    /// Motion) skips the motion.
     func present(activating: Bool) {
-        panel.setFrame(anchoredFrame(), display: false)
+        let target = anchoredFrame()
+        let wasVisible = panel.isVisible
         model.panelVisible = true
         if activating { NSApp.activate(ignoringOtherApps: true) }
-        panel.makeKeyAndOrderFront(nil)
+        if wasVisible || reduceMotion {
+            panel.alphaValue = 1
+            panel.setFrame(target, display: false)
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            panel.alphaValue = 0
+            panel.setFrame(target.offsetBy(dx: 0, dy: 10), display: false)   // start just above
+            panel.makeKeyAndOrderFront(nil)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1
+                panel.animator().setFrame(target, display: true)
+            }
+        }
         focusTerminalIfNeeded()
     }
 
     func hide() {
         model.panelVisible = false
-        panel.orderOut(nil)
+        guard panel.isVisible, !reduceMotion else {
+            panel.orderOut(nil)
+            panel.alphaValue = 1
+            return
+        }
+        let resting = panel.frame
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.14
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+            panel.animator().setFrame(resting.offsetBy(dx: 0, dy: 6), display: true)
+        }, completionHandler: { [weak self] in
+            // AppKit calls this on the main thread; the closure just isn't annotated.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // A present() during the fade wins: it already re-showed the panel at full alpha.
+                guard !self.model.panelVisible else { return }
+                self.panel.orderOut(nil)
+                self.panel.alphaValue = 1
+                self.panel.setFrame(resting, display: false)
+            }
+        })
+    }
+
+    private var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
     // MARK: - Model observation
