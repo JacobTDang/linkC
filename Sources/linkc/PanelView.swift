@@ -4,9 +4,10 @@ import LinkCKit
 
 // MARK: - Panel
 
-/// The panel content: a header, a scrollable session strip, and the selected session's terminal
-/// as the hero. Draws no opaque background of its own — the frosted `NSVisualEffectView` behind
-/// it (set up in `StatusPanelController`) shows through as glass.
+/// The panel content: a slim chrome strip, then the home overview or the selected session's
+/// terminal as the hero. Draws no opaque background of its own — the frosted `NSVisualEffectView`
+/// behind it (set up in `StatusPanelController`) shows through as glass, and nothing inside is
+/// outlined: content floats as soft fills of the same material.
 struct PanelView: View {
     let model: AppModel
 
@@ -19,7 +20,6 @@ struct PanelView: View {
             } else {
                 VStack(spacing: 0) {
                     PanelHeader(model: model)
-                    Divider().overlay(Theme.hairline)
                     // Home ⇄ terminal swap. The terminal is a live NSView, so its removal is a
                     // plain fade (no reflow); a pure-translate slide brings it and the home view
                     // in. Reduce Motion collapses both to a crossfade.
@@ -47,8 +47,12 @@ struct PanelView: View {
                     .animation(Theme.viewSwap, value: model.selectedId != nil)
                     if let error = model.lastError {
                         ErrorBar(message: error)
+                            .transition(reduceMotion
+                                ? .opacity
+                                : .move(edge: .bottom).combined(with: .opacity))
                     }
                 }
+                .animation(Theme.viewSwap, value: model.lastError)
             }
         }
         .frame(minWidth: 300, maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
@@ -60,60 +64,97 @@ struct PanelView: View {
 
 // MARK: - Header
 
+/// The chrome strip: no title, no divider — just what's true right now. Dot-count badges on the
+/// left (running teal, waiting coral, hidden at zero), bare glyph actions on the right, and the
+/// back chevron only while a terminal is open.
 private struct PanelHeader: View {
     let model: AppModel
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 10) {
             if model.selectedId != nil {
-                BackButton { model.goHome() }
+                ChromeButton(systemName: "chevron.left", help: "Back to overview") { model.goHome() }
+                    .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text("linkC")
-                    .font(.system(size: 15, weight: .semibold))
-                    .tracking(0.5)
-                    .foregroundStyle(Theme.textPrimary)
-                Text("\(model.activeCount) running · \(model.needsYouCount) waiting")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Theme.textSecondary)
-            }
+            CountBadge(color: Theme.statusRunning, count: model.activeCount)
+            CountBadge(color: Theme.statusNeedsYou, count: model.needsYouCount)
             Spacer(minLength: 8)
             LauncherMenu(model: model)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 6)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
+        // Badges and the back chevron come and go with the same soft scale-fade.
+        .animation(Theme.hoverEase, value: [model.activeCount, model.needsYouCount])
+        .animation(Theme.viewSwap, value: model.selectedId != nil)
     }
 }
 
-/// The back chevron shown in the header while a session's terminal is on screen — returns to the
-/// home overview. Styled to match the `+` launcher chrome button.
-private struct BackButton: View {
+/// A tiny dot-and-count pair. Rendered only when the count is non-zero — the header never
+/// states an absence.
+private struct CountBadge: View {
+    let color: Color
+    let count: Int
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if count > 0 {
+            HStack(spacing: 5) {
+                Circle().fill(color).frame(width: 6, height: 6)
+                Text("\(count)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textSecondary)
+                    .contentTransition(.numericText())
+            }
+            .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
+        }
+    }
+}
+
+/// A bare chrome glyph button — no box, no border. Hover raises it with a soft circular wash.
+private struct ChromeButton: View {
+    let systemName: String
+    let help: String
     let action: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Theme.textPrimary)
-                .frame(width: 30, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                        .fill(Theme.hover)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
-                )
+            ChromeGlyph(systemName: systemName, hovering: hovering)
         }
         .buttonStyle(.plain)
-        .help("Back to overview")
+        .onHover { hovering = $0 }
+        .help(help)
+    }
+}
+
+/// Shared rendering for chrome glyphs — used by plain buttons and the launcher `Menu` label,
+/// which manages its own hover state.
+private struct ChromeGlyph: View {
+    let systemName: String
+    let hovering: Bool
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(hovering ? Theme.textPrimary : Theme.textSecondary)
+            .frame(width: 26, height: 26)
+            .background(Circle().fill(hovering ? Theme.hover : Color.clear))
+            .contentShape(Circle())
+            .animation(Theme.hoverEase, value: hovering)
     }
 }
 
 /// The `+` launcher — new / continue / resume are the existing `AppModel` actions.
 private struct LauncherMenu: View {
     let model: AppModel
+
+    @State private var hovering = false
 
     var body: some View {
         Menu {
@@ -123,22 +164,12 @@ private struct LauncherMenu: View {
             Divider()
             Button("Quit linkC") { NSApplication.shared.terminate(nil) }
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Theme.textPrimary)
-                .frame(width: 30, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                        .fill(Theme.hover)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
-                )
+            ChromeGlyph(systemName: "plus", hovering: hovering)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .onHover { hovering = $0 }
         .help("New session")
     }
 }
@@ -208,7 +239,11 @@ private struct HomeView: View {
                         onOpen: { model.focus(session.id) },
                         onClose: { model.stop(session.id) }
                     )
-                    .transition(.opacity)
+                    // Cards materialize: a soft settle-in rather than a pop. Reduce Motion
+                    // keeps only the fade.
+                    .transition(reduceMotion
+                        ? .opacity
+                        : .scale(scale: 0.97, anchor: .top).combined(with: .opacity))
                 }
             }
         }
@@ -252,12 +287,14 @@ private struct SectionHeader: View {
 // MARK: - Earlier (restorable sessions)
 
 /// Previous sessions from an earlier run, shown below the live cards: a quiet section header with
-/// a "Restore all" affordance, then one dimmed card per restorable session.
+/// a "Restore all" affordance, then one dim row per restorable session.
 private struct EarlierSection: View {
     let model: AppModel
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 2) {
             HStack(spacing: 8) {
                 Text("EARLIER")
                     .font(.system(size: 10, weight: .semibold))
@@ -274,21 +311,27 @@ private struct EarlierSection: View {
                 .help("Restore every previous session")
             }
             .padding(.horizontal, 4)
+            .padding(.bottom, 4)
             ForEach(model.restorables) { session in
-                RestorableCard(
+                RestorableRow(
                     session: session,
                     onRestore: { model.restore(session) },
                     onDismiss: { model.dismiss(session) }
                 )
+                .transition(reduceMotion
+                    ? .opacity
+                    : .scale(scale: 0.97, anchor: .top).combined(with: .opacity))
             }
         }
+        // Restored/dismissed rows leave with the section spring so the rest glide up.
+        .animation(reduceMotion ? nil : Theme.sectionSpring, value: model.restorables.map(\.id))
     }
 }
 
-/// A dimmed card for one previous session: an idle-grey dot, its title and folder, when it ended,
-/// and a Restore action. No output preview — there is no live terminal behind it. A hover-only x
-/// dismisses it for good.
-private struct RestorableCard: View {
+/// One previous session as a quiet row — transparent until hovered, when a soft wash and its
+/// dismiss x appear. History shouldn't compete with live cards: no fill, no preview, just an
+/// ended-grey dot, the title and folder, when it ended, and a plain Restore action.
+private struct RestorableRow: View {
     let session: RestorableSession
     let onRestore: () -> Void
     let onDismiss: () -> Void
@@ -308,26 +351,23 @@ private struct RestorableCard: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 8) {
-                StatusDot(state: .ended)
-                Text(session.title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(1)
-                    .layoutPriority(1)
-                Text((session.cwd as NSString).abbreviatingWithTildeInPath)
-                    .font(.system(size: 11))
+            StatusDot(state: .ended)
+            Text(session.title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Text((session.cwd as NSString).abbreviatingWithTildeInPath)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let endedText {
+                Text(endedText)
+                    .font(.system(size: 10))
                     .foregroundStyle(Theme.textTertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let endedText {
-                    Text(endedText)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Theme.textTertiary)
-                        .fixedSize()
-                }
+                    .fixedSize()
             }
-            .opacity(0.75) // the whole card reads dimmer than a live one
 
             Spacer(minLength: 8)
 
@@ -335,12 +375,6 @@ private struct RestorableCard: View {
                 Text("Restore")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Theme.accent)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                            .strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1)
-                    )
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -358,41 +392,31 @@ private struct RestorableCard: View {
             .help("Dismiss")
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
                 .fill(hovering ? Theme.hover : Color.clear)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
-        )
+        .animation(Theme.hoverEase, value: hovering)
         .onHover { hovering = $0 }
     }
 }
 
-/// A single session card: a status · title · path · state header line above a dim, monospaced
-/// preview of the session's last few terminal rows. The whole card is the tap target.
+/// A single session card: a soft fill (a faint coral wash when it needs you), a status · title ·
+/// path header line, and a dim monospaced preview of the last few terminal rows aligned under the
+/// title. The state is the dot; words appear only when the session needs you. The whole card is
+/// the tap target.
 private struct HomeCard: View {
     let session: Session
     let preview: String
     let onOpen: () -> Void
     let onClose: () -> Void
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
 
-    /// NEEDS-YOU cards earn one quiet emphasis: their hairline is tinted with the state color.
-    private var borderColor: Color {
-        session.state.bucket == .needsYou ? Theme.needsYouHairline(session.state) : Theme.hairline
-    }
-
-    /// The hover lift is motion, so Reduce Motion keeps only the flat `hover` fill.
-    private var lifted: Bool { hovering && !reduceMotion }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 StatusDot(state: session.state)
                 Text(session.title)
@@ -406,11 +430,13 @@ private struct HomeCard: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 8)
-                Text(statusLabel(session.state).uppercased())
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(Theme.statusColor(session.state))
-                    .fixedSize()
+                // State text only when there's something to act on — the dot carries the rest.
+                if session.state.bucket == .needsYou {
+                    Text(statusLabel(session.state))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.statusColor(session.state))
+                        .fixedSize()
+                }
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
@@ -429,28 +455,19 @@ private struct HomeCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                .fill(hovering ? Theme.hover : Color.clear)
+                .fill(Theme.cardSurface(needsYou: session.state.bucket == .needsYou, hovering: hovering))
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                .strokeBorder(borderColor, lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-        .scaleEffect(lifted ? Theme.cardHoverScale : 1)
-        .shadow(
-            color: Theme.cardShadow.opacity(lifted ? 1 : 0),
-            radius: lifted ? Theme.cardShadowRadius : 0,
-            x: 0, y: lifted ? Theme.cardShadowY : 0
-        )
+        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
         .onTapGesture(perform: onOpen)
         .onHover { hovering = $0 }
-        .animation(Theme.hoverLift, value: hovering)
+        .animation(Theme.hoverEase, value: hovering)
         .help("Open \(session.title)")
     }
 }
 
-/// The card's monospaced output preview. Falls back to a dim placeholder when there's nothing to
-/// show yet (not started / no output), so a fresh card never reads as blank or broken.
+/// The card's monospaced output preview, sitting directly on the card fill and indented to align
+/// with the title (past the status dot's box). Falls back to a dim placeholder when there's
+/// nothing to show yet, so a fresh card never reads as blank or broken.
 private struct PreviewText: View {
     let text: String
 
@@ -473,12 +490,7 @@ private struct PreviewText: View {
             minHeight: Theme.previewHeight, maxHeight: Theme.previewHeight,
             alignment: .topLeading
         )
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.previewRadius, style: .continuous)
-                .fill(Theme.previewInset)
-        )
+        .padding(.leading, 26)   // dot box (18) + header spacing (8): preview aligns under the title
     }
 }
 
@@ -497,12 +509,8 @@ private struct TerminalHero: View {
                     .foregroundStyle(Theme.textTertiary)
             }
         }
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
-        )
         .padding(.horizontal, 12)
-        .padding(.top, 10)
+        .padding(.top, 8)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: model.selectedId, initial: true) { _, _ in
@@ -511,13 +519,16 @@ private struct TerminalHero: View {
     }
 
     /// Restyle the live terminal to the tokens from the panel side (the Terminal module is left
-    /// untouched): SF Mono at 12.5 and a dark, glass-toned background. Note SwiftTerm drops the
-    /// alpha when it converts to a cell color, so the terminal body renders opaque-dark; the
-    /// glass reads at the inset margins around it rather than through the text.
+    /// untouched): SF Mono at 12.5 and a genuinely translucent background, so the glass reads
+    /// through the terminal itself instead of framing an opaque slab. SwiftTerm keeps the
+    /// NSColor's alpha for every default-background cell fill; the one opaque remnant is the
+    /// view's CALayer background, which `setupOptions()` re-stamps on font changes — so the
+    /// font must be set first and the layer cleared last.
     private func styleTerminal(_ session: TerminalSession?) {
         guard let view = session?.terminalView else { return }
         view.font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
-        view.nativeBackgroundColor = NSColor(red: 0, green: 0, blue: 0, alpha: 0.22)
+        view.nativeBackgroundColor = NSColor.black.withAlphaComponent(0.30)
+        view.layer?.backgroundColor = NSColor.clear.cgColor
     }
 }
 
@@ -527,13 +538,14 @@ private struct EmptyStateView: View {
     let model: AppModel
 
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "square.stack.3d.up.fill")
-                .font(.system(size: 42, weight: .regular))
-                .foregroundStyle(Theme.accent.opacity(0.9))
+        VStack(spacing: 14) {
+            // The signature dot as the hero, in its waiting state: linkC itself is waiting
+            // for input. Pulses like a needs-you card would (Reduce Motion: steady glow).
+            StatusDot(state: .waitingIdle)
+                .scaleEffect(1.6)
             VStack(spacing: 5) {
                 Text("No sessions yet")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Theme.textPrimary)
                 Text("Start a Claude Code session and it runs right here.")
                     .font(.system(size: 12))
@@ -578,7 +590,8 @@ private struct SetupErrorView: View {
 
 // MARK: - Error bar
 
-/// A slim strip surfacing a one-off action failure without tearing down the panel. Fail loud.
+/// A one-off action failure, surfaced as a soft red-washed strip floating above the bottom edge —
+/// loud enough to read, quiet enough to leave the panel intact.
 private struct ErrorBar: View {
     let message: String
 
@@ -590,12 +603,17 @@ private struct ErrorBar: View {
                 .font(.system(size: 11))
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer()
+            Spacer(minLength: 0)
         }
         .foregroundStyle(Theme.statusError)
-        .padding(.horizontal, 16)
-        .frame(height: 30)
-        .overlay(Divider().overlay(Theme.hairline), alignment: .top)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .fill(Theme.errorWash)
+        )
+        .padding(.horizontal, 12)
+        .padding(.bottom, 10)
     }
 }
 
