@@ -37,6 +37,9 @@ public final class AppCoordinator {
     private let userSettingsURL: URL
     /// Persists the session manifest so sessions survive quitting/crashing and can be restored.
     private let manifest: WorkspaceManifest
+    /// Per-run shared secret baked into every composed settings file and required by the hook
+    /// server — no other local process can spoof session state at the loopback port.
+    let hookToken = UUID().uuidString  // internal: tests need to send it
     /// True when the user is currently watching a given session id — panel open, linkC
     /// active, and that tab selected. Injected because it depends on UI-layer state the
     /// coordinator can't see. Invoked on the main actor.
@@ -97,6 +100,7 @@ public final class AppCoordinator {
 
     public func start() throws {
         sweepOrphanedSettingsFiles()
+        hookServer.requiredToken = hookToken
         notifications.onActivate = { [weak self] id in
             Task { @MainActor in self?.focusSession(id) }
         }
@@ -298,7 +302,7 @@ public final class AppCoordinator {
         let user = try? Data(contentsOf: userSettingsURL)
         let projectURL = URL(fileURLWithPath: session.cwd).appendingPathComponent(".claude/settings.json")
         let project = try? Data(contentsOf: projectURL)
-        let data = try SettingsComposer.compose(userSettings: user, projectSettings: project, port: hookServer.port)
+        let data = try SettingsComposer.compose(userSettings: user, projectSettings: project, port: hookServer.port, token: hookToken)
         try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         let path = settingsDir.appendingPathComponent("session-\(session.id).json")
         try data.write(to: path)

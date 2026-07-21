@@ -9,26 +9,27 @@ public enum SettingsComposer {
         ("SessionStart", .sessionStart),
         ("UserPromptSubmit", .userPromptSubmit),
         ("Stop", .stop),
+        ("StopFailure", .stopFailure),   // API-error turn end — without it, sessions stick at "working"
         ("SessionEnd", .sessionEnd),
     ]
 
     /// The hooks block linkC injects, pointing every relevant event at the local server.
-    public static func linkcHooks(port: UInt16) -> [String: Any] {
+    public static func linkcHooks(port: UInt16, token: String) -> [String: Any] {
         var hooks: [String: Any] = [:]
         for (claudeEvent, kind) in singleEntryEvents {
-            hooks[claudeEvent] = [matcherBlock(matcher: nil, kind: kind, port: port)]
+            hooks[claudeEvent] = [matcherBlock(matcher: nil, kind: kind, port: port, token: token)]
         }
         // Notification fans out to two matchers depending on why Claude is idle.
         hooks["Notification"] = [
-            matcherBlock(matcher: "permission_prompt", kind: .notificationPermission, port: port),
-            matcherBlock(matcher: "idle_prompt", kind: .notificationIdle, port: port),
+            matcherBlock(matcher: "permission_prompt", kind: .notificationPermission, port: port, token: token),
+            matcherBlock(matcher: "idle_prompt", kind: .notificationIdle, port: port, token: token),
         ]
         return hooks
     }
 
     /// Deep-merge user + project settings with linkC hooks. Appends to existing hook
     /// arrays rather than clobbering them.
-    public static func compose(userSettings: Data?, projectSettings: Data?, port: UInt16) throws -> Data {
+    public static func compose(userSettings: Data?, projectSettings: Data?, port: UInt16, token: String) throws -> Data {
         let user = try decodeSettingsObject(userSettings, label: "user")
         let project = try decodeSettingsObject(projectSettings, label: "project")
 
@@ -42,7 +43,7 @@ public enum SettingsComposer {
 
         var merged = deepMerge(user, overlay: project)
         let userAndProjectHooks = concatHookArrays(base: userHooks, appending: projectHooks)
-        merged["hooks"] = concatHookArrays(base: userAndProjectHooks, appending: linkcHooks(port: port))
+        merged["hooks"] = concatHookArrays(base: userAndProjectHooks, appending: linkcHooks(port: port, token: token))
 
         guard JSONSerialization.isValidJSONObject(merged) else {
             throw LinkCError.parse("composed settings could not be represented as JSON")
@@ -56,7 +57,7 @@ public enum SettingsComposer {
 
     // MARK: - linkcHooks construction
 
-    private static func matcherBlock(matcher: String?, kind: HookEventKind, port: UInt16) -> [String: Any] {
+    private static func matcherBlock(matcher: String?, kind: HookEventKind, port: UInt16, token: String) -> [String: Any] {
         var block: [String: Any] = [
             "hooks": [
                 [
@@ -65,6 +66,9 @@ public enum SettingsComposer {
                     "headers": [
                         "X-LinkC-Session": "$LINKC_SESSION",
                         "X-LinkC-Event": kind.rawValue,
+                        // Per-run shared secret: the server drops events without it, so no
+                        // other local process can spoof session state at the loopback port.
+                        "X-LinkC-Token": token,
                     ],
                     "allowedEnvVars": ["LINKC_SESSION"],
                 ],
