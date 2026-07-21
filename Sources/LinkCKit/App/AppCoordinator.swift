@@ -26,12 +26,17 @@ public enum LaunchMode: String, Sendable, CaseIterable {
 public final class AppCoordinator {
     public let store = SessionStore()
     public let terminals: TerminalSessionManager
+    /// Restorable cards for the home overview — previous sessions that are no longer live.
+    /// Observable; the panel reacts to it the same way it reacts to the live session store.
+    public let restorableStore = RestorableStore()
 
     private let hookServer: HookServer
     private let notifications: NotificationManager
     private let claudePath: String
     private let settingsDir: URL
     private let userSettingsURL: URL
+    /// Persists the session manifest so sessions survive quitting/crashing and can be restored.
+    private let manifest: WorkspaceManifest
     /// True when the user is currently watching a given session id — panel open, linkC
     /// active, and that tab selected. Injected because it depends on UI-layer state the
     /// coordinator can't see. Invoked on the main actor.
@@ -52,6 +57,7 @@ public final class AppCoordinator {
         claudePath: String,
         settingsDir: URL,
         userSettingsURL: URL,
+        manifestDir: URL,
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -60,8 +66,11 @@ public final class AppCoordinator {
         self.claudePath = claudePath
         self.settingsDir = settingsDir
         self.userSettingsURL = userSettingsURL
+        self.manifest = WorkspaceManifest(directory: manifestDir)
         self.isWatching = isWatching
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
+        // Everything the manifest already holds is from a previous run — surface it as restorable.
+        syncRestorables()
     }
 
     /// Production initializer — builds the real hook server, notification center, and settings
@@ -73,18 +82,21 @@ public final class AppCoordinator {
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let linkCDir = support.appendingPathComponent("linkC", isDirectory: true)
         self.init(
             terminals: terminals,
             hookServer: HookServer(port: 0),
             notifications: NotificationManager(),
             claudePath: claudePath,
-            settingsDir: support.appendingPathComponent("linkC", isDirectory: true),
+            settingsDir: linkCDir,
             userSettingsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/settings.json"),
+            manifestDir: linkCDir,
             isWatching: isWatching
         )
     }
 
     public func start() throws {
+        sweepOrphanedSettingsFiles()
         notifications.onActivate = { [weak self] id in
             Task { @MainActor in self?.focusSession(id) }
         }
@@ -122,6 +134,12 @@ public final class AppCoordinator {
         let outcome = store.apply(event)
         guard let session = outcome.session else { return } // unknown / external session
 
+        // Keep the manifest's claude conversation id current so a later restore can `--resume`
+        // this exact conversation. Bind before any end-of-session handling below.
+        if let cid = session.claudeSessionId {
+            manifest.bindClaudeId(linkcId: session.id, claudeSessionId: cid)
+        }
+
         // A terminated session is pruned (store row, its terminal, its settings file, its
         // dedupe entry) instead of lingering forever as a dead tab. No notification for an end.
         if session.state == .ended {
@@ -148,6 +166,10 @@ public final class AppCoordinator {
         let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
         try? FileManager.default.removeItem(at: settingsFile)
         notifications.forget(sessionId)
+        // The session ended or was stopped — keep its manifest entry but stamp it, so it becomes
+        // a restorable card. (No-op when there is no entry, e.g. a launch that failed before start.)
+        manifest.markEnded(linkcId: sessionId, at: Date())
+        syncRestorables()
     }
 
     // MARK: - UI commands
@@ -155,6 +177,14 @@ public final class AppCoordinator {
     @discardableResult
     public func newSession(cwd: String, mode: LaunchMode = .new) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
+        return try launch(cwd: cwd, title: title, args: Self.launchArgs(mode: mode, resumeId: nil))
+    }
+
+    /// Spawn a claude session in `cwd` with the given claude `args`, wire its terminal, select it,
+    /// and record it (live, no `endedAt`) in the manifest. The single launch path for both new
+    /// sessions and restores. Fails loud: a launch error prunes any partial state and rethrows.
+    @discardableResult
+    private func launch(cwd: String, title: String, args: [String]) throws -> Session {
         let session = store.create(cwd: cwd, title: title)
         do {
             let settingsPath = try writeSettings(for: session)
@@ -163,17 +193,79 @@ public final class AppCoordinator {
             terminal.onTerminated = { [weak self] _ in
                 self?.cleanup(sessionId: session.id)
             }
-            terminal.start(
+            try terminal.start(
                 executable: claudePath,
-                args: mode.claudeArgs + ["--settings", settingsPath],
+                args: args + ["--settings", settingsPath],
                 env: ["LINKC_SESSION": session.id]
             )
             terminals.select(session.id)
+            // Record the now-live session so it survives a quit/crash and can be restored.
+            manifest.upsert(RestorableSession(linkcId: session.id, claudeSessionId: nil, cwd: cwd, title: title))
+            syncRestorables()
             return session
         } catch {
             cleanup(sessionId: session.id) // fail loud: no ghost session or orphaned settings file
             throw error
         }
+    }
+
+    // MARK: - Restore
+
+    /// Resume a previous session as a fresh live one. Uses `claude --resume <id>` when the claude
+    /// conversation id was captured, else `claude --continue` in the folder. On success the old
+    /// restorable is consumed (the new live session carries its own fresh manifest entry).
+    @discardableResult
+    public func restore(_ r: RestorableSession) throws -> Session {
+        // A restorable with no captured claude id falls back to `--continue`, which attaches to
+        // the folder's MOST RECENT conversation. If a live session already occupies that folder
+        // (including one restored moments ago in the same Restore-all pass), a second
+        // `--continue` would attach to the SAME conversation — two processes writing one
+        // transcript. Refuse; the card stays and the user can restore it individually later.
+        if (r.claudeSessionId ?? "").isEmpty,
+           store.sessions.contains(where: { $0.cwd == r.cwd }) {
+            throw LinkCError.process(
+                "a session is already running in \(r.title) — restore this one after it ends, or dismiss it"
+            )
+        }
+        let session = try launch(cwd: r.cwd, title: r.title, args: Self.launchArgs(mode: .continueLast, resumeId: r.claudeSessionId))
+        manifest.remove(linkcId: r.linkcId)
+        syncRestorables()
+        return session
+    }
+
+    /// Restore every current restorable. Individual failures are collected and surfaced together
+    /// (fail loud) rather than aborting the batch on the first error.
+    public func restoreAll() throws {
+        var failures: [String] = []
+        for r in restorableStore.restorables { // snapshot; `restore` mutates the list
+            do { try restore(r) } catch { failures.append("\(r.title): \(error.localizedDescription)") }
+        }
+        if !failures.isEmpty {
+            throw LinkCError.process("Could not restore \(failures.count) session(s): \(failures.joined(separator: "; "))")
+        }
+    }
+
+    /// Drop a restorable for good (the user dismissed the card).
+    public func dismiss(_ r: RestorableSession) {
+        manifest.remove(linkcId: r.linkcId)
+        syncRestorables()
+    }
+
+    /// The current restorable cards. Convenience passthrough to the observable store.
+    public var restorables: [RestorableSession] { restorableStore.restorables }
+
+    /// Claude args shared by the new-session and restore paths. A captured claude conversation id
+    /// always wins (`--resume <id>`); otherwise the mode's own flag is used, so a restore with no
+    /// captured id (`mode: .continueLast`) falls back to `--continue` in the folder.
+    public static func launchArgs(mode: LaunchMode, resumeId: String?) -> [String] {
+        if let resumeId, !resumeId.isEmpty { return ["--resume", resumeId] }
+        return mode.claudeArgs
+    }
+
+    /// Recompute the restorable set: every manifest entry that is not currently a live session.
+    private func syncRestorables() {
+        let liveIds = Set(store.sessions.map(\.id))
+        restorableStore.set(manifest.entries.filter { !liveIds.contains($0.linkcId) })
     }
 
     public func focusSession(_ id: String) {
@@ -189,6 +281,18 @@ public final class AppCoordinator {
     public var hookPort: UInt16 { hookServer.port }
 
     // MARK: - Helpers
+
+    /// Delete stale `session-*.json` files at startup. No session is live yet at this point,
+    /// so every such file is an orphan from a crash referencing a dead hook port. Never touches
+    /// `workspace.json` (the manifest).
+    private func sweepOrphanedSettingsFiles() {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: settingsDir, includingPropertiesForKeys: nil) else { return }
+        let orphans = files.filter { $0.lastPathComponent.hasPrefix("session-") && $0.pathExtension == "json" }
+        for file in orphans { try? FileManager.default.removeItem(at: file) }
+        if !orphans.isEmpty {
+            NSLog("linkC: swept %d orphaned session settings file(s)", orphans.count)
+        }
+    }
 
     private func writeSettings(for session: Session) throws -> String {
         let user = try? Data(contentsOf: userSettingsURL)

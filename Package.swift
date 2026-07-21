@@ -15,18 +15,18 @@ let package = Package(
         .target(
             name: "LinkCKit",
             dependencies: ["SwiftTerm"],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(
             name: "linkc",
             dependencies: ["LinkCKit", "SwiftTerm"],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
             name: "LinkCKitTests",
             dependencies: ["LinkCKit"],
             resources: [.process("Fixtures")],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]
 )
