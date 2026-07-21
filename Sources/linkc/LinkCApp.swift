@@ -32,8 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = count == 1 ? "Quit linkC and end 1 session?" : "Quit linkC and end \(count) sessions?"
-        alert.informativeText = "Quitting ends the Claude Code \(count == 1 ? "session" : "sessions") running in linkC. "
-            + "You can reopen \(count == 1 ? "it" : "them") later with Continue or Resume."
+        alert.informativeText = "Quitting ends the Claude Code \(count == 1 ? "session" : "sessions") running in linkC, "
+            + "but \(count == 1 ? "it'll" : "they'll") be offered for restore next launch."
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
@@ -59,6 +59,8 @@ final class AppModel {
     var panelVisible = false
 
     var sessions: [Session] { coordinator?.store.sessions ?? [] }
+    /// Previous sessions no longer live — shown as dimmed restorable cards on the home overview.
+    var restorables: [RestorableSession] { coordinator?.restorableStore.restorables ?? [] }
     var activeCount: Int { coordinator?.store.activeCount ?? 0 }
     var needsYouCount: Int { coordinator?.store.needsYouCount ?? 0 }
     var selectedId: String? { coordinator?.terminals.selectedId }
@@ -125,6 +127,31 @@ final class AppModel {
 
     func focus(_ id: String) { coordinator?.focusSession(id) }
     func stop(_ id: String) { coordinator?.stopSession(id) }
+
+    /// Resume a previous session as a fresh live one. Surfaces failures inline (fail loud).
+    func restore(_ r: RestorableSession) {
+        guard let coordinator else { return }
+        do {
+            lastError = nil
+            try coordinator.restore(r)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Restore every previous session. Any failures are collected and surfaced inline.
+    func restoreAll() {
+        guard let coordinator else { return }
+        do {
+            lastError = nil
+            try coordinator.restoreAll()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Forget a previous session (the user dismissed its card).
+    func dismiss(_ r: RestorableSession) { coordinator?.dismiss(r) }
 
     /// Return to the home overview (no session selected). Keeps every terminal alive.
     func goHome() { coordinator?.terminals.deselect() }

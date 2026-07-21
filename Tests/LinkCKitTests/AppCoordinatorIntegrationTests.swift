@@ -23,7 +23,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     private func makeCoordinator(
         sink: NotificationSink,
         claudePath: String = "/x/claude",
-        settingsDir: URL = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-\(UUID().uuidString)")
+        settingsDir: URL = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-\(UUID().uuidString)"),
+        manifestDir: URL? = nil
     ) -> AppCoordinator {
         AppCoordinator(
             terminals: TerminalSessionManager(),
@@ -32,6 +33,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             claudePath: claudePath,
             settingsDir: settingsDir,
             userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-settings.json"),
+            manifestDir: manifestDir ?? settingsDir,
             isWatching: { _ in false }
         )
     }
@@ -160,5 +162,119 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(LaunchMode.new.claudeArgs, [])
         XCTAssertEqual(LaunchMode.continueLast.claudeArgs, ["--continue"])
         XCTAssertEqual(LaunchMode.resume.claudeArgs, ["--resume"])
+    }
+
+    /// The shared arg builder used by both the new-session and restore paths. A captured claude
+    /// id always wins (`--resume <id>`); otherwise the mode's own flag is used, so restore with no
+    /// captured id falls back to `--continue` in the folder.
+    func testLaunchArgsTableDriven() {
+        let cases: [(mode: LaunchMode, resumeId: String?, expected: [String])] = [
+            (.new, nil, []),
+            (.continueLast, nil, ["--continue"]),
+            (.resume, nil, ["--resume"]),
+            (.new, "abc", ["--resume", "abc"]),
+            (.continueLast, "abc", ["--resume", "abc"]),
+            (.resume, "abc", ["--resume", "abc"]),
+            (.new, "", []), // an empty id is not a real conversation → treat as no resume
+        ]
+        for c in cases {
+            XCTAssertEqual(
+                AppCoordinator.launchArgs(mode: c.mode, resumeId: c.resumeId),
+                c.expected,
+                "mode \(c.mode) resumeId \(String(describing: c.resumeId))"
+            )
+        }
+    }
+
+    /// A live session is recorded in the manifest but is NOT a restorable while it is running
+    /// (its linkC id matches a live session). It becomes restorable only once it ends.
+    func testLiveSessionIsRecordedButNotRestorable() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-restore-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        defer { coordinator.stopSession(session.id) } // kill the /bin/cat stand-in
+
+        XCTAssertTrue(coordinator.restorables.isEmpty, "a live session must not show as restorable")
+    }
+
+    /// The full lifecycle: create → bind claude id via a hook → stop. A fresh coordinator over the
+    /// same manifest directory then surfaces it as a restorable carrying the captured claude id and
+    /// an `endedAt`; dismissing it removes it for good.
+    func testEndedSessionBecomesRestorableThenDismissable() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-restore-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        // A hook binds claude's real conversation id onto the session (and the manifest entry).
+        coordinator.handle(HookEvent(kind: .stop, linkcSessionId: session.id, claudeSessionId: "cabc", cwd: cwd.path))
+        coordinator.stopSession(session.id) // cleanup → endedAt stamped, entry kept
+
+        // A brand-new coordinator (simulating a relaunch) reads the manifest from disk.
+        let relaunched = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        XCTAssertEqual(relaunched.restorables.count, 1)
+        let r = try XCTUnwrap(relaunched.restorables.first)
+        XCTAssertEqual(r.linkcId, session.id)
+        XCTAssertEqual(r.claudeSessionId, "cabc")
+        XCTAssertEqual(r.cwd, cwd.path)
+        XCTAssertNotNil(r.endedAt, "a stopped session must carry an endedAt")
+
+        relaunched.dismiss(r)
+        XCTAssertTrue(relaunched.restorables.isEmpty)
+        // Persisted: a further relaunch also sees nothing.
+        XCTAssertTrue(makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir).restorables.isEmpty)
+    }
+
+    /// Restoring a card spawns a fresh live session and consumes the restorable (the new live
+    /// session gets its own manifest entry; the old one is removed).
+    func testRestoreConsumesRestorableAndSpawnsLiveSession() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-restore-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        // Seed the manifest as a previous run would have left it.
+        WorkspaceManifest(directory: dir).upsert(
+            RestorableSession(linkcId: "OLD", claudeSessionId: "cabc", cwd: cwd.path, title: "proj", endedAt: Date())
+        )
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        XCTAssertEqual(coordinator.restorables.count, 1)
+        let r = try XCTUnwrap(coordinator.restorables.first)
+
+        let live = try coordinator.restore(r)
+        defer { coordinator.stopSession(live.id) }
+
+        XCTAssertNotEqual(live.id, "OLD", "restore must create a fresh live session, not reuse the old id")
+        XCTAssertEqual(live.cwd, cwd.path)
+        XCTAssertNotNil(coordinator.store.session(id: live.id), "the restored session must be live in the store")
+        XCTAssertTrue(coordinator.restorables.isEmpty, "the restorable must be consumed by restoring it")
+    }
+
+    /// `restoreAll` restores every card; an empty restorable set makes it a no-op.
+    func testRestoreAllRestoresEveryCard() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-restore-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(linkcId: "A", claudeSessionId: "ca", cwd: cwd.path, title: "a", endedAt: Date()))
+        seed.upsert(RestorableSession(linkcId: "B", claudeSessionId: nil, cwd: cwd.path, title: "b", endedAt: Date()))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        XCTAssertEqual(coordinator.restorables.count, 2)
+
+        try coordinator.restoreAll()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertTrue(coordinator.restorables.isEmpty, "restoreAll must consume every restorable")
+        XCTAssertEqual(coordinator.store.sessions.count, 2, "restoreAll must spawn a live session per card")
     }
 }
