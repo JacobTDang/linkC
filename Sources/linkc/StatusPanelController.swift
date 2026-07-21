@@ -177,7 +177,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     }
 
     private func syncFromModel() {
-        updateStatusButtonTitle()
+        updateStatusIcon()
         let current = model.selectedId
         if current != lastSelectedId {
             lastSelectedId = current
@@ -198,17 +198,15 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func updateStatusButtonTitle() {
+    /// The menu-bar icon: tinted the accent (orange) when any session needs your attention,
+    /// otherwise the default template colour that follows the menu bar. No count text.
+    private func updateStatusIcon() {
         guard let button = statusItem.button else { return }
-        let active = model.activeCount
-        let waiting = model.needsYouCount
-        if active == 0 && waiting == 0 {
-            button.title = ""
-            button.imagePosition = .imageOnly
-        } else {
-            button.title = " \(active)·\(waiting)"
-            button.imagePosition = .imageLeading
-        }
+        button.title = ""
+        button.imagePosition = .imageOnly
+        button.contentTintColor = model.needsYouCount > 0
+            ? NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1)   // accent coral
+            : nil
     }
 
     // MARK: - Sizing

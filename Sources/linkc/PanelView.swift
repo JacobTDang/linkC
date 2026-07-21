@@ -58,7 +58,8 @@ private struct PanelHeader: View {
             LauncherMenu(model: model)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.top, 6)
+        .padding(.bottom, 10)
     }
 }
 
