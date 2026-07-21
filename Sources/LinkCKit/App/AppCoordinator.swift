@@ -96,6 +96,7 @@ public final class AppCoordinator {
     }
 
     public func start() throws {
+        sweepOrphanedSettingsFiles()
         notifications.onActivate = { [weak self] id in
             Task { @MainActor in self?.focusSession(id) }
         }
@@ -192,7 +193,7 @@ public final class AppCoordinator {
             terminal.onTerminated = { [weak self] _ in
                 self?.cleanup(sessionId: session.id)
             }
-            terminal.start(
+            try terminal.start(
                 executable: claudePath,
                 args: args + ["--settings", settingsPath],
                 env: ["LINKC_SESSION": session.id]
@@ -215,6 +216,17 @@ public final class AppCoordinator {
     /// restorable is consumed (the new live session carries its own fresh manifest entry).
     @discardableResult
     public func restore(_ r: RestorableSession) throws -> Session {
+        // A restorable with no captured claude id falls back to `--continue`, which attaches to
+        // the folder's MOST RECENT conversation. If a live session already occupies that folder
+        // (including one restored moments ago in the same Restore-all pass), a second
+        // `--continue` would attach to the SAME conversation — two processes writing one
+        // transcript. Refuse; the card stays and the user can restore it individually later.
+        if (r.claudeSessionId ?? "").isEmpty,
+           store.sessions.contains(where: { $0.cwd == r.cwd }) {
+            throw LinkCError.process(
+                "a session is already running in \(r.title) — restore this one after it ends, or dismiss it"
+            )
+        }
         let session = try launch(cwd: r.cwd, title: r.title, args: Self.launchArgs(mode: .continueLast, resumeId: r.claudeSessionId))
         manifest.remove(linkcId: r.linkcId)
         syncRestorables()
@@ -269,6 +281,18 @@ public final class AppCoordinator {
     public var hookPort: UInt16 { hookServer.port }
 
     // MARK: - Helpers
+
+    /// Delete stale `session-*.json` files at startup. No session is live yet at this point,
+    /// so every such file is an orphan from a crash referencing a dead hook port. Never touches
+    /// `workspace.json` (the manifest).
+    private func sweepOrphanedSettingsFiles() {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: settingsDir, includingPropertiesForKeys: nil) else { return }
+        let orphans = files.filter { $0.lastPathComponent.hasPrefix("session-") && $0.pathExtension == "json" }
+        for file in orphans { try? FileManager.default.removeItem(at: file) }
+        if !orphans.isEmpty {
+            NSLog("linkC: swept %d orphaned session settings file(s)", orphans.count)
+        }
+    }
 
     private func writeSettings(for session: Session) throws -> String {
         let user = try? Data(contentsOf: userSettingsURL)

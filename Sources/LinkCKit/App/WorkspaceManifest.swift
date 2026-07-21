@@ -4,7 +4,7 @@ import Observation
 /// A session recorded in the workspace manifest so it can be restored after the app quits.
 /// While a session is live its entry has no `endedAt`; once the session ends (or is stopped)
 /// `endedAt` is stamped and the entry becomes a restorable card on the home overview.
-public struct RestorableSession: Codable, Equatable, Identifiable {
+public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
     /// linkC's own session id (the `LINKC_SESSION` value). Stable across the session's life.
     public let linkcId: String
     /// claude's real conversation id, once a hook event has bound it. `nil` → fall back to
@@ -67,9 +67,12 @@ public final class WorkspaceManifest {
         save()
     }
 
-    /// Stamp `endedAt` on an existing entry — it is now restorable. No-op for an unknown id.
+    /// Stamp `endedAt` on an existing entry — it is now restorable. No-op for an unknown id
+    /// and when already stamped (a stop's synchronous cleanup and the child's async exit both
+    /// call this; the first timestamp wins, no redundant disk write).
     public func markEnded(linkcId: String, at date: Date) {
-        guard let i = entries.firstIndex(where: { $0.linkcId == linkcId }) else { return }
+        guard let i = entries.firstIndex(where: { $0.linkcId == linkcId }),
+              entries[i].endedAt == nil else { return }
         entries[i].endedAt = date
         save()
     }

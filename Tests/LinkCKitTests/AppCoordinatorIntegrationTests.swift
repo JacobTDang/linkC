@@ -260,13 +260,18 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     /// `restoreAll` restores every card; an empty restorable set makes it a no-op.
     func testRestoreAllRestoresEveryCard() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-restore-\(UUID().uuidString)")
-        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: cwd) }
+        let cwdA = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        let cwdB = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwdA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwdB, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: cwdA)
+            try? FileManager.default.removeItem(at: cwdB)
+        }
 
         let seed = WorkspaceManifest(directory: dir)
-        seed.upsert(RestorableSession(linkcId: "A", claudeSessionId: "ca", cwd: cwd.path, title: "a", endedAt: Date()))
-        seed.upsert(RestorableSession(linkcId: "B", claudeSessionId: nil, cwd: cwd.path, title: "b", endedAt: Date()))
+        seed.upsert(RestorableSession(linkcId: "A", claudeSessionId: "ca", cwd: cwdA.path, title: "a", endedAt: Date()))
+        seed.upsert(RestorableSession(linkcId: "B", claudeSessionId: nil, cwd: cwdB.path, title: "b", endedAt: Date()))
 
         let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
         XCTAssertEqual(coordinator.restorables.count, 2)
@@ -276,5 +281,61 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
 
         XCTAssertTrue(coordinator.restorables.isEmpty, "restoreAll must consume every restorable")
         XCTAssertEqual(coordinator.store.sessions.count, 2, "restoreAll must spawn a live session per card")
+    }
+
+    /// I2: two id-less restorables in the same folder must NOT both launch `--continue` — the
+    /// second would attach to the same conversation the first just started writing. Restore all
+    /// launches one, refuses the other, and surfaces the refusal.
+    func testRestoreAllRefusesSecondContinueInSameFolder() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-collide-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(linkcId: "A", claudeSessionId: nil, cwd: cwd.path, title: "a", endedAt: Date()))
+        seed.upsert(RestorableSession(linkcId: "B", claudeSessionId: nil, cwd: cwd.path, title: "b", endedAt: Date()))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        XCTAssertThrowsError(try coordinator.restoreAll(), "the second same-folder --continue must be refused and surfaced")
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertEqual(coordinator.store.sessions.count, 1, "exactly one --continue may launch per folder")
+        XCTAssertEqual(coordinator.restorables.count, 1, "the refused card must remain restorable")
+    }
+
+    /// I3: a spawn that never happens (bad executable) must fail loud — an error, no phantom
+    /// session, no phantom restorable, no orphaned settings file.
+    func testLaunchWithBadClaudePathFailsLoud() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-badexec-\(UUID().uuidString)")
+        let coordinator = makeCoordinator(
+            sink: RecordingSink(),
+            claudePath: "/nonexistent/claude-\(UUID().uuidString)",
+            settingsDir: dir,
+            manifestDir: dir
+        )
+        XCTAssertThrowsError(try coordinator.newSession(cwd: "/tmp"))
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "a failed spawn must not leave a session row")
+        XCTAssertTrue(coordinator.restorables.isEmpty, "a failed spawn must not manufacture a restorable")
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        XCTAssertFalse(leftovers.contains { $0.hasPrefix("session-") }, "a failed spawn must not orphan its settings file")
+    }
+
+    /// M3: stale per-session settings files from a crashed run are swept at startup; the
+    /// workspace manifest is untouched.
+    func testStartupSweepRemovesOrphanedSettingsFiles() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sweep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let stale = dir.appendingPathComponent("session-stale.json")
+        try Data("{}".utf8).write(to: stale)
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(linkcId: "old", claudeSessionId: "c", cwd: "/tmp", title: "old", endedAt: Date()))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path), "orphaned session-*.json must be swept at startup")
+        XCTAssertEqual(coordinator.restorables.count, 1, "the manifest must survive the sweep")
     }
 }

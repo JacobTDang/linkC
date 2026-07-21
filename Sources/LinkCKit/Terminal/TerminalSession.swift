@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftTerm
+import os
 
 /// One embedded terminal running a `claude` process for a linkC session.
 ///
@@ -28,11 +29,18 @@ public final class TerminalSession {
     /// — and a live PTY — into existence.
     private var _terminalView: LocalProcessTerminalView?
 
-    /// Our own main-actor liveness state. SwiftTerm's `process.running`/`shellPid` are written
-    /// on its private IO queue, so reading them at terminate-time is a data race (caught by
-    /// TSan); instead we capture the pid once at spawn and flip this flag on the main actor.
-    private var processRunning = false
+    /// Child liveness, flipped to false SYNCHRONOUSLY inside SwiftTerm's exit delegate — on
+    /// whichever thread it fires, in the same call chain that reaps the pid — so a signal can
+    /// never target a pid that was reaped a runloop ago and recycled by the OS. (A microscopic
+    /// window between SwiftTerm's waitpid and this flip is unavoidable without owning the reap;
+    /// it is instructions wide, not runloop wide.) A lock, not a main-actor var: the exit
+    /// delegate may arrive off-main, and reading SwiftTerm's own `process.running` races its IO
+    /// queue (TSan-confirmed).
+    private let liveness = OSAllocatedUnfairLock<Bool>(initialState: false)
+    /// Set once at spawn on the main actor; never reused across restarts (sessions start once).
     private var childPid: pid_t = -1
+    /// Idempotence for `terminate()` (main-actor only).
+    private var terminationRequested = false
 
     public init(id: String, cwd: String, title: String) {
         self.id = id
@@ -49,7 +57,10 @@ public final class TerminalSession {
         view.nativeBackgroundColor = NSColor(calibratedWhite: 0.09, alpha: 1)
         view.nativeForegroundColor = NSColor(calibratedWhite: 0.92, alpha: 1)
 
-        processDelegate.onExit = { [weak self] code in
+        processDelegate.onExit = { [weak self, liveness] code in
+            // Flip liveness in the SAME synchronous call chain as SwiftTerm's reap (see the
+            // property doc) — the main-queue hop below is only for the cleanup callback.
+            liveness.withLock { $0 = false }
             DispatchQueue.main.async { self?.handleTerminated(code) }
         }
         processDelegate.onTitle = { [weak self] title in
@@ -63,7 +74,18 @@ public final class TerminalSession {
     /// Launch `executable` in the PTY. Inherits the app's environment, overlays `env`, forces
     /// `TERM=xterm-256color`, and guarantees Homebrew is on `PATH` (a Finder-launched GUI app
     /// otherwise inherits a minimal PATH that lacks node and claude's other dependencies).
-    public func start(executable: String, args: [String], env: [String: String]) {
+    public func start(executable: String, args: [String], env: [String: String]) throws {
+        // Fail loud BEFORE forking: SwiftTerm forks even for a nonexistent executable (the exec
+        // failure happens asynchronously inside the child), which would manufacture a session
+        // that dies instantly with no surfaced error. Validate the deterministic
+        // preconditions here instead.
+        guard FileManager.default.isExecutableFile(atPath: executable) else {
+            throw LinkCError.process("cannot start session: \(executable) is missing or not executable")
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw LinkCError.process("cannot start session: folder \(cwd) no longer exists")
+        }
         var environment = ProcessInfo.processInfo.environment
         for (key, value) in env { environment[key] = value }
         environment["TERM"] = "xterm-256color"
@@ -80,23 +102,36 @@ public final class TerminalSession {
         // Capture once, on the spawning thread, before any concurrent activity — the only
         // data-race-free moment to read these from SwiftTerm.
         childPid = terminalView.process.shellPid
-        processRunning = true
+        // Fail loud on a spawn that never happened (missing/non-executable binary, fork
+        // failure): SwiftTerm leaves shellPid at 0 and would otherwise report nothing useful.
+        guard childPid > 0 else {
+            throw LinkCError.process("failed to start \(executable) in \(cwd) — the process never spawned")
+        }
+        liveness.withLock { $0 = true }
     }
 
     /// Kill the child process. A no-op if it was never started or has already exited. Fails
     /// loud (logs the errno) only when signalling a still-living child genuinely fails.
     public func terminate() {
-        guard _terminalView != nil, processRunning, childPid > 0 else { return }
-        processRunning = false
+        guard _terminalView != nil, childPid > 0, !terminationRequested else { return }
+        guard liveness.withLock({ $0 }) else { return } // already exited and reaped
+        terminationRequested = true
         // Signal the child directly instead of calling SwiftTerm's `view.terminate()`: that
         // method races its own childStopped handler on the IO queue (TSan-confirmed upstream
         // bug). A plain signal lets the exit flow through SwiftTerm's normal process monitor —
         // the same clean path as a natural exit — which also fires our onTerminated.
         kill(childPid, SIGTERM)
-        // Escalate to SIGKILL only if it is still alive right after. ESRCH means the child is
-        // already gone — the goal is met, not a failure.
-        if kill(childPid, 0) == 0, kill(childPid, SIGKILL) != 0, errno != ESRCH {
-            NSLog("linkC: failed to kill terminal child pid %d for session %@: %s", childPid, id, strerror(errno))
+        // Give SIGTERM a real grace window (claude flushes and tears down MCP children), then
+        // escalate to SIGKILL — but ONLY if the child hasn't exited-and-been-reaped meanwhile
+        // (the liveness gate is what makes signalling here safe against pid recycling).
+        let pid = childPid
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self, self.childPid == pid else { return }
+            guard self.liveness.withLock({ $0 }) else { return }
+            if kill(pid, SIGKILL) != 0, errno != ESRCH {
+                NSLog("linkC: failed to kill terminal child pid %d for session %@: %s", pid, self.id, strerror(errno))
+            }
         }
     }
 
@@ -115,7 +150,6 @@ public final class TerminalSession {
     }
 
     private func handleTerminated(_ code: Int32?) {
-        processRunning = false
         onTerminated?(code)
     }
 
