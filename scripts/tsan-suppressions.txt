@@ -1,0 +1,8 @@
+# ThreadSanitizer suppressions for known UPSTREAM races (not linkC bugs).
+#
+# SwiftTerm LocalProcess: when a child exits, its process-monitor DispatchSource and its
+# IO-read callback both invoke childStopped() concurrently and write the same flag without
+# synchronization (LocalProcess.swift:270; both racing stacks are SwiftTerm-internal).
+# linkC avoids the reachable variants (we never call view.terminate(), we track our own
+# liveness), but the exit path itself still races inside the library.
+race:LocalProcess.childStopped

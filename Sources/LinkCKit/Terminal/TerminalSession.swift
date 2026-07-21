@@ -28,6 +28,12 @@ public final class TerminalSession {
     /// — and a live PTY — into existence.
     private var _terminalView: LocalProcessTerminalView?
 
+    /// Our own main-actor liveness state. SwiftTerm's `process.running`/`shellPid` are written
+    /// on its private IO queue, so reading them at terminate-time is a data race (caught by
+    /// TSan); instead we capture the pid once at spawn and flip this flag on the main actor.
+    private var processRunning = false
+    private var childPid: pid_t = -1
+
     public init(id: String, cwd: String, title: String) {
         self.id = id
         self.cwd = cwd
@@ -71,19 +77,26 @@ public final class TerminalSession {
             execName: nil,
             currentDirectory: cwd
         )
+        // Capture once, on the spawning thread, before any concurrent activity — the only
+        // data-race-free moment to read these from SwiftTerm.
+        childPid = terminalView.process.shellPid
+        processRunning = true
     }
 
     /// Kill the child process. A no-op if it was never started or has already exited. Fails
     /// loud (logs the errno) only when signalling a still-living child genuinely fails.
     public func terminate() {
-        guard let view = _terminalView, view.process.running else { return }
-        let pid = view.process.shellPid
-        view.terminate() // SwiftTerm: tears down the PTY IO and SIGTERMs the child.
-        guard pid > 0 else { return }
+        guard _terminalView != nil, processRunning, childPid > 0 else { return }
+        processRunning = false
+        // Signal the child directly instead of calling SwiftTerm's `view.terminate()`: that
+        // method races its own childStopped handler on the IO queue (TSan-confirmed upstream
+        // bug). A plain signal lets the exit flow through SwiftTerm's normal process monitor —
+        // the same clean path as a natural exit — which also fires our onTerminated.
+        kill(childPid, SIGTERM)
         // Escalate to SIGKILL only if it is still alive right after. ESRCH means the child is
         // already gone — the goal is met, not a failure.
-        if kill(pid, 0) == 0, kill(pid, SIGKILL) != 0, errno != ESRCH {
-            NSLog("linkC: failed to kill terminal child pid %d for session %@: %s", pid, id, strerror(errno))
+        if kill(childPid, 0) == 0, kill(childPid, SIGKILL) != 0, errno != ESRCH {
+            NSLog("linkC: failed to kill terminal child pid %d for session %@: %s", childPid, id, strerror(errno))
         }
     }
 
@@ -102,6 +115,7 @@ public final class TerminalSession {
     }
 
     private func handleTerminated(_ code: Int32?) {
+        processRunning = false
         onTerminated?(code)
     }
 
