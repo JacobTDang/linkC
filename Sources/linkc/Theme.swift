@@ -30,6 +30,27 @@ enum Theme {
     static let panelRadius: CGFloat = 16
     static let terminalRadius: CGFloat = 10
     static let rowRadius: CGFloat = 8
+    static let previewRadius: CGFloat = 6
+
+    /// The card's output preview — a darker inset well over the glass so the monospaced rows read
+    /// as their own block, with a fixed height reserved so cards don't jitter as output changes.
+    static let previewInset = Color.black.opacity(0.25)
+    static let previewHeight: CGFloat = 44
+
+    /// Card hover lift — a subtle scale and drop shadow layered over the `hover` fill.
+    static let cardHoverScale: CGFloat = 1.01
+    static let cardShadow = Color.black.opacity(0.28)
+    static let cardShadowRadius: CGFloat = 10
+    static let cardShadowY: CGFloat = 4
+
+    /// The tint applied to a `needsYou` card's hairline — the one quiet emphasis it earns.
+    static func needsYouHairline(_ state: SessionState) -> Color { statusColor(state).opacity(0.35) }
+
+    // Motion — one orchestrated system. Springs/slides are gated behind Reduce Motion at the call
+    // site (which swaps them for a crossfade); these are the tuned parameters everything shares.
+    static let sectionSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
+    static let hoverLift = Animation.easeOut(duration: 0.15)
+    static let viewSwap = Animation.easeInOut(duration: 0.2)
 
     /// Dot / label color for a concrete session state. `.error` is called out in red even
     /// though it shares the `needsYou` bucket; every other state maps by its bucket.

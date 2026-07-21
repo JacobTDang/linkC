@@ -10,6 +10,8 @@ import LinkCKit
 struct PanelView: View {
     let model: AppModel
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         Group {
             if let error = model.setupError {
@@ -18,13 +20,31 @@ struct PanelView: View {
                 VStack(spacing: 0) {
                     PanelHeader(model: model)
                     Divider().overlay(Theme.hairline)
-                    if model.selectedId != nil {
-                        TerminalHero(model: model)
-                    } else if model.sessions.isEmpty && model.restorables.isEmpty {
-                        EmptyStateView(model: model)
-                    } else {
-                        HomeView(model: model)
+                    // Home ⇄ terminal swap. The terminal is a live NSView, so its removal is a
+                    // plain fade (no reflow); a pure-translate slide brings it and the home view
+                    // in. Reduce Motion collapses both to a crossfade.
+                    ZStack {
+                        if model.selectedId != nil {
+                            TerminalHero(model: model)
+                                .transition(reduceMotion
+                                    ? .opacity
+                                    : .asymmetric(
+                                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                                        removal: .opacity))
+                        } else if model.sessions.isEmpty && model.restorables.isEmpty {
+                            EmptyStateView(model: model)
+                                .transition(.opacity)
+                        } else {
+                            HomeView(model: model)
+                                .transition(reduceMotion
+                                    ? .opacity
+                                    : .asymmetric(
+                                        insertion: .move(edge: .leading).combined(with: .opacity),
+                                        removal: .opacity))
+                        }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .animation(Theme.viewSwap, value: model.selectedId != nil)
                     if let error = model.lastError {
                         ErrorBar(message: error)
                     }
@@ -132,22 +152,32 @@ private struct LauncherMenu: View {
 private struct HomeView: View {
     let model: AppModel
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// One row of the sectioned overview: a section header or a live session card. Cards keep a
+    /// stable id (`session.id`) so a state change reorders the flat list and SwiftUI *moves* the
+    /// card to its new section rather than recreating it — that move is what the spring animates.
+    private enum Row: Identifiable {
+        case header(String)
+        case card(Session)
+
+        var id: String {
+            switch self {
+            case .header(let title): return "header-\(title)"
+            case .card(let session): return session.id
+            }
+        }
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 10) {
                 // Live cards refresh their terminal previews about once a second — and only while
                 // home is on screen, since this view exists only then. Restorable cards have no
                 // live output, so they sit outside the timeline.
-                TimelineView(.periodic(from: .now, by: 1.0)) { _ in
-                    VStack(spacing: 6) {
-                        ForEach(model.sessions) { session in
-                            HomeCard(
-                                session: session,
-                                preview: model.recentOutput(session.id, lines: 3),
-                                onOpen: { model.focus(session.id) },
-                                onClose: { model.stop(session.id) }
-                            )
-                        }
+                if !model.sessions.isEmpty {
+                    TimelineView(.periodic(from: .now, by: 1.0)) { _ in
+                        liveSections
                     }
                 }
                 if !model.restorables.isEmpty {
@@ -158,6 +188,64 @@ private struct HomeView: View {
             .padding(.vertical, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The live sessions as a priority queue: NEEDS YOU → WORKING → IDLE, each a stable row in one
+    /// flat list so cards glide between sections on a state change. Reduce Motion drops the spring.
+    @MainActor @ViewBuilder private var liveSections: some View {
+        let rows = self.rows
+        VStack(spacing: 6) {
+            ForEach(rows) { row in
+                switch row {
+                case .header(let title):
+                    SectionHeader(title: title)
+                        .padding(.top, 6)
+                        .transition(.opacity)
+                case .card(let session):
+                    HomeCard(
+                        session: session,
+                        preview: model.recentOutput(session.id, lines: 3),
+                        onOpen: { model.focus(session.id) },
+                        onClose: { model.stop(session.id) }
+                    )
+                    .transition(.opacity)
+                }
+            }
+        }
+        .animation(reduceMotion ? nil : Theme.sectionSpring, value: rows.map(\.id))
+    }
+
+    /// Group live sessions by urgency bucket, in priority order, preserving each session's relative
+    /// order within its bucket. Empty buckets are dropped; headers are shown only when more than one
+    /// bucket is present (a lone group needs no label).
+    @MainActor private var rows: [Row] {
+        let sessions = model.sessions
+        let groups: [(String, [Session])] = [
+            ("NEEDS YOU", sessions.filter { $0.state.bucket == .needsYou }),
+            ("WORKING", sessions.filter { $0.state.bucket == .active }),
+            ("IDLE", sessions.filter { $0.state.bucket == .idle }),
+        ].filter { !$0.1.isEmpty }
+
+        let showHeaders = groups.count > 1
+        return groups.flatMap { title, group -> [Row] in
+            (showHeaders ? [Row.header(title)] : []) + group.map(Row.card)
+        }
+    }
+}
+
+/// A quiet section label — the priority-queue headers share the EARLIER header's styling.
+private struct SectionHeader: View {
+    let title: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(Theme.textTertiary)
+            Spacer()
+        }
+        .padding(.horizontal, 4)
     }
 }
 
@@ -292,7 +380,16 @@ private struct HomeCard: View {
     let onOpen: () -> Void
     let onClose: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
+
+    /// NEEDS-YOU cards earn one quiet emphasis: their hairline is tinted with the state color.
+    private var borderColor: Color {
+        session.state.bucket == .needsYou ? Theme.needsYouHairline(session.state) : Theme.hairline
+    }
+
+    /// The hover lift is motion, so Reduce Motion keeps only the flat `hover` fill.
+    private var lifted: Bool { hovering && !reduceMotion }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -336,11 +433,18 @@ private struct HomeCard: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+                .strokeBorder(borderColor, lineWidth: 1)
         )
         .contentShape(Rectangle())
+        .scaleEffect(lifted ? Theme.cardHoverScale : 1)
+        .shadow(
+            color: Theme.cardShadow.opacity(lifted ? 1 : 0),
+            radius: lifted ? Theme.cardShadowRadius : 0,
+            x: 0, y: lifted ? Theme.cardShadowY : 0
+        )
         .onTapGesture(perform: onOpen)
         .onHover { hovering = $0 }
+        .animation(Theme.hoverLift, value: hovering)
         .help("Open \(session.title)")
     }
 }
@@ -353,17 +457,28 @@ private struct PreviewText: View {
     var body: some View {
         Group {
             if text.isEmpty {
-                Text("starting…").foregroundStyle(Theme.textTertiary.opacity(0.7))
+                Text("starting…").foregroundStyle(Theme.textTertiary)
             } else {
-                Text(text).foregroundStyle(Theme.textTertiary)
+                Text(text).foregroundStyle(Theme.textSecondary)
             }
         }
         .font(.system(size: 11, design: .monospaced))
         .lineLimit(3)
         .truncationMode(.tail)
         .multilineTextAlignment(.leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
+        // A fixed 3-line well: the height is reserved (blank lines allowed) so a card never
+        // resizes as its output changes.
+        .frame(
+            maxWidth: .infinity,
+            minHeight: Theme.previewHeight, maxHeight: Theme.previewHeight,
+            alignment: .topLeading
+        )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.previewRadius, style: .continuous)
+                .fill(Theme.previewInset)
+        )
     }
 }
 
