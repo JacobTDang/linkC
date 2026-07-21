@@ -65,11 +65,6 @@ final class AppModel {
     var needsYouCount: Int { coordinator?.store.needsYouCount ?? 0 }
     var selectedId: String? { coordinator?.terminals.selectedId }
 
-    var selectedSession: Session? {
-        guard let id = selectedId else { return nil }
-        return coordinator?.store.session(id: id)
-    }
-
     var selectedTerminal: TerminalSession? {
         guard let id = selectedId else { return nil }
         return coordinator?.terminals.session(id: id)

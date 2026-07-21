@@ -31,6 +31,17 @@ public final class HookServer: @unchecked Sendable {
         set { stateLock.lock(); _onEvent = newValue; stateLock.unlock() }
     }
 
+    private var _requiredToken: String?
+
+    /// Per-run shared secret. When set, a request must carry it in `X-LinkC-Token` or its
+    /// event is DROPPED (the response is still 200 — never block a turn). The loopback port
+    /// is reachable by every local process; the token is what makes events trustworthy.
+    /// Guarded by `stateLock` like `onEvent`.
+    public var requiredToken: String? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _requiredToken }
+        set { stateLock.lock(); _requiredToken = newValue; stateLock.unlock() }
+    }
+
     /// - Parameter maxRequestBytes: hard cap on the total header+body bytes buffered for a
     ///   single request. A connection that exceeds it (or declares a larger `Content-Length`)
     ///   is dropped, bounding memory against a buggy/hostile local client.
@@ -184,7 +195,8 @@ public final class HookServer: @unchecked Sendable {
     /// never returns anything but success: this must never be able to deny a Claude tool.
     private func respond(on connection: NWConnection, request: ParsedRequest) {
         let handler = onEvent // synchronized read (see `onEvent`)
-        if let event = HookEventDecoder.decode(headers: request.headers, body: request.body) {
+        if tokenMatches(request.headers),
+           let event = HookEventDecoder.decode(headers: request.headers, body: request.body) {
             handler?(event)
         }
 
@@ -193,6 +205,14 @@ public final class HookServer: @unchecked Sendable {
             self?.untrack(connection)
             connection.cancel()
         })
+    }
+
+    /// True when no token is required, or the request's `X-LinkC-Token` (case-insensitive
+    /// header lookup, matching the decoder's convention) equals the required one.
+    private func tokenMatches(_ headers: [String: String]) -> Bool {
+        guard let required = requiredToken else { return true }
+        let sent = headers.first { $0.key.caseInsensitiveCompare("X-LinkC-Token") == .orderedSame }?.value
+        return sent == required
     }
 
     // MARK: - Minimal HTTP/1.1 request parsing

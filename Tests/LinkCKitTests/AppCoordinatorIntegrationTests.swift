@@ -41,11 +41,12 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     /// Fires one hook at the live server and waits for its 200 — so by the time it returns,
     /// the event has been enqueued onto the coordinator's serial stream (respond enqueues
     /// before it replies). Awaiting each in turn thus fixes enqueue order.
-    private func fireHook(port: UInt16, event: String, session: String) async throws {
+    private func fireHook(port: UInt16, token: String? = nil, event: String, session: String) async throws {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/hook")!)
         request.httpMethod = "POST"
         request.setValue(event, forHTTPHeaderField: "X-LinkC-Event")
         request.setValue(session, forHTTPHeaderField: "X-LinkC-Session")
+        if let token { request.setValue(token, forHTTPHeaderField: "X-LinkC-Token") }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data(#"{"session_id":"c1","cwd":"/tmp"}"#.utf8)
         let (_, response) = try await URLSession.shared.data(for: request)
@@ -61,6 +62,26 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         return predicate()
     }
 
+    /// Spoof protection: a hook POST without the per-run token gets a 200 (never block a
+    /// turn) but its event is DROPPED — a local process that doesn't know the token cannot
+    /// manipulate session state.
+    func testHookWithoutTokenIsDropped() async throws {
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+
+        _ = coordinator.store.create(cwd: "/tmp", title: "api", id: "L1")
+
+        try await fireHook(port: coordinator.hookPort, token: nil, event: "session_end", session: "L1")
+        try await fireHook(port: coordinator.hookPort, token: "wrong-token", event: "session_end", session: "L1")
+
+        // Give any (incorrect) processing a beat to happen, then assert nothing changed.
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNotNil(coordinator.store.session(id: "L1"), "a tokenless/badly-tokened event must not prune a session")
+        XCTAssertEqual(coordinator.store.session(id: "L1")?.state, .starting)
+    }
+
     /// I1: a SessionEnd hook prunes the session from the store — dead entries must not
     /// accumulate — and ending a session posts no notification.
     func testSessionEndPrunesSessionFromStore() async throws {
@@ -72,7 +93,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         _ = coordinator.store.create(cwd: "/tmp", title: "api", id: "L1")
         XCTAssertNotNil(coordinator.store.session(id: "L1"))
 
-        try await fireHook(port: coordinator.hookPort, event: "session_end", session: "L1")
+        try await fireHook(port: coordinator.hookPort, token: coordinator.hookToken, event: "session_end", session: "L1")
 
         let removed = try await waitUntil { coordinator.store.session(id: "L1") == nil }
         XCTAssertTrue(removed, "a SessionEnd hook must prune the session from the store")
@@ -90,9 +111,9 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
 
         _ = coordinator.store.create(cwd: "/tmp", title: "api", id: "L1")
 
-        try await fireHook(port: coordinator.hookPort, event: "user_prompt_submit", session: "L1")
-        try await fireHook(port: coordinator.hookPort, event: "stop", session: "L1")
-        try await fireHook(port: coordinator.hookPort, event: "session_end", session: "L1")
+        try await fireHook(port: coordinator.hookPort, token: coordinator.hookToken, event: "user_prompt_submit", session: "L1")
+        try await fireHook(port: coordinator.hookPort, token: coordinator.hookToken, event: "stop", session: "L1")
+        try await fireHook(port: coordinator.hookPort, token: coordinator.hookToken, event: "session_end", session: "L1")
 
         let removed = try await waitUntil { coordinator.store.session(id: "L1") == nil }
         XCTAssertTrue(removed, "the terminal SessionEnd must win — the session must not be stuck working/finished")
@@ -114,6 +135,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         request.httpMethod = "POST"
         request.setValue("stop", forHTTPHeaderField: "X-LinkC-Event")
         request.setValue("L1", forHTTPHeaderField: "X-LinkC-Session")
+        request.setValue(coordinator.hookToken, forHTTPHeaderField: "X-LinkC-Token")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data(#"{"session_id":"c1","cwd":"/tmp","hook_event_name":"Stop"}"#.utf8)
         let (respData, response) = try await URLSession.shared.data(for: request)

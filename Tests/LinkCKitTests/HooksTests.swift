@@ -103,7 +103,7 @@ final class HookEventDecoderTests: XCTestCase {
 
 final class SettingsComposerTests: XCTestCase {
     func testLinkcHooksNotificationHasExactlyTwoMatcherEntriesWithRightTokens() throws {
-        let hooks = SettingsComposer.linkcHooks(port: 4567)
+        let hooks = SettingsComposer.linkcHooks(port: 4567, token: "tok-test")
 
         let notification = try XCTUnwrap(hooks["Notification"] as? [[String: Any]])
         XCTAssertEqual(notification.count, 2)
@@ -131,7 +131,7 @@ final class SettingsComposerTests: XCTestCase {
     }
 
     func testLinkcHooksSingleEntryEventsPointAtTheGivenPort() throws {
-        let hooks = SettingsComposer.linkcHooks(port: 9)
+        let hooks = SettingsComposer.linkcHooks(port: 9, token: "tok-test")
         let singleEntryEvents: [(key: String, kind: HookEventKind)] = [
             ("SessionStart", .sessionStart),
             ("UserPromptSubmit", .userPromptSubmit),
@@ -167,7 +167,7 @@ final class SettingsComposerTests: XCTestCase {
         """
         let userData = Data(userJSON.utf8)
 
-        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: nil, port: 4321)
+        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: nil, port: 4321, token: "tok-test")
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
 
         XCTAssertEqual(decoded["model"] as? String, "claude-opus-4", "compose must preserve unrelated user settings")
@@ -196,7 +196,7 @@ final class SettingsComposerTests: XCTestCase {
         let userData = Data(#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user-stop"}]}]}}"#.utf8)
         let projectData = Data(#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"project-stop"}]}]}}"#.utf8)
 
-        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: projectData, port: 4321)
+        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: projectData, port: 4321, token: "tok-test")
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
         let hooks = try XCTUnwrap(decoded["hooks"] as? [String: Any])
         let stopBlocks = try XCTUnwrap(hooks["Stop"] as? [[String: Any]])
@@ -220,7 +220,7 @@ final class SettingsComposerTests: XCTestCase {
     }
 
     func testComposeWithNilSettingsStillProducesLinkcHooks() throws {
-        let composed = try SettingsComposer.compose(userSettings: nil, projectSettings: nil, port: 1111)
+        let composed = try SettingsComposer.compose(userSettings: nil, projectSettings: nil, port: 1111, token: "tok-test")
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
         let hooks = try XCTUnwrap(decoded["hooks"] as? [String: Any])
 
@@ -232,7 +232,7 @@ final class SettingsComposerTests: XCTestCase {
         let userData = Data(#"{"model": "user-model", "other": {"a": 1, "b": 2}}"#.utf8)
         let projectData = Data(#"{"model": "project-model", "other": {"b": 3}}"#.utf8)
 
-        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: projectData, port: 55)
+        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: projectData, port: 55, token: "tok-test")
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
 
         XCTAssertEqual(decoded["model"] as? String, "project-model", "project settings take precedence over user")
