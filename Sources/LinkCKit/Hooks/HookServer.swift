@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import os
 
 /// Local loopback HTTP server that receives Claude Code HTTP hooks.
 /// Responds 200 with an empty JSON body immediately and never blocks a turn.
@@ -66,35 +67,30 @@ public final class HookServer: @unchecked Sendable {
         }
 
         let semaphore = DispatchSemaphore(value: 0)
-        let outcomeLock = NSLock()
-        var outcome: Result<Void, Error>?
+        // OSAllocatedUnfairLock (not NSLock + captured var): strict concurrency can verify
+        // state protected *inside* the lock, so this stays data-race-free by construction.
+        let outcomeBox = OSAllocatedUnfairLock<Result<Void, Error>?>(initialState: nil)
 
         newListener.stateUpdateHandler = { state in
+            let resolved: Result<Void, Error>?
             switch state {
-            case .ready, .failed, .waiting:
-                outcomeLock.lock()
-                let alreadyResolved = outcome != nil
-                if !alreadyResolved {
-                    switch state {
-                    case .ready: outcome = .success(())
-                    case .failed(let error): outcome = .failure(error)
-                    case .waiting(let error): outcome = .failure(error)
-                    default: break
-                    }
-                }
-                outcomeLock.unlock()
-                if !alreadyResolved { semaphore.signal() }
-            default:
-                break
+            case .ready: resolved = .success(())
+            case .failed(let error), .waiting(let error): resolved = .failure(error)
+            default: resolved = nil
             }
+            guard let resolved else { return }
+            let isFirst = outcomeBox.withLock { current -> Bool in
+                guard current == nil else { return false }
+                current = resolved
+                return true
+            }
+            if isFirst { semaphore.signal() }
         }
 
         newListener.start(queue: queue)
         semaphore.wait()
 
-        outcomeLock.lock()
-        let resolvedOutcome = outcome
-        outcomeLock.unlock()
+        let resolvedOutcome = outcomeBox.withLock { $0 }
 
         switch resolvedOutcome {
         case .success:
