@@ -140,7 +140,8 @@ private struct HomeView: View {
                         HomeCard(
                             session: session,
                             preview: model.recentOutput(session.id, lines: 3),
-                            onOpen: { model.focus(session.id) }
+                            onOpen: { model.focus(session.id) },
+                            onClose: { model.stop(session.id) }
                         )
                     }
                 }
@@ -158,6 +159,7 @@ private struct HomeCard: View {
     let session: Session
     let preview: String
     let onOpen: () -> Void
+    let onClose: () -> Void
 
     @State private var hovering = false
 
@@ -181,6 +183,16 @@ private struct HomeCard: View {
                     .tracking(0.6)
                     .foregroundStyle(Theme.statusColor(session.state))
                     .fixedSize()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .opacity(hovering ? 1 : 0)
+                .help("Stop session")
             }
             PreviewText(text: preview)
         }
