@@ -55,8 +55,17 @@ final class AppModel {
     /// Surfaced when a one-off action (e.g. launching a session) fails — shown inline without
     /// tearing down the whole panel. Failing loud, not silent.
     private(set) var lastError: String?
-    /// Whether the menu-bar panel is currently on screen. Feeds the coordinator's watch probe.
-    var panelVisible = false
+    /// Whether the menu-bar panel is currently on screen. Feeds the coordinator's watch probe
+    /// and gates the usage-refresh timer — no panel, no polling.
+    var panelVisible = false {
+        didSet { updateUsageTimer() }
+    }
+
+    /// Live usage state: per-session context/tokens/cost, plus the global plan window.
+    let usage = UsageTracker()
+    /// Refreshes usage while the panel is visible; hook events cover the rest of the time.
+    @ObservationIgnored private var usageTimer: Timer?
+    @ObservationIgnored private var usageTicks = 0
 
     var sessions: [Session] { coordinator?.store.sessions ?? [] }
     /// Previous sessions no longer live — shown as dimmed restorable cards on the home overview.
@@ -83,9 +92,60 @@ final class AppModel {
                 }
             )
             try coordinator.start()
+            coordinator.usageTracker = usage
             self.coordinator = coordinator
         } catch {
             setupError = error.localizedDescription
+        }
+    }
+
+    // MARK: - Usage
+
+    /// 0…1 context fill for a session's hairline bar; nil until its transcript has data.
+    func contextFill(_ id: String) -> Double? {
+        usage.sessionUsage(id)?.contextFill
+    }
+
+    /// "142k · ~$1.87" for the open session's chrome; dollars dropped when any of the
+    /// session's models is missing from the pricing table (never guess).
+    var selectedUsageLabel: String? {
+        guard let id = selectedId, let s = usage.sessionUsage(id) else { return nil }
+        let tokens = UsageFormat.tokens(s.totalTokens)
+        guard !s.hasUnpricedTokens else { return tokens }
+        return "\(tokens) · \(UsageFormat.dollars(s.cost))"
+    }
+
+    /// The home footer: `5h · 3.1M tok · resets ~2am · 7d · 41M`. Nil until the first scan.
+    var windowUsageLabel: String? {
+        guard let w = usage.window else { return nil }
+        var parts: [String] = []
+        if let reset = w.blockResetAt {
+            parts.append("5h · \(UsageFormat.tokens(w.blockTokens)) tok · resets \(UsageFormat.resetTime(reset))")
+        }
+        if w.weekTokens > 0 {
+            parts.append("7d · \(UsageFormat.tokens(w.weekTokens))")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
+    }
+
+    private func updateUsageTimer() {
+        if panelVisible, usageTimer == nil {
+            // First tick immediately so the panel never opens on stale zeros.
+            usage.refreshAllSessions()
+            usage.refreshWindow()
+            usageTicks = 0
+            usageTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.usage.refreshAllSessions()
+                    self.usageTicks += 1
+                    // The global sweep is heavier — every 30s is live enough for a footer.
+                    if self.usageTicks % 6 == 0 { self.usage.refreshWindow() }
+                }
+            }
+        } else if !panelVisible {
+            usageTimer?.invalidate()
+            usageTimer = nil
         }
     }
 

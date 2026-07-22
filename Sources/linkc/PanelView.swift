@@ -89,6 +89,17 @@ private struct PanelHeader: View {
             CountBadge(color: Theme.statusRunning, count: model.activeCount)
             CountBadge(color: Theme.statusNeedsYou, count: model.needsYouCount)
             Spacer(minLength: 8)
+            // The open session's spend, roughly centered in the chrome — tokens always,
+            // dollars only when every model in the session is priced.
+            if let label = model.selectedUsageLabel {
+                Text(label)
+                    .font(.system(size: 10))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .transition(.opacity)
+                Spacer(minLength: 8)
+            }
             if showsLauncher {
                 LauncherMenu(model: model)
                     .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
@@ -213,6 +224,41 @@ private struct HomeView: View {
     }
 
     var body: some View {
+        // The session list is the left column; the rail is a quiet right-hand sidebar reserved
+        // for future navigation. It hides at narrow panel widths (see `Theme.railBreakpoint`) so
+        // a resized-down panel never has cards and tiles fighting for the same few points.
+        VStack(spacing: 0) {
+            GeometryReader { geo in
+                let showsRail = geo.size.width >= Theme.railBreakpoint
+                HStack(alignment: .top, spacing: showsRail ? Theme.columnSpacing : 0) {
+                    sessionList
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if showsRail {
+                        MetricsRail()
+                            .frame(width: Theme.railWidth(for: geo.size.width))
+                            .padding(.top, 12)
+                            .padding(.trailing, 12)
+                    }
+                }
+            }
+            // The one place plan usage appears: a quiet footer line pinned under the list.
+            if let label = model.windowUsageLabel {
+                HStack {
+                    Text(label)
+                        .font(.system(size: 10))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.textTertiary)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+                .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var sessionList: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 10) {
                 // Live cards refresh their terminal previews about once a second — and only while
@@ -230,7 +276,6 @@ private struct HomeView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// The live sessions as a priority queue: NEEDS YOU → WORKING → IDLE, each a stable row in one
@@ -248,6 +293,7 @@ private struct HomeView: View {
                     HomeCard(
                         session: session,
                         preview: model.recentOutput(session.id, lines: 3),
+                        contextFill: model.contextFill(session.id),
                         onOpen: { model.focus(session.id) },
                         onClose: { model.stop(session.id) }
                     )
@@ -420,6 +466,8 @@ private struct RestorableRow: View {
 private struct HomeCard: View {
     let session: Session
     let preview: String
+    /// 0…1 context-window fill for the hairline along the bottom edge; nil hides it.
+    let contextFill: Double?
     let onOpen: () -> Void
     let onClose: () -> Void
 
@@ -467,6 +515,19 @@ private struct HomeCard: View {
             RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
                 .fill(Theme.cardSurface(needsYou: session.state.bucket == .needsYou, hovering: hovering))
         )
+        // Context fill as a 2pt hairline flush to the bottom edge — quiet white until the
+        // conversation nears auto-compact, then the warning gold. Clipped to the card shape.
+        .overlay(alignment: .bottomLeading) {
+            if let contextFill {
+                GeometryReader { geo in
+                    Rectangle()
+                        .fill(contextFill > 0.75 ? Theme.contextWarn : Color.white.opacity(0.25))
+                        .frame(width: geo.size.width * contextFill, height: 2)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
         .onTapGesture(perform: onOpen)
         .onHover { hovering = $0 }
@@ -501,6 +562,51 @@ private struct PreviewText: View {
             alignment: .topLeading
         )
         .padding(.leading, 26)   // dot box (18) + header spacing (8): preview aligns under the title
+    }
+}
+
+// MARK: - Metrics rail
+
+/// The right-hand rail: a quiet column of glass tiles pointing at destinations that don't exist
+/// yet. No counts or fabricated metrics — each tile is only an icon and a label until the real
+/// MCP Servers / Skills / Settings screens land, so nothing here can go stale or lie. Deliberately
+/// inert for now (no hover, no tap target): an affordance for a screen you can't yet open would
+/// be a false promise, not a placeholder.
+private struct MetricsRail: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            RailTile(icon: "server.rack", label: "MCP Servers")
+            RailTile(icon: "wand.and.stars", label: "Skills")
+            RailTile(icon: "gearshape", label: "Settings")
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// One rail tile: icon over label, centered, in the secondary/tertiary text colors so the rail
+/// reads quieter than the primary column beside it.
+private struct RailTile: View {
+    let icon: String
+    let label: String
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+            Text(label)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(Theme.textTertiary)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 4)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .fill(Theme.railTileSurface)
+        )
     }
 }
 
@@ -551,6 +657,28 @@ private struct EmptyStateView: View {
     let model: AppModel
 
     var body: some View {
+        // Weighted left, not dead-centered: the hero sits in a left column, leaving the right
+        // for the same quiet rail the home view reserves (hidden below `Theme.railBreakpoint`,
+        // same as there — a resized-down panel keeps the hero but drops the rail first).
+        GeometryReader { geo in
+            let showsRail = geo.size.width >= Theme.railBreakpoint
+            HStack(alignment: .center, spacing: showsRail ? Theme.columnSpacing : 0) {
+                hero
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if showsRail {
+                    MetricsRail()
+                        .frame(width: Theme.railWidth(for: geo.size.width))
+                }
+            }
+            .padding(24)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            QuietLink("quit linkC", size: 10) { NSApplication.shared.terminate(nil) }
+                .padding(12)
+        }
+    }
+
+    private var hero: some View {
         VStack(spacing: 14) {
             // The signature dot as the hero, in its waiting state: linkC itself is waiting
             // for input. Pulses like a needs-you card would (Reduce Motion: steady glow).
@@ -569,12 +697,6 @@ private struct EmptyStateView: View {
                     .foregroundStyle(Theme.textTertiary)
                 QuietLink("Resume…") { model.newSession(mode: .resume) }
             }
-        }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .bottomTrailing) {
-            QuietLink("quit linkC", size: 10) { NSApplication.shared.terminate(nil) }
-                .padding(12)
         }
     }
 }

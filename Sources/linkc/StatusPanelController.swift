@@ -109,7 +109,9 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
         let effect = NSVisualEffectView()
-        effect.material = .hudWindow
+        // .popover, not .hudWindow: the softer mid-grey dark glass (what dark-mode menus
+        // use) rather than the near-black HUD tint.
+        effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.isEmphasized = true
