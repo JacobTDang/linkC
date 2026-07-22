@@ -1,0 +1,35 @@
+{
+  "numStartups": 42,
+  "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer SECRET-TOKEN-VALUE" }
+    },
+    "firecrawl": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "firecrawl-mcp@3.22.4"],
+      "env": { "FIRECRAWL_API_KEY": "fc-SECRET-VALUE", "FIRECRAWL_API_URL": "http://localhost:3002" }
+    }
+  },
+  "projects": {
+    "/Users/x/proj": {
+      "mcpServers": {
+        "playwright": { "type": "stdio", "command": "npx", "args": ["@playwright/mcp@latest"], "env": {} }
+      },
+      "disabledMcpjsonServers": ["playwright"],
+      "enabledMcpjsonServers": []
+    },
+    "/Users/x/empty": {
+      "allowedTools": []
+    }
+  },
+  "skillUsage": {
+    "deep-research": { "usageCount": 7, "lastUsedAt": 1784696643000 },
+    "superpowers:brainstorming": { "usageCount": 3, "lastUsedAt": 1784600000000 }
+  },
+  "pluginUsage": {
+    "superpowers@superpowers-marketplace": { "usageCount": 12, "lastUsedAt": 1784696000000 }
+  }
+}
