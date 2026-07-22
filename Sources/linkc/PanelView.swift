@@ -27,6 +27,7 @@ struct PanelView: View {
                             || model.activeScreen != nil
                             || !model.sessions.isEmpty
                             || !model.restorables.isEmpty
+                            || !model.shellRows.isEmpty
                     )
                     // Pane swap: terminal > rail screen > empty > home. The terminal is a live
                     // NSView, so its removal is a plain fade (no reflow); pure-translate slides
@@ -46,7 +47,7 @@ struct PanelView: View {
                                     : .asymmetric(
                                         insertion: .move(edge: .trailing).combined(with: .opacity),
                                         removal: .opacity))
-                        } else if model.sessions.isEmpty && model.restorables.isEmpty {
+                        } else if model.isEmptyOverview {
                             EmptyStateView(model: model)
                                 .transition(.opacity)
                         } else {
@@ -85,7 +86,7 @@ private enum Pane: Equatable {
     @MainActor init(_ model: AppModel) {
         if model.selectedId != nil { self = .terminal }
         else if let screen = model.activeScreen { self = .screen(screen) }
-        else if model.sessions.isEmpty && model.restorables.isEmpty { self = .empty }
+        else if model.isEmptyOverview { self = .empty }
         else { self = .home }
     }
 }
@@ -119,6 +120,7 @@ private struct ScreenHost: View {
         switch screen {
         case .mcpServers: MCPServersScreen(model: model)
         case .skills: SkillsScreen(model: model)
+        case .terminals: TerminalsScreen(model: model)
         case .settings: SettingsScreen(model: model)
         }
     }
@@ -240,6 +242,7 @@ private struct LauncherMenu: View {
             Button("New session…") { model.newSession(mode: .new) }
             Button("Continue last…") { model.newSession(mode: .continueLast) }
             Button("Resume…") { model.newSession(mode: .resume) }
+            Button("New terminal…") { model.newShellTerminal() }
             Divider()
             Button("Quit linkC") { NSApplication.shared.terminate(nil) }
         } label: {
@@ -325,6 +328,12 @@ private struct HomeView: View {
                         liveSections
                     }
                 }
+                // Dev terminals: same 1s preview cadence as sessions, quieter presence.
+                if !model.shellRows.isEmpty {
+                    TimelineView(.periodic(from: .now, by: 1.0)) { _ in
+                        TerminalsSection(model: model)
+                    }
+                }
                 if !model.restorables.isEmpty {
                     EarlierSection(model: model)
                 }
@@ -395,6 +404,37 @@ struct SectionHeader: View {
             Spacer()
         }
         .padding(.horizontal, 4)
+    }
+}
+
+// MARK: - Terminals (dev shells)
+
+/// The home overview's dev-terminal section — plain shells beside the claude sessions,
+/// deliberately quieter (no urgency states, no pulse).
+struct TerminalsSection: View {
+    let model: AppModel
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(spacing: 6) {
+            SectionHeader(title: "TERMINALS")
+                .padding(.top, 6)
+            ForEach(model.shellRows) { row in
+                TerminalCard(
+                    row: row,
+                    preview: model.recentOutput(row.id, lines: 3),
+                    onOpen: { model.focus(row.id) },
+                    onStop: { model.stopShell(row.id) },
+                    onRelaunch: { model.relaunchShell(row) },
+                    onDismiss: { model.dismissShell(row.id) }
+                )
+                .transition(reduceMotion
+                    ? .opacity
+                    : .scale(scale: 0.97, anchor: .top).combined(with: .opacity))
+            }
+        }
+        .animation(reduceMotion ? nil : Theme.sectionSpring, value: model.shellRows.map(\.id))
     }
 }
 
@@ -595,7 +635,7 @@ private struct HomeCard: View {
 /// The card's monospaced output preview, sitting directly on the card fill and indented to align
 /// with the title (past the status dot's box). Falls back to a dim placeholder when there's
 /// nothing to show yet, so a fresh card never reads as blank or broken.
-private struct PreviewText: View {
+struct PreviewText: View {
     let text: String
 
     var body: some View {
@@ -636,6 +676,8 @@ private struct MetricsRail: View {
                      isSelected: selected == .mcpServers) { model.open(.mcpServers) }
             RailTile(icon: "wand.and.stars", label: "Skills",
                      isSelected: selected == .skills) { model.open(.skills) }
+            RailTile(icon: "terminal", label: "Terminals",
+                     isSelected: selected == .terminals) { model.open(.terminals) }
             RailTile(icon: "gearshape", label: "Settings",
                      isSelected: selected == .settings) { model.open(.settings) }
             Spacer(minLength: 0)
