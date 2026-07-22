@@ -195,7 +195,7 @@ private struct CountBadge: View {
 }
 
 /// A bare chrome glyph button — no box, no border. Hover raises it with a soft circular wash.
-private struct ChromeButton: View {
+struct ChromeButton: View {
     let systemName: String
     let help: String
     let action: () -> Void
@@ -214,7 +214,7 @@ private struct ChromeButton: View {
 
 /// Shared rendering for chrome glyphs — used by plain buttons and the launcher `Menu` label,
 /// which manages its own hover state.
-private struct ChromeGlyph: View {
+struct ChromeGlyph: View {
     let systemName: String
     let hovering: Bool
 
@@ -383,7 +383,7 @@ private struct HomeView: View {
 }
 
 /// A quiet section label — the priority-queue headers share the EARLIER header's styling.
-private struct SectionHeader: View {
+struct SectionHeader: View {
     let title: String
 
     var body: some View {
@@ -775,7 +775,7 @@ private struct EmptyStateView: View {
 }
 
 /// A small muted text action — tertiary grey that warms to secondary on hover.
-private struct QuietLink: View {
+struct QuietLink: View {
     let title: String
     let size: CGFloat
     let action: () -> Void
@@ -832,7 +832,7 @@ private struct SetupErrorView: View {
 
 /// A one-off action failure, surfaced as a soft red-washed strip floating above the bottom edge —
 /// loud enough to read, quiet enough to leave the panel intact.
-private struct ErrorBar: View {
+struct ErrorBar: View {
     let message: String
 
     var body: some View {
