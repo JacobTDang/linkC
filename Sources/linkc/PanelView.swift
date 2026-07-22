@@ -286,8 +286,9 @@ private struct SectionHeader: View {
 
 // MARK: - Earlier (restorable sessions)
 
-/// Previous sessions from an earlier run, shown below the live cards: a quiet section header with
-/// a "Restore all" affordance, then one dim row per restorable session.
+/// Previous sessions from an earlier run, shown below the live cards: a quiet section header —
+/// with an inline "Restore all" only when there are 2+ to restore — then one dim row per
+/// restorable session.
 private struct EarlierSection: View {
     let model: AppModel
 
@@ -295,20 +296,28 @@ private struct EarlierSection: View {
 
     var body: some View {
         VStack(spacing: 2) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Text("EARLIER")
                     .font(.system(size: 10, weight: .semibold))
                     .tracking(0.6)
                     .foregroundStyle(Theme.textTertiary)
-                Spacer()
-                Button(action: { model.restoreAll() }) {
-                    Text("Restore all")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.accent)
-                        .contentShape(Rectangle())
+                // "Restore all" earns its place only when there is more than one thing to
+                // restore; inline with the label so it never stacks over the rows' own
+                // Restore buttons.
+                if model.restorables.count > 1 {
+                    Text("·")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                    Button(action: { model.restoreAll() }) {
+                        Text("Restore all")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Restore every previous session")
                 }
-                .buttonStyle(.plain)
-                .help("Restore every previous session")
+                Spacer()
             }
             .padding(.horizontal, 4)
             .padding(.bottom, 4)
@@ -338,17 +347,6 @@ private struct RestorableRow: View {
 
     @State private var hovering = false
 
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f
-    }()
-
-    private var endedText: String? {
-        guard let endedAt = session.endedAt else { return nil }
-        return "ended " + Self.relativeFormatter.localizedString(for: endedAt, relativeTo: Date())
-    }
-
     var body: some View {
         HStack(spacing: 8) {
             StatusDot(state: .ended)
@@ -362,7 +360,7 @@ private struct RestorableRow: View {
                 .foregroundStyle(Theme.textTertiary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            if let endedText {
+            if let endedText = session.endedLabel(now: Date()) {
                 Text(endedText)
                     .font(.system(size: 10))
                     .foregroundStyle(Theme.textTertiary)
