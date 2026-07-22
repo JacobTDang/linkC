@@ -18,6 +18,8 @@ enum Theme {
     static let statusNeedsYou = accent
     static let statusIdle = textTertiary
     static let statusError = Color(red: 0.85, green: 0.35, blue: 0.33)
+    /// Soft gold for a context hairline nearing auto-compact (~#E3C169).
+    static let contextWarn = Color(red: 0.89, green: 0.757, blue: 0.412)
 
     // Surfaces: soft fills, never borders — cards read as raised glass, not boxes.
     /// A card's surface: a faint top-lit vertical gradient, so it reads as a soft pane of
@@ -45,6 +47,27 @@ enum Theme {
     /// Fixed height reserved for the card's 3-line output preview so cards never jitter as
     /// output changes.
     static let previewHeight: CGFloat = 42
+
+    // Two-column layout (home + empty state): a left column for identity/primary action, a
+    // quiet right rail reserved for future navigation (MCP Servers, Skills, Settings). The rail
+    // hides below `railBreakpoint` so it never crowds the panel at its 300pt minimum width, and
+    // otherwise scales with the panel between `railMinWidth` and `railMaxWidth`.
+    static let railBreakpoint: CGFloat = 380
+    static let railMinWidth: CGFloat = 76
+    static let railMaxWidth: CGFloat = 108
+    static let railFraction: CGFloat = 0.22
+    static let columnSpacing: CGFloat = 14
+
+    /// The rail's width for a given panel width — a fraction of the whole, clamped so it
+    /// neither crushes down to nothing nor grows to dominate the panel.
+    static func railWidth(for totalWidth: CGFloat) -> CGFloat {
+        min(max(totalWidth * railFraction, railMinWidth), railMaxWidth)
+    }
+
+    /// The metrics rail's tile fill — flat and faint, quieter than a card's lit gradient, since
+    /// the rail is secondary to the left column. No hover/needs-you variants: these tiles are
+    /// static placeholders, not live state.
+    static let railTileSurface = Color.white.opacity(0.045)
 
     // Motion — one orchestrated system. Springs/slides are gated behind Reduce Motion at the call
     // site (which swaps them for a crossfade); these are the tuned parameters everything shares.
