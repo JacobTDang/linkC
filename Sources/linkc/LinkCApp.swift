@@ -59,13 +59,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Guard against losing running sessions: quitting linkC ends the claude processes it hosts.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let count = model.sessions.count
-        guard count > 0 else { return .terminateNow }
+        // Running dev terminals count too — quitting kills them, and unlike sessions they
+        // aren't restored, which the copy says plainly. Exited terminals have nothing to kill.
+        guard let warning = QuitWarningBuilder.build(
+            sessionCount: model.sessions.count,
+            runningTerminalCount: model.shellRows.count { $0.state == .running }
+        ) else { return .terminateNow }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = count == 1 ? "Quit linkC and end 1 session?" : "Quit linkC and end \(count) sessions?"
-        alert.informativeText = "Quitting ends the Claude Code \(count == 1 ? "session" : "sessions") running in linkC, "
-            + "but \(count == 1 ? "it'll" : "they'll") be offered for restore next launch."
+        alert.messageText = warning.title
+        alert.informativeText = warning.message
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
@@ -78,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// The rail's destinations — full screens the panel can show in place of home.
 enum PanelScreen: String, CaseIterable, Identifiable, Equatable {
-    case mcpServers, skills, settings
+    case mcpServers, skills, terminals, settings
     var id: String { rawValue }
 }
 
@@ -139,6 +142,7 @@ final class AppModel {
             self.coordinator = coordinator
             self.mcpServers = MCPServerService(claudePath: preflight.claudePath)
             self.skills = SkillsService(claudePath: preflight.claudePath)
+            self.shells = ShellCoordinator(terminals: terminals)
         } catch {
             setupError = error.localizedDescription
         }
@@ -149,6 +153,50 @@ final class AppModel {
     private(set) var mcpServers: MCPServerService?
     /// The unified skills catalog + plugin toggles for the Skills screen. Same lifecycle.
     private(set) var skills: SkillsService?
+    /// Dev terminals — plain login shells sharing the sessions' terminal manager, so both
+    /// kinds live under the panel's single selection cursor.
+    private(set) var shells: ShellCoordinator?
+
+    var shellRows: [ShellRow] { shells?.store.rows ?? [] }
+
+    /// The empty-state gate, centralized: dev terminals count as content too.
+    var isEmptyOverview: Bool {
+        sessions.isEmpty && restorables.isEmpty && shellRows.isEmpty
+    }
+
+    /// Open a new dev terminal: pick a folder, get your login shell there.
+    func newShellTerminal() {
+        guard let shells else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Open Terminal"
+        panel.message = "Choose a folder to open a terminal in"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            lastError = nil
+            try shells.launch(cwd: url.path)
+            activeScreen = nil  // the new terminal is selected — show it
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func stopShell(_ id: String) { shells?.stop(id) }
+    func dismissShell(_ id: String) { shells?.dismiss(id) }
+
+    func relaunchShell(_ row: ShellRow) {
+        guard let shells else { return }
+        do {
+            lastError = nil
+            try shells.relaunch(row)
+            activeScreen = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
 
     // MARK: - Usage
 
