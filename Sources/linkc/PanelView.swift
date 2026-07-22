@@ -19,7 +19,14 @@ struct PanelView: View {
                 SetupErrorView(message: error)
             } else {
                 VStack(spacing: 0) {
-                    PanelHeader(model: model)
+                    // The + hides while the empty state shows — the empty state is the launcher
+                    // then, and two launch affordances never share the screen.
+                    PanelHeader(
+                        model: model,
+                        showsLauncher: model.selectedId != nil
+                            || !model.sessions.isEmpty
+                            || !model.restorables.isEmpty
+                    )
                     // Home ⇄ terminal swap. The terminal is a live NSView, so its removal is a
                     // plain fade (no reflow); a pure-translate slide brings it and the home view
                     // in. Reduce Motion collapses both to a crossfade.
@@ -69,6 +76,7 @@ struct PanelView: View {
 /// back chevron only while a terminal is open.
 private struct PanelHeader: View {
     let model: AppModel
+    let showsLauncher: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -81,7 +89,10 @@ private struct PanelHeader: View {
             CountBadge(color: Theme.statusRunning, count: model.activeCount)
             CountBadge(color: Theme.statusNeedsYou, count: model.needsYouCount)
             Spacer(minLength: 8)
-            LauncherMenu(model: model)
+            if showsLauncher {
+                LauncherMenu(model: model)
+                    .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
+            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
@@ -89,6 +100,7 @@ private struct PanelHeader: View {
         // Badges and the back chevron come and go with the same soft scale-fade.
         .animation(Theme.hoverEase, value: [model.activeCount, model.needsYouCount])
         .animation(Theme.viewSwap, value: model.selectedId != nil)
+        .animation(Theme.viewSwap, value: showsLauncher)
     }
 }
 
@@ -532,6 +544,9 @@ private struct TerminalHero: View {
 
 // MARK: - Empty state
 
+/// The launcher: while nothing exists the panel's one entry point is here, not the chrome —
+/// the header + is hidden. Primary New session, quiet Continue/Resume beneath, and (since the
+/// + menu is gone) a faint quit link in the corner.
 private struct EmptyStateView: View {
     let model: AppModel
 
@@ -541,21 +556,53 @@ private struct EmptyStateView: View {
             // for input. Pulses like a needs-you card would (Reduce Motion: steady glow).
             StatusDot(state: .waitingIdle)
                 .scaleEffect(1.6)
-            VStack(spacing: 5) {
-                Text("No sessions yet")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                Text("Start a Claude Code session and it runs right here.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.textSecondary)
-                    .multilineTextAlignment(.center)
-            }
+            Text("No sessions yet")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
             Button("New session") { model.newSession(mode: .new) }
                 .buttonStyle(PrimaryButtonStyle())
                 .padding(.top, 4)
+            HStack(spacing: 6) {
+                QuietLink("Continue last") { model.newSession(mode: .continueLast) }
+                Text("·")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+                QuietLink("Resume…") { model.newSession(mode: .resume) }
+            }
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottomTrailing) {
+            QuietLink("quit linkC", size: 10) { NSApplication.shared.terminate(nil) }
+                .padding(12)
+        }
+    }
+}
+
+/// A small muted text action — tertiary grey that warms to secondary on hover.
+private struct QuietLink: View {
+    let title: String
+    let size: CGFloat
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    init(_ title: String, size: CGFloat = 11, action: @escaping () -> Void) {
+        self.title = title
+        self.size = size
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: size))
+                .foregroundStyle(hovering ? Theme.textSecondary : Theme.textTertiary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .animation(Theme.hoverEase, value: hovering)
+        .onHover { hovering = $0 }
     }
 }
 
