@@ -38,4 +38,17 @@ public enum SkillFrontmatterParser {
               let description = fields["description"], !description.isEmpty else { return nil }
         return SkillFrontmatter(name: name, description: description)
     }
+
+    /// The SKILL.md content after its frontmatter block — what a reader view shows (the
+    /// frontmatter's name/description are already displayed as chrome). Content without a
+    /// well-formed frontmatter block is returned whole; never silently truncated.
+    public static func body(_ contents: String) -> String {
+        let normalized = contents.replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard lines.first == "---",
+              let closing = lines.dropFirst().firstIndex(of: "---") else { return contents }
+        return lines[(closing + 1)...]
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .newlines)
+    }
 }
