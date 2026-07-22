@@ -66,9 +66,19 @@ public final class TerminalSession {
         return view
     }
 
-    /// Launch `executable` in the PTY. Inherits the app's environment, overlays `env`, forces
-    /// `TERM=xterm-256color`, and guarantees Homebrew is on `PATH` (a Finder-launched GUI app
-    /// otherwise inherits a minimal PATH that lacks node and claude's other dependencies).
+    /// The inherited environment minus Claude Code's own session markers. linkC may itself be
+    /// running inside a claude session (launched from a terminal there, or via `open`, which
+    /// forwards the caller's environment) — passing CLAUDECODE/CLAUDE_CODE_* through would make
+    /// every spawned claude treat itself as a child session: transcript saving off, nested-
+    /// session warnings. Sessions get a clean slate; the explicit `env` overlay still wins.
+    static func scrubbedEnvironment(_ base: [String: String]) -> [String: String] {
+        base.filter { key, _ in key != "CLAUDECODE" && !key.hasPrefix("CLAUDE_CODE_") }
+    }
+
+    /// Launch `executable` in the PTY. Inherits the app's environment (scrubbed of Claude Code
+    /// session markers), overlays `env`, forces `TERM=xterm-256color`, and guarantees Homebrew
+    /// is on `PATH` (a Finder-launched GUI app otherwise inherits a minimal PATH that lacks
+    /// node and claude's other dependencies).
     public func start(executable: String, args: [String], env: [String: String]) throws {
         // Fail loud BEFORE forking: SwiftTerm forks even for a nonexistent executable (the exec
         // failure happens asynchronously inside the child), which would manufacture a session
@@ -81,7 +91,7 @@ public final class TerminalSession {
         guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw LinkCError.process("cannot start session: folder \(cwd) no longer exists")
         }
-        var environment = ProcessInfo.processInfo.environment
+        var environment = Self.scrubbedEnvironment(ProcessInfo.processInfo.environment)
         for (key, value) in env { environment[key] = value }
         environment["TERM"] = "xterm-256color"
         environment["PATH"] = Self.pathEnsuringHomebrew(environment["PATH"])
