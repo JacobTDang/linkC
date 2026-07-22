@@ -101,6 +101,7 @@ final class AppModel {
             coordinator.usageTracker = usage
             self.coordinator = coordinator
             self.mcpServers = MCPServerService(claudePath: preflight.claudePath)
+            self.skills = SkillsService(claudePath: preflight.claudePath)
         } catch {
             setupError = error.localizedDescription
         }
@@ -109,6 +110,8 @@ final class AppModel {
     /// MCP config + live health for the MCP Servers screen. Built in `start()` (needs the
     /// resolved claude path); does no I/O until the screen asks.
     private(set) var mcpServers: MCPServerService?
+    /// The unified skills catalog + plugin toggles for the Skills screen. Same lifecycle.
+    private(set) var skills: SkillsService?
 
     // MARK: - Usage
 
