@@ -44,6 +44,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 echo "==> Ad-hoc code signing (required for notifications)"
+# File-provider sync (iCloud Desktop) stamps FinderInfo/xattrs onto the fresh bundle,
+# which codesign rejects as "detritus" — strip them right before signing.
+xattr -cr "$APP"
 codesign --force --deep --sign - "$APP"
 
 echo "==> Done: $APP"
