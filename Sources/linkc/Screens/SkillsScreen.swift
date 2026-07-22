@@ -8,14 +8,31 @@ import LinkCKit
 struct SkillsScreen: View {
     let model: AppModel
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// A skill opened for reading — clicking a row drills into its SKILL.md.
+    @State private var openSkill: SkillEntry?
+
     var body: some View {
-        VStack(spacing: 0) {
-            if let service = model.skills {
-                content(service)
+        ZStack {
+            if let openSkill {
+                SkillDetailView(skill: openSkill) { self.openSkill = nil }
+                    .transition(reduceMotion
+                        ? .opacity
+                        : .asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .opacity))
             } else {
-                Color.clear  // unreachable: services exist whenever setup succeeded
+                VStack(spacing: 0) {
+                    if let service = model.skills {
+                        content(service)
+                    } else {
+                        Color.clear  // unreachable: services exist whenever setup succeeded
+                    }
+                }
+                .transition(.opacity)
             }
         }
+        .animation(Theme.viewSwap, value: openSkill?.id)
         .task { await model.skills?.refresh() }
     }
 
@@ -44,12 +61,16 @@ struct SkillsScreen: View {
                 let userSkills = service.skills.filter { $0.source == .user }
                 if !userSkills.isEmpty {
                     SectionHeader(title: "YOUR SKILLS").padding(.top, 4)
-                    ForEach(userSkills) { SkillRow(skill: $0) }
+                    ForEach(userSkills) { skill in
+                        SkillRow(skill: skill) { openSkill = skill }
+                    }
                 }
                 ForEach(pluginGroups(service), id: \.plugin.id) { group in
                     PluginHeader(plugin: group.plugin, service: service)
                         .padding(.top, 6)
-                    ForEach(group.skills) { SkillRow(skill: $0) }
+                    ForEach(group.skills) { skill in
+                        SkillRow(skill: skill) { openSkill = skill }
+                    }
                 }
             }
             .padding(.horizontal, 12)
@@ -112,8 +133,10 @@ private struct PluginHeader: View {
 }
 
 /// One skill: name, truncated description, usage figures, hover-revealed Reveal in Finder.
+/// The whole row opens the skill's SKILL.md for reading.
 private struct SkillRow: View {
     let skill: SkillEntry
+    let onOpen: () -> Void
 
     @State private var hovering = false
 
@@ -172,7 +195,76 @@ private struct SkillRow: View {
             RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
                 .fill(hovering ? Theme.hover : Color.clear)
         )
+        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
+        .onTapGesture(perform: onOpen)
         .animation(Theme.hoverEase, value: hovering)
         .onHover { hovering = $0 }
+        .help("Read \(skill.name)")
+    }
+}
+
+/// A skill opened for reading: its description as the lede, then the SKILL.md body,
+/// monospaced and selectable. The file is read fresh on every open — skills change on disk.
+private struct SkillDetailView: View {
+    let skill: SkillEntry
+    let onBack: () -> Void
+
+    @State private var body_: String?
+    @State private var loadError: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                ChromeButton(systemName: "chevron.left", help: "Back to skills", action: onBack)
+                Text(skill.name)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                Spacer()
+                ChromeButton(systemName: "folder", help: "Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: skill.path)])
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 6)
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(skill.description)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let body_ {
+                        Text(body_)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Theme.textSecondary.opacity(0.9))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let loadError {
+                        Text(loadError)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.statusError)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+        }
+        .onAppear(perform: load)
+        .id(skill.id)  // a different skill re-reads
+    }
+
+    private func load() {
+        let file = URL(fileURLWithPath: skill.path).appendingPathComponent("SKILL.md")
+        do {
+            body_ = SkillFrontmatterParser.body(try String(contentsOf: file, encoding: .utf8))
+            loadError = nil
+        } catch {
+            body_ = nil
+            loadError = "Couldn't read \(file.path): \(error.localizedDescription)"
+        }
     }
 }

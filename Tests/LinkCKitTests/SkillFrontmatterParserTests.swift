@@ -45,4 +45,15 @@ final class SkillFrontmatterParserTests: XCTestCase {
         XCTAssertNil(SkillFrontmatterParser.parse("---\nname: only-name\n---\n"), "missing description")
         XCTAssertNil(SkillFrontmatterParser.parse("---\nname: x\ndescription: y\n"), "unclosed block")
     }
+
+    func testBodyStripsFrontmatterBlock() {
+        let contents = "---\nname: a\ndescription: b\n---\n\n# The Skill\n\nDo the thing."
+        XCTAssertEqual(SkillFrontmatterParser.body(contents), "# The Skill\n\nDo the thing.")
+    }
+
+    func testBodyWithoutFrontmatterIsWholeContents() {
+        XCTAssertEqual(SkillFrontmatterParser.body("# Bare markdown"), "# Bare markdown")
+        XCTAssertEqual(SkillFrontmatterParser.body("---\nunclosed: block\n"), "---\nunclosed: block\n",
+                       "an unclosed frontmatter block isn't frontmatter — show everything")
+    }
 }
