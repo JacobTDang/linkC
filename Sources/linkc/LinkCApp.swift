@@ -17,12 +17,44 @@ struct LinkCApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private var panelController: StatusPanelController?
+    private var hotKey: GlobalHotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar utility: no Dock icon, no main window.
         NSApp.setActivationPolicy(.accessory)
         panelController = StatusPanelController(model: model)
+        hotKey = GlobalHotKey { [weak self] in self?.panelController?.togglePanel() }
+        applyHotKeyPreference()
+        observeHotKeyPreference()
         Task { await model.start() }
+    }
+
+    /// Re-registers the global shortcut whenever the preference changes — the same
+    /// `withObservationTracking` re-arm loop StatusPanelController uses.
+    private func observeHotKeyPreference() {
+        withObservationTracking {
+            _ = model.preferences.hotKeyPreset
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.applyHotKeyPreference()
+                self.observeHotKeyPreference()
+            }
+        }
+    }
+
+    private func applyHotKeyPreference() {
+        guard let hotKey else { return }
+        let preset = model.preferences.hotKeyPreset
+        guard let keyCode = preset.keyCode, let modifiers = preset.carbonModifiers else {
+            hotKey.unregister()
+            return
+        }
+        do {
+            try hotKey.register(keyCode: keyCode, modifiers: modifiers)
+        } catch {
+            model.surface(error: "Global shortcut unavailable: \(error.localizedDescription)")
+        }
     }
 
     /// Guard against losing running sessions: quitting linkC ends the claude processes it hosts.
@@ -69,6 +101,11 @@ final class AppModel {
 
     /// Live usage state: per-session context/tokens/cost, plus the global plan window.
     let usage = UsageTracker()
+    /// linkC's own settings (hotkey preset, panel toggles) — UserDefaults-backed.
+    let preferences = AppPreferences()
+
+    /// Surface a one-off failure in the panel's error bar (fail loud, stay standing).
+    func surface(error message: String) { lastError = message }
     /// Refreshes usage while the panel is visible; hook events cover the rest of the time.
     @ObservationIgnored private var usageTimer: Timer?
     @ObservationIgnored private var usageTicks = 0

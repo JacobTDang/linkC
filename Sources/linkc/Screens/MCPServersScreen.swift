@@ -14,7 +14,7 @@ struct MCPServersScreen: View {
             if let service = model.mcpServers {
                 content(service)
             } else {
-                ScreenPlaceholder(title: "MCP Servers")
+                Color.clear  // unreachable: services exist whenever setup succeeded
             }
         }
         .task {
