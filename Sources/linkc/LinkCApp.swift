@@ -100,10 +100,15 @@ final class AppModel {
             try coordinator.start()
             coordinator.usageTracker = usage
             self.coordinator = coordinator
+            self.mcpServers = MCPServerService(claudePath: preflight.claudePath)
         } catch {
             setupError = error.localizedDescription
         }
     }
+
+    /// MCP config + live health for the MCP Servers screen. Built in `start()` (needs the
+    /// resolved claude path); does no I/O until the screen asks.
+    private(set) var mcpServers: MCPServerService?
 
     // MARK: - Usage
 
