@@ -11,13 +11,29 @@ public enum TerminalPreview {
     }
 
     /// A row has content when something remains after removing box-drawing/block glyphs and
-    /// trimming whitespace — and that remainder is more than a bare prompt marker.
+    /// trimming whitespace — and that remainder is more than a bare prompt marker or one of
+    /// Claude Code's status-bar banners.
     static func hasContent(_ row: String) -> Bool {
         let stripped = row.unicodeScalars.filter { !isBoxDrawing($0) }
         let text = String(String.UnicodeScalarView(stripped))
             .trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return false }
-        return !barePrompts.contains(text)
+        return !barePrompts.contains(text) && !isStatusFurniture(text)
+    }
+
+    /// Claude Code's status-bar banners — text-only chrome that sits by the input box and would
+    /// otherwise dominate a 3-line preview. Patterns stay anchored so real output that carries
+    /// a ⚠ or mentions MCP is never eaten.
+    private static func isStatusFurniture(_ text: String) -> Bool {
+        // The permission-mode line ("⏵⏵ bypass permissions on …") always ends with its hint.
+        if text.hasSuffix("(shift+tab to cycle)") { return true }
+        var t = text
+        if t.hasPrefix("⚠") { t = String(t.dropFirst()).trimmingCharacters(in: .whitespaces) }
+        if t.hasPrefix("Transcript saving is off") { return true }
+        return t.range(
+            of: #"^\d+ MCP servers? needs? authentication\b"#,
+            options: .regularExpression
+        ) != nil
     }
 
     /// Box Drawing (U+2500–U+257F) and Block Elements (U+2580–U+259F).
