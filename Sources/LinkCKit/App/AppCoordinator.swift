@@ -29,6 +29,9 @@ public final class AppCoordinator {
     /// Restorable cards for the home overview — previous sessions that are no longer live.
     /// Observable; the panel reacts to it the same way it reacts to the live session store.
     public let restorableStore = RestorableStore()
+    /// Fed transcript paths from hook events; owned by the UI layer, optional so the
+    /// coordinator works headless in tests.
+    public var usageTracker: UsageTracker?
 
     private let hookServer: HookServer
     private let notifications: NotificationManager
@@ -137,6 +140,12 @@ public final class AppCoordinator {
     func handle(_ event: HookEvent) {
         let outcome = store.apply(event)
         guard let session = outcome.session else { return } // unknown / external session
+
+        // Every hook event names the session's transcript — bind it and refresh usage.
+        if let transcriptPath = event.transcriptPath, let tracker = usageTracker {
+            tracker.bind(sessionId: session.id, transcriptPath: transcriptPath)
+            tracker.refreshSession(session.id)
+        }
 
         // Keep the manifest's claude conversation id current so a later restore can `--resume`
         // this exact conversation. Bind before any end-of-session handling below.

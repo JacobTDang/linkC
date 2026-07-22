@@ -231,3 +231,76 @@ final class UsageFormatTests: XCTestCase {
         XCTAssertEqual(UsageFormat.resetTime(Date(timeIntervalSince1970: 1_784_730_600), timeZone: tz), "~7:30am")
     }
 }
+
+/// The composed tracker: sessions bind to transcript files via hook events; reads are
+/// incremental; the global window scan sweeps a projects directory.
+@MainActor
+final class UsageTrackerTests: XCTestCase {
+
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-usage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("proj-a"), withIntermediateDirectories: true)
+    }
+
+    override func tearDown() { try? FileManager.default.removeItem(at: dir) }
+
+    private func transcriptLine(at iso: String, output: Int, context: Int = 0, sidechain: Bool = false) -> String {
+        """
+        {"type":"assistant","isSidechain":\(sidechain),"timestamp":"\(iso)",\
+        "message":{"model":"claude-opus-4-8","usage":{"input_tokens":\(context),\
+        "cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":\(output)}}}
+        """
+    }
+
+    func testSessionUsageAccumulatesAndTracksMainChainContext() throws {
+        let path = dir.appendingPathComponent("proj-a/session.jsonl").path
+        let lines = [
+            transcriptLine(at: "2026-07-22T05:00:00Z", output: 100, context: 50_000),
+            transcriptLine(at: "2026-07-22T05:01:00Z", output: 30, context: 9_999_999, sidechain: true),
+            transcriptLine(at: "2026-07-22T05:02:00Z", output: 200, context: 60_000),
+        ].joined(separator: "\n") + "\n"
+        try lines.data(using: .utf8)!.write(to: URL(fileURLWithPath: path))
+
+        let tracker = UsageTracker(projectsDir: dir)
+        tracker.bind(sessionId: "L1", transcriptPath: path)
+        tracker.refreshSession("L1")
+
+        let s = try XCTUnwrap(tracker.sessionUsage("L1"))
+        // Context follows the last MAIN-CHAIN message; the sidechain's giant context is ignored.
+        XCTAssertEqual(s.contextTokens, 60_000 + 200 == s.contextTokens ? s.contextTokens : 60_000)
+        XCTAssertEqual(s.contextTokens, 60_000)
+        // Totals include the sidechain — its tokens are real spend.
+        XCTAssertEqual(s.totalTokens, (50_000 + 100) + (9_999_999 + 30) + (60_000 + 200))
+        XCTAssertGreaterThan(s.cost, 0)
+        XCTAssertEqual(s.contextFill, 60_000.0 / 200_000.0, accuracy: 0.0001)
+
+        // Incremental: appending another line updates on the next refresh.
+        let handle = FileHandle(forWritingAtPath: path)!
+        try handle.seekToEnd()
+        try handle.write(contentsOf: (transcriptLine(at: "2026-07-22T05:03:00Z", output: 5, context: 70_000) + "\n").data(using: .utf8)!)
+        try handle.close()
+        tracker.refreshSession("L1")
+        XCTAssertEqual(tracker.sessionUsage("L1")?.contextTokens, 70_000)
+    }
+
+    func testWindowScanSweepsProjectsDir() throws {
+        // Timestamps must be recent for the mtime + 7d filters — derive from now.
+        let iso = ISO8601DateFormatter()
+        let recent = iso.string(from: Date().addingTimeInterval(-120))
+        let line = transcriptLine(at: recent, output: 1000, context: 500)
+        try (line + "\n").data(using: .utf8)!
+            .write(to: dir.appendingPathComponent("proj-a/other.jsonl"))
+
+        let tracker = UsageTracker(projectsDir: dir)
+        tracker.refreshWindow()
+
+        let w = try XCTUnwrap(tracker.window)
+        XCTAssertEqual(w.weekTokens, 1500)
+        XCTAssertEqual(w.blockTokens, 1500)
+        XCTAssertNotNil(w.blockResetAt)
+    }
+}

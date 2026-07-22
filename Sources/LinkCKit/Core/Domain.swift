@@ -50,17 +50,21 @@ public struct HookEvent: Sendable, Equatable {
     public let linkcSessionId: String?
     public let claudeSessionId: String?
     public let cwd: String?
+    /// The session's transcript JSONL on disk — feeds the usage tracker.
+    public let transcriptPath: String?
 
     public init(
         kind: HookEventKind,
         linkcSessionId: String?,
         claudeSessionId: String?,
-        cwd: String?
+        cwd: String?,
+        transcriptPath: String? = nil
     ) {
         self.kind = kind
         self.linkcSessionId = (linkcSessionId?.isEmpty ?? true) ? nil : linkcSessionId
         self.claudeSessionId = claudeSessionId
         self.cwd = cwd
+        self.transcriptPath = transcriptPath
     }
 }
 
