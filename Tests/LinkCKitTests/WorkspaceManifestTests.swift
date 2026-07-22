@@ -120,6 +120,29 @@ final class WorkspaceManifestTests: XCTestCase {
 }
 
 extension WorkspaceManifestTests {
+    /// endedLabel is the home view's ended-time copy: nil while live, "just now" inside a
+    /// minute (so near-now dates never render formatter artifacts like "in 0s"), relative after.
+    func testEndedLabelNilWhileLive() {
+        XCTAssertNil(entry("L1").endedLabel(now: Date(timeIntervalSince1970: 1_700_000_000)))
+    }
+
+    func testEndedLabelJustNowUnderAMinute() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        // Fresh, 30s old, and slight future clock skew all read as "just now" — never "in 0s".
+        XCTAssertEqual(entry("L1", endedAt: now).endedLabel(now: now), "ended just now")
+        XCTAssertEqual(entry("L1", endedAt: now.addingTimeInterval(-30)).endedLabel(now: now), "ended just now")
+        XCTAssertEqual(entry("L1", endedAt: now.addingTimeInterval(5)).endedLabel(now: now), "ended just now")
+    }
+
+    func testEndedLabelRelativeBeyondAMinute() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let label = entry("L1", endedAt: now.addingTimeInterval(-5 * 60)).endedLabel(now: now)
+        let unwrapped = try XCTUnwrap(label)
+        XCTAssertTrue(unwrapped.hasPrefix("ended "), "got: \(unwrapped)")
+        XCTAssertNotEqual(unwrapped, "ended just now")
+        XCTAssertTrue(unwrapped.contains("5"), "expected the 5-minute figure in: \(unwrapped)")
+    }
+
     /// M2: markEnded is idempotent — the first timestamp wins; a second call neither bumps the
     /// date nor rewrites the file.
     func testMarkEndedKeepsFirstTimestamp() throws {
