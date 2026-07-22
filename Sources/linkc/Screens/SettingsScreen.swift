@@ -79,8 +79,27 @@ struct SettingsScreen: View {
             if let errorText {
                 ErrorBar(message: errorText)
             }
+
+            // What am I running? Version from the release tag, build from the git commit —
+            // stamped by build-app.sh, so a stale install is identifiable at a glance.
+            HStack {
+                Text("linkC \(Self.versionLabel)")
+                    .font(.system(size: 10))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
         }
         .onAppear { launchAtLogin = LoginItem.isEnabled }
+    }
+
+    private static var versionLabel: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {

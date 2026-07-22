@@ -4,5 +4,5 @@ DerivedData/
 *.xcodeproj
 .DS_Store
 .superpowers/
-dist/
+dist.noindex/
 *.app
