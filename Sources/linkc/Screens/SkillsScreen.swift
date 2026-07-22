@@ -13,7 +13,7 @@ struct SkillsScreen: View {
             if let service = model.skills {
                 content(service)
             } else {
-                ScreenPlaceholder(title: "Skills")
+                Color.clear  // unreachable: services exist whenever setup succeeded
             }
         }
         .task { await model.skills?.refresh() }

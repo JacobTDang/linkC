@@ -298,7 +298,7 @@ private struct HomeView: View {
                 }
             }
             // The one place plan usage appears: a quiet footer line pinned under the list.
-            if let label = model.windowUsageLabel {
+            if let label = model.windowUsageLabel, model.preferences.showsUsageFooter {
                 HStack {
                     Text(label)
                         .font(.system(size: 10))

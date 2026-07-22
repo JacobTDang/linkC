@@ -134,7 +134,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     // MARK: - Toggle / show / hide
 
-    @objc private func togglePanel() {
+    @objc func togglePanel() {
         if panel.isVisible {
             hide()
         } else {
