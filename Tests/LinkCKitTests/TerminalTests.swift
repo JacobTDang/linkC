@@ -173,6 +173,22 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "Fixed the bug in PanelView.")
     }
 
+    func testDropsRemainingStatusFurnitureVariants() {
+        // The rest of claude's bottom-strip furniture: spinner rows, shortcut hints,
+        // context/usage warnings, update failures, queued-message hints.
+        let rows = [
+            "Deployed the fix.",
+            "✻ Sautéing… (12s · esc to interrupt)",
+            "? for shortcuts",
+            "Context left until auto-compact: 8%",
+            "Context low (11% remaining) · Run /compact to compact & continue",
+            "Approaching Opus usage limit · resets at 7pm",
+            "✗ Auto-update failed · Try claude doctor or npm i -g @anthropic-ai/claude-code",
+            "Press up to edit queued messages",
+        ]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "Deployed the fix.")
+    }
+
     func testKeepsRealOutputMentioningWarningsOrMCP() {
         // The furniture patterns must stay anchored: real output that merely carries a ⚠ or
         // mentions MCP is content, not chrome.
