@@ -25,13 +25,28 @@ public enum TerminalPreview {
     /// otherwise dominate a 3-line preview. Patterns stay anchored so real output that carries
     /// a ⚠ or mentions MCP is never eaten.
     private static func isStatusFurniture(_ text: String) -> Bool {
-        // The permission-mode line ("⏵⏵ bypass permissions on …") always ends with its hint.
-        if text.hasSuffix("(shift+tab to cycle)") { return true }
+        // Trailing hints are the strip's signature: the permission-mode line always ends with
+        // "(shift+tab to cycle)", the spinner row with "esc to interrupt)".
+        if text.hasSuffix("(shift+tab to cycle)") || text.hasSuffix("esc to interrupt)") {
+            return true
+        }
+        if text == "? for shortcuts" { return true }
+
+        // Banner rows, matched after any leading warning/failure glyph.
         var t = text
-        if t.hasPrefix("⚠") { t = String(t.dropFirst()).trimmingCharacters(in: .whitespaces) }
-        if t.hasPrefix("Transcript saving is off") { return true }
+        if let first = t.first, "⚠✗✘".contains(first) {
+            t = String(t.dropFirst()).trimmingCharacters(in: .whitespaces)
+        }
+        let bannerPrefixes = [
+            "Transcript saving is off",
+            "Context left until auto-compact:",
+            "Context low (",
+            "Auto-update failed",
+            "Press up to edit queued messages",
+        ]
+        if bannerPrefixes.contains(where: t.hasPrefix) { return true }
         return t.range(
-            of: #"^\d+ MCP servers? needs? authentication\b"#,
+            of: #"^(\d+ MCP servers? needs? authentication|Approaching [\w ]{0,24}usage limit)\b"#,
             options: .regularExpression
         ) != nil
     }
