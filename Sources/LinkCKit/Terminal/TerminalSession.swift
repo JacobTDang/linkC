@@ -66,10 +66,21 @@ public final class TerminalSession {
         return view
     }
 
-    /// Launch `executable` in the PTY. Inherits the app's environment, overlays `env`, forces
-    /// `TERM=xterm-256color`, and guarantees Homebrew is on `PATH` (a Finder-launched GUI app
-    /// otherwise inherits a minimal PATH that lacks node and claude's other dependencies).
-    public func start(executable: String, args: [String], env: [String: String]) throws {
+    /// The inherited environment minus Claude Code's own session markers. linkC may itself be
+    /// running inside a claude session (launched from a terminal there, or via `open`, which
+    /// forwards the caller's environment) — passing CLAUDECODE/CLAUDE_CODE_* through would make
+    /// every spawned claude treat itself as a child session: transcript saving off, nested-
+    /// session warnings. Sessions get a clean slate; the explicit `env` overlay still wins.
+    static func scrubbedEnvironment(_ base: [String: String]) -> [String: String] {
+        base.filter { key, _ in key != "CLAUDECODE" && !key.hasPrefix("CLAUDE_CODE_") }
+    }
+
+    /// Launch `executable` in the PTY. Inherits the app's environment (scrubbed of Claude Code
+    /// session markers), overlays `env`, forces `TERM=xterm-256color`, and guarantees Homebrew
+    /// is on `PATH` (a Finder-launched GUI app otherwise inherits a minimal PATH that lacks
+    /// node and claude's other dependencies). `execName` overrides argv[0] — dev terminals
+    /// pass "-zsh"-style names so the shell runs as a login shell.
+    public func start(executable: String, args: [String], env: [String: String], execName: String? = nil) throws {
         // Fail loud BEFORE forking: SwiftTerm forks even for a nonexistent executable (the exec
         // failure happens asynchronously inside the child), which would manufacture a session
         // that dies instantly with no surfaced error. Validate the deterministic
@@ -81,7 +92,7 @@ public final class TerminalSession {
         guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw LinkCError.process("cannot start session: folder \(cwd) no longer exists")
         }
-        var environment = ProcessInfo.processInfo.environment
+        var environment = Self.scrubbedEnvironment(ProcessInfo.processInfo.environment)
         for (key, value) in env { environment[key] = value }
         environment["TERM"] = "xterm-256color"
         environment["PATH"] = Self.pathEnsuringHomebrew(environment["PATH"])
@@ -91,7 +102,7 @@ public final class TerminalSession {
             executable: executable,
             args: args,
             environment: environmentArray,
-            execName: nil,
+            execName: execName,
             currentDirectory: cwd
         )
         // Capture once, on the spawning thread, before any concurrent activity — the only
@@ -133,9 +144,11 @@ public final class TerminalSession {
         }
     }
 
-    /// The last `lines` non-blank rows of the terminal's visible screen, as plain text — for the
-    /// home overview's live preview. Returns "" when the PTY was never started. Reads the private
-    /// backing store (not `terminalView`) so a never-shown session is never forced to spawn a view.
+    /// The last `lines` content rows of the terminal's visible screen, as plain text — for the
+    /// home overview's live preview. `TerminalPreview` drops chrome-only rows (frames, rules,
+    /// bare prompts) so the preview shows output, not furniture. Returns "" when the PTY was
+    /// never started. Reads the private backing store (not `terminalView`) so a never-shown
+    /// session is never forced to spawn a view.
     public func recentOutput(lines: Int) -> String {
         guard let view = _terminalView else { return "" }
         let terminal = view.getTerminal()
@@ -143,8 +156,7 @@ public final class TerminalSession {
         for row in 0..<terminal.rows {
             rows.append(terminal.getLine(row: row)?.translateToString(trimRight: true) ?? "")
         }
-        while let last = rows.last, last.trimmingCharacters(in: .whitespaces).isEmpty { rows.removeLast() }
-        return rows.suffix(lines).joined(separator: "\n")
+        return TerminalPreview.excerpt(rows: rows, lines: lines)
     }
 
     private func handleTerminated(_ code: Int32?) {

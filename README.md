@@ -53,8 +53,8 @@ swift test       # run the unit + integration suite
 
 ```sh
 ./scripts/make-icon.sh   # render the app icon → Assets/linkC.icns (once, or after icon changes)
-./build-app.sh           # produces dist/linkC.app (code-signed for notifications)
-open dist/linkC.app      # launches the menu-bar app
+./build-app.sh --install # builds and installs /Applications/linkC.app
+open /Applications/linkC.app
 ```
 
 A stacked-layers icon appears in the menu bar. Grant notification permission when asked, then

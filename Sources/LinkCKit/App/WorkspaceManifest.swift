@@ -32,6 +32,21 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+extension RestorableSession {
+    /// Human label for when the session ended: `nil` while live, "ended just now" inside a
+    /// minute (either direction, so slight clock skew never renders "in 0s"), otherwise the
+    /// abbreviated relative form ("ended 5m ago"). The formatter is built per call —
+    /// `RelativeDateTimeFormatter` is not Sendable, and restorable rows are few and re-render
+    /// rarely, so a shared instance isn't worth the isolation it would force.
+    public func endedLabel(now: Date) -> String? {
+        guard let endedAt else { return nil }
+        if abs(now.timeIntervalSince(endedAt)) < 60 { return "ended just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return "ended " + formatter.localizedString(for: endedAt, relativeTo: now)
+    }
+}
+
 /// Persists the set of known sessions to `<directory>/workspace.json` so they survive quitting
 /// or crashing the app. Holds the in-memory list as the single mirror of that file; every
 /// mutation writes the file back atomically. Fails loud on write errors (NSLog) and tolerates a

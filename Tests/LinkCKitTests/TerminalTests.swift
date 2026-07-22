@@ -111,4 +111,99 @@ final class TerminalSessionTests: XCTestCase {
         XCTAssertEqual(session.recentOutput(lines: 3), "")
         session.terminate() // still a safe no-op — proves recentOutput didn't spawn a view
     }
+
+    func testScrubbedEnvironmentDropsClaudeCodeMarkers() {
+        // linkC may itself be running inside a claude session (opened from a terminal there).
+        // Its inherited CLAUDECODE/CLAUDE_CODE_* markers must not leak into spawned sessions,
+        // which would make claude treat them as child sessions (transcript saving off).
+        let base = [
+            "PATH": "/usr/bin",
+            "HOME": "/Users/x",
+            "CLAUDECODE": "1",
+            "CLAUDE_CODE_CHILD_SESSION": "1",
+            "CLAUDE_CODE_ENTRYPOINT": "cli",
+        ]
+        XCTAssertEqual(
+            TerminalSession.scrubbedEnvironment(base),
+            ["PATH": "/usr/bin", "HOME": "/Users/x"]
+        )
+    }
+}
+
+/// The preview cleaner turns raw terminal rows into home-card content: chrome rows — box-drawing
+/// frames, horizontal rules, bare prompt markers, blanks — are dropped so the 3-line preview
+/// shows what the session is actually saying, not its furniture.
+final class TerminalPreviewTests: XCTestCase {
+
+    func testDropsBoxDrawingFrameRows() {
+        let rows = ["Build complete!", "╭──────────╮", "│ >        │", "╰──────────╯"]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "Build complete!")
+    }
+
+    func testDropsRulesAndBlankRows() {
+        let rows = ["one", "", "────────────", "two"]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "one\ntwo")
+    }
+
+    func testKeepsLastNContentRowsInOrder() {
+        let rows = ["a", "b", "c", "d"]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "b\nc\nd")
+    }
+
+    func testBarePromptDroppedButPromptWithCommandKept() {
+        let rows = ["❯", "❯ swift test"]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "❯ swift test")
+    }
+
+    func testTextInsideBoxFrameIsKept() {
+        // A framed row with real words keeps its words; only the frame glyphs go.
+        let rows = ["│ Claude is thinking… │"]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "│ Claude is thinking… │")
+    }
+
+    func testDropsClaudeStatusFurnitureRows() {
+        // Claude Code's status-bar banners are text-only chrome: the permission-mode line,
+        // the MCP-auth banner, and the transcript warning. None of them is session output.
+        let rows = [
+            "Fixed the bug in PanelView.",
+            "⚠5 MCP servers need authentication · run /mcp",
+            "⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker · restart with CLAUDE_CODE_FORCE_SESSIO…",
+            "⏵⏵ bypass permissions on (shift+tab to cycle)",
+        ]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "Fixed the bug in PanelView.")
+    }
+
+    func testDropsRemainingStatusFurnitureVariants() {
+        // The rest of claude's bottom-strip furniture: spinner rows, shortcut hints,
+        // context/usage warnings, update failures, queued-message hints.
+        let rows = [
+            "Deployed the fix.",
+            "✻ Sautéing… (12s · esc to interrupt)",
+            "? for shortcuts",
+            "Context left until auto-compact: 8%",
+            "Context low (11% remaining) · Run /compact to compact & continue",
+            "Approaching Opus usage limit · resets at 7pm",
+            "✗ Auto-update failed · Try claude doctor or npm i -g @anthropic-ai/claude-code",
+            "Press up to edit queued messages",
+        ]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "Deployed the fix.")
+    }
+
+    func testKeepsRealOutputMentioningWarningsOrMCP() {
+        // The furniture patterns must stay anchored: real output that merely carries a ⚠ or
+        // mentions MCP is content, not chrome.
+        let rows = [
+            "⚠ deprecation warning in Foo.swift",
+            "Added 3 MCP servers to the config",
+        ]
+        XCTAssertEqual(
+            TerminalPreview.excerpt(rows: rows, lines: 3),
+            "⚠ deprecation warning in Foo.swift\nAdded 3 MCP servers to the config"
+        )
+    }
+
+    func testEmptyAndChromeOnlyInputGivesEmptyString() {
+        XCTAssertEqual(TerminalPreview.excerpt(rows: [], lines: 3), "")
+        XCTAssertEqual(TerminalPreview.excerpt(rows: ["────", "", "❯"], lines: 3), "")
+    }
 }
