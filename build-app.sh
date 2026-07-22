@@ -51,3 +51,15 @@ codesign --force --deep --sign - "$APP"
 
 echo "==> Done: $APP"
 echo "    Launch with:  open \"$APP\""
+
+# --install: copy the fresh bundle into /Applications (the "real app" location — stable
+# path for Spotlight, Launchpad, and the launch-at-login registration). Refuses while the
+# installed copy is running: overwriting a live app corrupts its running image.
+if [[ "${1:-}" == "--install" ]]; then
+  if pgrep -f "/Applications/$NAME.app/Contents/MacOS/$NAME" > /dev/null; then
+    echo "ERROR: /Applications/$NAME.app is running — quit it first, then re-run with --install." >&2
+    exit 1
+  fi
+  ditto "$APP" "/Applications/$NAME.app"
+  echo "==> Installed: /Applications/$NAME.app"
+fi
