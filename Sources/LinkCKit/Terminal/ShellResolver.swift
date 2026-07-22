@@ -25,8 +25,9 @@ public enum ShellResolver {
         "-" + (shellPath as NSString).lastPathComponent
     }
 
-    /// Not private: default-argument values can't reference private members.
-    static func systemPasswdShell() -> String? {
+    /// Public only because a public function's default argument must reference a symbol at
+    /// least as visible as itself.
+    public static func systemPasswdShell() -> String? {
         guard let passwd = getpwuid(getuid()), let shell = passwd.pointee.pw_shell else {
             return nil
         }
