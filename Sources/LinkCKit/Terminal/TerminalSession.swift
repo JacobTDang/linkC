@@ -78,8 +78,9 @@ public final class TerminalSession {
     /// Launch `executable` in the PTY. Inherits the app's environment (scrubbed of Claude Code
     /// session markers), overlays `env`, forces `TERM=xterm-256color`, and guarantees Homebrew
     /// is on `PATH` (a Finder-launched GUI app otherwise inherits a minimal PATH that lacks
-    /// node and claude's other dependencies).
-    public func start(executable: String, args: [String], env: [String: String]) throws {
+    /// node and claude's other dependencies). `execName` overrides argv[0] — dev terminals
+    /// pass "-zsh"-style names so the shell runs as a login shell.
+    public func start(executable: String, args: [String], env: [String: String], execName: String? = nil) throws {
         // Fail loud BEFORE forking: SwiftTerm forks even for a nonexistent executable (the exec
         // failure happens asynchronously inside the child), which would manufacture a session
         // that dies instantly with no surfaced error. Validate the deterministic
@@ -101,7 +102,7 @@ public final class TerminalSession {
             executable: executable,
             args: args,
             environment: environmentArray,
-            execName: nil,
+            execName: execName,
             currentDirectory: cwd
         )
         // Capture once, on the spawning thread, before any concurrent activity — the only
