@@ -20,12 +20,15 @@ public final class ShellCoordinator {
         self.shellPath = shellPath
     }
 
-    /// Open the user's login shell in `cwd`. The terminal is selected on creation (same UX
-    /// as a new claude session). Fail loud: a failed spawn removes the terminal and rethrows.
+    /// Open the user's login shell in `cwd` — interactive when `command` is nil, otherwise
+    /// running `command` through `-l -c` (PATH/dotfiles still load; the terminal becomes a
+    /// normal exited card when the command ends — this is how "view logs" rides on dev
+    /// terminals). Selected on creation, same UX as a new claude session. Fail loud: a
+    /// failed spawn removes the terminal and rethrows.
     @discardableResult
-    public func launch(cwd: String) throws -> ShellRow {
+    public func launch(cwd: String, command: String? = nil, title: String? = nil) throws -> ShellRow {
         let id = UUID().uuidString
-        let title = URL(fileURLWithPath: cwd).lastPathComponent
+        let title = title ?? URL(fileURLWithPath: cwd).lastPathComponent
         let shell = shellPath()
 
         let terminal = terminals.makeSession(id: id, cwd: cwd, title: title)
@@ -37,9 +40,9 @@ public final class ShellCoordinator {
         do {
             try terminal.start(
                 executable: shell,
-                args: [],
+                args: command.map { ["-l", "-c", $0] } ?? [],
                 env: [:],
-                execName: ShellResolver.loginArgv0(for: shell)
+                execName: command == nil ? ShellResolver.loginArgv0(for: shell) : nil
             )
         } catch {
             terminals.remove(id)
