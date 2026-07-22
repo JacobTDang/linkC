@@ -1,11 +1,12 @@
 #!/bin/bash
 # Builds linkC as a proper .app bundle (menu-bar agent, code-signed so macOS
-# notifications work). Output: dist/linkC.app
+# notifications work). Output: dist.noindex/linkC.app (.noindex keeps the build artifact
+# out of Spotlight — /Applications/linkC.app is the one true app).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 NAME="linkC"
 BUNDLE_ID="com.linkc.app"
-APP="$ROOT/dist/$NAME.app"
+APP="$ROOT/dist.noindex/$NAME.app"
 ICNS="$ROOT/Assets/$NAME.icns"
 
 if [[ ! -f "$ICNS" ]]; then
@@ -13,7 +14,12 @@ if [[ ! -f "$ICNS" ]]; then
   exit 1
 fi
 
-echo "==> Building release binary"
+# Stamp real versions so "what am I running?" is answerable in the app.
+VERSION="$(git -C "$ROOT" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+VERSION="${VERSION:-0.0.0}"
+BUILD="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
+
+echo "==> Building release binary ($VERSION · $BUILD)"
 swift build -c release --package-path "$ROOT"
 BIN="$(swift build -c release --package-path "$ROOT" --show-bin-path)/linkc"
 
@@ -34,8 +40,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>$NAME</string>
   <key>CFBundleIconFile</key><string>$NAME</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$BUILD</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
