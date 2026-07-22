@@ -138,3 +138,96 @@ final class UsageWindowsTests: XCTestCase {
         XCTAssertEqual(w.weekTokens, 10)
     }
 }
+
+/// Incremental transcript reading: remember a byte offset per file, hand back only complete
+/// appended lines, and survive truncation. This is what makes "live" cheap.
+final class TranscriptTailReaderTests: XCTestCase {
+
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-tail-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() { try? FileManager.default.removeItem(at: dir) }
+
+    private func write(_ text: String, to name: String) throws -> String {
+        let url = dir.appendingPathComponent(name)
+        try text.data(using: .utf8)!.write(to: url)
+        return url.path
+    }
+
+    private func append(_ text: String, to path: String) throws {
+        let handle = FileHandle(forWritingAtPath: path)!
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: text.data(using: .utf8)!)
+    }
+
+    func testReadsAllThenOnlyAppended() throws {
+        let path = try write("a\nb\n", to: "t.jsonl")
+        let reader = TranscriptTailReader()
+        XCTAssertEqual(reader.readNewLines(at: path), ["a", "b"])
+        XCTAssertEqual(reader.readNewLines(at: path), [])
+        try append("c\n", to: path)
+        XCTAssertEqual(reader.readNewLines(at: path), ["c"])
+    }
+
+    func testPartialTrailingLineWithheldUntilComplete() throws {
+        let path = try write("a\npart", to: "t.jsonl")
+        let reader = TranscriptTailReader()
+        XCTAssertEqual(reader.readNewLines(at: path), ["a"])
+        try append("ial\n", to: path)
+        XCTAssertEqual(reader.readNewLines(at: path), ["partial"])
+    }
+
+    func testTruncationResetsOffset() throws {
+        let path = try write("aaaa\nbbbb\ncccc\n", to: "t.jsonl")
+        let reader = TranscriptTailReader()
+        _ = reader.readNewLines(at: path)
+        _ = try write("x\n", to: "t.jsonl") // shrunk: offset now beyond EOF
+        XCTAssertEqual(reader.readNewLines(at: path), ["x"])
+    }
+
+    func testFirstReadTailCapDropsLeadingPartialLine() throws {
+        let path = try write("aaaaaaaaaa\nbbb\nccc\n", to: "t.jsonl")
+        let reader = TranscriptTailReader()
+        // Cap lands mid-"aaaaaaaaaa" — that partial line is dropped, complete ones kept.
+        XCTAssertEqual(reader.readNewLines(at: path, firstReadTailCap: 9), ["bbb", "ccc"])
+        try append("d\n", to: path)
+        XCTAssertEqual(reader.readNewLines(at: path, firstReadTailCap: 9), ["d"],
+                       "the cap applies only to a file's first read")
+    }
+
+    func testMissingFileIsEmpty() {
+        XCTAssertEqual(TranscriptTailReader().readNewLines(at: dir.appendingPathComponent("no.jsonl").path), [])
+    }
+}
+
+/// Display formatting for the three usage surfaces — compact, deterministic.
+final class UsageFormatTests: XCTestCase {
+
+    func testTokens() {
+        XCTAssertEqual(UsageFormat.tokens(0), "0")
+        XCTAssertEqual(UsageFormat.tokens(950), "950")
+        XCTAssertEqual(UsageFormat.tokens(12_400), "12.4k")
+        XCTAssertEqual(UsageFormat.tokens(142_000), "142k")
+        XCTAssertEqual(UsageFormat.tokens(3_140_000), "3.1M")
+        XCTAssertEqual(UsageFormat.tokens(41_000_000), "41M")
+    }
+
+    func testDollars() {
+        XCTAssertEqual(UsageFormat.dollars(1.874), "~$1.87")
+        XCTAssertEqual(UsageFormat.dollars(0.002), "~$0.01", "positive sub-cent floors at one cent")
+        XCTAssertEqual(UsageFormat.dollars(0), "~$0.00")
+    }
+
+    func testResetTime() {
+        // 09:00 UTC = 2am PDT; 14:30 UTC = 7:30am PDT.
+        let tz = TimeZone(identifier: "America/Los_Angeles")!
+        XCTAssertEqual(UsageFormat.resetTime(Date(timeIntervalSince1970: 1_784_710_800), timeZone: tz), "~2am")
+        XCTAssertEqual(UsageFormat.resetTime(Date(timeIntervalSince1970: 1_784_730_600), timeZone: tz), "~7:30am")
+    }
+}
