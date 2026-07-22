@@ -24,15 +24,23 @@ struct PanelView: View {
                     PanelHeader(
                         model: model,
                         showsLauncher: model.selectedId != nil
+                            || model.activeScreen != nil
                             || !model.sessions.isEmpty
                             || !model.restorables.isEmpty
                     )
-                    // Home ⇄ terminal swap. The terminal is a live NSView, so its removal is a
-                    // plain fade (no reflow); a pure-translate slide brings it and the home view
-                    // in. Reduce Motion collapses both to a crossfade.
+                    // Pane swap: terminal > rail screen > empty > home. The terminal is a live
+                    // NSView, so its removal is a plain fade (no reflow); pure-translate slides
+                    // bring the others in. Reduce Motion collapses everything to a crossfade.
                     ZStack {
                         if model.selectedId != nil {
                             TerminalHero(model: model)
+                                .transition(reduceMotion
+                                    ? .opacity
+                                    : .asymmetric(
+                                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                                        removal: .opacity))
+                        } else if let screen = model.activeScreen {
+                            ScreenHost(model: model, screen: screen)
                                 .transition(reduceMotion
                                     ? .opacity
                                     : .asymmetric(
@@ -51,7 +59,7 @@ struct PanelView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .animation(Theme.viewSwap, value: model.selectedId != nil)
+                    .animation(Theme.viewSwap, value: Pane(model))
                     if let error = model.lastError {
                         ErrorBar(message: error)
                             .transition(reduceMotion
@@ -69,6 +77,53 @@ struct PanelView: View {
     }
 }
 
+/// One Equatable discriminator for the pane-swap animation — the ZStack has four branches now,
+/// so a single boolean can't drive `.animation(_:value:)` anymore.
+private enum Pane: Equatable {
+    case terminal, screen(PanelScreen), empty, home
+
+    @MainActor init(_ model: AppModel) {
+        if model.selectedId != nil { self = .terminal }
+        else if let screen = model.activeScreen { self = .screen(screen) }
+        else if model.sessions.isEmpty && model.restorables.isEmpty { self = .empty }
+        else { self = .home }
+    }
+}
+
+// MARK: - Screens
+
+/// Hosts a rail screen in the same two-column layout home uses — content left, the rail as a
+/// persistent sidebar right (hidden below the breakpoint), so the user can hop between screens
+/// without going home first.
+private struct ScreenHost: View {
+    let model: AppModel
+    let screen: PanelScreen
+
+    var body: some View {
+        GeometryReader { geo in
+            let showsRail = geo.size.width >= Theme.railBreakpoint
+            HStack(alignment: .top, spacing: showsRail ? Theme.columnSpacing : 0) {
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if showsRail {
+                    MetricsRail(model: model, selected: screen)
+                        .frame(width: Theme.railWidth(for: geo.size.width))
+                        .padding(.top, 12)
+                        .padding(.trailing, 12)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch screen {
+        case .mcpServers: MCPServersScreen(model: model)
+        case .skills: SkillsScreen(model: model)
+        case .settings: SettingsScreen(model: model)
+        }
+    }
+}
+
 // MARK: - Header
 
 /// The chrome strip: no title, no divider — just what's true right now. Dot-count badges on the
@@ -82,7 +137,7 @@ private struct PanelHeader: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            if model.selectedId != nil {
+            if model.selectedId != nil || model.activeScreen != nil {
                 ChromeButton(systemName: "chevron.left", help: "Back to overview") { model.goHome() }
                     .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
             }
@@ -111,6 +166,7 @@ private struct PanelHeader: View {
         // Badges and the back chevron come and go with the same soft scale-fade.
         .animation(Theme.hoverEase, value: [model.activeCount, model.needsYouCount])
         .animation(Theme.viewSwap, value: model.selectedId != nil)
+        .animation(Theme.viewSwap, value: model.activeScreen)
         .animation(Theme.viewSwap, value: showsLauncher)
     }
 }
@@ -234,7 +290,7 @@ private struct HomeView: View {
                     sessionList
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if showsRail {
-                        MetricsRail()
+                        MetricsRail(model: model, selected: model.activeScreen)
                             .frame(width: Theme.railWidth(for: geo.size.width))
                             .padding(.top, 12)
                             .padding(.trailing, 12)
@@ -567,46 +623,63 @@ private struct PreviewText: View {
 
 // MARK: - Metrics rail
 
-/// The right-hand rail: a quiet column of glass tiles pointing at destinations that don't exist
-/// yet. No counts or fabricated metrics — each tile is only an icon and a label until the real
-/// MCP Servers / Skills / Settings screens land, so nothing here can go stale or lie. Deliberately
-/// inert for now (no hover, no tap target): an affordance for a screen you can't yet open would
-/// be a false promise, not a placeholder.
+/// The right-hand rail: a quiet column of glass tiles, each opening its screen. The selected
+/// tile carries a faint accent wash so the rail doubles as a "where am I" indicator while a
+/// screen is open.
 private struct MetricsRail: View {
+    let model: AppModel
+    let selected: PanelScreen?
+
     var body: some View {
         VStack(spacing: 8) {
-            RailTile(icon: "server.rack", label: "MCP Servers")
-            RailTile(icon: "wand.and.stars", label: "Skills")
-            RailTile(icon: "gearshape", label: "Settings")
+            RailTile(icon: "server.rack", label: "MCP Servers",
+                     isSelected: selected == .mcpServers) { model.open(.mcpServers) }
+            RailTile(icon: "wand.and.stars", label: "Skills",
+                     isSelected: selected == .skills) { model.open(.skills) }
+            RailTile(icon: "gearshape", label: "Settings",
+                     isSelected: selected == .settings) { model.open(.settings) }
             Spacer(minLength: 0)
         }
     }
 }
 
-/// One rail tile: icon over label, centered, in the secondary/tertiary text colors so the rail
-/// reads quieter than the primary column beside it.
+/// One rail tile: icon over label, centered, quieter than the primary column beside it. Hover
+/// raises it with the shared wash; selection carries a faint accent tint.
 private struct RailTile: View {
     let icon: String
     let label: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
-        VStack(spacing: 5) {
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Theme.textSecondary)
-            Text(label)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(Theme.textTertiary)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+                Text(label)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(isSelected ? Theme.textSecondary : Theme.textTertiary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .padding(.horizontal, 4)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                    .fill(isSelected
+                        ? AnyShapeStyle(Theme.accent.opacity(0.16))
+                        : AnyShapeStyle(hovering ? Theme.hover : Theme.railTileSurface))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-        .padding(.horizontal, 4)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                .fill(Theme.railTileSurface)
-        )
+        .buttonStyle(.plain)
+        .animation(Theme.hoverEase, value: hovering)
+        .onHover { hovering = $0 }
+        .help(label)
     }
 }
 
@@ -666,7 +739,7 @@ private struct EmptyStateView: View {
                 hero
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if showsRail {
-                    MetricsRail()
+                    MetricsRail(model: model, selected: model.activeScreen)
                         .frame(width: Theme.railWidth(for: geo.size.width))
                 }
             }

@@ -44,6 +44,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// The rail's destinations — full screens the panel can show in place of home.
+enum PanelScreen: String, CaseIterable, Identifiable, Equatable {
+    case mcpServers, skills, settings
+    var id: String { rawValue }
+}
+
 /// Observable app state backing the panel. Holds the coordinator once preflight succeeds, or
 /// a setup error to show the user. Owns the terminal manager so the coordinator's watch probe
 /// and the panel's terminal view share one source of truth.
@@ -180,7 +186,21 @@ final class AppModel {
         }
     }
 
-    func focus(_ id: String) { coordinator?.focusSession(id) }
+    /// Which rail screen is open, if any. Orthogonal to `selectedId`; the terminal wins when
+    /// both are set (a session needing attention outranks a static screen).
+    var activeScreen: PanelScreen?
+
+    /// Open a rail screen — deselects any terminal so the screen actually shows.
+    func open(_ screen: PanelScreen) {
+        coordinator?.terminals.deselect()
+        activeScreen = screen
+    }
+
+    /// Focusing a session always wins over an open screen (notification clicks included).
+    func focus(_ id: String) {
+        activeScreen = nil
+        coordinator?.focusSession(id)
+    }
     func stop(_ id: String) { coordinator?.stopSession(id) }
 
     /// Resume a previous session as a fresh live one. Surfaces failures inline (fail loud).
@@ -209,7 +229,10 @@ final class AppModel {
     func dismiss(_ r: RestorableSession) { coordinator?.dismiss(r) }
 
     /// Return to the home overview (no session selected). Keeps every terminal alive.
-    func goHome() { coordinator?.terminals.deselect() }
+    func goHome() {
+        coordinator?.terminals.deselect()
+        activeScreen = nil
+    }
 
     /// The last `lines` rows of `id`'s live terminal output, for the home overview's preview.
     /// "" when the session has no terminal yet (never started).
