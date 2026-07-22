@@ -1,16 +1,14 @@
 import SwiftUI
 import LinkCKit
 
-/// Design tokens for the panel — a single dark, glass-forward palette and type/spacing scale.
-/// Every color and size in `PanelView` derives from here so the frosted surface reads as one
-/// cohesive system regardless of the system appearance.
+/// Design tokens for the panel — one sheet of dark glass, no outlines. Content floats as soft
+/// fills of the same material; color appears only where state demands it. Every color and size
+/// in `PanelView` derives from here so the surface reads as one cohesive system.
 enum Theme {
     // Text, on the dark glass.
     static let textPrimary = Color.white.opacity(0.92)
     static let textSecondary = Color.white.opacity(0.55)
     static let textTertiary = Color.white.opacity(0.35)
-    /// The glass-edge hairline used for dividers and 1px borders.
-    static let hairline = Color.white.opacity(0.08)
 
     /// Claude coral (~#D97757) — the single accent.
     static let accent = Color(red: 0.851, green: 0.467, blue: 0.341)
@@ -20,36 +18,61 @@ enum Theme {
     static let statusNeedsYou = accent
     static let statusIdle = textTertiary
     static let statusError = Color(red: 0.85, green: 0.35, blue: 0.33)
+    /// Soft gold for a context hairline nearing auto-compact (~#E3C169).
+    static let contextWarn = Color(red: 0.89, green: 0.757, blue: 0.412)
 
-    /// The selected-row highlight — a soft coral wash.
-    static let selection = accent.opacity(0.16)
-    /// A barely-there hover wash for rows and chrome buttons.
-    static let hover = Color.white.opacity(0.05)
+    // Surfaces: soft fills, never borders — cards read as raised glass, not boxes.
+    /// A card's surface: a faint top-lit vertical gradient, so it reads as a soft pane of
+    /// glass rather than a flat slab. Needs-you cards carry the one colored wash; hover
+    /// brightens either variant slightly.
+    static func cardSurface(needsYou: Bool, hovering: Bool) -> LinearGradient {
+        let top: Color = needsYou
+            ? accent.opacity(hovering ? 0.18 : 0.13)
+            : Color.white.opacity(hovering ? 0.10 : 0.065)
+        let bottom: Color = needsYou
+            ? accent.opacity(hovering ? 0.10 : 0.06)
+            : Color.white.opacity(hovering ? 0.055 : 0.03)
+        return LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom)
+    }
+    /// A barely-there wash behind bare chrome glyphs and restorable rows on hover.
+    static let hover = Color.white.opacity(0.07)
+    /// The inline error strip's tinted surface.
+    static let errorWash = statusError.opacity(0.12)
 
     // Corner radii.
     static let panelRadius: CGFloat = 16
-    static let terminalRadius: CGFloat = 10
-    static let rowRadius: CGFloat = 8
-    static let previewRadius: CGFloat = 6
+    static let terminalRadius: CGFloat = 12
+    static let rowRadius: CGFloat = 12
 
-    /// The card's output preview — a darker inset well over the glass so the monospaced rows read
-    /// as their own block, with a fixed height reserved so cards don't jitter as output changes.
-    static let previewInset = Color.black.opacity(0.25)
-    static let previewHeight: CGFloat = 44
+    /// Fixed height reserved for the card's 3-line output preview so cards never jitter as
+    /// output changes.
+    static let previewHeight: CGFloat = 42
 
-    /// Card hover lift — a subtle scale and drop shadow layered over the `hover` fill.
-    static let cardHoverScale: CGFloat = 1.01
-    static let cardShadow = Color.black.opacity(0.28)
-    static let cardShadowRadius: CGFloat = 10
-    static let cardShadowY: CGFloat = 4
+    // Two-column layout (home + empty state): a left column for identity/primary action, a
+    // quiet right rail reserved for future navigation (MCP Servers, Skills, Settings). The rail
+    // hides below `railBreakpoint` so it never crowds the panel at its 300pt minimum width, and
+    // otherwise scales with the panel between `railMinWidth` and `railMaxWidth`.
+    static let railBreakpoint: CGFloat = 380
+    static let railMinWidth: CGFloat = 76
+    static let railMaxWidth: CGFloat = 108
+    static let railFraction: CGFloat = 0.22
+    static let columnSpacing: CGFloat = 14
 
-    /// The tint applied to a `needsYou` card's hairline — the one quiet emphasis it earns.
-    static func needsYouHairline(_ state: SessionState) -> Color { statusColor(state).opacity(0.35) }
+    /// The rail's width for a given panel width — a fraction of the whole, clamped so it
+    /// neither crushes down to nothing nor grows to dominate the panel.
+    static func railWidth(for totalWidth: CGFloat) -> CGFloat {
+        min(max(totalWidth * railFraction, railMinWidth), railMaxWidth)
+    }
+
+    /// The metrics rail's tile fill — flat and faint, quieter than a card's lit gradient, since
+    /// the rail is secondary to the left column. No hover/needs-you variants: these tiles are
+    /// static placeholders, not live state.
+    static let railTileSurface = Color.white.opacity(0.045)
 
     // Motion — one orchestrated system. Springs/slides are gated behind Reduce Motion at the call
     // site (which swaps them for a crossfade); these are the tuned parameters everything shares.
     static let sectionSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
-    static let hoverLift = Animation.easeOut(duration: 0.15)
+    static let hoverEase = Animation.easeOut(duration: 0.15)
     static let viewSwap = Animation.easeInOut(duration: 0.2)
 
     /// Dot / label color for a concrete session state. `.error` is called out in red even

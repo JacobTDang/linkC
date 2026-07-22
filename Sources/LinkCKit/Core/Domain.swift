@@ -7,6 +7,17 @@ public enum LinkCError: Error, Sendable, Equatable {
     case server(String)
 }
 
+extension LinkCError: LocalizedError {
+    /// The carried message IS the description — without this, `localizedDescription`
+    /// collapses every error to a generic Foundation string and the detail is lost.
+    public var errorDescription: String? {
+        switch self {
+        case .parse(let message), .process(let message), .server(let message):
+            return message
+        }
+    }
+}
+
 /// The lifecycle state of a single Claude Code session, derived purely from hook events.
 public enum SessionState: String, Sendable, Codable, CaseIterable, Equatable {
     case starting            // tab launched, no hook seen yet
@@ -50,17 +61,21 @@ public struct HookEvent: Sendable, Equatable {
     public let linkcSessionId: String?
     public let claudeSessionId: String?
     public let cwd: String?
+    /// The session's transcript JSONL on disk — feeds the usage tracker.
+    public let transcriptPath: String?
 
     public init(
         kind: HookEventKind,
         linkcSessionId: String?,
         claudeSessionId: String?,
-        cwd: String?
+        cwd: String?,
+        transcriptPath: String? = nil
     ) {
         self.kind = kind
         self.linkcSessionId = (linkcSessionId?.isEmpty ?? true) ? nil : linkcSessionId
         self.claudeSessionId = claudeSessionId
         self.cwd = cwd
+        self.transcriptPath = transcriptPath
     }
 }
 

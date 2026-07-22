@@ -30,6 +30,11 @@ final class HookEventDecoderTests: XCTestCase {
         XCTAssertEqual(event.linkcSessionId, "L1")
         XCTAssertEqual(event.claudeSessionId, "7a29becc-2776-461b-a720-4c6ed80bb560")
         XCTAssertEqual(event.cwd, "/Users/jacobdang/Desktop/projects/linkC")
+        XCTAssertEqual(
+            event.transcriptPath,
+            "/Users/jacobdang/.claude/projects/-Users-jacobdang-Desktop-projects-linkC/7a29becc-2776-461b-a720-4c6ed80bb560.jsonl",
+            "transcript_path feeds the usage tracker"
+        )
     }
 
     func testDecodesRealUserPromptSubmitFixture() throws {

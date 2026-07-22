@@ -1,0 +1,33 @@
+[
+  {
+    "id": "superpowers@superpowers-marketplace",
+    "version": "6.1.1",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/x/.claude/plugins/cache/superpowers-marketplace/superpowers/6.1.1",
+    "installedAt": "2026-06-01T00:00:00Z",
+    "lastUpdated": "2026-07-01T00:00:00Z"
+  },
+  {
+    "id": "frontend-design@claude-plugins-official",
+    "version": "1.2.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/x/.claude/plugins/cache/claude-plugins-official/frontend-design/unknown"
+  },
+  {
+    "id": "frontend-design@claude-plugins-official",
+    "version": "1.2.0",
+    "scope": "project",
+    "enabled": true,
+    "installPath": "/Users/x/.claude/plugins/cache/claude-plugins-official/frontend-design/unknown",
+    "projectPath": "/Users/x/Desktop/projects/Sprout"
+  },
+  {
+    "id": "clangd-lsp@claude-plugins-official",
+    "version": "1.0.0",
+    "scope": "user",
+    "enabled": false,
+    "installPath": "/Users/x/.claude/plugins/cache/claude-plugins-official/clangd-lsp/1.0.0"
+  }
+]
