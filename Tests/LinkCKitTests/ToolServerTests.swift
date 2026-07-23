@@ -191,6 +191,29 @@ final class KnownStacksStoreTests: XCTestCase {
         try "not json".data(using: .utf8)!.write(to: dir.appendingPathComponent("known-stacks.json"))
         XCTAssertTrue(KnownStacksStore(directory: dir).stacks.isEmpty)
     }
+
+    func testLegacyFileWithoutServicesLoads() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(#"[{"name":"firecrawl","workingDir":"/tools/firecrawl"}]"#.utf8)
+            .write(to: dir.appendingPathComponent("known-stacks.json"))
+
+        let store = KnownStacksStore(directory: dir)
+        XCTAssertEqual(store.stacks.first?.name, "firecrawl")
+        XCTAssertEqual(store.stacks.first?.services, [])
+    }
+
+    func testRememberWithServicesStoresThem() {
+        let store = KnownStacksStore(directory: dir)
+        store.remember(name: "firecrawl", workingDir: "/t", services: ["api", "worker"])
+        XCTAssertEqual(KnownStacksStore(directory: dir).stacks.first?.services, ["api", "worker"])
+    }
+
+    func testRememberWithoutServicesPreservesExistingOnes() {
+        let store = KnownStacksStore(directory: dir)
+        store.remember(name: "firecrawl", workingDir: "/t", services: ["api"])
+        store.remember(name: "firecrawl", workingDir: "/t")  // the ps-discovery path
+        XCTAssertEqual(store.stacks.first?.services, ["api"], "ps discovery must not wipe known services")
+    }
 }
 
 /// Docker binary probing — Finder-launched apps have a minimal PATH, so fixed candidates,
