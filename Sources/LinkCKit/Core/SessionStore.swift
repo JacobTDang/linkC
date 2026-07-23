@@ -16,11 +16,15 @@ public enum SessionReducer {
     }
 
     /// Apply an event to a session. Returns the updated session and whether it just
-    /// *entered* a notifiable state (a transition, not a repeat).
-    public static func apply(_ event: HookEvent, to session: Session) -> (session: Session, enteredNotifiable: Bool) {
+    /// *entered* a notifiable state (a transition, not a repeat). Real transitions stamp
+    /// `stateChangedAt`; a re-asserted identical state keeps the original clock.
+    public static func apply(
+        _ event: HookEvent, to session: Session, now: Date = Date()
+    ) -> (session: Session, enteredNotifiable: Bool) {
         var s = session
         let old = s.state
         s.state = nextState(current: old, event: event.kind)
+        if s.state != old { s.stateChangedAt = now }
         if let cid = event.claudeSessionId { s.claudeSessionId = cid }
         let entered = s.state.isNotifiable && s.state != old
         return (s, entered)
