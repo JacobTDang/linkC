@@ -9,33 +9,18 @@ struct TerminalsScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("Terminals")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                Spacer()
+            ScreenHeader(title: "Terminals") {
                 ChromeButton(systemName: "plus", help: "New terminal") {
                     model.newShellTerminal()
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 6)
 
             if model.shellRows.isEmpty {
-                VStack(spacing: 8) {
-                    Text("No terminals yet")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                    Text("A plain shell in any folder — run your dev servers beside your sessions.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.textTertiary)
-                        .multilineTextAlignment(.center)
-                    QuietLink("New terminal") { model.newShellTerminal() }
-                        .padding(.top, 2)
-                }
-                .padding(24)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                EmptyHint(
+                    title: "No terminals yet",
+                    message: "A plain shell in any folder — run your dev servers beside your sessions.",
+                    actionLabel: "New terminal"
+                ) { model.newShellTerminal() }
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     TimelineView(.periodic(from: .now, by: 1.0)) { _ in
@@ -51,6 +36,7 @@ struct TerminalsScreen: View {
                                 )
                             }
                         }
+                        .readingColumn()
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                     }

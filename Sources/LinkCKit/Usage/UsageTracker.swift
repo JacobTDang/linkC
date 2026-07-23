@@ -26,6 +26,7 @@ public final class UsageTracker {
     private let scanReader = TranscriptTailReader()
     private var sessionPaths: [String: String] = [:]
     private var accumulators: [String: Accumulator] = [:]
+    private var agentAssemblers: [String: AgentAssembler] = [:]
     private var scanRecords: [MessageUsage] = []
 
     /// First-scan cost bound: only the trailing 4MB of a historical transcript is read, and
@@ -50,11 +51,22 @@ public final class UsageTracker {
     public func refreshSession(_ sessionId: String) {
         guard let path = sessionPaths[sessionId] else { return }
         var acc = accumulators[sessionId] ?? Accumulator()
+        var agents = agentAssemblers[sessionId] ?? AgentAssembler()
         for line in sessionReader.readNewLines(at: path) {
-            guard let usage = TranscriptUsage.parseLine(line) else { continue }
-            acc.add(usage)
+            if let usage = TranscriptUsage.parseLine(line) {
+                acc.add(usage)
+            }
+            let events = AgentEvents.parse(line: line)
+            if !events.isEmpty { agents.feed(events) }
         }
         accumulators[sessionId] = acc
+        agentAssemblers[sessionId] = agents
+    }
+
+    /// The session's subagent runs, oldest first — spawns and completions from the same
+    /// transcript tail that feeds usage.
+    public func sessionAgents(_ sessionId: String) -> [AgentRun] {
+        agentAssemblers[sessionId]?.runs ?? []
     }
 
     public func sessionUsage(_ sessionId: String) -> SessionUsage? {

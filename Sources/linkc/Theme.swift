@@ -39,6 +39,9 @@ enum Theme {
     /// The inline error strip's tinted surface.
     static let errorWash = statusError.opacity(0.12)
 
+    /// Content stops stretching past this — the reading-width cap for lists and screens.
+    static let contentMaxWidth: CGFloat = 560
+
     // Corner radii.
     static let panelRadius: CGFloat = 16
     static let terminalRadius: CGFloat = 12

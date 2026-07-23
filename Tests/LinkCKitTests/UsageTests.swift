@@ -287,6 +287,34 @@ final class UsageTrackerTests: XCTestCase {
         XCTAssertEqual(tracker.sessionUsage("L1")?.contextTokens, 70_000)
     }
 
+    func testSessionAgentsSurfaceFromTranscript() throws {
+        let path = dir.appendingPathComponent("proj-a/agents.jsonl").path
+        let lines = """
+        {"type":"assistant","timestamp":"2026-07-23T04:00:00Z","message":{"content":[{"type":"tool_use","id":"toolu_X","name":"Agent","input":{"description":"Map the code","subagent_type":"Explore"}}]}}
+        {"type":"user","timestamp":"2026-07-23T04:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_X","content":[{"type":"text","text":"Async agent launched successfully."}]}]}}
+        """ + "\n"
+        try lines.data(using: .utf8)!.write(to: URL(fileURLWithPath: path))
+
+        let tracker = UsageTracker(projectsDir: dir)
+        tracker.bind(sessionId: "L9", transcriptPath: path)
+        tracker.refreshSession("L9")
+
+        let agents = tracker.sessionAgents("L9")
+        XCTAssertEqual(agents.map(\.description), ["Map the code"])
+        XCTAssertTrue(agents[0].isRunning, "async launch metadata is not completion")
+
+        let handle = FileHandle(forWritingAtPath: path)!
+        try handle.seekToEnd()
+        let done = """
+        {"type":"user","timestamp":"2026-07-23T04:06:00Z","message":{"content":"<task-notification>\\n<tool-use-id>toolu_X</tool-use-id>\\n<result>found it</result>"}}
+        """ + "\n"
+        try handle.write(contentsOf: done.data(using: .utf8)!)
+        try handle.close()
+        tracker.refreshSession("L9")
+        XCTAssertFalse(tracker.sessionAgents("L9")[0].isRunning)
+        XCTAssertEqual(tracker.sessionAgents("L9")[0].resultText, "found it")
+    }
+
     func testWindowScanSweepsProjectsDir() throws {
         // Timestamps must be recent for the mtime + 7d filters — derive from now.
         let iso = ISO8601DateFormatter()
