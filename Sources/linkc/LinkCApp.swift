@@ -163,13 +163,32 @@ final class AppModel {
     /// "View logs" rides on dev terminals: a shell running `docker logs -f`, which becomes
     /// a normal exited card when the follow ends.
     func openContainerLogs(_ container: ContainerInfo) {
+        openContainerCommand(
+            "logs --tail 200 -f", container: container,
+            title: "logs: \(container.composeService ?? container.name)"
+        )
+    }
+
+    /// A shell INSIDE the container — sh, which every image has; bash is one keystroke away
+    /// when the image ships it.
+    func openContainerExec(_ container: ContainerInfo) {
+        openContainerCommand(
+            "exec -it", container: container, suffix: "/bin/sh",
+            title: "exec: \(container.composeService ?? container.name)"
+        )
+    }
+
+    private func openContainerCommand(
+        _ subcommand: String, container: ContainerInfo, suffix: String = "", title: String
+    ) {
         guard let shells, let dockerPath = toolServers?.dockerPath else { return }
         do {
             lastError = nil
             try shells.launch(
                 cwd: NSHomeDirectory(),
-                command: "\(dockerPath) logs --tail 200 -f \(container.name)",
-                title: "logs: \(container.composeService ?? container.name)"
+                command: "\(dockerPath) \(subcommand) \(container.name) \(suffix)"
+                    .trimmingCharacters(in: .whitespaces),
+                title: title
             )
             activeScreen = nil  // the new terminal is selected — show it
         } catch {
