@@ -87,6 +87,112 @@ final class ToolServerCatalogTests: XCTestCase {
     }
 }
 
+/// `docker inspect` extraction: the overview fields, with env VALUES discarded at parse —
+/// container env routinely holds secrets, and the detail view shows key names only.
+final class DockerInspectTests: XCTestCase {
+
+    private let realInspect = """
+    [{"Id":"90b2","RestartCount":2,
+      "State":{"Status":"running","StartedAt":"2026-07-20T18:46:09.047810921Z","Running":true},
+      "Config":{"Image":"firecrawl-api","Env":["SUPABASE_SERVICE_TOKEN=sk-SECRET","EXTRACT_WORKER_PORT=3004","PATH=/usr/bin"]},
+      "Mounts":[{"Type":"volume","Source":"/var/lib/docker/volumes/firecrawl_fdb","Destination":"/var/fdb"}],
+      "NetworkSettings":{"Ports":{"3002/tcp":[{"HostIp":"127.0.0.1","HostPort":"3002"}],"9000/tcp":null}}}]
+    """
+
+    func testParsesOverviewWithEnvKeysOnly() throws {
+        let detail = try XCTUnwrap(DockerInspect.parse(realInspect.data(using: .utf8)!))
+        XCTAssertEqual(detail.image, "firecrawl-api")
+        XCTAssertEqual(detail.status, "running")
+        XCTAssertEqual(detail.restartCount, 2)
+        XCTAssertEqual(detail.startedAt?.timeIntervalSince1970 ?? 0, 1_784_573_169, accuracy: 2)
+        XCTAssertEqual(detail.envKeys, ["EXTRACT_WORKER_PORT", "PATH", "SUPABASE_SERVICE_TOKEN"])
+        XCTAssertEqual(detail.mounts, ["volume → /var/fdb"])
+        XCTAssertEqual(detail.ports, ["3002/tcp → 127.0.0.1:3002"])
+        XCTAssertFalse(String(describing: detail).contains("SECRET"), "env values must never survive parsing")
+    }
+
+    func testMalformedIsNil() {
+        XCTAssertNil(DockerInspect.parse("[]".data(using: .utf8)!))
+        XCTAssertNil(DockerInspect.parse("nope".data(using: .utf8)!))
+    }
+}
+
+/// `docker stats --no-stream --format json`: the formatted strings pass through untouched.
+final class DockerStatsTests: XCTestCase {
+
+    func testParsesRealLine() throws {
+        let line = #"{"CPUPerc":"2.10%","MemUsage":"2.772GiB / 7.749GiB","ID":"90b2","Name":"firecrawl-api-1"}"#
+        let stats = try XCTUnwrap(DockerStats.parse(line))
+        XCTAssertEqual(stats.cpu, "2.10%")
+        XCTAssertEqual(stats.memory, "2.772GiB / 7.749GiB")
+    }
+
+    func testGarbageIsNil() {
+        XCTAssertNil(DockerStats.parse("no json"))
+    }
+}
+
+/// `docker images --format json`: newline-delimited; dangling = `<none>` repository.
+final class DockerImagesTests: XCTestCase {
+
+    func testParsesRealLines() {
+        let lines = """
+        {"ID":"3020cb9199c3","Repository":"firecrawl-firecrawl-proxy","Tag":"latest","Size":"229MB","CreatedSince":"20 hours ago"}
+        {"ID":"dead00000000","Repository":"\\u003cnone\\u003e","Tag":"\\u003cnone\\u003e","Size":"1.2GB","CreatedSince":"3 weeks ago"}
+        """
+        let images = DockerImages.parse(lines)
+        XCTAssertEqual(images.count, 2)
+        XCTAssertEqual(images[0].reference, "firecrawl-firecrawl-proxy:latest")
+        XCTAssertFalse(images[0].isDangling)
+        XCTAssertEqual(images[0].size, "229MB")
+        XCTAssertTrue(images[1].isDangling)
+    }
+
+    func testEmptyAndGarbage() {
+        XCTAssertTrue(DockerImages.parse("").isEmpty)
+        XCTAssertTrue(DockerImages.parse("junk").isEmpty)
+    }
+}
+
+/// Known stacks persist so a fully-downed compose project still shows (with Up) after
+/// restart — the store is the WorkspaceManifest pattern: JSON file, tolerant load.
+@MainActor
+final class KnownStacksStoreTests: XCTestCase {
+
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-stacks-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    override func tearDown() { try? FileManager.default.removeItem(at: dir) }
+
+    func testRememberPersistsAndUpserts() {
+        let store = KnownStacksStore(directory: dir)
+        store.remember(name: "firecrawl", workingDir: "/tools/firecrawl")
+        store.remember(name: "firecrawl", workingDir: "/tools/firecrawl-v2")  // upsert wins
+
+        let reloaded = KnownStacksStore(directory: dir)
+        XCTAssertEqual(reloaded.stacks.count, 1)
+        XCTAssertEqual(reloaded.stacks.first?.workingDir, "/tools/firecrawl-v2")
+    }
+
+    func testForgetRemoves() {
+        let store = KnownStacksStore(directory: dir)
+        store.remember(name: "x", workingDir: "/x")
+        store.forget(name: "x")
+        XCTAssertTrue(KnownStacksStore(directory: dir).stacks.isEmpty)
+    }
+
+    func testMissingAndCorruptFilesLoadEmpty() throws {
+        XCTAssertTrue(KnownStacksStore(directory: dir).stacks.isEmpty)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try "not json".data(using: .utf8)!.write(to: dir.appendingPathComponent("known-stacks.json"))
+        XCTAssertTrue(KnownStacksStore(directory: dir).stacks.isEmpty)
+    }
+}
+
 /// Docker binary probing — Finder-launched apps have a minimal PATH, so fixed candidates,
 /// first executable wins, nil (not a guess) when docker isn't installed.
 final class DockerLocatorTests: XCTestCase {
