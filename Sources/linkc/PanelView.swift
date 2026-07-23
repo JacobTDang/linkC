@@ -124,6 +124,7 @@ private struct ScreenHost: View {
         case .mcpServers: MCPServersScreen(model: model)
         case .skills: SkillsScreen(model: model)
         case .terminals: TerminalsScreen(model: model)
+        case .toolServers: ToolServersScreen(model: model)
         case .settings: SettingsScreen(model: model)
         }
     }
@@ -674,6 +675,8 @@ private struct MetricsRail: View {
     let selected: PanelScreen?
 
     var body: some View {
+        // Five tiles can outgrow the panel's minimum height — scroll, never clip.
+        ScrollView(.vertical, showsIndicators: false) {
         VStack(spacing: 8) {
             RailTile(icon: "server.rack", label: "MCP Servers",
                      isSelected: selected == .mcpServers) { model.open(.mcpServers) }
@@ -681,9 +684,12 @@ private struct MetricsRail: View {
                      isSelected: selected == .skills) { model.open(.skills) }
             RailTile(icon: "terminal", label: "Terminals",
                      isSelected: selected == .terminals) { model.open(.terminals) }
+            RailTile(icon: "shippingbox", label: "Tool Servers",
+                     isSelected: selected == .toolServers) { model.open(.toolServers) }
             RailTile(icon: "gearshape", label: "Settings",
                      isSelected: selected == .settings) { model.open(.settings) }
             Spacer(minLength: 0)
+        }
         }
     }
 }
