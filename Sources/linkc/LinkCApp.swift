@@ -81,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// The rail's destinations — full screens the panel can show in place of home.
 enum PanelScreen: String, CaseIterable, Identifiable, Equatable {
-    case mcpServers, skills, terminals, settings
+    case mcpServers, skills, terminals, toolServers, settings
     var id: String { rawValue }
 }
 
@@ -143,6 +143,7 @@ final class AppModel {
             self.mcpServers = MCPServerService(claudePath: preflight.claudePath)
             self.skills = SkillsService(claudePath: preflight.claudePath)
             self.shells = ShellCoordinator(terminals: terminals)
+            self.toolServers = ToolServerService()
         } catch {
             setupError = error.localizedDescription
         }
@@ -156,6 +157,25 @@ final class AppModel {
     /// Dev terminals — plain login shells sharing the sessions' terminal manager, so both
     /// kinds live under the panel's single selection cursor.
     private(set) var shells: ShellCoordinator?
+    /// The services his tools depend on — compose projects + standalone containers.
+    private(set) var toolServers: ToolServerService?
+
+    /// "View logs" rides on dev terminals: a shell running `docker logs -f`, which becomes
+    /// a normal exited card when the follow ends.
+    func openContainerLogs(_ container: ContainerInfo) {
+        guard let shells, let dockerPath = toolServers?.dockerPath else { return }
+        do {
+            lastError = nil
+            try shells.launch(
+                cwd: NSHomeDirectory(),
+                command: "\(dockerPath) logs --tail 200 -f \(container.name)",
+                title: "logs: \(container.composeService ?? container.name)"
+            )
+            activeScreen = nil  // the new terminal is selected — show it
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
 
     var shellRows: [ShellRow] { shells?.store.rows ?? [] }
 

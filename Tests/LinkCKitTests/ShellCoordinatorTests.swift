@@ -107,4 +107,15 @@ final class ShellCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.store.rows.isEmpty)
         XCTAssertTrue(terminals.sessions.isEmpty)
     }
+
+    func testCommandModeRunsThroughLoginShellAndExits() async throws {
+        // Command mode backs "view logs": the shell runs `-l -c <command>` so PATH/dotfiles
+        // load, and the terminal becomes a normal exited card when the command ends.
+        let coordinator = makeCoordinator(shell: "/bin/zsh")
+        let row = try coordinator.launch(cwd: "/tmp", command: "exit 7", title: "logs: thing")
+
+        XCTAssertEqual(row.title, "logs: thing")
+        try await waitUntil(coordinator.store.row(id: row.id)?.state == .exited(7))
+        XCTAssertNotNil(terminals.session(id: row.id), "output stays inspectable")
+    }
 }
