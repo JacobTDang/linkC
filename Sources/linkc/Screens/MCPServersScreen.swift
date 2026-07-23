@@ -24,24 +24,12 @@ struct MCPServersScreen: View {
     }
 
     @ViewBuilder private func content(_ service: MCPServerService) -> some View {
-        HStack(spacing: 8) {
-            Text("MCP Servers")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Theme.textPrimary)
-            if service.isRefreshing {
-                ProgressView()
-                    .controlSize(.small)
-                    .transition(.opacity)
-            }
-            Spacer()
+        ScreenHeader(title: "MCP Servers", isBusy: service.isRefreshing) {
             ChromeButton(systemName: "arrow.clockwise", help: "Re-check server health") {
                 Task { await service.refreshHealth() }
             }
             .disabled(service.isRefreshing)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 6)
 
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 6) {
@@ -75,6 +63,7 @@ struct MCPServersScreen: View {
                 .padding(.top, 8)
                 .padding(.horizontal, 4)
             }
+            .readingColumn()
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }

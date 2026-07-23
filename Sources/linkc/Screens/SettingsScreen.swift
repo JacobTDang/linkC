@@ -13,15 +13,7 @@ struct SettingsScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Settings")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 6)
+            ScreenHeader(title: "Settings") { EmptyView() }
 
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 6) {
@@ -72,6 +64,7 @@ struct SettingsScreen: View {
                         .labelsHidden()
                     }
                 }
+                .readingColumn()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
@@ -138,6 +131,6 @@ private struct SettingRow<Control: View>: View {
             control()
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
     }
 }
