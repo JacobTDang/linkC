@@ -38,37 +38,18 @@ struct ToolServersScreen: View {
     }
 
     @ViewBuilder private func content(_ service: ToolServerService) -> some View {
-        HStack(spacing: 8) {
-            Text("Tool Servers")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Theme.textPrimary)
-            if service.isRefreshing {
-                ProgressView()
-                    .controlSize(.small)
-                    .transition(.opacity)
-            }
-            Spacer()
+        ScreenHeader(title: "Tool Servers", isBusy: service.isRefreshing) {
             ChromeButton(systemName: "arrow.clockwise", help: "Refresh containers") {
                 Task { await service.refresh() }
             }
             .disabled(service.isRefreshing)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 6)
 
         if service.projects.isEmpty && service.standalone.isEmpty && service.lastError == nil {
-            VStack(spacing: 6) {
-                Text("Nothing running")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.textSecondary)
-                Text("Compose stacks and containers show up here once docker has them.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.textTertiary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            EmptyHint(
+                title: "Nothing running",
+                message: "Compose stacks and containers show up here once docker has them."
+            )
         } else {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 6) {
@@ -97,6 +78,7 @@ struct ToolServersScreen: View {
                         ImagesSection(service: service).padding(.top, 6)
                     }
                 }
+                .readingColumn()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }

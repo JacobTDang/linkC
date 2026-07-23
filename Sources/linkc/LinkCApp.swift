@@ -244,6 +244,14 @@ final class AppModel {
         usage.sessionUsage(id)?.contextFill
     }
 
+    /// The session's agents worth showing: everything running, plus completions from the
+    /// last minute — finished work lingers briefly, then folds away.
+    func visibleAgents(_ id: String, now: Date = Date()) -> [AgentRun] {
+        usage.sessionAgents(id).filter { agent in
+            agent.isRunning || (agent.endedAt.map { now.timeIntervalSince($0) < 60 } ?? false)
+        }
+    }
+
     /// "142k · ~$1.87" for the open session's chrome; dollars dropped when any of the
     /// session's models is missing from the pricing table (never guess).
     var selectedUsageLabel: String? {

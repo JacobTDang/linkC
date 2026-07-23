@@ -37,24 +37,12 @@ struct SkillsScreen: View {
     }
 
     @ViewBuilder private func content(_ service: SkillsService) -> some View {
-        HStack(spacing: 8) {
-            Text("Skills")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Theme.textPrimary)
-            if service.isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                    .transition(.opacity)
-            }
-            Spacer()
+        ScreenHeader(title: "Skills", isBusy: service.isLoading) {
             ChromeButton(systemName: "arrow.clockwise", help: "Reload skills") {
                 Task { await service.refresh() }
             }
             .disabled(service.isLoading)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 6)
 
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 6) {
@@ -73,6 +61,7 @@ struct SkillsScreen: View {
                     }
                 }
             }
+            .readingColumn()
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
