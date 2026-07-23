@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import LinkCKit
 
 /// The services your tools depend on — one card per compose project (the firecrawl stack as
@@ -10,6 +11,21 @@ struct ToolServersScreen: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// A container opened for drill-in — inspect overview, stats, log tail.
     @State private var openContainer: ContainerInfo?
+
+    /// "Add stack…": pick the project's folder; the service validates its compose file and
+    /// derives the canonical name via `compose config`. Failures land in the screen's error
+    /// strip like every other docker complaint.
+    private func addStack(_ service: ToolServerService) {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add Stack"
+        panel.message = "Choose a folder containing a compose file"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await service.addStack(directory: url.path) }
+    }
 
     var body: some View {
         ZStack {
@@ -39,16 +55,22 @@ struct ToolServersScreen: View {
 
     @ViewBuilder private func content(_ service: ToolServerService) -> some View {
         ScreenHeader(title: "Tool Servers", isBusy: service.isRefreshing) {
+            ChromeButton(systemName: "folder.badge.plus", help: "Add a compose stack from its folder") {
+                addStack(service)
+            }
             ChromeButton(systemName: "arrow.clockwise", help: "Refresh containers") {
                 Task { await service.refresh() }
             }
             .disabled(service.isRefreshing)
         }
 
-        if service.projects.isEmpty && service.standalone.isEmpty && service.lastError == nil {
+        // Cold stacks count as content: a folder-added stack must show even when docker
+        // has nothing running.
+        if service.projects.isEmpty && service.standalone.isEmpty
+            && service.coldStacks.isEmpty && service.lastError == nil {
             EmptyHint(
                 title: "Nothing running",
-                message: "Compose stacks and containers show up here once docker has them."
+                message: "Compose stacks and containers show up here once docker has them — or add one from its folder with the button above."
             )
         } else {
             ScrollView(.vertical, showsIndicators: false) {
@@ -153,6 +175,14 @@ private struct ColdStackRow: View {
                 .foregroundStyle(Theme.textTertiary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+            // What the stack contains, for folder-added projects that have never run.
+            if !stack.services.isEmpty {
+                Text(stack.services.joined(separator: " · "))
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             Text("down")
                 .font(.system(size: 10))
                 .foregroundStyle(Theme.textTertiary)
