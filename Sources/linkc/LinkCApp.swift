@@ -144,6 +144,8 @@ final class AppModel {
             self.skills = SkillsService(claudePath: preflight.claudePath)
             self.shells = ShellCoordinator(terminals: terminals)
             self.toolServers = ToolServerService()
+            let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            self.recents = RecentFoldersStore(directory: support.appendingPathComponent("linkC", isDirectory: true))
         } catch {
             setupError = error.localizedDescription
         }
@@ -159,6 +161,23 @@ final class AppModel {
     private(set) var shells: ShellCoordinator?
     /// The services his tools depend on — compose projects + standalone containers.
     private(set) var toolServers: ToolServerService?
+    /// Folders sessions/terminals were launched in — backs the empty state's one-tap chips.
+    private(set) var recents: RecentFoldersStore?
+
+    /// The empty state shows up to three recent launch folders as chips.
+    var recentFolders: [String] { Array((recents?.paths ?? []).prefix(3)) }
+
+    /// The chips' launch path: a new session in a known folder, no picker in the way.
+    func startSession(in cwd: String) {
+        guard let coordinator else { return }
+        do {
+            lastError = nil
+            try coordinator.newSession(cwd: cwd, mode: .new)
+            recents?.record(cwd)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
 
     /// "View logs" rides on dev terminals: a shell running `docker logs -f`, which becomes
     /// a normal exited card when the follow ends.
@@ -217,6 +236,7 @@ final class AppModel {
         do {
             lastError = nil
             try shells.launch(cwd: url.path)
+            recents?.record(url.path)
             activeScreen = nil  // the new terminal is selected — show it
         } catch {
             lastError = error.localizedDescription
@@ -231,6 +251,7 @@ final class AppModel {
         do {
             lastError = nil
             try shells.relaunch(row)
+            recents?.record(row.cwd)
             activeScreen = nil
         } catch {
             lastError = error.localizedDescription
@@ -321,6 +342,7 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.newSession(cwd: url.path, mode: mode)
+            recents?.record(url.path)
         } catch {
             lastError = error.localizedDescription
         }
@@ -349,6 +371,7 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.restore(r)
+            recents?.record(r.cwd)
         } catch {
             lastError = error.localizedDescription
         }

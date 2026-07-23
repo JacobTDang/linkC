@@ -29,38 +29,52 @@ struct PanelView: View {
                             || !model.restorables.isEmpty
                             || !model.shellRows.isEmpty
                     )
-                    // Pane swap: terminal > rail screen > empty > home. The terminal is a live
+                    // Pane swap: terminal > dock screen > empty > home. The terminal is a live
                     // NSView, so its removal is a plain fade (no reflow); pure-translate slides
                     // bring the others in. Reduce Motion collapses everything to a crossfade.
-                    ZStack {
-                        if model.selectedId != nil {
-                            TerminalHero(model: model)
-                                .transition(reduceMotion
-                                    ? .opacity
-                                    : .asymmetric(
-                                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                                        removal: .opacity))
-                        } else if let screen = model.activeScreen {
-                            ScreenHost(model: model, screen: screen)
-                                .transition(reduceMotion
-                                    ? .opacity
-                                    : .asymmetric(
-                                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                                        removal: .opacity))
-                        } else if model.isEmptyOverview {
-                            EmptyStateView(model: model)
-                                .transition(.opacity)
-                        } else {
-                            HomeView(model: model)
-                                .transition(reduceMotion
-                                    ? .opacity
-                                    : .asymmetric(
-                                        insertion: .move(edge: .leading).combined(with: .opacity),
-                                        removal: .opacity))
+                    // The dock rides every pane but the terminal as a trailing overlay — content
+                    // reserves its inset so nothing hides under the glass.
+                    GeometryReader { geo in
+                        let showsDock = model.selectedId == nil
+                            && geo.size.width >= Theme.dockBreakpoint
+                        ZStack {
+                            if model.selectedId != nil {
+                                TerminalHero(model: model)
+                                    .transition(reduceMotion
+                                        ? .opacity
+                                        : .asymmetric(
+                                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                                            removal: .opacity))
+                            } else if let screen = model.activeScreen {
+                                ScreenHost(model: model, screen: screen)
+                                    .transition(reduceMotion
+                                        ? .opacity
+                                        : .asymmetric(
+                                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                                            removal: .opacity))
+                            } else if model.isEmptyOverview {
+                                EmptyStateView(model: model)
+                                    .transition(.opacity)
+                            } else {
+                                HomeView(model: model)
+                                    .transition(reduceMotion
+                                        ? .opacity
+                                        : .asymmetric(
+                                            insertion: .move(edge: .leading).combined(with: .opacity),
+                                            removal: .opacity))
+                            }
                         }
+                        .padding(.trailing, showsDock ? Theme.dockInset : 0)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(alignment: .trailing) {
+                            if showsDock {
+                                Dock(model: model, selected: model.activeScreen)
+                                    .padding(.trailing, 10)
+                                    .transition(.opacity)
+                            }
+                        }
+                        .animation(Theme.viewSwap, value: Pane(model))
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .animation(Theme.viewSwap, value: Pane(model))
                     if let error = model.lastError {
                         ErrorBar(message: error)
                             .transition(reduceMotion
@@ -72,6 +86,19 @@ struct PanelView: View {
             }
         }
         .frame(minWidth: 300, maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
+        // A faint radial vignette grounds the sheet's edges — depth, not a border.
+        .overlay {
+            GeometryReader { geo in
+                let reach = max(geo.size.width, geo.size.height)
+                Rectangle()
+                    .fill(RadialGradient(
+                        colors: [.clear, Theme.vignette],
+                        center: UnitPoint(x: 0.5, y: 0.4),
+                        startRadius: reach * 0.45,
+                        endRadius: reach))
+            }
+            .allowsHitTesting(false)
+        }
         .environment(\.colorScheme, .dark)
         // Stock controls (switches, pickers, spinners) inherit the system's blue accent
         // otherwise — the panel is coral everywhere, including its toggles.
@@ -96,27 +123,14 @@ private enum Pane: Equatable {
 
 // MARK: - Screens
 
-/// Hosts a rail screen in the same two-column layout home uses — content left, the rail as a
-/// persistent sidebar right (hidden below the breakpoint), so the user can hop between screens
-/// without going home first.
+/// Hosts a dock screen — the dock itself rides above as PanelView's trailing overlay, so the
+/// user can hop between screens without going home first.
 private struct ScreenHost: View {
     let model: AppModel
     let screen: PanelScreen
 
     var body: some View {
-        GeometryReader { geo in
-            let showsRail = geo.size.width >= Theme.railBreakpoint
-            HStack(alignment: .top, spacing: showsRail ? Theme.columnSpacing : 0) {
-                content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if showsRail {
-                    MetricsRail(model: model, selected: screen)
-                        .frame(width: Theme.railWidth(for: geo.size.width))
-                        .padding(.top, 12)
-                        .padding(.trailing, 12)
-                }
-            }
-        }
+        content.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder private var content: some View {
@@ -287,23 +301,9 @@ private struct HomeView: View {
     }
 
     var body: some View {
-        // The session list is the left column; the rail is a quiet right-hand sidebar reserved
-        // for future navigation. It hides at narrow panel widths (see `Theme.railBreakpoint`) so
-        // a resized-down panel never has cards and tiles fighting for the same few points.
         VStack(spacing: 0) {
-            GeometryReader { geo in
-                let showsRail = geo.size.width >= Theme.railBreakpoint
-                HStack(alignment: .top, spacing: showsRail ? Theme.columnSpacing : 0) {
-                    sessionList
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if showsRail {
-                        MetricsRail(model: model, selected: model.activeScreen)
-                            .frame(width: Theme.railWidth(for: geo.size.width))
-                            .padding(.top, 12)
-                            .padding(.trailing, 12)
-                    }
-                }
-            }
+            sessionList
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             // The one place plan usage appears: a quiet footer line pinned under the list.
             if let label = model.windowUsageLabel, model.preferences.showsUsageFooter {
                 HStack {
@@ -631,12 +631,9 @@ private struct HomeCard: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                .fill(Theme.cardSurface(needsYou: session.state.bucket == .needsYou, hovering: hovering))
-        )
         // Context fill as a 2pt hairline flush to the bottom edge — quiet white until the
-        // conversation nears auto-compact, then the warning gold. Clipped to the card shape.
+        // conversation nears auto-compact, then the warning gold. Clipped to the card shape
+        // before the plane goes on, so the shadow isn't clipped with it.
         .overlay(alignment: .bottomLeading) {
             if let contextFill {
                 GeometryReader { geo in
@@ -648,6 +645,7 @@ private struct HomeCard: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
+        .planeCard(needsYou: session.state.bucket == .needsYou, hovering: hovering)
         .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
         .onTapGesture(perform: onOpen)
         .onHover { hovering = $0 }
@@ -682,75 +680,6 @@ struct PreviewText: View {
             alignment: .topLeading
         )
         .padding(.leading, 26)   // dot box (18) + header spacing (8): preview aligns under the title
-    }
-}
-
-// MARK: - Metrics rail
-
-/// The right-hand rail: a quiet column of glass tiles, each opening its screen. The selected
-/// tile carries a faint accent wash so the rail doubles as a "where am I" indicator while a
-/// screen is open.
-private struct MetricsRail: View {
-    let model: AppModel
-    let selected: PanelScreen?
-
-    var body: some View {
-        // Five tiles can outgrow the panel's minimum height — scroll, never clip.
-        ScrollView(.vertical, showsIndicators: false) {
-        VStack(spacing: 8) {
-            RailTile(icon: "server.rack", label: "MCP Servers",
-                     isSelected: selected == .mcpServers) { model.open(.mcpServers) }
-            RailTile(icon: "wand.and.stars", label: "Skills",
-                     isSelected: selected == .skills) { model.open(.skills) }
-            RailTile(icon: "terminal", label: "Terminals",
-                     isSelected: selected == .terminals) { model.open(.terminals) }
-            RailTile(icon: "shippingbox", label: "Tool Servers",
-                     isSelected: selected == .toolServers) { model.open(.toolServers) }
-            RailTile(icon: "gearshape", label: "Settings",
-                     isSelected: selected == .settings) { model.open(.settings) }
-            Spacer(minLength: 0)
-        }
-        }
-    }
-}
-
-/// One rail tile: icon over label, centered, quieter than the primary column beside it. Hover
-/// raises it with the shared wash; selection carries a faint accent tint.
-private struct RailTile: View {
-    let icon: String
-    let label: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
-                Text(label)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(isSelected ? Theme.textSecondary : Theme.textTertiary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-            .padding(.horizontal, 4)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                    .fill(isSelected
-                        ? AnyShapeStyle(Theme.accent.opacity(0.16))
-                        : AnyShapeStyle(hovering ? Theme.hover : Theme.railTileSurface))
-            )
-            .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .animation(Theme.hoverEase, value: hovering)
-        .onHover { hovering = $0 }
-        .help(label)
     }
 }
 
@@ -827,26 +756,20 @@ private struct TerminalHero: View {
 // MARK: - Empty state
 
 /// The launcher: while nothing exists the panel's one entry point is here, not the chrome —
-/// the header + is hidden. Primary New session, quiet Continue/Resume beneath, and (since the
-/// + menu is gone) a faint quit link in the corner.
+/// the header + is hidden. A halo hero with the primary New session action, quiet
+/// Continue/Resume beneath, recent folders as one-tap starters, and (since the + menu is
+/// gone) a faint quit link in the corner.
 private struct EmptyStateView: View {
     let model: AppModel
 
     var body: some View {
-        // Weighted left, not dead-centered: the hero sits in a left column, leaving the right
-        // for the same quiet rail the home view reserves (hidden below `Theme.railBreakpoint`,
-        // same as there — a resized-down panel keeps the hero but drops the rail first).
+        // Centered while it fits; a short panel scrolls rather than clipping the chips.
         GeometryReader { geo in
-            let showsRail = geo.size.width >= Theme.railBreakpoint
-            HStack(alignment: .center, spacing: showsRail ? Theme.columnSpacing : 0) {
+            ScrollView(.vertical, showsIndicators: false) {
                 hero
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if showsRail {
-                    MetricsRail(model: model, selected: model.activeScreen)
-                        .frame(width: Theme.railWidth(for: geo.size.width))
-                }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, minHeight: geo.size.height)
             }
-            .padding(24)
         }
         .overlay(alignment: .bottomTrailing) {
             QuietLink("quit linkC", size: 10) { NSApplication.shared.terminate(nil) }
@@ -855,17 +778,19 @@ private struct EmptyStateView: View {
     }
 
     private var hero: some View {
-        VStack(spacing: 14) {
-            // The signature dot as the hero, in its waiting state: linkC itself is waiting
-            // for input. Pulses like a needs-you card would (Reduce Motion: steady glow).
-            StatusDot(state: .waitingIdle)
-                .scaleEffect(1.6)
-            Text("No sessions yet")
-                .font(.system(size: 16, weight: .semibold))
+        VStack(spacing: 0) {
+            HeroHalo()
+            Text("Ready when you are")
+                .font(.system(size: 19, weight: .bold))
                 .foregroundStyle(Theme.textPrimary)
+                .padding(.top, 12)
+            Text("Claude Code sessions run right here.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+                .padding(.top, 3)
             Button("New session") { model.newSession(mode: .new) }
                 .buttonStyle(PrimaryButtonStyle())
-                .padding(.top, 4)
+                .padding(.top, 18)
             HStack(spacing: 6) {
                 QuietLink("Continue last") { model.newSession(mode: .continueLast) }
                 Text("·")
@@ -873,7 +798,93 @@ private struct EmptyStateView: View {
                     .foregroundStyle(Theme.textTertiary)
                 QuietLink("Resume…") { model.newSession(mode: .resume) }
             }
+            .padding(.top, 10)
+            if !model.recentFolders.isEmpty {
+                jumpBackIn.padding(.top, 26)
+            }
         }
+    }
+
+    /// The void gains function: the last few launch folders as one-tap session starters —
+    /// no folder picker in the way.
+    private var jumpBackIn: some View {
+        VStack(spacing: 8) {
+            Text("JUMP BACK IN")
+                .font(.system(size: 9, weight: .bold))
+                .tracking(0.9)
+                .foregroundStyle(Theme.textTertiary)
+            HStack(spacing: 8) {
+                ForEach(model.recentFolders, id: \.self) { path in
+                    FolderChip(path: path) { model.startSession(in: path) }
+                }
+            }
+        }
+    }
+}
+
+/// The empty state's signature: a breathing coral core inside a soft halo — the dot grown
+/// into a hero. Reduce Motion holds the core steady.
+private struct HeroHalo: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var up = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(RadialGradient(
+                    colors: [Theme.accent.opacity(0.28), .clear],
+                    center: .center, startRadius: 2, endRadius: 37))
+            Circle()
+                .strokeBorder(Theme.accent.opacity(0.25), lineWidth: 1)
+                .frame(width: 46, height: 46)
+            Circle()
+                .fill(Theme.accent)
+                .frame(width: 12, height: 12)
+                .shadow(color: Theme.accent.opacity(0.55), radius: 9)
+                .scaleEffect(reduceMotion ? 1 : (up ? 1.06 : 0.92))
+        }
+        .frame(width: 74, height: 74)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true)) { up = true }
+        }
+    }
+}
+
+/// One recent folder as a quiet capsule chip: the folder's name with its tilde-abbreviated
+/// parent, warming on hover. Tapping starts a new session there directly.
+private struct FolderChip: View {
+    let path: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        let name = (path as NSString).lastPathComponent
+        let parent = ((path as NSString).deletingLastPathComponent as NSString)
+            .abbreviatingWithTildeInPath
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(name)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(hovering ? Theme.textPrimary : Theme.textSecondary)
+                Text(parent)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                Capsule().fill(hovering ? Theme.hover : Color.white.opacity(0.055))
+            )
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.06), lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .animation(Theme.hoverEase, value: hovering)
+        .onHover { hovering = $0 }
+        .help("Start a new session in \(name)")
     }
 }
 
@@ -962,18 +973,33 @@ struct ErrorBar: View {
 
 // MARK: - Button style
 
+/// The one prominent action: a coral gradient capsule with an inner top highlight and a
+/// soft glow — real depth, matching the dock's selection pill.
 private struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.white)
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 22)
             .padding(.vertical, 9)
             .background(
-                RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                    .fill(Theme.accent.opacity(configuration.isPressed ? 0.78 : 1))
+                Capsule()
+                    .fill(LinearGradient(
+                        colors: [
+                            Color(red: 0.878, green: 0.502, blue: 0.373),
+                            Color(red: 0.769, green: 0.392, blue: 0.275),
+                        ],
+                        startPoint: .top, endPoint: .bottom))
+                    .overlay(
+                        Capsule().strokeBorder(
+                            LinearGradient(
+                                colors: [Color.white.opacity(0.35), .clear],
+                                startPoint: .top, endPoint: .bottom),
+                            lineWidth: 1))
+                    .shadow(color: Theme.accent.opacity(0.35), radius: 8, y: 4)
             )
-            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .contentShape(Capsule())
     }
 }
 
