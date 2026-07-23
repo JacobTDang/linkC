@@ -134,10 +134,7 @@ struct TerminalCard: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                .fill(Theme.cardSurface(needsYou: false, hovering: hovering && isRunning))
-        )
+        .planeCard(hovering: hovering && isRunning)
         .opacity(isRunning ? 1 : 0.75)
         .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
         .onTapGesture(perform: onOpen)
