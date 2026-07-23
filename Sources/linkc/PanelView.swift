@@ -342,6 +342,7 @@ private struct HomeView: View {
                     EarlierSection(model: model)
                 }
             }
+            .readingColumn()
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
         }
@@ -363,6 +364,7 @@ private struct HomeView: View {
                         session: session,
                         preview: model.recentOutput(session.id, lines: 3),
                         contextFill: model.contextFill(session.id),
+                        agents: model.visibleAgents(session.id),
                         onOpen: { model.focus(session.id) },
                         onClose: { model.stop(session.id) }
                     )
@@ -568,6 +570,8 @@ private struct HomeCard: View {
     let preview: String
     /// 0…1 context-window fill for the hairline along the bottom edge; nil hides it.
     let contextFill: Double?
+    /// Subagents worth showing: running ones plus the recently finished.
+    let agents: [AgentRun]
     let onOpen: () -> Void
     let onClose: () -> Void
 
@@ -590,10 +594,16 @@ private struct HomeCard: View {
                 Spacer(minLength: 8)
                 // State text only when there's something to act on — the dot carries the rest.
                 if session.state.bucket == .needsYou {
-                    Text(statusLabel(session.state))
+                    // Time-in-state: a 10-second wait and a 20-minute wait are different
+                    // situations — say which this is.
+                    Text("\(statusLabel(session.state)) · \(AgeFormat.compact(from: session.stateChangedAt))")
                         .font(.system(size: 10, weight: .semibold))
+                        .monospacedDigit()
                         .foregroundStyle(Theme.statusColor(session.state))
                         .fixedSize()
+                }
+                if agents.contains(where: \.isRunning) {
+                    AgentChip(count: agents.count { $0.isRunning })
                 }
                 Button(action: onClose) {
                     Image(systemName: "xmark")
@@ -607,6 +617,16 @@ private struct HomeCard: View {
                 .help("Stop session")
             }
             PreviewText(text: preview)
+            // The agent lane: the card grows quietly while the session fans out.
+            if !agents.isEmpty {
+                VStack(spacing: 2) {
+                    ForEach(agents) { AgentLine(agent: $0) }
+                }
+                .padding(.top, 4)
+                .overlay(alignment: .top) {
+                    Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
+                }
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -739,23 +759,55 @@ private struct RailTile: View {
 private struct TerminalHero: View {
     let model: AppModel
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// An agent opened for reading — replaces the terminal until dismissed.
+    @State private var readerAgent: AgentRun?
+
     var body: some View {
         ZStack {
-            TerminalContainer(session: model.selectedTerminal)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
-            if model.selectedTerminal == nil {
-                Text("Select a session")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.textTertiary)
+            if let readerAgent {
+                AgentReaderView(agent: currentAgent(readerAgent)) { self.readerAgent = nil }
+                    .transition(reduceMotion
+                        ? .opacity
+                        : .move(edge: .trailing).combined(with: .opacity))
+            } else {
+                VStack(spacing: 0) {
+                    // Live subagents ride above the terminal; TimelineView keeps their
+                    // ages/spinners honest while the strip is visible.
+                    if let id = model.selectedId, !model.visibleAgents(id).isEmpty {
+                        TimelineView(.periodic(from: .now, by: 1.0)) { _ in
+                            AgentStrip(agents: model.visibleAgents(id)) { readerAgent = $0 }
+                        }
+                        .transition(.opacity)
+                    }
+                    ZStack {
+                        TerminalContainer(session: model.selectedTerminal)
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
+                        if model.selectedTerminal == nil {
+                            Text("Select a session")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                }
+                .transition(.opacity)
             }
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(Theme.viewSwap, value: readerAgent?.id)
         .onChange(of: model.selectedId, initial: true) { _, _ in
+            readerAgent = nil
             styleTerminal(model.selectedTerminal)
         }
+    }
+
+    /// Re-resolve the opened agent so a completion arriving mid-read fills the body in.
+    private func currentAgent(_ agent: AgentRun) -> AgentRun {
+        guard let id = model.selectedId else { return agent }
+        return model.visibleAgents(id).first { $0.id == agent.id } ?? agent
     }
 
     /// Restyle the live terminal to the tokens from the panel side (the Terminal module is left
