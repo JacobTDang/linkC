@@ -106,6 +106,38 @@ public final class ToolServerService {
         await perform(target: name, args: ["compose", "-p", name, action.rawValue])
     }
 
+    /// Register a compose project from its folder — the "Add stack…" path, so a stack linkC
+    /// has never seen running still gets a cold card with Up. Validates through
+    /// `compose config`, which also yields the canonical project name compose itself would
+    /// use — a later `docker ps` discovery then upserts the same entry instead of duplicating.
+    /// Returns nil (with `lastError` set) when the folder has no compose file or the file
+    /// doesn't parse.
+    @discardableResult
+    public func addStack(directory: String) async -> KnownStack? {
+        guard let dockerPath else {
+            lastError = "Docker isn't installed (looked in \(DockerLocator.defaultCandidates.joined(separator: ", ")))."
+            return nil
+        }
+        guard ComposeFile.locate(in: directory) != nil else {
+            lastError = "No compose file in \((directory as NSString).abbreviatingWithTildeInPath) — expected \(ComposeFile.candidates.joined(separator: ", "))."
+            return nil
+        }
+        do {
+            let output = try await runner.run(
+                dockerPath,
+                args: ["compose", "--project-directory", directory, "config", "--format", "json"],
+                cwd: nil, timeout: Self.listTimeout
+            )
+            let config = try ComposeConfig.parse(Data(output.utf8))
+            knownStacks.remember(name: config.name, workingDir: directory, services: config.services)
+            lastError = nil
+            return knownStacks.stacks.first { $0.name == config.name }
+        } catch {
+            lastError = "Couldn't read the compose project: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// Bring a remembered stack up from cold. Long timeout: up may pull or build.
     public func stackUp(_ stack: KnownStack) async {
         await perform(

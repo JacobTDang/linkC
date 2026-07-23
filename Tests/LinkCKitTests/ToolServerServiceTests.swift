@@ -109,6 +109,71 @@ final class ToolServerServiceTests: XCTestCase {
         XCTAssertEqual(args.last, ["images", "--format", "json"], "every action re-reads state (refresh ends with images)")
     }
 
+    // MARK: - Add stack (folder → compose config → remembered)
+
+    private func makeComposeDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-addstack-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("services: {}\n".utf8).write(to: dir.appendingPathComponent("compose.yaml"))
+        return dir
+    }
+
+    func testAddStackValidatesViaComposeConfigAndRemembers() async throws {
+        let composeDir = try makeComposeDir()
+        defer { try? FileManager.default.removeItem(at: composeDir) }
+        let configJSON = #"{"name":"firecrawl","services":{"worker":{},"api":{}}}"#
+        let runner = FakeRunner(result: .success(configJSON))
+        let stacks = KnownStacksStore(directory: makeStacksDir())
+        let service = ToolServerService(dockerPath: "/fake/docker", runner: runner, knownStacks: stacks)
+
+        let added = await service.addStack(directory: composeDir.path)
+
+        XCTAssertNil(service.lastError)
+        XCTAssertEqual(added?.name, "firecrawl")
+        XCTAssertEqual(
+            runner.calls.map(\.args),
+            [["compose", "--project-directory", composeDir.path, "config", "--format", "json"]],
+            "the canonical name comes from compose itself — never guessed from the folder"
+        )
+        XCTAssertEqual(stacks.stacks.first?.name, "firecrawl")
+        XCTAssertEqual(stacks.stacks.first?.workingDir, composeDir.path)
+        XCTAssertEqual(stacks.stacks.first?.services, ["api", "worker"])
+    }
+
+    func testAddStackWithoutComposeFileFailsBeforeRunningDocker() async {
+        let emptyDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-addstack-empty-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: emptyDir) }
+        let runner = FakeRunner(result: .success("{}"))
+        let stacks = KnownStacksStore(directory: makeStacksDir())
+        let service = ToolServerService(dockerPath: "/fake/docker", runner: runner, knownStacks: stacks)
+
+        let added = await service.addStack(directory: emptyDir.path)
+
+        XCTAssertNil(added)
+        XCTAssertNotNil(service.lastError)
+        XCTAssertTrue(service.lastError!.contains("compose"), "the error names what was expected")
+        XCTAssertTrue(runner.calls.isEmpty, "no compose file, no subprocess")
+        XCTAssertTrue(stacks.stacks.isEmpty)
+    }
+
+    func testAddStackComposeFailureIsLoudAndRemembersNothing() async throws {
+        let composeDir = try makeComposeDir()
+        defer { try? FileManager.default.removeItem(at: composeDir) }
+        let runner = FakeRunner(result: .failure(LinkCError.process("yaml: line 3: mapping values")))
+        let stacks = KnownStacksStore(directory: makeStacksDir())
+        let service = ToolServerService(dockerPath: "/fake/docker", runner: runner, knownStacks: stacks)
+
+        let added = await service.addStack(directory: composeDir.path)
+
+        XCTAssertNil(added)
+        XCTAssertNotNil(service.lastError)
+        XCTAssertTrue(service.lastError!.contains("mapping values"))
+        XCTAssertTrue(stacks.stacks.isEmpty)
+    }
+
     func testRefreshListsImages() async {
         // FakeRunner returns the same output per call, so image parsing tolerating ps JSON
         // (yielding zero images) is the honest assertion here; the images-args contract is what matters.
