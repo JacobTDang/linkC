@@ -32,7 +32,7 @@ final class ToolServerServiceTests: XCTestCase {
 
         let args = runner.calls.map(\.args)
         XCTAssertTrue(args.contains(["restart", "c1"]))
-        XCTAssertEqual(args.last, ["ps", "--all", "--format", "json"], "actions re-read state")
+        XCTAssertEqual(args.last, ["images", "--format", "json"], "actions re-read state (refresh ends with images)")
         XCTAssertNil(service.busyTarget)
     }
 
@@ -64,5 +64,82 @@ final class ToolServerServiceTests: XCTestCase {
         XCTAssertNotNil(service.lastError)
         XCTAssertTrue(service.lastError!.lowercased().contains("docker"))
         XCTAssertTrue(runner.calls.isEmpty, "no docker binary, no subprocess")
+    }
+
+    private func makeStacksDir() -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-svc-stacks-\(UUID().uuidString)", isDirectory: true)
+        return dir
+    }
+
+    func testRefreshRemembersStacksAndComputesCold() async {
+        let dir = makeStacksDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stacks = KnownStacksStore(directory: dir)
+        stacks.remember(name: "ghost-stack", workingDir: "/tools/ghost")
+        let service = ToolServerService(
+            dockerPath: "/fake/docker", runner: FakeRunner(result: .success(psJSON)), knownStacks: stacks
+        )
+
+        await service.refresh()
+
+        // The live firecrawl project was remembered; ghost-stack has no live containers → cold.
+        XCTAssertTrue(stacks.stacks.contains { $0.name == "firecrawl" && $0.workingDir == "/tools/firecrawl" })
+        XCTAssertEqual(service.coldStacks.map(\.name), ["ghost-stack"])
+    }
+
+    func testUpDownPullPruneContracts() async {
+        let dir = makeStacksDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let runner = FakeRunner(result: .success(psJSON))
+        let service = ToolServerService(
+            dockerPath: "/fake/docker", runner: runner, knownStacks: KnownStacksStore(directory: dir)
+        )
+
+        await service.stackUp(KnownStack(name: "firecrawl", workingDir: "/tools/firecrawl"))
+        await service.projectDown(name: "firecrawl")
+        await service.pullImage("firecrawl-api:latest")
+        await service.pruneDanglingImages()
+
+        let args = runner.calls.map(\.args)
+        XCTAssertTrue(args.contains(["compose", "-p", "firecrawl", "--project-directory", "/tools/firecrawl", "up", "-d"]))
+        XCTAssertTrue(args.contains(["compose", "-p", "firecrawl", "down"]))
+        XCTAssertTrue(args.contains(["pull", "firecrawl-api:latest"]))
+        XCTAssertTrue(args.contains(["image", "prune", "-f"]))
+        XCTAssertEqual(args.last, ["images", "--format", "json"], "every action re-reads state (refresh ends with images)")
+    }
+
+    func testRefreshListsImages() async {
+        // FakeRunner returns the same output per call, so image parsing tolerating ps JSON
+        // (yielding zero images) is the honest assertion here; the images-args contract is what matters.
+        let runner = FakeRunner(result: .success(psJSON))
+        let service = ToolServerService(
+            dockerPath: "/fake/docker", runner: runner,
+            knownStacks: KnownStacksStore(directory: makeStacksDir())
+        )
+        await service.refresh()
+        XCTAssertTrue(runner.calls.map(\.args).contains(["images", "--format", "json"]))
+    }
+
+    func testLoadDetailComposesAndDegradesPerPart() async {
+        let inspectJSON = """
+        [{"RestartCount":0,"State":{"Status":"running","StartedAt":"2026-07-20T18:46:09Z"},\
+        "Config":{"Image":"img","Env":["A=1"]},"Mounts":[],"NetworkSettings":{"Ports":{}}}]
+        """
+        let runner = FakeRunner(result: .success(inspectJSON))
+        let service = ToolServerService(
+            dockerPath: "/fake/docker", runner: runner,
+            knownStacks: KnownStacksStore(directory: makeStacksDir())
+        )
+
+        let detail = await service.loadDetail(id: "c1")
+
+        XCTAssertEqual(detail?.overview?.image, "img")
+        XCTAssertNil(detail?.stats, "stats output wasn't stats JSON — degrades to nil, not failure")
+        XCTAssertNotNil(detail?.logTail, "raw text is a valid log tail")
+        let args = runner.calls.map(\.args)
+        XCTAssertTrue(args.contains(["inspect", "c1"]))
+        XCTAssertTrue(args.contains(["stats", "--no-stream", "--format", "json", "c1"]))
+        XCTAssertTrue(args.contains(["logs", "--tail", "40", "c1"]))
     }
 }
