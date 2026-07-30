@@ -701,6 +701,13 @@ private struct TerminalHero: View {
                         : .move(edge: .trailing).combined(with: .opacity))
             } else {
                 VStack(spacing: 0) {
+                    // Sibling sessions as mini-tabs — switch without going home.
+                    if model.showsSessionStrip {
+                        SessionStrip(sessions: model.sessions, selectedId: model.selectedId) {
+                            model.focus($0)
+                        }
+                        .transition(.opacity)
+                    }
                     // Live subagents ride above the terminal; TimelineView keeps their
                     // ages/spinners honest while the strip is visible.
                     if let id = model.selectedId, !model.visibleAgents(id).isEmpty {
