@@ -358,6 +358,13 @@ final class AppModel {
         activeScreen = screen
     }
 
+    /// The terminal hero shows the session strip only when it offers a real switch —
+    /// another live session to go to (which includes one session while a dev shell is open).
+    var showsSessionStrip: Bool {
+        guard let selectedId else { return false }
+        return sessions.contains { $0.id != selectedId }
+    }
+
     /// Focusing a session always wins over an open screen (notification clicks included).
     func focus(_ id: String) {
         activeScreen = nil
