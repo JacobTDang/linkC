@@ -193,12 +193,21 @@ public struct AgentAssembler: Sendable {
                                      startedAt: at, endedAt: nil, resultText: nil))
             case .completed(let id, let resultText, let at):
                 guard let index = runs.firstIndex(where: { $0.id == id }) else { continue }
-                guard runs[index].endedAt == nil else { continue }
-                runs[index].endedAt = at
-                runs[index].resultText = resultText
+                // A real completion can land after a sweep already ended the run — keep the earlier
+                // end stamp, but take the result body we were missing.
+                if runs[index].endedAt == nil { runs[index].endedAt = at }
+                if runs[index].resultText == nil { runs[index].resultText = resultText }
             }
         }
         // Bound memory on marathon sessions: keep the most recent 30 runs.
         if runs.count > 30 { runs.removeFirst(runs.count - 30) }
+    }
+
+    /// Turn-over backstop: the transcript never closed these runs out — end them now, so a
+    /// lost completion can't show a subagent as running forever.
+    public mutating func endAllRunning(at date: Date) {
+        for index in runs.indices where runs[index].endedAt == nil {
+            runs[index].endedAt = date
+        }
     }
 }
