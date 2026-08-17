@@ -43,9 +43,11 @@ public enum AgentEvents {
                     ))
                 }
                 if block.type == "tool_result", let id = block.toolUseId {
-                    let text = (block.content ?? []).compactMap(\.text).joined(separator: "\n")
-                    guard !text.isEmpty, !text.hasPrefix(asyncLaunchMarker) else { continue }
-                    events.append(.completed(toolUseId: id, resultText: text, at: timestamp))
+                    let text = block.content?.joinedText ?? ""
+                    // Async agents' immediate tool_result is launch metadata, not a completion.
+                    guard !text.hasPrefix(asyncLaunchMarker) else { continue }
+                    // An empty result still completes the run — dropping it strands the run as running.
+                    events.append(.completed(toolUseId: id, resultText: text.isEmpty ? nil : text, at: timestamp))
                 }
                 if block.type == "text", let text = block.text {
                     events.append(contentsOf: notificationCompletions(in: text, at: timestamp))
@@ -96,6 +98,8 @@ public enum AgentEvents {
     }
 
     /// User-message content is a string OR a block array; both occur in real transcripts.
+    /// Blocks decode individually — one malformed block is skipped alone rather than
+    /// discarding every event in the line.
     private enum RawContent: Decodable {
         case text(String)
         case blocks([RawBlock])
@@ -105,8 +109,19 @@ public enum AgentEvents {
             if let text = try? container.decode(String.self) {
                 self = .text(text)
             } else {
-                self = .blocks((try? container.decode([RawBlock].self)) ?? [])
+                let failables = (try? container.decode([FailableBlock].self)) ?? []
+                self = .blocks(failables.compactMap(\.block))
             }
+        }
+    }
+
+    /// Always decodes; `block` is nil when the element didn't match `RawBlock`. Wrapping each
+    /// element keeps the array's decode cursor advancing past bad entries.
+    private struct FailableBlock: Decodable {
+        let block: RawBlock?
+
+        init(from decoder: Decoder) throws {
+            block = try? RawBlock(from: decoder)
         }
     }
 
@@ -117,7 +132,7 @@ public enum AgentEvents {
         let text: String?
         let input: RawInput?
         let toolUseId: String?
-        let content: [RawResultContent]?
+        let content: RawResultPayload?
 
         enum CodingKeys: String, CodingKey {
             case type, id, name, text, input, content
@@ -137,6 +152,28 @@ public enum AgentEvents {
 
     private struct RawResultContent: Decodable {
         let text: String?
+    }
+
+    /// tool_result content: a block array in most transcripts, a bare string in some.
+    private enum RawResultPayload: Decodable {
+        case text(String)
+        case blocks([RawResultContent])
+
+        var joinedText: String {
+            switch self {
+            case .text(let string): return string
+            case .blocks(let blocks): return blocks.compactMap(\.text).joined(separator: "\n")
+            }
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let text = try? container.decode(String.self) {
+                self = .text(text)
+            } else {
+                self = .blocks(try container.decode([RawResultContent].self))
+            }
+        }
     }
 }
 

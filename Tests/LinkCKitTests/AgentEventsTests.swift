@@ -62,6 +62,47 @@ final class AgentEventsTests: XCTestCase {
         XCTAssertTrue(AgentEvents.parse(line: #"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#).isEmpty)
     }
 
+    func testStringContentToolResultCompletes() throws {
+        // Real transcripts sometimes carry tool_result content as a bare string, not a block array.
+        let line = """
+        {"type":"user","timestamp":"2026-07-23T04:05:00Z","message":{"content":[\
+        {"type":"tool_result","tool_use_id":"toolu_A","content":"plain string result"}]}}
+        """
+        let events = AgentEvents.parse(line: line)
+        XCTAssertEqual(events.count, 1)
+        guard case .completed(let id, let result, _) = events[0] else { return XCTFail() }
+        XCTAssertEqual(id, "toolu_A")
+        XCTAssertEqual(result, "plain string result")
+    }
+
+    func testMalformedBlockDoesNotDropSiblings() throws {
+        // One undecodable block (input as a bare string) must not erase the whole line's events.
+        let line = """
+        {"type":"assistant","timestamp":"2026-07-23T04:00:00Z","message":{"content":[\
+        {"type":"tool_use","id":"toolu_X","name":"Agent","input":"garbage-shape"},\
+        {"type":"tool_use","id":"toolu_A","name":"Agent",\
+        "input":{"description":"Survey","subagent_type":"Explore"}}]}}
+        """
+        let events = AgentEvents.parse(line: line)
+        XCTAssertEqual(events.count, 1)
+        guard case .spawned(let id, let description, _, _) = events[0] else { return XCTFail() }
+        XCTAssertEqual(id, "toolu_A")
+        XCTAssertEqual(description, "Survey")
+    }
+
+    func testEmptyToolResultStillCompletes() throws {
+        // A completion with no text is still a completion — dropping it strands the run as "running".
+        let line = """
+        {"type":"user","timestamp":"2026-07-23T04:05:00Z","message":{"content":[\
+        {"type":"tool_result","tool_use_id":"toolu_A","content":[]}]}}
+        """
+        let events = AgentEvents.parse(line: line)
+        XCTAssertEqual(events.count, 1)
+        guard case .completed(let id, let result, _) = events[0] else { return XCTFail() }
+        XCTAssertEqual(id, "toolu_A")
+        XCTAssertNil(result)
+    }
+
     func testAssemblerPairsSpawnsWithCompletions() {
         var assembler = AgentAssembler()
         let t0 = Date(timeIntervalSince1970: 1_784_692_800)
