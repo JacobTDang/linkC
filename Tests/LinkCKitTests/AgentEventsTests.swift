@@ -125,6 +125,36 @@ final class AgentEventsTests: XCTestCase {
         assembler.feed([.completed(toolUseId: "toolu_ghost", resultText: nil, at: t0)])
         XCTAssertEqual(assembler.runs.count, 2)
     }
+
+    func testEndAllRunningSweepsOpenRuns() {
+        var assembler = AgentAssembler()
+        let t0 = Date(timeIntervalSince1970: 1_784_692_800)
+        assembler.feed([
+            .spawned(toolUseId: "toolu_A", description: "Survey", type: "Explore", at: t0),
+            .spawned(toolUseId: "toolu_B", description: "Design", type: "Plan", at: t0),
+        ])
+        assembler.feed([.completed(toolUseId: "toolu_A", resultText: "done", at: t0.addingTimeInterval(60))])
+
+        assembler.endAllRunning(at: t0.addingTimeInterval(90))
+
+        let a = assembler.runs.first { $0.id == "toolu_A" }!
+        XCTAssertEqual(a.endedAt, t0.addingTimeInterval(60), "already-ended runs keep their real end")
+        let b = assembler.runs.first { $0.id == "toolu_B" }!
+        XCTAssertFalse(b.isRunning)
+        XCTAssertEqual(b.endedAt, t0.addingTimeInterval(90))
+        XCTAssertNil(b.resultText)
+    }
+
+    func testLateCompletionFillsSweptRun() {
+        var assembler = AgentAssembler()
+        let t0 = Date(timeIntervalSince1970: 1_784_692_800)
+        assembler.feed([.spawned(toolUseId: "toolu_A", description: "Survey", type: "Explore", at: t0)])
+        assembler.endAllRunning(at: t0.addingTimeInterval(90))
+        assembler.feed([.completed(toolUseId: "toolu_A", resultText: "late report", at: t0.addingTimeInterval(120))])
+
+        XCTAssertEqual(assembler.runs[0].resultText, "late report", "the body we were missing arrives")
+        XCTAssertEqual(assembler.runs[0].endedAt, t0.addingTimeInterval(90), "sweep end stamp is kept")
+    }
 }
 
 /// Compact ages for time-in-state and agent rows: seconds under a minute, then minutes, then hours.
