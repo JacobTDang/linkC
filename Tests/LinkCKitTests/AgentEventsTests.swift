@@ -70,7 +70,8 @@ final class AgentEventsTests: XCTestCase {
         """
         let events = AgentEvents.parse(line: line)
         XCTAssertEqual(events.count, 1)
-        guard case .completed(let id, let result, _) = events[0] else { return XCTFail() }
+        guard let first = events.first else { return XCTFail("no events parsed") }
+        guard case .completed(let id, let result, _) = first else { return XCTFail() }
         XCTAssertEqual(id, "toolu_A")
         XCTAssertEqual(result, "plain string result")
     }
@@ -85,7 +86,8 @@ final class AgentEventsTests: XCTestCase {
         """
         let events = AgentEvents.parse(line: line)
         XCTAssertEqual(events.count, 1)
-        guard case .spawned(let id, let description, _, _) = events[0] else { return XCTFail() }
+        guard let first = events.first else { return XCTFail("no events parsed") }
+        guard case .spawned(let id, let description, _, _) = first else { return XCTFail() }
         XCTAssertEqual(id, "toolu_A")
         XCTAssertEqual(description, "Survey")
     }
@@ -98,7 +100,8 @@ final class AgentEventsTests: XCTestCase {
         """
         let events = AgentEvents.parse(line: line)
         XCTAssertEqual(events.count, 1)
-        guard case .completed(let id, let result, _) = events[0] else { return XCTFail() }
+        guard let first = events.first else { return XCTFail("no events parsed") }
+        guard case .completed(let id, let result, _) = first else { return XCTFail() }
         XCTAssertEqual(id, "toolu_A")
         XCTAssertNil(result)
     }
