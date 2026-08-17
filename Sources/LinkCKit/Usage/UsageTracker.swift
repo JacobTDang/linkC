@@ -69,6 +69,14 @@ public final class UsageTracker {
         agentAssemblers[sessionId]?.runs ?? []
     }
 
+    /// Backstop for lost completions: mark every still-running agent run ended. Called when
+    /// the session's turn is over — anything still "running" then is a phantom.
+    public func sweepAgents(_ sessionId: String, at date: Date = Date()) {
+        guard var agents = agentAssemblers[sessionId] else { return }
+        agents.endAllRunning(at: date)
+        agentAssemblers[sessionId] = agents
+    }
+
     public func sessionUsage(_ sessionId: String) -> SessionUsage? {
         guard let acc = accumulators[sessionId], acc.totalTokens > 0 else { return nil }
         return acc.snapshot

@@ -157,6 +157,37 @@ final class AgentEventsTests: XCTestCase {
     }
 }
 
+/// The tracker-level sweep: refresh reads the spawn from the transcript; the sweep then
+/// ends anything the transcript never closed out.
+final class AgentSweepTrackerTests: XCTestCase {
+    @MainActor
+    func testSweepEndsRunningAgents() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-sweep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcript = dir.appendingPathComponent("t.jsonl")
+        let spawn = """
+        {"type":"assistant","timestamp":"2026-07-23T04:00:00Z","message":{"content":[\
+        {"type":"tool_use","id":"toolu_A","name":"Agent",\
+        "input":{"description":"Survey","subagent_type":"Explore","prompt":"..."}}]}}
+        """
+        try (spawn + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let tracker = UsageTracker(projectsDir: dir)
+        tracker.bind(sessionId: "S1", transcriptPath: transcript.path)
+        tracker.refreshSession("S1")
+        XCTAssertTrue(tracker.sessionAgents("S1").contains(where: \.isRunning))
+
+        tracker.sweepAgents("S1", at: Date(timeIntervalSince1970: 1_784_779_260))
+
+        let runs = tracker.sessionAgents("S1")
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertFalse(runs[0].isRunning)
+        XCTAssertEqual(runs[0].endedAt, Date(timeIntervalSince1970: 1_784_779_260))
+    }
+}
+
 /// Compact ages for time-in-state and agent rows: seconds under a minute, then minutes, then hours.
 final class AgeFormatTests: XCTestCase {
     func testCompact() {

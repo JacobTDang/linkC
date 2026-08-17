@@ -145,6 +145,11 @@ public final class AppCoordinator {
         if let transcriptPath = event.transcriptPath, let tracker = usageTracker {
             tracker.bind(sessionId: session.id, transcriptPath: transcriptPath)
             tracker.refreshSession(session.id)
+            // The refresh above applies any real completions first; only then does the
+            // backstop end whatever the transcript never closed out.
+            if turnIsOver(session.state) {
+                tracker.sweepAgents(session.id)
+            }
         }
 
         // Keep the manifest's claude conversation id current so a later restore can `--resume`
@@ -167,6 +172,16 @@ public final class AppCoordinator {
             isWatchingThisSession: isWatching(session.id)
         ) {
             notifications.post(session: session)
+        }
+    }
+
+    /// States in which no subagent can legitimately still be running. `.working`/`.starting`
+    /// are live; `.waitingPermission` pauses mid-turn — a sync subagent may be alive behind
+    /// the permission prompt, so it must not sweep.
+    private func turnIsOver(_ state: SessionState) -> Bool {
+        switch state {
+        case .ready, .waitingIdle, .finished, .error, .ended: return true
+        case .starting, .working, .waitingPermission: return false
         }
     }
 
