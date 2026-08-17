@@ -350,6 +350,10 @@ struct PreviewText: View {
 
 // MARK: - Terminal (hero)
 
+/// The open terminal, split beside the session list when the pane is wide enough. Narrow
+/// panes keep the original full-bleed terminal with the mini-tab strip; the split's sidebar
+/// replaces the strip entirely. The agent reader swaps only the terminal side in the split
+/// (the whole pane when narrow).
 private struct TerminalHero: View {
     let model: AppModel
 
@@ -358,6 +362,29 @@ private struct TerminalHero: View {
     @State private var readerAgent: AgentRun?
 
     var body: some View {
+        GeometryReader { geo in
+            let split = geo.size.width >= Theme.splitBreakpoint
+            HStack(alignment: .top, spacing: 12) {
+                if split {
+                    SessionListColumn(model: model, selectedId: model.selectedId, horizontalPadding: 0)
+                        .frame(width: Theme.sidebarWidth)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                }
+                rightPane(split: split)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 12)
+        }
+        .onChange(of: model.selectedId, initial: true) { _, _ in
+            readerAgent = nil
+            styleTerminal(model.selectedTerminal)
+        }
+    }
+
+    /// The terminal column (or the agent reader in its place). In the split the sidebar is
+    /// the switcher, so the mini-tab strip renders only when narrow.
+    @ViewBuilder private func rightPane(split: Bool) -> some View {
         ZStack {
             if let readerAgent {
                 AgentReaderView(agent: currentAgent(readerAgent)) { self.readerAgent = nil }
@@ -367,7 +394,7 @@ private struct TerminalHero: View {
             } else {
                 VStack(spacing: 0) {
                     // Sibling sessions as mini-tabs — switch without going home.
-                    if model.showsSessionStrip {
+                    if !split, model.showsSessionStrip {
                         SessionStrip(sessions: model.sessions, selectedId: model.selectedId) {
                             model.focus($0)
                         }
@@ -394,15 +421,8 @@ private struct TerminalHero: View {
                 .transition(.opacity)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(Theme.viewSwap, value: readerAgent?.id)
-        .onChange(of: model.selectedId, initial: true) { _, _ in
-            readerAgent = nil
-            styleTerminal(model.selectedTerminal)
-        }
     }
 
     /// Re-resolve the opened agent so a completion arriving mid-read fills the body in.
