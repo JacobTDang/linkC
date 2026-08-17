@@ -50,10 +50,12 @@ struct TerminalsScreen: View {
 /// a session card: a small steady dot (no pulse, no glow — urgency is claude's vocabulary),
 /// the folder title and path, a live preview. Running shows a hover-revealed stop ✕; exited
 /// dims the card, keeps it tappable (scrollback stays inspectable), and offers Relaunch +
-/// dismiss.
+/// dismiss. `isSelected` (the sidebar's open item) brightens the plane and hangs an accent
+/// hairline off the leading edge.
 struct TerminalCard: View {
     let row: ShellRow
     let preview: String
+    var isSelected: Bool = false
     let onOpen: () -> Void
     let onStop: () -> Void
     let onRelaunch: () -> Void
@@ -134,7 +136,16 @@ struct TerminalCard: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .planeCard(hovering: hovering && isRunning)
+        .planeCard(hovering: (hovering && isRunning) || isSelected)
+        .overlay(alignment: .leading) {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Theme.accent.opacity(0.7))
+                    .frame(width: 2)
+                    .padding(.vertical, 10)
+                    .padding(.leading, 1)
+            }
+        }
         .opacity(isRunning ? 1 : 0.75)
         .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
         .onTapGesture(perform: onOpen)
