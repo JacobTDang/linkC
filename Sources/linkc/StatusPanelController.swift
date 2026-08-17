@@ -48,8 +48,6 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     /// Width: the user's persisted size, widened for the sidebar split while a session is
     /// selected. Height derives from the persisted size too.
-    /// One consistent size — a wide rectangle hanging from the icon — regardless of selection. The
-    /// user's dragged size is persisted and wins; otherwise a wide default proportional to the screen.
     private let panelMinSize = CGSize(width: 340, height: 220)
     /// Comfortable width for the split (sidebar + terminal). Selection grows the panel to
     /// this when it's too narrow for the split; it never shrinks the panel.
@@ -275,10 +273,9 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     // MARK: - Sizing
 
-    /// One consistent size: the user's persisted (dragged) size, else a wide default proportional
-    /// to the screen — never below the min.
-    /// One consistent size: the user's persisted (dragged) size, else a small, short default —
-    /// resize when you want more room to work; it persists.
+    /// The user's persisted (dragged) size, else a small, short default — never below the min.
+    /// While a session is selected the width grows to fit the sidebar split; a wider dragged
+    /// size wins.
     private func panelSize() -> CGSize {
         let defaultWidth: CGFloat = 480
         let defaultHeight: CGFloat = 300
