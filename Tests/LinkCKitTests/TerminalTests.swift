@@ -189,6 +189,23 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "Deployed the fix.")
     }
 
+    func testDropsTokenSpinnerAndSessionLimitBanners() {
+        // Spinner rows carry the token counter even when a narrow pane cuts off the
+        // "esc to interrupt" hint that usually marks them; the session-limit banner is
+        // strip furniture, not output.
+        let rows = [
+            "Shipped the sidebar.",
+            "✳ Boondoggling… (50s · ↓2.5k tokens · thinking with xhigh effort)",
+            "* Frolicking… (1m 11s · ↓ 271 tokens)",
+            "You've used 98% of your session limit · resets 1am (America/Chicago) · /upgrade to keep using Claude",
+        ]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "Shipped the sidebar.")
+    }
+
+    func testTokenTalkInRealOutputIsKept() {
+        XCTAssertTrue(TerminalPreview.hasContent("The request used 2.5k tokens in total."))
+    }
+
     func testKeepsRealOutputMentioningWarningsOrMCP() {
         // The furniture patterns must stay anchored: real output that merely carries a ⚠ or
         // mentions MCP is content, not chrome.
