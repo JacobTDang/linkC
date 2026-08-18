@@ -139,10 +139,12 @@ final class AgentEventsTests: XCTestCase {
 
         let a = assembler.runs.first { $0.id == "toolu_A" }!
         XCTAssertEqual(a.endedAt, t0.addingTimeInterval(60), "already-ended runs keep their real end")
+        XCTAssertFalse(a.endedBySweep, "the already-completed run keeps false")
         let b = assembler.runs.first { $0.id == "toolu_B" }!
         XCTAssertFalse(b.isRunning)
         XCTAssertEqual(b.endedAt, t0.addingTimeInterval(90))
         XCTAssertNil(b.resultText)
+        XCTAssertTrue(b.endedBySweep, "the sweep-ended run is flagged")
     }
 
     func testLateCompletionFillsSweptRun() {
@@ -153,7 +155,19 @@ final class AgentEventsTests: XCTestCase {
         assembler.feed([.completed(toolUseId: "toolu_A", resultText: "late report", at: t0.addingTimeInterval(120))])
 
         XCTAssertEqual(assembler.runs[0].resultText, "late report", "the body we were missing arrives")
-        XCTAssertEqual(assembler.runs[0].endedAt, t0.addingTimeInterval(90), "sweep end stamp is kept")
+        XCTAssertEqual(assembler.runs[0].endedAt, t0.addingTimeInterval(120), "the real completion overwrites the sweep stamp")
+        XCTAssertFalse(assembler.runs[0].endedBySweep, "a real completion clears the sweep flag")
+    }
+
+    func testRealCompletionThenDuplicateKeepsFirstEnd() {
+        var assembler = AgentAssembler()
+        let t0 = Date(timeIntervalSince1970: 1_784_692_800)
+        assembler.feed([.spawned(toolUseId: "toolu_A", description: "Survey", type: "Explore", at: t0)])
+        assembler.feed([.completed(toolUseId: "toolu_A", resultText: "done", at: t0.addingTimeInterval(60))])
+        assembler.feed([.completed(toolUseId: "toolu_A", resultText: "dupe", at: t0.addingTimeInterval(120))])
+
+        XCTAssertEqual(assembler.runs[0].endedAt, t0.addingTimeInterval(60), "the first real end is kept")
+        XCTAssertEqual(assembler.runs[0].resultText, "done", "a duplicate completion does not overwrite the first result")
     }
 }
 

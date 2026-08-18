@@ -14,6 +14,8 @@ public struct AgentRun: Equatable, Sendable, Identifiable {
     public let startedAt: Date
     public var endedAt: Date?
     public var resultText: String?
+    /// True when the turn-over backstop ended this run rather than a real completion.
+    public var endedBySweep: Bool = false
 
     public var isRunning: Bool { endedAt == nil }
 }
@@ -193,9 +195,12 @@ public struct AgentAssembler: Sendable {
                                      startedAt: at, endedAt: nil, resultText: nil))
             case .completed(let id, let resultText, let at):
                 guard let index = runs.firstIndex(where: { $0.id == id }) else { continue }
-                // A real completion can land after a sweep already ended the run — keep the earlier
-                // end stamp, but take the result body we were missing.
-                if runs[index].endedAt == nil { runs[index].endedAt = at }
+                // A real completion outranks the sweep's guess — take its timestamp so the run
+                // surfaces in the recent-completion window. The first real end is otherwise kept.
+                if runs[index].endedAt == nil || runs[index].endedBySweep {
+                    runs[index].endedAt = at
+                    runs[index].endedBySweep = false
+                }
                 if runs[index].resultText == nil { runs[index].resultText = resultText }
             }
         }
@@ -208,6 +213,7 @@ public struct AgentAssembler: Sendable {
     public mutating func endAllRunning(at date: Date) {
         for index in runs.indices where runs[index].endedAt == nil {
             runs[index].endedAt = date
+            runs[index].endedBySweep = true
         }
     }
 }
