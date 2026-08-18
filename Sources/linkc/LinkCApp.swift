@@ -266,10 +266,12 @@ final class AppModel {
     }
 
     /// The session's agents worth showing: everything running, plus completions from the
-    /// last minute — finished work lingers briefly, then folds away.
+    /// last minute — finished work lingers briefly, then folds away. Swept runs stay hidden
+    /// (they are phantoms) unless a later real completion clears the flag and re-surfaces them.
     func visibleAgents(_ id: String, now: Date = Date()) -> [AgentRun] {
         usage.sessionAgents(id).filter { agent in
-            agent.isRunning || (agent.endedAt.map { now.timeIntervalSince($0) < 60 } ?? false)
+            agent.isRunning || (!agent.endedBySweep
+                && (agent.endedAt.map { now.timeIntervalSince($0) < 60 } ?? false))
         }
     }
 
