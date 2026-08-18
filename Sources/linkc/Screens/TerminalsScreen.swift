@@ -105,6 +105,7 @@ struct TerminalCard: View {
                         Text("Relaunch")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(Theme.accent)
+                            .fixedSize()   // starved rows must truncate the title, never wrap the action
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
