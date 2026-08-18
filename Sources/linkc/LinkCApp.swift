@@ -217,6 +217,22 @@ final class AppModel {
 
     var shellRows: [ShellRow] { shells?.store.rows ?? [] }
 
+    /// The sidebar's SERVERS section: compose projects with at least one live container,
+    /// then standalone running containers. Empty (and the section hidden) without docker.
+    var runningProjects: [ToolServerProject] {
+        toolServers?.projects.filter { $0.runningCount > 0 } ?? []
+    }
+    var runningStandalone: [ContainerInfo] {
+        toolServers?.standalone.filter { $0.state == .running } ?? []
+    }
+
+    /// Keep the SERVERS section honest while the panel shows: docker state changes
+    /// out-of-band, so poll gently — and only when docker exists at all.
+    private func refreshServers() {
+        guard let toolServers, toolServers.dockerPath != nil else { return }
+        Task { await toolServers.refresh() }
+    }
+
     /// The empty-state gate, centralized: dev terminals count as content too.
     var isEmptyOverview: Bool {
         sessions.isEmpty && restorables.isEmpty && shellRows.isEmpty
@@ -302,6 +318,7 @@ final class AppModel {
             // First tick immediately so the panel never opens on stale zeros.
             usage.refreshAllSessions()
             usage.refreshWindow()
+            refreshServers()
             usageTicks = 0
             usageTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in
@@ -310,6 +327,8 @@ final class AppModel {
                     self.usageTicks += 1
                     // The global sweep is heavier — every 30s is live enough for a footer.
                     if self.usageTicks % 6 == 0 { self.usage.refreshWindow() }
+                    // Docker state drifts slowly; every 15s keeps SERVERS honest cheaply.
+                    if self.usageTicks % 3 == 0 { self.refreshServers() }
                 }
             }
         } else if !panelVisible {
