@@ -360,4 +360,52 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path), "orphaned session-*.json must be swept at startup")
         XCTAssertEqual(coordinator.restorables.count, 1, "the manifest must survive the sweep")
     }
+
+    /// Coordinator-level sweep coverage: a subagent spawned mid-turn stays running through a
+    /// permission pause (it may be alive behind the prompt — no sweep mid-turn) and is only
+    /// swept, flagged, once the turn genuinely ends.
+    func testSweepHoldsThroughPermissionPauseThenSweepsWhenTurnEnds() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sweep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let transcript = dir.appendingPathComponent("t.jsonl")
+        let spawn = """
+        {"type":"assistant","timestamp":"2026-07-23T04:00:00Z","message":{"content":[\
+        {"type":"tool_use","id":"toolu_A","name":"Agent",\
+        "input":{"description":"Survey","subagent_type":"Explore","prompt":"..."}}]}}
+        """
+        try (spawn + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        let tracker = UsageTracker(projectsDir: dir)
+        coordinator.usageTracker = tracker
+        _ = coordinator.store.create(cwd: "/tmp", title: "api", id: "L1")
+
+        // 1: userPromptSubmit -> working; the spawn is parsed and its run is running.
+        coordinator.handle(HookEvent(
+            kind: .userPromptSubmit, linkcSessionId: "L1", claudeSessionId: nil, cwd: "/tmp",
+            transcriptPath: transcript.path
+        ))
+        XCTAssertEqual(coordinator.store.session(id: "L1")?.state, .working)
+        XCTAssertTrue(tracker.sessionAgents("L1").contains(where: \.isRunning), "the spawn must be parsed and running")
+
+        // 2: notificationPermission -> waitingPermission; a mid-turn pause must not sweep.
+        coordinator.handle(HookEvent(
+            kind: .notificationPermission, linkcSessionId: "L1", claudeSessionId: nil, cwd: "/tmp",
+            transcriptPath: transcript.path
+        ))
+        XCTAssertEqual(coordinator.store.session(id: "L1")?.state, .waitingPermission)
+        XCTAssertTrue(tracker.sessionAgents("L1").contains(where: \.isRunning), "a permission pause must not sweep mid-turn")
+
+        // 3: stop -> finished; the turn is over, so the backstop ends the run and flags it.
+        coordinator.handle(HookEvent(
+            kind: .stop, linkcSessionId: "L1", claudeSessionId: nil, cwd: "/tmp",
+            transcriptPath: transcript.path
+        ))
+        XCTAssertEqual(coordinator.store.session(id: "L1")?.state, .finished)
+        let runs = tracker.sessionAgents("L1")
+        XCTAssertFalse(runs.contains(where: \.isRunning), "the turn ending must sweep the still-running run")
+        XCTAssertEqual(runs.first?.endedBySweep, true, "the sweep must flag the run it ended")
+    }
 }

@@ -141,9 +141,11 @@ public final class AppCoordinator {
         let outcome = store.apply(event)
         guard let session = outcome.session else { return } // unknown / external session
 
-        // Every hook event names the session's transcript — bind it and refresh usage.
-        if let transcriptPath = event.transcriptPath, let tracker = usageTracker {
-            tracker.bind(sessionId: session.id, transcriptPath: transcriptPath)
+        if let tracker = usageTracker {
+            // Every hook event names the session's transcript — bind it and refresh usage.
+            if let transcriptPath = event.transcriptPath {
+                tracker.bind(sessionId: session.id, transcriptPath: transcriptPath)
+            }
             tracker.refreshSession(session.id)
             // The refresh above applies any real completions first; only then does the
             // backstop end whatever the transcript never closed out.
