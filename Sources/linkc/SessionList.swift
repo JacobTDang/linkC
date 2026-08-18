@@ -4,11 +4,14 @@ import LinkCKit
 
 /// The scrolling session/terminal/earlier column — the whole of home's list, reusable as
 /// the sidebar beside an open terminal. In sidebar mode `selectedId` highlights the open
-/// item's card and `horizontalPadding` lets the caller own the gutters.
+/// item, `horizontalPadding` lets the caller own the gutters, and `compact` swaps the full
+/// cards for one-line rail rows: at 260pt the cards' paths, previews, and agent lanes read
+/// as clutter, and a starved Restore label wraps letter-by-letter.
 struct SessionListColumn: View {
     let model: AppModel
     var selectedId: String? = nil
     var horizontalPadding: CGFloat = 12
+    var compact: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -41,11 +44,11 @@ struct SessionListColumn: View {
                 // Dev terminals: same 1s preview cadence as sessions, quieter presence.
                 if !model.shellRows.isEmpty {
                     TimelineView(.periodic(from: .now, by: 1.0)) { _ in
-                        TerminalsSection(model: model, selectedId: selectedId)
+                        TerminalsSection(model: model, selectedId: selectedId, compact: compact)
                     }
                 }
                 if !model.restorables.isEmpty {
-                    EarlierSection(model: model)
+                    EarlierSection(model: model, compact: compact)
                 }
             }
             .readingColumn()
@@ -66,15 +69,27 @@ struct SessionListColumn: View {
                         .padding(.top, 6)
                         .transition(.opacity)
                 case .card(let session):
-                    HomeCard(
-                        session: session,
-                        preview: model.recentOutput(session.id, lines: 3),
-                        contextFill: model.contextFill(session.id),
-                        agents: model.visibleAgents(session.id),
-                        isSelected: session.id == selectedId,
-                        onOpen: { model.focus(session.id) },
-                        onClose: { model.stop(session.id) }
-                    )
+                    Group {
+                        if compact {
+                            CompactSessionRow(
+                                session: session,
+                                runningAgents: model.visibleAgents(session.id).count(where: \.isRunning),
+                                isSelected: session.id == selectedId,
+                                onOpen: { model.focus(session.id) },
+                                onClose: { model.stop(session.id) }
+                            )
+                        } else {
+                            HomeCard(
+                                session: session,
+                                preview: model.recentOutput(session.id, lines: 3),
+                                contextFill: model.contextFill(session.id),
+                                agents: model.visibleAgents(session.id),
+                                isSelected: session.id == selectedId,
+                                onOpen: { model.focus(session.id) },
+                                onClose: { model.stop(session.id) }
+                            )
+                        }
+                    }
                     // Cards materialize: a soft settle-in rather than a pop. Reduce Motion
                     // keeps only the fade.
                     .transition(reduceMotion
@@ -111,6 +126,7 @@ struct SessionListColumn: View {
 private struct TerminalsSection: View {
     let model: AppModel
     var selectedId: String? = nil
+    var compact: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -119,15 +135,28 @@ private struct TerminalsSection: View {
             SectionHeader(title: "TERMINALS")
                 .padding(.top, 6)
             ForEach(model.shellRows) { row in
-                TerminalCard(
-                    row: row,
-                    preview: model.recentOutput(row.id, lines: 3),
-                    isSelected: row.id == selectedId,
-                    onOpen: { model.focus(row.id) },
-                    onStop: { model.stopShell(row.id) },
-                    onRelaunch: { model.relaunchShell(row) },
-                    onDismiss: { model.dismissShell(row.id) }
-                )
+                Group {
+                    if compact {
+                        CompactTerminalRow(
+                            row: row,
+                            isSelected: row.id == selectedId,
+                            onOpen: { model.focus(row.id) },
+                            onStop: { model.stopShell(row.id) },
+                            onRelaunch: { model.relaunchShell(row) },
+                            onDismiss: { model.dismissShell(row.id) }
+                        )
+                    } else {
+                        TerminalCard(
+                            row: row,
+                            preview: model.recentOutput(row.id, lines: 3),
+                            isSelected: row.id == selectedId,
+                            onOpen: { model.focus(row.id) },
+                            onStop: { model.stopShell(row.id) },
+                            onRelaunch: { model.relaunchShell(row) },
+                            onDismiss: { model.dismissShell(row.id) }
+                        )
+                    }
+                }
                 .transition(reduceMotion
                     ? .opacity
                     : .scale(scale: 0.97, anchor: .top).combined(with: .opacity))
@@ -144,6 +173,7 @@ private struct TerminalsSection: View {
 /// restorable session.
 private struct EarlierSection: View {
     let model: AppModel
+    var compact: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -175,11 +205,21 @@ private struct EarlierSection: View {
             .padding(.horizontal, 4)
             .padding(.bottom, 4)
             ForEach(model.restorables) { session in
-                RestorableRow(
-                    session: session,
-                    onRestore: { model.restore(session) },
-                    onDismiss: { model.dismiss(session) }
-                )
+                Group {
+                    if compact {
+                        CompactRestorableRow(
+                            session: session,
+                            onRestore: { model.restore(session) },
+                            onDismiss: { model.dismiss(session) }
+                        )
+                    } else {
+                        RestorableRow(
+                            session: session,
+                            onRestore: { model.restore(session) },
+                            onDismiss: { model.dismiss(session) }
+                        )
+                    }
+                }
                 .transition(reduceMotion
                     ? .opacity
                     : .scale(scale: 0.97, anchor: .top).combined(with: .opacity))
@@ -226,6 +266,7 @@ private struct RestorableRow: View {
                 Text("Restore")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Theme.accent)
+                    .fixedSize()   // starved rows must truncate the title, never wrap the action
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -356,6 +397,205 @@ private struct HomeCard: View {
         .animation(Theme.hoverEase, value: hovering)
         .animation(Theme.hoverEase, value: isSelected)
         .help("Open \(session.title)")
+    }
+}
+
+// MARK: - Compact (sidebar) rows
+
+/// Sidebar-density session row: the dot, the title, and only what demands attention — a
+/// needs-you age and a running-agent chip. Paths, previews, and agent lanes stay on home;
+/// at rail width they read as clutter, and the strip above the terminal already shows agents.
+private struct CompactSessionRow: View {
+    let session: Session
+    let runningAgents: Int
+    let isSelected: Bool
+    let onOpen: () -> Void
+    let onClose: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            StatusDot(state: session.state)
+            Text(session.title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            if session.state.bucket == .needsYou {
+                // The age alone — the pulsing dot already says "needs you"; words don't fit here.
+                Text(AgeFormat.compact(from: session.stateChangedAt))
+                    .font(.system(size: 10, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.statusColor(session.state))
+                    .fixedSize()
+            }
+            if runningAgents > 0 {
+                AgentChip(count: runningAgents)
+            }
+            Button(action: onClose) {
+                CompactRowGlyph()
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering ? 1 : 0)
+            .help("Stop session")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .planeCard(needsYou: session.state.bucket == .needsYou, hovering: hovering || isSelected)
+        .overlay(alignment: .leading) {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Theme.accent.opacity(0.7))
+                    .frame(width: 2)
+                    .padding(.vertical, 6)
+                    .padding(.leading, 1)
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
+        .onTapGesture(perform: onOpen)
+        .onHover { hovering = $0 }
+        .animation(Theme.hoverEase, value: hovering)
+        .animation(Theme.hoverEase, value: isSelected)
+        .help(isSelected ? "\(session.title) — current" : "Switch to \(session.title)")
+    }
+}
+
+/// Sidebar-density dev-terminal row: the quiet steady dot and the title. Running rows get a
+/// hover stop; exited rows dim, keep Relaunch, and reveal dismiss on hover.
+private struct CompactTerminalRow: View {
+    let row: ShellRow
+    let isSelected: Bool
+    let onOpen: () -> Void
+    let onStop: () -> Void
+    let onRelaunch: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var hovering = false
+
+    private var isRunning: Bool { row.state == .running }
+
+    private var dotColor: Color {
+        switch row.state {
+        case .running: return Theme.textSecondary
+        case .exited(let code): return code == 0 ? Theme.textTertiary : Theme.statusError
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 8, height: 8)
+                .frame(width: 18, height: 18)  // StatusDot's box, minus its glow
+            Text(row.title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(isRunning ? Theme.textPrimary : Theme.textSecondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            if isRunning {
+                Button(action: onStop) {
+                    CompactRowGlyph()
+                }
+                .buttonStyle(.plain)
+                .opacity(hovering ? 1 : 0)
+                .help("Stop terminal")
+            } else {
+                Button(action: onRelaunch) {
+                    Text("Relaunch")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .fixedSize()
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open a fresh shell in this folder")
+                Button(action: onDismiss) {
+                    CompactRowGlyph()
+                }
+                .buttonStyle(.plain)
+                .opacity(hovering ? 1 : 0)
+                .help("Dismiss")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .planeCard(hovering: (hovering && isRunning) || isSelected)
+        .overlay(alignment: .leading) {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Theme.accent.opacity(0.7))
+                    .frame(width: 2)
+                    .padding(.vertical, 6)
+                    .padding(.leading, 1)
+            }
+        }
+        .opacity(isRunning ? 1 : 0.75)
+        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
+        .onTapGesture(perform: onOpen)
+        .onHover { hovering = $0 }
+        .animation(Theme.hoverEase, value: hovering)
+        .animation(Theme.hoverEase, value: isSelected)
+        .help(isRunning ? "Open \(row.title)" : "View \(row.title)'s last output")
+    }
+}
+
+/// Sidebar-density restorable row: dot, title, Restore. The path and ended-at stamp are home
+/// detail — at rail width they truncate into noise and starve the Restore label into a
+/// letter stack.
+private struct CompactRestorableRow: View {
+    let session: RestorableSession
+    let onRestore: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            StatusDot(state: .ended)
+            Text(session.title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Button(action: onRestore) {
+                Text("Restore")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .fixedSize()
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Resume this session")
+            Button(action: onDismiss) {
+                CompactRowGlyph()
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering ? 1 : 0)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .fill(hovering ? Theme.hover : Color.clear)
+        )
+        .animation(Theme.hoverEase, value: hovering)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// The compact rows' shared hover ✕.
+private struct CompactRowGlyph: View {
+    var body: some View {
+        Image(systemName: "xmark")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(Theme.textTertiary)
+            .frame(width: 16, height: 16)
+            .contentShape(Rectangle())
     }
 }
 

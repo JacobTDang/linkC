@@ -366,7 +366,7 @@ private struct TerminalHero: View {
             let split = geo.size.width >= Theme.splitBreakpoint
             HStack(alignment: .top, spacing: 12) {
                 if split {
-                    SessionListColumn(model: model, selectedId: model.selectedId, horizontalPadding: 0)
+                    SessionListColumn(model: model, selectedId: model.selectedId, horizontalPadding: 0, compact: true)
                         .frame(width: Theme.sidebarWidth)
                         .frame(maxHeight: .infinity, alignment: .top)
                 }
