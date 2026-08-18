@@ -108,7 +108,7 @@ struct SessionListColumn: View {
 
 /// The dev-terminal section — plain shells beside the claude sessions, deliberately
 /// quieter (no urgency states, no pulse).
-struct TerminalsSection: View {
+private struct TerminalsSection: View {
     let model: AppModel
     var selectedId: String? = nil
 
@@ -142,7 +142,7 @@ struct TerminalsSection: View {
 /// Previous sessions from an earlier run, shown below the live cards: a quiet section header —
 /// with an inline "Restore all" only when there are 2+ to restore — then one dim row per
 /// restorable session.
-struct EarlierSection: View {
+private struct EarlierSection: View {
     let model: AppModel
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -259,7 +259,7 @@ private struct RestorableRow: View {
 /// title. The state is the dot; words appear only when the session needs you. The whole card is
 /// the tap target. `isSelected` (the sidebar's open item) brightens the plane and hangs an
 /// accent hairline off the leading edge.
-struct HomeCard: View {
+private struct HomeCard: View {
     let session: Session
     let preview: String
     /// 0…1 context-window fill for the hairline along the bottom edge; nil hides it.
@@ -354,12 +354,13 @@ struct HomeCard: View {
         .onTapGesture(perform: onOpen)
         .onHover { hovering = $0 }
         .animation(Theme.hoverEase, value: hovering)
+        .animation(Theme.hoverEase, value: isSelected)
         .help("Open \(session.title)")
     }
 }
 
 /// Shared status copy for a card's needs-you label.
-func statusLabel(_ state: SessionState) -> String {
+private func statusLabel(_ state: SessionState) -> String {
     switch state {
     case .starting: return "starting"
     case .ready: return "ready"
