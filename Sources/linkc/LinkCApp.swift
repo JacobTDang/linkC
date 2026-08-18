@@ -233,6 +233,14 @@ final class AppModel {
         Task { await toolServers.refresh() }
     }
 
+    /// A container's last stats sample; nil before the first sweep lands.
+    func containerStats(_ id: String) -> ContainerStats? { toolServers?.statsById[id] }
+
+    /// A compose project's summed live CPU — the sidebar's power proxy for the whole stack.
+    func projectCpu(_ project: ToolServerProject) -> Double {
+        project.containers.reduce(0) { $0 + (containerStats($1.id)?.cpuValue ?? 0) }
+    }
+
     /// The empty-state gate, centralized: dev terminals count as content too.
     var isEmptyOverview: Bool {
         sessions.isEmpty && restorables.isEmpty && shellRows.isEmpty

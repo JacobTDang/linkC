@@ -27,6 +27,8 @@ public final class ToolServerService {
     public private(set) var projects: [ToolServerProject] = []
     public private(set) var standalone: [ContainerInfo] = []
     public private(set) var images: [ImageInfo] = []
+    /// Last batch `docker stats` sweep, keyed by container id — the per-container power proxy.
+    public private(set) var statsById: [String: ContainerStats] = [:]
     public private(set) var isRefreshing = false
     /// The container id or project name with a CLI action in flight — its controls disable.
     public private(set) var busyTarget: String?
@@ -95,6 +97,23 @@ public final class ToolServerService {
             images = DockerImages.parse(output)
         } catch {
             lastError = "Couldn't list images: \(error.localizedDescription)"
+        }
+        // The power proxy, additive too: one batch sample of every running container.
+        // Skipped when nothing runs — `docker stats --no-stream` blocks ~2s sampling.
+        let anythingRunning = projects.contains { $0.runningCount > 0 }
+            || standalone.contains { $0.state == .running }
+        guard anythingRunning else {
+            statsById = [:]
+            return
+        }
+        do {
+            let output = try await runner.run(
+                dockerPath, args: ["stats", "--no-stream", "--format", "json"], cwd: nil, timeout: Self.listTimeout
+            )
+            statsById = DockerStats.parseAll(output)
+        } catch {
+            // Keep the last reading rather than blanking the column mid-hiccup.
+            lastError = "Couldn't sample container stats: \(error.localizedDescription)"
         }
     }
 

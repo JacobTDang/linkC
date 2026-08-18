@@ -538,14 +538,17 @@ private struct CompactTerminalRow: View {
 // MARK: - Servers (sidebar)
 
 /// The sidebar's running-servers section: compose projects with live containers, then
-/// standalone running containers — read-only pointers into the Tool Servers screen. Hidden
-/// entirely when nothing runs (the sidebar never states an absence).
+/// standalone running containers, each ranked hottest-first by live CPU — the power proxy
+/// (per-container energy doesn't exist on macOS; every container shares one VM). Read-only
+/// pointers into the Tool Servers screen; hidden entirely when nothing runs.
 private struct ServersSection: View {
     let model: AppModel
 
     var body: some View {
         let projects = model.runningProjects
+            .sorted { model.projectCpu($0) > model.projectCpu($1) }
         let standalone = model.runningStandalone
+            .sorted { (model.containerStats($0.id)?.cpuValue ?? 0) > (model.containerStats($1.id)?.cpuValue ?? 0) }
         if !projects.isEmpty || !standalone.isEmpty {
             VStack(spacing: 6) {
                 SectionHeader(title: "SERVERS")
@@ -554,13 +557,17 @@ private struct ServersSection: View {
                     ServerRow(
                         title: project.name,
                         count: project.runningCount,
+                        cpuPercent: model.projectCpu(project),
                         onOpen: { model.open(.toolServers) }
                     )
                 }
                 ForEach(standalone) { container in
-                    ServerRow(title: container.name, count: nil) {
-                        model.open(.toolServers)
-                    }
+                    ServerRow(
+                        title: container.name,
+                        count: nil,
+                        cpuPercent: model.containerStats(container.id)?.cpuValue ?? 0,
+                        onOpen: { model.open(.toolServers) }
+                    )
                 }
             }
         }
@@ -568,11 +575,13 @@ private struct ServersSection: View {
 }
 
 /// One running server as a quiet row: a steady dot (infra never pulses — urgency is
-/// claude's vocabulary), the project or container name, and its live-container count.
-/// Tapping opens the Tool Servers screen for the real controls.
+/// claude's vocabulary), the project or container name, its live-container count, and its
+/// CPU share — gold past a full core, the "this is your battery" signal. Tapping opens the
+/// Tool Servers screen for the real controls.
 private struct ServerRow: View {
     let title: String
     let count: Int?
+    let cpuPercent: Double
     let onOpen: () -> Void
 
     @State private var hovering = false
@@ -595,6 +604,13 @@ private struct ServerRow: View {
                     .fixedSize()
             }
             Spacer(minLength: 8)
+            if cpuPercent >= 1 {
+                Text("\(Int(cpuPercent.rounded()))%")
+                    .font(.system(size: 10, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(cpuPercent >= 100 ? Theme.contextWarn : Theme.textTertiary)
+                    .fixedSize()
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)

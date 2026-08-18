@@ -32,7 +32,7 @@ final class ToolServerServiceTests: XCTestCase {
 
         let args = runner.calls.map(\.args)
         XCTAssertTrue(args.contains(["restart", "c1"]))
-        XCTAssertEqual(args.last, ["images", "--format", "json"], "actions re-read state (refresh ends with images)")
+        XCTAssertEqual(args.last, ["stats", "--no-stream", "--format", "json"], "actions re-read state (refresh now ends with the stats sweep)")
         XCTAssertNil(service.busyTarget)
     }
 
@@ -43,6 +43,37 @@ final class ToolServerServiceTests: XCTestCase {
         await service.projectAction(.stop, name: "firecrawl")
 
         XCTAssertTrue(runner.calls.map(\.args).contains(["compose", "-p", "firecrawl", "stop"]))
+    }
+
+    /// Refresh ends with one batch stats sample when anything is running — the power proxy.
+    /// (The fake returns ps JSON for the stats call too, which parses to no entries; the
+    /// contract under test is the CLI invocation, parseAll's correctness is unit-tested.)
+    func testRefreshSamplesStatsForRunningContainers() async {
+        let runner = FakeRunner(result: .success(psJSON))
+        let service = ToolServerService(dockerPath: "/fake/docker", runner: runner)
+
+        await service.refresh()
+
+        XCTAssertTrue(
+            runner.calls.map(\.args).contains(["stats", "--no-stream", "--format", "json"]),
+            "a running container must trigger the batch stats sweep"
+        )
+    }
+
+    func testRefreshSkipsStatsWhenNothingRuns() async {
+        let exitedOnly = """
+        {"ID":"c2","Names":"lonely","Image":"redis:7","State":"exited","Status":"Exited","HealthStatus":"none","Ports":"","Labels":""}
+        """
+        let runner = FakeRunner(result: .success(exitedOnly))
+        let service = ToolServerService(dockerPath: "/fake/docker", runner: runner)
+
+        await service.refresh()
+
+        XCTAssertFalse(
+            runner.calls.map(\.args).contains(["stats", "--no-stream", "--format", "json"]),
+            "no running containers → no stats sweep (docker stats blocks ~2s sampling)"
+        )
+        XCTAssertTrue(service.statsById.isEmpty)
     }
 
     func testRunnerFailureIsLoud() async {
@@ -106,7 +137,7 @@ final class ToolServerServiceTests: XCTestCase {
         XCTAssertTrue(args.contains(["compose", "-p", "firecrawl", "down"]))
         XCTAssertTrue(args.contains(["pull", "firecrawl-api:latest"]))
         XCTAssertTrue(args.contains(["image", "prune", "-f"]))
-        XCTAssertEqual(args.last, ["images", "--format", "json"], "every action re-reads state (refresh ends with images)")
+        XCTAssertEqual(args.last, ["stats", "--no-stream", "--format", "json"], "every action re-reads state (refresh now ends with the stats sweep)")
     }
 
     // MARK: - Add stack (folder → compose config → remembered)

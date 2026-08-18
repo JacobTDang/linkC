@@ -112,6 +112,11 @@ public enum DockerInspect {
 public struct ContainerStats: Equatable, Sendable {
     public let cpu: String
     public let memory: String
+
+    /// Numeric CPU for sorting and thresholds — "188.85%" → 188.85; unparseable → 0.
+    public var cpuValue: Double {
+        Double(cpu.replacingOccurrences(of: "%", with: "")) ?? 0
+    }
 }
 
 public enum DockerStats {
@@ -122,10 +127,26 @@ public enum DockerStats {
         return ContainerStats(cpu: cpu, memory: memory)
     }
 
+    /// The batch sweep: every running container's one-shot figures keyed by container id,
+    /// one JSON line each. Garbage lines are skipped alone.
+    public static func parseAll(_ output: String) -> [String: ContainerStats] {
+        var byId: [String: ContainerStats] = [:]
+        for line in output.split(separator: "\n") {
+            guard let data = line.data(using: .utf8),
+                  let raw = try? JSONDecoder().decode(RawStats.self, from: data),
+                  let id = raw.id, let cpu = raw.cpuPerc, let memory = raw.memUsage
+            else { continue }
+            byId[id] = ContainerStats(cpu: cpu, memory: memory)
+        }
+        return byId
+    }
+
     private struct RawStats: Decodable {
+        let id: String?
         let cpuPerc: String?
         let memUsage: String?
         enum CodingKeys: String, CodingKey {
+            case id = "ID"
             case cpuPerc = "CPUPerc"
             case memUsage = "MemUsage"
         }
