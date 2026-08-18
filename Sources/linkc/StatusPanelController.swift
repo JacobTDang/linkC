@@ -225,20 +225,22 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         updateStatusIcon()
         let current = model.selectedId
         if current != lastSelectedId {
+            let previous = lastSelectedId
             lastSelectedId = current
-            selectionDidChange(to: current)
+            selectionDidChange(from: previous, to: current)
         }
     }
 
     /// A session was selected. If the panel is open, raise it + focus its terminal; if hidden (a
-    /// programmatic focus, e.g. a notification click), open it to reveal the session. Either way,
-    /// make sure the panel is wide enough for the sidebar split.
-    private func selectionDidChange(to id: String?) {
+    /// programmatic focus, e.g. a notification click), open it to reveal the session. Only the
+    /// nil→selected transition widens for the split — switching between sessions must not resize
+    /// (in narrow mode the mini-tab strip is the switcher and a resize would swap it away).
+    private func selectionDidChange(from previous: String?, to id: String?) {
         guard id != nil else { return }
         if panel.isVisible {
             panel.makeKeyAndOrderFront(nil)   // raise on programmatic focus
             focusTerminalIfNeeded()
-            ensureSplitWidth()
+            if previous == nil { ensureSplitWidth() }
         } else {
             present(activating: true)         // panelSize() already accounts for the selection
         }
@@ -274,8 +276,9 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     // MARK: - Sizing
 
     /// The user's persisted (dragged) size, else a small, short default — never below the min.
-    /// While a session is selected the width grows to fit the sidebar split; a wider dragged
-    /// size wins.
+    /// While a session is selected the width grows to fit the sidebar split, but only when the
+    /// persisted width would not fit the split at all — a deliberately kept width between the
+    /// breakpoint and the target is honored.
     private func panelSize() -> CGSize {
         let defaultWidth: CGFloat = 480
         let defaultHeight: CGFloat = 300
@@ -284,7 +287,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         var width = max(w > 0 ? w : defaultWidth, panelMinSize.width)
         // With a terminal open the pane splits into sidebar + terminal — a fresh present
         // starts wide enough for it. A user-dragged size wins when it's already wider.
-        if model.selectedId != nil, width < splitTargetWidth { width = splitTargetWidth }
+        if model.selectedId != nil, width < Theme.splitBreakpoint { width = splitTargetWidth }
         return CGSize(
             width: width,
             height: max(h > 0 ? h : defaultHeight, panelMinSize.height)
