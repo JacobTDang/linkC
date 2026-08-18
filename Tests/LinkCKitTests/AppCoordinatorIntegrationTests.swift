@@ -375,20 +375,25 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         {"type":"tool_use","id":"toolu_A","name":"Agent",\
         "input":{"description":"Survey","subagent_type":"Explore","prompt":"..."}}]}}
         """
-        try (spawn + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+        try "".write(to: transcript, atomically: true, encoding: .utf8)
 
         let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
         let tracker = UsageTracker(projectsDir: dir)
         coordinator.usageTracker = tracker
         _ = coordinator.store.create(cwd: "/tmp", title: "api", id: "L1")
 
-        // 1: userPromptSubmit -> working; the spawn is parsed and its run is running.
+        // 1: userPromptSubmit -> working, on an empty transcript (the turn just began).
         coordinator.handle(HookEvent(
             kind: .userPromptSubmit, linkcSessionId: "L1", claudeSessionId: nil, cwd: "/tmp",
             transcriptPath: transcript.path
         ))
         XCTAssertEqual(coordinator.store.session(id: "L1")?.state, .working)
-        XCTAssertTrue(tracker.sessionAgents("L1").contains(where: \.isRunning), "the spawn must be parsed and running")
+
+        // The spawn lands mid-turn — appended after the submit, the way real spawns arrive.
+        let handle = try XCTUnwrap(FileHandle(forWritingAtPath: transcript.path))
+        handle.seekToEndOfFile()
+        handle.write(Data((spawn + "\n").utf8))
+        try handle.close()
 
         // 2: notificationPermission -> waitingPermission; a mid-turn pause must not sweep.
         coordinator.handle(HookEvent(
@@ -407,5 +412,37 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let runs = tracker.sessionAgents("L1")
         XCTAssertFalse(runs.contains(where: \.isRunning), "the turn ending must sweep the still-running run")
         XCTAssertEqual(runs.first?.endedBySweep, true, "the sweep must flag the run it ended")
+    }
+
+    /// A spawn already in the transcript when a prompt is submitted belongs to an earlier
+    /// turn (a resumed session replays its whole history) — submit must sweep it, or it
+    /// shows as "running" for however long the new turn takes.
+    func testPromptSubmitSweepsRunsFromEarlierTurns() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sweep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let transcript = dir.appendingPathComponent("t.jsonl")
+        let staleSpawn = """
+        {"type":"assistant","timestamp":"2026-07-21T04:00:00Z","message":{"content":[\
+        {"type":"tool_use","id":"toolu_OLD","name":"Agent",\
+        "input":{"description":"Ancient","subagent_type":"Explore","prompt":"..."}}]}}
+        """
+        try (staleSpawn + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        let tracker = UsageTracker(projectsDir: dir)
+        coordinator.usageTracker = tracker
+        _ = coordinator.store.create(cwd: "/tmp", title: "api", id: "L1")
+
+        coordinator.handle(HookEvent(
+            kind: .userPromptSubmit, linkcSessionId: "L1", claudeSessionId: nil, cwd: "/tmp",
+            transcriptPath: transcript.path
+        ))
+
+        let runs = tracker.sessionAgents("L1")
+        XCTAssertEqual(runs.count, 1, "the historical spawn must still be parsed")
+        XCTAssertFalse(runs.contains(where: \.isRunning), "prompt submit must sweep pre-turn runs")
+        XCTAssertEqual(runs.first?.endedBySweep, true)
     }
 }
