@@ -39,7 +39,8 @@ final class AgentEventsTests: XCTestCase {
         """
         let events = AgentEvents.parse(line: line)
         XCTAssertEqual(events.count, 1)
-        guard case .completed(let id, let result, _) = events[0] else { return XCTFail() }
+        guard let first = events.first else { return XCTFail("no events parsed") }
+        guard case .completed(let id, let result, _) = first else { return XCTFail() }
         XCTAssertEqual(id, "toolu_A")
         XCTAssertEqual(result, "Here is the exploration report: 42 findings.")
     }
@@ -52,7 +53,8 @@ final class AgentEventsTests: XCTestCase {
         """
         let events = AgentEvents.parse(line: line)
         XCTAssertEqual(events.count, 1)
-        guard case .completed(let id, let result, _) = events[0] else { return XCTFail() }
+        guard let first = events.first else { return XCTFail("no events parsed") }
+        guard case .completed(let id, let result, _) = first else { return XCTFail() }
         XCTAssertEqual(id, "toolu_A")
         XCTAssertEqual(result, "The full agent report body.")
     }

@@ -151,6 +151,7 @@ struct TerminalCard: View {
         .onTapGesture(perform: onOpen)
         .onHover { hovering = $0 }
         .animation(Theme.hoverEase, value: hovering)
+        .animation(Theme.hoverEase, value: isSelected)
         .help(isRunning ? "Open \(row.title)" : "View \(row.title)'s last output")
     }
 }
