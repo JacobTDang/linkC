@@ -314,11 +314,15 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: cwd) }
 
-        let seed = WorkspaceManifest(directory: dir)
-        seed.upsert(RestorableSession(linkcId: "A", claudeSessionId: nil, cwd: cwd.path, title: "a", endedAt: Date()))
-        seed.upsert(RestorableSession(linkcId: "B", claudeSessionId: nil, cwd: cwd.path, title: "b", endedAt: Date()))
-
+        // Same-folder duplicates can no longer come from disk (load keeps one entry per
+        // folder), but two id-less sessions can still end in the same folder during ONE run —
+        // hooks never bound a claude id, so both would restore as `--continue`.
         let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        try coordinator.newSession(cwd: cwd.path, mode: .new)
+        try coordinator.newSession(cwd: cwd.path, mode: .new)
+        coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+        XCTAssertEqual(coordinator.restorables.count, 2, "both ended sessions must be restorable mid-run")
+
         XCTAssertThrowsError(try coordinator.restoreAll(), "the second same-folder --continue must be refused and surfaced")
         defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
 

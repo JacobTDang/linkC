@@ -25,19 +25,51 @@ final class WorkspaceManifestTests: XCTestCase {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let ended = Date(timeIntervalSince1970: 1_700_000_000)
+        // Recent, whole-second date — an old fixture would age out of the reload below.
+        let ended = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded() - 3600)
         let manifest = WorkspaceManifest(directory: dir)
         manifest.upsert(entry("L1", claude: "c1", cwd: "/a", title: "a"))
         manifest.upsert(entry("L2", claude: nil, cwd: "/b", title: "b", endedAt: ended))
 
-        // A fresh manifest over the same directory must observe exactly what was saved.
+        // A fresh manifest over the same directory must observe what was saved — except that
+        // an entry still live at save time belongs to a run that is now dead, so the reload
+        // stamps its endedAt (recovery is the moment we know it ended).
         let reloaded = WorkspaceManifest(directory: dir)
         XCTAssertEqual(reloaded.entries.count, 2)
-        XCTAssertEqual(reloaded.entries.first { $0.linkcId == "L1" }, entry("L1", claude: "c1", cwd: "/a", title: "a"))
+        let l1 = reloaded.entries.first { $0.linkcId == "L1" }
+        XCTAssertEqual(l1?.claudeSessionId, "c1")
+        XCTAssertEqual(l1?.cwd, "/a")
+        XCTAssertNotNil(l1?.endedAt, "orphaned live entries are stamped at load")
         let l2 = reloaded.entries.first { $0.linkcId == "L2" }
         XCTAssertEqual(l2?.cwd, "/b")
         XCTAssertNil(l2?.claudeSessionId)
         XCTAssertEqual(l2?.endedAt?.timeIntervalSince1970 ?? 0, ended.timeIntervalSince1970, accuracy: 1)
+    }
+
+    /// Retention at load: orphans from a dead run get stamped (their age-out clock starts),
+    /// week-old history drops, and each folder keeps only its newest entry — the Resume…
+    /// launcher still reaches anything older.
+    func testLoadStampsOrphansAgesOutAndDedupesPerFolder() {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(entry("aged", cwd: "/a", endedAt: now.addingTimeInterval(-8 * 24 * 3600)))
+        seed.upsert(entry("dupOld", cwd: "/b", endedAt: now.addingTimeInterval(-7200)))
+        seed.upsert(entry("dupNew", cwd: "/b", endedAt: now.addingTimeInterval(-60)))
+        seed.upsert(entry("orphan", cwd: "/c"))
+
+        let reloaded = WorkspaceManifest(directory: dir, now: now)
+        XCTAssertEqual(Set(reloaded.entries.map(\.linkcId)), ["dupNew", "orphan"])
+        XCTAssertEqual(
+            reloaded.entries.first { $0.linkcId == "orphan" }?.endedAt, now,
+            "a dead run's live entry is stamped at load"
+        )
+
+        // The pruned list is what got persisted — a third open sees the same set.
+        let third = WorkspaceManifest(directory: dir, now: now)
+        XCTAssertEqual(Set(third.entries.map(\.linkcId)), ["dupNew", "orphan"])
     }
 
     func testMissingFileLoadsEmpty() {
@@ -94,7 +126,9 @@ final class WorkspaceManifestTests: XCTestCase {
         manifest.upsert(entry("L1"))
         XCTAssertNil(manifest.entries.first?.endedAt)
 
-        let when = Date(timeIntervalSince1970: 1_700_000_500)
+        // Recent, whole-second date: old fixtures would age out of the reload below, and
+        // ISO8601 persistence rounds to whole seconds.
+        let when = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded() - 3600)
         manifest.markEnded(linkcId: "L1", at: when)
         XCTAssertEqual(manifest.entries.first?.endedAt?.timeIntervalSince1970 ?? 0, when.timeIntervalSince1970, accuracy: 1)
         // Persisted.
@@ -149,9 +183,12 @@ extension WorkspaceManifestTests {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-manifest-\(UUID().uuidString)")
         let manifest = WorkspaceManifest(directory: dir)
         manifest.upsert(RestorableSession(linkcId: "X", cwd: "/tmp", title: "x"))
-        let first = Date(timeIntervalSince1970: 1_000)
+        // Recent, whole-second dates: old fixtures would age out of the reload below, and
+        // ISO8601 persistence rounds to whole seconds.
+        let base = Date().timeIntervalSince1970.rounded()
+        let first = Date(timeIntervalSince1970: base - 7200)
         manifest.markEnded(linkcId: "X", at: first)
-        manifest.markEnded(linkcId: "X", at: Date(timeIntervalSince1970: 2_000))
+        manifest.markEnded(linkcId: "X", at: Date(timeIntervalSince1970: base - 3600))
         XCTAssertEqual(manifest.entries.first?.endedAt, first, "the first endedAt must win")
         XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first?.endedAt, first, "and must be what was persisted")
     }

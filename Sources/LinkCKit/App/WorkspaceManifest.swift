@@ -57,11 +57,35 @@ public final class WorkspaceManifest {
     private let directory: URL
     public private(set) var entries: [RestorableSession]
 
-    public init(directory: URL) {
+    public init(directory: URL, now: Date = Date()) {
         self.directory = directory
         self.fileURL = directory.appendingPathComponent("workspace.json", isDirectory: false)
-        self.entries = WorkspaceManifest.load(from: fileURL)
+        let loaded = WorkspaceManifest.load(from: fileURL)
+        self.entries = WorkspaceManifest.prune(loaded, now: now)
+        if entries != loaded { save() }   // the file self-heals to the pruned set
     }
+
+    /// Retention, applied once per launch: restorable history should stay useful, not
+    /// archaeological. Entries still live in the file belong to a run that is dead by
+    /// definition of loading — stamp them so their age-out clock starts; ended entries
+    /// older than a week drop; and each folder keeps only its newest entry (the Resume…
+    /// launcher still reaches every older conversation through claude's own picker).
+    static func prune(_ entries: [RestorableSession], now: Date) -> [RestorableSession] {
+        var stamped = entries
+        for i in stamped.indices where stamped[i].endedAt == nil {
+            stamped[i].endedAt = now
+        }
+        let fresh = stamped.filter { (now.timeIntervalSince($0.endedAt ?? now)) < Self.maxAge }
+        var newestByFolder: [String: RestorableSession] = [:]
+        for entry in fresh {
+            if let kept = newestByFolder[entry.cwd],
+               (kept.endedAt ?? now) >= (entry.endedAt ?? now) { continue }
+            newestByFolder[entry.cwd] = entry
+        }
+        return fresh.filter { newestByFolder[$0.cwd]?.linkcId == $0.linkcId }
+    }
+
+    private static let maxAge: TimeInterval = 7 * 24 * 3600
 
     /// Insert `entry`, or replace the existing entry with the same linkC id. Persists.
     public func upsert(_ entry: RestorableSession) {
