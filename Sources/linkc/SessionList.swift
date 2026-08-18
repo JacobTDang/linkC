@@ -47,8 +47,12 @@ struct SessionListColumn: View {
                         TerminalsSection(model: model, selectedId: selectedId, compact: compact)
                     }
                 }
-                if !model.restorables.isEmpty {
-                    EarlierSection(model: model, compact: compact)
+                // The sidebar is for what's live: running servers ride here, and restorable
+                // history stays on home — restoring is a home decision, not a mid-session one.
+                if compact {
+                    ServersSection(model: model)
+                } else if !model.restorables.isEmpty {
+                    EarlierSection(model: model)
                 }
             }
             .readingColumn()
@@ -173,7 +177,6 @@ private struct TerminalsSection: View {
 /// restorable session.
 private struct EarlierSection: View {
     let model: AppModel
-    var compact: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -205,21 +208,11 @@ private struct EarlierSection: View {
             .padding(.horizontal, 4)
             .padding(.bottom, 4)
             ForEach(model.restorables) { session in
-                Group {
-                    if compact {
-                        CompactRestorableRow(
-                            session: session,
-                            onRestore: { model.restore(session) },
-                            onDismiss: { model.dismiss(session) }
-                        )
-                    } else {
-                        RestorableRow(
-                            session: session,
-                            onRestore: { model.restore(session) },
-                            onDismiss: { model.dismiss(session) }
-                        )
-                    }
-                }
+                RestorableRow(
+                    session: session,
+                    onRestore: { model.restore(session) },
+                    onDismiss: { model.dismiss(session) }
+                )
                 .transition(reduceMotion
                     ? .opacity
                     : .scale(scale: 0.97, anchor: .top).combined(with: .opacity))
@@ -542,49 +535,76 @@ private struct CompactTerminalRow: View {
     }
 }
 
-/// Sidebar-density restorable row: dot, title, Restore. The path and ended-at stamp are home
-/// detail — at rail width they truncate into noise and starve the Restore label into a
-/// letter stack.
-private struct CompactRestorableRow: View {
-    let session: RestorableSession
-    let onRestore: () -> Void
-    let onDismiss: () -> Void
+// MARK: - Servers (sidebar)
+
+/// The sidebar's running-servers section: compose projects with live containers, then
+/// standalone running containers — read-only pointers into the Tool Servers screen. Hidden
+/// entirely when nothing runs (the sidebar never states an absence).
+private struct ServersSection: View {
+    let model: AppModel
+
+    var body: some View {
+        let projects = model.runningProjects
+        let standalone = model.runningStandalone
+        if !projects.isEmpty || !standalone.isEmpty {
+            VStack(spacing: 6) {
+                SectionHeader(title: "SERVERS")
+                    .padding(.top, 6)
+                ForEach(projects) { project in
+                    ServerRow(
+                        title: project.name,
+                        count: project.runningCount,
+                        onOpen: { model.open(.toolServers) }
+                    )
+                }
+                ForEach(standalone) { container in
+                    ServerRow(title: container.name, count: nil) {
+                        model.open(.toolServers)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One running server as a quiet row: a steady dot (infra never pulses — urgency is
+/// claude's vocabulary), the project or container name, and its live-container count.
+/// Tapping opens the Tool Servers screen for the real controls.
+private struct ServerRow: View {
+    let title: String
+    let count: Int?
+    let onOpen: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 8) {
-            StatusDot(state: .ended)
-            Text(session.title)
+            Circle()
+                .fill(Theme.textSecondary)
+                .frame(width: 8, height: 8)
+                .frame(width: 18, height: 18)  // StatusDot's box, minus its glow
+            Text(title)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Theme.textSecondary)
+                .foregroundStyle(Theme.textPrimary)
                 .lineLimit(1)
-            Spacer(minLength: 8)
-            Button(action: onRestore) {
-                Text("Restore")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
+            if let count, count > 1 {
+                Text("\(count)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textTertiary)
                     .fixedSize()
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help("Resume this session")
-            Button(action: onDismiss) {
-                CompactRowGlyph()
-            }
-            .buttonStyle(.plain)
-            .opacity(hovering ? 1 : 0)
-            .help("Dismiss")
+            Spacer(minLength: 8)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                .fill(hovering ? Theme.hover : Color.clear)
-        )
-        .animation(Theme.hoverEase, value: hovering)
+        .planeCard(hovering: hovering)
+        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
+        .onTapGesture(perform: onOpen)
         .onHover { hovering = $0 }
+        .animation(Theme.hoverEase, value: hovering)
+        .help("Open Tool Servers")
     }
 }
 
