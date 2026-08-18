@@ -39,7 +39,8 @@ final class AgentEventsTests: XCTestCase {
         """
         let events = AgentEvents.parse(line: line)
         XCTAssertEqual(events.count, 1)
-        guard case .completed(let id, let result, _) = events[0] else { return XCTFail() }
+        guard let first = events.first else { return XCTFail("no events parsed") }
+        guard case .completed(let id, let result, _) = first else { return XCTFail() }
         XCTAssertEqual(id, "toolu_A")
         XCTAssertEqual(result, "Here is the exploration report: 42 findings.")
     }
@@ -52,7 +53,8 @@ final class AgentEventsTests: XCTestCase {
         """
         let events = AgentEvents.parse(line: line)
         XCTAssertEqual(events.count, 1)
-        guard case .completed(let id, let result, _) = events[0] else { return XCTFail() }
+        guard let first = events.first else { return XCTFail("no events parsed") }
+        guard case .completed(let id, let result, _) = first else { return XCTFail() }
         XCTAssertEqual(id, "toolu_A")
         XCTAssertEqual(result, "The full agent report body.")
     }
@@ -60,6 +62,50 @@ final class AgentEventsTests: XCTestCase {
     func testGarbageAndUnrelatedLinesAreEmpty() {
         XCTAssertTrue(AgentEvents.parse(line: "not json").isEmpty)
         XCTAssertTrue(AgentEvents.parse(line: #"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#).isEmpty)
+    }
+
+    func testStringContentToolResultCompletes() throws {
+        // Real transcripts sometimes carry tool_result content as a bare string, not a block array.
+        let line = """
+        {"type":"user","timestamp":"2026-07-23T04:05:00Z","message":{"content":[\
+        {"type":"tool_result","tool_use_id":"toolu_A","content":"plain string result"}]}}
+        """
+        let events = AgentEvents.parse(line: line)
+        XCTAssertEqual(events.count, 1)
+        guard let first = events.first else { return XCTFail("no events parsed") }
+        guard case .completed(let id, let result, _) = first else { return XCTFail() }
+        XCTAssertEqual(id, "toolu_A")
+        XCTAssertEqual(result, "plain string result")
+    }
+
+    func testMalformedBlockDoesNotDropSiblings() throws {
+        // One undecodable block (input as a bare string) must not erase the whole line's events.
+        let line = """
+        {"type":"assistant","timestamp":"2026-07-23T04:00:00Z","message":{"content":[\
+        {"type":"tool_use","id":"toolu_X","name":"Agent","input":"garbage-shape"},\
+        {"type":"tool_use","id":"toolu_A","name":"Agent",\
+        "input":{"description":"Survey","subagent_type":"Explore"}}]}}
+        """
+        let events = AgentEvents.parse(line: line)
+        XCTAssertEqual(events.count, 1)
+        guard let first = events.first else { return XCTFail("no events parsed") }
+        guard case .spawned(let id, let description, _, _) = first else { return XCTFail() }
+        XCTAssertEqual(id, "toolu_A")
+        XCTAssertEqual(description, "Survey")
+    }
+
+    func testEmptyToolResultStillCompletes() throws {
+        // A completion with no text is still a completion — dropping it strands the run as "running".
+        let line = """
+        {"type":"user","timestamp":"2026-07-23T04:05:00Z","message":{"content":[\
+        {"type":"tool_result","tool_use_id":"toolu_A","content":[]}]}}
+        """
+        let events = AgentEvents.parse(line: line)
+        XCTAssertEqual(events.count, 1)
+        guard let first = events.first else { return XCTFail("no events parsed") }
+        guard case .completed(let id, let result, _) = first else { return XCTFail() }
+        XCTAssertEqual(id, "toolu_A")
+        XCTAssertNil(result)
     }
 
     func testAssemblerPairsSpawnsWithCompletions() {
@@ -80,6 +126,81 @@ final class AgentEventsTests: XCTestCase {
         // Completion for an unknown id is a quiet no-op.
         assembler.feed([.completed(toolUseId: "toolu_ghost", resultText: nil, at: t0)])
         XCTAssertEqual(assembler.runs.count, 2)
+    }
+
+    func testEndAllRunningSweepsOpenRuns() {
+        var assembler = AgentAssembler()
+        let t0 = Date(timeIntervalSince1970: 1_784_692_800)
+        assembler.feed([
+            .spawned(toolUseId: "toolu_A", description: "Survey", type: "Explore", at: t0),
+            .spawned(toolUseId: "toolu_B", description: "Design", type: "Plan", at: t0),
+        ])
+        assembler.feed([.completed(toolUseId: "toolu_A", resultText: "done", at: t0.addingTimeInterval(60))])
+
+        assembler.endAllRunning(at: t0.addingTimeInterval(90))
+
+        let a = assembler.runs.first { $0.id == "toolu_A" }!
+        XCTAssertEqual(a.endedAt, t0.addingTimeInterval(60), "already-ended runs keep their real end")
+        XCTAssertFalse(a.endedBySweep, "the already-completed run keeps false")
+        let b = assembler.runs.first { $0.id == "toolu_B" }!
+        XCTAssertFalse(b.isRunning)
+        XCTAssertEqual(b.endedAt, t0.addingTimeInterval(90))
+        XCTAssertNil(b.resultText)
+        XCTAssertTrue(b.endedBySweep, "the sweep-ended run is flagged")
+    }
+
+    func testLateCompletionFillsSweptRun() {
+        var assembler = AgentAssembler()
+        let t0 = Date(timeIntervalSince1970: 1_784_692_800)
+        assembler.feed([.spawned(toolUseId: "toolu_A", description: "Survey", type: "Explore", at: t0)])
+        assembler.endAllRunning(at: t0.addingTimeInterval(90))
+        assembler.feed([.completed(toolUseId: "toolu_A", resultText: "late report", at: t0.addingTimeInterval(120))])
+
+        XCTAssertEqual(assembler.runs[0].resultText, "late report", "the body we were missing arrives")
+        XCTAssertEqual(assembler.runs[0].endedAt, t0.addingTimeInterval(120), "the real completion overwrites the sweep stamp")
+        XCTAssertFalse(assembler.runs[0].endedBySweep, "a real completion clears the sweep flag")
+    }
+
+    func testRealCompletionThenDuplicateKeepsFirstEnd() {
+        var assembler = AgentAssembler()
+        let t0 = Date(timeIntervalSince1970: 1_784_692_800)
+        assembler.feed([.spawned(toolUseId: "toolu_A", description: "Survey", type: "Explore", at: t0)])
+        assembler.feed([.completed(toolUseId: "toolu_A", resultText: "done", at: t0.addingTimeInterval(60))])
+        assembler.feed([.completed(toolUseId: "toolu_A", resultText: "dupe", at: t0.addingTimeInterval(120))])
+
+        XCTAssertEqual(assembler.runs[0].endedAt, t0.addingTimeInterval(60), "the first real end is kept")
+        XCTAssertEqual(assembler.runs[0].resultText, "done", "a duplicate completion does not overwrite the first result")
+    }
+}
+
+/// The tracker-level sweep: refresh reads the spawn from the transcript; the sweep then
+/// ends anything the transcript never closed out.
+final class AgentSweepTrackerTests: XCTestCase {
+    @MainActor
+    func testSweepEndsRunningAgents() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-sweep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcript = dir.appendingPathComponent("t.jsonl")
+        let spawn = """
+        {"type":"assistant","timestamp":"2026-07-23T04:00:00Z","message":{"content":[\
+        {"type":"tool_use","id":"toolu_A","name":"Agent",\
+        "input":{"description":"Survey","subagent_type":"Explore","prompt":"..."}}]}}
+        """
+        try (spawn + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let tracker = UsageTracker(projectsDir: dir)
+        tracker.bind(sessionId: "S1", transcriptPath: transcript.path)
+        tracker.refreshSession("S1")
+        XCTAssertTrue(tracker.sessionAgents("S1").contains(where: \.isRunning))
+
+        tracker.sweepAgents("S1", at: Date(timeIntervalSince1970: 1_784_779_260))
+
+        let runs = tracker.sessionAgents("S1")
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertFalse(runs[0].isRunning)
+        XCTAssertEqual(runs[0].endedAt, Date(timeIntervalSince1970: 1_784_779_260))
     }
 }
 

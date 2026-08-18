@@ -46,11 +46,12 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     /// genuine `selectedId` transition resizes or auto-opens the panel.
     private var lastSelectedId: String?
 
-    /// Widths: compact when nothing is selected, expanded when a session is. Height is derived
-    /// from the screen (nearly full), so only the width is a stored preference.
-    /// One consistent size — a wide rectangle hanging from the icon — regardless of selection. The
-    /// user's dragged size is persisted and wins; otherwise a wide default proportional to the screen.
+    /// Width: the user's persisted size, widened for the sidebar split while a session is
+    /// selected. Height derives from the persisted size too.
     private let panelMinSize = CGSize(width: 340, height: 220)
+    /// Comfortable width for the split (sidebar + terminal). Selection grows the panel to
+    /// this when it's too narrow for the split; it never shrinks the panel.
+    private let splitTargetWidth: CGFloat = 760
     /// Gap below the menu bar / in from the screen edge.
     private let edgeGap: CGFloat = 8
 
@@ -224,21 +225,40 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         updateStatusIcon()
         let current = model.selectedId
         if current != lastSelectedId {
+            let previous = lastSelectedId
             lastSelectedId = current
-            selectionDidChange(to: current)
+            selectionDidChange(from: previous, to: current)
         }
     }
 
     /// A session was selected. If the panel is open, raise it + focus its terminal; if hidden (a
-    /// programmatic focus, e.g. a notification click), open it to reveal the session. No resize —
-    /// the panel keeps its one consistent size.
-    private func selectionDidChange(to id: String?) {
+    /// programmatic focus, e.g. a notification click), open it to reveal the session. Only the
+    /// nil→selected transition widens for the split — switching between sessions must not resize
+    /// (in narrow mode the mini-tab strip is the switcher and a resize would swap it away).
+    private func selectionDidChange(from previous: String?, to id: String?) {
         guard id != nil else { return }
         if panel.isVisible {
             panel.makeKeyAndOrderFront(nil)   // raise on programmatic focus
             focusTerminalIfNeeded()
+            if previous == nil { ensureSplitWidth() }
         } else {
-            present(activating: true)
+            present(activating: true)         // panelSize() already accounts for the selection
+        }
+    }
+
+    /// Grow a too-narrow panel leftward (top-right stays anchored) so the split fits. Only
+    /// ever widens — and only below the split's breakpoint, so a user who deliberately keeps
+    /// the panel between the breakpoint and the target is left alone.
+    private func ensureSplitWidth() {
+        guard panel.frame.width < Theme.splitBreakpoint else { return }
+        var frame = panel.frame
+        frame.origin.x = frame.maxX - splitTargetWidth
+        frame.size.width = splitTargetWidth
+        frame = clampToScreen(frame)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(frame, display: true)
         }
     }
 
@@ -255,17 +275,21 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     // MARK: - Sizing
 
-    /// One consistent size: the user's persisted (dragged) size, else a wide default proportional
-    /// to the screen — never below the min.
-    /// One consistent size: the user's persisted (dragged) size, else a small, short default —
-    /// resize when you want more room to work; it persists.
+    /// The user's persisted (dragged) size, else a small, short default — never below the min.
+    /// While a session is selected the width grows to fit the sidebar split, but only when the
+    /// persisted width would not fit the split at all — a deliberately kept width between the
+    /// breakpoint and the target is honored.
     private func panelSize() -> CGSize {
         let defaultWidth: CGFloat = 480
         let defaultHeight: CGFloat = 300
         let w = UserDefaults.standard.double(forKey: SizeKey.width)
         let h = UserDefaults.standard.double(forKey: SizeKey.height)
+        var width = max(w > 0 ? w : defaultWidth, panelMinSize.width)
+        // With a terminal open the pane splits into sidebar + terminal — a fresh present
+        // starts wide enough for it. A user-dragged size wins when it's already wider.
+        if model.selectedId != nil, width < Theme.splitBreakpoint { width = splitTargetWidth }
         return CGSize(
-            width: max(w > 0 ? w : defaultWidth, panelMinSize.width),
+            width: width,
             height: max(h > 0 ? h : defaultHeight, panelMinSize.height)
         )
     }
