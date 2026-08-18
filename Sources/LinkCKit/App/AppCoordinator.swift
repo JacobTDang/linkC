@@ -141,10 +141,21 @@ public final class AppCoordinator {
         let outcome = store.apply(event)
         guard let session = outcome.session else { return } // unknown / external session
 
-        // Every hook event names the session's transcript — bind it and refresh usage.
-        if let transcriptPath = event.transcriptPath, let tracker = usageTracker {
-            tracker.bind(sessionId: session.id, transcriptPath: transcriptPath)
+        if let tracker = usageTracker {
+            // Every hook event names the session's transcript — bind it and refresh usage.
+            if let transcriptPath = event.transcriptPath {
+                tracker.bind(sessionId: session.id, transcriptPath: transcriptPath)
+            }
             tracker.refreshSession(session.id)
+            // The refresh above applies any real completions first; only then does the
+            // backstop end whatever the transcript never closed out. Both turn boundaries
+            // sweep: at turn end nothing sync survives, and at prompt submit anything
+            // already parsed belongs to an earlier turn (a resumed session replays its
+            // whole history — those spawns would otherwise show as running for the entire
+            // first turn). Late async completions still resurface via the sweep flag.
+            if turnIsOver(session.state) || event.kind == .userPromptSubmit {
+                tracker.sweepAgents(session.id)
+            }
         }
 
         // Keep the manifest's claude conversation id current so a later restore can `--resume`
@@ -167,6 +178,16 @@ public final class AppCoordinator {
             isWatchingThisSession: isWatching(session.id)
         ) {
             notifications.post(session: session)
+        }
+    }
+
+    /// States in which no subagent can legitimately still be running. `.working`/`.starting`
+    /// are live; `.waitingPermission` pauses mid-turn — a sync subagent may be alive behind
+    /// the permission prompt, so it must not sweep.
+    private func turnIsOver(_ state: SessionState) -> Bool {
+        switch state {
+        case .ready, .waitingIdle, .finished, .error, .ended: return true
+        case .starting, .working, .waitingPermission: return false
         }
     }
 

@@ -14,6 +14,8 @@ public struct AgentRun: Equatable, Sendable, Identifiable {
     public let startedAt: Date
     public var endedAt: Date?
     public var resultText: String?
+    /// True when the turn-over backstop ended this run rather than a real completion.
+    public var endedBySweep: Bool = false
 
     public var isRunning: Bool { endedAt == nil }
 }
@@ -43,9 +45,11 @@ public enum AgentEvents {
                     ))
                 }
                 if block.type == "tool_result", let id = block.toolUseId {
-                    let text = (block.content ?? []).compactMap(\.text).joined(separator: "\n")
-                    guard !text.isEmpty, !text.hasPrefix(asyncLaunchMarker) else { continue }
-                    events.append(.completed(toolUseId: id, resultText: text, at: timestamp))
+                    let text = block.content?.joinedText ?? ""
+                    // Async agents' immediate tool_result is launch metadata, not a completion.
+                    guard !text.hasPrefix(asyncLaunchMarker) else { continue }
+                    // An empty result still completes the run — dropping it strands the run as running.
+                    events.append(.completed(toolUseId: id, resultText: text.isEmpty ? nil : text, at: timestamp))
                 }
                 if block.type == "text", let text = block.text {
                     events.append(contentsOf: notificationCompletions(in: text, at: timestamp))
@@ -96,6 +100,8 @@ public enum AgentEvents {
     }
 
     /// User-message content is a string OR a block array; both occur in real transcripts.
+    /// Blocks decode individually — one malformed block is skipped alone rather than
+    /// discarding every event in the line.
     private enum RawContent: Decodable {
         case text(String)
         case blocks([RawBlock])
@@ -105,8 +111,19 @@ public enum AgentEvents {
             if let text = try? container.decode(String.self) {
                 self = .text(text)
             } else {
-                self = .blocks((try? container.decode([RawBlock].self)) ?? [])
+                let failables = (try? container.decode([FailableBlock].self)) ?? []
+                self = .blocks(failables.compactMap(\.block))
             }
+        }
+    }
+
+    /// Always decodes; `block` is nil when the element didn't match `RawBlock`. Wrapping each
+    /// element keeps the array's decode cursor advancing past bad entries.
+    private struct FailableBlock: Decodable {
+        let block: RawBlock?
+
+        init(from decoder: Decoder) throws {
+            block = try? RawBlock(from: decoder)
         }
     }
 
@@ -117,7 +134,7 @@ public enum AgentEvents {
         let text: String?
         let input: RawInput?
         let toolUseId: String?
-        let content: [RawResultContent]?
+        let content: RawResultPayload?
 
         enum CodingKeys: String, CodingKey {
             case type, id, name, text, input, content
@@ -138,6 +155,28 @@ public enum AgentEvents {
     private struct RawResultContent: Decodable {
         let text: String?
     }
+
+    /// tool_result content: a block array in most transcripts, a bare string in some.
+    private enum RawResultPayload: Decodable {
+        case text(String)
+        case blocks([RawResultContent])
+
+        var joinedText: String {
+            switch self {
+            case .text(let string): return string
+            case .blocks(let blocks): return blocks.compactMap(\.text).joined(separator: "\n")
+            }
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let text = try? container.decode(String.self) {
+                self = .text(text)
+            } else {
+                self = .blocks(try container.decode([RawResultContent].self))
+            }
+        }
+    }
 }
 
 /// Pairs spawns with completions across incremental feeds. Completions for unknown ids are
@@ -156,12 +195,25 @@ public struct AgentAssembler: Sendable {
                                      startedAt: at, endedAt: nil, resultText: nil))
             case .completed(let id, let resultText, let at):
                 guard let index = runs.firstIndex(where: { $0.id == id }) else { continue }
-                guard runs[index].endedAt == nil else { continue }
-                runs[index].endedAt = at
-                runs[index].resultText = resultText
+                // A real completion outranks the sweep's guess — take its timestamp so the run
+                // surfaces in the recent-completion window. The first real end is otherwise kept.
+                if runs[index].endedAt == nil || runs[index].endedBySweep {
+                    runs[index].endedAt = at
+                    runs[index].endedBySweep = false
+                }
+                if runs[index].resultText == nil { runs[index].resultText = resultText }
             }
         }
         // Bound memory on marathon sessions: keep the most recent 30 runs.
         if runs.count > 30 { runs.removeFirst(runs.count - 30) }
+    }
+
+    /// Turn-over backstop: the transcript never closed these runs out — end them now, so a
+    /// lost completion can't show a subagent as running forever.
+    public mutating func endAllRunning(at date: Date) {
+        for index in runs.indices where runs[index].endedAt == nil {
+            runs[index].endedAt = date
+            runs[index].endedBySweep = true
+        }
     }
 }

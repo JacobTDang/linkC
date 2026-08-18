@@ -75,6 +75,11 @@ enum Theme {
     /// margin and a breathing gap to the content column.
     static let dockInset: CGFloat = 62
 
+    // The sidebar split: with a terminal open and at least `splitBreakpoint` of pane width,
+    // the home list rides beside the terminal as a fixed column instead of the mini-tab strip.
+    static let splitBreakpoint: CGFloat = 600
+    static let sidebarWidth: CGFloat = 260
+
     // Motion — one orchestrated system. Springs/slides are gated behind Reduce Motion at the call
     // site (which swaps them for a crossfade); these are the tuned parameters everything shares.
     static let sectionSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)

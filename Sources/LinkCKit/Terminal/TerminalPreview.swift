@@ -45,8 +45,13 @@ public enum TerminalPreview {
             "Press up to edit queued messages",
         ]
         if bannerPrefixes.contains(where: t.hasPrefix) { return true }
+        // The spinner row carries its token counter ("Boondoggling… (50s · ↓2.5k tokens …")
+        // even when a narrow pane cuts off the "esc to interrupt" hint that usually marks it.
+        if t.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil {
+            return true
+        }
         return t.range(
-            of: #"^(\d+ MCP servers? needs? authentication|Approaching [\w ]{0,24}usage limit)\b"#,
+            of: #"^(\d+ MCP servers? needs? authentication|Approaching [\w ]{0,24}usage limit|You've used \d+% of your session limit)\b"#,
             options: .regularExpression
         ) != nil
     }
