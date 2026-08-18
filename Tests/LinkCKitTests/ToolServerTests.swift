@@ -130,6 +130,26 @@ final class DockerStatsTests: XCTestCase {
     func testGarbageIsNil() {
         XCTAssertNil(DockerStats.parse("no json"))
     }
+
+    /// The batch sweep — one line per running container, keyed by id — is the sidebar's
+    /// power proxy. Garbage lines are skipped alone; cpuValue turns "188.85%" numeric.
+    func testParseAllKeysByIdAndSkipsGarbage() {
+        let output = """
+        {"ID":"abc123","Name":"firecrawl-playwright-service-1","CPUPerc":"188.85%","MemUsage":"1.2GiB / 8GiB"}
+        not json
+        {"ID":"def456","Name":"firecrawl-rabbitmq-1","CPUPerc":"48.73%","MemUsage":"200MiB / 8GiB"}
+        """
+        let stats = DockerStats.parseAll(output)
+        XCTAssertEqual(stats.count, 2)
+        XCTAssertEqual(stats["abc123"]?.cpu, "188.85%")
+        XCTAssertEqual(stats["abc123"]?.cpuValue ?? 0, 188.85, accuracy: 0.01)
+        XCTAssertEqual(stats["def456"]?.memory, "200MiB / 8GiB")
+        XCTAssertEqual(stats["def456"]?.cpuValue ?? 0, 48.73, accuracy: 0.01)
+    }
+
+    func testCpuValueToleratesUnparseable() {
+        XCTAssertEqual(ContainerStats(cpu: "--", memory: "").cpuValue, 0)
+    }
 }
 
 /// `docker images --format json`: newline-delimited; dangling = `<none>` repository.
