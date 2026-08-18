@@ -426,9 +426,11 @@ private struct TerminalHero: View {
     }
 
     /// Re-resolve the opened agent so a completion arriving mid-read fills the body in.
+    /// Resolved against the full run list, not `visibleAgents` — a swept run leaves the
+    /// visible set, and the reader must not freeze on its "still working" snapshot.
     private func currentAgent(_ agent: AgentRun) -> AgentRun {
         guard let id = model.selectedId else { return agent }
-        return model.visibleAgents(id).first { $0.id == agent.id } ?? agent
+        return model.usage.sessionAgents(id).first { $0.id == agent.id } ?? agent
     }
 
     /// Restyle the live terminal to the tokens from the panel side (the Terminal module is left
