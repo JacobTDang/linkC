@@ -66,11 +66,16 @@ final class FakeRunner: ProcessRunner, @unchecked Sendable {
     struct Call: Equatable { let executable: String; let args: [String] }
     private let lock = NSLock()
     private var recorded: [Call] = []
-    private let result: Result<String, Error>
+    private var _result: Result<String, Error>
 
     var calls: [Call] { lock.withLock { recorded } }
+    /// Swappable mid-test: flip to .failure to simulate a blip after a good first call.
+    var result: Result<String, Error> {
+        get { lock.withLock { _result } }
+        set { lock.withLock { _result = newValue } }
+    }
 
-    init(result: Result<String, Error>) { self.result = result }
+    init(result: Result<String, Error>) { self._result = result }
 
     func run(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> String {
         lock.withLock { recorded.append(Call(executable: executable, args: args)) }
