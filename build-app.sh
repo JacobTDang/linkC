@@ -67,5 +67,13 @@ if [[ "${1:-}" == "--install" ]]; then
     exit 1
   fi
   ditto "$APP" "/Applications/$NAME.app"
+  # The installed copy learns where fresh builds land, so it can offer
+  # "Update ready — Install & restart" when this dist bundle changes.
+  /usr/libexec/PlistBuddy -c "Add :LinkCSourceDist string $APP" \
+    "/Applications/$NAME.app/Contents/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Set :LinkCSourceDist $APP" \
+      "/Applications/$NAME.app/Contents/Info.plist"
+  # Re-sign: the plist edit invalidated the ad-hoc signature.
+  codesign --force --deep --sign - "/Applications/$NAME.app"
   echo "==> Installed: /Applications/$NAME.app"
 fi
