@@ -29,18 +29,35 @@ public enum UpdateCheck {
     }
 }
 
-/// The swap itself: a detached shell script that outlives the app. Order matters — wait
-/// for the app's PID to actually exit (replacing a running bundle invites Gatekeeper and
-/// half-copied-state weirdness), then copy, then relaunch.
+/// The swap itself: a detached shell script that outlives the app. It stages the copy
+/// beside the installed bundle, re-stamps `LinkCSourceDist` (dist's plist never carries
+/// it — without this the FIRST in-app update would kill detection forever) and re-signs,
+/// then atomically replaces the old bundle. The relaunch sits OUTSIDE the success branch:
+/// a failed staging (deleted dist, disk full) leaves the installed app untouched and
+/// still brings it back. The script deletes itself last.
 public enum UpdateSwap {
     public static func script(pid: Int32, distPath: String, installPath: String) -> String {
         let dist = shellQuoted(distPath)
         let install = shellQuoted(installPath)
+        let stage = shellQuoted(installPath + ".update")
+        let stagePlist = shellQuoted(installPath + ".update/Contents/Info.plist")
+        // PlistBuddy takes the rest of the -c string as the value, spaces included; the
+        // whole command is one shell-quoted argument.
+        let stamp = shellQuoted("Add :LinkCSourceDist string \(distPath)")
         return """
         #!/bin/sh
         while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
-        ditto \(dist) \(install)
+        rm -rf \(stage)
+        if ditto \(dist) \(stage) \\
+           && /usr/libexec/PlistBuddy -c \(stamp) \(stagePlist) \\
+           && codesign --force --deep --sign - \(stage); then
+          rm -rf \(install)
+          mv \(stage) \(install)
+        else
+          rm -rf \(stage)
+        fi
         open \(install)
+        rm -- "$0"
         """
     }
 
