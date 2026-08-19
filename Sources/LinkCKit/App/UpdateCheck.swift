@@ -50,6 +50,7 @@ public enum UpdateSwap {
         rm -rf \(stage)
         if ditto \(dist) \(stage) \\
            && /usr/libexec/PlistBuddy -c \(stamp) \(stagePlist) \\
+           && xattr -cr \(stage) \\
            && codesign --force --deep --sign - \(stage); then
           rm -rf \(install)
           mv \(stage) \(install)

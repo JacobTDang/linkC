@@ -60,7 +60,12 @@ final class UpdateSwapTests: XCTestCase {
         let wait = try XCTUnwrap(script.range(of: "kill -0 12345"))
         let stage = try XCTUnwrap(script.range(of: "if ditto"))
         let stamp = try XCTUnwrap(script.range(of: "Add :LinkCSourceDist"))
+        // iCloud-synced folders stamp Finder xattrs that codesign rejects as detritus —
+        // the staged bundle must be cleaned before re-signing, same as build-app.sh does.
+        let clean = try XCTUnwrap(script.range(of: "xattr -cr"))
         let sign = try XCTUnwrap(script.range(of: "codesign"))
+        XCTAssertLessThan(stamp.lowerBound, clean.lowerBound)
+        XCTAssertLessThan(clean.lowerBound, sign.lowerBound, "clean xattrs before re-signing")
         let swap = try XCTUnwrap(script.range(of: "mv "))
         let launch = try XCTUnwrap(script.range(of: "open "))
         let cleanup = try XCTUnwrap(script.range(of: #"rm -- "$0""#))
