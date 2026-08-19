@@ -149,6 +149,7 @@ final class AppModel {
             self.toolServers = ToolServerService()
             let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             self.recents = RecentFoldersStore(directory: support.appendingPathComponent("linkC", isDirectory: true))
+            self.oracle = OracleService()
         } catch {
             setupError = error.localizedDescription
         }
@@ -166,6 +167,18 @@ final class AppModel {
     private(set) var toolServers: ToolServerService?
     /// Folders sessions/terminals were launched in — backs the empty state's one-tap chips.
     private(set) var recents: RecentFoldersStore?
+    /// Oracle compute through the user's own `oci` CLI — a permanent quiet no-op when
+    /// the CLI or its config is absent.
+    private(set) var oracle: OracleService?
+
+    var cloudInstances: [OracleInstance] { oracle?.instances ?? [] }
+
+    /// Cloud calls are slow and rate-limited — refresh on panel open + every ~120s,
+    /// never the local 15s loop.
+    private func refreshCloud() {
+        guard let oracle, oracle.ociPath != nil else { return }
+        Task { await oracle.refresh() }
+    }
 
     /// The empty state shows up to three recent launch folders as chips.
     var recentFolders: [String] { Array((recents?.paths ?? []).prefix(3)) }
@@ -403,6 +416,7 @@ final class AppModel {
             usage.refreshWindow()
             refreshServers()
             checkForUpdate()
+            refreshCloud()
             usageTicks = 0
             usageTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in
@@ -415,6 +429,8 @@ final class AppModel {
                         self.usage.refreshWindow()
                         self.checkForUpdate()
                     }
+                    // Cloud is slowest and rate-limited: every 120s is plenty.
+                    if self.usageTicks % 24 == 0 { self.refreshCloud() }
                     // Docker state drifts slowly; every 15s keeps SERVERS honest cheaply.
                     if self.usageTicks % 3 == 0 { self.refreshServers() }
                 }
