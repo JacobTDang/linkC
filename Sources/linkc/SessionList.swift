@@ -47,10 +47,12 @@ struct SessionListColumn: View {
                         TerminalsSection(model: model, selectedId: selectedId, compact: compact)
                     }
                 }
-                // The sidebar is for what's live: running servers ride here, and restorable
-                // history stays on home — restoring is a home decision, not a mid-session one.
+                // The sidebar is for what's live: running servers and cloud boxes ride
+                // here, and restorable history stays on home — restoring is a home
+                // decision, not a mid-session one.
                 if compact {
                     ServersSection(model: model)
+                    CloudSection(model: model)
                 } else if !model.restorables.isEmpty {
                     EarlierSection(model: model)
                 }
@@ -657,6 +659,72 @@ private struct ServerRow: View {
         .onHover { hovering = $0 }
         .animation(Theme.hoverEase, value: hovering)
         .help("Open Tool Servers")
+    }
+}
+
+// MARK: - Cloud (sidebar)
+
+/// The sidebar's cloud section — Oracle compute instances through the user's own `oci`
+/// CLI (linkC never holds credentials). Hidden entirely when the CLI, config, or
+/// instances are absent. The Oracle console is the drill-in: tapping opens it.
+private struct CloudSection: View {
+    let model: AppModel
+
+    var body: some View {
+        let instances = model.cloudInstances
+        if !instances.isEmpty {
+            VStack(spacing: 6) {
+                SectionHeader(title: "CLOUD")
+                    .padding(.top, 6)
+                ForEach(instances) { instance in
+                    CloudRow(instance: instance)
+                }
+            }
+        }
+    }
+}
+
+/// One cloud box as a quiet row: a steady dot (running reads like a dev terminal, not a
+/// claude state — infra never pulses), the instance name, its state when it isn't
+/// running, and the region.
+private struct CloudRow: View {
+    let instance: OracleInstance
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(instance.isRunning ? Theme.textSecondary : Theme.textTertiary)
+                .frame(width: 8, height: 8)
+                .frame(width: 18, height: 18)  // StatusDot's box, minus its glow
+            Text(instance.name)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(instance.isRunning ? Theme.textPrimary : Theme.textSecondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            if !instance.isRunning {
+                Text(instance.state.lowercased())
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize()
+            }
+            Text(instance.region)
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.textTertiary)
+                .fixedSize()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .planeCard(hovering: hovering)
+        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
+        .onTapGesture {
+            NSWorkspace.shared.open(URL(string: "https://cloud.oracle.com/compute/instances")!)
+        }
+        .onHover { hovering = $0 }
+        .animation(Theme.hoverEase, value: hovering)
+        .help("Open the Oracle console")
     }
 }
 
