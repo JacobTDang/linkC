@@ -27,12 +27,21 @@ struct TranscriptLine {
         let resultText: String?
     }
 
-    struct Input {
+    /// Decodes directly (no Raw twin): the two structs were field-identical, and the
+    /// hand copy meant a new field could be added and silently dropped at runtime.
+    struct Input: Decodable {
         let command: String?
         let filePath: String?
         let notebookPath: String?
         let description: String?
         let subagentType: String?
+
+        enum CodingKeys: String, CodingKey {
+            case command, description
+            case filePath = "file_path"
+            case notebookPath = "notebook_path"
+            case subagentType = "subagent_type"
+        }
     }
 
     /// Nil only for non-JSON. A missing message or content decodes as empty blocks;
@@ -48,11 +57,7 @@ struct TranscriptLine {
             content = .blocks(blocks.map {
                 Block(
                     type: $0.type, id: $0.id, name: $0.name, text: $0.text,
-                    input: $0.input.map {
-                        Input(command: $0.command, filePath: $0.filePath,
-                              notebookPath: $0.notebookPath, description: $0.description,
-                              subagentType: $0.subagentType)
-                    },
+                    input: $0.input,
                     toolUseId: $0.toolUseId,
                     resultText: $0.content?.joinedText
                 )
@@ -66,13 +71,34 @@ struct TranscriptLine {
         )
     }
 
+    /// Formatters are hoisted: this runs per transcript line, and ISO8601DateFormatter's
+    /// locale/calendar/timezone init is expensive to repeat.
     static func parseTimestamp(_ raw: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: raw) { return date }
-        let whole = ISO8601DateFormatter()
-        whole.formatOptions = [.withInternetDateTime]
-        return whole.date(from: raw)
+        formatters.date(from: raw)
+    }
+
+    /// ISO8601DateFormatter isn't Sendable, so the shared pair lives behind a lock —
+    /// still far cheaper than constructing two formatters per transcript line.
+    private static let formatters = FormatterBox()
+
+    private final class FormatterBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private let fractional: ISO8601DateFormatter = {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return f
+        }()
+        private let whole: ISO8601DateFormatter = {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime]
+            return f
+        }()
+
+        func date(from raw: String) -> Date? {
+            lock.lock()
+            defer { lock.unlock() }
+            return fractional.date(from: raw) ?? whole.date(from: raw)
+        }
     }
 
     private static let decoder = JSONDecoder()
@@ -121,28 +147,13 @@ struct TranscriptLine {
         let id: String?
         let name: String?
         let text: String?
-        let input: RawInput?
+        let input: Input?
         let toolUseId: String?
         let content: RawResultPayload?
 
         enum CodingKeys: String, CodingKey {
             case type, id, name, text, input, content
             case toolUseId = "tool_use_id"
-        }
-    }
-
-    private struct RawInput: Decodable {
-        let command: String?
-        let filePath: String?
-        let notebookPath: String?
-        let description: String?
-        let subagentType: String?
-
-        enum CodingKeys: String, CodingKey {
-            case command, description
-            case filePath = "file_path"
-            case notebookPath = "notebook_path"
-            case subagentType = "subagent_type"
         }
     }
 
