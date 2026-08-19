@@ -1,113 +1,136 @@
 import XCTest
 @testable import LinkCKit
 
-/// The `~/.oci/config` tenancy parse: first `tenancy=` line of the ini wins; comments
-/// and missing keys are quiet nils.
+/// The `~/.oci/config` parse is section-aware: only the DEFAULT profile counts — the
+/// CLI authenticates as DEFAULT when no --profile is passed, so another profile's values
+/// must never leak in, whatever the section order.
 final class OCIConfigTests: XCTestCase {
 
-    func testTenancyParsed() {
+    func testDefaultProfileValueParsed() {
         let config = """
         [DEFAULT]
         user=ocid1.user.oc1..aaa
-        fingerprint=aa:bb
-        tenancy=ocid1.tenancy.oc1..zzz
         region=us-chicago-1
         """
-        XCTAssertEqual(OCIConfig.tenancy(from: config), "ocid1.tenancy.oc1..zzz")
+        XCTAssertEqual(OCIConfig.defaultProfileValue("region", from: config), "us-chicago-1")
     }
 
-    func testWhitespaceAndCommentsTolerated() {
+    func testEarlierForeignProfileNeverWins() {
         let config = """
-        # tenancy=ocid1.tenancy.oc1..commented
+        [WORK]
+        region=eu-frankfurt-1
         [DEFAULT]
-        tenancy = ocid1.tenancy.oc1..spaced
+        region = us-chicago-1
         """
-        XCTAssertEqual(OCIConfig.tenancy(from: config), "ocid1.tenancy.oc1..spaced")
+        XCTAssertEqual(
+            OCIConfig.defaultProfileValue("region", from: config), "us-chicago-1",
+            "a non-DEFAULT profile listed first must not supply the value"
+        )
     }
 
-    func testMissingTenancyIsNil() {
-        XCTAssertNil(OCIConfig.tenancy(from: "[DEFAULT]\nuser=ocid1.user.oc1..aaa"))
+    func testCommentsAndMissingKeyAreNil() {
+        let config = """
+        [DEFAULT]
+        # region=us-commented-1
+        user=ocid1.user.oc1..aaa
+        """
+        XCTAssertNil(OCIConfig.defaultProfileValue("region", from: config))
+        XCTAssertNil(OCIConfig.defaultProfileValue("region", from: "[WORK]\nregion=eu-frankfurt-1"))
     }
 }
 
-/// `oci compute instance list --output json`: real CLI field names, terminated rows
-/// dropped (console noise, not state).
+/// The structured-search parse: nil for non-JSON (stale rows must survive stdout noise),
+/// [] only for a genuinely empty listing, TERMINATED dropped as console noise.
 final class OracleInstancesTests: XCTestCase {
 
     func testParsesRunningAndStoppedDropsTerminated() throws {
-        // The CLI is invoked with a JMESPath --query that renames fields and drops the
-        // rest (keeps output far under the runner's 64KB after-exit pipe read).
         let json = """
         [
-          {"name": "audio-1", "state": "RUNNING",
-           "shape": "VM.Standard.A1.Flex", "region": "us-chicago-1",
-           "id": "ocid1.instance.oc1.us-chicago-1.aaa"},
-          {"name": "old-box", "state": "STOPPED",
-           "shape": "VM.Standard.E2.1.Micro", "region": "us-chicago-1",
-           "id": "ocid1.instance.oc1.us-chicago-1.bbb"},
-          {"name": "ghost", "state": "TERMINATED",
-           "shape": "VM.Standard.A1.Flex", "region": "us-chicago-1",
-           "id": "ocid1.instance.oc1.us-chicago-1.ccc"}
+          {"name": "audio-1", "state": "RUNNING", "id": "ocid1.instance.oc1..aaa"},
+          {"name": "old-box", "state": "STOPPED", "id": "ocid1.instance.oc1..bbb"},
+          {"name": "ghost", "state": "TERMINATED", "id": "ocid1.instance.oc1..ccc"}
         ]
         """
-        let instances = OracleInstances.parse(json)
+        let instances = try XCTUnwrap(OracleInstances.parse(json))
         XCTAssertEqual(instances.map(\.name), ["audio-1", "old-box"])
-        XCTAssertEqual(instances[0].state, "RUNNING")
-        XCTAssertEqual(instances[0].shape, "VM.Standard.A1.Flex")
-        XCTAssertEqual(instances[0].region, "us-chicago-1")
         XCTAssertTrue(instances[0].isRunning)
         XCTAssertFalse(instances[1].isRunning)
     }
 
-    func testGarbageIsEmpty() {
-        XCTAssertTrue(OracleInstances.parse("not json").isEmpty)
-        XCTAssertTrue(OracleInstances.parse("[]").isEmpty)
+    func testGarbageIsNilButValidEmptyIsEmpty() {
+        XCTAssertNil(OracleInstances.parse("Warning: your API key…\n[]"),
+                     "banner-polluted output is not the listing — the caller keeps stale rows")
+        XCTAssertNil(OracleInstances.parse("not json"))
+        XCTAssertEqual(OracleInstances.parse("[]"), [])
     }
 }
 
-/// The service over a fake runner: the exact CLI contract, quiet no-ops without a
-/// binary or tenancy, stale rows kept over a network blip.
+/// The service over a fake runner: the exact CLI contract (tenancy-wide search, --all),
+/// quiet no-ops without a binary or config, stale rows + loud lastError on failure.
 @MainActor
 final class OracleServiceTests: XCTestCase {
 
     private let listJSON = """
-    [{"name": "audio-1", "state": "RUNNING",
-     "shape": "VM.Standard.A1.Flex", "region": "us-chicago-1",
-     "id": "ocid1.instance.oc1.us-chicago-1.aaa"}]
+    [{"name": "audio-1", "state": "RUNNING", "id": "ocid1.instance.oc1..aaa"}]
     """
+
+    private func makeService(_ runner: FakeRunner) -> OracleService {
+        OracleService(ociPath: "/fake/oci", hasConfig: true, region: "us-chicago-1", runner: runner)
+    }
 
     func testRefreshParsesAndCarriesContract() async {
         let runner = FakeRunner(result: .success(listJSON))
-        let service = OracleService(ociPath: "/fake/oci", tenancy: "ocid1.tenancy.oc1..zzz", runner: runner)
+        let service = makeService(runner)
 
         await service.refresh()
 
         XCTAssertEqual(service.instances.map(\.name), ["audio-1"])
+        XCTAssertNil(service.lastError)
         XCTAssertEqual(
             runner.calls.first?.args,
-            ["compute", "instance", "list", "--compartment-id", "ocid1.tenancy.oc1..zzz",
-             "--query", OracleInstances.cliQuery, "--output", "json"]
+            ["search", "resource", "structured-search",
+             "--query-text", OracleInstances.searchText,
+             "--query", OracleInstances.cliQuery,
+             "--output", "json", "--all"],
+            "tenancy-wide search (child compartments included), paged with --all"
         )
     }
 
-    func testMissingBinaryOrTenancyNeverRuns() async {
+    func testMissingBinaryOrConfigNeverRuns() async {
         let runner = FakeRunner(result: .success(listJSON))
-        let none = OracleService(ociPath: nil, tenancy: "ocid1.tenancy.oc1..zzz", runner: runner)
+        let none = OracleService(ociPath: nil, hasConfig: true, region: nil, runner: runner)
         await none.refresh()
-        let noTenancy = OracleService(ociPath: "/fake/oci", tenancy: nil, runner: runner)
-        await noTenancy.refresh()
-        XCTAssertTrue(runner.calls.isEmpty, "no binary or no tenancy → no subprocess, no rows")
+        let noConfig = OracleService(ociPath: "/fake/oci", hasConfig: false, region: nil, runner: runner)
+        await noConfig.refresh()
+        XCTAssertTrue(runner.calls.isEmpty, "no binary or no config → no subprocess, no rows")
         XCTAssertTrue(none.instances.isEmpty)
     }
 
-    func testFailureKeepsStaleRows() async {
+    func testFailureKeepsStaleRowsAndIsLoud() async {
         let runner = FakeRunner(result: .success(listJSON))
-        let service = OracleService(ociPath: "/fake/oci", tenancy: "t", runner: runner)
+        let service = makeService(runner)
         await service.refresh()
         XCTAssertEqual(service.instances.count, 1)
 
         runner.result = .failure(LinkCError.process("rate limited"))
         await service.refresh()
         XCTAssertEqual(service.instances.count, 1, "a network blip must not blank the section")
+        XCTAssertTrue(service.lastError?.contains("rate limited") == true, "and it must not be silent")
+
+        runner.result = .success(listJSON)
+        await service.refresh()
+        XCTAssertNil(service.lastError, "the next success clears the failure")
+    }
+
+    func testExitZeroGarbageKeepsStaleRows() async {
+        let runner = FakeRunner(result: .success(listJSON))
+        let service = makeService(runner)
+        await service.refresh()
+
+        runner.result = .success("Warning: some banner\nnot json")
+        await service.refresh()
+        XCTAssertEqual(service.instances.count, 1,
+                       "exit-0 stdout noise must not blank the section either")
+        XCTAssertNotNil(service.lastError)
     }
 }
