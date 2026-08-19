@@ -72,6 +72,43 @@ final class WorkspaceManifestTests: XCTestCase {
         XCTAssertEqual(Set(third.entries.map(\.linkcId)), ["dupNew", "orphan"])
     }
 
+    /// Same-crash orphans tie on the stamped date — the tie must not silently keep whichever
+    /// entry happened to be created first: a bound conversation id wins (precise `--resume`
+    /// beats `--continue`), and on a pure tie the later entry (the newer session) wins.
+    func testTieBreakPrefersBoundIdThenLaterEntry() {
+        let now = Date()
+
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(entry("first", cwd: "/b"))                  // orphan, no claude id
+        seed.upsert(entry("second", claude: "c2", cwd: "/b"))   // orphan, bound id
+        XCTAssertEqual(
+            WorkspaceManifest(directory: dir, now: now).entries.map(\.linkcId), ["second"],
+            "the bound-id orphan must win the stamped-date tie"
+        )
+
+        let dir2 = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir2) }
+        let seed2 = WorkspaceManifest(directory: dir2)
+        seed2.upsert(entry("keeper", claude: "c1", cwd: "/c"))  // bound id, created first
+        seed2.upsert(entry("idless", cwd: "/c"))                // no id, created later
+        XCTAssertEqual(
+            WorkspaceManifest(directory: dir2, now: now).entries.map(\.linkcId), ["keeper"],
+            "a later id-less orphan must not displace a bound-id one"
+        )
+
+        let dir3 = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir3) }
+        let seed3 = WorkspaceManifest(directory: dir3)
+        seed3.upsert(entry("older", cwd: "/d"))
+        seed3.upsert(entry("newer", cwd: "/d"))
+        XCTAssertEqual(
+            WorkspaceManifest(directory: dir3, now: now).entries.map(\.linkcId), ["newer"],
+            "on a pure tie the later (newer) entry wins"
+        )
+    }
+
     func testMissingFileLoadsEmpty() {
         let dir = tempDir() // never created on disk
         let manifest = WorkspaceManifest(directory: dir)

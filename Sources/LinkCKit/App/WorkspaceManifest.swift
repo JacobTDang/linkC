@@ -75,12 +75,24 @@ public final class WorkspaceManifest {
         for i in stamped.indices where stamped[i].endedAt == nil {
             stamped[i].endedAt = now
         }
-        let fresh = stamped.filter { (now.timeIntervalSince($0.endedAt ?? now)) < Self.maxAge }
+        // Every endedAt is non-nil past this point — the force-unwraps encode that
+        // invariant rather than masking it with a fallback.
+        let fresh = stamped.filter { now.timeIntervalSince($0.endedAt!) < Self.maxAge }
         var newestByFolder: [String: RestorableSession] = [:]
         for entry in fresh {
-            if let kept = newestByFolder[entry.cwd],
-               (kept.endedAt ?? now) >= (entry.endedAt ?? now) { continue }
-            newestByFolder[entry.cwd] = entry
+            guard let kept = newestByFolder[entry.cwd] else {
+                newestByFolder[entry.cwd] = entry
+                continue
+            }
+            if entry.endedAt! > kept.endedAt! {
+                newestByFolder[entry.cwd] = entry
+            } else if entry.endedAt! == kept.endedAt!,
+                      entry.claudeSessionId != nil || kept.claudeSessionId == nil {
+                // Same-crash orphans tie on the stamped date. A bound conversation id wins
+                // (precise `--resume` beats `--continue`); on a pure tie the later entry —
+                // the newer session, by upsert order — wins.
+                newestByFolder[entry.cwd] = entry
+            }
         }
         return fresh.filter { newestByFolder[$0.cwd]?.linkcId == $0.linkcId }
     }
