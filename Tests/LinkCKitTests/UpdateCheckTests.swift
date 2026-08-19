@@ -47,19 +47,37 @@ final class UpdateCheckTests: XCTestCase {
 /// then copy, then relaunch — in that order, with paths shell-quoted.
 final class UpdateSwapTests: XCTestCase {
 
-    func testScriptWaitsThenCopiesThenOpens() throws {
+    func testScriptStagesStampsSwapsRelaunchesAndSelfDeletes() throws {
         let script = UpdateSwap.script(
             pid: 12345,
             distPath: "/Users/x/my repo/dist.noindex/linkC.app",
             installPath: "/Applications/linkC.app"
         )
+        // Order: wait → staged copy → re-stamp the dist pointer → re-sign → atomic swap →
+        // relaunch → self-delete. The stamp is what keeps update detection alive across
+        // updates (dist's plist never carries the key); the staging is what keeps a failed
+        // copy from destroying the installed app.
         let wait = try XCTUnwrap(script.range(of: "kill -0 12345"))
-        let copy = try XCTUnwrap(script.range(of: "ditto"))
-        let launch = try XCTUnwrap(script.range(of: "open"))
-        XCTAssertLessThan(wait.lowerBound, copy.lowerBound, "wait for exit before copying")
-        XCTAssertLessThan(copy.lowerBound, launch.lowerBound, "copy before relaunching")
+        let stage = try XCTUnwrap(script.range(of: "if ditto"))
+        let stamp = try XCTUnwrap(script.range(of: "Add :LinkCSourceDist"))
+        let sign = try XCTUnwrap(script.range(of: "codesign"))
+        let swap = try XCTUnwrap(script.range(of: "mv "))
+        let launch = try XCTUnwrap(script.range(of: "open "))
+        let cleanup = try XCTUnwrap(script.range(of: #"rm -- "$0""#))
+        XCTAssertLessThan(wait.lowerBound, stage.lowerBound, "wait for exit before staging")
+        XCTAssertLessThan(stage.lowerBound, stamp.lowerBound, "stage before stamping")
+        XCTAssertLessThan(stamp.lowerBound, sign.lowerBound, "stamp before re-signing")
+        XCTAssertLessThan(sign.lowerBound, swap.lowerBound, "sign before swapping")
+        XCTAssertLessThan(swap.lowerBound, launch.lowerBound, "swap before relaunching")
+        XCTAssertLessThan(launch.lowerBound, cleanup.lowerBound, "relaunch, then self-delete")
         XCTAssertTrue(script.contains("'/Users/x/my repo/dist.noindex/linkC.app'"),
                       "paths with spaces must be quoted")
         XCTAssertTrue(script.contains("'/Applications/linkC.app'"))
+        // The destructive rm of the installed bundle lives inside the success branch only —
+        // and `open` sits outside the branch, so a failed staging still relaunches the old app.
+        let destroy = try XCTUnwrap(script.range(of: "rm -rf '/Applications/linkC.app'"))
+        XCTAssertLessThan(stamp.lowerBound, destroy.lowerBound,
+                          "the installed bundle is only removed after staging succeeded")
+        XCTAssertLessThan(destroy.lowerBound, launch.lowerBound)
     }
 }
