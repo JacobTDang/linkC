@@ -252,3 +252,41 @@ final class DockerLocatorTests: XCTestCase {
         XCTAssertNil(DockerLocator.resolve(candidates: ["/a", "/b"], isExecutable: { _ in false }))
     }
 }
+
+/// The VM tax: Docker's Linux VM burns host CPU even with every container idle. The
+/// parser attributes `com.apple.Virtualization.VirtualMachine` processes to Docker by
+/// parentage (child of com.docker.backend) — another hypervisor's VM must not count.
+final class DockerVMTests: XCTestCase {
+
+    func testSumsDockerOwnedVMsOnly() {
+        let ps = """
+          500     1  0.2 /Applications/Docker.app/Contents/MacOS/com.docker.backend
+          612   500  8.5 /System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+          700     1 22.0 /System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+          801     1  1.0 /Applications/UTM.app/Contents/MacOS/UTM
+        """
+        XCTAssertEqual(DockerVM.parse(ps) ?? -1, 8.5, accuracy: 0.01,
+                       "only the backend-parented VM counts; the orphan VM belongs to someone else")
+    }
+
+    func testNoDockerVMIsNil() {
+        let ps = """
+          801     1  1.0 /Applications/UTM.app/Contents/MacOS/UTM
+          900     1  0.1 /sbin/launchd
+        """
+        XCTAssertNil(DockerVM.parse(ps))
+
+        // Backend alive but VM not yet booted (Docker starting): still nil, not 0.
+        let starting = "  500     1  0.2 /Applications/Docker.app/Contents/MacOS/com.docker.backend"
+        XCTAssertNil(DockerVM.parse(starting))
+    }
+
+    func testGarbageLinesAreSkippedAlone() {
+        let ps = """
+        not a ps line at all
+          500     1  0.2 /Applications/Docker.app/Contents/MacOS/com.docker.backend
+          612   500  4.25 /System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+        """
+        XCTAssertEqual(DockerVM.parse(ps) ?? -1, 4.25, accuracy: 0.01)
+    }
+}
