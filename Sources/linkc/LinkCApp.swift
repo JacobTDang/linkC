@@ -478,10 +478,20 @@ final class AppModel {
     /// both are set (a session needing attention outranks a static screen).
     var activeScreen: PanelScreen?
 
-    /// Open a rail screen — deselects any terminal so the screen actually shows.
+    /// Open a rail screen. The selection stays put — screens layer over an open terminal,
+    /// so closing the screen lands the user exactly where they were.
     func open(_ screen: PanelScreen) {
-        coordinator?.terminals.deselect()
         activeScreen = screen
+    }
+
+    /// Back peels one layer: a screen closes onto whatever was under it (the open
+    /// terminal, or home); the terminal closes onto home.
+    func goBack() {
+        if activeScreen != nil {
+            activeScreen = nil
+        } else {
+            coordinator?.terminals.deselect()
+        }
     }
 
     /// The terminal hero shows the session strip only when it offers a real switch —
