@@ -59,6 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Guard against losing running sessions: quitting linkC ends the claude processes it hosts.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Tapping "Install & restart" already consented to exactly this quit — the swap
+        // helper is waiting on our exit, so the warning would only stall it.
+        if model.updateInProgress { return .terminateNow }
         // Running dev terminals count too — quitting kills them, and unlike sessions they
         // aren't restored, which the copy says plainly. Exited terminals have nothing to kill.
         guard let warning = QuitWarningBuilder.build(
@@ -233,6 +236,46 @@ final class AppModel {
         Task { await toolServers.refresh() }
     }
 
+    /// A fresh build waiting in dist — nil when current, or when running straight from
+    /// dist (no `LinkCSourceDist` stamp, so dev runs never nag).
+    private(set) var updateAvailable: UpdateInfo?
+    /// Set the moment Install & restart is tapped: the quit warning steps aside (the tap
+    /// IS the consent) and the detached swap helper takes over.
+    private(set) var updateInProgress = false
+
+    private func checkForUpdate() {
+        guard let dist = Bundle.main.object(forInfoDictionaryKey: "LinkCSourceDist") as? String,
+              let own = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        else { return }
+        updateAvailable = UpdateCheck.available(ownBuild: own, distBundle: URL(fileURLWithPath: dist))
+    }
+
+    /// Swap in the fresh build: a detached helper waits for this process to exit, copies
+    /// the dist bundle over the installed one, and relaunches it. Sessions land in
+    /// EARLIER for manual restore — same as any quit.
+    func installUpdate() {
+        guard let dist = Bundle.main.object(forInfoDictionaryKey: "LinkCSourceDist") as? String else { return }
+        let script = UpdateSwap.script(
+            pid: ProcessInfo.processInfo.processIdentifier,
+            distPath: dist,
+            installPath: Bundle.main.bundlePath
+        )
+        let scriptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-update-\(UUID().uuidString).sh")
+        do {
+            lastError = nil
+            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = [scriptURL.path]
+            try process.run()
+            updateInProgress = true
+            NSApplication.shared.terminate(nil)
+        } catch {
+            lastError = "Couldn't start the update: \(error.localizedDescription)"
+        }
+    }
+
     /// The session's current action ("$ swift test") — while it's working, and while it's
     /// blocked on a permission prompt (that's exactly when "which command is waiting?"
     /// matters most). Idle rows never state an absence.
@@ -356,14 +399,19 @@ final class AppModel {
             usage.refreshAllSessions()
             usage.refreshWindow()
             refreshServers()
+            checkForUpdate()
             usageTicks = 0
             usageTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.usage.refreshAllSessions()
                     self.usageTicks += 1
-                    // The global sweep is heavier — every 30s is live enough for a footer.
-                    if self.usageTicks % 6 == 0 { self.usage.refreshWindow() }
+                    // The global sweep is heavier — every 30s is live enough for a footer,
+                    // and enough for noticing a fresh build too.
+                    if self.usageTicks % 6 == 0 {
+                        self.usage.refreshWindow()
+                        self.checkForUpdate()
+                    }
                     // Docker state drifts slowly; every 15s keeps SERVERS honest cheaply.
                     if self.usageTicks % 3 == 0 { self.refreshServers() }
                 }
