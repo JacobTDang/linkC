@@ -418,6 +418,9 @@ private struct CompactRowShell<Leading: View, Middle: View, Trailing: View>: Vie
     var needsYou: Bool = false
     var isSelected: Bool = false
     var dimmed: Bool = false
+    /// Whether hover brightens the plane. Dead rows (an exited terminal) stay flat —
+    /// they're still tappable for scrollback, but a history row must not read as live.
+    var glowsOnHover: Bool = true
     let help: String
     let onTap: () -> Void
     @ViewBuilder let leading: () -> Leading
@@ -441,7 +444,7 @@ private struct CompactRowShell<Leading: View, Middle: View, Trailing: View>: Vie
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .planeCard(needsYou: needsYou, hovering: hovering || isSelected)
+        .planeCard(needsYou: needsYou, hovering: (hovering && glowsOnHover) || isSelected)
         .overlay(alignment: .leading) {
             if isSelected {
                 RoundedRectangle(cornerRadius: 1)
@@ -458,6 +461,29 @@ private struct CompactRowShell<Leading: View, Middle: View, Trailing: View>: Vie
         .animation(Theme.hoverEase, value: hovering)
         .animation(Theme.hoverEase, value: isSelected)
         .help(help)
+    }
+}
+
+/// Rows with nothing to put between title and trailing edge (terminals, cloud) use this
+/// narrower init rather than passing an empty `middle` closure.
+extension CompactRowShell where Middle == EmptyView {
+    init(
+        title: String,
+        titleColor: Color = Theme.textPrimary,
+        needsYou: Bool = false,
+        isSelected: Bool = false,
+        dimmed: Bool = false,
+        glowsOnHover: Bool = true,
+        help: String,
+        onTap: @escaping () -> Void,
+        @ViewBuilder leading: @escaping () -> Leading,
+        @ViewBuilder trailing: @escaping (_ hovering: Bool) -> Trailing
+    ) {
+        self.init(
+            title: title, titleColor: titleColor, needsYou: needsYou, isSelected: isSelected,
+            dimmed: dimmed, glowsOnHover: glowsOnHover, help: help, onTap: onTap,
+            leading: leading, middle: { EmptyView() }, trailing: trailing
+        )
     }
 }
 
@@ -550,11 +576,11 @@ private struct CompactTerminalRow: View {
             titleColor: isRunning ? Theme.textPrimary : Theme.textSecondary,
             isSelected: isSelected,
             dimmed: !isRunning,
+            glowsOnHover: isRunning,   // a dead row stays flat — tappable, but not live
             help: isRunning ? "Open \(row.title)" : "View \(row.title)'s last output",
             onTap: onOpen
         ) {
             InfraDot(color: dotColor)
-        } middle: {
         } trailing: { hovering in
             if isRunning {
                 Button(action: onStop) {
@@ -709,7 +735,6 @@ private struct CloudRow: View {
             onTap: { NSWorkspace.shared.open(URL(string: "https://cloud.oracle.com/compute/instances")!) }
         ) {
             InfraDot(color: instance.isRunning ? Theme.textSecondary : Theme.textTertiary)
-        } middle: {
         } trailing: { _ in
             if !instance.isRunning {
                 Text(instance.state.lowercased())
