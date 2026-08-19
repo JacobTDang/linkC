@@ -19,8 +19,11 @@ lines `UsageTracker.refreshSession` already reads (hook events + the 5s panel ti
   | `Read` | `⊙ <last path component>` |
   | `Agent` / `Task` | `▸ <description>` |
   | anything else | the bare tool name |
-- A `tool_result` whose id matches the recorded activity clears it — thinking between
-  tools shows nothing, never a stale command. A newer `tool_use` simply replaces.
+- (Amended 2026-08-19, from live use) A tool's own `description` outranks its raw
+  arguments — "Reading the token block" beats the `cd …; sed …` it describes — except
+  subagents, which keep their `▸` mark. And a `tool_result` does NOT clear the label:
+  during the thinking that follows, the last action beats an absence. Only the next
+  `tool_use` replaces it; the turn-boundary sweep wipes it.
 - Sidechain lines (`isSidechain: true`) are skipped entirely: a subagent's inner Bash
   must not masquerade as the session's own action.
 - Malformed blocks are skipped alone (same tolerance as `AgentEvents`).

@@ -13,11 +13,12 @@ public struct CurrentActivity: Equatable, Sendable {
 }
 
 /// Folds transcript lines into the session's current activity. An assistant `tool_use`
-/// sets it; a `tool_result` matching the recorded id clears it (thinking between tools
-/// shows nothing, never a stale command); a newer `tool_use` simply replaces. Sidechain
-/// lines are skipped entirely — a subagent's inner Bash must not masquerade as the
-/// session's own action — and malformed blocks are skipped alone (the same tolerance as
-/// `AgentEvents`, and for the same reason: transcript shapes vary).
+/// sets it and only the NEXT one replaces it — a finished tool keeps its label through
+/// the thinking that follows (the last action beats an absence; the turn-boundary sweep
+/// in the tracker is what wipes it). Sidechain lines are skipped entirely — a subagent's
+/// inner Bash must not masquerade as the session's own action — and malformed blocks are
+/// skipped alone (the same tolerance as `AgentEvents`, and for the same reason:
+/// transcript shapes vary).
 public enum ActivityEvents {
     public static func apply(line: String, to current: CurrentActivity?) -> CurrentActivity? {
         guard let data = line.data(using: .utf8),
@@ -30,16 +31,19 @@ public enum ActivityEvents {
             if block.type == "tool_use", let id = block.id, let name = block.name {
                 activity = CurrentActivity(toolUseId: id, label: label(tool: name, input: block.input))
             }
-            if block.type == "tool_result", let id = block.toolUseId, id == activity?.toolUseId {
-                activity = nil
-            }
         }
         return activity
     }
 
-    /// One-line row copy per tool: the command itself, the touched file, the subagent's
-    /// description — or the bare tool name when there's nothing better to say.
+    /// One-line row copy per tool. Claude's own description outranks raw arguments —
+    /// "Reading the token block" beats the `cd …; sed …` it describes — except for
+    /// subagents, which keep their ▸ mark. Then: the command, the touched file, or the
+    /// bare tool name when there's nothing better to say.
     static func label(tool: String, input: RawInput?) -> String {
+        if tool != "Agent", tool != "Task",
+           let description = input?.description, !description.isEmpty {
+            return description
+        }
         switch tool {
         case "Bash":
             guard let command = input?.command?.split(separator: "\n").first.map(String.init),
