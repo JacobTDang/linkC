@@ -29,24 +29,28 @@ struct PanelView: View {
                             || !model.restorables.isEmpty
                             || !model.shellRows.isEmpty
                     )
-                    // Pane swap: terminal > dock screen > empty > home. The terminal is a live
-                    // NSView, so its removal is a plain fade (no reflow); pure-translate slides
-                    // bring the others in. Reduce Motion collapses everything to a crossfade.
-                    // The dock rides every pane but the terminal as a trailing overlay — content
-                    // reserves its inset so nothing hides under the glass.
+                    // Pane swap: dock screen > terminal > empty > home. Screens LAYER over an
+                    // open terminal instead of evicting it — closing the screen (back) lands
+                    // exactly where the user was; focusing a session still clears the screen,
+                    // so a session needing attention keeps outranking a static screen. The
+                    // terminal is a live NSView, so its removal is a plain fade (no reflow);
+                    // pure-translate slides bring the others in. Reduce Motion collapses
+                    // everything to a crossfade. The dock rides every pane but the terminal
+                    // as a trailing overlay — content reserves its inset so nothing hides
+                    // under the glass.
                     GeometryReader { geo in
-                        let showsDock = model.selectedId == nil
+                        let showsDock = (model.selectedId == nil || model.activeScreen != nil)
                             && geo.size.width >= Theme.dockBreakpoint
                         ZStack {
-                            if model.selectedId != nil {
-                                TerminalHero(model: model)
+                            if let screen = model.activeScreen {
+                                ScreenHost(model: model, screen: screen)
                                     .transition(reduceMotion
                                         ? .opacity
                                         : .asymmetric(
                                             insertion: .move(edge: .trailing).combined(with: .opacity),
                                             removal: .opacity))
-                            } else if let screen = model.activeScreen {
-                                ScreenHost(model: model, screen: screen)
+                            } else if model.selectedId != nil {
+                                TerminalHero(model: model)
                                     .transition(reduceMotion
                                         ? .opacity
                                         : .asymmetric(
@@ -114,8 +118,8 @@ private enum Pane: Equatable {
     case terminal, screen(PanelScreen), empty, home
 
     @MainActor init(_ model: AppModel) {
-        if model.selectedId != nil { self = .terminal }
-        else if let screen = model.activeScreen { self = .screen(screen) }
+        if let screen = model.activeScreen { self = .screen(screen) }
+        else if model.selectedId != nil { self = .terminal }
         else if model.isEmptyOverview { self = .empty }
         else { self = .home }
     }
@@ -158,7 +162,9 @@ private struct PanelHeader: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             if model.selectedId != nil || model.activeScreen != nil {
-                ChromeButton(systemName: "chevron.left", help: "Back to overview") { model.goHome() }
+                // Back peels one layer: a screen closes onto whatever was under it (the
+                // open terminal, or home); the terminal closes onto home.
+                ChromeButton(systemName: "chevron.left", help: "Back") { model.goBack() }
                     .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
             }
             CountBadge(color: Theme.statusRunning, count: model.activeCount)
