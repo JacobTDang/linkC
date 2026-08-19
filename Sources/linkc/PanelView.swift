@@ -285,6 +285,11 @@ private struct HomeView: View {
         VStack(spacing: 0) {
             SessionListColumn(model: model)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // A fresh build waiting in dist — one strip, home only.
+            if let update = model.updateAvailable {
+                UpdateBar(update: update) { model.installUpdate() }
+                    .transition(.opacity)
+            }
             // The one place plan usage appears: a quiet footer line pinned under the list.
             if let label = model.windowUsageLabel, model.preferences.showsUsageFooter {
                 HStack {
@@ -633,6 +638,44 @@ private struct SetupErrorView: View {
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Update bar
+
+/// A fresh build is waiting — an accent-washed strip above home's footer, and nowhere
+/// else. Installing is one tap; sessions return as restorable cards after the relaunch.
+struct UpdateBar: View {
+    let update: UpdateInfo
+    let onInstall: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle().fill(Theme.accent).frame(width: 6, height: 6)
+            Text("Update ready · \(update.fromBuild) → \(update.toBuild)")
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Button(action: onInstall) {
+                Text("Install & restart")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .fixedSize()
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Swap in the new build — sessions return as restorable cards")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .fill(Theme.accent.opacity(0.10))
+        )
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
     }
 }
 
