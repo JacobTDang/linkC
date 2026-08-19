@@ -37,6 +37,12 @@ final class ActivityEventsTests: XCTestCase {
 
         let other = toolUseLine(#"{"type":"tool_use","id":"t5","name":"WebSearch","input":{}}"#)
         XCTAssertEqual(ActivityEvents.apply(line: other, to: nil)?.label, "WebSearch")
+
+        // NotebookEdit carries its file under notebook_path, not file_path.
+        let notebook = toolUseLine(
+            #"{"type":"tool_use","id":"t7","name":"NotebookEdit","input":{"notebook_path":"/a/b/analysis.ipynb"}}"#
+        )
+        XCTAssertEqual(ActivityEvents.apply(line: notebook, to: nil)?.label, "✎ analysis.ipynb")
     }
 
     func testResultClearsOnlyMatchingId() {
@@ -88,5 +94,36 @@ final class ActivityTrackerTests: XCTestCase {
 
         tracker.sweepAgents("S1")
         XCTAssertNil(tracker.sessionActivity("S1"), "turn boundaries clear the activity too")
+    }
+
+    /// Ended sessions must not leak tracker state for the process lifetime: unbind drops
+    /// every per-session dictionary in one call.
+    @MainActor
+    func testUnbindDropsAllPerSessionState() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-unbind-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcript = dir.appendingPathComponent("t.jsonl")
+        let lines = """
+        {"type":"assistant","isSidechain":false,"timestamp":"2026-08-18T04:00:00Z","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"swift test"}}]}}
+        {"type":"assistant","isSidechain":false,"timestamp":"2026-08-18T04:00:01Z","message":{"content":[{"type":"tool_use","id":"a1","name":"Agent","input":{"description":"Survey","subagent_type":"Explore"}}]}}
+        """
+        try (lines + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let tracker = UsageTracker(projectsDir: dir)
+        tracker.bind(sessionId: "S1", transcriptPath: transcript.path)
+        tracker.refreshSession("S1")
+        XCTAssertNotNil(tracker.sessionActivity("S1"))
+        XCTAssertFalse(tracker.sessionAgents("S1").isEmpty)
+
+        tracker.unbind(sessionId: "S1")
+
+        XCTAssertNil(tracker.sessionActivity("S1"))
+        XCTAssertTrue(tracker.sessionAgents("S1").isEmpty)
+        XCTAssertNil(tracker.sessionUsage("S1"))
+        // And a refresh sweep no longer touches the dead session's transcript.
+        tracker.refreshAllSessions()
+        XCTAssertNil(tracker.sessionActivity("S1"))
     }
 }

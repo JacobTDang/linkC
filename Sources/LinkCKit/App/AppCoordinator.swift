@@ -192,14 +192,15 @@ public final class AppCoordinator {
     }
 
     /// Remove a session everywhere it leaves state behind: the store, its terminal (dropped,
-    /// not killed — the process is already dead here), its per-session settings file, and its
-    /// notification dedupe entry. Idempotent.
+    /// not killed — the process is already dead here), its per-session settings file, its
+    /// notification dedupe entry, and its usage-tracker dictionaries. Idempotent.
     private func cleanup(sessionId: String) {
         store.remove(id: sessionId)
         terminals.remove(sessionId)
         let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
         try? FileManager.default.removeItem(at: settingsFile)
         notifications.forget(sessionId)
+        usageTracker?.unbind(sessionId: sessionId)
         // The session ended or was stopped — keep its manifest entry but stamp it, so it becomes
         // a restorable card. (No-op when there is no entry, e.g. a launch that failed before start.)
         manifest.markEnded(linkcId: sessionId, at: Date())

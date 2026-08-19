@@ -73,11 +73,10 @@ public final class UsageTracker {
         agentAssemblers[sessionId]?.runs ?? []
     }
 
-    /// Backstop for lost completions: mark every still-running agent run ended. Called when
-    /// the session's turn is over — anything still "running" then is a phantom.
+    /// The turn-boundary reset for ALL per-turn transient state: still-running agent runs
+    /// are ended (anything "running" past a turn boundary is a phantom) and the current
+    /// activity is cleared (a new prompt must never open showing the last turn's action).
     public func sweepAgents(_ sessionId: String, at date: Date = Date()) {
-        // Turn boundaries also clear the current activity — a new prompt must never open
-        // showing the previous turn's final action.
         activities[sessionId] = nil
         guard var agents = agentAssemblers[sessionId] else { return }
         agents.endAllRunning(at: date)
@@ -88,6 +87,16 @@ public final class UsageTracker {
     /// or between tools.
     public func sessionActivity(_ sessionId: String) -> String? {
         activities[sessionId]?.label
+    }
+
+    /// Drop every per-session dictionary for an ended session — without this, session ids
+    /// (fresh UUIDs, never reused) accumulate for the process lifetime and every refresh
+    /// sweep keeps re-reading dead transcripts.
+    public func unbind(sessionId: String) {
+        sessionPaths[sessionId] = nil
+        accumulators[sessionId] = nil
+        agentAssemblers[sessionId] = nil
+        activities[sessionId] = nil
     }
 
     public func sessionUsage(_ sessionId: String) -> SessionUsage? {

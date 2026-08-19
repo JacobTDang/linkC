@@ -21,7 +21,7 @@ public struct CurrentActivity: Equatable, Sendable {
 public enum ActivityEvents {
     public static func apply(line: String, to current: CurrentActivity?) -> CurrentActivity? {
         guard let data = line.data(using: .utf8),
-              let raw = try? JSONDecoder().decode(RawLine.self, from: data),
+              let raw = try? Self.decoder.decode(RawLine.self, from: data),
               raw.isSidechain != true,
               case .blocks(let blocks) = raw.message?.content else { return current }
 
@@ -46,7 +46,8 @@ public enum ActivityEvents {
                   !command.isEmpty else { return tool }
             return "$ \(command)"
         case "Edit", "Write", "NotebookEdit":
-            guard let path = input?.filePath else { return tool }
+            // NotebookEdit carries its file under notebook_path, the others under file_path.
+            guard let path = input?.filePath ?? input?.notebookPath else { return tool }
             return "✎ \((path as NSString).lastPathComponent)"
         case "Read":
             guard let path = input?.filePath else { return tool }
@@ -58,6 +59,8 @@ public enum ActivityEvents {
             return tool
         }
     }
+
+    private static let decoder = JSONDecoder()
 
     // MARK: - Raw shapes (same tolerance discipline as AgentEvents)
 
@@ -111,11 +114,13 @@ public enum ActivityEvents {
     struct RawInput: Decodable {
         let command: String?
         let filePath: String?
+        let notebookPath: String?
         let description: String?
 
         enum CodingKeys: String, CodingKey {
             case command, description
             case filePath = "file_path"
+            case notebookPath = "notebook_path"
         }
     }
 }
