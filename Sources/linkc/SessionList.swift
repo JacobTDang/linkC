@@ -408,6 +408,98 @@ private struct HomeCard: View {
 
 // MARK: - Compact (sidebar) rows
 
+/// The compact rows' shared shell: leading accessory · title · middle · spacer · trailing,
+/// on the plane/hover/tap treatment every sidebar row repeats. Four near-verbatim copies
+/// of this tail existed before it; rows now supply only what actually differs. The
+/// trailing builder receives the hover state (hover-revealed actions live there).
+private struct CompactRowShell<Leading: View, Middle: View, Trailing: View>: View {
+    let title: String
+    var titleColor: Color = Theme.textPrimary
+    var needsYou: Bool = false
+    var isSelected: Bool = false
+    var dimmed: Bool = false
+    /// Whether hover brightens the plane. Dead rows (an exited terminal) stay flat —
+    /// they're still tappable for scrollback, but a history row must not read as live.
+    var glowsOnHover: Bool = true
+    let help: String
+    let onTap: () -> Void
+    @ViewBuilder let leading: () -> Leading
+    @ViewBuilder let middle: () -> Middle
+    @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            leading()
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(titleColor)
+                .lineLimit(1)
+                .layoutPriority(1)   // the title never yields to middle/trailing content
+            middle()
+            Spacer(minLength: 8)
+            trailing(hovering)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .planeCard(needsYou: needsYou, hovering: (hovering && glowsOnHover) || isSelected)
+        .overlay(alignment: .leading) {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Theme.accent.opacity(0.7))
+                    .frame(width: 2)
+                    .padding(.vertical, 6)
+                    .padding(.leading, 1)
+            }
+        }
+        .opacity(dimmed ? 0.75 : 1)
+        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
+        .onTapGesture(perform: onTap)
+        .onHover { hovering = $0 }
+        .animation(Theme.hoverEase, value: hovering)
+        .animation(Theme.hoverEase, value: isSelected)
+        .help(help)
+    }
+}
+
+/// Rows with nothing to put between title and trailing edge (terminals, cloud) use this
+/// narrower init rather than passing an empty `middle` closure.
+extension CompactRowShell where Middle == EmptyView {
+    init(
+        title: String,
+        titleColor: Color = Theme.textPrimary,
+        needsYou: Bool = false,
+        isSelected: Bool = false,
+        dimmed: Bool = false,
+        glowsOnHover: Bool = true,
+        help: String,
+        onTap: @escaping () -> Void,
+        @ViewBuilder leading: @escaping () -> Leading,
+        @ViewBuilder trailing: @escaping (_ hovering: Bool) -> Trailing
+    ) {
+        self.init(
+            title: title, titleColor: titleColor, needsYou: needsYou, isSelected: isSelected,
+            dimmed: dimmed, glowsOnHover: glowsOnHover, help: help, onTap: onTap,
+            leading: leading, middle: { EmptyView() }, trailing: trailing
+        )
+    }
+}
+
+/// The quiet 8pt infra dot in StatusDot's 18pt box (minus its glow) — terminals, servers,
+/// and cloud rows share it; only claude sessions get the living StatusDot.
+private struct InfraDot: View {
+    let color: Color
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 8, height: 8)
+            .frame(width: 18, height: 18)
+    }
+}
+
 /// Sidebar-density session row: the dot, the title, and only what demands attention — a
 /// needs-you age and a running-agent chip. Paths, previews, and agent lanes stay on home;
 /// at rail width they read as clutter, and the strip above the terminal already shows agents.
@@ -420,16 +512,16 @@ private struct CompactSessionRow: View {
     let onOpen: () -> Void
     let onClose: () -> Void
 
-    @State private var hovering = false
-
     var body: some View {
-        HStack(spacing: 8) {
+        CompactRowShell(
+            title: session.title,
+            needsYou: session.state.bucket == .needsYou,
+            isSelected: isSelected,
+            help: isSelected ? "\(session.title) — current" : "Switch to \(session.title)",
+            onTap: onOpen
+        ) {
             StatusDot(state: session.state)
-            Text(session.title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Theme.textPrimary)
-                .lineLimit(1)
-                .layoutPriority(1)   // the title never yields to the activity text
+        } middle: {
             if let activity {
                 Text(activity)
                     .font(.system(size: 11, design: .monospaced))
@@ -437,7 +529,7 @@ private struct CompactSessionRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
-            Spacer(minLength: 8)
+        } trailing: { hovering in
             if session.state.bucket == .needsYou {
                 // The age alone — the pulsing dot already says "needs you"; words don't fit here.
                 Text(AgeFormat.compact(from: session.stateChangedAt))
@@ -456,25 +548,6 @@ private struct CompactSessionRow: View {
             .opacity(hovering ? 1 : 0)
             .help("Stop session")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .planeCard(needsYou: session.state.bucket == .needsYou, hovering: hovering || isSelected)
-        .overlay(alignment: .leading) {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Theme.accent.opacity(0.7))
-                    .frame(width: 2)
-                    .padding(.vertical, 6)
-                    .padding(.leading, 1)
-            }
-        }
-        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
-        .onTapGesture(perform: onOpen)
-        .onHover { hovering = $0 }
-        .animation(Theme.hoverEase, value: hovering)
-        .animation(Theme.hoverEase, value: isSelected)
-        .help(isSelected ? "\(session.title) — current" : "Switch to \(session.title)")
     }
 }
 
@@ -488,8 +561,6 @@ private struct CompactTerminalRow: View {
     let onRelaunch: () -> Void
     let onDismiss: () -> Void
 
-    @State private var hovering = false
-
     private var isRunning: Bool { row.state == .running }
 
     private var dotColor: Color {
@@ -500,16 +571,17 @@ private struct CompactTerminalRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 8, height: 8)
-                .frame(width: 18, height: 18)  // StatusDot's box, minus its glow
-            Text(row.title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(isRunning ? Theme.textPrimary : Theme.textSecondary)
-                .lineLimit(1)
-            Spacer(minLength: 8)
+        CompactRowShell(
+            title: row.title,
+            titleColor: isRunning ? Theme.textPrimary : Theme.textSecondary,
+            isSelected: isSelected,
+            dimmed: !isRunning,
+            glowsOnHover: isRunning,   // a dead row stays flat — tappable, but not live
+            help: isRunning ? "Open \(row.title)" : "View \(row.title)'s last output",
+            onTap: onOpen
+        ) {
+            InfraDot(color: dotColor)
+        } trailing: { hovering in
             if isRunning {
                 Button(action: onStop) {
                     CompactRowGlyph()
@@ -535,26 +607,6 @@ private struct CompactTerminalRow: View {
                 .help("Dismiss")
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .planeCard(hovering: (hovering && isRunning) || isSelected)
-        .overlay(alignment: .leading) {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Theme.accent.opacity(0.7))
-                    .frame(width: 2)
-                    .padding(.vertical, 6)
-                    .padding(.leading, 1)
-            }
-        }
-        .opacity(isRunning ? 1 : 0.75)
-        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
-        .onTapGesture(perform: onOpen)
-        .onHover { hovering = $0 }
-        .animation(Theme.hoverEase, value: hovering)
-        .animation(Theme.hoverEase, value: isSelected)
-        .help(isRunning ? "Open \(row.title)" : "View \(row.title)'s last output")
     }
 }
 
@@ -622,18 +674,10 @@ private struct ServerRow: View {
     let warn: Bool
     let onOpen: () -> Void
 
-    @State private var hovering = false
-
     var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(Theme.textSecondary)
-                .frame(width: 8, height: 8)
-                .frame(width: 18, height: 18)  // StatusDot's box, minus its glow
-            Text(title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Theme.textPrimary)
-                .lineLimit(1)
+        CompactRowShell(title: title, help: "Open Tool Servers", onTap: onOpen) {
+            InfraDot(color: Theme.textSecondary)
+        } middle: {
             if let count, count > 1 {
                 Text("\(count)")
                     .font(.system(size: 10, weight: .semibold))
@@ -641,7 +685,7 @@ private struct ServerRow: View {
                     .foregroundStyle(Theme.textTertiary)
                     .fixedSize()
             }
-            Spacer(minLength: 8)
+        } trailing: { _ in
             if cpuPercent >= 1 {
                 Text("\(Int(cpuPercent.rounded()))%")
                     .font(.system(size: 10, weight: .semibold))
@@ -650,15 +694,6 @@ private struct ServerRow: View {
                     .fixedSize()
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .planeCard(hovering: hovering)
-        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
-        .onTapGesture(perform: onOpen)
-        .onHover { hovering = $0 }
-        .animation(Theme.hoverEase, value: hovering)
-        .help("Open Tool Servers")
     }
 }
 
@@ -692,19 +727,15 @@ private struct CloudRow: View {
     /// The DEFAULT profile's region — one per config, so it rides on the service.
     let region: String?
 
-    @State private var hovering = false
-
     var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(instance.isRunning ? Theme.textSecondary : Theme.textTertiary)
-                .frame(width: 8, height: 8)
-                .frame(width: 18, height: 18)  // StatusDot's box, minus its glow
-            Text(instance.name)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(instance.isRunning ? Theme.textPrimary : Theme.textSecondary)
-                .lineLimit(1)
-            Spacer(minLength: 8)
+        CompactRowShell(
+            title: instance.name,
+            titleColor: instance.isRunning ? Theme.textPrimary : Theme.textSecondary,
+            help: "Open the Oracle console",
+            onTap: { NSWorkspace.shared.open(URL(string: "https://cloud.oracle.com/compute/instances")!) }
+        ) {
+            InfraDot(color: instance.isRunning ? Theme.textSecondary : Theme.textTertiary)
+        } trailing: { _ in
             if !instance.isRunning {
                 Text(instance.state.lowercased())
                     .font(.system(size: 10, weight: .semibold))
@@ -718,17 +749,6 @@ private struct CloudRow: View {
                     .fixedSize()
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .planeCard(hovering: hovering)
-        .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
-        .onTapGesture {
-            NSWorkspace.shared.open(URL(string: "https://cloud.oracle.com/compute/instances")!)
-        }
-        .onHover { hovering = $0 }
-        .animation(Theme.hoverEase, value: hovering)
-        .help("Open the Oracle console")
     }
 }
 
