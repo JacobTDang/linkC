@@ -233,6 +233,33 @@ final class AppModel {
         Task { await toolServers.refresh() }
     }
 
+    /// A container's last stats sample; nil before the first sweep lands.
+    func containerStats(_ id: String) -> ContainerStats? { toolServers?.statsById[id] }
+
+    /// A compose project's summed live CPU — the stack's total draw, for display.
+    func projectCpu(_ project: ToolServerProject) -> Double {
+        project.containers.reduce(0) { $0 + (containerStats($1.id)?.cpuValue ?? 0) }
+    }
+
+    /// A project's single hottest container — the warning signal. A four-container stack
+    /// idling at 30% each totals 120% without anything being hot; gold means one container
+    /// actually crossed a full core.
+    func projectHottest(_ project: ToolServerProject) -> Double {
+        project.containers.map { containerStats($0.id)?.cpuValue ?? 0 }.max() ?? 0
+    }
+
+    /// The SERVERS rows, hottest first — ranked here so every surface orders the same way
+    /// and the sort never re-derives a stack's total per comparison.
+    var runningProjectsByPower: [ToolServerProject] {
+        let cpu = Dictionary(uniqueKeysWithValues: runningProjects.map { ($0.id, projectCpu($0)) })
+        return runningProjects.sorted { (cpu[$0.id] ?? 0) > (cpu[$1.id] ?? 0) }
+    }
+    var runningStandaloneByPower: [ContainerInfo] {
+        runningStandalone.sorted {
+            (containerStats($0.id)?.cpuValue ?? 0) > (containerStats($1.id)?.cpuValue ?? 0)
+        }
+    }
+
     /// The empty-state gate, centralized: dev terminals count as content too.
     var isEmptyOverview: Bool {
         sessions.isEmpty && restorables.isEmpty && shellRows.isEmpty

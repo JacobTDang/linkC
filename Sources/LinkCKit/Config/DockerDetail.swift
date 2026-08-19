@@ -112,20 +112,44 @@ public enum DockerInspect {
 public struct ContainerStats: Equatable, Sendable {
     public let cpu: String
     public let memory: String
+
+    /// Numeric CPU for sorting and thresholds — "188.85%" → 188.85; unparseable → 0.
+    public var cpuValue: Double {
+        Double(cpu.replacingOccurrences(of: "%", with: "")) ?? 0
+    }
 }
 
 public enum DockerStats {
     public static func parse(_ line: String) -> ContainerStats? {
+        decodeLine(line)?.stats
+    }
+
+    /// The batch sweep: every running container's one-shot figures keyed by container id,
+    /// one JSON line each. Garbage lines (and lines with no id) are skipped alone.
+    public static func parseAll(_ output: String) -> [String: ContainerStats] {
+        var byId: [String: ContainerStats] = [:]
+        for line in output.split(separator: "\n") {
+            guard let decoded = decodeLine(String(line)), let id = decoded.id else { continue }
+            byId[id] = decoded.stats
+        }
+        return byId
+    }
+
+    /// One `docker stats` JSON line → its figures (and the container id when present) —
+    /// the single decode-and-validate path both entry points share.
+    private static func decodeLine(_ line: String) -> (id: String?, stats: ContainerStats)? {
         guard let data = line.data(using: .utf8),
               let raw = try? JSONDecoder().decode(RawStats.self, from: data),
               let cpu = raw.cpuPerc, let memory = raw.memUsage else { return nil }
-        return ContainerStats(cpu: cpu, memory: memory)
+        return (raw.id, ContainerStats(cpu: cpu, memory: memory))
     }
 
     private struct RawStats: Decodable {
+        let id: String?
         let cpuPerc: String?
         let memUsage: String?
         enum CodingKeys: String, CodingKey {
+            case id = "ID"
             case cpuPerc = "CPUPerc"
             case memUsage = "MemUsage"
         }
