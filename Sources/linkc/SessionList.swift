@@ -677,7 +677,7 @@ private struct CloudSection: View {
                 SectionHeader(title: "CLOUD")
                     .padding(.top, 6)
                 ForEach(instances) { instance in
-                    CloudRow(instance: instance)
+                    CloudRow(instance: instance, region: model.cloudRegion)
                 }
             }
         }
@@ -689,6 +689,8 @@ private struct CloudSection: View {
 /// running, and the region.
 private struct CloudRow: View {
     let instance: OracleInstance
+    /// The DEFAULT profile's region — one per config, so it rides on the service.
+    let region: String?
 
     @State private var hovering = false
 
@@ -709,10 +711,12 @@ private struct CloudRow: View {
                     .foregroundStyle(Theme.textTertiary)
                     .fixedSize()
             }
-            Text(instance.region)
-                .font(.system(size: 10))
-                .foregroundStyle(Theme.textTertiary)
-                .fixedSize()
+            if let region {
+                Text(region)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize()
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)

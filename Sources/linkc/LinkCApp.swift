@@ -172,6 +172,7 @@ final class AppModel {
     private(set) var oracle: OracleService?
 
     var cloudInstances: [OracleInstance] { oracle?.instances ?? [] }
+    var cloudRegion: String? { oracle?.region }
 
     /// Cloud calls are slow and rate-limited — refresh on panel open + every ~120s,
     /// never the local 15s loop.
