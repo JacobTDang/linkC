@@ -20,22 +20,26 @@ public struct AgentRun: Equatable, Sendable, Identifiable {
     public var isRunning: Bool { endedAt == nil }
 }
 
-/// Parses subagent activity out of session-transcript lines. Spawns are `Agent`/`Task`
-/// tool_use blocks (their input carries description + subagent_type). Completion differs by
-/// agent style: sync agents complete via a real tool_result; async agents' immediate
-/// tool_result is only launch metadata — their completion arrives later as a
-/// task-notification that names the original tool-use id.
+/// Parses subagent activity out of session-transcript lines (decoded via the shared
+/// `TranscriptLine`). Spawns are `Agent`/`Task` tool_use blocks (their input carries
+/// description + subagent_type). Completion differs by agent style: sync agents complete
+/// via a real tool_result; async agents' immediate tool_result is only launch metadata —
+/// their completion arrives later as a task-notification naming the original tool-use id.
 public enum AgentEvents {
     private static let asyncLaunchMarker = "Async agent launched"
-    private static let decoder = JSONDecoder()
 
     public static func parse(line: String) -> [AgentEvent] {
-        guard let data = line.data(using: .utf8),
-              let raw = try? Self.decoder.decode(RawLine.self, from: data),
-              let timestamp = raw.timestamp.flatMap(parseTimestamp) else { return [] }
+        guard let decoded = TranscriptLine.decode(line) else { return [] }
+        return events(from: decoded)
+    }
+
+    /// The pre-decoded path — `UsageTracker` decodes each line once and feeds every
+    /// consumer the same `TranscriptLine`.
+    static func events(from decoded: TranscriptLine) -> [AgentEvent] {
+        guard let timestamp = decoded.timestamp else { return [] }
 
         var events: [AgentEvent] = []
-        switch raw.message?.content {
+        switch decoded.content {
         case .blocks(let blocks):
             for block in blocks {
                 if block.type == "tool_use", block.name == "Agent" || block.name == "Task",
@@ -46,11 +50,13 @@ public enum AgentEvents {
                     ))
                 }
                 if block.type == "tool_result", let id = block.toolUseId {
-                    let text = block.content?.joinedText ?? ""
+                    let text = block.resultText ?? ""
                     // Async agents' immediate tool_result is launch metadata, not a completion.
                     guard !text.hasPrefix(asyncLaunchMarker) else { continue }
-                    // An empty result still completes the run — dropping it strands the run as running.
-                    events.append(.completed(toolUseId: id, resultText: text.isEmpty ? nil : text, at: timestamp))
+                    // An empty result still completes the run — dropping it strands the run.
+                    events.append(.completed(
+                        toolUseId: id, resultText: text.isEmpty ? nil : text, at: timestamp
+                    ))
                 }
                 if block.type == "text", let text = block.text {
                     events.append(contentsOf: notificationCompletions(in: text, at: timestamp))
@@ -58,8 +64,6 @@ public enum AgentEvents {
             }
         case .text(let text):
             events.append(contentsOf: notificationCompletions(in: text, at: timestamp))
-        case nil:
-            break
         }
         return events
     }
@@ -79,105 +83,6 @@ public enum AgentEvents {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
     }
-
-    static func parseTimestamp(_ raw: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: raw) { return date }
-        let whole = ISO8601DateFormatter()
-        whole.formatOptions = [.withInternetDateTime]
-        return whole.date(from: raw)
-    }
-
-    // MARK: - Raw shapes
-
-    private struct RawLine: Decodable {
-        let timestamp: String?
-        let message: RawMessage?
-    }
-
-    private struct RawMessage: Decodable {
-        let content: RawContent?
-    }
-
-    /// User-message content is a string OR a block array; both occur in real transcripts.
-    /// Blocks decode individually — one malformed block is skipped alone rather than
-    /// discarding every event in the line.
-    private enum RawContent: Decodable {
-        case text(String)
-        case blocks([RawBlock])
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            if let text = try? container.decode(String.self) {
-                self = .text(text)
-            } else {
-                let failables = (try? container.decode([FailableBlock].self)) ?? []
-                self = .blocks(failables.compactMap(\.block))
-            }
-        }
-    }
-
-    /// Always decodes; `block` is nil when the element didn't match `RawBlock`. Wrapping each
-    /// element keeps the array's decode cursor advancing past bad entries.
-    private struct FailableBlock: Decodable {
-        let block: RawBlock?
-
-        init(from decoder: Decoder) throws {
-            block = try? RawBlock(from: decoder)
-        }
-    }
-
-    private struct RawBlock: Decodable {
-        let type: String?
-        let id: String?
-        let name: String?
-        let text: String?
-        let input: RawInput?
-        let toolUseId: String?
-        let content: RawResultPayload?
-
-        enum CodingKeys: String, CodingKey {
-            case type, id, name, text, input, content
-            case toolUseId = "tool_use_id"
-        }
-    }
-
-    private struct RawInput: Decodable {
-        let description: String?
-        let subagentType: String?
-
-        enum CodingKeys: String, CodingKey {
-            case description
-            case subagentType = "subagent_type"
-        }
-    }
-
-    private struct RawResultContent: Decodable {
-        let text: String?
-    }
-
-    /// tool_result content: a block array in most transcripts, a bare string in some.
-    private enum RawResultPayload: Decodable {
-        case text(String)
-        case blocks([RawResultContent])
-
-        var joinedText: String {
-            switch self {
-            case .text(let string): return string
-            case .blocks(let blocks): return blocks.compactMap(\.text).joined(separator: "\n")
-            }
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            if let text = try? container.decode(String.self) {
-                self = .text(text)
-            } else {
-                self = .blocks(try container.decode([RawResultContent].self))
-            }
-        }
-    }
 }
 
 /// Pairs spawns with completions across incremental feeds. Completions for unknown ids are
@@ -196,8 +101,8 @@ public struct AgentAssembler: Sendable {
                                      startedAt: at, endedAt: nil, resultText: nil))
             case .completed(let id, let resultText, let at):
                 guard let index = runs.firstIndex(where: { $0.id == id }) else { continue }
-                // A real completion outranks the sweep's guess — take its timestamp so the run
-                // surfaces in the recent-completion window. The first real end is otherwise kept.
+                // A real completion outranks the sweep's guess — take its timestamp so the
+                // run surfaces in the recent-completion window. The first real end is kept.
                 if runs[index].endedAt == nil || runs[index].endedBySweep {
                     runs[index].endedAt = at
                     runs[index].endedBySweep = false
