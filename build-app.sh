@@ -72,7 +72,9 @@ if [[ "${1:-}" == "--install" ]]; then
   # succeeds: the ditto above just replaced the plist with dist's key-less one.
   /usr/libexec/PlistBuddy -c "Add :LinkCSourceDist string $APP" \
     "/Applications/$NAME.app/Contents/Info.plist"
-  # Re-sign: the plist edit invalidated the ad-hoc signature.
+  # Re-sign: the plist edit invalidated the ad-hoc signature. Clean xattrs first —
+  # iCloud-synced folders stamp Finder detritus that codesign refuses.
+  xattr -cr "/Applications/$NAME.app"
   codesign --force --deep --sign - "/Applications/$NAME.app"
   echo "==> Installed: /Applications/$NAME.app"
 fi
