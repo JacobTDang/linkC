@@ -33,6 +33,9 @@ public final class ToolServerService {
     /// right now) can await it deterministically.
     public private(set) var statsSweepTask: Task<Void, Never>?
     private var isSweepingStats = false
+    /// Docker's VM tax — the Linux VM's host CPU, which no per-container stat can show.
+    /// Nil while the VM isn't running.
+    public private(set) var vmCpu: Double?
     public private(set) var isRefreshing = false
     /// The container id or project name with a CLI action in flight — its controls disable.
     public private(set) var busyTarget: String?
@@ -104,6 +107,16 @@ public final class ToolServerService {
             images = DockerImages.parse(output)
         } catch {
             lastError = "Couldn't list images: \(error.localizedDescription)"
+        }
+        // The VM tax rides along every refresh: one host `ps`, attributed by parentage.
+        // It matters MOST when containers idle — that's when the VM is the whole cost.
+        do {
+            let output = try await runner.run(
+                "/bin/ps", args: ["-Ao", "pid=,ppid=,pcpu=,comm="], cwd: nil, timeout: Self.listTimeout
+            )
+            vmCpu = DockerVM.parse(output)
+        } catch {
+            vmCpu = nil   // a ps hiccup is not a docker error — hide the row, don't shout
         }
         // The power proxy rides behind refresh as a follow-up task: `docker stats
         // --no-stream` blocks ~2s sampling, and neither container actions (which await

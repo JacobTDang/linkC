@@ -568,10 +568,22 @@ private struct ServersSection: View {
     var body: some View {
         let projects = model.runningProjectsByPower
         let standalone = model.runningStandaloneByPower
-        if !projects.isEmpty || !standalone.isEmpty {
+        if !projects.isEmpty || !standalone.isEmpty || model.dockerVmCpu != nil {
             VStack(spacing: 6) {
                 SectionHeader(title: "SERVERS")
                     .padding(.top, 6)
+                // The VM tax leads the section: it's what Docker costs even when every
+                // container below reads 0% — the answer to "why does the battery menu
+                // still blame Docker?".
+                if let vm = model.dockerVmCpu {
+                    ServerRow(
+                        title: "docker VM",
+                        count: nil,
+                        cpuPercent: vm,
+                        warn: vm >= 100,
+                        onOpen: { model.open(.toolServers) }
+                    )
+                }
                 ForEach(projects) { project in
                     ServerRow(
                         title: project.name,
