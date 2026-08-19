@@ -96,6 +96,20 @@ final class ToolServerServiceTests: XCTestCase {
         XCTAssertTrue(service.lastError!.contains("Couldn't list containers"), "the root cause must survive")
     }
 
+    /// Every refresh samples the VM tax with one host ps call.
+    func testRefreshSamplesTheVMTax() async {
+        let runner = FakeRunner(result: .success(psJSON))
+        let service = ToolServerService(dockerPath: "/fake/docker", runner: runner)
+
+        await service.refresh()
+
+        XCTAssertTrue(
+            runner.calls.contains { $0.args == ["-Ao", "pid=,ppid=,pcpu=,comm="] },
+            "refresh must sample the VM's host CPU"
+        )
+        XCTAssertNil(service.vmCpu, "ps JSON parses no VM rows -> nil, not 0")
+    }
+
     func testRunnerFailureIsLoud() async {
         let runner = FakeRunner(result: .failure(LinkCError.process("Cannot connect to the Docker daemon")))
         let service = ToolServerService(dockerPath: "/fake/docker", runner: runner)

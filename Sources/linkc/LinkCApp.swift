@@ -286,6 +286,9 @@ final class AppModel {
         return usage.sessionActivity(session.id)
     }
 
+    /// The Docker VM's host CPU — the tax no per-container stat can show.
+    var dockerVmCpu: Double? { toolServers?.vmCpu }
+
     /// A container's last stats sample; nil before the first sweep lands.
     func containerStats(_ id: String) -> ContainerStats? { toolServers?.statsById[id] }
 

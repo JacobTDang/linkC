@@ -200,3 +200,25 @@ public enum DockerImages {
         }
     }
 }
+
+/// The VM tax: Docker Desktop's Linux VM burns host CPU even with every container idle —
+/// per-container stats can never show it, which is exactly why the panel must. Input is
+/// `ps -Ao pid=,ppid=,pcpu=,comm=` output; the VM is attributed to Docker by parentage
+/// (a `com.apple.Virtualization.VirtualMachine` child of `com.docker.backend`), so another
+/// hypervisor's VM never counts. Nil when Docker's VM isn't running at all.
+public enum DockerVM {
+    public static func parse(_ psOutput: String) -> Double? {
+        struct Row { let pid: String; let ppid: String; let pcpu: Double; let comm: String }
+        let rows: [Row] = psOutput.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
+            guard parts.count == 4, let pcpu = Double(parts[2]) else { return nil }
+            return Row(pid: String(parts[0]), ppid: String(parts[1]), pcpu: pcpu, comm: String(parts[3]))
+        }
+        let backendPids = Set(rows.filter { $0.comm.hasSuffix("com.docker.backend") }.map(\.pid))
+        let vms = rows.filter {
+            $0.comm.hasSuffix("com.apple.Virtualization.VirtualMachine") && backendPids.contains($0.ppid)
+        }
+        guard !vms.isEmpty else { return nil }
+        return vms.reduce(0) { $0 + $1.pcpu }
+    }
+}
