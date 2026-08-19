@@ -78,6 +78,7 @@ struct SessionListColumn: View {
                             CompactSessionRow(
                                 session: session,
                                 runningAgents: model.visibleAgents(session.id).count(where: \.isRunning),
+                                activity: model.currentActivity(session),
                                 isSelected: session.id == selectedId,
                                 onOpen: { model.focus(session.id) },
                                 onClose: { model.stop(session.id) }
@@ -88,6 +89,7 @@ struct SessionListColumn: View {
                                 preview: model.recentOutput(session.id, lines: 3),
                                 contextFill: model.contextFill(session.id),
                                 agents: model.visibleAgents(session.id),
+                                activity: model.currentActivity(session),
                                 isSelected: session.id == selectedId,
                                 onOpen: { model.focus(session.id) },
                                 onClose: { model.stop(session.id) }
@@ -300,6 +302,8 @@ private struct HomeCard: View {
     let contextFill: Double?
     /// Subagents worth showing: running ones plus the recently finished.
     let agents: [AgentRun]
+    /// The current command/file/subagent while working — fills the header's middle.
+    var activity: String? = nil
     var isSelected: Bool = false
     let onOpen: () -> Void
     let onClose: () -> Void
@@ -320,6 +324,13 @@ private struct HomeCard: View {
                     .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let activity {
+                    Text(activity)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 Spacer(minLength: 8)
                 // State text only when there's something to act on — the dot carries the rest.
                 if session.state.bucket == .needsYou {
@@ -401,6 +412,8 @@ private struct HomeCard: View {
 private struct CompactSessionRow: View {
     let session: Session
     let runningAgents: Int
+    /// The current command/file/subagent while working — fills the space after the title.
+    let activity: String?
     let isSelected: Bool
     let onOpen: () -> Void
     let onClose: () -> Void
@@ -414,6 +427,14 @@ private struct CompactSessionRow: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Theme.textPrimary)
                 .lineLimit(1)
+                .layoutPriority(1)   // the title never yields to the activity text
+            if let activity {
+                Text(activity)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             Spacer(minLength: 8)
             if session.state.bucket == .needsYou {
                 // The age alone — the pulsing dot already says "needs you"; words don't fit here.

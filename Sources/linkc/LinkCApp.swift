@@ -233,6 +233,13 @@ final class AppModel {
         Task { await toolServers.refresh() }
     }
 
+    /// The session's current action ("$ swift test") — only while it's actually working;
+    /// idle rows never state an absence.
+    func currentActivity(_ session: Session) -> String? {
+        guard session.state.bucket == .active else { return nil }
+        return usage.sessionActivity(session.id)
+    }
+
     /// A container's last stats sample; nil before the first sweep lands.
     func containerStats(_ id: String) -> ContainerStats? { toolServers?.statsById[id] }
 
