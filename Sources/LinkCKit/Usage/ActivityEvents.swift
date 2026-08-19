@@ -1,7 +1,7 @@
 import Foundation
 
-/// "What is Claude doing right now?" — the most recent main-chain tool_use that hasn't
-/// seen its tool_result yet, formatted for a one-line session row.
+/// "What is Claude doing right now?" — the most recent main-chain tool_use, formatted
+/// for a one-line session row.
 public struct CurrentActivity: Equatable, Sendable {
     public let toolUseId: String
     public let label: String
@@ -12,19 +12,22 @@ public struct CurrentActivity: Equatable, Sendable {
     }
 }
 
-/// Folds transcript lines into the session's current activity. An assistant `tool_use`
-/// sets it and only the NEXT one replaces it — a finished tool keeps its label through
-/// the thinking that follows (the last action beats an absence; the turn-boundary sweep
-/// in the tracker is what wipes it). Sidechain lines are skipped entirely — a subagent's
-/// inner Bash must not masquerade as the session's own action — and malformed blocks are
-/// skipped alone (the same tolerance as `AgentEvents`, and for the same reason:
-/// transcript shapes vary).
+/// Folds transcript lines (decoded via the shared `TranscriptLine`) into the session's
+/// current activity. An assistant `tool_use` sets it and only the NEXT one replaces it —
+/// a finished tool keeps its label through the thinking that follows (the last action
+/// beats an absence; the turn-boundary sweep in the tracker is what wipes it). Sidechain
+/// lines are skipped entirely — a subagent's inner Bash must not masquerade as the
+/// session's own action.
 public enum ActivityEvents {
     public static func apply(line: String, to current: CurrentActivity?) -> CurrentActivity? {
-        guard let data = line.data(using: .utf8),
-              let raw = try? Self.decoder.decode(RawLine.self, from: data),
-              raw.isSidechain != true,
-              case .blocks(let blocks) = raw.message?.content else { return current }
+        guard let decoded = TranscriptLine.decode(line) else { return current }
+        return apply(decoded, to: current)
+    }
+
+    /// The pre-decoded path — `UsageTracker` decodes each line once and feeds every
+    /// consumer the same `TranscriptLine`.
+    static func apply(_ decoded: TranscriptLine, to current: CurrentActivity?) -> CurrentActivity? {
+        guard !decoded.isSidechain, case .blocks(let blocks) = decoded.content else { return current }
 
         var activity = current
         for block in blocks {
@@ -39,7 +42,7 @@ public enum ActivityEvents {
     /// "Reading the token block" beats the `cd …; sed …` it describes — except for
     /// subagents, which keep their ▸ mark. Then: the command, the touched file, or the
     /// bare tool name when there's nothing better to say.
-    static func label(tool: String, input: RawInput?) -> String {
+    static func label(tool: String, input: TranscriptLine.Input?) -> String {
         if tool != "Agent", tool != "Task",
            let description = input?.description, !description.isEmpty {
             return description
@@ -61,70 +64,6 @@ public enum ActivityEvents {
             return "▸ \(description)"
         default:
             return tool
-        }
-    }
-
-    private static let decoder = JSONDecoder()
-
-    // MARK: - Raw shapes (same tolerance discipline as AgentEvents)
-
-    private struct RawLine: Decodable {
-        let isSidechain: Bool?
-        let message: RawMessage?
-    }
-
-    private struct RawMessage: Decodable {
-        let content: RawContent?
-    }
-
-    /// Content is a string OR a block array; blocks decode individually so one malformed
-    /// block cannot erase the events beside it.
-    private enum RawContent: Decodable {
-        case text
-        case blocks([RawBlock])
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            if (try? container.decode(String.self)) != nil {
-                self = .text
-            } else {
-                let failables = (try? container.decode([FailableBlock].self)) ?? []
-                self = .blocks(failables.compactMap(\.block))
-            }
-        }
-    }
-
-    private struct FailableBlock: Decodable {
-        let block: RawBlock?
-
-        init(from decoder: Decoder) throws {
-            block = try? RawBlock(from: decoder)
-        }
-    }
-
-    struct RawBlock: Decodable {
-        let type: String?
-        let id: String?
-        let name: String?
-        let input: RawInput?
-        let toolUseId: String?
-
-        enum CodingKeys: String, CodingKey {
-            case type, id, name, input
-            case toolUseId = "tool_use_id"
-        }
-    }
-
-    struct RawInput: Decodable {
-        let command: String?
-        let filePath: String?
-        let notebookPath: String?
-        let description: String?
-
-        enum CodingKeys: String, CodingKey {
-            case command, description
-            case filePath = "file_path"
-            case notebookPath = "notebook_path"
         }
     }
 }
