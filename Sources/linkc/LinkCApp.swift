@@ -233,10 +233,13 @@ final class AppModel {
         Task { await toolServers.refresh() }
     }
 
-    /// The session's current action ("$ swift test") — only while it's actually working;
-    /// idle rows never state an absence.
+    /// The session's current action ("$ swift test") — while it's working, and while it's
+    /// blocked on a permission prompt (that's exactly when "which command is waiting?"
+    /// matters most). Idle rows never state an absence.
     func currentActivity(_ session: Session) -> String? {
-        guard session.state.bucket == .active else { return nil }
+        guard session.state.bucket == .active || session.state == .waitingPermission else {
+            return nil
+        }
         return usage.sessionActivity(session.id)
     }
 

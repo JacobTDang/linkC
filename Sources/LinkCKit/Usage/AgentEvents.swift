@@ -27,10 +27,11 @@ public struct AgentRun: Equatable, Sendable, Identifiable {
 /// task-notification that names the original tool-use id.
 public enum AgentEvents {
     private static let asyncLaunchMarker = "Async agent launched"
+    private static let decoder = JSONDecoder()
 
     public static func parse(line: String) -> [AgentEvent] {
         guard let data = line.data(using: .utf8),
-              let raw = try? JSONDecoder().decode(RawLine.self, from: data),
+              let raw = try? Self.decoder.decode(RawLine.self, from: data),
               let timestamp = raw.timestamp.flatMap(parseTimestamp) else { return [] }
 
         var events: [AgentEvent] = []
