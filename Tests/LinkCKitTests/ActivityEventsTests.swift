@@ -19,6 +19,21 @@ final class ActivityEventsTests: XCTestCase {
         XCTAssertEqual(activity?.toolUseId, "t1")
     }
 
+    /// Claude Code sends a human description with most Bash calls — "Reading the token
+    /// block" beats the raw `cd …; sed -n '1,80p' …` it describes.
+    func testDescriptionOutranksRawArguments() {
+        let bash = toolUseLine(
+            #"{"type":"tool_use","id":"t8","name":"Bash","input":{"command":"cd /x; sed -n '1,80p' app/globals.css","description":"Reading the token block"}}"#
+        )
+        XCTAssertEqual(ActivityEvents.apply(line: bash, to: nil)?.label, "Reading the token block")
+
+        // Subagents keep their ▸ mark — the description is the same field, but the kind matters.
+        let agent = toolUseLine(
+            #"{"type":"tool_use","id":"t9","name":"Agent","input":{"description":"Map architecture"}}"#
+        )
+        XCTAssertEqual(ActivityEvents.apply(line: agent, to: nil)?.label, "▸ Map architecture")
+    }
+
     func testFileAndAgentAndFallbackLabels() {
         let edit = toolUseLine(
             #"{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"/a/b/PanelView.swift"}}"#
@@ -45,14 +60,18 @@ final class ActivityEventsTests: XCTestCase {
         XCTAssertEqual(ActivityEvents.apply(line: notebook, to: nil)?.label, "✎ analysis.ipynb")
     }
 
-    func testResultClearsOnlyMatchingId() {
+    /// A finished tool does NOT blank the row: during the thinking that follows, the last
+    /// action is more useful than an absence. Only the next action replaces it (and the
+    /// turn-boundary sweep wipes it — that part lives in the tracker).
+    func testResultKeepsTheLastAction() {
         let current = CurrentActivity(toolUseId: "t1", label: "$ swift test")
 
         let unrelated = #"{"type":"user","isSidechain":false,"message":{"content":[{"type":"tool_result","tool_use_id":"other"}]}}"#
         XCTAssertEqual(ActivityEvents.apply(line: unrelated, to: current), current)
 
         let matching = #"{"type":"user","isSidechain":false,"message":{"content":[{"type":"tool_result","tool_use_id":"t1"}]}}"#
-        XCTAssertNil(ActivityEvents.apply(line: matching, to: current))
+        XCTAssertEqual(ActivityEvents.apply(line: matching, to: current), current,
+                       "the last action survives its own result")
     }
 
     func testSidechainLinesAreIgnored() {
