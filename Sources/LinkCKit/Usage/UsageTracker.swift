@@ -58,9 +58,13 @@ public final class UsageTracker {
             if let usage = TranscriptUsage.parseLine(line) {
                 acc.add(usage)
             }
-            let events = AgentEvents.parse(line: line)
-            if !events.isEmpty { agents.feed(events) }
-            activity = ActivityEvents.apply(line: line, to: activity)
+            // One decode feeds both event consumers (TranscriptUsage keeps its own
+            // pricing-critical parser — see TranscriptLine's doc comment).
+            if let decoded = TranscriptLine.decode(line) {
+                let events = AgentEvents.events(from: decoded)
+                if !events.isEmpty { agents.feed(events) }
+                activity = ActivityEvents.apply(decoded, to: activity)
+            }
         }
         accumulators[sessionId] = acc
         agentAssemblers[sessionId] = agents
