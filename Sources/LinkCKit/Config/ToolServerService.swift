@@ -29,6 +29,10 @@ public final class ToolServerService {
     public private(set) var images: [ImageInfo] = []
     /// Last batch `docker stats` sweep, keyed by container id — the per-container power proxy.
     public private(set) var statsById: [String: ContainerStats] = [:]
+    /// The in-flight follow-up sweep, exposed so tests (and any caller needing fresh figures
+    /// right now) can await it deterministically.
+    public private(set) var statsSweepTask: Task<Void, Never>?
+    private var isSweepingStats = false
     public private(set) var isRefreshing = false
     /// The container id or project name with a CLI action in flight — its controls disable.
     public private(set) var busyTarget: String?
@@ -87,7 +91,10 @@ public final class ToolServerService {
             }
             lastError = nil
         } catch {
+            // The daemon is unreachable — stop here. Running images/stats against it would
+            // only burn timeouts and clobber this root-cause message with theirs.
             lastError = "Couldn't list containers: \(error.localizedDescription)"
+            return
         }
         // Images are additive: a failure here surfaces but doesn't clobber the container list.
         do {
@@ -98,14 +105,25 @@ public final class ToolServerService {
         } catch {
             lastError = "Couldn't list images: \(error.localizedDescription)"
         }
-        // The power proxy, additive too: one batch sample of every running container.
-        // Skipped when nothing runs — `docker stats --no-stream` blocks ~2s sampling.
+        // The power proxy rides behind refresh as a follow-up task: `docker stats
+        // --no-stream` blocks ~2s sampling, and neither container actions (which await
+        // refresh before re-enabling their controls) nor the manual refresh spinner
+        // should pay that. Results land when the sample does.
+        statsSweepTask = Task { await self.sweepStats() }
+    }
+
+    /// One batch stats sample of every running container. Skipped when nothing runs; one
+    /// sweep at a time (the 15s sidebar poll can lap a slow daemon).
+    private func sweepStats() async {
+        guard let dockerPath, !isSweepingStats else { return }
         let anythingRunning = projects.contains { $0.runningCount > 0 }
             || standalone.contains { $0.state == .running }
         guard anythingRunning else {
             statsById = [:]
             return
         }
+        isSweepingStats = true
+        defer { isSweepingStats = false }
         do {
             let output = try await runner.run(
                 dockerPath, args: ["stats", "--no-stream", "--format", "json"], cwd: nil, timeout: Self.listTimeout

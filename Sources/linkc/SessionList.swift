@@ -545,10 +545,8 @@ private struct ServersSection: View {
     let model: AppModel
 
     var body: some View {
-        let projects = model.runningProjects
-            .sorted { model.projectCpu($0) > model.projectCpu($1) }
-        let standalone = model.runningStandalone
-            .sorted { (model.containerStats($0.id)?.cpuValue ?? 0) > (model.containerStats($1.id)?.cpuValue ?? 0) }
+        let projects = model.runningProjectsByPower
+        let standalone = model.runningStandaloneByPower
         if !projects.isEmpty || !standalone.isEmpty {
             VStack(spacing: 6) {
                 SectionHeader(title: "SERVERS")
@@ -558,14 +556,17 @@ private struct ServersSection: View {
                         title: project.name,
                         count: project.runningCount,
                         cpuPercent: model.projectCpu(project),
+                        warn: model.projectHottest(project) >= 100,
                         onOpen: { model.open(.toolServers) }
                     )
                 }
                 ForEach(standalone) { container in
+                    let cpu = model.containerStats(container.id)?.cpuValue ?? 0
                     ServerRow(
                         title: container.name,
                         count: nil,
-                        cpuPercent: model.containerStats(container.id)?.cpuValue ?? 0,
+                        cpuPercent: cpu,
+                        warn: cpu >= 100,
                         onOpen: { model.open(.toolServers) }
                     )
                 }
@@ -576,12 +577,14 @@ private struct ServersSection: View {
 
 /// One running server as a quiet row: a steady dot (infra never pulses — urgency is
 /// claude's vocabulary), the project or container name, its live-container count, and its
-/// CPU share — gold past a full core, the "this is your battery" signal. Tapping opens the
-/// Tool Servers screen for the real controls.
+/// CPU share. `warn` golds the figure when a single container crosses a full core — the
+/// "this is your battery" signal (a stack's SUM crossing 100 from idle containers is not).
+/// Tapping opens the Tool Servers screen for the real controls.
 private struct ServerRow: View {
     let title: String
     let count: Int?
     let cpuPercent: Double
+    let warn: Bool
     let onOpen: () -> Void
 
     @State private var hovering = false
@@ -608,7 +611,7 @@ private struct ServerRow: View {
                 Text("\(Int(cpuPercent.rounded()))%")
                     .font(.system(size: 10, weight: .semibold))
                     .monospacedDigit()
-                    .foregroundStyle(cpuPercent >= 100 ? Theme.contextWarn : Theme.textTertiary)
+                    .foregroundStyle(warn ? Theme.contextWarn : Theme.textTertiary)
                     .fixedSize()
             }
         }

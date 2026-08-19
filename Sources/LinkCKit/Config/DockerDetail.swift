@@ -121,24 +121,27 @@ public struct ContainerStats: Equatable, Sendable {
 
 public enum DockerStats {
     public static func parse(_ line: String) -> ContainerStats? {
-        guard let data = line.data(using: .utf8),
-              let raw = try? JSONDecoder().decode(RawStats.self, from: data),
-              let cpu = raw.cpuPerc, let memory = raw.memUsage else { return nil }
-        return ContainerStats(cpu: cpu, memory: memory)
+        decodeLine(line)?.stats
     }
 
     /// The batch sweep: every running container's one-shot figures keyed by container id,
-    /// one JSON line each. Garbage lines are skipped alone.
+    /// one JSON line each. Garbage lines (and lines with no id) are skipped alone.
     public static func parseAll(_ output: String) -> [String: ContainerStats] {
         var byId: [String: ContainerStats] = [:]
         for line in output.split(separator: "\n") {
-            guard let data = line.data(using: .utf8),
-                  let raw = try? JSONDecoder().decode(RawStats.self, from: data),
-                  let id = raw.id, let cpu = raw.cpuPerc, let memory = raw.memUsage
-            else { continue }
-            byId[id] = ContainerStats(cpu: cpu, memory: memory)
+            guard let decoded = decodeLine(String(line)), let id = decoded.id else { continue }
+            byId[id] = decoded.stats
         }
         return byId
+    }
+
+    /// One `docker stats` JSON line → its figures (and the container id when present) —
+    /// the single decode-and-validate path both entry points share.
+    private static func decodeLine(_ line: String) -> (id: String?, stats: ContainerStats)? {
+        guard let data = line.data(using: .utf8),
+              let raw = try? JSONDecoder().decode(RawStats.self, from: data),
+              let cpu = raw.cpuPerc, let memory = raw.memUsage else { return nil }
+        return (raw.id, ContainerStats(cpu: cpu, memory: memory))
     }
 
     private struct RawStats: Decodable {
