@@ -27,6 +27,7 @@ public final class UsageTracker {
     private var sessionPaths: [String: String] = [:]
     private var accumulators: [String: Accumulator] = [:]
     private var agentAssemblers: [String: AgentAssembler] = [:]
+    private var activities: [String: CurrentActivity] = [:]
     private var scanRecords: [MessageUsage] = []
 
     /// First-scan cost bound: only the trailing 4MB of a historical transcript is read, and
@@ -52,15 +53,18 @@ public final class UsageTracker {
         guard let path = sessionPaths[sessionId] else { return }
         var acc = accumulators[sessionId] ?? Accumulator()
         var agents = agentAssemblers[sessionId] ?? AgentAssembler()
+        var activity = activities[sessionId]
         for line in sessionReader.readNewLines(at: path) {
             if let usage = TranscriptUsage.parseLine(line) {
                 acc.add(usage)
             }
             let events = AgentEvents.parse(line: line)
             if !events.isEmpty { agents.feed(events) }
+            activity = ActivityEvents.apply(line: line, to: activity)
         }
         accumulators[sessionId] = acc
         agentAssemblers[sessionId] = agents
+        activities[sessionId] = activity
     }
 
     /// The session's subagent runs, oldest first — spawns and completions from the same
@@ -69,12 +73,30 @@ public final class UsageTracker {
         agentAssemblers[sessionId]?.runs ?? []
     }
 
-    /// Backstop for lost completions: mark every still-running agent run ended. Called when
-    /// the session's turn is over — anything still "running" then is a phantom.
+    /// The turn-boundary reset for ALL per-turn transient state: still-running agent runs
+    /// are ended (anything "running" past a turn boundary is a phantom) and the current
+    /// activity is cleared (a new prompt must never open showing the last turn's action).
     public func sweepAgents(_ sessionId: String, at date: Date = Date()) {
+        activities[sessionId] = nil
         guard var agents = agentAssemblers[sessionId] else { return }
         agents.endAllRunning(at: date)
         agentAssemblers[sessionId] = agents
+    }
+
+    /// The session's current action ("$ swift test", "✎ PanelView.swift"), nil while idle
+    /// or between tools.
+    public func sessionActivity(_ sessionId: String) -> String? {
+        activities[sessionId]?.label
+    }
+
+    /// Drop every per-session dictionary for an ended session — without this, session ids
+    /// (fresh UUIDs, never reused) accumulate for the process lifetime and every refresh
+    /// sweep keeps re-reading dead transcripts.
+    public func unbind(sessionId: String) {
+        sessionPaths[sessionId] = nil
+        accumulators[sessionId] = nil
+        agentAssemblers[sessionId] = nil
+        activities[sessionId] = nil
     }
 
     public func sessionUsage(_ sessionId: String) -> SessionUsage? {
