@@ -771,6 +771,8 @@ private struct ServerRow: View {
 /// instances are absent. The Oracle console is the drill-in: tapping opens it.
 private struct CloudSection: View {
     let model: AppModel
+    /// Only one row expands at a time — the sidebar stays a glance, not a dashboard.
+    @State private var expandedId: String?
 
     var body: some View {
         let instances = model.cloudInstances
@@ -779,7 +781,21 @@ private struct CloudSection: View {
                 SectionHeader(title: "CLOUD")
                     .padding(.top, 6)
                 ForEach(instances) { instance in
-                    CloudRow(instance: instance, region: model.cloudRegion)
+                    CloudRow(
+                        instance: instance,
+                        region: model.cloudRegion,
+                        detail: model.cloudDetail(instance.id),
+                        isExpanded: expandedId == instance.id,
+                        onTap: {
+                            if expandedId == instance.id {
+                                expandedId = nil
+                            } else {
+                                expandedId = instance.id
+                                model.loadCloudDetail(instance.id)
+                            }
+                        },
+                        onRefresh: { model.loadCloudDetail(instance.id) }
+                    )
                 }
             }
         }
@@ -793,28 +809,81 @@ private struct CloudRow: View {
     let instance: OracleInstance
     /// The DEFAULT profile's region — one per config, so it rides on the service.
     let region: String?
+    let detail: OracleDetail?
+    let isExpanded: Bool
+    let onTap: () -> Void
+    let onRefresh: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        CompactRowShell(
-            title: instance.name,
-            titleColor: instance.isRunning ? Theme.textPrimary : Theme.textSecondary,
-            help: "Open the Oracle console",
-            onTap: { NSWorkspace.shared.open(URL(string: "https://cloud.oracle.com/compute/instances")!) }
-        ) {
-            InfraDot(color: instance.isRunning ? Theme.textSecondary : Theme.textTertiary)
-        } trailing: { _ in
-            if !instance.isRunning {
-                Text(instance.state.lowercased())
-                    .font(.system(size: 10, weight: .semibold))
+        VStack(spacing: 0) {
+            CompactRowShell(
+                title: instance.name,
+                titleColor: instance.isRunning ? Theme.textPrimary : Theme.textSecondary,
+                help: isExpanded ? "Collapse" : "Show details",
+                onTap: onTap
+            ) {
+                InfraDot(color: instance.isRunning ? Theme.textSecondary : Theme.textTertiary)
+            } trailing: { _ in
+                if !instance.isRunning {
+                    Text(instance.state.lowercased())
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize()
+                }
+                if let region {
+                    Text(region)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize()
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(Theme.textTertiary)
-                    .fixedSize()
+                    .rotationEffect(.degrees(isExpanded ? 0 : -90))
             }
-            if let region {
-                Text(region)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Theme.textTertiary)
-                    .fixedSize()
+            if isExpanded {
+                CloudDetailPanel(detail: detail, onRefresh: onRefresh)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
+        }
+        .animation(reduceMotion ? nil : Theme.sectionSpring, value: isExpanded)
+    }
+}
+
+/// The expanded drill-in: the two figures worth a glance, and the console as an opt-in
+/// link rather than the row's tap target. Fields render "—" until they land (or if they
+/// fail) — a hiccup never collapses the row.
+private struct CloudDetailPanel: View {
+    let detail: OracleDetail?
+    let onRefresh: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            field("ip", detail?.publicIP ?? "—")
+            field("cpu", detail?.cpuPercent.map { "\(Int($0.rounded()))%" } ?? "—")
+            Spacer(minLength: 8)
+            QuietLink("refresh", size: 10, action: onRefresh)
+            QuietLink("console", size: 10) {
+                NSWorkspace.shared.open(URL(string: "https://cloud.oracle.com/compute/instances")!)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 2)
+        .padding(.bottom, 8)
+    }
+
+    private func field(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(0.4)
+                .foregroundStyle(Theme.textTertiary)
+            Text(value)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize()
         }
     }
 }

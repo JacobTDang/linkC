@@ -77,6 +77,9 @@ public final class OracleService {
     /// The last refresh failure, kept as state (fail loud): expired auth failing every
     /// tick must be inspectable, not a Console.app whisper. Cleared by the next success.
     public private(set) var lastError: String?
+    /// Drill-in results, cached per instance for the panel session — expanding a row
+    /// twice reuses what's here rather than re-hitting a rate-limited API.
+    public private(set) var details: [String: OracleDetail] = [:]
 
     public let ociPath: String?
     /// The DEFAULT profile's region, for the rows' trailing label.
@@ -136,5 +139,102 @@ public final class OracleService {
         }
     }
 
+    /// The cached drill-in for an instance, if it has been expanded.
+    public func detail(for id: String) -> OracleDetail? { details[id] }
+
+    /// Fetch one instance's drill-in: public IP and latest CPU mean. On-demand only —
+    /// never on the polling path. Fields degrade independently, and a total failure
+    /// still records an (empty) detail so the row renders "—" instead of a spinner.
+    public func loadDetail(for id: String) async {
+        guard let ociPath else { return }
+        async let vnics = try? runner.run(
+            ociPath,
+            args: ["compute", "instance", "list-vnics", "--instance-id", id,
+                   "--query", OracleVnics.cliQuery, "--output", "json"],
+            cwd: nil, timeout: Self.listTimeout
+        )
+        async let metrics = try? runner.run(
+            ociPath,
+            args: ["monitoring", "metric-data", "summarize-metrics-data",
+                   "--namespace", "oci_computeagent",
+                   "--query-text", OracleMetrics.queryText,
+                   "--query", OracleMetrics.cliQuery, "--output", "json"],
+            cwd: nil, timeout: Self.listTimeout
+        )
+        let ip = await vnics.flatMap(OracleVnics.publicIP)
+        let cpu = await metrics.flatMap { OracleMetrics.latestCpuByInstance($0)[id] }
+        details[id] = OracleDetail(publicIP: ip, cpuPercent: cpu)
+    }
+
     private static let listTimeout: TimeInterval = 30
+}
+
+/// What a drill-in shows for one instance. Fields degrade independently — a metrics
+/// hiccup must not hide the IP, and neither must collapse the row.
+public struct OracleDetail: Equatable, Sendable {
+    public let publicIP: String?
+    public let cpuPercent: Double?
+}
+
+/// `oci compute instance list-vnics --query 'data[].{...}'` — the public IP, when the
+/// instance has one (private-only boxes legitimately don't).
+public enum OracleVnics {
+    public static let cliQuery = #"data[].{"public-ip": "public-ip", "private-ip": "private-ip"}"#
+
+    public static func publicIP(_ json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let rows = try? JSONDecoder().decode([RawVnic].self, from: data) else { return nil }
+        return rows.compactMap(\.publicIP).first { !$0.isEmpty }
+    }
+
+    private struct RawVnic: Decodable {
+        let publicIP: String?
+        enum CodingKeys: String, CodingKey { case publicIP = "public-ip" }
+    }
+}
+
+/// `oci monitoring metric-data summarize-metrics-data` — CPU means keyed by the
+/// `resourceId` dimension, so one tenancy-wide call covers every instance. The newest
+/// datapoint wins; a series with no datapoints contributes nothing (never a bogus zero).
+public enum OracleMetrics {
+    public static let cliQuery =
+        #"data[].{dimensions: dimensions, "aggregated-datapoints": "aggregated-datapoints"}"#
+    public static let queryText = "CpuUtilization[1h].mean()"
+
+    public static func latestCpuByInstance(_ json: String) -> [String: Double] {
+        guard let data = json.data(using: .utf8),
+              let series = try? JSONDecoder().decode([RawSeries].self, from: data) else { return [:] }
+        var byId: [String: Double] = [:]
+        for entry in series {
+            guard let id = entry.dimensions?.resourceId,
+                  let latest = entry.datapoints?
+                    .compactMap({ point -> (Date, Double)? in
+                        guard let stamp = point.timestamp.flatMap(TranscriptLine.parseTimestamp),
+                              let value = point.value else { return nil }
+                        return (stamp, value)
+                    })
+                    .max(by: { $0.0 < $1.0 })
+            else { continue }
+            byId[id] = latest.1
+        }
+        return byId
+    }
+
+    private struct RawSeries: Decodable {
+        let dimensions: RawDimensions?
+        let datapoints: [RawPoint]?
+        enum CodingKeys: String, CodingKey {
+            case dimensions
+            case datapoints = "aggregated-datapoints"
+        }
+    }
+
+    private struct RawDimensions: Decodable {
+        let resourceId: String?
+    }
+
+    private struct RawPoint: Decodable {
+        let timestamp: String?
+        let value: Double?
+    }
 }
