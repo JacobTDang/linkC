@@ -779,7 +779,9 @@ private struct CloudSection: View {
         let projects = model.supabaseProjects
         let needsLogin = model.supabaseNeedsLogin
         let errors = model.cloudErrors
-        if !instances.isEmpty || !projects.isEmpty || needsLogin || !errors.isEmpty {
+        let watched = model.configuredEndpoints
+        if !instances.isEmpty || !projects.isEmpty || !watched.isEmpty
+            || needsLogin || !errors.isEmpty {
             VStack(spacing: 6) {
                 SectionHeader(title: "CLOUD")
                     .padding(.top, 6)
@@ -810,7 +812,7 @@ private struct CloudSection: View {
                 }
                 // Services the user named in endpoints.json — the ones linkC can't
                 // discover, like a web app behind a domain on a compute instance.
-                ForEach(model.configuredEndpoints) { endpoint in
+                ForEach(watched) { endpoint in
                     WatchedServiceRow(
                         endpoint: endpoint,
                         health: model.serviceHealth(endpoint.id)
@@ -964,6 +966,11 @@ private struct SupabaseDetailPanel: View {
     /// The probe's verdict in words — the row's number without the guesswork.
     private var healthLine: String {
         guard !project.isPaused else { return "paused — restore it from the dashboard" }
+        // Only a serving project is probed; anything transitional would say "checking…"
+        // forever, because no check is coming.
+        guard project.isHealthy else {
+            return "\(project.status.lowercased().replacingOccurrences(of: "_", with: " ")) — not serving"
+        }
         switch health {
         case .ok(let code, let latency)?:
             return "answering \(code) in \(Int((latency * 1000).rounded()))ms"

@@ -6,6 +6,8 @@ import Observation
 /// a paused project doesn't resolve at all. Only 5xx (answering but broken) and no answer
 /// at all are bad news.
 public enum HealthStatus: Equatable, Sendable {
+    /// Not checked, or checked from a machine that had no working network — an honest
+    /// absence of knowledge, never reported as an outage.
     case unknown
     case ok(Int, TimeInterval)
     case degraded(Int, TimeInterval)
@@ -13,6 +15,20 @@ public enum HealthStatus: Equatable, Sendable {
 
     public static func classify(code: Int, latency: TimeInterval) -> HealthStatus {
         code >= 500 ? .degraded(code, latency) : .ok(code, latency)
+    }
+
+    /// True when the error means the probe never left this machine.
+    static func isLocalNetworkFailure(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .notConnectedToInternet, .networkConnectionLost, .cancelled,
+             .dataNotAllowed, .internationalRoamingOff:
+            return true
+        default:
+            // DNS failure, refused connection, TLS failure and timeouts are all things
+            // the service itself did (or failed to do) — those stay real outages.
+            return false
+        }
     }
 
     public var isUp: Bool {
@@ -69,7 +85,10 @@ public struct LiveEndpointProbe: EndpointProbe {
         // 30s to throw it away is waste. Verified live that Supabase's auth health answers
         // HEAD with the same 401 it gives GET. Servers that refuse the method get a GET.
         let head = try await send(url, method: "HEAD", timeout: timeout)
-        guard head.statusCode == 405 || head.statusCode == 501 else { return head }
+        // Any non-success answer to HEAD is retried with GET rather than believed: servers
+        // reject the method with 400/403/405/501, and a misconfigured proxy can 5xx on
+        // HEAD while GET is perfectly healthy — that would report a false "answering 500".
+        guard head.statusCode >= 400 else { return head }
         return try await send(url, method: "GET", timeout: timeout)
     }
 
@@ -176,19 +195,29 @@ public final class HealthMonitor {
         defer { isChecking = false }
 
         let probe = self.probe
-        let results = await withTaskGroup(of: (String, HealthStatus).self) { group in
+        let results = await withTaskGroup(of: (String, HealthStatus?).self) { group in
             for endpoint in endpoints {
                 group.addTask {
                     do {
                         let result = try await probe.probe(endpoint.url, timeout: timeout)
                         return (endpoint.id, .classify(code: result.statusCode, latency: result.latency))
                     } catch {
+                        // A failure on OUR side (Wi-Fi off, laptop asleep, VPN flip) says
+                        // nothing about the service. Calling it down would alert that
+                        // every watched service died at once, then "recovered" together —
+                        // the alarm fatigue the transition rules exist to prevent. nil
+                        // means "no reading": the previous one stands, so a real outage
+                        // arriving right after a blip is still announced against what we
+                        // last actually knew.
+                        if HealthStatus.isLocalNetworkFailure(error) { return (endpoint.id, nil) }
                         return (endpoint.id, .down(error.localizedDescription))
                     }
                 }
             }
             var collected: [String: HealthStatus] = [:]
-            for await (id, status) in group { collected[id] = status }
+            for await (id, status) in group {
+                if let status { collected[id] = status }
+            }
             return collected
         }
 

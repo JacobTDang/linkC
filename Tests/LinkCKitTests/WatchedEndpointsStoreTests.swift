@@ -63,6 +63,27 @@ final class WatchedEndpointsStoreTests: XCTestCase {
         XCTAssertEqual(Set(endpoints.map(\.id)).count, 2, "ids must not collide")
     }
 
+    /// Ids must survive an edit elsewhere in the file: if inserting a line above renamed
+    /// every id below it, those services would lose their history and a subsequent outage
+    /// would be treated as a fresh baseline and never announced.
+    func testIdsAreStableWhenOtherEntriesMove() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = WatchedEndpointsStore(directory: dir)
+
+        try write(#"[{"label": "mp3", "url": "https://music.example.com/health"}]"#, to: dir)
+        let before = store.load().first?.id
+
+        // The user adds a service ABOVE the existing one.
+        try write("""
+        [{"label": "new", "url": "https://new.example.com"},
+         {"label": "mp3", "url": "https://music.example.com/health"}]
+        """, to: dir)
+        let after = store.load().first { $0.label == "mp3" }?.id
+
+        XCTAssertEqual(before, after, "an unrelated edit must not re-identify a service")
+    }
+
     func testMissingAndCorruptAreEmptyNotFatal() throws {
         XCTAssertTrue(WatchedEndpointsStore(directory: tempDir()).load().isEmpty)
 

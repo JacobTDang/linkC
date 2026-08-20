@@ -194,7 +194,9 @@ final class AppModel {
             guard let url = project.healthURL else { return nil }
             return WatchedEndpoint(id: "supabase:\(project.id)", label: project.name, url: url)
         }
-        return supabaseEndpoints + (watchedEndpointsStore?.load() ?? [])
+        // The cache, not another disk read — reloadConfiguredEndpoints() is what
+        // refreshes it, once per health beat.
+        return supabaseEndpoints + configuredEndpoints
     }
 
     func serviceHealth(_ endpointId: String) -> HealthStatus? { health.status(of: endpointId) }

@@ -189,3 +189,53 @@ final class FakeProbe: EndpointProbe, @unchecked Sendable {
         return try answer.get()
     }
 }
+
+/// Network failures on THIS machine are not outages. Wi-Fi dropping must not announce
+/// that every watched service died — and must not destroy the baseline either, or a real
+/// outage arriving right after the blip would be silent.
+@MainActor
+final class HealthLocalFailureTests: XCTestCase {
+
+    private let endpoint = WatchedEndpoint(
+        id: "a", label: "mp3", url: URL(string: "https://a.test")!
+    )
+
+    func testLocalFailureIsNotAnOutage() async {
+        let probe = FakeProbe(answers: ["https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.1))])
+        let monitor = HealthMonitor(probe: probe)
+        _ = await monitor.check([endpoint])
+
+        probe.setAnswer("https://a.test", .failure(URLError(.notConnectedToInternet)))
+        let changes = await monitor.check([endpoint])
+
+        XCTAssertTrue(changes.isEmpty, "losing Wi-Fi is not a service outage")
+        XCTAssertEqual(monitor.status(of: "a"), .ok(200, 0.1),
+                       "the last real reading stands — we simply couldn't ask")
+    }
+
+    /// The sequence that matters: blip, then the service genuinely dies. The outage must
+    /// still be announced, measured against the last reading we actually trust.
+    func testOutageAfterABlipIsStillAnnounced() async {
+        let probe = FakeProbe(answers: ["https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.1))])
+        let monitor = HealthMonitor(probe: probe)
+        _ = await monitor.check([endpoint])
+
+        probe.setAnswer("https://a.test", .failure(URLError(.networkConnectionLost)))
+        _ = await monitor.check([endpoint])
+
+        probe.setAnswer("https://a.test", .failure(URLError(.cannotConnectToHost)))
+        let changes = await monitor.check([endpoint])
+
+        XCTAssertEqual(changes.count, 1, "a real outage after a blip must not be swallowed")
+        XCTAssertTrue(changes[0].body.contains("not responding"))
+    }
+
+    /// DNS failure, refused connections and TLS errors are things the SERVICE did — the
+    /// paused-Supabase and mp3-by-IP cases both land here and must stay real outages.
+    func testServiceSideFailuresRemainOutages() {
+        XCTAssertFalse(HealthStatus.isLocalNetworkFailure(URLError(.cannotFindHost)))
+        XCTAssertFalse(HealthStatus.isLocalNetworkFailure(URLError(.secureConnectionFailed)))
+        XCTAssertFalse(HealthStatus.isLocalNetworkFailure(URLError(.timedOut)))
+        XCTAssertTrue(HealthStatus.isLocalNetworkFailure(URLError(.notConnectedToInternet)))
+    }
+}

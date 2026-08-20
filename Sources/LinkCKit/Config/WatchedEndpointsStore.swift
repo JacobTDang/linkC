@@ -24,17 +24,29 @@ public struct WatchedEndpointsStore {
             NSLog("linkC: endpoints.json at %@ is unreadable, ignoring it", fileURL.path)
             return []
         }
+        // Ids key on the URL, not the position: embedding the index would change every
+        // id below an inserted line, pruning those services' history and treating the
+        // next round as a fresh baseline — so a service that went down across an edit
+        // would never be announced. A counter disambiguates genuine duplicates only.
+        var seenURLs: [String: Int] = [:]
         return entries.enumerated().compactMap { index, entry in
             guard let label = entry.label, !label.isEmpty,
                   let raw = entry.url, let url = URL(string: raw),
                   let scheme = url.scheme?.lowercased(),
                   scheme == "https" || scheme == "http",
                   url.host != nil
-            else { return nil }
-            // The index keeps ids distinct when two entries share a URL — duplicate
-            // Identifiable ids make SwiftUI drop rows, and the monitor's result map would
-            // silently discard one of the two probes.
-            return WatchedEndpoint(id: "configured:\(index):\(raw)", label: label, url: url)
+            else {
+                // Fail loud: a typo'd entry silently vanishing looks exactly like a
+                // service being watched.
+                NSLog("linkC: endpoints.json entry %d ignored — needs a label and an "
+                      + "http(s) url with a host (got label: %@, url: %@)",
+                      index, entry.label ?? "nil", entry.url ?? "nil")
+                return nil
+            }
+            let seen = seenURLs[raw, default: 0]
+            seenURLs[raw] = seen + 1
+            let id = seen == 0 ? "configured:\(raw)" : "configured:\(raw)#\(seen + 1)"
+            return WatchedEndpoint(id: id, label: label, url: url)
         }
     }
 
