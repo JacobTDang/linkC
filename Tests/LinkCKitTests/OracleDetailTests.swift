@@ -47,6 +47,82 @@ final class OracleDetailTests: XCTestCase {
     }
 }
 
+/// Health metrics: one call carries several metric names, keyed by name AND resourceId.
+final class OracleHealthTests: XCTestCase {
+
+    /// The real shape: `name` distinguishes the metric, `dimensions.resourceId` the box.
+    private let multiMetricJSON = """
+    [
+      {"name": "CpuUtilization", "dimensions": {"resourceId": "aaa"},
+       "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 2.4}]},
+      {"name": "MemoryUtilization", "dimensions": {"resourceId": "aaa"},
+       "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 10.9}]},
+      {"name": "LoadAverage", "dimensions": {"resourceId": "aaa"},
+       "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 0.31}]},
+      {"name": "MemoryUtilization", "dimensions": {"resourceId": "bbb"},
+       "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 71.2}]}
+    ]
+    """
+
+    func testMetricsSplitByNameAndInstance() {
+        let health = OracleMetrics.healthByInstance(multiMetricJSON)
+        XCTAssertEqual(health["aaa"]?.cpuPercent ?? -1, 2.4, accuracy: 0.01)
+        XCTAssertEqual(health["aaa"]?.memoryPercent ?? -1, 10.9, accuracy: 0.01)
+        XCTAssertEqual(health["aaa"]?.loadAverage ?? -1, 0.31, accuracy: 0.01)
+        XCTAssertEqual(health["bbb"]?.memoryPercent ?? -1, 71.2, accuracy: 0.01)
+        XCTAssertNil(health["bbb"]?.cpuPercent, "a metric absent for a box stays nil, not zero")
+    }
+
+    /// Audit output is MULTIPLE concatenated JSON documents (one per page), not one array —
+    /// verified against the live CLI, and a plain JSONDecoder chokes on it.
+    func testAuditSummaryAcrossConcatenatedDocuments() {
+        let json = """
+        {"data": [
+          {"data": {"identity": {"principal-name": "Jacob Dang", "ip-address": "47.1.2.3"}}},
+          {"data": {"identity": {"principal-name": null, "ip-address": "10.0.2.7"}}}
+        ]}
+        {"data": [
+          {"data": {"identity": {"principal-name": "Jacob Dang", "ip-address": "47.1.2.3"}}}
+        ]}
+        """
+        let summary = OracleAudit.summarize(json)
+        XCTAssertEqual(summary?.eventCount, 3, "events across every page count")
+        XCTAssertEqual(summary?.humanPrincipals, ["Jacob Dang"], "system events aren't people")
+        XCTAssertFalse(summary?.hasUnknownPrincipal ?? true)
+    }
+
+    func testUnfamiliarPrincipalIsFlagged() {
+        let json = """
+        {"data": [
+          {"data": {"identity": {"principal-name": "Jacob Dang", "ip-address": "47.1.2.3"}}},
+          {"data": {"identity": {"principal-name": "someone-else", "ip-address": "203.0.113.9"}}}
+        ]}
+        """
+        let summary = OracleAudit.summarize(json, knownPrincipals: ["Jacob Dang"])
+        XCTAssertTrue(summary?.hasUnknownPrincipal ?? false, "an unfamiliar principal is the whole point")
+        XCTAssertEqual(summary?.humanPrincipals.count, 2)
+    }
+
+    /// A `||`-joined query returns ONE series named `join-#<id>` — the per-metric name is
+    /// gone, so every figure would read "—". Pinned so nobody "optimizes" three calls into
+    /// one; verified against the live API.
+    func testJoinedSeriesNameIsNotAMetric() {
+        let joined = """
+        [{"name": "join-#123764268", "dimensions": {"resourceId": "aaa"},
+          "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 1.0}]}]
+        """
+        let health = OracleMetrics.healthByInstance(joined)
+        XCTAssertNil(health["aaa"]?.cpuPercent)
+        XCTAssertNil(health["aaa"]?.memoryPercent)
+        XCTAssertEqual(OracleMetrics.healthMetrics.count, 3, "one call per metric")
+    }
+
+    func testGarbageAuditIsNil() {
+        XCTAssertNil(OracleAudit.summarize("not json"))
+        XCTAssertEqual(OracleAudit.summarize(#"{"data": []}"#)?.eventCount, 0)
+    }
+}
+
 /// Detail fetching is on-demand only: expanding a row fetches, refresh() never does.
 /// Answers per command rather than one canned payload for every call — a single-answer
 /// fake is how a wrong argument list slips through unnoticed.
@@ -97,12 +173,13 @@ final class OracleDetailServiceTests: XCTestCase {
 
     func testExpandFetchesIPAndCpuWithRequiredArgs() async {
         let metricsJSON = """
-        [{"dimensions": {"resourceId": "ocid1.instance.oc1..aaa"},
+        [{"name": "CpuUtilization", "dimensions": {"resourceId": "ocid1.instance.oc1..aaa"},
           "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 3.5}]}]
         """
         let runner = ScriptedRunner(answers: [
             "list-vnics": .success(#"[{"public-ip": "147.224.213.182"}]"#),
             "summarize-metrics-data": .success(metricsJSON),
+            "event": .success(#"{"data": []}"#),
         ])
         let service = OracleService(
             ociPath: "/fake/oci", hasConfig: true, region: "us-chicago-1",
@@ -125,8 +202,8 @@ final class OracleDetailServiceTests: XCTestCase {
              "--compartment-id", "ocid1.tenancy.oc1..zzz",
              "--compartment-id-in-subtree", "true",
              "--namespace", "oci_computeagent",
-             "--query-text", OracleMetrics.queryText,
-             "--query", OracleMetrics.cliQuery, "--output", "json"]
+             "--query-text", OracleMetrics.healthQueryText("CpuUtilization"),
+             "--query", OracleMetrics.healthQuery, "--output", "json"]
         )
     }
 
@@ -134,14 +211,15 @@ final class OracleDetailServiceTests: XCTestCase {
     /// expanding twice must not spawn four processes against a rate-limited API.
     func testCachesAndFansOutMetricsToOtherRows() async {
         let metricsJSON = """
-        [{"dimensions": {"resourceId": "ocid1.instance.oc1..aaa"},
+        [{"name": "CpuUtilization", "dimensions": {"resourceId": "ocid1.instance.oc1..aaa"},
           "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 3.5}]},
-         {"dimensions": {"resourceId": "ocid1.instance.oc1..bbb"},
+         {"name": "CpuUtilization", "dimensions": {"resourceId": "ocid1.instance.oc1..bbb"},
           "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 42.0}]}]
         """
         let runner = ScriptedRunner(answers: [
             "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
             "summarize-metrics-data": .success(metricsJSON),
+            "event": .success(#"{"data": []}"#),
         ])
         let service = OracleService(
             ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner
@@ -186,6 +264,7 @@ final class OracleDetailServiceTests: XCTestCase {
         let runner = ScriptedRunner(answers: [
             "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
             "summarize-metrics-data": .success("[]"),
+            "event": .success(#"{"data": []}"#),
         ])
         let service = OracleService(
             ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner
@@ -213,6 +292,7 @@ final class OracleDetailServiceTests: XCTestCase {
             "structured-search": .failure(LinkCError.process("NotAuthenticated")),
             "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
             "summarize-metrics-data": .success("[]"),
+            "event": .success(#"{"data": []}"#),
         ])
         let service = OracleService(
             ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner
