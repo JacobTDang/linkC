@@ -179,6 +179,10 @@ final class AppModel {
     var cloudInstances: [OracleInstance] { oracle?.instances ?? [] }
     var cloudRegion: String? { oracle?.region }
     var supabaseProjects: [SupabaseProject] { supabase?.projects ?? [] }
+    /// The CLI is installed but not authenticated — an invitation, not a failure.
+    var supabaseNeedsLogin: Bool { supabase?.needsLogin ?? false }
+    /// A real cloud failure worth showing: either provider's last error.
+    var cloudError: String? { supabase?.lastError ?? oracle?.lastError }
 
     /// A cloud instance's drill-in (IP, CPU), once its row has been expanded.
     func cloudDetail(_ id: String) -> OracleDetail? { oracle?.detail(for: id) }
