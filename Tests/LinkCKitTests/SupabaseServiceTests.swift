@@ -25,7 +25,6 @@ final class SupabaseProjectsTests: XCTestCase {
         XCTAssertFalse(projects[0].isHealthy, "a paused project is not healthy")
         XCTAssertTrue(projects[1].isHealthy)
         XCTAssertEqual(projects[1].region, "ca-central-1")
-        XCTAssertEqual(projects[1].postgresVersion, "17")
     }
 
     /// A paused project is the signal worth surfacing — Supabase pauses free projects
@@ -37,8 +36,11 @@ final class SupabaseProjectsTests: XCTestCase {
     }
 
     func testTolerantOfLeadingBannerAndGarbage() {
-        // Defensive: some CLI versions print notices before the payload.
+        // Defensive: some CLI versions print notices before the payload — including
+        // notices that themselves contain a bracket (ANSI colour, "[warn]" prefixes).
         XCTAssertEqual(SupabaseProjects.parse("Cannot find project ref.\n" + listJSON)?.count, 2)
+        XCTAssertEqual(SupabaseProjects.parse("\u{1b}[31m[warn] notice\u{1b}[0m\n" + listJSON)?.count, 2,
+                       "a bracket inside the banner must not derail the scan")
         XCTAssertNil(SupabaseProjects.parse("not json"), "unparseable output is nil, never an empty list")
         XCTAssertEqual(SupabaseProjects.parse("[]")?.count, 0, "a real empty account is a real zero")
     }

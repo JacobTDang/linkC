@@ -8,7 +8,6 @@ public struct SupabaseProject: Equatable, Sendable, Identifiable {
     public let region: String
     /// ACTIVE_HEALTHY / INACTIVE / COMING_UP / …
     public let status: String
-    public let postgresVersion: String?
 
     public var isHealthy: Bool { status == "ACTIVE_HEALTHY" }
     public var isPaused: Bool { Self.isPaused(status) }
@@ -18,26 +17,38 @@ public struct SupabaseProject: Equatable, Sendable, Identifiable {
     public static func isPaused(_ status: String) -> Bool { status == "INACTIVE" }
 }
 
-/// `supabase projects list --output json`. The CLI can print unrelated notices (e.g.
-/// "Cannot find project ref") — those go to stderr, which the live runner discards, but
-/// the parser tolerates a leading banner anyway rather than trusting that forever.
+/// `supabase projects list --output json`. The CLI prints unrelated notices (e.g.
+/// "Cannot find project ref") to stderr, which the runner folds into thrown errors rather
+/// than into stdout — but the parser tolerates a leading banner anyway.
 public enum SupabaseProjects {
     /// Nil for unparseable output (the caller keeps its stale rows); `[]` only for a
     /// genuinely empty account.
     public static func parse(_ output: String) -> [SupabaseProject]? {
-        guard let start = output.firstIndex(of: "["),
-              let data = String(output[start...]).data(using: .utf8),
-              let raw = try? JSONDecoder().decode([RawProject].self, from: data) else { return nil }
+        guard let raw = decodeArray(output) else { return nil }
         return raw.compactMap { entry in
             guard let id = entry.id, let name = entry.name else { return nil }
             return SupabaseProject(
                 id: id,
                 name: name,
                 region: entry.region ?? "",
-                status: entry.status ?? "UNKNOWN",
-                postgresVersion: entry.database?.postgresEngine
+                status: entry.status ?? "UNKNOWN"
             )
         }
+    }
+
+    /// Try each `[` in turn: a notice can contain a bracket (an ANSI escape, a `[warn]`
+    /// prefix), and slicing from the first one would start mid-banner and fail.
+    private static func decodeArray(_ output: String) -> [RawProject]? {
+        var searchStart = output.startIndex
+        while let bracket = output[searchStart...].firstIndex(of: "[") {
+            if let data = String(output[bracket...]).data(using: .utf8),
+               let raw = try? JSONDecoder().decode([RawProject].self, from: data) {
+                return raw
+            }
+            searchStart = output.index(after: bracket)
+            if searchStart >= output.endIndex { break }
+        }
+        return nil
     }
 
     private struct RawProject: Decodable {
@@ -45,12 +56,6 @@ public enum SupabaseProjects {
         let name: String?
         let region: String?
         let status: String?
-        let database: RawDatabase?
-    }
-
-    private struct RawDatabase: Decodable {
-        let postgresEngine: String?
-        enum CodingKeys: String, CodingKey { case postgresEngine = "postgres_engine" }
     }
 }
 

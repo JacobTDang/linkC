@@ -777,7 +777,9 @@ private struct CloudSection: View {
     var body: some View {
         let instances = model.cloudInstances
         let projects = model.supabaseProjects
-        if !instances.isEmpty || !projects.isEmpty {
+        let needsLogin = model.supabaseNeedsLogin
+        let error = model.cloudError
+        if !instances.isEmpty || !projects.isEmpty || needsLogin || error != nil {
             VStack(spacing: 6) {
                 SectionHeader(title: "CLOUD")
                     .padding(.top, 6)
@@ -801,8 +803,40 @@ private struct CloudSection: View {
                 ForEach(projects) { project in
                     SupabaseRow(project: project)
                 }
+                // Fail loud: an unauthenticated CLI or a failing listing must not render
+                // as a silently empty section.
+                if needsLogin {
+                    CloudNoticeRow(text: "supabase login to list projects", isWarning: false)
+                }
+                if let error {
+                    CloudNoticeRow(text: error, isWarning: true)
+                }
             }
         }
+    }
+}
+
+/// A quiet one-line notice under the cloud rows — an invitation ("supabase login…") or a
+/// failure. Without it, a provider that can't answer renders as nothing at all.
+private struct CloudNoticeRow: View {
+    let text: String
+    let isWarning: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: isWarning ? "exclamationmark.triangle.fill" : "person.crop.circle.badge.questionmark")
+                .font(.system(size: 9))
+                .foregroundStyle(isWarning ? Theme.statusError : Theme.textTertiary)
+                .frame(width: 18)
+            Text(text)
+                .font(.system(size: 10))
+                .foregroundStyle(isWarning ? Theme.statusError : Theme.textTertiary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
     }
 }
 
@@ -820,9 +854,14 @@ private struct SupabaseRow: View {
             help: project.isPaused ? "\(project.name) is paused — open the dashboard to restore it"
                                    : "Open the Supabase dashboard",
             onTap: {
-                NSWorkspace.shared.open(
-                    URL(string: "https://supabase.com/dashboard/project/\(project.id)")!
-                )
+                // The id comes from the CLI, so the URL is built defensively — a stray
+                // character must not crash the app on tap.
+                let encoded = project.id.addingPercentEncoding(
+                    withAllowedCharacters: .urlPathAllowed
+                ) ?? project.id
+                if let url = URL(string: "https://supabase.com/dashboard/project/\(encoded)") {
+                    NSWorkspace.shared.open(url)
+                }
             }
         ) {
             InfraDot(color: project.isHealthy ? Theme.textSecondary : Theme.textTertiary)
