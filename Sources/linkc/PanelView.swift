@@ -671,6 +671,7 @@ struct ErrorBar: View {
                 .font(.system(size: 11))
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .selectableText()
             Spacer(minLength: 0)
         }
         .foregroundStyle(Theme.statusError)
