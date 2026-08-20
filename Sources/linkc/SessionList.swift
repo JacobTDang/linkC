@@ -778,8 +778,8 @@ private struct CloudSection: View {
         let instances = model.cloudInstances
         let projects = model.supabaseProjects
         let needsLogin = model.supabaseNeedsLogin
-        let error = model.cloudError
-        if !instances.isEmpty || !projects.isEmpty || needsLogin || error != nil {
+        let errors = model.cloudErrors
+        if !instances.isEmpty || !projects.isEmpty || needsLogin || !errors.isEmpty {
             VStack(spacing: 6) {
                 SectionHeader(title: "CLOUD")
                     .padding(.top, 6)
@@ -808,7 +808,7 @@ private struct CloudSection: View {
                 if needsLogin {
                     CloudNoticeRow(text: "supabase login to list projects", isWarning: false)
                 }
-                if let error {
+                ForEach(errors, id: \.self) { error in
                     CloudNoticeRow(text: error, isWarning: true)
                 }
             }
