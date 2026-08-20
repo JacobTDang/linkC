@@ -62,8 +62,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Tapping "Install & restart" already consented to exactly this quit — the swap
         // helper is waiting on our exit, so the warning would only stall it.
         if model.updateInProgress { return .terminateNow }
-        // Running dev terminals count too — quitting kills them, and unlike sessions they
-        // aren't restored, which the copy says plainly. Exited terminals have nothing to kill.
+        // Running dev terminals count too — quitting kills them, and they come back as
+        // relaunchable rows (a fresh shell, no scrollback), which the copy says plainly.
+        // Exited terminals have nothing to kill.
         guard let warning = QuitWarningBuilder.build(
             sessionCount: model.sessions.count,
             runningTerminalCount: model.shellRows.count { $0.state == .running }
