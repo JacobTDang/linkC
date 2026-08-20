@@ -145,6 +145,12 @@ final class OracleDetailServiceTests: XCTestCase {
         XCTAssertEqual(service.detail(for: "ocid1.instance.oc1..bbb")?.cpuPercent ?? -1, 42.0, accuracy: 0.01,
                        "the tenancy-wide map serves the other rows too")
 
+        // …but a fanned-out CPU seed must NOT count as a loaded row: expanding B still has
+        // to fetch B's own IP, or every row except the first shows "—" forever.
+        await service.loadDetail(for: "ocid1.instance.oc1..bbb")
+        XCTAssertEqual(service.detail(for: "ocid1.instance.oc1..bbb")?.publicIP, "1.2.3.4",
+                       "a metrics-seeded row still fetches its own IP")
+
         let callsAfterFirst = runner.calls.count
         await service.loadDetail(for: "ocid1.instance.oc1..aaa")
         XCTAssertEqual(runner.calls.count, callsAfterFirst, "a cached detail is reused")
@@ -165,6 +171,26 @@ final class OracleDetailServiceTests: XCTestCase {
         // but it must not be silent either (a swallowed failure looks like "no public IP").
         XCTAssertNotNil(service.detail(for: "ocid1.instance.oc1..aaa"), "an attempted detail exists, fields empty")
         XCTAssertNil(service.detail(for: "ocid1.instance.oc1..aaa")?.publicIP)
-        XCTAssertNotNil(service.lastError, "fail loud")
+        XCTAssertNotNil(service.detailError, "fail loud")
+    }
+
+    /// The drill-in and the listing keep separate error fields: a successful expand must
+    /// not erase an expired-auth listing failure the user still needs to see.
+    func testDrillInSuccessDoesNotEraseListingError() async {
+        let runner = ScriptedRunner(answers: [
+            "structured-search": .failure(LinkCError.process("NotAuthenticated")),
+            "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
+            "summarize-metrics-data": .success("[]"),
+        ])
+        let service = OracleService(
+            ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner
+        )
+
+        await service.refresh()
+        XCTAssertNotNil(service.lastError, "the listing failure is recorded")
+
+        await service.loadDetail(for: "ocid1.instance.oc1..aaa")
+        XCTAssertNotNil(service.lastError, "a successful drill-in must not wipe it")
+        XCTAssertNil(service.detailError)
     }
 }
