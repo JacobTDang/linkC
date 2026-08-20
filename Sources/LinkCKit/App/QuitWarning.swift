@@ -5,8 +5,9 @@ public struct QuitWarning: Sendable, Equatable {
     public let message: String
 }
 
-/// The quit-confirmation copy. Sessions restore after relaunch; terminals don't — the copy
-/// says so plainly. Exited terminals aren't counted (nothing left to kill). The
+/// The quit-confirmation copy. Sessions resume after relaunch; terminals come back as
+/// relaunchable rows (a fresh shell in the same folder — scrollback is gone), and the copy
+/// says exactly that. Exited terminals aren't counted (nothing left to kill). The
 /// sessions-only strings are pinned by test to the pre-terminals dialog, byte for byte.
 public enum QuitWarningBuilder {
     public static func build(sessionCount: Int, runningTerminalCount: Int) -> QuitWarning? {
@@ -27,7 +28,7 @@ public enum QuitWarningBuilder {
             return QuitWarning(
                 title: "Quit linkC and end \(terminals) \(noun)?",
                 message: "Quitting ends the \(noun) running in linkC. "
-                    + "Unlike Claude Code sessions, \(terminals == 1 ? "it isn't" : "they aren't") restored next launch."
+                    + "\(terminals == 1 ? "It'll be" : "They'll be") offered for relaunch next launch, without scrollback."
             )
 
         case (let sessions, let terminals):
@@ -36,8 +37,8 @@ public enum QuitWarningBuilder {
             return QuitWarning(
                 title: "Quit linkC and end \(sessions) \(sessionNoun) and \(terminals) \(terminalNoun)?",
                 message: "Quitting ends the Claude Code \(sessionNoun) and \(terminalNoun) running in linkC. "
-                    + "\(sessions == 1 ? "The session" : "Sessions") will be offered for restore next launch — "
-                    + "\(terminals == 1 ? "the terminal" : "terminals") won't."
+                    + "\(sessions == 1 ? "The session" : "Sessions") will be offered for restore next launch, "
+                    + "\(terminals == 1 ? "the terminal" : "terminals") for relaunch."
             )
         }
     }
