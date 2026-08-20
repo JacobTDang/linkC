@@ -18,31 +18,12 @@ final class OracleDetailTests: XCTestCase {
         XCTAssertNil(OracleVnics.publicIP("not json"))
     }
 
-    func testCpuKeyedByResourceIdTakesLatestDatapoint() {
-        // Shape copied from a real `oci monitoring metric-data summarize-metrics-data` run.
-        let json = """
-        [
-          {"dimensions": {"resourceId": "ocid1.instance.oc1..aaa"},
-           "aggregated-datapoints": [
-             {"timestamp": "2026-08-20T00:30:00+00:00", "value": 1.5933216150719312},
-             {"timestamp": "2026-08-20T01:30:00+00:00", "value": 3.4821}
-           ]},
-          {"dimensions": {"resourceId": "ocid1.instance.oc1..bbb"},
-           "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 42.5}]}
-        ]
-        """
-        let cpu = OracleMetrics.latestCpuByInstance(json)
-        XCTAssertEqual(cpu["ocid1.instance.oc1..aaa"] ?? -1, 3.48, accuracy: 0.01,
-                       "the newest datapoint wins, not the first")
-        XCTAssertEqual(cpu["ocid1.instance.oc1..bbb"] ?? -1, 42.5, accuracy: 0.01)
-    }
-
     func testEmptyAndGarbageMetricsAreEmpty() {
-        XCTAssertTrue(OracleMetrics.latestCpuByInstance("[]").isEmpty)
-        XCTAssertTrue(OracleMetrics.latestCpuByInstance("not json").isEmpty)
+        XCTAssertTrue(OracleMetrics.healthByInstance("[]").isEmpty)
+        XCTAssertTrue(OracleMetrics.healthByInstance("not json").isEmpty)
         // A series with no datapoints contributes nothing rather than a bogus zero.
-        XCTAssertTrue(OracleMetrics.latestCpuByInstance(
-            #"[{"dimensions": {"resourceId": "x"}, "aggregated-datapoints": []}]"#
+        XCTAssertTrue(OracleMetrics.healthByInstance(
+            #"[{"name": "CpuUtilization", "dimensions": {"resourceId": "x"}, "aggregated-datapoints": []}]"#
         ).isEmpty)
     }
 }
@@ -119,7 +100,16 @@ final class OracleHealthTests: XCTestCase {
 
     func testGarbageAuditIsNil() {
         XCTAssertNil(OracleAudit.summarize("not json"))
-        XCTAssertEqual(OracleAudit.summarize(#"{"data": []}"#)?.eventCount, 0)
+        XCTAssertEqual(OracleAudit.summarize(#"{"data": []}"#)?.eventCount, 0,
+                       "a real empty page is a real zero")
+    }
+
+    /// A document with no `data` array (an error payload, a banner) must NOT decode as a
+    /// confident "0 events" — that reads exactly like a verified-quiet account.
+    func testNonEventDocumentIsNilNotZero() {
+        XCTAssertNil(OracleAudit.summarize(#"{"error": {"code": "NotAuthenticated"}}"#))
+        XCTAssertNil(OracleAudit.summarize(#"{"data": [{"data": {}}]} {"opc-next-page": "abc"}"#),
+                     "a malformed or non-event page invalidates the summary rather than under-reporting")
     }
 }
 
@@ -195,7 +185,12 @@ final class OracleDetailServiceTests: XCTestCase {
 
         // The monitoring API requires a compartment — without it the CLI exits nonzero and
         // CPU silently reads "—" forever. Pin the whole contract, not just the subcommand.
-        let metricsArgs = runner.calls.map(\.args).first { $0.contains("summarize-metrics-data") }
+        // Three metric calls run concurrently and record in arbitrary order — select the
+        // CPU one explicitly rather than "the first metrics call" (which was flaky).
+        let metricsArgs = runner.calls.map(\.args).first {
+            $0.contains("summarize-metrics-data")
+                && $0.contains(OracleMetrics.healthQueryText("CpuUtilization"))
+        }
         XCTAssertEqual(
             metricsArgs,
             ["monitoring", "metric-data", "summarize-metrics-data",

@@ -110,11 +110,15 @@ public final class OracleService {
         let configURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".oci/config")
         let config = try? String(contentsOf: configURL, encoding: .utf8)
+        // The account's own identity, so an unfamiliar principal in the audit trail can
+        // actually be recognized as unfamiliar. Without this the flag is dead code.
+        let owner = OracleService.configOwner()
         self.init(
             ociPath: path,
             hasConfig: config != nil,
             region: config.flatMap { OCIConfig.defaultProfileValue("region", from: $0) },
-            tenancy: config.flatMap { OCIConfig.defaultProfileValue("tenancy", from: $0) }
+            tenancy: config.flatMap { OCIConfig.defaultProfileValue("tenancy", from: $0) },
+            knownPrincipals: owner
         )
     }
 
@@ -194,12 +198,12 @@ public final class OracleService {
             }
         }()
         // One call per metric, concurrently — see healthMetrics for why not one joined call.
-        async let metricOutputs: [String] = {
-            guard let tenancy else { return [] }
-            return await withTaskGroup(of: String?.self) { group in
+        async let metricOutputs: [String: String] = {
+            guard let tenancy else { return [:] }
+            return await withTaskGroup(of: (String, String?).self) { group in
                 for metric in OracleMetrics.healthMetrics {
                     group.addTask {
-                        try? await runner.run(
+                        let output = try? await runner.run(
                             ociPath,
                             args: ["monitoring", "metric-data", "summarize-metrics-data",
                                    "--compartment-id", tenancy,
@@ -209,11 +213,12 @@ public final class OracleService {
                                    "--query", OracleMetrics.healthQuery, "--output", "json"],
                             cwd: nil, timeout: Self.listTimeout
                         )
+                        return (metric, output)
                     }
                 }
-                var outputs: [String] = []
-                for await output in group {
-                    if let output { outputs.append(output) }
+                var outputs: [String: String] = [:]
+                for await (metric, output) in group {
+                    if let output { outputs[metric] = output }
                 }
                 return outputs
             }
@@ -252,7 +257,7 @@ public final class OracleService {
         var healthByInstance: [String: OracleHealth] = [:]
         let outputs = await metricOutputs
         // Each call contributes its own metric; a partial set is better than none.
-        for output in outputs {
+        for output in outputs.values {
             for (instanceId, health) in OracleMetrics.healthByInstance(output) {
                 var merged = healthByInstance[instanceId] ?? OracleHealth()
                 merged.cpuPercent = health.cpuPercent ?? merged.cpuPercent
@@ -261,9 +266,16 @@ public final class OracleService {
                 healthByInstance[instanceId] = merged
             }
         }
-        let metricsFailed = outputs.isEmpty
-        if metricsFailed {
-            failures.append(tenancy == nil ? "metrics: no tenancy in ~/.oci/config" : "metrics unavailable")
+        // Per-metric, not all-or-nothing: one rate-limited call must not silently erase
+        // the figure it failed to refresh, and must say so.
+        let cpuFailed = tenancy == nil || outputs["CpuUtilization"] == nil
+        let memoryFailed = tenancy == nil || outputs["MemoryUtilization"] == nil
+        let loadFailed = tenancy == nil || outputs["LoadAverage"] == nil
+        if tenancy == nil {
+            failures.append("metrics: no tenancy in ~/.oci/config")
+        } else {
+            let missing = OracleMetrics.healthMetrics.filter { outputs[$0] == nil }
+            if !missing.isEmpty { failures.append("metrics unavailable (\(missing.joined(separator: ", ")))") }
         }
 
         // The audit summary is account-wide, so it applies to every row equally.
@@ -281,9 +293,11 @@ public final class OracleService {
             let existing = details[instanceId]
             details[instanceId] = OracleDetail(
                 publicIP: existing?.publicIP,
-                cpuPercent: health.cpuPercent,
-                memoryPercent: health.memoryPercent,
-                loadAverage: health.loadAverage,
+                // Same rule as the expanded row: a figure this round couldn't refresh
+                // keeps its last known value rather than blanking.
+                cpuPercent: health.cpuPercent ?? existing?.cpuPercent,
+                memoryPercent: health.memoryPercent ?? existing?.memoryPercent,
+                loadAverage: health.loadAverage ?? existing?.loadAverage,
                 audit: auditSummary ?? existing?.audit,
                 didLoadIP: existing?.didLoadIP ?? false   // metrics alone is not a loaded row
             )
@@ -296,9 +310,9 @@ public final class OracleService {
         let health = healthByInstance[id]
         details[id] = OracleDetail(
             publicIP: vnicsFailed ? previous?.publicIP : ip,
-            cpuPercent: metricsFailed ? previous?.cpuPercent : health?.cpuPercent,
-            memoryPercent: metricsFailed ? previous?.memoryPercent : health?.memoryPercent,
-            loadAverage: metricsFailed ? previous?.loadAverage : health?.loadAverage,
+            cpuPercent: cpuFailed ? previous?.cpuPercent : health?.cpuPercent,
+            memoryPercent: memoryFailed ? previous?.memoryPercent : health?.memoryPercent,
+            loadAverage: loadFailed ? previous?.loadAverage : health?.loadAverage,
             audit: auditSummary ?? previous?.audit,
             didLoadIP: true
         )
@@ -311,6 +325,23 @@ public final class OracleService {
     private func pruneDetails() {
         let live = Set(instances.map(\.id))
         details = details.filter { live.contains($0.key) }
+    }
+
+    /// Principals treated as "yours": the login identity OCI records on this machine.
+    /// Falls back to empty — and an empty set disables the unfamiliar-principal flag
+    /// rather than flagging everyone.
+    static func configOwner() -> Set<String> {
+        var names: Set<String> = []
+        if let full = ProcessInfo.processInfo.environment["LINKC_OCI_PRINCIPALS"] {
+            names.formUnion(full.split(separator: ",").map {
+                $0.trimmingCharacters(in: .whitespaces)
+            })
+        }
+        // The macOS account's full name and short name are what OCI's console login and
+        // API-key principals typically read as.
+        names.insert(NSFullUserName())
+        names.insert(NSUserName())
+        return names.filter { !$0.isEmpty }
     }
 
     private static let listTimeout: TimeInterval = 30
@@ -373,16 +404,24 @@ public enum OracleAudit {
         guard !documents.isEmpty else { return nil }
         var count = 0
         var people: Set<String> = []
+        var sawEventPage = false
         for document in documents {
             guard let data = document.data(using: .utf8),
-                  let page = try? JSONDecoder().decode(RawPage.self, from: data) else { continue }
-            let events = page.data ?? []
+                  let page = try? JSONDecoder().decode(RawPage.self, from: data),
+                  let events = page.data
+            else {
+                // An error payload, a banner, or a malformed page — refuse to report a
+                // confident "0 events", which reads exactly like a verified-quiet account.
+                return nil
+            }
+            sawEventPage = true
             count += events.count
             for event in events {
                 guard let name = event.data?.identity?.principalName, !name.isEmpty else { continue }
                 people.insert(name)
             }
         }
+        guard sawEventPage else { return nil }
         let unknown = knownPrincipals.isEmpty ? false : !people.subtracting(knownPrincipals).isEmpty
         return OracleAuditSummary(
             eventCount: count, humanPrincipals: people.sorted(), hasUnknownPrincipal: unknown
@@ -434,9 +473,6 @@ public enum OracleAudit {
 /// `resourceId` dimension, so one tenancy-wide call covers every instance. The newest
 /// datapoint wins; a series with no datapoints contributes nothing (never a bogus zero).
 public enum OracleMetrics {
-    public static let cliQuery =
-        #"data[].{dimensions: dimensions, "aggregated-datapoints": "aggregated-datapoints"}"#
-    public static let queryText = "CpuUtilization[1h].mean()"
     /// One metric per call. `||`-joined MQL looks tempting but OCI JOINS the series into
     /// one named `join-#<id>`, losing the per-metric name entirely — verified against the
     /// live API. Three concurrent calls cost the same wall-clock and keep the names.
@@ -477,25 +513,9 @@ public enum OracleMetrics {
             .max(by: { $0.0 < $1.0 })?.1
     }
 
-    public static func latestCpuByInstance(_ json: String) -> [String: Double] {
-        guard let data = json.data(using: .utf8),
-              let series = try? JSONDecoder().decode([RawSeries].self, from: data) else { return [:] }
-        var byId: [String: Double] = [:]
-        for entry in series {
-            guard let id = entry.dimensions?.resourceId,
-                  let latest = entry.datapoints?
-                    .compactMap({ point -> (Date, Double)? in
-                        guard let stamp = point.timestamp.flatMap(TranscriptLine.parseTimestamp),
-                              let value = point.value else { return nil }
-                        return (stamp, value)
-                    })
-                    .max(by: { $0.0 < $1.0 })
-            else { continue }
-            byId[id] = latest.1
-        }
-        return byId
-    }
-
+    /// Health figures per instance from a multi-metric response — split by the series'
+    /// `name` and its `resourceId` dimension. A metric absent for a box stays nil rather
+    /// than reading as a confident zero.
     private struct RawSeries: Decodable {
         let name: String?
         let dimensions: RawDimensions?

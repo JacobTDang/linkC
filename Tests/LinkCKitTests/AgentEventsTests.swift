@@ -215,6 +215,17 @@ final class AgeFormatTests: XCTestCase {
         XCTAssertEqual(AgeFormat.compact(26 * 3600), "26h")
         XCTAssertEqual(AgeFormat.compact(-5), "0s", "clock skew clamps to zero")
     }
+
+    /// Uptime needs days and weeks — an instance created 17 days ago must not read "408h".
+    func testLongSpan() {
+        XCTAssertEqual(AgeFormat.longSpan(90 * 60), "1h")
+        XCTAssertEqual(AgeFormat.longSpan(23 * 3600), "23h")
+        XCTAssertEqual(AgeFormat.longSpan(24 * 3600), "1d")
+        XCTAssertEqual(AgeFormat.longSpan(17 * 24 * 3600), "2w 3d")
+        XCTAssertEqual(AgeFormat.longSpan(14 * 24 * 3600), "2w")
+        XCTAssertEqual(AgeFormat.longSpan(6 * 24 * 3600), "6d")
+        XCTAssertEqual(AgeFormat.longSpan(-5), "0m", "clock skew clamps to zero")
+    }
 }
 
 /// Session state transitions stamp when they happened — the "needs permission · 4m" number.
