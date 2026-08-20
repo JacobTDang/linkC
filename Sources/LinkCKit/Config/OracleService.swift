@@ -77,6 +77,9 @@ public final class OracleService {
     /// The last refresh failure, kept as state (fail loud): expired auth failing every
     /// tick must be inspectable, not a Console.app whisper. Cleared by the next success.
     public private(set) var lastError: String?
+    /// The drill-in's own failures. Separate from `lastError` so a successful expand can't
+    /// erase a listing failure (expired auth must stay inspectable) and vice versa.
+    public private(set) var detailError: String?
     /// Drill-in results, cached per instance for the panel session — expanding a row
     /// twice reuses what's here rather than re-hitting a rate-limited API.
     public private(set) var details: [String: OracleDetail] = [:]
@@ -155,7 +158,9 @@ public final class OracleService {
     /// row reuses it instead of issuing an identical call.
     public func loadDetail(for id: String, force: Bool = false) async {
         guard let ociPath, hasConfig else { return }
-        guard force || details[id] == nil else { return }
+        // A row seeded by the metrics fan-out has CPU but no IP — it still needs its own
+        // VNIC call, so only a genuinely loaded row counts as cached.
+        guard force || details[id]?.didLoadIP != true else { return }
         guard !inFlightDetails.contains(id) else { return }   // no last-writer-wins races
         inFlightDetails.insert(id)
         defer { inFlightDetails.remove(id) }
@@ -209,11 +214,21 @@ public final class OracleService {
         // this instance's slice.
         for (instanceId, cpu) in cpuByInstance where instanceId != id {
             let existing = details[instanceId]
-            details[instanceId] = OracleDetail(publicIP: existing?.publicIP, cpuPercent: cpu)
+            details[instanceId] = OracleDetail(
+                publicIP: existing?.publicIP, cpuPercent: cpu,
+                didLoadIP: existing?.didLoadIP ?? false   // CPU alone is not a loaded row
+            )
         }
-        details[id] = OracleDetail(publicIP: ip, cpuPercent: cpuByInstance[id])
+        // Fields degrade independently: a failed metrics call keeps the last known CPU
+        // rather than replacing a real figure with "—".
+        let previous = details[id]
+        details[id] = OracleDetail(
+            publicIP: ip ?? previous?.publicIP,
+            cpuPercent: cpuByInstance[id] ?? previous?.cpuPercent,
+            didLoadIP: true
+        )
         // Fail loud: a swallowed drill-in error is indistinguishable from "no public IP".
-        lastError = failures.isEmpty ? nil : "Couldn't load details — \(failures.joined(separator: "; "))"
+        detailError = failures.isEmpty ? nil : "Couldn't load details — \(failures.joined(separator: "; "))"
     }
 
     /// Drop cached drill-ins for instances that are no longer listed — a stopped-and-
@@ -231,6 +246,10 @@ public final class OracleService {
 public struct OracleDetail: Equatable, Sendable {
     public let publicIP: String?
     public let cpuPercent: Double?
+    /// True once this row's own VNIC call has been attempted. A row seeded only by the
+    /// tenancy-wide metrics fan-out is NOT loaded — without this it would look cached and
+    /// never fetch its IP.
+    public var didLoadIP: Bool = false
 }
 
 /// `oci compute instance list-vnics --query 'data[].{...}'` — the public IP, when the
