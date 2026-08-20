@@ -91,6 +91,9 @@ public final class OracleService {
     /// twice reuses what's here rather than re-hitting a rate-limited API.
     public private(set) var details: [String: OracleDetail] = [:]
     private var inFlightDetails: Set<String> = []
+    /// Principals seen on the first successful audit fetch — the "normal for this account"
+    /// baseline. Nil until then, so the flag never fires on a guess.
+    private var learnedPrincipals: Set<String>?
 
     public let ociPath: String?
     /// The DEFAULT profile's region, for the rows' trailing label.
@@ -110,8 +113,10 @@ public final class OracleService {
         let configURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".oci/config")
         let config = try? String(contentsOf: configURL, encoding: .utf8)
-        // The account's own identity, so an unfamiliar principal in the audit trail can
-        // actually be recognized as unfamiliar. Without this the flag is dead code.
+        // Explicit override only. The baseline is LEARNED from the account's own audit
+        // trail (see learnPrincipals) — guessing from the macOS user name would flag
+        // every event forever on any machine whose name differs from the OCI principal,
+        // and a security signal that always fires is worse than one that never does.
         let owner = OracleService.configOwner()
         self.init(
             ociPath: path,
@@ -281,7 +286,14 @@ public final class OracleService {
         // The audit summary is account-wide, so it applies to every row equally.
         var auditSummary: OracleAuditSummary?
         if let output = await auditOutput {
-            auditSummary = OracleAudit.summarize(output, knownPrincipals: knownPrincipals)
+            // First successful fetch teaches us who normally touches this account; only
+            // names appearing AFTER that baseline count as unfamiliar.
+            let observed = OracleAudit.summarize(output, knownPrincipals: [])
+            if learnedPrincipals == nil, let observed {
+                learnedPrincipals = Set(observed.humanPrincipals)
+            }
+            let baseline = knownPrincipals.union(learnedPrincipals ?? [])
+            auditSummary = OracleAudit.summarize(output, knownPrincipals: baseline)
             if auditSummary == nil { failures.append("audit unreadable") }
         } else if tenancy != nil {
             failures.append("audit unavailable")
@@ -327,21 +339,13 @@ public final class OracleService {
         details = details.filter { live.contains($0.key) }
     }
 
-    /// Principals treated as "yours": the login identity OCI records on this machine.
-    /// Falls back to empty — and an empty set disables the unfamiliar-principal flag
-    /// rather than flagging everyone.
+    /// Explicit principals from the environment, for accounts where the names linkC
+    /// learns aren't the whole story. Empty by default.
     static func configOwner() -> Set<String> {
-        var names: Set<String> = []
-        if let full = ProcessInfo.processInfo.environment["LINKC_OCI_PRINCIPALS"] {
-            names.formUnion(full.split(separator: ",").map {
-                $0.trimmingCharacters(in: .whitespaces)
-            })
-        }
-        // The macOS account's full name and short name are what OCI's console login and
-        // API-key principals typically read as.
-        names.insert(NSFullUserName())
-        names.insert(NSUserName())
-        return names.filter { !$0.isEmpty }
+        guard let raw = ProcessInfo.processInfo.environment["LINKC_OCI_PRINCIPALS"] else { return [] }
+        return Set(raw.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty })
     }
 
     private static let listTimeout: TimeInterval = 30
@@ -404,7 +408,6 @@ public enum OracleAudit {
         guard !documents.isEmpty else { return nil }
         var count = 0
         var people: Set<String> = []
-        var sawEventPage = false
         for document in documents {
             guard let data = document.data(using: .utf8),
                   let page = try? JSONDecoder().decode(RawPage.self, from: data),
@@ -414,14 +417,12 @@ public enum OracleAudit {
                 // confident "0 events", which reads exactly like a verified-quiet account.
                 return nil
             }
-            sawEventPage = true
             count += events.count
             for event in events {
                 guard let name = event.data?.identity?.principalName, !name.isEmpty else { continue }
                 people.insert(name)
             }
         }
-        guard sawEventPage else { return nil }
         let unknown = knownPrincipals.isEmpty ? false : !people.subtracting(knownPrincipals).isEmpty
         return OracleAuditSummary(
             eventCount: count, humanPrincipals: people.sorted(), hasUnknownPrincipal: unknown
@@ -513,9 +514,6 @@ public enum OracleMetrics {
             .max(by: { $0.0 < $1.0 })?.1
     }
 
-    /// Health figures per instance from a multi-metric response — split by the series'
-    /// `name` and its `resourceId` dimension. A metric absent for a box stays nil rather
-    /// than reading as a confident zero.
     private struct RawSeries: Decodable {
         let name: String?
         let dimensions: RawDimensions?

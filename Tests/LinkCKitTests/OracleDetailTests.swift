@@ -282,6 +282,35 @@ final class OracleDetailServiceTests: XCTestCase {
 
     /// The drill-in and the listing keep separate error fields: a successful expand must
     /// not erase an expired-auth listing failure the user still needs to see.
+    /// The unfamiliar-principal flag learns its baseline from the account's first
+    /// successful audit fetch. A guessed baseline (the macOS user name) would fire on
+    /// every event forever wherever the names differ — a signal that always cries wolf is
+    /// worse than one that never fires.
+    func testPrincipalBaselineIsLearnedThenNewNamesFlag() async {
+        let firstPage = #"{"data": [{"data": {"identity": {"principal-name": "Jacob Dang"}}}]}"#
+        let runner = ScriptedRunner(answers: [
+            "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
+            "summarize-metrics-data": .success("[]"),
+            "event": .success(firstPage),
+        ])
+        let service = OracleService(
+            ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner
+        )
+
+        await service.loadDetail(for: "aaa")
+        XCTAssertEqual(service.detail(for: "aaa")?.audit?.hasUnknownPrincipal, false,
+                       "the first fetch establishes normal — it must not flag itself")
+
+        // A name that wasn't in the baseline shows up later: that's the real signal.
+        runner.setAnswer("event", .success("""
+        {"data": [{"data": {"identity": {"principal-name": "Jacob Dang"}}},
+                  {"data": {"identity": {"principal-name": "stranger"}}}]}
+        """))
+        await service.loadDetail(for: "aaa", force: true)
+        XCTAssertEqual(service.detail(for: "aaa")?.audit?.hasUnknownPrincipal, true,
+                       "a principal absent from the learned baseline is flagged")
+    }
+
     func testDrillInSuccessDoesNotEraseListingError() async {
         let runner = ScriptedRunner(answers: [
             "structured-search": .failure(LinkCError.process("NotAuthenticated")),
