@@ -145,10 +145,11 @@ final class AppModel {
             self.coordinator = coordinator
             self.mcpServers = MCPServerService(claudePath: preflight.claudePath)
             self.skills = SkillsService(claudePath: preflight.claudePath)
-            self.shells = ShellCoordinator(terminals: terminals)
-            self.toolServers = ToolServerService()
             let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            self.recents = RecentFoldersStore(directory: support.appendingPathComponent("linkC", isDirectory: true))
+            let linkCSupport = support.appendingPathComponent("linkC", isDirectory: true)
+            self.shells = ShellCoordinator(terminals: terminals, manifestDir: linkCSupport)
+            self.toolServers = ToolServerService()
+            self.recents = RecentFoldersStore(directory: linkCSupport)
             self.oracle = OracleService()
         } catch {
             setupError = error.localizedDescription
@@ -233,6 +234,22 @@ final class AppModel {
     }
 
     var shellRows: [ShellRow] { shells?.store.rows ?? [] }
+    /// Dev terminals remembered from a previous run — relaunchable, never auto-started.
+    var restorableShells: [RestorableShell] { shells?.restorables ?? [] }
+
+    func restoreShell(_ shell: RestorableShell) {
+        guard let shells else { return }
+        do {
+            lastError = nil
+            try shells.restore(shell)
+            recents?.record(shell.cwd)
+            activeScreen = nil   // the new terminal is selected — show it
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func forgetShell(_ shell: RestorableShell) { shells?.forget(shell) }
 
     /// The sidebar's SERVERS section: compose projects with at least one live container,
     /// then standalone running containers. Empty (and the section hidden) without docker.
@@ -332,7 +349,7 @@ final class AppModel {
 
     /// The empty-state gate, centralized: dev terminals count as content too.
     var isEmptyOverview: Bool {
-        sessions.isEmpty && restorables.isEmpty && shellRows.isEmpty
+        sessions.isEmpty && restorables.isEmpty && shellRows.isEmpty && restorableShells.isEmpty
     }
 
     /// Open a new dev terminal: pick a folder, get your login shell there.
