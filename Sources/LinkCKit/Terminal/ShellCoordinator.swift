@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// Drives dev terminals — plain login shells for running local servers. Deliberately a
 /// sibling of `AppCoordinator`, not part of it: shells need none of the claude plumbing
@@ -6,6 +7,7 @@ import Foundation
 /// thing — the `TerminalSessionManager` — so both kinds of terminal live under the panel's
 /// single selection cursor and render through the same hero.
 @MainActor
+@Observable
 public final class ShellCoordinator {
     public let store = ShellTerminalStore()
 
@@ -70,9 +72,12 @@ public final class ShellCoordinator {
     /// launch rethrows, and the entry is already gone, matching session restore.
     @discardableResult
     public func restore(_ shell: RestorableShell) throws -> ShellRow {
+        // Remove only after a successful launch: a throw (folder on an unmounted volume,
+        // say) must leave the card recoverable rather than erasing it.
+        let row = try launch(cwd: shell.cwd, command: shell.command, title: shell.title)
         manifest?.remove(id: shell.id)
-        defer { syncRestorables() }   // consumed even if the launch throws
-        return try launch(cwd: shell.cwd, command: shell.command, title: shell.title)
+        syncRestorables()
+        return row
     }
 
     /// Drop a remembered shell without launching it (the user dismissed the card).
@@ -102,8 +107,11 @@ public final class ShellCoordinator {
     public func stop(_ id: String) {
         terminals.terminate(id)
         store.remove(id: id)
-        manifest?.markEnded(id: id, at: Date())
-        syncRestorables()   // no longer live → offer it back
+        // Deliberately stopping a shell drops it entirely (same as dismiss) — it must not
+        // reappear as a relaunch card in the same run. Cross-run persistence comes from
+        // the manifest's load-time stamping, not from this path.
+        manifest?.remove(id: id)
+        syncRestorables()
     }
 
     /// Drop an EXITED terminal (row + kept scrollback). No-op while it's still running —
