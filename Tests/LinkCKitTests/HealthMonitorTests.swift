@@ -1,6 +1,12 @@
 import XCTest
 @testable import LinkCKit
 
+/// A down status with a chosen label, for tests about transitions rather than about how a
+/// failure is classified.
+private func down(_ label: String) -> HealthStatus {
+    .down(DownReason(label: label, detail: "\(label) (test)"))
+}
+
 /// Classifying a probe: a service that ANSWERS is alive, even when it answers 401 —
 /// verified against the live Supabase API, where an unauthenticated health call returns
 /// 401 in ~0.2s and a paused project doesn't resolve at all.
@@ -21,10 +27,11 @@ final class HealthStatusTests: XCTestCase {
     func testShortLabels() {
         XCTAssertEqual(HealthStatus.ok(200, 0.142).shortLabel, "142ms")
         XCTAssertEqual(HealthStatus.degraded(502, 1.2).shortLabel, "502")
-        XCTAssertEqual(HealthStatus.down("timed out").shortLabel, "down")
+        XCTAssertEqual(down("timeout").shortLabel, "timeout",
+                       "the row names the failure instead of just calling it down")
         XCTAssertEqual(HealthStatus.unknown.shortLabel, "—")
         XCTAssertTrue(HealthStatus.ok(200, 0.142).isUp)
-        XCTAssertFalse(HealthStatus.down("x").isUp)
+        XCTAssertFalse(down("dns").isUp)
     }
 }
 
@@ -37,21 +44,21 @@ final class HealthTransitionTests: XCTestCase {
 
     func testFirstCheckIsSilent() {
         let changes = HealthTransitions.changes(
-            from: [:], to: ["e1": .down("refused")], endpoints: [endpoint]
+            from: [:], to: ["e1": down("refused")], endpoints: [endpoint]
         )
         XCTAssertTrue(changes.isEmpty, "the first observation is a baseline, not news")
     }
 
     func testGoingDownAndComingBackBothNotify() {
-        let down = HealthTransitions.changes(
-            from: ["e1": .ok(200, 0.1)], to: ["e1": .down("refused")], endpoints: [endpoint]
+        let lost = HealthTransitions.changes(
+            from: ["e1": .ok(200, 0.1)], to: ["e1": down("refused")], endpoints: [endpoint]
         )
-        XCTAssertEqual(down.count, 1)
-        XCTAssertTrue(down[0].body.contains("not responding"))
-        XCTAssertEqual(down[0].endpointId, "e1")
+        XCTAssertEqual(lost.count, 1)
+        XCTAssertTrue(lost[0].body.contains("not responding"))
+        XCTAssertEqual(lost[0].endpointId, "e1")
 
         let up = HealthTransitions.changes(
-            from: ["e1": .down("refused")], to: ["e1": .ok(200, 0.1)], endpoints: [endpoint]
+            from: ["e1": down("refused")], to: ["e1": .ok(200, 0.1)], endpoints: [endpoint]
         )
         XCTAssertEqual(up.count, 1)
         XCTAssertTrue(up[0].body.contains("back"))
@@ -59,7 +66,7 @@ final class HealthTransitionTests: XCTestCase {
 
     func testStayingDownIsSilent() {
         let changes = HealthTransitions.changes(
-            from: ["e1": .down("refused")], to: ["e1": .down("timed out")], endpoints: [endpoint]
+            from: ["e1": down("refused")], to: ["e1": down("timeout")], endpoints: [endpoint]
         )
         XCTAssertTrue(changes.isEmpty, "an ongoing outage must not re-alert every tick")
     }
@@ -487,5 +494,142 @@ final class LiveNetworkReachabilityTests: XCTestCase {
             XCTAssertTrue(reachability.isOnline, "optimistic until the monitor says otherwise")
         }
         XCTAssertNil(weakRef, "the path handler must not retain the object that owns the monitor")
+    }
+}
+
+/// "down" alone is not an answer. The failures a watched service actually hits are
+/// different problems with different fixes, and the row has room for the distinction.
+final class DownReasonTests: XCTestCase {
+
+    func testTheFailuresAreToldApart() {
+        XCTAssertEqual(DownReason.classify(URLError(.cannotFindHost)).label, "dns")
+        XCTAssertEqual(DownReason.classify(URLError(.dnsLookupFailed)).label, "dns")
+        XCTAssertEqual(DownReason.classify(URLError(.cannotConnectToHost)).label, "refused")
+        XCTAssertEqual(DownReason.classify(URLError(.timedOut)).label, "timeout")
+    }
+
+    /// The mp3-server-by-IP case: Caddy aborts the handshake when SNI names no site it
+    /// serves. Reading "down" sends you looking for a dead service; reading "tls" sends
+    /// you to the hostname, which is the actual problem.
+    func testATLSFailureSaysSoInsteadOfClaimingTheServiceIsDead() {
+        XCTAssertEqual(DownReason.classify(URLError(.secureConnectionFailed)).label, "tls")
+        XCTAssertEqual(DownReason.classify(URLError(.serverCertificateUntrusted)).label, "tls")
+        XCTAssertEqual(DownReason.classify(URLError(.serverCertificateHasBadDate)).label, "tls")
+    }
+
+    func testTheFullReasonSurvivesForTheTooltip() {
+        let reason = DownReason.classify(URLError(.timedOut))
+        XCTAssertFalse(reason.detail.isEmpty)
+        XCTAssertNotEqual(reason.detail, reason.label, "the label is a summary, not the whole story")
+    }
+
+    func testAnUnrecognisedFailureStillReadsAsDown() {
+        XCTAssertEqual(DownReason.classify(LinkCError.process("boom")).label, "down")
+    }
+
+    func testTheRowShowsTheReasonNotTheWordDown() {
+        XCTAssertEqual(HealthStatus.down(DownReason.classify(URLError(.timedOut))).shortLabel, "timeout")
+    }
+}
+
+/// A liveness probe answers "did the thing I named answer me" — so it must not chase a
+/// redirect to somewhere else and report on that instead.
+final class RedirectPolicyTests: XCTestCase {
+
+    func testARedirectIsNotFollowed() {
+        let blocker = RedirectBlocker()
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.dataTask(with: URL(string: "http://example.test")!)
+        let response = HTTPURLResponse(
+            url: URL(string: "http://example.test")!, statusCode: 308,
+            httpVersion: nil, headerFields: ["Location": "https://elsewhere.test/"]
+        )!
+        let expectation = expectation(description: "redirect decision")
+        var followed: URLRequest?
+
+        blocker.urlSession(
+            session, task: task, willPerformHTTPRedirection: response,
+            newRequest: URLRequest(url: URL(string: "https://elsewhere.test/")!)
+        ) { request in
+            followed = request
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1)
+        XCTAssertNil(followed, "the 308 IS the answer — following it would watch a host nobody asked for")
+        task.cancel()
+        session.invalidateAndCancel()
+    }
+
+    /// A 308 from a front door that only serves HTTPS is a live server, not an outage —
+    /// this is what makes the mp3 server monitorable before its domain exists.
+    func testARedirectCountsAsAlive() {
+        XCTAssertTrue(HealthStatus.classify(code: 308, latency: 0.034).isUp)
+        XCTAssertTrue(HealthStatus.classify(code: 301, latency: 0.01).isUp)
+    }
+}
+
+/// What gets probed each beat. Extracted from the app target so the rule that matters —
+/// a stale Supabase listing must not take the user's OWN endpoints down with it — is
+/// covered by a test rather than by reading the code.
+final class WatchListTests: XCTestCase {
+
+    private let now = Date(timeIntervalSince1970: 2_000_000)
+
+    private func project(_ id: String, _ status: String) -> SupabaseProject {
+        SupabaseProject(id: id, name: id, region: "ca-central-1", status: status)
+    }
+
+    private let mp3 = WatchedEndpoint(
+        id: "https://mp3.test", label: "mp3", url: URL(string: "https://mp3.test")!
+    )
+
+    func testServingProjectsAndConfiguredEndpointsAreBothWatched() {
+        let list = WatchList.endpoints(
+            supabaseProjects: [project("abc", "ACTIVE_HEALTHY")],
+            lastListedAt: now, configured: [mp3], now: now
+        )
+        XCTAssertEqual(list.map(\.id), ["supabase:abc", "https://mp3.test"])
+    }
+
+    func testPausedProjectsAreNotProbed() {
+        let list = WatchList.endpoints(
+            supabaseProjects: [project("abc", "INACTIVE")],
+            lastListedAt: now, configured: [], now: now
+        )
+        XCTAssertTrue(list.isEmpty, "a paused project doesn't resolve; probing it invents an outage")
+    }
+
+    /// The finding: the allowlist is only as fresh as the listing it filters.
+    func testAnUntrustworthyListingStopsDrivingProbes() {
+        let ancient = now.addingTimeInterval(-ListingFreshness.standard.trustWindow - 1)
+        let list = WatchList.endpoints(
+            supabaseProjects: [project("abc", "ACTIVE_HEALTHY")],
+            lastListedAt: ancient, configured: [], now: now
+        )
+        XCTAssertTrue(list.isEmpty, "ACTIVE_HEALTHY from an hour ago is not grounds to alert")
+    }
+
+    /// And the rule that must survive it: Supabase going stale is not a reason to stop
+    /// watching the services the user named themselves.
+    func testConfiguredEndpointsSurviveAStaleListing() {
+        let ancient = now.addingTimeInterval(-ListingFreshness.standard.trustWindow - 1)
+        let list = WatchList.endpoints(
+            supabaseProjects: [project("abc", "ACTIVE_HEALTHY")],
+            lastListedAt: ancient, configured: [mp3], now: now
+        )
+        XCTAssertEqual(list.map(\.id), ["https://mp3.test"])
+    }
+
+    func testNeverListedMeansNoSupabaseEndpoints() {
+        let list = WatchList.endpoints(
+            supabaseProjects: [project("abc", "ACTIVE_HEALTHY")],
+            lastListedAt: nil, configured: [mp3], now: now
+        )
+        XCTAssertEqual(list.map(\.id), ["https://mp3.test"])
+    }
+
+    func testTheIdMatchesWhatTheRowLooksUp() {
+        XCTAssertEqual(WatchList.supabaseEndpointId(project("abc", "ACTIVE_HEALTHY")), "supabase:abc")
     }
 }

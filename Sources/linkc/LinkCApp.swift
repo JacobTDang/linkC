@@ -196,27 +196,21 @@ final class AppModel {
     /// ref — no configuration) plus whatever the user listed in endpoints.json. A paused
     /// project is skipped; the row already explains that state.
     ///
-    /// The Supabase half is dropped once the listing behind it is too old to trust. Its
-    /// statuses are an ALLOWLIST, so a stale ACTIVE_HEALTHY for a project that has since
-    /// auto-paused would be probed, fail to resolve, and be announced as an outage — the
-    /// false alarm the allowlist exists to prevent. Rows keep showing what was last known;
-    /// only the alerting stops.
+    /// The rule lives in WatchList (and is tested there): a Supabase listing too old to
+    /// trust stops driving probes, but never takes the user's own endpoints with it.
     var watchedEndpoints: [WatchedEndpoint] {
-        let listingIsTrustworthy = ListingFreshness.standard
-            .isTrustworthy(lastListedAt: supabase?.lastListedAt)
-        let supabaseEndpoints = !listingIsTrustworthy ? [] :
-            supabaseProjects.compactMap { project -> WatchedEndpoint? in
-                guard let url = project.healthURL else { return nil }
-                return WatchedEndpoint(id: "supabase:\(project.id)", label: project.name, url: url)
-            }
-        // The cache, not another disk read — reloadConfiguredEndpoints() is what
-        // refreshes it, once per health beat.
-        return supabaseEndpoints + configuredEndpoints
+        // configuredEndpoints is the cache, not another disk read —
+        // reloadConfiguredEndpoints() is what refreshes it, once per health beat.
+        WatchList.endpoints(
+            supabaseProjects: supabaseProjects,
+            lastListedAt: supabase?.lastListedAt,
+            configured: configuredEndpoints
+        )
     }
 
     func serviceHealth(_ endpointId: String) -> HealthStatus? { health.status(of: endpointId) }
     func supabaseHealth(_ project: SupabaseProject) -> HealthStatus? {
-        health.status(of: "supabase:\(project.id)")
+        health.status(of: WatchList.supabaseEndpointId(project))
     }
     /// Endpoints from endpoints.json that aren't tied to a provider row — the mp3 server
     /// and anything else the user named. Cached: this is read by the sidebar's body, and
@@ -257,15 +251,10 @@ final class AppModel {
     private func checkHealth() {
         reloadConfiguredEndpoints()
         // The Supabase half of the watch list comes from the project listing, which the
-        // panel-gated refresh populates. With the panel closed that list is empty, so the
-        // background beat would check nothing at all — exactly the outage window this
-        // timer exists to cover. Refreshing only when EMPTY was not enough either: the
-        // statuses in a listing go stale (a free project auto-pauses), and every endpoint
-        // derived from them inherits that staleness. Re-list on a cadence of its own.
-        if let supabase, supabase.cliPath != nil,
-           ListingFreshness.standard.shouldRefresh(lastListedAt: supabase.lastListedAt) {
-            Task { await supabase.refresh() }
-        }
+        // panel-gated refresh populates — with the panel closed the background beat would
+        // otherwise check nothing at all, which is exactly the outage window this timer
+        // exists to cover. refreshIfStale keeps it current on its own cadence.
+        if let supabase { Task { await supabase.refreshIfStale() } }
         let endpoints = watchedEndpoints
         // Emptying the watch list must clear stale readings rather than freeze them for
         // the life of the process.

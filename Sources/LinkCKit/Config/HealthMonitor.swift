@@ -6,13 +6,55 @@ import Observation
 /// the live Supabase API, where an unauthenticated health call returns 401 in ~0.2s while
 /// a paused project doesn't resolve at all. Only 5xx (answering but broken) and no answer
 /// at all are bad news.
+/// Why a probe got no usable answer. "down" on its own sends you looking for a dead
+/// service; naming the failure sends you to the actual problem — a hostname that doesn't
+/// resolve, a handshake the server refused, a port nothing is listening on.
+public struct DownReason: Equatable, Sendable {
+    /// Fits the compact row where a latency or status code would otherwise sit.
+    public let label: String
+    /// The full text, for the row's tooltip.
+    public let detail: String
+
+    public init(label: String, detail: String) {
+        self.label = label
+        self.detail = detail
+    }
+
+    public static func classify(_ error: Error) -> DownReason {
+        DownReason(label: shortLabel(for: error), detail: error.localizedDescription)
+    }
+
+    private static func shortLabel(for error: Error) -> String {
+        guard let urlError = error as? URLError else { return "down" }
+        switch urlError.code {
+        case .cannotFindHost, .dnsLookupFailed:
+            return "dns"
+        case .cannotConnectToHost:
+            return "refused"
+        case .timedOut:
+            return "timeout"
+        // The mp3-server-by-IP case lands here: a server that only serves named sites
+        // aborts the handshake when SNI matches nothing it hosts. Nothing is wrong with
+        // the service — the request just never named it.
+        case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+             .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid,
+             .clientCertificateRejected, .clientCertificateRequired:
+            return "tls"
+        case .badServerResponse:
+            return "bad reply"
+        default:
+            return "down"
+        }
+    }
+}
+
 public enum HealthStatus: Equatable, Sendable {
     /// Not checked, or checked from a machine that had no working network — an honest
     /// absence of knowledge, never reported as an outage.
     case unknown
     case ok(Int, TimeInterval)
     case degraded(Int, TimeInterval)
-    case down(String)
+    case down(DownReason)
 
     public static func classify(code: Int, latency: TimeInterval) -> HealthStatus {
         code >= 500 ? .degraded(code, latency) : .ok(code, latency)
@@ -73,7 +115,7 @@ public enum HealthStatus: Equatable, Sendable {
         case .unknown: return "—"
         case .ok(_, let latency): return "\(Int((latency * 1000).rounded()))ms"
         case .degraded(let code, _): return "\(code)"
-        case .down: return "down"
+        case .down(let reason): return reason.label
         }
     }
 }
@@ -136,6 +178,23 @@ public final class LiveNetworkReachability: NetworkReachability, @unchecked Send
     }
 }
 
+/// Refuses to follow redirects. A liveness probe asks "did the host I named answer me",
+/// and a 3xx already answers it — chasing the Location header would instead report on
+/// whatever host it points at, which is not the one the user asked linkC to watch. It also
+/// turns a front door that only serves HTTPS into a false outage: the redirect target may
+/// refuse a handshake the redirect itself never needed.
+final class RedirectBlocker: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
 /// The seam every health check goes through — faked in tests, URLSession in the app.
 public protocol EndpointProbe: Sendable {
     func probe(_ url: URL, timeout: TimeInterval) async throws -> ProbeResult
@@ -191,7 +250,9 @@ public struct LiveEndpointProbe: EndpointProbe {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieStorage = nil
-        return URLSession(configuration: configuration)
+        return URLSession(
+            configuration: configuration, delegate: RedirectBlocker(), delegateQueue: nil
+        )
     }()
 }
 
@@ -280,6 +341,38 @@ public enum HealthTransitions {
     }
 }
 
+/// What each beat probes: the Supabase projects worth asking about plus whatever the user
+/// named themselves. Lives here rather than in the app so the rule that matters is covered
+/// by a test — a Supabase listing going stale must never take the user's own endpoints
+/// down with it.
+public enum WatchList {
+    /// The id a Supabase row looks its own health up by. One definition, so the row and
+    /// the probe can't drift apart.
+    public static func supabaseEndpointId(_ project: SupabaseProject) -> String {
+        "supabase:\(project.id)"
+    }
+
+    public static func endpoints(
+        supabaseProjects: [SupabaseProject],
+        lastListedAt: Date?,
+        configured: [WatchedEndpoint],
+        freshness: ListingFreshness = .standard,
+        now: Date = Date()
+    ) -> [WatchedEndpoint] {
+        // healthURL is an allowlist over the listing's status, so it inherits the
+        // listing's age: a project that auto-paused hours ago still reads ACTIVE_HEALTHY
+        // in a stale snapshot, stops resolving, and would be announced as an outage.
+        guard freshness.isTrustworthy(lastListedAt: lastListedAt, now: now) else {
+            return configured
+        }
+        let supabase = supabaseProjects.compactMap { project -> WatchedEndpoint? in
+            guard let url = project.healthURL else { return nil }
+            return WatchedEndpoint(id: supabaseEndpointId(project), label: project.name, url: url)
+        }
+        return supabase + configured
+    }
+}
+
 /// Probes watched endpoints and remembers what it found. Checks run only while the panel
 /// is visible (the caller's cadence), and every endpoint is probed concurrently so one
 /// slow host doesn't delay the rest.
@@ -343,7 +436,7 @@ public final class HealthMonitor {
                         }
                         return Reading(
                             id: endpoint.id,
-                            status: .down(error.localizedDescription),
+                            status: .down(DownReason.classify(error)),
                             connectivityFailure: connectivity
                         )
                     }

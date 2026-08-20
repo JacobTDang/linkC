@@ -121,6 +121,18 @@ public final class SupabaseService {
         self.runner = runner
     }
 
+    /// Re-list only when the last listing has aged past `freshness.refreshInterval`. The
+    /// health beat runs every minute; spawning a CLI that often, forever, to catch a status
+    /// that changes maybe twice a month is not a trade worth making — but never re-listing
+    /// leaves every derived endpoint as stale as the first snapshot.
+    public func refreshIfStale(
+        _ freshness: ListingFreshness = .standard, now: Date = Date()
+    ) async {
+        guard cliPath != nil,
+              freshness.shouldRefresh(lastListedAt: lastListedAt, now: now) else { return }
+        await refresh()
+    }
+
     public func refresh() async {
         guard let cliPath, !isRefreshing else { return }
         isRefreshing = true

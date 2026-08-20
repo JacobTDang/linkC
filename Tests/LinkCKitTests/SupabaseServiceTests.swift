@@ -97,6 +97,36 @@ final class SupabaseServiceTests: XCTestCase {
         XCTAssertEqual(service.lastListedAt, stamp, "a failure ages the listing, it doesn't renew it")
     }
 
+    /// The health beat calls this every minute; it must spawn a CLI at the listing's
+    /// cadence, not the beat's.
+    func testStaleRefreshRunsOnceThenWaits() async {
+        let runner = FakeRunner(result: .success(listJSON))
+        let service = SupabaseService(cliPath: "/fake/supabase", runner: runner)
+        let start = Date()
+
+        await service.refreshIfStale(now: start)
+        XCTAssertEqual(runner.calls.count, 1, "nothing listed yet, so list")
+
+        await service.refreshIfStale(now: start.addingTimeInterval(60))
+        await service.refreshIfStale(now: start.addingTimeInterval(120))
+        XCTAssertEqual(runner.calls.count, 1, "a minute later the listing is still fresh")
+
+        await service.refreshIfStale(now: start.addingTimeInterval(ListingFreshness.standard.refreshInterval + 1))
+        XCTAssertEqual(runner.calls.count, 2, "once it goes stale, list again")
+    }
+
+    /// A listing that keeps failing must keep being retried — otherwise expired auth
+    /// freezes the watch list until the app restarts.
+    func testAFailedRefreshIsRetriedOnTheNextBeat() async {
+        let runner = FakeRunner(result: .failure(LinkCError.process("network unreachable")))
+        let service = SupabaseService(cliPath: "/fake/supabase", runner: runner)
+        let start = Date()
+
+        await service.refreshIfStale(now: start)
+        await service.refreshIfStale(now: start.addingTimeInterval(1))
+        XCTAssertEqual(runner.calls.count, 2, "a failure leaves the listing stale, so it retries")
+    }
+
     func testMissingBinaryNeverRuns() async {
         let runner = FakeRunner(result: .success(listJSON))
         let service = SupabaseService(cliPath: nil, runner: runner)

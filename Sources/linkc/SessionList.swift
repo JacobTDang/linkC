@@ -1007,7 +1007,7 @@ private struct SupabaseDetailPanel: View {
         case .degraded(let code, _)?:
             return "answering \(code) — server error"
         case .down(let reason)?:
-            return "not responding · \(reason)"
+            return "not responding · \(reason.label)"
         case .unknown?, nil:
             return "checking…"
         }
@@ -1031,7 +1031,7 @@ private struct WatchedServiceRow: View {
         CompactRowShell(
             title: endpoint.label,
             titleColor: isDown ? Theme.textSecondary : Theme.textPrimary,
-            help: endpoint.url.absoluteString,
+            help: helpText,
             onTap: { NSWorkspace.shared.open(endpoint.url) }
         ) {
             InfraDot(color: isDown ? Theme.statusError : Theme.textSecondary)
@@ -1049,6 +1049,13 @@ private struct WatchedServiceRow: View {
     private var isDown: Bool {
         guard let health, health != .unknown else { return false }
         return !health.isUp
+    }
+
+    /// The row has space for the short label ("tls", "dns"); the whole sentence lives here,
+    /// so a failure is never just the word "down" with nowhere to go.
+    private var helpText: String {
+        guard case .down(let reason)? = health else { return endpoint.url.absoluteString }
+        return "\(endpoint.url.absoluteString)\n\(reason.detail)"
     }
 }
 
