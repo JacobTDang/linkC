@@ -116,6 +116,11 @@ final class AppModel {
     /// Refreshes usage while the panel is visible; hook events cover the rest of the time.
     @ObservationIgnored private var usageTimer: Timer?
     @ObservationIgnored private var usageTicks = 0
+    /// Health checks run on their OWN timer, deliberately independent of `panelVisible`:
+    /// an outage that starts and ends while the panel is closed would otherwise never
+    /// notify, making the alert only ever restate a row the user is already looking at.
+    /// The cost is a few HTTP HEADs a minute — nothing like a polling loop.
+    @ObservationIgnored private var healthTimer: Timer?
 
     var sessions: [Session] { coordinator?.store.sessions ?? [] }
     /// Previous sessions no longer live — shown as dimmed restorable cards on the home overview.
@@ -155,6 +160,7 @@ final class AppModel {
             self.supabase = SupabaseService()
             self.watchedEndpointsStore = WatchedEndpointsStore(directory: linkCSupport)
             reloadConfiguredEndpoints()
+            startHealthTimer()
         } catch {
             setupError = error.localizedDescription
         }
@@ -221,8 +227,16 @@ final class AppModel {
         return path
     }
 
-    /// Probe the watched services and announce anything that CHANGED. Runs only while the
-    /// panel is visible, on the 30s beat.
+    /// The background health beat. Runs for the app's lifetime, not the panel's.
+    private func startHealthTimer() {
+        guard healthTimer == nil else { return }
+        checkHealth()
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkHealth() }
+        }
+    }
+
+    /// Probe the watched services and announce anything that CHANGED.
     private func checkHealth() {
         reloadConfiguredEndpoints()
         let endpoints = watchedEndpoints
@@ -539,7 +553,6 @@ final class AppModel {
                     if self.usageTicks % 6 == 0 {
                         self.usage.refreshWindow()
                         self.checkForUpdate()
-                        self.checkHealth()   // 30s: close enough to notice, cheap enough to ignore
                     }
                     // Cloud is slowest and rate-limited: every 120s is plenty.
                     if self.usageTicks % 24 == 0 { self.refreshCloud() }
@@ -554,6 +567,8 @@ final class AppModel {
     }
 
     func shutdown() {
+        healthTimer?.invalidate()
+        healthTimer = nil
         coordinator?.shutdown()
     }
 
