@@ -29,6 +29,20 @@ final class WatchedEndpointsStoreTests: XCTestCase {
         XCTAssertEqual(Set(endpoints.map(\.id)).count, 2, "ids are distinct per URL")
     }
 
+    /// Plain http is deliberately allowed, not an oversight: the mp3 server is watched
+    /// over http because its HTTPS front door only serves named sites and refuses a
+    /// handshake aimed at the bare IP. Tightening this to https-only would silently stop
+    /// watching it.
+    func testPlainHTTPIsAllowed() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try write(#"[{"label": "audio-1", "url": "http://203.0.113.10/"}]"#, to: dir)
+
+        let endpoints = WatchedEndpointsStore(directory: dir).load()
+        XCTAssertEqual(endpoints.map(\.label), ["audio-1"])
+        XCTAssertEqual(endpoints.first?.url.scheme, "http")
+    }
+
     /// A health check must stay a network probe: a file:// or other scheme in the config
     /// would turn "monitoring" into reading local files.
     func testRejectsNonHTTPSchemesAndIncompleteEntries() throws {

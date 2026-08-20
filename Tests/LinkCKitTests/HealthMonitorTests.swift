@@ -633,3 +633,68 @@ final class WatchListTests: XCTestCase {
         XCTAssertEqual(WatchList.supabaseEndpointId(project("abc", "ACTIVE_HEALTHY")), "supabase:abc")
     }
 }
+
+/// The whole chain for a service the user configured by hand: the file they edit, the
+/// watch list built from it, the probe, and what the row ends up showing. Every piece is
+/// unit-tested on its own; this is the one that fails if they stop fitting together.
+@MainActor
+final class ConfiguredServiceEndToEndTests: XCTestCase {
+
+    private func storeDirectory(containing json: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-e2e-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(json.utf8).write(to: dir.appendingPathComponent("endpoints.json"))
+        return dir
+    }
+
+    /// The real endpoints.json content, and the answer the real server really gives.
+    private let config = #"[{ "label": "audio-1", "url": "http://203.0.113.10/" }]"#
+
+    func testTheConfiguredServiceIsWatchedAndReadsHealthy() async throws {
+        let dir = try storeDirectory(containing: config)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let configured = WatchedEndpointsStore(directory: dir).load()
+        // No Supabase listing at all — the case that must not take the user's own
+        // endpoints down with it.
+        let endpoints = WatchList.endpoints(
+            supabaseProjects: [], lastListedAt: nil, configured: configured
+        )
+        XCTAssertEqual(endpoints.map(\.label), ["audio-1"])
+
+        let probe = FakeProbe(answers: [
+            "http://203.0.113.10/": .success(ProbeResult(statusCode: 308, latency: 0.042)),
+        ])
+        let monitor = HealthMonitor(probe: probe, reachability: FakeReachability(online: true))
+        let changes = await monitor.check(endpoints)
+
+        XCTAssertEqual(monitor.status(of: endpoints[0].id)?.shortLabel, "42ms",
+                       "a 308 from a redirect-only front door is a live server")
+        XCTAssertTrue(monitor.status(of: endpoints[0].id)?.isUp ?? false)
+        XCTAssertTrue(changes.isEmpty, "the first reading is a baseline, not an alert")
+    }
+
+    /// Pointed at HTTPS instead, the same box refuses the handshake. The row has to say
+    /// which problem that is — "down" would send you hunting a service that never died.
+    func testAHandshakeRefusalReadsAsTLSNotAsADeadService() async throws {
+        let dir = try storeDirectory(
+            containing: #"[{ "label": "audio-1", "url": "https://203.0.113.10/" }]"#
+        )
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let endpoints = WatchedEndpointsStore(directory: dir).load()
+        let probe = FakeProbe(answers: [
+            "https://203.0.113.10/": .success(ProbeResult(statusCode: 200, latency: 0.04)),
+        ])
+        let monitor = HealthMonitor(probe: probe, reachability: FakeReachability(online: true))
+        _ = await monitor.check(endpoints)
+
+        probe.setAnswer("https://203.0.113.10/", .failure(URLError(.secureConnectionFailed)))
+        _ = await monitor.check(endpoints)
+        let changes = await monitor.check(endpoints)
+
+        XCTAssertEqual(monitor.status(of: endpoints[0].id)?.shortLabel, "tls")
+        XCTAssertEqual(changes.count, 1, "confirmed, then announced once")
+    }
+}
