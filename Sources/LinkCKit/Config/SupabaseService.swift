@@ -99,6 +99,10 @@ public final class SupabaseService {
     public private(set) var projects: [SupabaseProject] = []
     public private(set) var isRefreshing = false
     public private(set) var lastError: String?
+    /// When the last SUCCESSFUL listing landed. The health beat re-lists off this, and
+    /// refuses to raise outage alerts from a listing too old to mean anything — the
+    /// `healthURL` allowlist can only be as fresh as the statuses it filters on.
+    public private(set) var lastListedAt: Date?
     /// True when the CLI reports no access token. That's the expected first-run state, not
     /// an error — the UI can invite `supabase login` instead of crying failure.
     public private(set) var needsLogin = false
@@ -128,6 +132,7 @@ public final class SupabaseService {
             )
             if let parsed = SupabaseProjects.parse(output) {
                 projects = parsed
+                lastListedAt = Date()
                 lastError = nil
                 needsLogin = false
             } else {

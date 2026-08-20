@@ -195,11 +195,20 @@ final class AppModel {
     /// Everything being health-checked: each live Supabase project (URL derived from its
     /// ref — no configuration) plus whatever the user listed in endpoints.json. A paused
     /// project is skipped; the row already explains that state.
+    ///
+    /// The Supabase half is dropped once the listing behind it is too old to trust. Its
+    /// statuses are an ALLOWLIST, so a stale ACTIVE_HEALTHY for a project that has since
+    /// auto-paused would be probed, fail to resolve, and be announced as an outage — the
+    /// false alarm the allowlist exists to prevent. Rows keep showing what was last known;
+    /// only the alerting stops.
     var watchedEndpoints: [WatchedEndpoint] {
-        let supabaseEndpoints = supabaseProjects.compactMap { project -> WatchedEndpoint? in
-            guard let url = project.healthURL else { return nil }
-            return WatchedEndpoint(id: "supabase:\(project.id)", label: project.name, url: url)
-        }
+        let listingIsTrustworthy = ListingFreshness.standard
+            .isTrustworthy(lastListedAt: supabase?.lastListedAt)
+        let supabaseEndpoints = !listingIsTrustworthy ? [] :
+            supabaseProjects.compactMap { project -> WatchedEndpoint? in
+                guard let url = project.healthURL else { return nil }
+                return WatchedEndpoint(id: "supabase:\(project.id)", label: project.name, url: url)
+            }
         // The cache, not another disk read — reloadConfiguredEndpoints() is what
         // refreshes it, once per health beat.
         return supabaseEndpoints + configuredEndpoints
@@ -250,8 +259,11 @@ final class AppModel {
         // The Supabase half of the watch list comes from the project listing, which the
         // panel-gated refresh populates. With the panel closed that list is empty, so the
         // background beat would check nothing at all — exactly the outage window this
-        // timer exists to cover. Refresh it here, then probe on the next beat.
-        if let supabase, supabase.cliPath != nil, supabase.projects.isEmpty {
+        // timer exists to cover. Refreshing only when EMPTY was not enough either: the
+        // statuses in a listing go stale (a free project auto-pauses), and every endpoint
+        // derived from them inherits that staleness. Re-list on a cadence of its own.
+        if let supabase, supabase.cliPath != nil,
+           ListingFreshness.standard.shouldRefresh(lastListedAt: supabase.lastListedAt) {
             Task { await supabase.refresh() }
         }
         let endpoints = watchedEndpoints

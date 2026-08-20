@@ -47,6 +47,20 @@ public enum HealthStatus: Equatable, Sendable {
         }
     }
 
+    /// Which of the four states this is, ignoring the code and latency inside it. What
+    /// counts as a CHANGE — and therefore what has to be confirmed before it is recorded —
+    /// is a move between kinds; drifting from 120ms to 900ms is the same news.
+    enum Kind { case unknown, ok, degraded, down }
+
+    var kind: Kind {
+        switch self {
+        case .unknown: return .unknown
+        case .ok: return .ok
+        case .degraded: return .degraded
+        case .down: return .down
+        }
+    }
+
     public var isUp: Bool {
         if case .ok = self { return true }
         return false
@@ -101,7 +115,11 @@ public final class LiveNetworkReachability: NetworkReachability, @unchecked Send
     private var online = true   // optimistic until the monitor says otherwise
 
     public init() {
-        monitor.pathUpdateHandler = { [self] path in
+        // weak: the monitor is owned by self and its handler outlives every update, so a
+        // strong capture would keep this object alive forever — and `deinit`, the only
+        // thing that cancels the monitor, would never run.
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
             lock.lock()
             online = path.status == .satisfied
             lock.unlock()
@@ -177,6 +195,41 @@ public struct LiveEndpointProbe: EndpointProbe {
     }()
 }
 
+/// How much a cached project listing can be trusted to say what is worth probing.
+///
+/// The Supabase watch list is derived from `supabase projects list`, and `healthURL` is an
+/// ALLOWLIST over that listing's status. So the allowlist is only ever as fresh as the
+/// listing: a free project that auto-paused hours ago still reads ACTIVE_HEALTHY in a
+/// stale snapshot, stops resolving, and gets reported as an outage — the exact false alarm
+/// the allowlist was written to prevent.
+public struct ListingFreshness: Sendable {
+    /// How old a listing may get before the beat re-lists. Well above the beat interval:
+    /// re-listing spawns a CLI, and doing that every minute forever to catch a status that
+    /// changes maybe twice a month is not a trade worth making.
+    public let refreshInterval: TimeInterval
+    /// How old a listing may get before it stops driving ALERTS. Reached only when
+    /// refreshing has failed repeatedly (expired auth, no network) — the rows stay on
+    /// screen, they just stop being grounds to claim a service died.
+    public let trustWindow: TimeInterval
+
+    public init(refreshInterval: TimeInterval, trustWindow: TimeInterval) {
+        self.refreshInterval = refreshInterval
+        self.trustWindow = trustWindow
+    }
+
+    public static let standard = ListingFreshness(refreshInterval: 300, trustWindow: 1800)
+
+    public func shouldRefresh(lastListedAt: Date?, now: Date = Date()) -> Bool {
+        guard let lastListedAt else { return true }
+        return now.timeIntervalSince(lastListedAt) >= refreshInterval
+    }
+
+    public func isTrustworthy(lastListedAt: Date?, now: Date = Date()) -> Bool {
+        guard let lastListedAt else { return false }
+        return now.timeIntervalSince(lastListedAt) < trustWindow
+    }
+}
+
 /// A status change worth telling the user about.
 public struct HealthChange: Equatable, Sendable {
     public let endpointId: String
@@ -238,13 +291,21 @@ public final class HealthMonitor {
     private let probe: EndpointProbe
     private let reachability: NetworkReachability
     private var isChecking = false
+    /// A kind seen since the recorded status, and how many rounds in a row it has held.
+    private var pending: [String: (kind: HealthStatus.Kind, count: Int)] = [:]
+    private let confirmations: Int
 
+    /// - Parameter confirmations: how many consecutive rounds a new kind must hold before
+    ///   it is recorded. Two is the smallest number that survives a single flap; one would
+    ///   restore the every-beat notification storm this exists to stop.
     public init(
         probe: EndpointProbe = LiveEndpointProbe(),
-        reachability: NetworkReachability = LiveNetworkReachability()
+        reachability: NetworkReachability = LiveNetworkReachability(),
+        confirmations: Int = 2
     ) {
         self.probe = probe
         self.reachability = reachability
+        self.confirmations = max(1, confirmations)
     }
 
     public func status(of id: String) -> HealthStatus? { statuses[id] }
@@ -303,7 +364,11 @@ public final class HealthMonitor {
 
         var results: [String: HealthStatus] = [:]
         for reading in readings {
-            if let status = reading.status { results[reading.id] = status }
+            // A round with no reading (a local blip) leaves the pending count alone: it is
+            // an absence of evidence, not evidence of recovery, so it must not postpone a
+            // real outage by resetting the count every time the link stutters.
+            guard let status = reading.status else { continue }
+            if let confirmed = confirmed(reading.id, status) { results[reading.id] = confirmed }
         }
 
         let changes = HealthTransitions.changes(from: statuses, to: results, endpoints: endpoints)
@@ -314,7 +379,39 @@ public final class HealthMonitor {
         statuses.merge(results) { _, new in new }
         let live = Set(endpoints.map(\.id))
         statuses = statuses.filter { live.contains($0.key) }
+        pending = pending.filter { live.contains($0.key) }
         return changes
+    }
+
+    /// Damping. A service sitting on the timeout boundary alternates pass/fail every beat,
+    /// and reporting each flip is louder than any sustained outage — the transition rules
+    /// only quieten an outage that STAYS down. So a change of kind must hold for
+    /// `confirmations` rounds before it becomes the recorded status; until then the last
+    /// confirmed reading stands and nothing is announced. Recovery is confirmed the same
+    /// way, or the noise would simply move to the "back up" side.
+    ///
+    /// Returns the status to record, or nil to leave the previous one in place.
+    private func confirmed(_ id: String, _ status: HealthStatus) -> HealthStatus? {
+        let kind = status.kind
+        // Nothing recorded yet: the first reading is a baseline, which announces nothing
+        // and is what the UI has to show. There is no change to confirm.
+        guard let current = statuses[id] else {
+            pending[id] = nil
+            return status
+        }
+        // Same kind — latency drift, a different 5xx code — is not a change; record it live
+        // so the row stays honest between beats.
+        if current.kind == kind {
+            pending[id] = nil
+            return status
+        }
+        let streak = (pending[id]?.kind == kind ? pending[id]!.count : 0) + 1
+        guard streak >= confirmations else {
+            pending[id] = (kind, streak)
+            return nil
+        }
+        pending[id] = nil
+        return status
     }
 
     private struct Reading: Sendable {
@@ -328,5 +425,6 @@ public final class HealthMonitor {
     public func prune(to endpoints: [WatchedEndpoint]) {
         let live = Set(endpoints.map(\.id))
         statuses = statuses.filter { live.contains($0.key) }
+        pending = pending.filter { live.contains($0.key) }
     }
 }

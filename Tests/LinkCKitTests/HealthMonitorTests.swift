@@ -163,6 +163,7 @@ final class HealthMonitorTests: XCTestCase {
         _ = await monitor.check(endpoints())
 
         probe.setAnswer("https://a.test", .failure(URLError(.cannotConnectToHost)))
+        _ = await monitor.check(endpoints())   // one miss is not yet an outage
         let first = await monitor.check(endpoints())
         XCTAssertEqual(first.count, 1, "the outage is announced once")
         XCTAssertFalse(monitor.status(of: "a")?.isUp ?? true)
@@ -224,6 +225,7 @@ final class HealthLocalFailureTests: XCTestCase {
         _ = await monitor.check([endpoint])
 
         probe.setAnswer("https://a.test", .failure(URLError(.cannotConnectToHost)))
+        _ = await monitor.check([endpoint])
         let changes = await monitor.check([endpoint])
 
         XCTAssertEqual(changes.count, 1, "a real outage after a blip must not be swallowed")
@@ -285,6 +287,7 @@ final class HealthReachabilityTests: XCTestCase {
 
         probe.setAnswer("https://a.test", .failure(URLError(.cannotConnectToHost)))
         probe.setAnswer("https://b.test", .failure(URLError(.cannotConnectToHost)))
+        _ = await monitor.check(endpoints())
         let changes = await monitor.check(endpoints())
 
         XCTAssertEqual(changes.count, 2, "the network is up, so both really are down")
@@ -313,4 +316,176 @@ final class FakeReachability: NetworkReachability, @unchecked Sendable {
         set { lock.withLock { _online = newValue } }
     }
     var isOnline: Bool { online }
+}
+
+/// A service that answers slowly enough to sit on the timeout boundary alternates
+/// pass/fail every beat. Alerting on each flip is noisier than any sustained outage —
+/// roughly two notifications a minute — so a change of kind has to be seen twice in a row
+/// before it counts.
+@MainActor
+final class HealthFlapDampingTests: XCTestCase {
+
+    private let endpoint = WatchedEndpoint(
+        id: "a", label: "mp3", url: URL(string: "https://a.test")!
+    )
+
+    private func monitor(_ probe: FakeProbe) -> HealthMonitor {
+        HealthMonitor(probe: probe, reachability: FakeReachability(online: true))
+    }
+
+    private func healthy() -> FakeProbe {
+        FakeProbe(answers: ["https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.1))])
+    }
+
+    func testOneFailedProbeIsNotYetAnOutage() async {
+        let probe = healthy()
+        let monitor = monitor(probe)
+        _ = await monitor.check([endpoint])
+
+        probe.setAnswer("https://a.test", .failure(URLError(.timedOut)))
+        let changes = await monitor.check([endpoint])
+
+        XCTAssertTrue(changes.isEmpty, "one miss is not yet news")
+        XCTAssertEqual(monitor.status(of: "a"), .ok(200, 0.1),
+                       "and the row still shows the last confirmed reading")
+    }
+
+    func testASecondConsecutiveFailureConfirmsTheOutage() async {
+        let probe = healthy()
+        let monitor = monitor(probe)
+        _ = await monitor.check([endpoint])
+
+        probe.setAnswer("https://a.test", .failure(URLError(.timedOut)))
+        _ = await monitor.check([endpoint])
+        let changes = await monitor.check([endpoint])
+
+        XCTAssertEqual(changes.count, 1, "a sustained outage is still announced")
+        XCTAssertTrue(changes[0].body.contains("not responding"))
+        XCTAssertFalse(monitor.status(of: "a")?.isUp ?? true)
+    }
+
+    /// The finding this damping exists for: without it, six beats produce six notifications.
+    func testAFlappingServiceNeverNotifies() async {
+        let probe = healthy()
+        let monitor = monitor(probe)
+        _ = await monitor.check([endpoint])
+
+        var total = 0
+        for round in 0..<6 {
+            probe.setAnswer(
+                "https://a.test",
+                round.isMultiple(of: 2)
+                    ? .failure(URLError(.timedOut))
+                    : .success(ProbeResult(statusCode: 200, latency: 0.1))
+            )
+            total += await monitor.check([endpoint]).count
+        }
+
+        XCTAssertEqual(total, 0, "a service flapping on the timeout boundary is not six outages")
+    }
+
+    /// Recovery is confirmed the same way — otherwise damping just moves the flapping
+    /// noise to the "back up" side.
+    func testRecoveryIsConfirmedBeforeItIsAnnounced() async {
+        let probe = healthy()
+        let monitor = monitor(probe)
+        _ = await monitor.check([endpoint])
+        probe.setAnswer("https://a.test", .failure(URLError(.timedOut)))
+        _ = await monitor.check([endpoint])
+        _ = await monitor.check([endpoint])   // outage confirmed
+
+        probe.setAnswer("https://a.test", .success(ProbeResult(statusCode: 200, latency: 0.1)))
+        let first = await monitor.check([endpoint])
+        XCTAssertTrue(first.isEmpty, "one good answer during an outage is not recovery")
+
+        let second = await monitor.check([endpoint])
+        XCTAssertEqual(second.count, 1)
+        XCTAssertTrue(second[0].body.contains("back up"))
+    }
+
+    /// A blip (no reading at all) is not evidence of recovery, so it must not reset the
+    /// count — otherwise a flaky link could postpone a real outage alert indefinitely.
+    func testABlipDoesNotResetTheFailureCount() async {
+        let probe = healthy()
+        let monitor = monitor(probe)
+        _ = await monitor.check([endpoint])
+
+        probe.setAnswer("https://a.test", .failure(URLError(.timedOut)))
+        _ = await monitor.check([endpoint])
+        probe.setAnswer("https://a.test", .failure(URLError(.notConnectedToInternet)))
+        _ = await monitor.check([endpoint])
+        probe.setAnswer("https://a.test", .failure(URLError(.timedOut)))
+        let changes = await monitor.check([endpoint])
+
+        XCTAssertEqual(changes.count, 1, "two real failures either side of a blip still confirm")
+    }
+
+    /// Latency drift within a kind is not a change and must never wait for confirmation.
+    func testSameKindReadingsUpdateImmediately() async {
+        let probe = healthy()
+        let monitor = monitor(probe)
+        _ = await monitor.check([endpoint])
+
+        probe.setAnswer("https://a.test", .success(ProbeResult(statusCode: 200, latency: 0.9)))
+        let changes = await monitor.check([endpoint])
+
+        XCTAssertTrue(changes.isEmpty)
+        XCTAssertEqual(monitor.status(of: "a"), .ok(200, 0.9), "the row tracks latency live")
+    }
+}
+
+/// The Supabase half of the watch list is only as trustworthy as the project listing it
+/// came from: a cached ACTIVE_HEALTHY for a project that has since auto-paused produces
+/// exactly the false "not responding" the status allowlist exists to prevent.
+final class ListingFreshnessTests: XCTestCase {
+
+    private let policy = ListingFreshness.standard
+    private let now = Date(timeIntervalSince1970: 1_000_000)
+
+    func testNeverListedAsksForARefresh() {
+        XCTAssertTrue(policy.shouldRefresh(lastListedAt: nil, now: now))
+    }
+
+    func testAFreshListingIsLeftAlone() {
+        let listed = now.addingTimeInterval(-60)
+        XCTAssertFalse(policy.shouldRefresh(lastListedAt: listed, now: now),
+                       "the beat must not spawn a CLI every minute")
+    }
+
+    func testAStaleListingIsRefreshed() {
+        let listed = now.addingTimeInterval(-policy.refreshInterval - 1)
+        XCTAssertTrue(policy.shouldRefresh(lastListedAt: listed, now: now))
+    }
+
+    /// If refreshing has been failing, the listing keeps its stale rows by design — but at
+    /// some point "ACTIVE_HEALTHY as of an hour ago" stops being grounds for an alert.
+    func testAnAncientListingIsNoLongerTrustedToDriveAlerts() {
+        XCTAssertTrue(policy.isTrustworthy(lastListedAt: now.addingTimeInterval(-60), now: now))
+        XCTAssertFalse(policy.isTrustworthy(lastListedAt: nil, now: now))
+        XCTAssertFalse(
+            policy.isTrustworthy(lastListedAt: now.addingTimeInterval(-policy.trustWindow - 1), now: now),
+            "an unrefreshable listing must not keep generating outage alerts"
+        )
+    }
+
+    func testTrustOutlastsTheRefreshInterval() {
+        let listed = now.addingTimeInterval(-policy.refreshInterval - 1)
+        XCTAssertTrue(policy.isTrustworthy(lastListedAt: listed, now: now),
+                      "one missed refresh is not grounds to stop watching")
+    }
+}
+
+/// `deinit` cancels the path monitor — which only ever runs if the update handler doesn't
+/// hold the object that owns it.
+final class LiveNetworkReachabilityTests: XCTestCase {
+
+    func testItIsReleasedWhenTheOwnerLetsGo() {
+        weak var weakRef: LiveNetworkReachability?
+        autoreleasepool {
+            let reachability = LiveNetworkReachability()
+            weakRef = reachability
+            XCTAssertTrue(reachability.isOnline, "optimistic until the monitor says otherwise")
+        }
+        XCTAssertNil(weakRef, "the path handler must not retain the object that owns the monitor")
+    }
 }

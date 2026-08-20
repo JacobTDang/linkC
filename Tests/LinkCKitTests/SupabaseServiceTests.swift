@@ -67,6 +67,36 @@ final class SupabaseServiceTests: XCTestCase {
         XCTAssertNil(service.lastError)
     }
 
+    /// The health beat decides whether to re-list from this stamp; without it, the watch
+    /// list is frozen at whatever the last successful listing said.
+    func testASuccessfulListingIsStamped() async {
+        let runner = FakeRunner(result: .success(listJSON))
+        let service = SupabaseService(cliPath: "/fake/supabase", runner: runner)
+        XCTAssertNil(service.lastListedAt, "nothing has been listed yet")
+
+        let before = Date()
+        await service.refresh()
+
+        guard let listed = service.lastListedAt else {
+            return XCTFail("a successful listing must record when it happened")
+        }
+        XCTAssertGreaterThanOrEqual(listed, before)
+    }
+
+    /// A failed refresh keeps the stale rows on purpose — but it must NOT claim they are
+    /// fresh, or the beat would stop retrying and keep alerting off an old allowlist.
+    func testAFailedListingDoesNotRefreshTheStamp() async {
+        let runner = FakeRunner(result: .success(listJSON))
+        let service = SupabaseService(cliPath: "/fake/supabase", runner: runner)
+        await service.refresh()
+        let stamp = service.lastListedAt
+
+        runner.result = .failure(LinkCError.process("network unreachable"))
+        await service.refresh()
+
+        XCTAssertEqual(service.lastListedAt, stamp, "a failure ages the listing, it doesn't renew it")
+    }
+
     func testMissingBinaryNeverRuns() async {
         let runner = FakeRunner(result: .success(listJSON))
         let service = SupabaseService(cliPath: nil, runner: runner)
