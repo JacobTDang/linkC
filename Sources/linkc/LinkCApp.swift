@@ -179,10 +179,11 @@ final class AppModel {
     /// A cloud instance's drill-in (IP, CPU), once its row has been expanded.
     func cloudDetail(_ id: String) -> OracleDetail? { oracle?.detail(for: id) }
 
-    /// Fetch a drill-in on expand — never on the poll path.
-    func loadCloudDetail(_ id: String) {
+    /// Fetch a drill-in on expand — never on the poll path. `force` is the row's own
+    /// refresh action; a plain expand reuses the cached figures.
+    func loadCloudDetail(_ id: String, force: Bool = false) {
         guard let oracle else { return }
-        Task { await oracle.loadDetail(for: id) }
+        Task { await oracle.loadDetail(for: id, force: force) }
     }
 
     /// Cloud calls are slow and rate-limited — refresh on panel open + every ~120s,

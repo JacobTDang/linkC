@@ -794,7 +794,7 @@ private struct CloudSection: View {
                                 model.loadCloudDetail(instance.id)
                             }
                         },
-                        onRefresh: { model.loadCloudDetail(instance.id) }
+                        onRefresh: { model.loadCloudDetail(instance.id, force: true) }
                     )
                 }
             }
