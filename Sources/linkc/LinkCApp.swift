@@ -152,6 +152,7 @@ final class AppModel {
             self.toolServers = ToolServerService()
             self.recents = RecentFoldersStore(directory: linkCSupport)
             self.oracle = OracleService()
+            self.supabase = SupabaseService()
         } catch {
             setupError = error.localizedDescription
         }
@@ -172,9 +173,12 @@ final class AppModel {
     /// Oracle compute through the user's own `oci` CLI — a permanent quiet no-op when
     /// the CLI or its config is absent.
     private(set) var oracle: OracleService?
+    /// Supabase projects through the user's own CLI — the second CLOUD provider.
+    private(set) var supabase: SupabaseService?
 
     var cloudInstances: [OracleInstance] { oracle?.instances ?? [] }
     var cloudRegion: String? { oracle?.region }
+    var supabaseProjects: [SupabaseProject] { supabase?.projects ?? [] }
 
     /// A cloud instance's drill-in (IP, CPU), once its row has been expanded.
     func cloudDetail(_ id: String) -> OracleDetail? { oracle?.detail(for: id) }
@@ -189,8 +193,12 @@ final class AppModel {
     /// Cloud calls are slow and rate-limited — refresh on panel open + every ~120s,
     /// never the local 15s loop.
     private func refreshCloud() {
-        guard let oracle, oracle.ociPath != nil else { return }
-        Task { await oracle.refresh() }
+        if let oracle, oracle.ociPath != nil {
+            Task { await oracle.refresh() }
+        }
+        if let supabase, supabase.cliPath != nil {
+            Task { await supabase.refresh() }
+        }
     }
 
     /// The empty state shows up to three recent launch folders as chips.

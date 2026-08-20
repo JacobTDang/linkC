@@ -776,7 +776,8 @@ private struct CloudSection: View {
 
     var body: some View {
         let instances = model.cloudInstances
-        if !instances.isEmpty {
+        let projects = model.supabaseProjects
+        if !instances.isEmpty || !projects.isEmpty {
             VStack(spacing: 6) {
                 SectionHeader(title: "CLOUD")
                     .padding(.top, 6)
@@ -797,7 +798,50 @@ private struct CloudSection: View {
                         onRefresh: { model.loadCloudDetail(instance.id, force: true) }
                     )
                 }
+                ForEach(projects) { project in
+                    SupabaseRow(project: project)
+                }
             }
+        }
+    }
+}
+
+/// One Supabase project: a steady dot (paused projects dim and say so — Supabase stops
+/// serving a paused project until it's restored, which is the state worth noticing), the
+/// name, and its region. Tapping opens that project's dashboard.
+private struct SupabaseRow: View {
+    let project: SupabaseProject
+
+    var body: some View {
+        CompactRowShell(
+            title: project.name,
+            titleColor: project.isHealthy ? Theme.textPrimary : Theme.textSecondary,
+            dimmed: project.isPaused,
+            help: project.isPaused ? "\(project.name) is paused — open the dashboard to restore it"
+                                   : "Open the Supabase dashboard",
+            onTap: {
+                NSWorkspace.shared.open(
+                    URL(string: "https://supabase.com/dashboard/project/\(project.id)")!
+                )
+            }
+        ) {
+            InfraDot(color: project.isHealthy ? Theme.textSecondary : Theme.textTertiary)
+        } trailing: { _ in
+            if project.isPaused {
+                Text("paused")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.contextWarn)
+                    .fixedSize()
+            } else if !project.isHealthy {
+                Text(project.status.lowercased().replacingOccurrences(of: "_", with: " "))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize()
+            }
+            Text(project.region)
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.textTertiary)
+                .fixedSize()
         }
     }
 }
