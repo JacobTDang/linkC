@@ -100,3 +100,41 @@ final class ProcessRunnerStderrTests: XCTestCase {
         XCTAssertEqual(output.trimmingCharacters(in: .whitespacesAndNewlines), "[{\"ok\":true}]")
     }
 }
+
+/// A pipe holds ~64KB. Reading only after exit means a chatty child fills the buffer,
+/// blocks on write, and never exits — so both streams must be drained while it runs.
+final class ProcessRunnerBackpressureTests: XCTestCase {
+
+    func testLargeStderrDoesNotDeadlock() async throws {
+        let runner = LiveProcessRunner()
+        // 200KB of stderr — comfortably past the buffer that used to deadlock.
+        let output = try await runner.run(
+            "/bin/sh",
+            args: ["-c", "yes 'noisy diagnostic line' | head -c 200000 >&2; echo done"],
+            cwd: nil, timeout: 20
+        )
+        XCTAssertEqual(output.trimmingCharacters(in: .whitespacesAndNewlines), "done")
+    }
+
+    func testLargeStdoutIsReturnedWhole() async throws {
+        let runner = LiveProcessRunner()
+        let output = try await runner.run(
+            "/bin/sh", args: ["-c", "yes 'x' | head -c 200000"], cwd: nil, timeout: 20
+        )
+        XCTAssertEqual(output.count, 200000, "a large stdout must not be truncated or stall")
+    }
+
+    func testLargeStderrOnFailureStillReportsTheReason() async {
+        let runner = LiveProcessRunner()
+        do {
+            _ = try await runner.run(
+                "/bin/sh",
+                args: ["-c", "yes 'noise' | head -c 100000 >&2; echo 'Access token not provided' >&2; exit 1"],
+                cwd: nil, timeout: 20
+            )
+            XCTFail("a nonzero exit must throw")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("noise"), "the capped detail survives")
+        }
+    }
+}
