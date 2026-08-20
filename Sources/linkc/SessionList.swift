@@ -42,7 +42,7 @@ struct SessionListColumn: View {
                     }
                 }
                 // Dev terminals: same 1s preview cadence as sessions, quieter presence.
-                if !model.shellRows.isEmpty {
+                if !model.shellRows.isEmpty || (!compact && !model.restorableShells.isEmpty) {
                     TimelineView(.periodic(from: .now, by: 1.0)) { _ in
                         TerminalsSection(model: model, selectedId: selectedId, compact: compact)
                     }
@@ -142,6 +142,8 @@ private struct TerminalsSection: View {
         VStack(spacing: 6) {
             SectionHeader(title: "TERMINALS")
                 .padding(.top, 6)
+            // Remembered shells ride under the live ones on home — relaunching is a home
+            // decision, like EARLIER; the sidebar shows only what's live.
             ForEach(model.shellRows) { row in
                 Group {
                     if compact {
@@ -169,8 +171,73 @@ private struct TerminalsSection: View {
                     ? .opacity
                     : .scale(scale: 0.97, anchor: .top).combined(with: .opacity))
             }
+            if !compact {
+                ForEach(model.restorableShells) { shell in
+                    RestorableShellRow(
+                        shell: shell,
+                        onRestore: { model.restoreShell(shell) },
+                        onDismiss: { model.forgetShell(shell) }
+                    )
+                    .transition(reduceMotion
+                        ? .opacity
+                        : .scale(scale: 0.97, anchor: .top).combined(with: .opacity))
+                }
+            }
         }
-        .animation(reduceMotion ? nil : Theme.sectionSpring, value: model.shellRows.map(\.id))
+        .animation(reduceMotion ? nil : Theme.sectionSpring,
+                   value: model.shellRows.map(\.id) + model.restorableShells.map(\.id))
+    }
+}
+
+/// A dev terminal remembered from a previous run: quiet like EARLIER's rows — no fill
+/// until hover, an ended-grey dot, the folder, and a plain Relaunch. Shells re-open
+/// rather than resume, so the copy says Relaunch, not Restore.
+private struct RestorableShellRow: View {
+    let shell: RestorableShell
+    let onRestore: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            InfraDot(color: Theme.textTertiary)
+            Text(shell.title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Text((shell.cwd as NSString).abbreviatingWithTildeInPath)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            Button(action: onRestore) {
+                Text("Relaunch")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .fixedSize()
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(shell.command.map { "Re-run: \($0)" } ?? "Open a fresh shell in this folder")
+            Button(action: onDismiss) {
+                CompactRowGlyph()
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering ? 1 : 0)
+            .help("Forget this terminal")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .fill(hovering ? Theme.hover : Color.clear)
+        )
+        .animation(Theme.hoverEase, value: hovering)
+        .onHover { hovering = $0 }
     }
 }
 

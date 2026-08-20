@@ -11,13 +11,22 @@ public final class ShellCoordinator {
 
     private let terminals: TerminalSessionManager
     private let shellPath: () -> String
+    private let manifest: ShellManifest?
+    /// Shells remembered from a previous run — restorable rows, not live ones. Kept in
+    /// sync with the manifest so the UI can observe one source.
+    public private(set) var restorables: [RestorableShell] = []
 
     public init(
         terminals: TerminalSessionManager,
+        manifestDir: URL? = nil,
         shellPath: @escaping () -> String = { ShellResolver.loginShell() }
     ) {
         self.terminals = terminals
         self.shellPath = shellPath
+        self.manifest = manifestDir.map { ShellManifest(directory: $0) }
+        // Everything the manifest already holds is from a previous run — nothing is live
+        // yet, so all of it surfaces as restorable.
+        self.restorables = manifest?.entries ?? []
     }
 
     /// Open the user's login shell in `cwd` — interactive when `command` is nil, otherwise
@@ -36,6 +45,8 @@ public final class ShellCoordinator {
             // Keeps the row (and the terminal's scrollback): a dead dev server stays
             // visible and inspectable until the user dismisses it.
             self?.store.markExited(id: id, code: Self.decodeWaitStatus(rawStatus))
+            // Stamp it restorable: the shell is dead, so a later run can offer it back.
+            self?.manifest?.markEnded(id: id, at: Date())
         }
         do {
             try terminal.start(
@@ -48,7 +59,35 @@ public final class ShellCoordinator {
             terminals.remove(id)
             throw error
         }
-        return store.add(id: id, cwd: cwd, title: title)
+        manifest?.upsert(RestorableShell(id: id, cwd: cwd, title: title, command: command))
+        let row = store.add(id: id, cwd: cwd, title: title, command: command)
+        syncRestorables()   // after the row exists: a live shell is not restorable
+        return row
+    }
+
+    /// Re-open a shell remembered from a previous run: a fresh shell in its folder (and
+    /// its command, for command-mode shells). The card is consumed either way — a failed
+    /// launch rethrows, and the entry is already gone, matching session restore.
+    @discardableResult
+    public func restore(_ shell: RestorableShell) throws -> ShellRow {
+        manifest?.remove(id: shell.id)
+        defer { syncRestorables() }   // consumed even if the launch throws
+        return try launch(cwd: shell.cwd, command: shell.command, title: shell.title)
+    }
+
+    /// Drop a remembered shell without launching it (the user dismissed the card).
+    public func forget(_ shell: RestorableShell) {
+        manifest?.remove(id: shell.id)
+        syncRestorables()
+    }
+
+    /// Restorables are the remembered shells that aren't currently live — the same
+    /// live-minus-manifest split the session side uses. Without the filter, launching a
+    /// shell would immediately also list it as restorable.
+    private func syncRestorables() {
+        let liveIds = Set(store.rows.map(\.id))
+        let next = (manifest?.entries ?? []).filter { !liveIds.contains($0.id) }
+        if next != restorables { restorables = next }
     }
 
     /// Re-open an exited terminal's folder in a fresh shell (dev servers "restore" by
@@ -56,13 +95,15 @@ public final class ShellCoordinator {
     @discardableResult
     public func relaunch(_ row: ShellRow) throws -> ShellRow {
         dismiss(row.id)
-        return try launch(cwd: row.cwd)
+        return try launch(cwd: row.cwd, command: row.command, title: row.title)
     }
 
     /// Kill a RUNNING terminal and drop it entirely.
     public func stop(_ id: String) {
         terminals.terminate(id)
         store.remove(id: id)
+        manifest?.markEnded(id: id, at: Date())
+        syncRestorables()   // no longer live → offer it back
     }
 
     /// Drop an EXITED terminal (row + kept scrollback). No-op while it's still running —
@@ -71,6 +112,8 @@ public final class ShellCoordinator {
         guard case .exited = store.row(id: id)?.state else { return }
         terminals.remove(id)
         store.remove(id: id)
+        manifest?.remove(id: id)
+        syncRestorables()
     }
 
     /// SwiftTerm's forkpty path reports the RAW waitpid status (exit 1 arrives as 256).
