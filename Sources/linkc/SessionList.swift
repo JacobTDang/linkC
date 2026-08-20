@@ -776,7 +776,10 @@ private struct CloudSection: View {
 
     var body: some View {
         let instances = model.cloudInstances
-        if !instances.isEmpty {
+        let projects = model.supabaseProjects
+        let needsLogin = model.supabaseNeedsLogin
+        let errors = model.cloudErrors
+        if !instances.isEmpty || !projects.isEmpty || needsLogin || !errors.isEmpty {
             VStack(spacing: 6) {
                 SectionHeader(title: "CLOUD")
                     .padding(.top, 6)
@@ -797,7 +800,87 @@ private struct CloudSection: View {
                         onRefresh: { model.loadCloudDetail(instance.id, force: true) }
                     )
                 }
+                ForEach(projects) { project in
+                    SupabaseRow(project: project)
+                }
+                // Fail loud: an unauthenticated CLI or a failing listing must not render
+                // as a silently empty section.
+                if needsLogin {
+                    CloudNoticeRow(text: "supabase login to list projects", isWarning: false)
+                }
+                ForEach(errors, id: \.self) { error in
+                    CloudNoticeRow(text: error, isWarning: true)
+                }
             }
+        }
+    }
+}
+
+/// A quiet one-line notice under the cloud rows — an invitation ("supabase login…") or a
+/// failure. Without it, a provider that can't answer renders as nothing at all.
+private struct CloudNoticeRow: View {
+    let text: String
+    let isWarning: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: isWarning ? "exclamationmark.triangle.fill" : "person.crop.circle.badge.questionmark")
+                .font(.system(size: 9))
+                .foregroundStyle(isWarning ? Theme.statusError : Theme.textTertiary)
+                .frame(width: 18)
+            Text(text)
+                .font(.system(size: 10))
+                .foregroundStyle(isWarning ? Theme.statusError : Theme.textTertiary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+    }
+}
+
+/// One Supabase project: a steady dot (paused projects dim and say so — Supabase stops
+/// serving a paused project until it's restored, which is the state worth noticing), the
+/// name, and its region. Tapping opens that project's dashboard.
+private struct SupabaseRow: View {
+    let project: SupabaseProject
+
+    var body: some View {
+        CompactRowShell(
+            title: project.name,
+            titleColor: project.isHealthy ? Theme.textPrimary : Theme.textSecondary,
+            dimmed: project.isPaused,
+            help: project.isPaused ? "\(project.name) is paused — open the dashboard to restore it"
+                                   : "Open the Supabase dashboard",
+            onTap: {
+                // The id comes from the CLI, so the URL is built defensively — a stray
+                // character must not crash the app on tap.
+                let encoded = project.id.addingPercentEncoding(
+                    withAllowedCharacters: .urlPathAllowed
+                ) ?? project.id
+                if let url = URL(string: "https://supabase.com/dashboard/project/\(encoded)") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        ) {
+            InfraDot(color: project.isHealthy ? Theme.textSecondary : Theme.textTertiary)
+        } trailing: { _ in
+            if project.isPaused {
+                Text("paused")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.contextWarn)
+                    .fixedSize()
+            } else if !project.isHealthy {
+                Text(project.status.lowercased().replacingOccurrences(of: "_", with: " "))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize()
+            }
+            Text(project.region)
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.textTertiary)
+                .fixedSize()
         }
     }
 }
