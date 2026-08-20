@@ -11,6 +11,8 @@ public struct ShellRow: Sendable, Identifiable, Equatable {
     public let id: String
     public let cwd: String
     public let title: String
+    /// Non-nil for command-mode shells (docker logs, a dev server) — relaunch re-runs it.
+    public var command: String?
     public var state: ShellState
 }
 
@@ -26,8 +28,8 @@ public final class ShellTerminalStore {
     public init() {}
 
     @discardableResult
-    public func add(id: String, cwd: String, title: String) -> ShellRow {
-        let row = ShellRow(id: id, cwd: cwd, title: title, state: .running)
+    public func add(id: String, cwd: String, title: String, command: String? = nil) -> ShellRow {
+        let row = ShellRow(id: id, cwd: cwd, title: title, command: command, state: .running)
         rows.append(row)
         return row
     }

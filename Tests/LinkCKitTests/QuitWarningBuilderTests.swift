@@ -23,20 +23,20 @@ final class QuitWarningBuilderTests: XCTestCase {
     func testTerminalsOnlyCopyIsHonestAboutNoRestore() throws {
         let one = try XCTUnwrap(QuitWarningBuilder.build(sessionCount: 0, runningTerminalCount: 1))
         XCTAssertEqual(one.title, "Quit linkC and end 1 terminal?")
-        XCTAssertEqual(one.message, "Quitting ends the terminal running in linkC. Unlike Claude Code sessions, it isn't restored next launch.")
+        XCTAssertEqual(one.message, "Quitting ends the terminal running in linkC. It'll be offered for relaunch next launch, without scrollback.")
 
         let two = try XCTUnwrap(QuitWarningBuilder.build(sessionCount: 0, runningTerminalCount: 3))
         XCTAssertEqual(two.title, "Quit linkC and end 3 terminals?")
-        XCTAssertEqual(two.message, "Quitting ends the terminals running in linkC. Unlike Claude Code sessions, they aren't restored next launch.")
+        XCTAssertEqual(two.message, "Quitting ends the terminals running in linkC. They'll be offered for relaunch next launch, without scrollback.")
     }
 
     func testMixedCopySplitsRestorability() throws {
         let mixed = try XCTUnwrap(QuitWarningBuilder.build(sessionCount: 1, runningTerminalCount: 1))
         XCTAssertEqual(mixed.title, "Quit linkC and end 1 session and 1 terminal?")
-        XCTAssertEqual(mixed.message, "Quitting ends the Claude Code session and terminal running in linkC. The session will be offered for restore next launch — the terminal won't.")
+        XCTAssertEqual(mixed.message, "Quitting ends the Claude Code session and terminal running in linkC. The session will be offered for restore next launch, the terminal for relaunch.")
 
         let plural = try XCTUnwrap(QuitWarningBuilder.build(sessionCount: 2, runningTerminalCount: 2))
         XCTAssertEqual(plural.title, "Quit linkC and end 2 sessions and 2 terminals?")
-        XCTAssertEqual(plural.message, "Quitting ends the Claude Code sessions and terminals running in linkC. Sessions will be offered for restore next launch — terminals won't.")
+        XCTAssertEqual(plural.message, "Quitting ends the Claude Code sessions and terminals running in linkC. Sessions will be offered for restore next launch, terminals for relaunch.")
     }
 }

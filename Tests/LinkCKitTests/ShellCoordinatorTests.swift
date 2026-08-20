@@ -119,3 +119,109 @@ final class ShellCoordinatorTests: XCTestCase {
         XCTAssertNotNil(terminals.session(id: row.id), "output stays inspectable")
     }
 }
+
+/// Persistence: launching remembers a shell, exiting stamps it, dismissing forgets it,
+/// and a previous run's entries surface as restorable rows the user can relaunch.
+@MainActor
+final class ShellPersistenceTests: XCTestCase {
+
+    private func tempDir() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-shellpersist-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    func testLaunchRemembersAndDismissForgets() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let coordinator = ShellCoordinator(
+            terminals: TerminalSessionManager(),
+            manifestDir: dir,
+            shellPath: { "/bin/echo" }
+        )
+
+        let row = try coordinator.launch(cwd: "/tmp", command: "npm run dev", title: "dev")
+        let remembered = ShellManifest(directory: dir).entries
+        XCTAssertEqual(remembered.map(\.id), [row.id])
+        XCTAssertEqual(remembered.first?.command, "npm run dev", "command-mode shells relaunch as themselves")
+
+        coordinator.store.markExited(id: row.id, code: 0)
+        coordinator.dismiss(row.id)
+        XCTAssertTrue(ShellManifest(directory: dir).entries.isEmpty, "dismiss forgets the entry")
+    }
+
+    func testPreviousRunSurfacesAsRestorable() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // A real folder: launching into a vanished one fails loud by design.
+        let cwd = tempDir()
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+        let seed = ShellManifest(directory: dir)
+        seed.upsert(RestorableShell(
+            id: "old", cwd: cwd.path, title: "proj", command: nil,
+            endedAt: Date().addingTimeInterval(-60)
+        ))
+
+        let coordinator = ShellCoordinator(
+            terminals: TerminalSessionManager(), manifestDir: dir, shellPath: { "/bin/echo" }
+        )
+
+        XCTAssertEqual(coordinator.restorables.map(\.id), ["old"])
+        XCTAssertTrue(coordinator.store.rows.isEmpty, "a remembered shell is not a live row")
+
+        // Relaunching consumes the restorable and starts a live shell in that folder.
+        let fresh = try coordinator.restore(coordinator.restorables[0])
+        XCTAssertEqual(fresh.cwd, cwd.path)
+        XCTAssertTrue(coordinator.restorables.isEmpty, "restoring consumes the card")
+        XCTAssertEqual(coordinator.store.rows.map(\.id), [fresh.id])
+    }
+
+    /// Stopping a shell drops it entirely — it must not reappear as a relaunch card in
+    /// the same run (that would make the user dismiss the same terminal twice).
+    func testStopDoesNotResurrectAsRestorable() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let coordinator = ShellCoordinator(
+            terminals: TerminalSessionManager(), manifestDir: dir, shellPath: { "/bin/echo" }
+        )
+
+        let row = try coordinator.launch(cwd: "/tmp", title: "dev")
+        coordinator.stop(row.id)
+
+        XCTAssertTrue(coordinator.restorables.isEmpty, "a deliberately stopped shell is gone")
+        XCTAssertTrue(ShellManifest(directory: dir).entries.isEmpty, "and forgotten on disk")
+    }
+
+    /// A failed relaunch must leave the card recoverable — losing the only record of a
+    /// terminal because its folder was temporarily unavailable is not acceptable.
+    func testFailedRestoreKeepsTheCard() {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let seed = ShellManifest(directory: dir)
+        seed.upsert(RestorableShell(
+            id: "old", cwd: "/nonexistent-volume/proj", title: "proj",
+            endedAt: Date().addingTimeInterval(-60)
+        ))
+        let coordinator = ShellCoordinator(
+            terminals: TerminalSessionManager(), manifestDir: dir, shellPath: { "/bin/echo" }
+        )
+
+        XCTAssertThrowsError(try coordinator.restore(coordinator.restorables[0]))
+        XCTAssertEqual(coordinator.restorables.map(\.id), ["old"], "the card survives a failed launch")
+    }
+
+    func testForgetDropsARestorableWithoutLaunching() {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let seed = ShellManifest(directory: dir)
+        seed.upsert(RestorableShell(id: "old", cwd: "/tmp", title: "t", endedAt: Date()))
+
+        let coordinator = ShellCoordinator(
+            terminals: TerminalSessionManager(), manifestDir: dir, shellPath: { "/bin/echo" }
+        )
+        coordinator.forget(coordinator.restorables[0])
+
+        XCTAssertTrue(coordinator.restorables.isEmpty)
+        XCTAssertTrue(ShellManifest(directory: dir).entries.isEmpty, "persisted")
+    }
+}

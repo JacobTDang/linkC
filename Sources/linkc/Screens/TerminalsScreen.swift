@@ -15,7 +15,7 @@ struct TerminalsScreen: View {
                 }
             }
 
-            if model.shellRows.isEmpty {
+            if model.shellRows.isEmpty && model.restorableShells.isEmpty {
                 EmptyHint(
                     title: "No terminals yet",
                     message: "A plain shell in any folder — run your dev servers beside your sessions.",
@@ -33,6 +33,15 @@ struct TerminalsScreen: View {
                                     onStop: { model.stopShell(row.id) },
                                     onRelaunch: { model.relaunchShell(row) },
                                     onDismiss: { model.dismissShell(row.id) }
+                                )
+                            }
+                            // Shells remembered from a previous run — the screen must not
+                            // claim "no terminals" while home offers these.
+                            ForEach(model.restorableShells) { shell in
+                                RememberedTerminalCard(
+                                    shell: shell,
+                                    onRestore: { model.restoreShell(shell) },
+                                    onDismiss: { model.forgetShell(shell) }
                                 )
                             }
                         }
@@ -154,5 +163,61 @@ struct TerminalCard: View {
         .animation(Theme.hoverEase, value: hovering)
         .animation(Theme.hoverEase, value: isSelected)
         .help(isRunning ? "Open \(row.title)" : "View \(row.title)'s last output")
+    }
+}
+
+/// A remembered shell on the Terminals screen: the card shape of its live siblings, dimmed
+/// and preview-less (there's no output yet), with Relaunch as its one action.
+struct RememberedTerminalCard: View {
+    let shell: RestorableShell
+    let onRestore: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Theme.textTertiary)
+                .frame(width: 8, height: 8)
+                .frame(width: 18, height: 18)
+            Text(shell.title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Text((shell.cwd as NSString).abbreviatingWithTildeInPath)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            Button(action: onRestore) {
+                Text("Relaunch")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .fixedSize()
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(shell.command.map { "Re-run: \($0)" } ?? "Open a fresh shell in this folder")
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering ? 1 : 0)
+            .help("Forget this terminal")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .planeCard()
+        .opacity(0.75)
+        .animation(Theme.hoverEase, value: hovering)
+        .onHover { hovering = $0 }
     }
 }

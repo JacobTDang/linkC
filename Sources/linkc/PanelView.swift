@@ -28,6 +28,7 @@ struct PanelView: View {
                             || !model.sessions.isEmpty
                             || !model.restorables.isEmpty
                             || !model.shellRows.isEmpty
+                            || !model.restorableShells.isEmpty
                     )
                     // Pane swap: dock screen > terminal > empty > home. Screens LAYER over an
                     // open terminal instead of evicting it — closing the screen (back) lands
