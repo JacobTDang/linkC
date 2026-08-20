@@ -34,8 +34,6 @@ enum Theme {
         return Color(red: 1.0, green: 0.94, blue: 0.88).opacity(hovering ? 0.10 : 0.055)
     }
 
-    /// The vignette's edge darkening — grounds the sheet without reading as a border.
-    static let vignette = Color.black.opacity(0.16)
     /// A barely-there wash behind bare chrome glyphs and restorable rows on hover.
     static let hover = Color.white.opacity(0.07)
     /// The inline error strip's tinted surface.

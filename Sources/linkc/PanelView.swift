@@ -91,19 +91,6 @@ struct PanelView: View {
             }
         }
         .frame(minWidth: 300, maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
-        // A faint radial vignette grounds the sheet's edges — depth, not a border.
-        .overlay {
-            GeometryReader { geo in
-                let reach = max(geo.size.width, geo.size.height)
-                Rectangle()
-                    .fill(RadialGradient(
-                        colors: [.clear, Theme.vignette],
-                        center: UnitPoint(x: 0.5, y: 0.4),
-                        startRadius: reach * 0.45,
-                        endRadius: reach))
-            }
-            .allowsHitTesting(false)
-        }
         .environment(\.colorScheme, .dark)
         // Stock controls (switches, pickers, spinners) inherit the system's blue accent
         // otherwise — the panel is coral everywhere, including its toggles.
@@ -485,7 +472,7 @@ private struct EmptyStateView: View {
 
     private var hero: some View {
         VStack(spacing: 0) {
-            HeroHalo()
+            HeroGlyph()
             Text("Ready when you are")
                 .font(.system(size: 19, weight: .bold))
                 .foregroundStyle(Theme.textPrimary)
@@ -528,32 +515,15 @@ private struct EmptyStateView: View {
     }
 }
 
-/// The empty state's signature: a breathing coral core inside a soft halo — the dot grown
-/// into a hero. Reduce Motion holds the core steady.
-private struct HeroHalo: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var up = false
-
+/// The empty state's glyph: what this panel does, said once. A still symbol rather than a
+/// breathing halo — an empty screen is an invitation to act, not an ambient animation.
+private struct HeroGlyph: View {
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(RadialGradient(
-                    colors: [Theme.accent.opacity(0.28), .clear],
-                    center: .center, startRadius: 2, endRadius: 37))
-            Circle()
-                .strokeBorder(Theme.accent.opacity(0.25), lineWidth: 1)
-                .frame(width: 46, height: 46)
-            Circle()
-                .fill(Theme.accent)
-                .frame(width: 12, height: 12)
-                .shadow(color: Theme.accent.opacity(0.55), radius: 9)
-                .scaleEffect(reduceMotion ? 1 : (up ? 1.06 : 0.92))
-        }
-        .frame(width: 74, height: 74)
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true)) { up = true }
-        }
+        Image(systemName: "apple.terminal")
+            .font(.system(size: 40, weight: .regular))
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(Theme.accent.opacity(0.85))
+            .frame(width: 74, height: 64)
     }
 }
 
@@ -717,8 +687,9 @@ struct ErrorBar: View {
 
 // MARK: - Button style
 
-/// The one prominent action: a coral gradient capsule with an inner top highlight and a
-/// soft glow — real depth, matching the dock's selection pill.
+/// The one prominent action: a flat accent capsule, like any prominent button on the
+/// system. The colour is the emphasis — a gradient, an inner highlight and a glow on top
+/// of it are three more ways to say the same thing.
 private struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -726,23 +697,8 @@ private struct PrimaryButtonStyle: ButtonStyle {
             .foregroundStyle(.white)
             .padding(.horizontal, 22)
             .padding(.vertical, 9)
-            .background(
-                Capsule()
-                    .fill(LinearGradient(
-                        colors: [
-                            Color(red: 0.878, green: 0.502, blue: 0.373),
-                            Color(red: 0.769, green: 0.392, blue: 0.275),
-                        ],
-                        startPoint: .top, endPoint: .bottom))
-                    .overlay(
-                        Capsule().strokeBorder(
-                            LinearGradient(
-                                colors: [Color.white.opacity(0.35), .clear],
-                                startPoint: .top, endPoint: .bottom),
-                            lineWidth: 1))
-                    .shadow(color: Theme.accent.opacity(0.35), radius: 8, y: 4)
-            )
-            .opacity(configuration.isPressed ? 0.85 : 1)
+            .background(Capsule().fill(Theme.accent))
+            .opacity(configuration.isPressed ? 0.8 : 1)
             .contentShape(Capsule())
     }
 }

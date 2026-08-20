@@ -32,25 +32,19 @@ struct Dock: View {
         }
     }
 
-    /// Pre-Tahoe stand-in: a top-lit gradient capsule with an inner highlight and cast
-    /// shadow — the same silhouette, hand-rolled.
+    /// Pre-Tahoe stand-in for the glass effect: a flat wash and one hairline, plus the
+    /// cast shadow. The dock is the one element that genuinely floats, so it is the one
+    /// element that earns a shadow.
     private var fallbackCapsule: some View {
         Capsule()
-            .fill(LinearGradient(
-                colors: [Color.white.opacity(0.14), Color.white.opacity(0.05)],
-                startPoint: .top, endPoint: .bottom))
-            .overlay(
-                Capsule().strokeBorder(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.22), Color.white.opacity(0.04)],
-                        startPoint: .top, endPoint: .bottom),
-                    lineWidth: 1))
+            .fill(Color.white.opacity(0.10))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
             .shadow(color: Color.black.opacity(0.45), radius: 14, y: 10)
     }
 }
 
-/// One dock icon: a 34pt circular hit target. Selection is a coral gradient pill with a soft
-/// glow; hover raises the glyph over the shared wash. The label lives in the tooltip.
+/// One dock icon: a 34pt circular hit target. Selection is a flat coral disc; hover raises
+/// the glyph over the shared wash. The label lives in the tooltip.
 private struct DockButton: View {
     let icon: String
     let label: String
@@ -67,14 +61,7 @@ private struct DockButton: View {
                 .frame(width: 34, height: 34)
                 .background {
                     if isSelected {
-                        Circle()
-                            .fill(LinearGradient(
-                                colors: [
-                                    Color(red: 0.878, green: 0.502, blue: 0.373),
-                                    Color(red: 0.769, green: 0.392, blue: 0.275),
-                                ],
-                                startPoint: .top, endPoint: .bottom))
-                            .shadow(color: Theme.accent.opacity(0.4), radius: 5, y: 2)
+                        Circle().fill(Theme.accent)
                     } else if hovering {
                         Circle().fill(Theme.hover)
                     }
