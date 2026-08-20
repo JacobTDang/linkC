@@ -239,3 +239,65 @@ final class HealthLocalFailureTests: XCTestCase {
         XCTAssertTrue(HealthStatus.isLocalNetworkFailure(URLError(.notConnectedToInternet)))
     }
 }
+
+/// A whole round failing to connect is this machine's problem, not every provider's.
+@MainActor
+final class HealthWholeRoundFailureTests: XCTestCase {
+
+    private func endpoints() -> [WatchedEndpoint] {
+        [
+            WatchedEndpoint(id: "a", label: "mp3", url: URL(string: "https://a.test")!),
+            WatchedEndpoint(id: "b", label: "june", url: URL(string: "https://b.test")!),
+        ]
+    }
+
+    private func healthy() -> FakeProbe {
+        FakeProbe(answers: [
+            "https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.1)),
+            "https://b.test": .success(ProbeResult(statusCode: 200, latency: 0.1)),
+        ])
+    }
+
+    /// A captive portal or DNS outage makes every endpoint fail with cannotFindHost at
+    /// once — announcing N outages and then N recoveries is the alarm fatigue this whole
+    /// design exists to avoid.
+    func testEveryEndpointFailingTogetherIsTreatedAsALocalBlip() async {
+        let probe = healthy()
+        let monitor = HealthMonitor(probe: probe)
+        _ = await monitor.check(endpoints())
+
+        probe.setAnswer("https://a.test", .failure(URLError(.cannotFindHost)))
+        probe.setAnswer("https://b.test", .failure(URLError(.cannotFindHost)))
+        let changes = await monitor.check(endpoints())
+
+        XCTAssertTrue(changes.isEmpty, "one broken network is not two dead services")
+        XCTAssertEqual(monitor.status(of: "a"), .ok(200, 0.1), "readings survive the blip")
+    }
+
+    /// But one service failing while its neighbour answers is a genuine outage.
+    func testASingleFailureAmongHealthyPeersStillAlerts() async {
+        let probe = healthy()
+        let monitor = HealthMonitor(probe: probe)
+        _ = await monitor.check(endpoints())
+
+        probe.setAnswer("https://a.test", .failure(URLError(.cannotFindHost)))
+        let changes = await monitor.check(endpoints())
+
+        XCTAssertEqual(changes.count, 1, "its peer answered, so this one really is down")
+        XCTAssertTrue(changes[0].body.contains("not responding"))
+    }
+
+    /// With one endpoint there's nothing to compare against — take it at face value
+    /// rather than silently never reporting a single-service outage.
+    func testLoneEndpointFailureIsStillReported() async {
+        let probe = FakeProbe(answers: ["https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.1))])
+        let monitor = HealthMonitor(probe: probe)
+        let only = [endpoints()[0]]
+        _ = await monitor.check(only)
+
+        probe.setAnswer("https://a.test", .failure(URLError(.cannotFindHost)))
+        let changes = await monitor.check(only)
+
+        XCTAssertEqual(changes.count, 1)
+    }
+}

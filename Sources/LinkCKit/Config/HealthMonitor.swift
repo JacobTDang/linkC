@@ -17,6 +17,21 @@ public enum HealthStatus: Equatable, Sendable {
         code >= 500 ? .degraded(code, latency) : .ok(code, latency)
     }
 
+    /// Failures that could equally be this machine's network or the service's: DNS,
+    /// timeouts, refused connections. Individually they're real outages — but when EVERY
+    /// watched service hits one in the same round, a captive portal, VPN flip, DNS
+    /// outage, or wake-from-sleep is far likelier than every provider dying at once.
+    static func isConnectivityFailure(_ error: Error) -> Bool {
+        if isLocalNetworkFailure(error) { return true }
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .cannotFindHost, .dnsLookupFailed, .timedOut, .cannotConnectToHost:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// True when the error means the probe never left this machine.
     static func isLocalNetworkFailure(_ error: Error) -> Bool {
         guard let urlError = error as? URLError else { return false }
@@ -85,12 +100,20 @@ public struct LiveEndpointProbe: EndpointProbe {
         // 30s to throw it away is waste. Verified live that Supabase's auth health answers
         // HEAD with the same 401 it gives GET. Servers that refuse the method get a GET.
         let head = try await send(url, method: "HEAD", timeout: timeout)
-        // Any non-success answer to HEAD is retried with GET rather than believed: servers
-        // reject the method with 400/403/405/501, and a misconfigured proxy can 5xx on
-        // HEAD while GET is perfectly healthy — that would report a false "answering 500".
-        guard head.statusCode >= 400 else { return head }
-        return try await send(url, method: "GET", timeout: timeout)
+        // Retry ONLY when the status says the METHOD was refused. Retrying every 4xx
+        // defeated the optimisation for the headline case (Supabase answers 401, so every
+        // probe made two requests) — and worse, a HEAD that proved the host is alive could
+        // be overwritten by a transient GET failure and reported as an outage.
+        guard Self.methodRejections.contains(head.statusCode) else { return head }
+        do {
+            return try await send(url, method: "GET", timeout: timeout)
+        } catch {
+            // HEAD already demonstrated the host answers; a flaky retry doesn't unprove it.
+            return head
+        }
     }
+
+    private static let methodRejections: Set<Int> = [400, 403, 405, 501]
 
     private func send(_ url: URL, method: String, timeout: TimeInterval) async throws -> ProbeResult {
         var request = URLRequest(url: url)
@@ -195,12 +218,16 @@ public final class HealthMonitor {
         defer { isChecking = false }
 
         let probe = self.probe
-        let results = await withTaskGroup(of: (String, HealthStatus?).self) { group in
+        let readings = await withTaskGroup(of: Reading.self) { group in
             for endpoint in endpoints {
                 group.addTask {
                     do {
                         let result = try await probe.probe(endpoint.url, timeout: timeout)
-                        return (endpoint.id, .classify(code: result.statusCode, latency: result.latency))
+                        return Reading(
+                            id: endpoint.id,
+                            status: .classify(code: result.statusCode, latency: result.latency),
+                            connectivityFailure: false
+                        )
                     } catch {
                         // A failure on OUR side (Wi-Fi off, laptop asleep, VPN flip) says
                         // nothing about the service. Calling it down would alert that
@@ -209,16 +236,34 @@ public final class HealthMonitor {
                         // means "no reading": the previous one stands, so a real outage
                         // arriving right after a blip is still announced against what we
                         // last actually knew.
-                        if HealthStatus.isLocalNetworkFailure(error) { return (endpoint.id, nil) }
-                        return (endpoint.id, .down(error.localizedDescription))
+                        let connectivity = HealthStatus.isConnectivityFailure(error)
+                        if HealthStatus.isLocalNetworkFailure(error) {
+                            return Reading(id: endpoint.id, status: nil, connectivityFailure: true)
+                        }
+                        return Reading(
+                            id: endpoint.id,
+                            status: .down(error.localizedDescription),
+                            connectivityFailure: connectivity
+                        )
                     }
                 }
             }
-            var collected: [String: HealthStatus] = [:]
-            for await (id, status) in group {
-                if let status { collected[id] = status }
-            }
+            var collected: [Reading] = []
+            for await reading in group { collected.append(reading) }
             return collected
+        }
+
+        // Every service unreachable at once says more about this machine than about every
+        // provider simultaneously. Discard the whole round rather than announce N
+        // outages and, a minute later, N recoveries. (With a single endpoint there is
+        // nothing to compare against, so it is taken at face value.)
+        if readings.count > 1, readings.allSatisfy(\.connectivityFailure) {
+            return []
+        }
+
+        var results: [String: HealthStatus] = [:]
+        for reading in readings {
+            if let status = reading.status { results[reading.id] = status }
         }
 
         let changes = HealthTransitions.changes(from: statuses, to: results, endpoints: endpoints)
@@ -226,6 +271,12 @@ public final class HealthMonitor {
         // the same as observed-as-down).
         statuses.merge(results) { _, new in new }
         return changes
+    }
+
+    private struct Reading: Sendable {
+        let id: String
+        let status: HealthStatus?
+        let connectivityFailure: Bool
     }
 
     /// Forget endpoints that are no longer watched, so a removed service can't leave a

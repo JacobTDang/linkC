@@ -105,10 +105,17 @@ public final class AppCoordinator {
         sweepOrphanedSettingsFiles()
         hookServer.requiredToken = hookToken
         notifications.onActivate = { [weak self] id in
-            // Health alerts carry no session to focus; activating the app is the whole
-            // interaction. Routing them through focusSession would silently match nothing.
-            guard !id.hasPrefix(Self.alertIdPrefix) else { return }
-            Task { @MainActor in self?.focusSession(id) }
+            Task { @MainActor in
+                // A health alert has no session to select — but clicking it must still
+                // bring linkC forward, which is the whole interaction. (An earlier guard
+                // returned here instead, so clicking a "not responding" banner did
+                // nothing at all.)
+                guard !id.hasPrefix(Self.alertIdPrefix) else {
+                    NSApp.activate(ignoringOtherApps: true)
+                    return
+                }
+                self?.focusSession(id)
+            }
         }
         // Funnel every hook event into the serial stream; a single consumer drains it in
         // arrival order (see `eventStream`). The server's callback just enqueues — no

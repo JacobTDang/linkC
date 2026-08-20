@@ -226,13 +226,18 @@ final class AppModel {
     private func checkHealth() {
         reloadConfiguredEndpoints()
         let endpoints = watchedEndpoints
-        // Prune before the empty check: emptying the watch list must clear stale readings
-        // rather than freeze them for the life of the process.
-        health.prune(to: endpoints)
-        guard !endpoints.isEmpty else { return }
+        // Emptying the watch list must clear stale readings rather than freeze them for
+        // the life of the process.
+        guard !endpoints.isEmpty else {
+            health.prune(to: [])
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             let changes = await self.health.check(endpoints)
+            // Prune AFTER the check: pruning first would let this round's results merge
+            // an endpoint back in that was removed while the probes were in flight.
+            self.health.prune(to: endpoints)
             for change in changes {
                 self.coordinator?.notify(
                     id: "health:\(change.endpointId)", title: change.title, body: change.body

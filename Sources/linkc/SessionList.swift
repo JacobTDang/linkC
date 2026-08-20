@@ -777,46 +777,58 @@ private struct CloudSection: View {
     var body: some View {
         let instances = model.cloudInstances
         let projects = model.supabaseProjects
+        let watched = model.configuredEndpoints
         let needsLogin = model.supabaseNeedsLogin
         let errors = model.cloudErrors
-        let watched = model.configuredEndpoints
-        if !instances.isEmpty || !projects.isEmpty || !watched.isEmpty
-            || needsLogin || !errors.isEmpty {
+        // Where a row came from is worth saying once per group rather than once per row —
+        // the rail can't spare the width. Headers appear only when more than one provider
+        // is present, the same rule the session buckets use: a lone group needs no label.
+        let groupCount = [!instances.isEmpty, !projects.isEmpty, !watched.isEmpty]
+            .count { $0 }
+        let showsProviders = groupCount > 1
+        if groupCount > 0 || needsLogin || !errors.isEmpty {
             VStack(spacing: 6) {
                 SectionHeader(title: "CLOUD")
                     .padding(.top, 6)
-                ForEach(instances) { instance in
-                    CloudRow(
-                        instance: instance,
-                        region: model.cloudRegion,
-                        detail: model.cloudDetail(instance.id),
-                        isExpanded: expandedId == instance.id,
-                        onTap: {
-                            if expandedId == instance.id {
-                                expandedId = nil
-                            } else {
-                                expandedId = instance.id
-                                model.loadCloudDetail(instance.id)
-                            }
-                        },
-                        onRefresh: { model.loadCloudDetail(instance.id, force: true) }
-                    )
+                if !instances.isEmpty {
+                    if showsProviders { ProviderHeader(title: "ORACLE") }
+                    ForEach(instances) { instance in
+                        CloudRow(
+                            instance: instance,
+                            region: model.cloudRegion,
+                            detail: model.cloudDetail(instance.id),
+                            isExpanded: expandedId == instance.id,
+                            onTap: {
+                                if expandedId == instance.id {
+                                    expandedId = nil
+                                } else {
+                                    expandedId = instance.id
+                                    model.loadCloudDetail(instance.id)
+                                }
+                            },
+                            onRefresh: { model.loadCloudDetail(instance.id, force: true) }
+                        )
+                    }
                 }
-                ForEach(projects) { project in
-                    SupabaseRow(
-                        project: project,
-                        health: model.supabaseHealth(project),
-                        isExpanded: expandedId == project.id,
-                        onTap: { expandedId = expandedId == project.id ? nil : project.id }
-                    )
+                if !projects.isEmpty {
+                    if showsProviders { ProviderHeader(title: "SUPABASE") }
+                    ForEach(projects) { project in
+                        SupabaseRow(
+                            project: project,
+                            health: model.supabaseHealth(project),
+                            isExpanded: expandedId == project.id,
+                            onTap: { expandedId = expandedId == project.id ? nil : project.id }
+                        )
+                    }
                 }
-                // Services the user named in endpoints.json — the ones linkC can't
-                // discover, like a web app behind a domain on a compute instance.
-                ForEach(watched) { endpoint in
-                    WatchedServiceRow(
-                        endpoint: endpoint,
-                        health: model.serviceHealth(endpoint.id)
-                    )
+                if !watched.isEmpty {
+                    if showsProviders { ProviderHeader(title: "WATCHED") }
+                    ForEach(watched) { endpoint in
+                        WatchedServiceRow(
+                            endpoint: endpoint,
+                            health: model.serviceHealth(endpoint.id)
+                        )
+                    }
                 }
                 // Fail loud: an unauthenticated CLI or a failing listing must not render
                 // as a silently empty section.
@@ -852,6 +864,24 @@ private struct CloudNoticeRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
+    }
+}
+
+/// A provider label inside CLOUD — deliberately quieter and smaller than `SectionHeader`
+/// so the section title still reads as the parent of these groups.
+private struct ProviderHeader: View {
+    let title: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(0.8)
+                .foregroundStyle(Theme.textTertiary.opacity(0.75))
+            Spacer()
+        }
+        .padding(.leading, 10)
+        .padding(.top, 2)
     }
 }
 
