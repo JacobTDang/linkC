@@ -80,10 +80,13 @@ public final class OracleService {
     /// Drill-in results, cached per instance for the panel session — expanding a row
     /// twice reuses what's here rather than re-hitting a rate-limited API.
     public private(set) var details: [String: OracleDetail] = [:]
+    private var inFlightDetails: Set<String> = []
 
     public let ociPath: String?
     /// The DEFAULT profile's region, for the rows' trailing label.
     public let region: String?
+    /// The DEFAULT profile's tenancy OCID — the monitoring API requires a compartment.
+    private let tenancy: String?
     private let hasConfig: Bool
     private let runner: ProcessRunner
 
@@ -97,17 +100,19 @@ public final class OracleService {
         self.init(
             ociPath: path,
             hasConfig: config != nil,
-            region: config.flatMap { OCIConfig.defaultProfileValue("region", from: $0) }
+            region: config.flatMap { OCIConfig.defaultProfileValue("region", from: $0) },
+            tenancy: config.flatMap { OCIConfig.defaultProfileValue("tenancy", from: $0) }
         )
     }
 
     public init(
-        ociPath: String?, hasConfig: Bool, region: String?,
+        ociPath: String?, hasConfig: Bool, region: String?, tenancy: String? = nil,
         runner: ProcessRunner = LiveProcessRunner()
     ) {
         self.ociPath = ociPath
         self.hasConfig = hasConfig
         self.region = region
+        self.tenancy = tenancy
         self.runner = runner
     }
 
@@ -124,12 +129,13 @@ public final class OracleService {
                     "search", "resource", "structured-search",
                     "--query-text", OracleInstances.searchText,
                     "--query", OracleInstances.cliQuery,
-                    "--output", "json", "--all",
+                    "--output", "json",
                 ],
                 cwd: nil, timeout: Self.listTimeout
             )
             if let parsed = OracleInstances.parse(output) {
                 instances = parsed
+                pruneDetails()
                 lastError = nil
             } else {
                 lastError = "oci returned unparseable output (kept the last listing)"
@@ -143,27 +149,78 @@ public final class OracleService {
     public func detail(for id: String) -> OracleDetail? { details[id] }
 
     /// Fetch one instance's drill-in: public IP and latest CPU mean. On-demand only —
-    /// never on the polling path. Fields degrade independently, and a total failure
-    /// still records an (empty) detail so the row renders "—" instead of a spinner.
-    public func loadDetail(for id: String) async {
-        guard let ociPath else { return }
-        async let vnics = try? runner.run(
-            ociPath,
-            args: ["compute", "instance", "list-vnics", "--instance-id", id,
-                   "--query", OracleVnics.cliQuery, "--output", "json"],
-            cwd: nil, timeout: Self.listTimeout
-        )
-        async let metrics = try? runner.run(
-            ociPath,
-            args: ["monitoring", "metric-data", "summarize-metrics-data",
-                   "--namespace", "oci_computeagent",
-                   "--query-text", OracleMetrics.queryText,
-                   "--query", OracleMetrics.cliQuery, "--output", "json"],
-            cwd: nil, timeout: Self.listTimeout
-        )
-        let ip = await vnics.flatMap(OracleVnics.publicIP)
-        let cpu = await metrics.flatMap { OracleMetrics.latestCpuByInstance($0)[id] }
-        details[id] = OracleDetail(publicIP: ip, cpuPercent: cpu)
+    /// never on the polling path. `force` is the row's refresh action; without it a cached
+    /// detail is reused (the API is rate-limited and these figures move slowly).
+    /// The metrics call is tenancy-wide, so its whole map is stored — expanding a second
+    /// row reuses it instead of issuing an identical call.
+    public func loadDetail(for id: String, force: Bool = false) async {
+        guard let ociPath, hasConfig else { return }
+        guard force || details[id] == nil else { return }
+        guard !inFlightDetails.contains(id) else { return }   // no last-writer-wins races
+        inFlightDetails.insert(id)
+        defer { inFlightDetails.remove(id) }
+
+        let runner = self.runner
+        let tenancy = self.tenancy
+        // Both calls run concurrently; each reports its own failure so one hiccup can't
+        // hide the other's answer.
+        async let vnicsOutput: String? = {
+            do {
+                return try await runner.run(
+                    ociPath,
+                    args: ["compute", "instance", "list-vnics", "--instance-id", id,
+                           "--query", OracleVnics.cliQuery, "--output", "json"],
+                    cwd: nil, timeout: Self.listTimeout
+                )
+            } catch {
+                return nil
+            }
+        }()
+        async let metricsOutput: String? = {
+            guard let tenancy else { return nil }
+            do {
+                return try await runner.run(
+                    ociPath,
+                    args: ["monitoring", "metric-data", "summarize-metrics-data",
+                           "--compartment-id", tenancy,
+                           "--compartment-id-in-subtree", "true",
+                           "--namespace", "oci_computeagent",
+                           "--query-text", OracleMetrics.queryText,
+                           "--query", OracleMetrics.cliQuery, "--output", "json"],
+                    cwd: nil, timeout: Self.listTimeout
+                )
+            } catch {
+                return nil
+            }
+        }()
+
+        var failures: [String] = []
+        let ip = await vnicsOutput.flatMap(OracleVnics.publicIP)
+        if await vnicsOutput == nil { failures.append("IP unavailable") }
+
+        var cpuByInstance: [String: Double] = [:]
+        if let output = await metricsOutput {
+            cpuByInstance = OracleMetrics.latestCpuByInstance(output)
+        } else {
+            failures.append(tenancy == nil ? "CPU: no tenancy in ~/.oci/config" : "CPU unavailable")
+        }
+
+        // One tenancy-wide metrics call serves every row — keep the whole map, not just
+        // this instance's slice.
+        for (instanceId, cpu) in cpuByInstance where instanceId != id {
+            let existing = details[instanceId]
+            details[instanceId] = OracleDetail(publicIP: existing?.publicIP, cpuPercent: cpu)
+        }
+        details[id] = OracleDetail(publicIP: ip, cpuPercent: cpuByInstance[id])
+        // Fail loud: a swallowed drill-in error is indistinguishable from "no public IP".
+        lastError = failures.isEmpty ? nil : "Couldn't load details — \(failures.joined(separator: "; "))"
+    }
+
+    /// Drop cached drill-ins for instances that are no longer listed — a stopped-and-
+    /// restarted box must not keep showing its old IP.
+    private func pruneDetails() {
+        let live = Set(instances.map(\.id))
+        details = details.filter { live.contains($0.key) }
     }
 
     private static let listTimeout: TimeInterval = 30

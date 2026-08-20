@@ -91,8 +91,10 @@ final class OracleServiceTests: XCTestCase {
             ["search", "resource", "structured-search",
              "--query-text", OracleInstances.searchText,
              "--query", OracleInstances.cliQuery,
-             "--output", "json", "--all"],
-            "tenancy-wide search (child compartments included), paged with --all"
+             "--output", "json"],
+            // structured-search spans every compartment by nature and has NO --all option
+            // (the CLI exits 2 on it) — verified against the live oci CLI.
+            "tenancy-wide search, child compartments included"
         )
     }
 
