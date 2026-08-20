@@ -222,9 +222,17 @@ final class AppModel {
     var endpointsConfigPath: String? { watchedEndpointsStore?.path }
     /// Create the file on demand so "reveal" in Settings always lands somewhere real.
     func revealEndpointsConfig() -> String? {
-        let path = watchedEndpointsStore?.ensureExists()
-        reloadConfiguredEndpoints()
-        return path
+        guard let store = watchedEndpointsStore else { return nil }
+        do {
+            let path = try store.ensureExists()
+            reloadConfiguredEndpoints()
+            lastError = nil
+            return path
+        } catch {
+            // Fail loud rather than send Finder to a path that was never written.
+            lastError = "Couldn't create endpoints.json: \(error.localizedDescription)"
+            return nil
+        }
     }
 
     /// The background health beat. Runs for the app's lifetime, not the panel's.
@@ -239,6 +247,13 @@ final class AppModel {
     /// Probe the watched services and announce anything that CHANGED.
     private func checkHealth() {
         reloadConfiguredEndpoints()
+        // The Supabase half of the watch list comes from the project listing, which the
+        // panel-gated refresh populates. With the panel closed that list is empty, so the
+        // background beat would check nothing at all — exactly the outage window this
+        // timer exists to cover. Refresh it here, then probe on the next beat.
+        if let supabase, supabase.cliPath != nil, supabase.projects.isEmpty {
+            Task { await supabase.refresh() }
+        }
         let endpoints = watchedEndpoints
         // Emptying the watch list must clear stale readings rather than freeze them for
         // the life of the process.
@@ -248,10 +263,8 @@ final class AppModel {
         }
         Task { [weak self] in
             guard let self else { return }
+            // check() prunes internally, against the list it actually probed.
             let changes = await self.health.check(endpoints)
-            // Prune AFTER the check: pruning first would let this round's results merge
-            // an endpoint back in that was removed while the probes were in flight.
-            self.health.prune(to: endpoints)
             for change in changes {
                 self.coordinator?.notify(
                     id: "health:\(change.endpointId)", title: change.title, body: change.body

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 
 /// What one probe learned. A service that ANSWERS is alive — even a 401: verified against
@@ -87,6 +88,36 @@ public struct ProbeResult: Equatable, Sendable {
     }
 }
 
+/// Does this machine have a working network path at all? The honest answer to "is the
+/// service down, or am I?" — inferring it from "every probe failed" cannot tell a dead
+/// Wi-Fi from the one host that happens to run every watched service.
+public protocol NetworkReachability: Sendable {
+    var isOnline: Bool { get }
+}
+
+public final class LiveNetworkReachability: NetworkReachability, @unchecked Sendable {
+    private let monitor = NWPathMonitor()
+    private let lock = NSLock()
+    private var online = true   // optimistic until the monitor says otherwise
+
+    public init() {
+        monitor.pathUpdateHandler = { [self] path in
+            lock.lock()
+            online = path.status == .satisfied
+            lock.unlock()
+        }
+        monitor.start(queue: DispatchQueue(label: "linkc.reachability"))
+    }
+
+    deinit { monitor.cancel() }
+
+    public var isOnline: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return online
+    }
+}
+
 /// The seam every health check goes through — faked in tests, URLSession in the app.
 public protocol EndpointProbe: Sendable {
     func probe(_ url: URL, timeout: TimeInterval) async throws -> ProbeResult
@@ -113,7 +144,11 @@ public struct LiveEndpointProbe: EndpointProbe {
         }
     }
 
-    private static let methodRejections: Set<Int> = [400, 403, 405, 501]
+    /// 405 Method Not Allowed and 501 Not Implemented are the ONLY codes that mean the
+    /// method was refused. 400/403 are answers about the request or its auth — retrying
+    /// those defeated the optimisation and let a worse GET status replace a HEAD that had
+    /// already proven the host answers.
+    private static let methodRejections: Set<Int> = [405, 501]
 
     private func send(_ url: URL, method: String, timeout: TimeInterval) async throws -> ProbeResult {
         var request = URLRequest(url: url)
@@ -201,10 +236,15 @@ public final class HealthMonitor {
     public private(set) var statuses: [String: HealthStatus] = [:]
 
     private let probe: EndpointProbe
+    private let reachability: NetworkReachability
     private var isChecking = false
 
-    public init(probe: EndpointProbe = LiveEndpointProbe()) {
+    public init(
+        probe: EndpointProbe = LiveEndpointProbe(),
+        reachability: NetworkReachability = LiveNetworkReachability()
+    ) {
         self.probe = probe
+        self.reachability = reachability
     }
 
     public func status(of id: String) -> HealthStatus? { statuses[id] }
@@ -253,11 +293,11 @@ public final class HealthMonitor {
             return collected
         }
 
-        // Every service unreachable at once says more about this machine than about every
-        // provider simultaneously. Discard the whole round rather than announce N
-        // outages and, a minute later, N recoveries. (With a single endpoint there is
-        // nothing to compare against, so it is taken at face value.)
-        if readings.count > 1, readings.allSatisfy(\.connectivityFailure) {
+        // If this machine had no network path, the round says nothing about the services.
+        // This asks the OS rather than inferring it from "everything failed" — that guess
+        // could not tell a dead Wi-Fi from the one host running every watched service, and
+        // would have suppressed such an outage forever.
+        if !reachability.isOnline, readings.contains(where: \.connectivityFailure) {
             return []
         }
 
@@ -268,8 +308,12 @@ public final class HealthMonitor {
 
         let changes = HealthTransitions.changes(from: statuses, to: results, endpoints: endpoints)
         // Keep readings for endpoints that weren't in this round (nothing observed is not
-        // the same as observed-as-down).
+        // the same as observed-as-down), then drop anything no longer watched. Pruning
+        // here — inside the round that actually ran — means a re-entrant call dropped by
+        // the guard above can't prune against its own stale list.
         statuses.merge(results) { _, new in new }
+        let live = Set(endpoints.map(\.id))
+        statuses = statuses.filter { live.contains($0.key) }
         return changes
     }
 

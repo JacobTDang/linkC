@@ -56,17 +56,15 @@ public struct WatchedEndpointsStore {
     /// reveal and the user has a file to edit. Writes `[]` rather than a placeholder
     /// entry: a template URL would be probed, fail, and notify about a service that was
     /// never real.
+    /// Nil when the file could not be created — "reveal" must not open Finder on a path
+    /// that doesn't exist and leave the user believing it does.
     @discardableResult
-    public func ensureExists() -> String {
+    public func ensureExists() throws -> String {
         if !FileManager.default.fileExists(atPath: fileURL.path) {
-            do {
-                try FileManager.default.createDirectory(
-                    at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
-                )
-                try Data("[]\n".utf8).write(to: fileURL, options: .atomic)
-            } catch {
-                NSLog("linkC: couldn't create %@: %@", fileURL.path, error.localizedDescription)
-            }
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try Data("[]\n".utf8).write(to: fileURL, options: .atomic)
         }
         return fileURL.path
     }

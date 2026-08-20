@@ -101,14 +101,14 @@ final class WatchedEndpointsStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = WatchedEndpointsStore(directory: dir)
 
-        let path = store.ensureExists()
+        let path = try store.ensureExists()
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: path))
         XCTAssertTrue(store.load().isEmpty, "a seeded file watches nothing")
 
         // Idempotent: it must not clobber a list the user already filled in.
         try write(#"[{"label": "mine", "url": "https://mine.example.com"}]"#, to: dir)
-        store.ensureExists()
+        _ = try store.ensureExists()
         XCTAssertEqual(store.load().map(\.label), ["mine"])
     }
 }

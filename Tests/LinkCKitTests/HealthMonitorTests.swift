@@ -129,7 +129,7 @@ final class HealthMonitorTests: XCTestCase {
             "https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.12)),
             "https://b.test": .success(ProbeResult(statusCode: 401, latency: 0.22)),
         ])
-        let monitor = HealthMonitor(probe: probe)
+        let monitor = HealthMonitor(probe: probe, reachability: FakeReachability(online: true))
 
         let changes = await monitor.check(endpoints())
 
@@ -145,7 +145,7 @@ final class HealthMonitorTests: XCTestCase {
             "https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.12)),
             "https://b.test": .success(ProbeResult(statusCode: 200, latency: 0.12)),
         ])
-        let monitor = HealthMonitor(probe: probe)
+        let monitor = HealthMonitor(probe: probe, reachability: FakeReachability(online: true))
         _ = await monitor.check(endpoints())
         XCTAssertNotNil(monitor.status(of: "a"))
 
@@ -159,7 +159,7 @@ final class HealthMonitorTests: XCTestCase {
             "https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.12)),
             "https://b.test": .success(ProbeResult(statusCode: 200, latency: 0.12)),
         ])
-        let monitor = HealthMonitor(probe: probe)
+        let monitor = HealthMonitor(probe: probe, reachability: FakeReachability(online: true))
         _ = await monitor.check(endpoints())
 
         probe.setAnswer("https://a.test", .failure(URLError(.cannotConnectToHost)))
@@ -202,7 +202,7 @@ final class HealthLocalFailureTests: XCTestCase {
 
     func testLocalFailureIsNotAnOutage() async {
         let probe = FakeProbe(answers: ["https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.1))])
-        let monitor = HealthMonitor(probe: probe)
+        let monitor = HealthMonitor(probe: probe, reachability: FakeReachability(online: true))
         _ = await monitor.check([endpoint])
 
         probe.setAnswer("https://a.test", .failure(URLError(.notConnectedToInternet)))
@@ -217,7 +217,7 @@ final class HealthLocalFailureTests: XCTestCase {
     /// still be announced, measured against the last reading we actually trust.
     func testOutageAfterABlipIsStillAnnounced() async {
         let probe = FakeProbe(answers: ["https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.1))])
-        let monitor = HealthMonitor(probe: probe)
+        let monitor = HealthMonitor(probe: probe, reachability: FakeReachability(online: true))
         _ = await monitor.check([endpoint])
 
         probe.setAnswer("https://a.test", .failure(URLError(.networkConnectionLost)))
@@ -240,9 +240,11 @@ final class HealthLocalFailureTests: XCTestCase {
     }
 }
 
-/// A whole round failing to connect is this machine's problem, not every provider's.
+/// "Is the service down, or am I?" is answered by asking the OS for a network path —
+/// never by inferring it from "everything failed at once", which cannot tell a dead Wi-Fi
+/// from the single host that runs every watched service.
 @MainActor
-final class HealthWholeRoundFailureTests: XCTestCase {
+final class HealthReachabilityTests: XCTestCase {
 
     private func endpoints() -> [WatchedEndpoint] {
         [
@@ -258,46 +260,57 @@ final class HealthWholeRoundFailureTests: XCTestCase {
         ])
     }
 
-    /// A captive portal or DNS outage makes every endpoint fail with cannotFindHost at
-    /// once — announcing N outages and then N recoveries is the alarm fatigue this whole
-    /// design exists to avoid.
-    func testEveryEndpointFailingTogetherIsTreatedAsALocalBlip() async {
+    func testOfflineMachineReportsNoOutages() async {
         let probe = healthy()
-        let monitor = HealthMonitor(probe: probe)
+        let network = FakeReachability(online: true)
+        let monitor = HealthMonitor(probe: probe, reachability: network)
         _ = await monitor.check(endpoints())
 
+        network.online = false
         probe.setAnswer("https://a.test", .failure(URLError(.cannotFindHost)))
-        probe.setAnswer("https://b.test", .failure(URLError(.cannotFindHost)))
+        probe.setAnswer("https://b.test", .failure(URLError(.timedOut)))
         let changes = await monitor.check(endpoints())
 
-        XCTAssertTrue(changes.isEmpty, "one broken network is not two dead services")
-        XCTAssertEqual(monitor.status(of: "a"), .ok(200, 0.1), "readings survive the blip")
+        XCTAssertTrue(changes.isEmpty, "no network path means no verdict about the services")
+        XCTAssertEqual(monitor.status(of: "a"), .ok(200, 0.1), "the last real reading stands")
     }
 
-    /// But one service failing while its neighbour answers is a genuine outage.
-    func testASingleFailureAmongHealthyPeersStillAlerts() async {
+    /// The case the old unanimity heuristic got catastrophically wrong: every watched
+    /// service lives on one host, the host dies, the machine is fine. That MUST alert.
+    func testOnlineMachineReportsEveryServiceOnADeadHost() async {
         let probe = healthy()
-        let monitor = HealthMonitor(probe: probe)
+        let network = FakeReachability(online: true)
+        let monitor = HealthMonitor(probe: probe, reachability: network)
         _ = await monitor.check(endpoints())
 
-        probe.setAnswer("https://a.test", .failure(URLError(.cannotFindHost)))
+        probe.setAnswer("https://a.test", .failure(URLError(.cannotConnectToHost)))
+        probe.setAnswer("https://b.test", .failure(URLError(.cannotConnectToHost)))
         let changes = await monitor.check(endpoints())
 
-        XCTAssertEqual(changes.count, 1, "its peer answered, so this one really is down")
-        XCTAssertTrue(changes[0].body.contains("not responding"))
+        XCTAssertEqual(changes.count, 2, "the network is up, so both really are down")
     }
 
-    /// With one endpoint there's nothing to compare against — take it at face value
-    /// rather than silently never reporting a single-service outage.
-    func testLoneEndpointFailureIsStillReported() async {
-        let probe = FakeProbe(answers: ["https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.1))])
-        let monitor = HealthMonitor(probe: probe)
-        let only = [endpoints()[0]]
-        _ = await monitor.check(only)
+    /// Pruning belongs to the round that actually probed — a re-entrant call dropped by
+    /// the guard must not prune against its own list.
+    func testCheckPrunesWhatItProbed() async {
+        let probe = healthy()
+        let monitor = HealthMonitor(probe: probe, reachability: FakeReachability(online: true))
+        _ = await monitor.check(endpoints())
+        XCTAssertNotNil(monitor.status(of: "b"))
 
-        probe.setAnswer("https://a.test", .failure(URLError(.cannotFindHost)))
-        let changes = await monitor.check(only)
-
-        XCTAssertEqual(changes.count, 1)
+        _ = await monitor.check([endpoints()[0]])
+        XCTAssertNil(monitor.status(of: "b"), "an unwatched endpoint's reading is dropped")
+        XCTAssertNotNil(monitor.status(of: "a"))
     }
+}
+
+final class FakeReachability: NetworkReachability, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _online: Bool
+    init(online: Bool) { _online = online }
+    var online: Bool {
+        get { lock.withLock { _online } }
+        set { lock.withLock { _online = newValue } }
+    }
+    var isOnline: Bool { online }
 }
