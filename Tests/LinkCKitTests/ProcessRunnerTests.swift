@@ -124,17 +124,32 @@ final class ProcessRunnerBackpressureTests: XCTestCase {
         XCTAssertEqual(output.count, 200000, "a large stdout must not be truncated or stall")
     }
 
-    func testLargeStderrOnFailureStillReportsTheReason() async {
+    /// CLIs put banners first and the real reason last, so the cap must keep the TAIL.
+    /// Capping the head would drop exactly the line that makes a failure actionable —
+    /// which is how login detection would silently stop working on a chatty CLI.
+    func testLargeStderrOnFailureKeepsTheLastLineNotTheFirst() async {
         let runner = LiveProcessRunner()
+        // The reason is written by a script FILE, so the command echoed in the error
+        // can't contain the phrase — otherwise the assertion passes on the echo rather
+        // than on captured stderr.
+        let script = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-cap-\(UUID().uuidString).sh")
+        try? """
+        yes 'noise' | head -c 100000 >&2
+        printf 'AUTH_REQUIRED_MARKER\\n' >&2
+        exit 1
+        """.write(to: script, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: script) }
+
         do {
-            _ = try await runner.run(
-                "/bin/sh",
-                args: ["-c", "yes 'noise' | head -c 100000 >&2; echo 'Access token not provided' >&2; exit 1"],
-                cwd: nil, timeout: 20
-            )
+            _ = try await runner.run("/bin/sh", args: [script.path], cwd: nil, timeout: 20)
             XCTFail("a nonzero exit must throw")
         } catch {
-            XCTAssertTrue(error.localizedDescription.contains("noise"), "the capped detail survives")
+            let message = error.localizedDescription
+            XCTAssertTrue(
+                message.contains("AUTH_REQUIRED_MARKER"),
+                "the actionable LAST line must survive the cap (head-capping drops it): \(message.prefix(200))"
+            )
         }
     }
 }

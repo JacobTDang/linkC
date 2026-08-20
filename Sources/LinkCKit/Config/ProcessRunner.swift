@@ -25,10 +25,14 @@ public struct LiveProcessRunner: ProcessRunner {
     private static let stderrCap = 4096
 
     /// The actionable part of stderr. CLIs prepend advisory banners (the `oci` key-
-    /// permissions warning fires on every call) that would otherwise bury the real reason
-    /// a command failed.
+    /// permissions warning fires on every call) and put the real reason LAST, so the cap
+    /// keeps the tail — capping the head would drop exactly the line worth reading.
     static func meaningfulStderr(_ data: Data) -> String {
-        let text = String(data: data.prefix(stderrCap), encoding: .utf8) ?? ""
+        // Decode the tail; a multi-byte character split by the cut is dropped by the
+        // lossy conversion rather than failing the whole decode.
+        let tail = data.suffix(stderrCap)
+        let text = String(data: tail, encoding: .utf8)
+            ?? String(decoding: tail, as: UTF8.self)
         let lines = text
             .split(separator: "\n", omittingEmptySubsequences: true)
             .map { $0.trimmingCharacters(in: .whitespaces) }
