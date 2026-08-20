@@ -176,6 +176,15 @@ final class AppModel {
     var cloudInstances: [OracleInstance] { oracle?.instances ?? [] }
     var cloudRegion: String? { oracle?.region }
 
+    /// A cloud instance's drill-in (IP, CPU), once its row has been expanded.
+    func cloudDetail(_ id: String) -> OracleDetail? { oracle?.detail(for: id) }
+
+    /// Fetch a drill-in on expand — never on the poll path.
+    func loadCloudDetail(_ id: String) {
+        guard let oracle else { return }
+        Task { await oracle.loadDetail(for: id) }
+    }
+
     /// Cloud calls are slow and rate-limited — refresh on panel open + every ~120s,
     /// never the local 15s loop.
     private func refreshCloud() {
