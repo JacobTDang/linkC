@@ -63,6 +63,22 @@ struct SettingsScreen: View {
                         .controlSize(.mini)
                         .labelsHidden()
                     }
+
+                    SectionHeader(title: "WATCHED SERVICES").padding(.top, 6)
+                    SettingRow(
+                        title: "Health checks",
+                        detail: "Supabase projects are checked automatically. Add anything "
+                            + "else — a web app behind a domain — to endpoints.json as "
+                            + #"[{"label": "…", "url": "https://…"}]."#
+                    ) {
+                        QuietLink("reveal", size: 11) {
+                            if let path = model.revealEndpointsConfig() {
+                                NSWorkspace.shared.activateFileViewerSelecting(
+                                    [URL(fileURLWithPath: path)]
+                                )
+                            }
+                        }
+                    }
                 }
                 .readingColumn()
                 .padding(.horizontal, 12)

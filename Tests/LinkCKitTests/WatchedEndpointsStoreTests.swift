@@ -1,0 +1,78 @@
+import XCTest
+@testable import LinkCKit
+
+/// The user-supplied watch list: usable entries load, unusable ones are skipped rather
+/// than turned into probes, and a missing or corrupt file is simply "nothing to watch".
+final class WatchedEndpointsStoreTests: XCTestCase {
+
+    private func tempDir() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-endpoints-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    private func write(_ json: String, to dir: URL) throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(json.utf8).write(to: dir.appendingPathComponent("endpoints.json"))
+    }
+
+    func testLoadsUsableEntries() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try write("""
+        [{"label": "mp3 server", "url": "https://music.example.com/health"},
+         {"label": "api", "url": "http://10.0.0.5:8080/healthz"}]
+        """, to: dir)
+
+        let endpoints = WatchedEndpointsStore(directory: dir).load()
+        XCTAssertEqual(endpoints.map(\.label), ["mp3 server", "api"])
+        XCTAssertEqual(endpoints[0].url.absoluteString, "https://music.example.com/health")
+        XCTAssertEqual(Set(endpoints.map(\.id)).count, 2, "ids are distinct per URL")
+    }
+
+    /// A health check must stay a network probe: a file:// or other scheme in the config
+    /// would turn "monitoring" into reading local files.
+    func testRejectsNonHTTPSchemesAndIncompleteEntries() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try write("""
+        [{"label": "sneaky", "url": "file:///etc/passwd"},
+         {"label": "ftp", "url": "ftp://example.com/x"},
+         {"label": "", "url": "https://example.com"},
+         {"label": "no url"},
+         {"label": "hostless", "url": "https:///nothing"},
+         {"label": "good", "url": "https://ok.example.com"}]
+        """, to: dir)
+
+        let endpoints = WatchedEndpointsStore(directory: dir).load()
+        XCTAssertEqual(endpoints.map(\.label), ["good"],
+                       "only a complete http(s) entry with a host is watchable")
+    }
+
+    func testMissingAndCorruptAreEmptyNotFatal() throws {
+        XCTAssertTrue(WatchedEndpointsStore(directory: tempDir()).load().isEmpty)
+
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try write("not json at all", to: dir)
+        XCTAssertTrue(WatchedEndpointsStore(directory: dir).load().isEmpty)
+    }
+
+    /// "reveal" in Settings has to land on a real file — and the seed must be an empty
+    /// list, never a placeholder entry that would be probed and alert about a service
+    /// that never existed.
+    func testEnsureExistsSeedsAnEmptyList() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = WatchedEndpointsStore(directory: dir)
+
+        let path = store.ensureExists()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        XCTAssertTrue(store.load().isEmpty, "a seeded file watches nothing")
+
+        // Idempotent: it must not clobber a list the user already filled in.
+        try write(#"[{"label": "mine", "url": "https://mine.example.com"}]"#, to: dir)
+        store.ensureExists()
+        XCTAssertEqual(store.load().map(\.label), ["mine"])
+    }
+}

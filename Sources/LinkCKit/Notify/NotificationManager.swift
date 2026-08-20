@@ -141,6 +141,13 @@ public final class NotificationManager {
         sink.deliver(id: session.id, title: "linkC", body: body)
     }
 
+    /// Post an alert that isn't about a session (a watched service changing state). No
+    /// dedupe here on purpose: the caller only reports genuine CHANGES, so coalescing
+    /// would swallow a real down→up→down flap.
+    public func postAlert(id: String, title: String, body: String) {
+        sink.deliver(id: id, title: title, body: body)
+    }
+
     /// Drop a session's dedupe entry. Called when a session is removed/ended so the
     /// `lastDelivery` map doesn't grow unbounded over the app's lifetime.
     public func forget(_ id: String) {

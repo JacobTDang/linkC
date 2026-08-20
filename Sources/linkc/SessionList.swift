@@ -801,7 +801,20 @@ private struct CloudSection: View {
                     )
                 }
                 ForEach(projects) { project in
-                    SupabaseRow(project: project)
+                    SupabaseRow(
+                        project: project,
+                        health: model.supabaseHealth(project),
+                        isExpanded: expandedId == project.id,
+                        onTap: { expandedId = expandedId == project.id ? nil : project.id }
+                    )
+                }
+                // Services the user named in endpoints.json — the ones linkC can't
+                // discover, like a web app behind a domain on a compute instance.
+                ForEach(model.configuredEndpoints) { endpoint in
+                    WatchedServiceRow(
+                        endpoint: endpoint,
+                        health: model.serviceHealth(endpoint.id)
+                    )
                 }
                 // Fail loud: an unauthenticated CLI or a failing listing must not render
                 // as a silently empty section.
@@ -842,46 +855,163 @@ private struct CloudNoticeRow: View {
 
 /// One Supabase project: a steady dot (paused projects dim and say so — Supabase stops
 /// serving a paused project until it's restored, which is the state worth noticing), the
-/// name, and its region. Tapping opens that project's dashboard.
+/// name, its live round-trip, and its region. Expands like the Oracle rows.
 private struct SupabaseRow: View {
     let project: SupabaseProject
+    let health: HealthStatus?
+    let isExpanded: Bool
+    let onTap: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(spacing: 0) {
+            CompactRowShell(
+                title: project.name,
+                titleColor: project.isHealthy ? Theme.textPrimary : Theme.textSecondary,
+                dimmed: project.isPaused,
+                help: project.isPaused
+                    ? "\(project.name) is paused — expand to restore it"
+                    : (isExpanded ? "Collapse" : "Show details"),
+                onTap: onTap
+            ) {
+                InfraDot(color: dotColor)
+            } trailing: { _ in
+                if project.isPaused {
+                    Text("paused")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.contextWarn)
+                        .fixedSize()
+                } else if !project.isHealthy {
+                    Text(project.status.lowercased().replacingOccurrences(of: "_", with: " "))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize()
+                } else if let health, health != .unknown {
+                    Text(health.shortLabel)
+                        .font(.system(size: 10, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(health.isUp ? Theme.textTertiary : Theme.statusError)
+                        .fixedSize()
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .rotationEffect(.degrees(isExpanded ? 0 : -90))
+            }
+            if isExpanded {
+                SupabaseDetailPanel(project: project, health: health)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(reduceMotion ? nil : Theme.sectionSpring, value: isExpanded)
+    }
+
+    /// A project that reports healthy but isn't answering gets the error colour — the
+    /// control plane's opinion loses to an actual probe.
+    private var dotColor: Color {
+        if let health, health != .unknown, !health.isUp { return Theme.statusError }
+        return project.isHealthy ? Theme.textSecondary : Theme.textTertiary
+    }
+}
+
+/// The Supabase drill-in: how long it has existed, what it runs, and whether it is
+/// actually answering right now.
+private struct SupabaseDetailPanel: View {
+    let project: SupabaseProject
+    let health: HealthStatus?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(detailLine)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text(healthLine)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(healthColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                QuietLink("dashboard", size: 10) {
+                    let encoded = project.id.addingPercentEncoding(
+                        withAllowedCharacters: .urlPathAllowed
+                    ) ?? project.id
+                    if let url = URL(string: "https://supabase.com/dashboard/project/\(encoded)") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 2)
+        .padding(.bottom, 8)
+    }
+
+    /// "up 5w · pg17 · ca-central-1" — each part dropped when unknown.
+    private var detailLine: String {
+        var parts: [String] = []
+        if let created = project.createdAt {
+            parts.append("up \(AgeFormat.longSpan(from: created))")
+        }
+        if let version = project.postgresVersion { parts.append("pg\(version)") }
+        if !project.region.isEmpty { parts.append(project.region) }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+    }
+
+    /// The probe's verdict in words — the row's number without the guesswork.
+    private var healthLine: String {
+        guard !project.isPaused else { return "paused — restore it from the dashboard" }
+        switch health {
+        case .ok(let code, let latency)?:
+            return "answering \(code) in \(Int((latency * 1000).rounded()))ms"
+        case .degraded(let code, _)?:
+            return "answering \(code) — server error"
+        case .down(let reason)?:
+            return "not responding · \(reason)"
+        case .unknown?, nil:
+            return "checking…"
+        }
+    }
+
+    private var healthColor: Color {
+        switch health {
+        case .degraded?, .down?: return Theme.statusError
+        default: return Theme.textTertiary
+        }
+    }
+}
+
+/// A service named in endpoints.json — something linkC can't discover on its own, like a
+/// web app behind a domain. The row IS its health: there's nothing else to say about it.
+private struct WatchedServiceRow: View {
+    let endpoint: WatchedEndpoint
+    let health: HealthStatus?
 
     var body: some View {
         CompactRowShell(
-            title: project.name,
-            titleColor: project.isHealthy ? Theme.textPrimary : Theme.textSecondary,
-            dimmed: project.isPaused,
-            help: project.isPaused ? "\(project.name) is paused — open the dashboard to restore it"
-                                   : "Open the Supabase dashboard",
-            onTap: {
-                // The id comes from the CLI, so the URL is built defensively — a stray
-                // character must not crash the app on tap.
-                let encoded = project.id.addingPercentEncoding(
-                    withAllowedCharacters: .urlPathAllowed
-                ) ?? project.id
-                if let url = URL(string: "https://supabase.com/dashboard/project/\(encoded)") {
-                    NSWorkspace.shared.open(url)
-                }
-            }
+            title: endpoint.label,
+            titleColor: isDown ? Theme.textSecondary : Theme.textPrimary,
+            help: endpoint.url.absoluteString,
+            onTap: { NSWorkspace.shared.open(endpoint.url) }
         ) {
-            InfraDot(color: project.isHealthy ? Theme.textSecondary : Theme.textTertiary)
+            InfraDot(color: isDown ? Theme.statusError : Theme.textSecondary)
         } trailing: { _ in
-            if project.isPaused {
-                Text("paused")
+            if let health, health != .unknown {
+                Text(health.shortLabel)
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Theme.contextWarn)
-                    .fixedSize()
-            } else if !project.isHealthy {
-                Text(project.status.lowercased().replacingOccurrences(of: "_", with: " "))
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Theme.textTertiary)
+                    .monospacedDigit()
+                    .foregroundStyle(isDown ? Theme.statusError : Theme.textTertiary)
                     .fixedSize()
             }
-            Text(project.region)
-                .font(.system(size: 10))
-                .foregroundStyle(Theme.textTertiary)
-                .fixedSize()
         }
+    }
+
+    private var isDown: Bool {
+        guard let health, health != .unknown else { return false }
+        return !health.isUp
     }
 }
 

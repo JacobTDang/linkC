@@ -191,6 +191,13 @@ public final class AppCoordinator {
         }
     }
 
+    /// Announce something that isn't a session — a watched service going down or coming
+    /// back. Routed through the same notification manager so authorization, the sink, and
+    /// click handling stay in one place.
+    public func notify(id: String, title: String, body: String) {
+        notifications.postAlert(id: id, title: title, body: body)
+    }
+
     /// Remove a session everywhere it leaves state behind: the store, its terminal (dropped,
     /// not killed — the process is already dead here), its per-session settings file, its
     /// notification dedupe entry, and its usage-tracker dictionaries. Idempotent.

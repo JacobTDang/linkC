@@ -153,6 +153,7 @@ final class AppModel {
             self.recents = RecentFoldersStore(directory: linkCSupport)
             self.oracle = OracleService()
             self.supabase = SupabaseService()
+            self.watchedEndpointsStore = WatchedEndpointsStore(directory: linkCSupport)
         } catch {
             setupError = error.localizedDescription
         }
@@ -175,10 +176,53 @@ final class AppModel {
     private(set) var oracle: OracleService?
     /// Supabase projects through the user's own CLI — the second CLOUD provider.
     private(set) var supabase: SupabaseService?
+    /// Liveness of the services worth watching — a VM being RUNNING says nothing about
+    /// whether the thing on it is answering.
+    let health = HealthMonitor()
+    private var watchedEndpointsStore: WatchedEndpointsStore?
 
     var cloudInstances: [OracleInstance] { oracle?.instances ?? [] }
     var cloudRegion: String? { oracle?.region }
     var supabaseProjects: [SupabaseProject] { supabase?.projects ?? [] }
+
+    /// Everything being health-checked: each live Supabase project (URL derived from its
+    /// ref — no configuration) plus whatever the user listed in endpoints.json. A paused
+    /// project is skipped; the row already explains that state.
+    var watchedEndpoints: [WatchedEndpoint] {
+        let supabaseEndpoints = supabaseProjects.compactMap { project -> WatchedEndpoint? in
+            guard let url = project.healthURL else { return nil }
+            return WatchedEndpoint(id: "supabase:\(project.id)", label: project.name, url: url)
+        }
+        return supabaseEndpoints + (watchedEndpointsStore?.load() ?? [])
+    }
+
+    func serviceHealth(_ endpointId: String) -> HealthStatus? { health.status(of: endpointId) }
+    func supabaseHealth(_ project: SupabaseProject) -> HealthStatus? {
+        health.status(of: "supabase:\(project.id)")
+    }
+    /// Endpoints from endpoints.json that aren't tied to a provider row — the mp3 server
+    /// and anything else the user named. Shown as their own rows.
+    var configuredEndpoints: [WatchedEndpoint] { watchedEndpointsStore?.load() ?? [] }
+    var endpointsConfigPath: String? { watchedEndpointsStore?.path }
+    /// Create the file on demand so "reveal" in Settings always lands somewhere real.
+    func revealEndpointsConfig() -> String? { watchedEndpointsStore?.ensureExists() }
+
+    /// Probe the watched services and announce anything that CHANGED. Runs only while the
+    /// panel is visible, on the 30s beat.
+    private func checkHealth() {
+        let endpoints = watchedEndpoints
+        guard !endpoints.isEmpty else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let changes = await self.health.check(endpoints)
+            self.health.prune(to: endpoints)
+            for change in changes {
+                self.coordinator?.notify(
+                    id: "health:\(change.endpointId)", title: change.title, body: change.body
+                )
+            }
+        }
+    }
     /// The CLI is installed but not authenticated — an invitation, not a failure.
     var supabaseNeedsLogin: Bool { supabase?.needsLogin ?? false }
     /// Real cloud failures worth showing. Both providers can fail at once, so neither
@@ -461,6 +505,7 @@ final class AppModel {
             refreshServers()
             checkForUpdate()
             refreshCloud()
+            checkHealth()
             usageTicks = 0
             usageTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in
@@ -472,6 +517,7 @@ final class AppModel {
                     if self.usageTicks % 6 == 0 {
                         self.usage.refreshWindow()
                         self.checkForUpdate()
+                        self.checkHealth()   // 30s: close enough to notice, cheap enough to ignore
                     }
                     // Cloud is slowest and rate-limited: every 120s is plenty.
                     if self.usageTicks % 24 == 0 { self.refreshCloud() }

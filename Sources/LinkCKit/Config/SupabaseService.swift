@@ -8,8 +8,21 @@ public struct SupabaseProject: Equatable, Sendable, Identifiable {
     public let region: String
     /// ACTIVE_HEALTHY / INACTIVE / COMING_UP / …
     public let status: String
+    /// Shown in the drill-in beside uptime.
+    public var postgresVersion: String?
+    public var createdAt: Date?
 
     public var isHealthy: Bool { status == "ACTIVE_HEALTHY" }
+
+    /// The credential-free liveness endpoint, derived from the project ref — no
+    /// configuration needed. Verified live: an active project answers 401 in ~0.2s (proof
+    /// the API is up), so any answer counts as alive. A PAUSED project's hostname doesn't
+    /// resolve at all, and reporting that as an outage would be alarming nonsense when the
+    /// row already says "paused" — so it isn't probed.
+    public var healthURL: URL? {
+        guard !isPaused else { return nil }
+        return URL(string: "https://\(id).supabase.co/auth/v1/health")
+    }
     public var isPaused: Bool { Self.isPaused(status) }
 
     /// Supabase pauses free projects after inactivity — they stop serving requests until
@@ -31,7 +44,9 @@ public enum SupabaseProjects {
                 id: id,
                 name: name,
                 region: entry.region ?? "",
-                status: entry.status ?? "UNKNOWN"
+                status: entry.status ?? "UNKNOWN",
+                postgresVersion: entry.database?.postgresEngine,
+                createdAt: entry.createdAt.flatMap(TranscriptLine.parseTimestamp)
             )
         }
     }
@@ -56,6 +71,18 @@ public enum SupabaseProjects {
         let name: String?
         let region: String?
         let status: String?
+        let database: RawDatabase?
+        let createdAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, region, status, database
+            case createdAt = "created_at"
+        }
+    }
+
+    private struct RawDatabase: Decodable {
+        let postgresEngine: String?
+        enum CodingKeys: String, CodingKey { case postgresEngine = "postgres_engine" }
     }
 }
 
