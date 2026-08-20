@@ -18,32 +18,98 @@ final class OracleDetailTests: XCTestCase {
         XCTAssertNil(OracleVnics.publicIP("not json"))
     }
 
-    func testCpuKeyedByResourceIdTakesLatestDatapoint() {
-        // Shape copied from a real `oci monitoring metric-data summarize-metrics-data` run.
-        let json = """
-        [
-          {"dimensions": {"resourceId": "ocid1.instance.oc1..aaa"},
-           "aggregated-datapoints": [
-             {"timestamp": "2026-08-20T00:30:00+00:00", "value": 1.5933216150719312},
-             {"timestamp": "2026-08-20T01:30:00+00:00", "value": 3.4821}
-           ]},
-          {"dimensions": {"resourceId": "ocid1.instance.oc1..bbb"},
-           "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 42.5}]}
-        ]
-        """
-        let cpu = OracleMetrics.latestCpuByInstance(json)
-        XCTAssertEqual(cpu["ocid1.instance.oc1..aaa"] ?? -1, 3.48, accuracy: 0.01,
-                       "the newest datapoint wins, not the first")
-        XCTAssertEqual(cpu["ocid1.instance.oc1..bbb"] ?? -1, 42.5, accuracy: 0.01)
+    func testEmptyAndGarbageMetricsAreEmpty() {
+        XCTAssertTrue(OracleMetrics.healthByInstance("[]").isEmpty)
+        XCTAssertTrue(OracleMetrics.healthByInstance("not json").isEmpty)
+        // A series with no datapoints contributes nothing rather than a bogus zero.
+        XCTAssertTrue(OracleMetrics.healthByInstance(
+            #"[{"name": "CpuUtilization", "dimensions": {"resourceId": "x"}, "aggregated-datapoints": []}]"#
+        ).isEmpty)
+    }
+}
+
+/// Health metrics: one call carries several metric names, keyed by name AND resourceId.
+final class OracleHealthTests: XCTestCase {
+
+    /// The real shape: `name` distinguishes the metric, `dimensions.resourceId` the box.
+    private let multiMetricJSON = """
+    [
+      {"name": "CpuUtilization", "dimensions": {"resourceId": "aaa"},
+       "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 2.4}]},
+      {"name": "MemoryUtilization", "dimensions": {"resourceId": "aaa"},
+       "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 10.9}]},
+      {"name": "LoadAverage", "dimensions": {"resourceId": "aaa"},
+       "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 0.31}]},
+      {"name": "MemoryUtilization", "dimensions": {"resourceId": "bbb"},
+       "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 71.2}]}
+    ]
+    """
+
+    func testMetricsSplitByNameAndInstance() {
+        let health = OracleMetrics.healthByInstance(multiMetricJSON)
+        XCTAssertEqual(health["aaa"]?.cpuPercent ?? -1, 2.4, accuracy: 0.01)
+        XCTAssertEqual(health["aaa"]?.memoryPercent ?? -1, 10.9, accuracy: 0.01)
+        XCTAssertEqual(health["aaa"]?.loadAverage ?? -1, 0.31, accuracy: 0.01)
+        XCTAssertEqual(health["bbb"]?.memoryPercent ?? -1, 71.2, accuracy: 0.01)
+        XCTAssertNil(health["bbb"]?.cpuPercent, "a metric absent for a box stays nil, not zero")
     }
 
-    func testEmptyAndGarbageMetricsAreEmpty() {
-        XCTAssertTrue(OracleMetrics.latestCpuByInstance("[]").isEmpty)
-        XCTAssertTrue(OracleMetrics.latestCpuByInstance("not json").isEmpty)
-        // A series with no datapoints contributes nothing rather than a bogus zero.
-        XCTAssertTrue(OracleMetrics.latestCpuByInstance(
-            #"[{"dimensions": {"resourceId": "x"}, "aggregated-datapoints": []}]"#
-        ).isEmpty)
+    /// Audit output is MULTIPLE concatenated JSON documents (one per page), not one array —
+    /// verified against the live CLI, and a plain JSONDecoder chokes on it.
+    func testAuditSummaryAcrossConcatenatedDocuments() {
+        let json = """
+        {"data": [
+          {"data": {"identity": {"principal-name": "Jacob Dang", "ip-address": "47.1.2.3"}}},
+          {"data": {"identity": {"principal-name": null, "ip-address": "10.0.2.7"}}}
+        ]}
+        {"data": [
+          {"data": {"identity": {"principal-name": "Jacob Dang", "ip-address": "47.1.2.3"}}}
+        ]}
+        """
+        let summary = OracleAudit.summarize(json)
+        XCTAssertEqual(summary?.eventCount, 3, "events across every page count")
+        XCTAssertEqual(summary?.humanPrincipals, ["Jacob Dang"], "system events aren't people")
+        XCTAssertFalse(summary?.hasUnknownPrincipal ?? true)
+    }
+
+    func testUnfamiliarPrincipalIsFlagged() {
+        let json = """
+        {"data": [
+          {"data": {"identity": {"principal-name": "Jacob Dang", "ip-address": "47.1.2.3"}}},
+          {"data": {"identity": {"principal-name": "someone-else", "ip-address": "203.0.113.9"}}}
+        ]}
+        """
+        let summary = OracleAudit.summarize(json, knownPrincipals: ["Jacob Dang"])
+        XCTAssertTrue(summary?.hasUnknownPrincipal ?? false, "an unfamiliar principal is the whole point")
+        XCTAssertEqual(summary?.humanPrincipals.count, 2)
+    }
+
+    /// A `||`-joined query returns ONE series named `join-#<id>` — the per-metric name is
+    /// gone, so every figure would read "—". Pinned so nobody "optimizes" three calls into
+    /// one; verified against the live API.
+    func testJoinedSeriesNameIsNotAMetric() {
+        let joined = """
+        [{"name": "join-#123764268", "dimensions": {"resourceId": "aaa"},
+          "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 1.0}]}]
+        """
+        let health = OracleMetrics.healthByInstance(joined)
+        XCTAssertNil(health["aaa"]?.cpuPercent)
+        XCTAssertNil(health["aaa"]?.memoryPercent)
+        XCTAssertEqual(OracleMetrics.healthMetrics.count, 3, "one call per metric")
+    }
+
+    func testGarbageAuditIsNil() {
+        XCTAssertNil(OracleAudit.summarize("not json"))
+        XCTAssertEqual(OracleAudit.summarize(#"{"data": []}"#)?.eventCount, 0,
+                       "a real empty page is a real zero")
+    }
+
+    /// A document with no `data` array (an error payload, a banner) must NOT decode as a
+    /// confident "0 events" — that reads exactly like a verified-quiet account.
+    func testNonEventDocumentIsNilNotZero() {
+        XCTAssertNil(OracleAudit.summarize(#"{"error": {"code": "NotAuthenticated"}}"#))
+        XCTAssertNil(OracleAudit.summarize(#"{"data": [{"data": {}}]} {"opc-next-page": "abc"}"#),
+                     "a malformed or non-event page invalidates the summary rather than under-reporting")
     }
 }
 
@@ -97,12 +163,13 @@ final class OracleDetailServiceTests: XCTestCase {
 
     func testExpandFetchesIPAndCpuWithRequiredArgs() async {
         let metricsJSON = """
-        [{"dimensions": {"resourceId": "ocid1.instance.oc1..aaa"},
+        [{"name": "CpuUtilization", "dimensions": {"resourceId": "ocid1.instance.oc1..aaa"},
           "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 3.5}]}]
         """
         let runner = ScriptedRunner(answers: [
             "list-vnics": .success(#"[{"public-ip": "147.224.213.182"}]"#),
             "summarize-metrics-data": .success(metricsJSON),
+            "event": .success(#"{"data": []}"#),
         ])
         let service = OracleService(
             ociPath: "/fake/oci", hasConfig: true, region: "us-chicago-1",
@@ -118,15 +185,20 @@ final class OracleDetailServiceTests: XCTestCase {
 
         // The monitoring API requires a compartment — without it the CLI exits nonzero and
         // CPU silently reads "—" forever. Pin the whole contract, not just the subcommand.
-        let metricsArgs = runner.calls.map(\.args).first { $0.contains("summarize-metrics-data") }
+        // Three metric calls run concurrently and record in arbitrary order — select the
+        // CPU one explicitly rather than "the first metrics call" (which was flaky).
+        let metricsArgs = runner.calls.map(\.args).first {
+            $0.contains("summarize-metrics-data")
+                && $0.contains(OracleMetrics.healthQueryText("CpuUtilization"))
+        }
         XCTAssertEqual(
             metricsArgs,
             ["monitoring", "metric-data", "summarize-metrics-data",
              "--compartment-id", "ocid1.tenancy.oc1..zzz",
              "--compartment-id-in-subtree", "true",
              "--namespace", "oci_computeagent",
-             "--query-text", OracleMetrics.queryText,
-             "--query", OracleMetrics.cliQuery, "--output", "json"]
+             "--query-text", OracleMetrics.healthQueryText("CpuUtilization"),
+             "--query", OracleMetrics.healthQuery, "--output", "json"]
         )
     }
 
@@ -134,14 +206,15 @@ final class OracleDetailServiceTests: XCTestCase {
     /// expanding twice must not spawn four processes against a rate-limited API.
     func testCachesAndFansOutMetricsToOtherRows() async {
         let metricsJSON = """
-        [{"dimensions": {"resourceId": "ocid1.instance.oc1..aaa"},
+        [{"name": "CpuUtilization", "dimensions": {"resourceId": "ocid1.instance.oc1..aaa"},
           "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 3.5}]},
-         {"dimensions": {"resourceId": "ocid1.instance.oc1..bbb"},
+         {"name": "CpuUtilization", "dimensions": {"resourceId": "ocid1.instance.oc1..bbb"},
           "aggregated-datapoints": [{"timestamp": "2026-08-20T01:30:00+00:00", "value": 42.0}]}]
         """
         let runner = ScriptedRunner(answers: [
             "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
             "summarize-metrics-data": .success(metricsJSON),
+            "event": .success(#"{"data": []}"#),
         ])
         let service = OracleService(
             ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner
@@ -186,6 +259,7 @@ final class OracleDetailServiceTests: XCTestCase {
         let runner = ScriptedRunner(answers: [
             "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
             "summarize-metrics-data": .success("[]"),
+            "event": .success(#"{"data": []}"#),
         ])
         let service = OracleService(
             ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner
@@ -208,11 +282,41 @@ final class OracleDetailServiceTests: XCTestCase {
 
     /// The drill-in and the listing keep separate error fields: a successful expand must
     /// not erase an expired-auth listing failure the user still needs to see.
+    /// The unfamiliar-principal flag learns its baseline from the account's first
+    /// successful audit fetch. A guessed baseline (the macOS user name) would fire on
+    /// every event forever wherever the names differ — a signal that always cries wolf is
+    /// worse than one that never fires.
+    func testPrincipalBaselineIsLearnedThenNewNamesFlag() async {
+        let firstPage = #"{"data": [{"data": {"identity": {"principal-name": "Jacob Dang"}}}]}"#
+        let runner = ScriptedRunner(answers: [
+            "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
+            "summarize-metrics-data": .success("[]"),
+            "event": .success(firstPage),
+        ])
+        let service = OracleService(
+            ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner
+        )
+
+        await service.loadDetail(for: "aaa")
+        XCTAssertEqual(service.detail(for: "aaa")?.audit?.hasUnknownPrincipal, false,
+                       "the first fetch establishes normal — it must not flag itself")
+
+        // A name that wasn't in the baseline shows up later: that's the real signal.
+        runner.setAnswer("event", .success("""
+        {"data": [{"data": {"identity": {"principal-name": "Jacob Dang"}}},
+                  {"data": {"identity": {"principal-name": "stranger"}}}]}
+        """))
+        await service.loadDetail(for: "aaa", force: true)
+        XCTAssertEqual(service.detail(for: "aaa")?.audit?.hasUnknownPrincipal, true,
+                       "a principal absent from the learned baseline is flagged")
+    }
+
     func testDrillInSuccessDoesNotEraseListingError() async {
         let runner = ScriptedRunner(answers: [
             "structured-search": .failure(LinkCError.process("NotAuthenticated")),
             "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
             "summarize-metrics-data": .success("[]"),
+            "event": .success(#"{"data": []}"#),
         ])
         let service = OracleService(
             ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner
