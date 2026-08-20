@@ -21,33 +21,19 @@ enum Theme {
     /// Soft gold for a context hairline nearing auto-compact (~#E3C169).
     static let contextWarn = Color(red: 0.89, green: 0.757, blue: 0.412)
 
-    // Surfaces: the content plane. Cards are near-opaque dark planes resting ON the glass
-    // sheet — darker than the sheet so they anchor, never translucent washes that dissolve
-    // into it (glass is reserved for the one floating element, the dock).
-    /// A card's plane: a top-lit dark gradient, slightly lighter on hover. Needs-you cards
-    /// burn a warm coral-tinted plane instead.
-    static func cardSurface(needsYou: Bool, hovering: Bool) -> LinearGradient {
-        let top: Color = needsYou
-            ? Color(red: hovering ? 0.27 : 0.227, green: hovering ? 0.16 : 0.133, blue: hovering ? 0.12 : 0.102).opacity(0.82)
-            : Color(red: hovering ? 0.118 : 0.086, green: hovering ? 0.125 : 0.094, blue: hovering ? 0.145 : 0.114).opacity(0.85)
-        let bottom: Color = needsYou
-            ? Color(red: hovering ? 0.19 : 0.157, green: hovering ? 0.125 : 0.102, blue: hovering ? 0.10 : 0.086).opacity(0.85)
-            : Color(red: hovering ? 0.098 : 0.071, green: hovering ? 0.106 : 0.078, blue: hovering ? 0.122 : 0.094).opacity(0.88)
-        return LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom)
+    // Surfaces: the content plane. One flat translucent fill over the sheet — the model is
+    // Control Center, whose tiles are a single wash of light on the material with no
+    // gradient, no border and no shadow. Depth comes from the material behind them, not
+    // from painting depth onto each row; stacking a gradient, a rim stroke and a drop
+    // shadow on every row in a list is what makes a panel look busy at a glance.
+    /// A card's plane. Warm white, so the plane reads as a different shade from the neutral
+    /// sheet rather than as a grey box. State is one axis — how much light the tile holds.
+    static func cardSurface(needsYou: Bool, hovering: Bool) -> Color {
+        // Attention is the accent itself, flat, like a Control Center toggle that is on.
+        if needsYou { return accent.opacity(hovering ? 0.22 : 0.16) }
+        return Color(red: 1.0, green: 0.94, blue: 0.88).opacity(hovering ? 0.10 : 0.055)
     }
 
-    /// The plane's edge: a hairline stroke that rim-lights the top and fades down the sides,
-    /// so cards read as lit objects, not outlined boxes. Needs-you edges glow warm.
-    static func cardStroke(needsYou: Bool) -> LinearGradient {
-        let top: Color = needsYou
-            ? Color(red: 1.0, green: 0.64, blue: 0.50).opacity(0.18)
-            : Color.white.opacity(0.10)
-        let bottom: Color = needsYou ? accent.opacity(0.10) : Color.white.opacity(0.03)
-        return LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom)
-    }
-
-    /// The plane's soft cast shadow onto the sheet.
-    static let planeShadow = Color.black.opacity(0.28)
     /// The vignette's edge darkening — grounds the sheet without reading as a border.
     static let vignette = Color.black.opacity(0.16)
     /// A barely-there wash behind bare chrome glyphs and restorable rows on hover.
@@ -98,8 +84,7 @@ enum Theme {
     }
 }
 
-/// The shared card treatment: the content plane's fill with its cast shadow, plus the
-/// rim-lit hairline edge. Applied outside any `clipShape` so the shadow survives clipping.
+/// The shared card treatment: one flat translucent fill, nothing else.
 private struct PlaneCard: ViewModifier {
     let needsYou: Bool
     let hovering: Bool
@@ -109,11 +94,6 @@ private struct PlaneCard: ViewModifier {
             .background(
                 RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
                     .fill(Theme.cardSurface(needsYou: needsYou, hovering: hovering))
-                    .shadow(color: Theme.planeShadow, radius: 6, y: 3)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
-                    .strokeBorder(Theme.cardStroke(needsYou: needsYou), lineWidth: 1)
             )
     }
 }
