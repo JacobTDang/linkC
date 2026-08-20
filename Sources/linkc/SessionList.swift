@@ -899,8 +899,10 @@ private struct CloudDetailPanel: View {
     /// than shown as a confident zero.
     private var healthLine: String {
         var parts: [String] = []
-        if let created = instance.createdAt {
-            parts.append("up \(AgeFormat.compact(from: created))")
+        // Uptime only for a running box — createdAt is creation, not boot, so a stopped
+        // instance would otherwise claim to be "up".
+        if instance.isRunning, let created = instance.createdAt {
+            parts.append("up \(AgeFormat.longSpan(from: created))")
         }
         if let cpu = detail?.cpuPercent { parts.append("cpu \(Int(cpu.rounded()))%") }
         if let memory = detail?.memoryPercent { parts.append("mem \(Int(memory.rounded()))%") }
