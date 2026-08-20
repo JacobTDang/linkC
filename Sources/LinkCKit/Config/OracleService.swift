@@ -200,13 +200,20 @@ public final class OracleService {
         }()
 
         var failures: [String] = []
-        let ip = await vnicsOutput.flatMap(OracleVnics.publicIP)
-        if await vnicsOutput == nil { failures.append("IP unavailable") }
+        // Distinguish "the call failed" from "this instance has no public IP" — a
+        // private-only box is a legitimate state, and coalescing over it would strand a
+        // stale address on screen forever.
+        let vnicsResult = await vnicsOutput
+        let vnicsFailed = vnicsResult == nil
+        let ip = vnicsResult.flatMap(OracleVnics.publicIP)
+        if vnicsFailed { failures.append("IP unavailable") }
 
         var cpuByInstance: [String: Double] = [:]
+        var metricsFailed = false
         if let output = await metricsOutput {
             cpuByInstance = OracleMetrics.latestCpuByInstance(output)
         } else {
+            metricsFailed = true
             failures.append(tenancy == nil ? "CPU: no tenancy in ~/.oci/config" : "CPU unavailable")
         }
 
@@ -221,10 +228,12 @@ public final class OracleService {
         }
         // Fields degrade independently: a failed metrics call keeps the last known CPU
         // rather than replacing a real figure with "—".
+        // Keep the last known value only when the call FAILED; a successful call that
+        // reports nothing is the truth (the IP really was unassigned).
         let previous = details[id]
         details[id] = OracleDetail(
-            publicIP: ip ?? previous?.publicIP,
-            cpuPercent: cpuByInstance[id] ?? previous?.cpuPercent,
+            publicIP: vnicsFailed ? previous?.publicIP : ip,
+            cpuPercent: metricsFailed ? previous?.cpuPercent : cpuByInstance[id],
             didLoadIP: true
         )
         // Fail loud: a swallowed drill-in error is indistinguishable from "no public IP".

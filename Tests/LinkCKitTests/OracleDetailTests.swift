@@ -54,16 +54,22 @@ final class ScriptedRunner: ProcessRunner, @unchecked Sendable {
     struct Call: Equatable { let executable: String; let args: [String] }
     private let lock = NSLock()
     private var recorded: [Call] = []
-    private let answers: [String: Result<String, Error>]
+    private var answers: [String: Result<String, Error>]
 
     var calls: [Call] { lock.withLock { recorded } }
 
     /// Keyed by a distinctive subcommand token ("list-vnics", "summarize-metrics-data").
     init(answers: [String: Result<String, Error>]) { self.answers = answers }
 
+    /// Change one command's answer mid-test (an instance losing its public IP, say).
+    func setAnswer(_ token: String, _ answer: Result<String, Error>) {
+        lock.withLock { answers[token] = answer }
+    }
+
     func run(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> String {
         lock.withLock { recorded.append(Call(executable: executable, args: args)) }
-        for (token, answer) in answers where args.contains(token) {
+        let snapshot = lock.withLock { answers }
+        for (token, answer) in snapshot where args.contains(token) {
             return try answer.get()
         }
         throw LinkCError.process("unscripted command: \(args.joined(separator: " "))")
@@ -172,6 +178,32 @@ final class OracleDetailServiceTests: XCTestCase {
         XCTAssertNotNil(service.detail(for: "ocid1.instance.oc1..aaa"), "an attempted detail exists, fields empty")
         XCTAssertNil(service.detail(for: "ocid1.instance.oc1..aaa")?.publicIP)
         XCTAssertNotNil(service.detailError, "fail loud")
+    }
+
+    /// An IP that is genuinely unassigned must clear, not linger: coalescing exists for
+    /// failed calls, not for successful ones that report nothing.
+    func testUnassignedIPClearsButFailureKeepsLastKnown() async {
+        let runner = ScriptedRunner(answers: [
+            "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
+            "summarize-metrics-data": .success("[]"),
+        ])
+        let service = OracleService(
+            ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner
+        )
+        await service.loadDetail(for: "aaa")
+        XCTAssertEqual(service.detail(for: "aaa")?.publicIP, "1.2.3.4")
+
+        // The instance loses its public IP — the call succeeds, private-only.
+        runner.setAnswer("list-vnics", .success(#"[{"private-ip": "10.0.0.5"}]"#))
+        await service.loadDetail(for: "aaa", force: true)
+        XCTAssertNil(service.detail(for: "aaa")?.publicIP, "a real unassignment must clear")
+
+        // But a FAILED call keeps whatever was last known.
+        runner.setAnswer("list-vnics", .success(#"[{"public-ip": "5.6.7.8"}]"#))
+        await service.loadDetail(for: "aaa", force: true)
+        runner.setAnswer("list-vnics", .failure(LinkCError.process("rate limited")))
+        await service.loadDetail(for: "aaa", force: true)
+        XCTAssertEqual(service.detail(for: "aaa")?.publicIP, "5.6.7.8", "a failure keeps the last known IP")
     }
 
     /// The drill-in and the listing keep separate error fields: a successful expand must
