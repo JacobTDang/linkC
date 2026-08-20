@@ -154,6 +154,7 @@ final class AppModel {
             self.oracle = OracleService()
             self.supabase = SupabaseService()
             self.watchedEndpointsStore = WatchedEndpointsStore(directory: linkCSupport)
+            reloadConfiguredEndpoints()
         } catch {
             setupError = error.localizedDescription
         }
@@ -201,21 +202,35 @@ final class AppModel {
         health.status(of: "supabase:\(project.id)")
     }
     /// Endpoints from endpoints.json that aren't tied to a provider row — the mp3 server
-    /// and anything else the user named. Shown as their own rows.
-    var configuredEndpoints: [WatchedEndpoint] { watchedEndpointsStore?.load() ?? [] }
+    /// and anything else the user named. Cached: this is read by the sidebar's body, and
+    /// re-parsing the file on every re-render (expand, hover, each 5s tick) would put a
+    /// synchronous disk read on the main thread. Refreshed on the health beat.
+    private(set) var configuredEndpoints: [WatchedEndpoint] = []
+
+    private func reloadConfiguredEndpoints() {
+        let next = watchedEndpointsStore?.load() ?? []
+        if next != configuredEndpoints { configuredEndpoints = next }
+    }
     var endpointsConfigPath: String? { watchedEndpointsStore?.path }
     /// Create the file on demand so "reveal" in Settings always lands somewhere real.
-    func revealEndpointsConfig() -> String? { watchedEndpointsStore?.ensureExists() }
+    func revealEndpointsConfig() -> String? {
+        let path = watchedEndpointsStore?.ensureExists()
+        reloadConfiguredEndpoints()
+        return path
+    }
 
     /// Probe the watched services and announce anything that CHANGED. Runs only while the
     /// panel is visible, on the 30s beat.
     private func checkHealth() {
+        reloadConfiguredEndpoints()
         let endpoints = watchedEndpoints
+        // Prune before the empty check: emptying the watch list must clear stale readings
+        // rather than freeze them for the life of the process.
+        health.prune(to: endpoints)
         guard !endpoints.isEmpty else { return }
         Task { [weak self] in
             guard let self else { return }
             let changes = await self.health.check(endpoints)
-            self.health.prune(to: endpoints)
             for change in changes {
                 self.coordinator?.notify(
                     id: "health:\(change.endpointId)", title: change.title, body: change.body

@@ -48,6 +48,21 @@ final class WatchedEndpointsStoreTests: XCTestCase {
                        "only a complete http(s) entry with a host is watchable")
     }
 
+    /// Two entries pointing at the same URL are two watched services. Sharing an id would
+    /// make SwiftUI drop a row and the monitor's result map discard one probe.
+    func testDuplicateURLsKeepDistinctIds() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try write("""
+        [{"label": "primary", "url": "https://same.example.com/health"},
+         {"label": "canary", "url": "https://same.example.com/health"}]
+        """, to: dir)
+
+        let endpoints = WatchedEndpointsStore(directory: dir).load()
+        XCTAssertEqual(endpoints.count, 2)
+        XCTAssertEqual(Set(endpoints.map(\.id)).count, 2, "ids must not collide")
+    }
+
     func testMissingAndCorruptAreEmptyNotFatal() throws {
         XCTAssertTrue(WatchedEndpointsStore(directory: tempDir()).load().isEmpty)
 

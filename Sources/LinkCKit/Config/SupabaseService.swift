@@ -16,11 +16,14 @@ public struct SupabaseProject: Equatable, Sendable, Identifiable {
 
     /// The credential-free liveness endpoint, derived from the project ref — no
     /// configuration needed. Verified live: an active project answers 401 in ~0.2s (proof
-    /// the API is up), so any answer counts as alive. A PAUSED project's hostname doesn't
-    /// resolve at all, and reporting that as an outage would be alarming nonsense when the
-    /// row already says "paused" — so it isn't probed.
+    /// the API is up), so any answer counts as alive.
+    ///
+    /// Only a project the control plane calls healthy is probed. This is an ALLOWLIST on
+    /// purpose: PAUSING, RESTORING, REMOVED, INIT_FAILED and friends don't resolve or
+    /// refuse, so "not INACTIVE" would fire a false "not responding" alert for exactly
+    /// the transitional states the row already names.
     public var healthURL: URL? {
-        guard !isPaused else { return nil }
+        guard isHealthy else { return nil }
         return URL(string: "https://\(id).supabase.co/auth/v1/health")
     }
     public var isPaused: Bool { Self.isPaused(status) }

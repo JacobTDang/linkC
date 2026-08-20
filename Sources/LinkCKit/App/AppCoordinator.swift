@@ -105,6 +105,9 @@ public final class AppCoordinator {
         sweepOrphanedSettingsFiles()
         hookServer.requiredToken = hookToken
         notifications.onActivate = { [weak self] id in
+            // Health alerts carry no session to focus; activating the app is the whole
+            // interaction. Routing them through focusSession would silently match nothing.
+            guard !id.hasPrefix(Self.alertIdPrefix) else { return }
             Task { @MainActor in self?.focusSession(id) }
         }
         // Funnel every hook event into the serial stream; a single consumer drains it in
@@ -195,8 +198,18 @@ public final class AppCoordinator {
     /// back. Routed through the same notification manager so authorization, the sink, and
     /// click handling stay in one place.
     public func notify(id: String, title: String, body: String) {
-        notifications.postAlert(id: id, title: title, body: body)
+        // A unique request id per alert: UNNotificationRequest's identifier IS the
+        // dedupe key, so reusing one id per endpoint would make each new alert replace
+        // the last in Notification Center — a down→up→down flap would leave only its
+        // final state for someone who was away from the machine.
+        notifications.postAlert(
+            id: "\(Self.alertIdPrefix)\(id):\(UUID().uuidString)", title: title, body: body
+        )
     }
+
+    /// Marks a notification as "not a session" — clicking one must not be routed into
+    /// session focus, where the id matches nothing and the app activates on no navigation.
+    static let alertIdPrefix = "alert:"
 
     /// Remove a session everywhere it leaves state behind: the store, its terminal (dropped,
     /// not killed — the process is already dead here), its per-session settings file, its

@@ -24,14 +24,17 @@ public struct WatchedEndpointsStore {
             NSLog("linkC: endpoints.json at %@ is unreadable, ignoring it", fileURL.path)
             return []
         }
-        return entries.compactMap { entry in
+        return entries.enumerated().compactMap { index, entry in
             guard let label = entry.label, !label.isEmpty,
                   let raw = entry.url, let url = URL(string: raw),
                   let scheme = url.scheme?.lowercased(),
                   scheme == "https" || scheme == "http",
                   url.host != nil
             else { return nil }
-            return WatchedEndpoint(id: "configured:\(raw)", label: label, url: url)
+            // The index keeps ids distinct when two entries share a URL — duplicate
+            // Identifiable ids make SwiftUI drop rows, and the monitor's result map would
+            // silently discard one of the two probes.
+            return WatchedEndpoint(id: "configured:\(index):\(raw)", label: label, url: url)
         }
     }
 

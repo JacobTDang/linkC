@@ -65,19 +65,29 @@ public struct LiveEndpointProbe: EndpointProbe {
     public init() {}
 
     public func probe(_ url: URL, timeout: TimeInterval) async throws -> ProbeResult {
+        // HEAD first: a watched endpoint may be a whole page, and downloading it every
+        // 30s to throw it away is waste. Verified live that Supabase's auth health answers
+        // HEAD with the same 401 it gives GET. Servers that refuse the method get a GET.
+        let head = try await send(url, method: "HEAD", timeout: timeout)
+        guard head.statusCode == 405 || head.statusCode == 501 else { return head }
+        return try await send(url, method: "GET", timeout: timeout)
+    }
+
+    private func send(_ url: URL, method: String, timeout: TimeInterval) async throws -> ProbeResult {
         var request = URLRequest(url: url)
-        // GET, not HEAD: some services (Supabase's auth health among them) answer HEAD
-        // differently or not at all, and the body is discarded anyway.
-        request.httpMethod = "GET"
+        request.httpMethod = method
         request.timeoutInterval = timeout
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        let started = Date()
+        // Monotonic: the wall clock can be stepped by NTP mid-probe — likely right after
+        // wake, which is exactly when the panel reopens and a check fires — and that would
+        // render a nonsense or negative round-trip.
+        let started = DispatchTime.now().uptimeNanoseconds
         let (_, response) = try await Self.session.data(for: request)
-        let latency = Date().timeIntervalSince(started)
+        let elapsed = DispatchTime.now().uptimeNanoseconds &- started
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        return ProbeResult(statusCode: http.statusCode, latency: latency)
+        return ProbeResult(statusCode: http.statusCode, latency: Double(elapsed) / 1_000_000_000)
     }
 
     /// An ephemeral session: health checks must never be answered from cache, and no

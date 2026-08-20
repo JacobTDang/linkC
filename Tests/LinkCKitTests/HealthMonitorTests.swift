@@ -94,13 +94,21 @@ final class SupabaseHealthURLTests: XCTestCase {
         )
     }
 
-    /// A paused project's hostname doesn't even resolve — checking it would report a
-    /// scary "down" for a state the row already explains as "paused".
-    func testPausedProjectIsNotProbed() {
-        let paused = SupabaseProject(
-            id: "abc", name: "Sprout", region: "us-west-2", status: "INACTIVE"
+    /// Only a serving project is probed. Every other state — paused, mid-pause, restoring,
+    /// removed — either doesn't resolve or refuses, so probing it would fire a false
+    /// "not responding" alert for a state the row already names. Allowlist, not blocklist.
+    func testOnlyHealthyProjectsAreProbed() {
+        for status in ["INACTIVE", "PAUSING", "GOING_DOWN", "RESTORING", "REMOVED",
+                       "INIT_FAILED", "RESTORE_FAILED", "COMING_UP", "UNKNOWN"] {
+            let project = SupabaseProject(
+                id: "abc", name: "p", region: "us-west-2", status: status
+            )
+            XCTAssertNil(project.healthURL, "\(status) must not be probed")
+        }
+        let healthy = SupabaseProject(
+            id: "abc", name: "p", region: "us-west-2", status: "ACTIVE_HEALTHY"
         )
-        XCTAssertNil(paused.healthURL, "paused is a known state, not an outage")
+        XCTAssertNotNil(healthy.healthURL)
     }
 }
 
@@ -128,6 +136,22 @@ final class HealthMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.status(of: "a"), .ok(200, 0.12))
         XCTAssertEqual(monitor.status(of: "b"), .ok(401, 0.22))
         XCTAssertTrue(changes.isEmpty, "first pass is a baseline")
+    }
+
+    /// Emptying the watch list must clear what was learned — a stale "down" that outlives
+    /// the endpoint it described would sit in the UI for the life of the process.
+    func testPruneForgetsRemovedEndpoints() async {
+        let probe = FakeProbe(answers: [
+            "https://a.test": .success(ProbeResult(statusCode: 200, latency: 0.12)),
+            "https://b.test": .success(ProbeResult(statusCode: 200, latency: 0.12)),
+        ])
+        let monitor = HealthMonitor(probe: probe)
+        _ = await monitor.check(endpoints())
+        XCTAssertNotNil(monitor.status(of: "a"))
+
+        monitor.prune(to: [])
+        XCTAssertNil(monitor.status(of: "a"))
+        XCTAssertNil(monitor.status(of: "b"))
     }
 
     func testFailureBecomesDownAndReportsOnce() async {
