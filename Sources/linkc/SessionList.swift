@@ -844,7 +844,7 @@ private struct CloudRow: View {
                     .rotationEffect(.degrees(isExpanded ? 0 : -90))
             }
             if isExpanded {
-                CloudDetailPanel(detail: detail, onRefresh: onRefresh)
+                CloudDetailPanel(instance: instance, detail: detail, onRefresh: onRefresh)
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
         }
@@ -852,21 +852,42 @@ private struct CloudRow: View {
     }
 }
 
-/// The expanded drill-in: the two figures worth a glance, and the console as an opt-in
-/// link rather than the row's tap target. Fields render "—" until they land (or if they
-/// fail) — a hiccup never collapses the row.
+/// The expanded drill-in: is it healthy, and is it still mine? Figures wrap onto lines
+/// that fit a 260pt rail (the first cut wrapped "cpu" into c/p/u), and every label is
+/// fixed-size so a starved row truncates values, never letter-stacks a word.
 private struct CloudDetailPanel: View {
+    let instance: OracleInstance
     let detail: OracleDetail?
     let onRefresh: () -> Void
 
     var body: some View {
-        HStack(spacing: 14) {
-            field("ip", detail?.publicIP ?? "—")
-            field("cpu", detail?.cpuPercent.map { "\(Int($0.rounded()))%" } ?? "—")
-            Spacer(minLength: 8)
-            QuietLink("refresh", size: 10, action: onRefresh)
-            QuietLink("console", size: 10) {
-                NSWorkspace.shared.open(URL(string: "https://cloud.oracle.com/compute/instances")!)
+        VStack(alignment: .leading, spacing: 3) {
+            // Health: uptime and the three utilization figures worth watching.
+            Text(healthLine)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            // Security: who has been touching the account.
+            HStack(spacing: 4) {
+                Text(auditLine)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(detail?.audit?.hasUnknownPrincipal == true
+                        ? Theme.contextWarn : Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            HStack(spacing: 10) {
+                Text(detail?.publicIP ?? "—")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 6)
+                QuietLink("refresh", size: 10, action: onRefresh)
+                QuietLink("console", size: 10) {
+                    NSWorkspace.shared.open(URL(string: "https://cloud.oracle.com/compute/instances")!)
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -874,17 +895,28 @@ private struct CloudDetailPanel: View {
         .padding(.bottom, 8)
     }
 
-    private func field(_ label: String, _ value: String) -> some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .font(.system(size: 9, weight: .semibold))
-                .tracking(0.4)
-                .foregroundStyle(Theme.textTertiary)
-            Text(value)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Theme.textSecondary)
-                .fixedSize()
+    /// "up 17d · cpu 2% · mem 11% · load 0.3" — each part dropped when unknown rather
+    /// than shown as a confident zero.
+    private var healthLine: String {
+        var parts: [String] = []
+        if let created = instance.createdAt {
+            parts.append("up \(AgeFormat.compact(from: created))")
         }
+        if let cpu = detail?.cpuPercent { parts.append("cpu \(Int(cpu.rounded()))%") }
+        if let memory = detail?.memoryPercent { parts.append("mem \(Int(memory.rounded()))%") }
+        if let load = detail?.loadAverage {
+            parts.append("load \(String(format: "%.1f", load))")
+        }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+    }
+
+    /// "12 events · you" / "12 events · you, someone-else" — the unfamiliar name is the
+    /// signal, and it golds the line.
+    private var auditLine: String {
+        guard let audit = detail?.audit else { return "—" }
+        let noun = audit.eventCount == 1 ? "event" : "events"
+        guard !audit.humanPrincipals.isEmpty else { return "\(audit.eventCount) \(noun) · system only" }
+        return "\(audit.eventCount) \(noun) · \(audit.humanPrincipals.joined(separator: ", "))"
     }
 }
 
