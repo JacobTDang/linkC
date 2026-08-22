@@ -649,7 +649,7 @@ final class ConfiguredServiceEndToEndTests: XCTestCase {
     }
 
     /// The real endpoints.json content, and the answer the real server really gives.
-    private let config = #"[{ "label": "audio-1", "url": "http://203.0.113.10/" }]"#
+    private let config = #"[{ "label": "mp3 server", "url": "http://203.0.113.10/" }]"#
 
     func testTheConfiguredServiceIsWatchedAndReadsHealthy() async throws {
         let dir = try storeDirectory(containing: config)
@@ -661,7 +661,7 @@ final class ConfiguredServiceEndToEndTests: XCTestCase {
         let endpoints = WatchList.endpoints(
             supabaseProjects: [], lastListedAt: nil, configured: configured
         )
-        XCTAssertEqual(endpoints.map(\.label), ["audio-1"])
+        XCTAssertEqual(endpoints.map(\.label), ["mp3 server"])
 
         let probe = FakeProbe(answers: [
             "http://203.0.113.10/": .success(ProbeResult(statusCode: 308, latency: 0.042)),
@@ -679,7 +679,7 @@ final class ConfiguredServiceEndToEndTests: XCTestCase {
     /// which problem that is — "down" would send you hunting a service that never died.
     func testAHandshakeRefusalReadsAsTLSNotAsADeadService() async throws {
         let dir = try storeDirectory(
-            containing: #"[{ "label": "audio-1", "url": "https://203.0.113.10/" }]"#
+            containing: #"[{ "label": "mp3 server", "url": "https://203.0.113.10/" }]"#
         )
         defer { try? FileManager.default.removeItem(at: dir) }
 
