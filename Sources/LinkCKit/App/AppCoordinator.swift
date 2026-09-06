@@ -346,9 +346,7 @@ public final class AppCoordinator {
                     mode: .continueLast,
                     resumeId: r.claudeSessionId,
                     id: r.linkcId
-                )) != nil {
-                    manifest.upsert(r)
-                } else {
+                )) == nil {
                     manifest.upsert(r)
                 }
             } else {

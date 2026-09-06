@@ -96,9 +96,7 @@ public final class ShellCoordinator {
                     title: entry.title,
                     agent: entry.detectedAgent ?? .shell,
                     id: entry.id
-                )) != nil {
-                    manifest.upsert(entry)
-                } else {
+                )) == nil {
                     manifest.upsert(entry)
                 }
             } else {

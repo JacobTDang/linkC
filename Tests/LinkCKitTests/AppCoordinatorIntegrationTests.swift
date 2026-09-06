@@ -587,7 +587,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             title: "p1",
             agentKind: .claude,
             wasActiveOnQuit: true,
-            endedAt: nil
+            endedAt: Date(timeIntervalSince1970: 1000)
         ))
         seed.upsert(RestorableSession(
             linkcId: "ACT2",
@@ -614,9 +614,11 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(s2?.agentKind, .shell)
         XCTAssertEqual(s2?.cwd, cwd2.path)
 
-        // Manifest entries should have had wasActiveOnQuit reset to false
+        // Manifest entries should have had wasActiveOnQuit reset to false and endedAt nil while live
         XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT1" })?.wasActiveOnQuit, false)
         XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT2" })?.wasActiveOnQuit, false)
+        XCTAssertNil(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT1" })?.endedAt)
+        XCTAssertNil(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT2" })?.endedAt)
     }
 
     /// ShellCoordinator.restoreActiveShells() revives active shells with wasActiveOnQuit == true and their detectedAgent.
@@ -641,7 +643,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             command: "echo test",
             wasActiveOnQuit: true,
             detectedAgent: .codex,
-            endedAt: nil
+            endedAt: Date(timeIntervalSince1970: 2000)
         ))
         seed.upsert(RestorableShell(
             id: "SH2",
@@ -665,8 +667,9 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         // Inactive shell should NOT have been revived into store
         XCTAssertFalse(shellCoordinator.store.rows.contains(where: { $0.id == "SH2" }))
 
-        // Manifest should have wasActiveOnQuit reset to false
+        // Manifest should have wasActiveOnQuit reset to false and endedAt nil while live
         XCTAssertEqual(shellCoordinator.manifest?.entries.first(where: { $0.id == "SH1" })?.wasActiveOnQuit, false)
+        XCTAssertNil(shellCoordinator.manifest?.entries.first(where: { $0.id == "SH1" })?.endedAt)
     }
 
     /// LinkCLastSelectedSessionId in UserDefaults restores tab selection on start().
