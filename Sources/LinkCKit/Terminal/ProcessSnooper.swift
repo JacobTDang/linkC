@@ -47,7 +47,9 @@ public struct ProcessSnooper: Sendable {
 
             let pathLen = proc_pidpath(childPid, &pathBuffer, UInt32(pathBuffer.count))
             if pathLen > 0 {
-                let path = String(cString: pathBuffer)
+                let path = pathBuffer.withUnsafeBufferPointer { ptr in
+                    ptr.baseAddress.map { String(cString: $0) } ?? ""
+                }
                 if let agent = detectAgent(inPath: path) {
                     return agent
                 }
