@@ -34,7 +34,7 @@
   - `AgentDescriptor.arguments(for: AgentKind, mode: LaunchMode) -> [String]`
   - `AgentDescriptor.resolveExecutable(for: AgentKind) -> String?`
 
-- [ ] **Step 1: Write failing tests for `AgentKind` and `AgentDescriptor`**
+- [x] **Step 1: Write failing tests for `AgentKind` and `AgentDescriptor`**
   Create `Tests/LinkCKitTests/AgentDescriptorTests.swift` testing:
   - All 5 enum cases produce correct `pillText` (`CLAUDE`, `AGY`, `CURSOR`, `CODEX`, `SHELL`).
   - `arguments(for: .claude, mode: .new)` includes `["--dangerously-skip-permissions"]`.
@@ -42,16 +42,16 @@
   - `arguments(for: .cursor, mode: .new)` includes `["agent", "--yolo"]`.
   - `arguments(for: .codex, mode: .continueLast)` includes `["--dangerously-bypass-approvals-and-sandbox", "resume", "--last"]`.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
   Run `swift test --filter AgentDescriptorTests` and confirm compilation fails (types not found).
 
-- [ ] **Step 3: Implement `AgentKind` and `AgentDescriptor`**
+- [x] **Step 3: Implement `AgentKind` and `AgentDescriptor`**
   Create `Sources/LinkCKit/Core/AgentKind.swift` implementing all cases, candidate paths, and argument mappings.
 
-- [ ] **Step 4: Run tests and verify pass**
+- [x] **Step 4: Run tests and verify pass**
   Run `swift test --filter AgentDescriptorTests` and confirm all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
   `git add Sources/LinkCKit/Core/AgentKind.swift Tests/LinkCKitTests/AgentDescriptorTests.swift && git commit -m "Add AgentKind and AgentDescriptor domain models with --yolo arguments"`
 
 ---
@@ -69,7 +69,7 @@
   - `ProcessSnooper.detectAgent(inPath path: String) -> AgentKind?`
   - `ProcessSnooper.detectAgent(inProcessTreeOf ppid: pid_t) -> AgentKind?`
 
-- [ ] **Step 1: Write failing tests for `ProcessSnooper` path parsing**
+- [x] **Step 1: Write failing tests for `ProcessSnooper` path parsing**
   Create `Tests/LinkCKitTests/ProcessSnooperTests.swift` testing:
   - `/opt/homebrew/bin/claude` &rarr; `.claude`
   - `/Users/user/.local/bin/agy` &rarr; `.agy`
@@ -78,16 +78,16 @@
   - `/bin/zsh`, `/usr/bin/git`, `/usr/bin/vim` &rarr; `nil`
   - Real process tree inspection on `getpid()` returns expected shell or test runner.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
   Run `swift test --filter ProcessSnooperTests` and confirm compilation fails.
 
-- [ ] **Step 3: Implement `ProcessSnooper` using Darwin `libproc`**
+- [x] **Step 3: Implement `ProcessSnooper` using Darwin `libproc`**
   Create `Sources/LinkCKit/Terminal/ProcessSnooper.swift` calling Darwin `proc_listpids` with `PROC_PPID_ONLY` and `proc_pidpath`.
 
-- [ ] **Step 4: Run tests and verify pass**
+- [x] **Step 4: Run tests and verify pass**
   Run `swift test --filter ProcessSnooperTests` and confirm all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
   `git add Sources/LinkCKit/Terminal/ProcessSnooper.swift Tests/LinkCKitTests/ProcessSnooperTests.swift && git commit -m "Add ProcessSnooper with Darwin libproc child process inspection"`
 
 ---
@@ -108,23 +108,23 @@
   - `AppCoordinator.launch(cwd:agent:mode:)`
   - `ShellRow.detectedAgent: AgentKind?`
 
-- [ ] **Step 1: Write failing tests for `TerminalSession` agent tracking**
+- [x] **Step 1: Write failing tests for `TerminalSession` agent tracking**
   Create `Tests/LinkCKitTests/TerminalSessionAgentTests.swift` verifying:
   - Initial `agentKind` defaults to configured value.
   - `sampleForegroundAgent()` checks `childPid` and updates `agentKind`.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
   Run `swift test --filter TerminalSessionAgentTests` and confirm compilation fails.
 
-- [ ] **Step 3: Implement agent support in `TerminalSession`, `ShellCoordinator`, and `AppCoordinator`**
+- [x] **Step 3: Implement agent support in `TerminalSession`, `ShellCoordinator`, and `AppCoordinator`**
   - Add `agentKind` property and `sampleForegroundAgent()` to `TerminalSession`.
   - Update `AppCoordinator` to allow launching any `AgentKind` via its descriptor.
   - Update `ShellRow` to expose `detectedAgent: AgentKind?`.
 
-- [ ] **Step 4: Run tests and verify pass**
+- [x] **Step 4: Run tests and verify pass**
   Run `swift test` and confirm all 369+ tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
   `git add Sources/LinkCKit/Terminal/TerminalSession.swift Sources/LinkCKit/Terminal/ShellCoordinator.swift Sources/LinkCKit/App/AppCoordinator.swift Tests/LinkCKitTests/TerminalSessionAgentTests.swift && git commit -m "Wire AgentKind and process sampling into TerminalSession and Coordinators"`
 
 ---
@@ -139,7 +139,7 @@
 - Consumes: `AgentKind`
 - Produces: `struct AgentPill: View`
 
-- [ ] **Step 1: Create `AgentPill` component**
+- [x] **Step 1: Create `AgentPill` component**
   Create `Sources/linkc/AgentPill.swift` rendering compact pill with branded color tokens:
   - Claude: `#D97757`
   - Antigravity: `#7AA2F7`
@@ -147,16 +147,16 @@
   - Codex: `#10A37F`
   - Shell: `#8E8E93`
 
-- [ ] **Step 2: Integrate `AgentPill` into `HomeCard`**
+- [x] **Step 2: Integrate `AgentPill` into `HomeCard`**
   In `Sources/linkc/SessionList.swift`, render `AgentPill(agent: session.agentKind)` next to `session.title`.
 
-- [ ] **Step 3: Integrate `AgentPill` into `CompactSessionRow` and `CompactTerminalRow`**
+- [x] **Step 3: Integrate `AgentPill` into `CompactSessionRow` and `CompactTerminalRow`**
   Render `AgentPill` in the sidebar compact view for both sessions and dev terminals with detected agents.
 
-- [ ] **Step 4: Verify build**
+- [x] **Step 4: Verify build**
   Run `swift build` to confirm UI compiles cleanly.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
   `git add Sources/linkc/AgentPill.swift Sources/linkc/SessionList.swift && git commit -m "Add AgentPill component and badge session and terminal rows"`
 
 ---
@@ -171,27 +171,27 @@
 - Consumes: `AgentKind`, `LaunchMode`, `AppCoordinator`
 - Produces: Expanded `+` menu and `AppModel.newSession(agent:mode:)`
 
-- [ ] **Step 1: Update `AppModel` to support multi-agent launching**
+- [x] **Step 1: Update `AppModel` to support multi-agent launching**
   In `Sources/linkc/LinkCApp.swift`, update `newSession(agent: AgentKind = .claude, mode: LaunchMode)` to look up the executable and arguments for the specified agent.
 
-- [ ] **Step 2: Expand `LauncherMenu` in `PanelView.swift`**
+- [x] **Step 2: Expand `LauncherMenu` in `PanelView.swift`**
   Add direct 1-click launch items for Claude, Antigravity (`agy`), Cursor Agent, Codex, and Shell (`zsh`), plus submenus for Continue / Resume.
 
-- [ ] **Step 3: Verify build and test suite**
+- [x] **Step 3: Verify build and test suite**
   Run `swift build` and `swift test` to ensure 0 errors and all tests pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
   `git add Sources/linkc/PanelView.swift Sources/linkc/LinkCApp.swift && git commit -m "Expand LauncherMenu with 1-click autonomous launch for all agents"`
 
 ---
 
 ### Task 6: Full Verification & Integration Smoke Test
 
-- [ ] **Step 1: Run complete test suite**
+- [x] **Step 1: Run complete test suite**
   Run `swift test` and confirm 100% green tests.
-- [ ] **Step 2: Build the app bundle**
+- [x] **Step 2: Build the app bundle**
   Run `./build-app.sh` to ensure app bundle creates cleanly with code signing and resources.
-- [ ] **Step 3: Update documentation and ledger**
+- [x] **Step 3: Update documentation and ledger**
   Update `.superpowers/sdd/progress.md` with the completed milestone status.
-- [ ] **Step 4: Final commit**
+- [x] **Step 4: Final commit**
   `git commit -am "Complete Milestone 1: Multi-agent detection and autonomous launch"`
