@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "linkc", targets: ["linkc"]),
+        .executable(name: "linkc-mcp", targets: ["linkc-mcp"]),
         .library(name: "LinkCKit", targets: ["LinkCKit"]),
     ],
     dependencies: [
@@ -20,6 +21,11 @@ let package = Package(
         .executableTarget(
             name: "linkc",
             dependencies: ["LinkCKit", "SwiftTerm"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
+            name: "linkc-mcp",
+            dependencies: ["LinkCKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
