@@ -26,6 +26,10 @@ public struct TerminalContainer: NSViewRepresentable {
 public final class TerminalHostView: NSView {
     private weak var shown: NSView?
 
+    /// Only allows window dragging if no terminal view is currently attached. When a terminal
+    /// is shown, mouse clicks/drags must be handled by the terminal view for text selection.
+    public override var mouseDownCanMoveWindow: Bool { shown == nil }
+
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         autoresizingMask = [.width, .height]

@@ -27,7 +27,7 @@ public final class TerminalSession {
     /// Backing store for the lazily-created view. Kept as an optional (rather than a `lazy
     /// var`) so `terminate()` can ask "was a process ever started?" without forcing the view
     /// — and a live PTY — into existence.
-    private var _terminalView: LocalProcessTerminalView?
+    private var _terminalView: LinkCTerminalView?
 
     /// Child liveness, flipped to false SYNCHRONOUSLY inside SwiftTerm's exit delegate — on
     /// whichever thread it fires, in the same call chain that reaps the pid — so a signal can
@@ -64,9 +64,9 @@ public final class TerminalSession {
 
     /// The AppKit view to embed. Created on first access; retains the process delegate and
     /// marshals its callbacks (delivered on SwiftTerm's private queue) onto the main actor.
-    public var terminalView: LocalProcessTerminalView {
+    public var terminalView: LinkCTerminalView {
         if let existing = _terminalView { return existing }
-        let view = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
         view.processDelegate = processDelegate
         view.nativeBackgroundColor = NSColor(calibratedWhite: 0.09, alpha: 1)
         view.nativeForegroundColor = NSColor(calibratedWhite: 0.92, alpha: 1)
@@ -200,4 +200,10 @@ private final class ProcessDelegate: NSObject, LocalProcessTerminalViewDelegate 
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
     func processTerminated(source: TerminalView, exitCode: Int32?) { onExit?(exitCode) }
+}
+
+/// A specialized LocalProcessTerminalView that disables window moving on mouse clicks/drags,
+/// ensuring that clicking and dragging inside the terminal highlights text instead of moving the window.
+public final class LinkCTerminalView: LocalProcessTerminalView {
+    public override var mouseDownCanMoveWindow: Bool { false }
 }

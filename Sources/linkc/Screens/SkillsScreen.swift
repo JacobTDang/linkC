@@ -228,7 +228,7 @@ private struct SkillDetailView: View {
                         Text(body_)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(Theme.textSecondary.opacity(0.9))
-                            .textSelection(.enabled)
+                            .selectableText()
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let loadError {

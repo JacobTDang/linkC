@@ -147,7 +147,7 @@ struct AgentReaderView: View {
                         Text(result)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(Theme.textSecondary.opacity(0.9))
-                            .textSelection(.enabled)
+                            .selectableText()
                             .fixedSize(horizontal: false, vertical: true)
                     } else if agent.isRunning {
                         Text("Still working — \(AgeFormat.compact(from: agent.startedAt)) in. The report lands here when it finishes.")

@@ -375,8 +375,11 @@ private struct TerminalHero: View {
     let model: AppModel
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.setWindowDraggable) private var setWindowDraggable
     /// An agent opened for reading — replaces the terminal until dismissed.
     @State private var readerAgent: AgentRun?
+    /// Whether the pointer is hovering over the active terminal area.
+    @State private var isHoveringTerminal = false
 
     var body: some View {
         GeometryReader { geo in
@@ -428,6 +431,25 @@ private struct TerminalHero: View {
                     ZStack {
                         TerminalContainer(session: model.selectedTerminal)
                             .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
+                            .onHover { hovering in
+                                let active = hovering && model.selectedTerminal != nil
+                                if active != isHoveringTerminal {
+                                    isHoveringTerminal = active
+                                    setWindowDraggable(!active)
+                                }
+                            }
+                            .onDisappear {
+                                if isHoveringTerminal {
+                                    isHoveringTerminal = false
+                                    setWindowDraggable(true)
+                                }
+                            }
+                            .onChange(of: model.selectedTerminal?.id) { _, newId in
+                                if newId == nil && isHoveringTerminal {
+                                    isHoveringTerminal = false
+                                    setWindowDraggable(true)
+                                }
+                            }
                         if model.selectedTerminal == nil {
                             Text("Select a session")
                                 .font(.system(size: 12))

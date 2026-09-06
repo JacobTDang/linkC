@@ -337,7 +337,7 @@ private struct ContainerDetailView: View {
                         Text(logTail.trimmingCharacters(in: .whitespacesAndNewlines))
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(Theme.textSecondary.opacity(0.85))
-                            .textSelection(.enabled)
+                            .selectableText()
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if !isLoading, bundle?.overview == nil, bundle?.logTail == nil {
@@ -392,7 +392,7 @@ private struct DetailGrid: View {
             Text(value)
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textSecondary)
-                .textSelection(.enabled)
+                .selectableText()
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

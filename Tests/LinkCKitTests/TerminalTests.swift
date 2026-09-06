@@ -128,6 +128,23 @@ final class TerminalSessionTests: XCTestCase {
             ["PATH": "/usr/bin", "HOME": "/Users/x"]
         )
     }
+
+    func testLinkCTerminalViewDisablesWindowDragging() {
+        let view = LinkCTerminalView(frame: .zero)
+        XCTAssertFalse(view.mouseDownCanMoveWindow, "Terminal view must disable window dragging so text highlighting works")
+    }
+
+    func testTerminalHostViewMouseDownCanMoveWindowBehavior() {
+        let hostView = TerminalHostView(frame: .zero)
+        XCTAssertTrue(hostView.mouseDownCanMoveWindow, "Empty host view allows window dragging")
+
+        let terminal = LinkCTerminalView(frame: .zero)
+        hostView.show(terminal)
+        XCTAssertFalse(hostView.mouseDownCanMoveWindow, "Host view with active terminal must disallow window dragging")
+
+        hostView.show(nil)
+        XCTAssertTrue(hostView.mouseDownCanMoveWindow, "Detaching terminal restores window dragging")
+    }
 }
 
 /// The preview cleaner turns raw terminal rows into home-card content: chrome rows — box-drawing
