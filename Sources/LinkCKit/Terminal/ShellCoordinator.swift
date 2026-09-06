@@ -13,7 +13,7 @@ public final class ShellCoordinator {
 
     private let terminals: TerminalSessionManager
     private let shellPath: () -> String
-    private let manifest: ShellManifest?
+    let manifest: ShellManifest?
     /// Shells remembered from a previous run — restorable rows, not live ones. Kept in
     /// sync with the manifest so the UI can observe one source.
     public private(set) var restorables: [RestorableShell] = []
@@ -74,6 +74,21 @@ public final class ShellCoordinator {
                 let agent = terminal.sampleForegroundAgent()
                 store.updateDetectedAgent(id: row.id, agent: agent == .shell ? nil : agent)
             }
+        }
+    }
+
+    /// Snapshot all running shells to the manifest before shutdown.
+    public func prepareForShutdown() {
+        for row in store.rows where row.state == .running {
+            manifest?.upsert(RestorableShell(
+                id: row.id,
+                cwd: row.cwd,
+                title: row.title,
+                command: row.command,
+                wasActiveOnQuit: true,
+                detectedAgent: row.detectedAgent,
+                endedAt: nil
+            ))
         }
     }
 

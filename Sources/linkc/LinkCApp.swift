@@ -424,6 +424,8 @@ final class AppModel {
     /// EARLIER for manual restore — same as any quit.
     func installUpdate() {
         guard let dist = Bundle.main.object(forInfoDictionaryKey: "LinkCSourceDist") as? String else { return }
+        shells?.prepareForShutdown()
+        coordinator?.prepareForShutdown(selectedId: selectedId)
         let script = UpdateSwap.script(
             pid: ProcessInfo.processInfo.processIdentifier,
             distPath: dist,
@@ -601,6 +603,8 @@ final class AppModel {
     func shutdown() {
         healthTimer?.invalidate()
         healthTimer = nil
+        shells?.prepareForShutdown()
+        coordinator?.prepareForShutdown(selectedId: selectedId)
         coordinator?.shutdown()
     }
 

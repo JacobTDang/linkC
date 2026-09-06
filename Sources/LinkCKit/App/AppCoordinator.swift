@@ -42,7 +42,7 @@ public final class AppCoordinator {
     private let settingsDir: URL
     private let userSettingsURL: URL
     /// Persists the session manifest so sessions survive quitting/crashing and can be restored.
-    private let manifest: WorkspaceManifest
+    let manifest: WorkspaceManifest
     /// Per-run shared secret baked into every composed settings file and required by the hook
     /// server — no other local process can spoof session state at the loopback port.
     let hookToken = UUID().uuidString  // internal: tests need to send it
@@ -141,8 +141,28 @@ public final class AppCoordinator {
         Task { await notifications.requestAuthorization() }
     }
 
+    /// Snapshot all active sessions to the manifest with wasActiveOnQuit == true before shutdown.
+    public func prepareForShutdown(selectedId: String? = nil) {
+        for s in store.sessions where s.state != .ended {
+            let liveAgent = terminals.session(id: s.id)?.sampleForegroundAgent() ?? s.agentKind
+            manifest.upsert(RestorableSession(
+                linkcId: s.id,
+                claudeSessionId: s.claudeSessionId,
+                cwd: s.cwd,
+                title: s.title,
+                agentKind: liveAgent,
+                wasActiveOnQuit: true,
+                endedAt: nil
+            ))
+        }
+        if let selectedId {
+            UserDefaults.standard.set(selectedId, forKey: "LinkCLastSelectedSessionId")
+        }
+    }
+
     /// Stops the hook server and the event consumer. Called at app termination (and by tests).
     public func shutdown() {
+        prepareForShutdown()
         eventContinuation.finish()
         consumerTask?.cancel()
         consumerTask = nil

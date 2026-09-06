@@ -449,4 +449,120 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertFalse(runs.contains(where: \.isRunning), "prompt submit must sweep pre-turn runs")
         XCTAssertEqual(runs.first?.endedBySweep, true)
     }
+
+    /// prepareForShutdown snapshots all active sessions to the manifest with wasActiveOnQuit == true,
+    /// samples live foreground agents, and persists the selected session ID to UserDefaults.
+    func testPrepareForShutdownPersistsActiveSessionsWithLiveAgentAndActiveOnQuit() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-shutdown-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            UserDefaults.standard.removeObject(forKey: "LinkCLastSelectedSessionId")
+        }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        _ = coordinator.store.create(cwd: "/tmp/project1", title: "p1", id: "L1", agentKind: .claude)
+        coordinator.store.apply(HookEvent(kind: .userPromptSubmit, linkcSessionId: "L1", claudeSessionId: "c1", cwd: "/tmp/project1"))
+
+        _ = coordinator.store.create(cwd: "/tmp/project2", title: "p2", id: "L2", agentKind: .cursor)
+        _ = coordinator.terminals.makeSession(id: "L2", cwd: "/tmp/project2", title: "p2", agentKind: .cursor)
+
+        _ = coordinator.store.create(cwd: "/tmp/project3", title: "p3", id: "L3", agentKind: .agy)
+        coordinator.store.apply(HookEvent(kind: .sessionEnd, linkcSessionId: "L3", claudeSessionId: nil, cwd: "/tmp/project3"))
+
+        coordinator.prepareForShutdown(selectedId: "L2")
+
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "LinkCLastSelectedSessionId"), "L2")
+
+        let entries = coordinator.manifest.entries
+        guard let entry1 = entries.first(where: { $0.linkcId == "L1" }) else {
+            return XCTFail("Missing manifest entry for L1")
+        }
+        XCTAssertTrue(entry1.wasActiveOnQuit)
+        XCTAssertNil(entry1.endedAt)
+        XCTAssertEqual(entry1.agentKind, .claude)
+        XCTAssertEqual(entry1.claudeSessionId, "c1")
+        XCTAssertEqual(entry1.cwd, "/tmp/project1")
+
+        guard let entry2 = entries.first(where: { $0.linkcId == "L2" }) else {
+            return XCTFail("Missing manifest entry for L2")
+        }
+        XCTAssertTrue(entry2.wasActiveOnQuit)
+        XCTAssertNil(entry2.endedAt)
+        XCTAssertEqual(entry2.agentKind, .cursor)
+
+        let entry3 = entries.first(where: { $0.linkcId == "L3" })
+        XCTAssertFalse(entry3?.wasActiveOnQuit ?? false)
+
+        // Verify disk persistence to workspace.json
+        let fileURL = dir.appendingPathComponent("workspace.json")
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let diskEntries = try decoder.decode([RestorableSession].self, from: data)
+        XCTAssertTrue(diskEntries.contains { $0.linkcId == "L1" && $0.wasActiveOnQuit && $0.endedAt == nil })
+        XCTAssertTrue(diskEntries.contains { $0.linkcId == "L2" && $0.wasActiveOnQuit && $0.endedAt == nil })
+    }
+
+    /// ShellCoordinator.prepareForShutdown snapshots all running shells with wasActiveOnQuit == true and detected agents.
+    func testShellCoordinatorPrepareForShutdownPersistsRunningShells() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-shell-shutdown-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let terminals = TerminalSessionManager()
+        let shellCoordinator = ShellCoordinator(terminals: terminals, manifestDir: dir)
+
+        _ = shellCoordinator.store.add(id: "S1", cwd: "/tmp/shell1", title: "sh1", command: "npm run dev")
+        shellCoordinator.store.updateDetectedAgent(id: "S1", agent: .codex)
+
+        _ = shellCoordinator.store.add(id: "S2", cwd: "/tmp/shell2", title: "sh2", command: nil)
+        shellCoordinator.store.markExited(id: "S2", code: 0)
+
+        shellCoordinator.prepareForShutdown()
+
+        guard let entries = shellCoordinator.manifest?.entries else {
+            return XCTFail("Shell manifest should exist")
+        }
+
+        guard let shell1 = entries.first(where: { $0.id == "S1" }) else {
+            return XCTFail("Missing shell manifest entry for S1")
+        }
+        XCTAssertTrue(shell1.wasActiveOnQuit)
+        XCTAssertNil(shell1.endedAt)
+        XCTAssertEqual(shell1.detectedAgent, .codex)
+        XCTAssertEqual(shell1.command, "npm run dev")
+
+        let shell2 = entries.first(where: { $0.id == "S2" })
+        XCTAssertFalse(shell2?.wasActiveOnQuit ?? false)
+
+        // Verify disk persistence to shells.json
+        let fileURL = dir.appendingPathComponent("shells.json")
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let diskEntries = try decoder.decode([RestorableShell].self, from: data)
+        XCTAssertTrue(diskEntries.contains { $0.id == "S1" && $0.wasActiveOnQuit && $0.detectedAgent == .codex && $0.endedAt == nil })
+    }
+
+    /// AppCoordinator.shutdown() invokes prepareForShutdown() to persist active sessions.
+    func testAppCoordinatorShutdownCallsPrepareForShutdown() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-shutdown-call-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        _ = coordinator.store.create(cwd: "/tmp/proj", title: "proj", id: "L4", agentKind: .agy)
+
+        coordinator.shutdown()
+
+        let entries = coordinator.manifest.entries
+        guard let entry = entries.first(where: { $0.linkcId == "L4" }) else {
+            return XCTFail("Missing manifest entry for L4")
+        }
+        XCTAssertTrue(entry.wasActiveOnQuit)
+        XCTAssertNil(entry.endedAt)
+        XCTAssertEqual(entry.agentKind, .agy)
+    }
 }
+
