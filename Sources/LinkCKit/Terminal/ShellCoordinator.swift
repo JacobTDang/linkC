@@ -67,6 +67,16 @@ public final class ShellCoordinator {
         return row
     }
 
+    /// Sample active foreground agents across all live shell terminals.
+    public func sampleAgents() {
+        for row in store.rows {
+            if let terminal = terminals.session(id: row.id) {
+                let agent = terminal.sampleForegroundAgent()
+                store.updateDetectedAgent(id: row.id, agent: agent == .shell ? nil : agent)
+            }
+        }
+    }
+
     /// Re-open a shell remembered from a previous run: a fresh shell in its folder (and
     /// its command, for command-mode shells). The card is consumed either way — a failed
     /// launch rethrows, and the entry is already gone, matching session restore.

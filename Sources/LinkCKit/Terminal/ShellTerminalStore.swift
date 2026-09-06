@@ -14,6 +14,23 @@ public struct ShellRow: Sendable, Identifiable, Equatable {
     /// Non-nil for command-mode shells (docker logs, a dev server) — relaunch re-runs it.
     public var command: String?
     public var state: ShellState
+    public var detectedAgent: AgentKind?
+
+    public init(
+        id: String,
+        cwd: String,
+        title: String,
+        command: String? = nil,
+        state: ShellState,
+        detectedAgent: AgentKind? = nil
+    ) {
+        self.id = id
+        self.cwd = cwd
+        self.title = title
+        self.command = command
+        self.state = state
+        self.detectedAgent = detectedAgent
+    }
 }
 
 /// Bookkeeping for dev terminals — the shell analogue of `SessionStore`, minus the hook
@@ -29,7 +46,7 @@ public final class ShellTerminalStore {
 
     @discardableResult
     public func add(id: String, cwd: String, title: String, command: String? = nil) -> ShellRow {
-        let row = ShellRow(id: id, cwd: cwd, title: title, command: command, state: .running)
+        let row = ShellRow(id: id, cwd: cwd, title: title, command: command, state: .running, detectedAgent: nil)
         rows.append(row)
         return row
     }
@@ -43,6 +60,12 @@ public final class ShellTerminalStore {
     public func markExited(id: String, code: Int32?) {
         guard let index = rows.firstIndex(where: { $0.id == id }) else { return }
         rows[index].state = .exited(code)
+    }
+
+    /// Update the detected active agent running in this shell terminal.
+    public func updateDetectedAgent(id: String, agent: AgentKind?) {
+        guard let index = rows.firstIndex(where: { $0.id == id }) else { return }
+        rows[index].detectedAgent = agent
     }
 
     public func remove(id: String) {

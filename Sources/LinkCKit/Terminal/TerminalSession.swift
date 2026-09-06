@@ -14,6 +14,8 @@ public final class TerminalSession {
     public let id: String
     public let cwd: String
     public let title: String
+    public let initialAgentKind: AgentKind
+    public private(set) var agentKind: AgentKind
 
     /// Fired on the main actor when the child process exits — for ANY reason, including being
     /// killed by `terminate()`. Carries the exit code (nil when the exit was an IO error).
@@ -40,10 +42,24 @@ public final class TerminalSession {
     /// Idempotence for `terminate()` (main-actor only).
     private var terminationRequested = false
 
-    public init(id: String, cwd: String, title: String) {
+    public init(id: String, cwd: String, title: String, agentKind: AgentKind = .shell) {
         self.id = id
         self.cwd = cwd
         self.title = title
+        self.initialAgentKind = agentKind
+        self.agentKind = agentKind
+    }
+
+    /// Query Darwin kernel for any active AI agent in this terminal's child process tree.
+    @discardableResult
+    public func sampleForegroundAgent() -> AgentKind {
+        guard childPid > 0 else { return agentKind }
+        if let detected = ProcessSnooper.detectAgent(inProcessTreeOf: childPid) {
+            self.agentKind = detected
+            return detected
+        }
+        self.agentKind = initialAgentKind
+        return initialAgentKind
     }
 
     /// The AppKit view to embed. Created on first access; retains the process delegate and

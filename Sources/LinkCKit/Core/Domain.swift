@@ -90,6 +90,7 @@ public struct Session: Sendable, Identifiable, Equatable {
     /// When `state` last actually changed — feeds "needs permission · 4m". A re-asserted
     /// identical state never resets it.
     public var stateChangedAt: Date
+    public var agentKind: AgentKind
 
     public init(
         id: String,
@@ -97,7 +98,8 @@ public struct Session: Sendable, Identifiable, Equatable {
         title: String,
         state: SessionState = .starting,
         claudeSessionId: String? = nil,
-        stateChangedAt: Date = Date()
+        stateChangedAt: Date = Date(),
+        agentKind: AgentKind = .claude
     ) {
         self.id = id
         self.cwd = cwd
@@ -105,5 +107,6 @@ public struct Session: Sendable, Identifiable, Equatable {
         self.state = state
         self.claudeSessionId = claudeSessionId
         self.stateChangedAt = stateChangedAt
+        self.agentKind = agentKind
     }
 }

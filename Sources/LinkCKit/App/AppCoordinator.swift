@@ -237,28 +237,44 @@ public final class AppCoordinator {
     // MARK: - UI commands
 
     @discardableResult
-    public func newSession(cwd: String, mode: LaunchMode = .new) throws -> Session {
+    public func newSession(cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
-        return try launch(cwd: cwd, title: title, args: Self.launchArgs(mode: mode, resumeId: nil))
+        return try launch(cwd: cwd, title: title, agent: agent, mode: mode)
     }
 
-    /// Spawn a claude session in `cwd` with the given claude `args`, wire its terminal, select it,
+    /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it,
     /// and record it (live, no `endedAt`) in the manifest. The single launch path for both new
     /// sessions and restores. Fails loud: a launch error prunes any partial state and rethrows.
     @discardableResult
-    private func launch(cwd: String, title: String, args: [String]) throws -> Session {
-        let session = store.create(cwd: cwd, title: title)
+    private func launch(cwd: String, title: String, agent: AgentKind = .claude, mode: LaunchMode, resumeId: String? = nil) throws -> Session {
+        let session = store.create(cwd: cwd, title: title, agentKind: agent)
         do {
-            let settingsPath = try writeSettings(for: session)
-            let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title)
-            // A terminated claude = an ended session: prune everything when the child exits.
+            let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent)
+            // A terminated child = an ended session: prune everything when the child exits.
             terminal.onTerminated = { [weak self] _ in
                 self?.cleanup(sessionId: session.id)
             }
+
+            let executable: String
+            let args: [String]
+            let env: [String: String] = ["LINKC_SESSION": session.id]
+
+            if agent == .claude {
+                executable = claudePath
+                let settingsPath = try writeSettings(for: session)
+                args = Self.launchArgs(mode: mode, resumeId: resumeId) + ["--settings", settingsPath]
+            } else {
+                guard let resolved = AgentDescriptor.resolveExecutable(for: agent) else {
+                    throw LinkCError.process("Executable for \(agent.pillText) not found")
+                }
+                executable = resolved
+                args = AgentDescriptor.arguments(for: agent, mode: mode)
+            }
+
             try terminal.start(
-                executable: claudePath,
-                args: args + ["--settings", settingsPath],
-                env: ["LINKC_SESSION": session.id]
+                executable: executable,
+                args: args,
+                env: env
             )
             terminals.select(session.id)
             // Record the now-live session so it survives a quit/crash and can be restored.
@@ -289,7 +305,7 @@ public final class AppCoordinator {
                 "a session is already running in \(r.title) — restore this one after it ends, or dismiss it"
             )
         }
-        let session = try launch(cwd: r.cwd, title: r.title, args: Self.launchArgs(mode: .continueLast, resumeId: r.claudeSessionId))
+        let session = try launch(cwd: r.cwd, title: r.title, agent: .claude, mode: .continueLast, resumeId: r.claudeSessionId)
         manifest.remove(linkcId: r.linkcId)
         syncRestorables()
         return session

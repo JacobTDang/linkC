@@ -16,8 +16,8 @@ public final class TerminalSessionManager {
     /// process — the caller drives `TerminalSession.start(...)` — so construction is
     /// side-effect free and unit-testable without spawning a real PTY.
     @discardableResult
-    public func makeSession(id: String, cwd: String, title: String) -> TerminalSession {
-        let session = TerminalSession(id: id, cwd: cwd, title: title)
+    public func makeSession(id: String, cwd: String, title: String, agentKind: AgentKind = .shell) -> TerminalSession {
+        let session = TerminalSession(id: id, cwd: cwd, title: title, agentKind: agentKind)
         sessions.append(session)
         selectedId = id
         return session
