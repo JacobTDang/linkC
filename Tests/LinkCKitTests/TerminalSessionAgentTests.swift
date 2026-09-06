@@ -37,4 +37,26 @@ final class TerminalSessionAgentTests: XCTestCase {
         let s2 = store.create(cwd: "/tmp", title: "Cursor", agentKind: .cursor)
         XCTAssertEqual(s2.agentKind, .cursor)
     }
+
+    func testSessionStateBuckets() {
+        XCTAssertEqual(SessionState.working.bucket, .active)
+        XCTAssertEqual(SessionState.ready.bucket, .idle)
+        XCTAssertEqual(SessionState.starting.bucket, .idle)
+        XCTAssertEqual(SessionState.ended.bucket, .idle)
+        XCTAssertEqual(SessionState.waitingPermission.bucket, .needsYou)
+        XCTAssertEqual(SessionState.waitingIdle.bucket, .needsYou)
+        XCTAssertEqual(SessionState.finished.bucket, .needsYou)
+        XCTAssertEqual(SessionState.error.bucket, .needsYou)
+    }
+
+    func testAgentRunLifecycle() {
+        var run = AgentRun(id: "tool-1", description: "Search docs", type: "Explore", startedAt: Date())
+        XCTAssertTrue(run.isRunning)
+        XCTAssertEqual(run.type, "Explore")
+
+        run.endedAt = Date()
+        run.resultText = "Found 3 files"
+        XCTAssertFalse(run.isRunning)
+        XCTAssertEqual(run.resultText, "Found 3 files")
+    }
 }

@@ -152,6 +152,13 @@ final class AppModel {
         return coordinator?.terminals.session(id: id)
     }
 
+    var selectedSession: Session? {
+        guard let id = selectedId else { return nil }
+        return sessions.first { $0.id == id } ?? selectedTerminal.map {
+            Session(id: $0.id, cwd: $0.cwd, title: $0.title, state: .ready, agentKind: $0.agentKind)
+        }
+    }
+
     func start() async {
         do {
             let preflight = try Preflight.resolve()
