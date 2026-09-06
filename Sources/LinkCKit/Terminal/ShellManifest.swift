@@ -9,15 +9,61 @@ public struct RestorableShell: Codable, Equatable, Identifiable, Sendable {
     public let title: String
     /// Non-nil for command-mode shells, so a relaunch re-runs the same thing.
     public let command: String?
+    /// Whether the shell was actively running when linkC quit or shut down.
+    public var wasActiveOnQuit: Bool
+    /// The agent kind detected running in this terminal shell, if any.
+    public var detectedAgent: AgentKind?
     /// When the shell ended. `nil` means it was still live when last persisted.
     public var endedAt: Date?
 
-    public init(id: String, cwd: String, title: String, command: String? = nil, endedAt: Date? = nil) {
+    public init(
+        id: String,
+        cwd: String,
+        title: String,
+        command: String? = nil,
+        wasActiveOnQuit: Bool = false,
+        detectedAgent: AgentKind? = nil,
+        endedAt: Date? = nil
+    ) {
         self.id = id
         self.cwd = cwd
         self.title = title
         self.command = command
+        self.wasActiveOnQuit = wasActiveOnQuit
+        self.detectedAgent = detectedAgent
         self.endedAt = endedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case cwd
+        case title
+        case command
+        case wasActiveOnQuit
+        case detectedAgent
+        case endedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        cwd = try container.decode(String.self, forKey: .cwd)
+        title = try container.decode(String.self, forKey: .title)
+        command = try container.decodeIfPresent(String.self, forKey: .command)
+        wasActiveOnQuit = try container.decodeIfPresent(Bool.self, forKey: .wasActiveOnQuit) ?? false
+        detectedAgent = try container.decodeIfPresent(AgentKind.self, forKey: .detectedAgent)
+        endedAt = try container.decodeIfPresent(Date.self, forKey: .endedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(cwd, forKey: .cwd)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(command, forKey: .command)
+        try container.encode(wasActiveOnQuit, forKey: .wasActiveOnQuit)
+        try container.encodeIfPresent(detectedAgent, forKey: .detectedAgent)
+        try container.encodeIfPresent(endedAt, forKey: .endedAt)
     }
 }
 
@@ -42,15 +88,18 @@ public final class ShellManifest {
     /// is dead by definition of loading — stamp them so their age-out clock starts; ended
     /// entries older than a week drop; and each folder+command keeps only its newest entry
     /// (two shells in one folder running different commands are different things).
+    /// Shells marked `wasActiveOnQuit` are always retained and exempt from deduplication.
     static func prune(_ entries: [RestorableShell], now: Date) -> [RestorableShell] {
         var stamped = entries
         for i in stamped.indices where stamped[i].endedAt == nil {
             stamped[i].endedAt = now
         }
         // Every endedAt is non-nil past this point — the force-unwraps encode that.
-        let fresh = stamped.filter { now.timeIntervalSince($0.endedAt!) < Self.maxAge }
+        let freshInactive = stamped.filter {
+            !$0.wasActiveOnQuit && now.timeIntervalSince($0.endedAt!) < Self.maxAge
+        }
         var newest: [String: RestorableShell] = [:]
-        for entry in fresh {
+        for entry in freshInactive {
             let key = "\(entry.cwd)\u{0}\(entry.command ?? "")"
             guard let kept = newest[key] else {
                 newest[key] = entry
@@ -59,8 +108,8 @@ public final class ShellManifest {
             // Ties (same-crash orphans share a stamp) keep the later entry — the newer shell.
             if entry.endedAt! >= kept.endedAt! { newest[key] = entry }
         }
-        let survivors = Set(newest.values.map(\.id))
-        return fresh.filter { survivors.contains($0.id) }
+        let retainedInactiveIds = Set(newest.values.map(\.id))
+        return stamped.filter { $0.wasActiveOnQuit || retainedInactiveIds.contains($0.id) }
     }
 
     private static let maxAge: TimeInterval = 7 * 24 * 3600

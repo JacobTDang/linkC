@@ -16,9 +16,19 @@ final class WorkspaceManifestTests: XCTestCase {
         claude: String? = nil,
         cwd: String = "/tmp/proj",
         title: String = "proj",
+        agentKind: AgentKind = .claude,
+        wasActiveOnQuit: Bool = false,
         endedAt: Date? = nil
     ) -> RestorableSession {
-        RestorableSession(linkcId: linkcId, claudeSessionId: claude, cwd: cwd, title: title, endedAt: endedAt)
+        RestorableSession(
+            linkcId: linkcId,
+            claudeSessionId: claude,
+            cwd: cwd,
+            title: title,
+            agentKind: agentKind,
+            wasActiveOnQuit: wasActiveOnQuit,
+            endedAt: endedAt
+        )
     }
 
     func testRoundTripSaveLoad() {
@@ -187,6 +197,74 @@ final class WorkspaceManifestTests: XCTestCase {
         XCTAssertEqual(manifest.entries.map(\.linkcId), ["L2"])
         // Persisted.
         XCTAssertEqual(WorkspaceManifest(directory: dir).entries.map(\.linkcId), ["L2"])
+    }
+
+    func testRestorableSessionBackwardsCompatibility() throws {
+        let json = """
+        {
+            "linkcId": "L-legacy",
+            "claudeSessionId": "legacy-session-id",
+            "cwd": "/tmp/legacy",
+            "title": "Legacy Project"
+        }
+        """
+        let data = Data(json.utf8)
+        let decoder = JSONDecoder()
+        let session = try decoder.decode(RestorableSession.self, from: data)
+
+        XCTAssertEqual(session.linkcId, "L-legacy")
+        XCTAssertEqual(session.claudeSessionId, "legacy-session-id")
+        XCTAssertEqual(session.cwd, "/tmp/legacy")
+        XCTAssertEqual(session.title, "Legacy Project")
+        XCTAssertEqual(session.agentKind, .claude, "legacy records without agentKind must default to .claude")
+        XCTAssertFalse(session.wasActiveOnQuit, "legacy records without wasActiveOnQuit must default to false")
+        XCTAssertNil(session.endedAt)
+    }
+
+    func testRestorableSessionRoundTripWithAgentKindAndActiveOnQuit() throws {
+        let original = RestorableSession(
+            linkcId: "L-active",
+            claudeSessionId: "conv-123",
+            cwd: "/tmp/repo",
+            title: "Active Repo",
+            agentKind: .agy,
+            wasActiveOnQuit: true,
+            endedAt: nil
+        )
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(original)
+        let decoded = try JSONDecoder().decode(RestorableSession.self, from: data)
+
+        XCTAssertEqual(decoded.linkcId, "L-active")
+        XCTAssertEqual(decoded.claudeSessionId, "conv-123")
+        XCTAssertEqual(decoded.cwd, "/tmp/repo")
+        XCTAssertEqual(decoded.title, "Active Repo")
+        XCTAssertEqual(decoded.agentKind, .agy)
+        XCTAssertTrue(decoded.wasActiveOnQuit)
+        XCTAssertNil(decoded.endedAt)
+    }
+
+    func testPruneRetainsMultipleActiveSessionsInSameFolder() {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+
+        let s1 = entry("S1", cwd: "/repo/shared", title: "Shared Claude", agentKind: .claude, wasActiveOnQuit: true)
+        let s2 = entry("S2", cwd: "/repo/shared", title: "Shared AGY", agentKind: .agy, wasActiveOnQuit: true)
+        let s3 = entry("S3", cwd: "/repo/shared", title: "Shared Cursor", agentKind: .cursor, wasActiveOnQuit: true)
+
+        let s4 = entry("S4", cwd: "/repo/shared", title: "Shared Ended New", wasActiveOnQuit: false, endedAt: now.addingTimeInterval(-3600))
+        let s5 = entry("S5", cwd: "/repo/shared", title: "Shared Ended Old", wasActiveOnQuit: false, endedAt: now.addingTimeInterval(-7200))
+
+        let pruned = WorkspaceManifest.prune([s1, s2, s3, s4, s5], now: now)
+
+        let retainedIds = Set(pruned.map(\.linkcId))
+        XCTAssertTrue(retainedIds.contains("S1"), "active session S1 must be retained")
+        XCTAssertTrue(retainedIds.contains("S2"), "active session S2 must be retained")
+        XCTAssertTrue(retainedIds.contains("S3"), "active session S3 must be retained")
+        XCTAssertTrue(retainedIds.contains("S4"), "newest inactive session S4 must be retained")
+        XCTAssertFalse(retainedIds.contains("S5"), "older inactive session S5 must be pruned by folder dedup")
     }
 }
 

@@ -12,6 +12,10 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
     public var claudeSessionId: String?
     public let cwd: String
     public let title: String
+    /// The agent running in this session (e.g. claude, agy, cursor, codex). Defaults to .claude.
+    public var agentKind: AgentKind
+    /// Whether the session was actively running when linkC quit or shut down.
+    public var wasActiveOnQuit: Bool
     /// When the session ended/stopped. `nil` means it was still live when last persisted.
     public var endedAt: Date?
 
@@ -22,13 +26,49 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
         claudeSessionId: String? = nil,
         cwd: String,
         title: String,
+        agentKind: AgentKind = .claude,
+        wasActiveOnQuit: Bool = false,
         endedAt: Date? = nil
     ) {
         self.linkcId = linkcId
         self.claudeSessionId = claudeSessionId
         self.cwd = cwd
         self.title = title
+        self.agentKind = agentKind
+        self.wasActiveOnQuit = wasActiveOnQuit
         self.endedAt = endedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case linkcId
+        case claudeSessionId
+        case cwd
+        case title
+        case agentKind
+        case wasActiveOnQuit
+        case endedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        linkcId = try container.decode(String.self, forKey: .linkcId)
+        claudeSessionId = try container.decodeIfPresent(String.self, forKey: .claudeSessionId)
+        cwd = try container.decode(String.self, forKey: .cwd)
+        title = try container.decode(String.self, forKey: .title)
+        agentKind = try container.decodeIfPresent(AgentKind.self, forKey: .agentKind) ?? .claude
+        wasActiveOnQuit = try container.decodeIfPresent(Bool.self, forKey: .wasActiveOnQuit) ?? false
+        endedAt = try container.decodeIfPresent(Date.self, forKey: .endedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(linkcId, forKey: .linkcId)
+        try container.encodeIfPresent(claudeSessionId, forKey: .claudeSessionId)
+        try container.encode(cwd, forKey: .cwd)
+        try container.encode(title, forKey: .title)
+        try container.encode(agentKind, forKey: .agentKind)
+        try container.encode(wasActiveOnQuit, forKey: .wasActiveOnQuit)
+        try container.encodeIfPresent(endedAt, forKey: .endedAt)
     }
 }
 
@@ -70,6 +110,7 @@ public final class WorkspaceManifest {
     /// definition of loading — stamp them so their age-out clock starts; ended entries
     /// older than a week drop; and each folder keeps only its newest entry (the Resume…
     /// launcher still reaches every older conversation through claude's own picker).
+    /// Sessions marked `wasActiveOnQuit` are always retained and exempt from folder deduplication.
     static func prune(_ entries: [RestorableSession], now: Date) -> [RestorableSession] {
         var stamped = entries
         for i in stamped.indices where stamped[i].endedAt == nil {
@@ -77,9 +118,11 @@ public final class WorkspaceManifest {
         }
         // Every endedAt is non-nil past this point — the force-unwraps encode that
         // invariant rather than masking it with a fallback.
-        let fresh = stamped.filter { now.timeIntervalSince($0.endedAt!) < Self.maxAge }
+        let freshInactive = stamped.filter {
+            !$0.wasActiveOnQuit && now.timeIntervalSince($0.endedAt!) < Self.maxAge
+        }
         var newestByFolder: [String: RestorableSession] = [:]
-        for entry in fresh {
+        for entry in freshInactive {
             guard let kept = newestByFolder[entry.cwd] else {
                 newestByFolder[entry.cwd] = entry
                 continue
@@ -94,7 +137,8 @@ public final class WorkspaceManifest {
                 newestByFolder[entry.cwd] = entry
             }
         }
-        return fresh.filter { newestByFolder[$0.cwd]?.linkcId == $0.linkcId }
+        let retainedInactiveIds = Set(newestByFolder.values.map(\.linkcId))
+        return stamped.filter { $0.wasActiveOnQuit || retainedInactiveIds.contains($0.linkcId) }
     }
 
     private static let maxAge: TimeInterval = 7 * 24 * 3600

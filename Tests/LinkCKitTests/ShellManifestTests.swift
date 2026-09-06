@@ -14,9 +14,20 @@ final class ShellManifestTests: XCTestCase {
 
     private func entry(
         _ id: String, cwd: String = "/tmp/proj", title: String = "proj",
-        command: String? = nil, endedAt: Date? = nil
+        command: String? = nil,
+        wasActiveOnQuit: Bool = false,
+        detectedAgent: AgentKind? = nil,
+        endedAt: Date? = nil
     ) -> RestorableShell {
-        RestorableShell(id: id, cwd: cwd, title: title, command: command, endedAt: endedAt)
+        RestorableShell(
+            id: id,
+            cwd: cwd,
+            title: title,
+            command: command,
+            wasActiveOnQuit: wasActiveOnQuit,
+            detectedAgent: detectedAgent,
+            endedAt: endedAt
+        )
     }
 
     func testRoundTripSaveLoad() {
@@ -81,5 +92,68 @@ final class ShellManifestTests: XCTestCase {
 
         XCTAssertEqual(manifest.entries.map(\.id), ["S2"])
         XCTAssertEqual(ShellManifest(directory: dir).entries.map(\.id), ["S2"], "persisted")
+    }
+
+    func testRestorableShellBackwardsCompatibility() throws {
+        let json = """
+        {
+            "id": "S-legacy",
+            "cwd": "/tmp/legacy",
+            "title": "Legacy Terminal"
+        }
+        """
+        let data = Data(json.utf8)
+        let shell = try JSONDecoder().decode(RestorableShell.self, from: data)
+
+        XCTAssertEqual(shell.id, "S-legacy")
+        XCTAssertEqual(shell.cwd, "/tmp/legacy")
+        XCTAssertEqual(shell.title, "Legacy Terminal")
+        XCTAssertNil(shell.command)
+        XCTAssertFalse(shell.wasActiveOnQuit, "legacy records without wasActiveOnQuit must default to false")
+        XCTAssertNil(shell.detectedAgent, "legacy records without detectedAgent must default to nil")
+        XCTAssertNil(shell.endedAt)
+    }
+
+    func testRestorableShellRoundTripWithAgentAndActiveOnQuit() throws {
+        let original = RestorableShell(
+            id: "S-active",
+            cwd: "/tmp/repo",
+            title: "Active Dev Server",
+            command: "npm run dev",
+            wasActiveOnQuit: true,
+            detectedAgent: .cursor,
+            endedAt: nil
+        )
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(original)
+        let decoded = try JSONDecoder().decode(RestorableShell.self, from: data)
+
+        XCTAssertEqual(decoded.id, "S-active")
+        XCTAssertEqual(decoded.cwd, "/tmp/repo")
+        XCTAssertEqual(decoded.title, "Active Dev Server")
+        XCTAssertEqual(decoded.command, "npm run dev")
+        XCTAssertTrue(decoded.wasActiveOnQuit)
+        XCTAssertEqual(decoded.detectedAgent, .cursor)
+        XCTAssertNil(decoded.endedAt)
+    }
+
+    func testPruneRetainsMultipleActiveShellsInSameFolderAndCommand() {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+
+        let s1 = entry("S1", cwd: "/repo/shared", title: "Terminal 1", command: nil, wasActiveOnQuit: true)
+        let s2 = entry("S2", cwd: "/repo/shared", title: "Terminal 2", command: nil, wasActiveOnQuit: true)
+        let s3 = entry("S3", cwd: "/repo/shared", title: "Terminal Old", command: nil, wasActiveOnQuit: false, endedAt: now.addingTimeInterval(-7200))
+        let s4 = entry("S4", cwd: "/repo/shared", title: "Terminal New", command: nil, wasActiveOnQuit: false, endedAt: now.addingTimeInterval(-3600))
+
+        let pruned = ShellManifest.prune([s1, s2, s3, s4], now: now)
+
+        let retainedIds = Set(pruned.map(\.id))
+        XCTAssertTrue(retainedIds.contains("S1"), "active shell S1 must be retained")
+        XCTAssertTrue(retainedIds.contains("S2"), "active shell S2 must be retained")
+        XCTAssertTrue(retainedIds.contains("S4"), "newest inactive shell S4 must be retained")
+        XCTAssertFalse(retainedIds.contains("S3"), "older inactive shell S3 must be pruned")
     }
 }
