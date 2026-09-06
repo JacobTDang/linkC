@@ -53,14 +53,10 @@ while true {
             continue
         }
 
-        // Check if Content-Length header framing is used
+        // Skip HTTP-style header frames if present
         if let lineStr = String(data: lineData, encoding: .utf8),
            lineStr.lowercased().hasPrefix("content-length:") {
-            let lengthStr = lineStr.dropFirst("content-length:".count).trimmingCharacters(in: .whitespacesAndNewlines)
-            if let expectedLength = Int(lengthStr) {
-                // Header-delimited frame: wait for blank line \r\n or \n then read expectedLength
-                // For simplicity in standard MCP, clients like Claude & Cursor send single line JSON
-            }
+            continue
         }
 
         // Process line as JSON message

@@ -22,12 +22,17 @@ BUILD="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
 echo "==> Building release binary ($VERSION · $BUILD)"
 swift build -c release --package-path "$ROOT"
 BIN="$(swift build -c release --package-path "$ROOT" --show-bin-path)/linkc"
+MCP_BIN="$(swift build -c release --package-path "$ROOT" --show-bin-path)/linkc-mcp"
 
 echo "==> Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$NAME"
+cp "$MCP_BIN" "$APP/Contents/MacOS/linkc-mcp"
 cp "$ICNS" "$APP/Contents/Resources/$NAME.icns"
+
+mkdir -p "$HOME/.local/bin"
+ln -sf "$APP/Contents/MacOS/linkc-mcp" "$HOME/.local/bin/linkc-mcp"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
