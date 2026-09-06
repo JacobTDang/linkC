@@ -564,5 +564,180 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertNil(entry.endedAt)
         XCTAssertEqual(entry.agentKind, .agy)
     }
+
+    /// On start(), AppCoordinator automatically revives sessions marked wasActiveOnQuit into live sessions with their saved agentKind.
+    func testStartRevivesActiveSessionsFromManifest() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-revive-\(UUID().uuidString)")
+        let cwd1 = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd1-\(UUID().uuidString)")
+        let cwd2 = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd2-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd1, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd2, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: cwd1)
+            try? FileManager.default.removeItem(at: cwd2)
+        }
+
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(
+            linkcId: "ACT1",
+            claudeSessionId: "c1",
+            cwd: cwd1.path,
+            title: "p1",
+            agentKind: .claude,
+            wasActiveOnQuit: true,
+            endedAt: nil
+        ))
+        seed.upsert(RestorableSession(
+            linkcId: "ACT2",
+            claudeSessionId: nil,
+            cwd: cwd2.path,
+            title: "p2",
+            agentKind: .shell,
+            wasActiveOnQuit: true,
+            endedAt: nil
+        ))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        try coordinator.start()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertEqual(coordinator.store.sessions.count, 2)
+        let s1 = coordinator.store.session(id: "ACT1")
+        XCTAssertNotNil(s1)
+        XCTAssertEqual(s1?.agentKind, .claude)
+        XCTAssertEqual(s1?.cwd, cwd1.path)
+
+        let s2 = coordinator.store.session(id: "ACT2")
+        XCTAssertNotNil(s2)
+        XCTAssertEqual(s2?.agentKind, .shell)
+        XCTAssertEqual(s2?.cwd, cwd2.path)
+
+        // Manifest entries should have had wasActiveOnQuit reset to false
+        XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT1" })?.wasActiveOnQuit, false)
+        XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT2" })?.wasActiveOnQuit, false)
+    }
+
+    /// ShellCoordinator.restoreActiveShells() revives active shells with wasActiveOnQuit == true and their detectedAgent.
+    func testShellCoordinatorRestoreActiveShellsRevivesShells() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-shell-restore-\(UUID().uuidString)")
+        let cwd1 = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd1-\(UUID().uuidString)")
+        let cwd2 = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd2-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd1, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd2, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: cwd1)
+            try? FileManager.default.removeItem(at: cwd2)
+        }
+
+        let seed = ShellManifest(directory: dir)
+        seed.upsert(RestorableShell(
+            id: "SH1",
+            cwd: cwd1.path,
+            title: "sh1",
+            command: "echo test",
+            wasActiveOnQuit: true,
+            detectedAgent: .codex,
+            endedAt: nil
+        ))
+        seed.upsert(RestorableShell(
+            id: "SH2",
+            cwd: cwd2.path,
+            title: "sh2",
+            command: nil,
+            wasActiveOnQuit: false,
+            detectedAgent: nil,
+            endedAt: Date()
+        ))
+
+        let terminals = TerminalSessionManager()
+        let shellCoordinator = ShellCoordinator(terminals: terminals, manifestDir: dir)
+        shellCoordinator.restoreActiveShells()
+        defer { shellCoordinator.store.rows.forEach { shellCoordinator.stop($0.id) } }
+
+        XCTAssertTrue(shellCoordinator.store.rows.contains(where: { $0.id == "SH1" }))
+        XCTAssertEqual(shellCoordinator.store.row(id: "SH1")?.detectedAgent, .codex)
+        XCTAssertTrue(terminals.sessions.contains(where: { $0.id == "SH1" }))
+
+        // Inactive shell should NOT have been revived into store
+        XCTAssertFalse(shellCoordinator.store.rows.contains(where: { $0.id == "SH2" }))
+
+        // Manifest should have wasActiveOnQuit reset to false
+        XCTAssertEqual(shellCoordinator.manifest?.entries.first(where: { $0.id == "SH1" })?.wasActiveOnQuit, false)
+    }
+
+    /// LinkCLastSelectedSessionId in UserDefaults restores tab selection on start().
+    func testStartRestoresTabSelectionFromUserDefaults() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-tabsel-\(UUID().uuidString)")
+        let cwd1 = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd1-\(UUID().uuidString)")
+        let cwd2 = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd2-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd1, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd2, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: cwd1)
+            try? FileManager.default.removeItem(at: cwd2)
+            UserDefaults.standard.removeObject(forKey: "LinkCLastSelectedSessionId")
+        }
+
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(
+            linkcId: "TAB1",
+            claudeSessionId: nil,
+            cwd: cwd1.path,
+            title: "t1",
+            agentKind: .claude,
+            wasActiveOnQuit: true,
+            endedAt: nil
+        ))
+        seed.upsert(RestorableSession(
+            linkcId: "TAB2",
+            claudeSessionId: nil,
+            cwd: cwd2.path,
+            title: "t2",
+            agentKind: .claude,
+            wasActiveOnQuit: true,
+            endedAt: nil
+        ))
+
+        UserDefaults.standard.set("TAB1", forKey: "LinkCLastSelectedSessionId")
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        try coordinator.start()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertEqual(coordinator.terminals.selectedId, "TAB1")
+    }
+
+    /// An invalid or missing directory gracefully leaves the session in restorables without throwing.
+    func testInvalidDirectoryLeavesSessionInRestorablesWithoutThrowing() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-invalid-dir-\(UUID().uuidString)")
+        let badCwd = "/nonexistent/path-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(
+            linkcId: "BAD1",
+            claudeSessionId: nil,
+            cwd: badCwd,
+            title: "bad",
+            agentKind: .claude,
+            wasActiveOnQuit: true,
+            endedAt: nil
+        ))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        XCTAssertNoThrow(try coordinator.start())
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertTrue(coordinator.store.sessions.isEmpty)
+        XCTAssertTrue(coordinator.restorables.contains(where: { $0.linkcId == "BAD1" }))
+        XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "BAD1" })?.wasActiveOnQuit, false)
+    }
 }
 

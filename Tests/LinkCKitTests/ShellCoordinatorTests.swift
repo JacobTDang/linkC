@@ -9,11 +9,11 @@ final class ShellCoordinatorTests: XCTestCase {
 
     private var terminals: TerminalSessionManager!
 
-    override func setUp() {
+    override func setUp() async throws {
         terminals = TerminalSessionManager()
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         for session in terminals.sessions { terminals.terminate(session.id) }
     }
 

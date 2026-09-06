@@ -139,6 +139,11 @@ public final class AppCoordinator {
         // dialog, which can block indefinitely on first launch.
         try hookServer.start()
         Task { await notifications.requestAuthorization() }
+        restoreActiveSessions()
+        if let lastId = UserDefaults.standard.string(forKey: "LinkCLastSelectedSessionId"),
+           terminals.sessions.contains(where: { $0.id == lastId }) {
+            terminals.select(lastId)
+        }
     }
 
     /// Snapshot all active sessions to the manifest with wasActiveOnQuit == true before shutdown.
@@ -155,8 +160,9 @@ public final class AppCoordinator {
                 endedAt: nil
             ))
         }
-        if let selectedId {
-            UserDefaults.standard.set(selectedId, forKey: "LinkCLastSelectedSessionId")
+        let sel = selectedId ?? terminals.selectedId
+        if let sel {
+            UserDefaults.standard.set(sel, forKey: "LinkCLastSelectedSessionId")
         }
     }
 
@@ -270,8 +276,15 @@ public final class AppCoordinator {
     /// and record it (live, no `endedAt`) in the manifest. The single launch path for both new
     /// sessions and restores. Fails loud: a launch error prunes any partial state and rethrows.
     @discardableResult
-    private func launch(cwd: String, title: String, agent: AgentKind = .claude, mode: LaunchMode, resumeId: String? = nil) throws -> Session {
-        let session = store.create(cwd: cwd, title: title, agentKind: agent)
+    private func launch(
+        cwd: String,
+        title: String,
+        agent: AgentKind = .claude,
+        mode: LaunchMode,
+        resumeId: String? = nil,
+        id: String? = nil
+    ) throws -> Session {
+        let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent)
             // A terminated child = an ended session: prune everything when the child exits.
@@ -302,7 +315,14 @@ public final class AppCoordinator {
             )
             terminals.select(session.id)
             // Record the now-live session so it survives a quit/crash and can be restored.
-            manifest.upsert(RestorableSession(linkcId: session.id, claudeSessionId: nil, cwd: cwd, title: title))
+            manifest.upsert(RestorableSession(
+                linkcId: session.id,
+                claudeSessionId: resumeId,
+                cwd: cwd,
+                title: title,
+                agentKind: agent,
+                wasActiveOnQuit: false
+            ))
             syncRestorables()
             return session
         } catch {
@@ -312,6 +332,31 @@ public final class AppCoordinator {
     }
 
     // MARK: - Restore
+
+    /// Revives all sessions that were marked active when the app last shut down.
+    public func restoreActiveSessions() {
+        let activeEntries = manifest.entries.filter { $0.wasActiveOnQuit }
+        for var r in activeEntries {
+            r.wasActiveOnQuit = false
+            if FileManager.default.fileExists(atPath: r.cwd) {
+                if (try? launch(
+                    cwd: r.cwd,
+                    title: r.title,
+                    agent: r.agentKind,
+                    mode: .continueLast,
+                    resumeId: r.claudeSessionId,
+                    id: r.linkcId
+                )) != nil {
+                    manifest.upsert(r)
+                } else {
+                    manifest.upsert(r)
+                }
+            } else {
+                manifest.upsert(r)
+            }
+        }
+        syncRestorables()
+    }
 
     /// Resume a previous session as a fresh live one. Uses `claude --resume <id>` when the claude
     /// conversation id was captured, else `claude --continue` in the folder. On success the old
@@ -329,7 +374,7 @@ public final class AppCoordinator {
                 "a session is already running in \(r.title) — restore this one after it ends, or dismiss it"
             )
         }
-        let session = try launch(cwd: r.cwd, title: r.title, agent: .claude, mode: .continueLast, resumeId: r.claudeSessionId)
+        let session = try launch(cwd: r.cwd, title: r.title, agent: r.agentKind, mode: .continueLast, resumeId: r.claudeSessionId)
         manifest.remove(linkcId: r.linkcId)
         syncRestorables()
         return session

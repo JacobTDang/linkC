@@ -37,12 +37,18 @@ public final class ShellCoordinator {
     /// terminals). Selected on creation, same UX as a new claude session. Fail loud: a
     /// failed spawn removes the terminal and rethrows.
     @discardableResult
-    public func launch(cwd: String, command: String? = nil, title: String? = nil) throws -> ShellRow {
-        let id = UUID().uuidString
+    public func launch(
+        cwd: String,
+        command: String? = nil,
+        title: String? = nil,
+        agent: AgentKind = .shell,
+        id: String? = nil
+    ) throws -> ShellRow {
+        let id = id ?? UUID().uuidString
         let title = title ?? URL(fileURLWithPath: cwd).lastPathComponent
         let shell = shellPath()
 
-        let terminal = terminals.makeSession(id: id, cwd: cwd, title: title)
+        let terminal = terminals.makeSession(id: id, cwd: cwd, title: title, agentKind: agent)
         terminal.onTerminated = { [weak self] rawStatus in
             // Keeps the row (and the terminal's scrollback): a dead dev server stays
             // visible and inspectable until the user dismisses it.
@@ -61,10 +67,45 @@ public final class ShellCoordinator {
             terminals.remove(id)
             throw error
         }
-        manifest?.upsert(RestorableShell(id: id, cwd: cwd, title: title, command: command))
+        manifest?.upsert(RestorableShell(
+            id: id,
+            cwd: cwd,
+            title: title,
+            command: command,
+            wasActiveOnQuit: false,
+            detectedAgent: agent == .shell ? nil : agent
+        ))
         let row = store.add(id: id, cwd: cwd, title: title, command: command)
+        if agent != .shell {
+            store.updateDetectedAgent(id: id, agent: agent)
+        }
         syncRestorables()   // after the row exists: a live shell is not restorable
         return row
+    }
+
+    /// Automatically revive shells that were running when the app quit.
+    public func restoreActiveShells() {
+        guard let manifest else { return }
+        let toRestore = manifest.entries.filter { $0.wasActiveOnQuit }
+        for var entry in toRestore {
+            entry.wasActiveOnQuit = false
+            if FileManager.default.fileExists(atPath: entry.cwd) {
+                if (try? launch(
+                    cwd: entry.cwd,
+                    command: entry.command,
+                    title: entry.title,
+                    agent: entry.detectedAgent ?? .shell,
+                    id: entry.id
+                )) != nil {
+                    manifest.upsert(entry)
+                } else {
+                    manifest.upsert(entry)
+                }
+            } else {
+                manifest.upsert(entry)
+            }
+        }
+        syncRestorables()
     }
 
     /// Sample active foreground agents across all live shell terminals.

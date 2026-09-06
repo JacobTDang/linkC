@@ -154,6 +154,14 @@ final class AppModel {
             let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             let linkCSupport = support.appendingPathComponent("linkC", isDirectory: true)
             self.shells = ShellCoordinator(terminals: terminals, manifestDir: linkCSupport)
+            self.shells?.restoreActiveShells()
+            if let lastId = UserDefaults.standard.string(forKey: "LinkCLastSelectedSessionId"),
+               terminals.sessions.contains(where: { $0.id == lastId }) {
+                terminals.select(lastId)
+            }
+            if coordinator.terminals.selectedId != nil {
+                self.activeScreen = nil
+            }
             self.toolServers = ToolServerService()
             self.recents = RecentFoldersStore(directory: linkCSupport)
             self.oracle = OracleService()
