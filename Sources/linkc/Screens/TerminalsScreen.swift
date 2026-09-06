@@ -93,6 +93,9 @@ struct TerminalCard: View {
                     .fill(dotColor)
                     .frame(width: 8, height: 8)
                     .frame(width: 18, height: 18)  // StatusDot's box, minus its glow
+                if let agent = row.detectedAgent {
+                    AgentPill(agent: agent)
+                }
                 Text(row.title)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)

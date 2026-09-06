@@ -139,6 +139,7 @@ private struct TerminalsSection: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let _ = model.sampleShellAgents()
         VStack(spacing: 6) {
             SectionHeader(title: "TERMINALS")
                 .padding(.top, 6)
@@ -383,6 +384,7 @@ private struct HomeCard: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 StatusDot(state: session.state)
+                AgentPill(agent: session.agentKind)
                 Text(session.title)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
@@ -589,6 +591,7 @@ private struct CompactSessionRow: View {
         ) {
             StatusDot(state: session.state)
         } middle: {
+            AgentPill(agent: session.agentKind)
             if let activity {
                 Text(activity)
                     .font(.system(size: 11, design: .monospaced))
@@ -645,10 +648,16 @@ private struct CompactTerminalRow: View {
             dimmed: !isRunning,
             glowsOnHover: isRunning,   // a dead row stays flat — tappable, but not live
             help: isRunning ? "Open \(row.title)" : "View \(row.title)'s last output",
-            onTap: onOpen
-        ) {
-            InfraDot(color: dotColor)
-        } trailing: { hovering in
+            onTap: onOpen,
+            leading: {
+                InfraDot(color: dotColor)
+            },
+            middle: {
+                if let agent = row.detectedAgent {
+                    AgentPill(agent: agent)
+                }
+            }
+        ) { hovering in
             if isRunning {
                 Button(action: onStop) {
                     CompactRowGlyph()

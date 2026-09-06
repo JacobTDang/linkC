@@ -354,6 +354,7 @@ final class AppModel {
     }
 
     var shellRows: [ShellRow] { shells?.store.rows ?? [] }
+    func sampleShellAgents() { shells?.sampleAgents() }
     /// Dev terminals remembered from a previous run — relaunchable, never auto-started.
     var restorableShells: [RestorableShell] { shells?.restorables ?? [] }
 
