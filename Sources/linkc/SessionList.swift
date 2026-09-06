@@ -14,6 +14,7 @@ struct SessionListColumn: View {
     var compact: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var inspectingWorkspace: String? = nil
 
     /// One row of the sectioned overview: a section header or a live session card. Cards keep a
     /// stable id (`session.id`) so a state change reorders the flat list and SwiftUI *moves* the
@@ -61,6 +62,16 @@ struct SessionListColumn: View {
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, 12)
         }
+        .sheet(isPresented: Binding(
+            get: { inspectingWorkspace != nil },
+            set: { if !$0 { inspectingWorkspace = nil } }
+        )) {
+            if let path = inspectingWorkspace {
+                BlackboardSheet(workspacePath: path) {
+                    inspectingWorkspace = nil
+                }
+            }
+        }
     }
 
     /// The live sessions as a priority queue: NEEDS YOU → WORKING → IDLE, each a stable row in one
@@ -92,9 +103,11 @@ struct SessionListColumn: View {
                                 contextFill: model.contextFill(session.id),
                                 agents: model.visibleAgents(session.id),
                                 activity: model.currentActivity(session),
+                                swarm: model.swarm(for: session.cwd),
                                 isSelected: session.id == selectedId,
                                 onOpen: { model.focus(session.id) },
-                                onClose: { model.stop(session.id) }
+                                onClose: { model.stop(session.id) },
+                                onInspectSwarm: { inspectingWorkspace = session.cwd }
                             )
                         }
                     }
@@ -374,9 +387,11 @@ private struct HomeCard: View {
     let agents: [AgentRun]
     /// The current command/file/subagent while working — fills the header's middle.
     var activity: String? = nil
+    var swarm: ProjectSwarm? = nil
     var isSelected: Bool = false
     let onOpen: () -> Void
     let onClose: () -> Void
+    var onInspectSwarm: (() -> Void)? = nil
 
     @State private var hovering = false
 
@@ -385,6 +400,9 @@ private struct HomeCard: View {
             HStack(spacing: 8) {
                 StatusDot(state: session.state)
                 AgentPill(agent: session.agentKind)
+                if let swarm {
+                    SwarmBadge(swarm: swarm) { onInspectSwarm?() }
+                }
                 Text(session.title)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
@@ -426,6 +444,9 @@ private struct HomeCard: View {
                 .buttonStyle(.plain)
                 .opacity(hovering ? 1 : 0)
                 .help("Stop session")
+            }
+            if let swarm, !swarm.collisions.isEmpty {
+                CollisionBanner(collisions: swarm.collisions)
             }
             PreviewText(text: preview)
             // The agent lane: the card grows quietly while the session fans out.

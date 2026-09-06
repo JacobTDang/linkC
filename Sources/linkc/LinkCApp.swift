@@ -354,7 +354,24 @@ final class AppModel {
     }
 
     var shellRows: [ShellRow] { shells?.store.rows ?? [] }
-    func sampleShellAgents() { shells?.sampleAgents() }
+
+    var swarms: [ProjectSwarm] { coordinator?.swarms ?? [] }
+
+    func swarm(for cwd: String) -> ProjectSwarm? {
+        let norm = (cwd as NSString).standardizingPath
+        return swarms.first { ($0.workspacePath as NSString).standardizingPath == norm }
+    }
+
+    func sampleShellAgents() {
+        shells?.sampleAgents()
+        var shellAgents: [String: [AgentKind]] = [:]
+        for row in shellRows {
+            if let agent = row.detectedAgent {
+                shellAgents[row.cwd, default: []].append(agent)
+            }
+        }
+        coordinator?.sampleSwarms(additionalAgents: shellAgents)
+    }
     /// Dev terminals remembered from a previous run — relaunchable, never auto-started.
     var restorableShells: [RestorableShell] { shells?.restorables ?? [] }
 
