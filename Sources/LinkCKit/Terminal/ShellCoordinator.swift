@@ -72,8 +72,9 @@ public final class ShellCoordinator {
             cwd: cwd,
             title: title,
             command: command,
-            wasActiveOnQuit: false,
-            detectedAgent: agent == .shell ? nil : agent
+            wasActiveOnQuit: true,
+            detectedAgent: agent == .shell ? nil : agent,
+            endedAt: nil
         ))
         let row = store.add(id: id, cwd: cwd, title: title, command: command)
         if agent != .shell {
@@ -167,14 +168,11 @@ public final class ShellCoordinator {
         return try launch(cwd: row.cwd, command: row.command, title: row.title)
     }
 
-    /// Kill a RUNNING terminal and drop it entirely.
+    /// Kill a RUNNING terminal and update manifest entry.
     public func stop(_ id: String) {
         terminals.terminate(id)
         store.remove(id: id)
-        // Deliberately stopping a shell drops it entirely (same as dismiss) — it must not
-        // reappear as a relaunch card in the same run. Cross-run persistence comes from
-        // the manifest's load-time stamping, not from this path.
-        manifest?.remove(id: id)
+        manifest?.markEnded(id: id, at: Date())
         syncRestorables()
     }
 

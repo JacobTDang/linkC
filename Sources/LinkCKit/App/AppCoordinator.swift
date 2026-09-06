@@ -321,7 +321,8 @@ public final class AppCoordinator {
                 cwd: cwd,
                 title: title,
                 agentKind: agent,
-                wasActiveOnQuit: false
+                wasActiveOnQuit: true,
+                endedAt: nil
             ))
             syncRestorables()
             return session

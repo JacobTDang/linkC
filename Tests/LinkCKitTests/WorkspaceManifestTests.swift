@@ -266,6 +266,20 @@ final class WorkspaceManifestTests: XCTestCase {
         XCTAssertTrue(retainedIds.contains("S4"), "newest inactive session S4 must be retained")
         XCTAssertFalse(retainedIds.contains("S5"), "older inactive session S5 must be pruned by folder dedup")
     }
+
+    func testPruneKeepsEndedAtNilForActiveOnQuitSessions() {
+        let now = Date()
+        let active = entry("A1", wasActiveOnQuit: true, endedAt: nil)
+        let inactive = entry("I1", wasActiveOnQuit: false, endedAt: nil)
+        let pruned = WorkspaceManifest.prune([active, inactive], now: now)
+
+        let prunedActive = pruned.first { $0.linkcId == "A1" }
+        let prunedInactive = pruned.first { $0.linkcId == "I1" }
+
+        XCTAssertNotNil(prunedActive)
+        XCTAssertNil(prunedActive?.endedAt, "prune must keep endedAt == nil for wasActiveOnQuit == true")
+        XCTAssertEqual(prunedInactive?.endedAt, now, "prune must stamp endedAt = now for inactive nil-endedAt sessions")
+    }
 }
 
 extension WorkspaceManifestTests {

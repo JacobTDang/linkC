@@ -176,9 +176,8 @@ final class ShellPersistenceTests: XCTestCase {
         XCTAssertEqual(coordinator.store.rows.map(\.id), [fresh.id])
     }
 
-    /// Stopping a shell drops it entirely — it must not reappear as a relaunch card in
-    /// the same run (that would make the user dismiss the same terminal twice).
-    func testStopDoesNotResurrectAsRestorable() throws {
+    /// Stopping a shell updates its manifest entry to ended (wasActiveOnQuit: false, endedAt: Date()).
+    func testStopUpdatesManifestEntryToEnded() throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let coordinator = ShellCoordinator(
@@ -188,8 +187,11 @@ final class ShellPersistenceTests: XCTestCase {
         let row = try coordinator.launch(cwd: "/tmp", title: "dev")
         coordinator.stop(row.id)
 
-        XCTAssertTrue(coordinator.restorables.isEmpty, "a deliberately stopped shell is gone")
-        XCTAssertTrue(ShellManifest(directory: dir).entries.isEmpty, "and forgotten on disk")
+        let entries = ShellManifest(directory: dir).entries
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.first?.wasActiveOnQuit, false)
+        XCTAssertNotNil(entries.first?.endedAt)
+        XCTAssertEqual(coordinator.restorables.map(\.id), [row.id])
     }
 
     /// A failed relaunch must leave the card recoverable — losing the only record of a

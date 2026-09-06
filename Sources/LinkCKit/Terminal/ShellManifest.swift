@@ -91,22 +91,23 @@ public final class ShellManifest {
     /// Shells marked `wasActiveOnQuit` are always retained and exempt from deduplication.
     static func prune(_ entries: [RestorableShell], now: Date) -> [RestorableShell] {
         var stamped = entries
-        for i in stamped.indices where stamped[i].endedAt == nil {
+        for i in stamped.indices where !stamped[i].wasActiveOnQuit && stamped[i].endedAt == nil {
             stamped[i].endedAt = now
         }
-        // Every endedAt is non-nil past this point — the force-unwraps encode that.
+        // Inactive entries have endedAt stamped if previously nil.
         let freshInactive = stamped.filter {
-            !$0.wasActiveOnQuit && now.timeIntervalSince($0.endedAt!) < Self.maxAge
+            !$0.wasActiveOnQuit && ($0.endedAt.map { now.timeIntervalSince($0) < Self.maxAge } ?? false)
         }
         var newest: [String: RestorableShell] = [:]
         for entry in freshInactive {
+            guard let entryEnded = entry.endedAt else { continue }
             let key = "\(entry.cwd)\u{0}\(entry.command ?? "")"
-            guard let kept = newest[key] else {
+            guard let kept = newest[key], let keptEnded = kept.endedAt else {
                 newest[key] = entry
                 continue
             }
             // Ties (same-crash orphans share a stamp) keep the later entry — the newer shell.
-            if entry.endedAt! >= kept.endedAt! { newest[key] = entry }
+            if entryEnded >= keptEnded { newest[key] = entry }
         }
         let retainedInactiveIds = Set(newest.values.map(\.id))
         return stamped.filter { $0.wasActiveOnQuit || retainedInactiveIds.contains($0.id) }
@@ -125,10 +126,15 @@ public final class ShellManifest {
     }
 
     /// Stamp `endedAt` — the shell died, so it's now restorable. No-op for an unknown id
-    /// or an already-stamped entry (the first timestamp wins).
+    /// or when already ended with wasActiveOnQuit == false (the first timestamp wins).
     public func markEnded(id: String, at date: Date) {
-        guard let i = entries.firstIndex(where: { $0.id == id }), entries[i].endedAt == nil else { return }
-        entries[i].endedAt = date
+        guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
+        let changed = entries[i].wasActiveOnQuit || entries[i].endedAt == nil
+        guard changed else { return }
+        entries[i].wasActiveOnQuit = false
+        if entries[i].endedAt == nil {
+            entries[i].endedAt = date
+        }
         save()
     }
 

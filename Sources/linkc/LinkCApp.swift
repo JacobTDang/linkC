@@ -78,6 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
     }
 
+    func applicationDidResignActive(_ notification: Notification) {
+        model.flushStateToDisk()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         model.shutdown()
     }
@@ -103,7 +107,21 @@ final class AppModel {
     /// Whether the menu-bar panel is currently on screen. Feeds the coordinator's watch probe
     /// and gates the usage-refresh timer — no panel, no polling.
     var panelVisible = false {
-        didSet { updateUsageTimer() }
+        didSet {
+            updateUsageTimer()
+            if !panelVisible {
+                flushStateToDisk()
+            }
+        }
+    }
+
+    /// Flush all session, shell, and selection state to disk in real-time.
+    public func flushStateToDisk() {
+        shells?.prepareForShutdown()
+        coordinator?.prepareForShutdown(selectedId: selectedId)
+        if let selectedId {
+            UserDefaults.standard.set(selectedId, forKey: "LinkCLastSelectedSessionId")
+        }
     }
 
     /// Live usage state: per-session context/tokens/cost, plus the global plan window.

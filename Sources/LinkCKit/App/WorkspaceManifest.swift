@@ -113,23 +113,23 @@ public final class WorkspaceManifest {
     /// Sessions marked `wasActiveOnQuit` are always retained and exempt from folder deduplication.
     static func prune(_ entries: [RestorableSession], now: Date) -> [RestorableSession] {
         var stamped = entries
-        for i in stamped.indices where stamped[i].endedAt == nil {
+        for i in stamped.indices where !stamped[i].wasActiveOnQuit && stamped[i].endedAt == nil {
             stamped[i].endedAt = now
         }
-        // Every endedAt is non-nil past this point — the force-unwraps encode that
-        // invariant rather than masking it with a fallback.
+        // Inactive entries have endedAt stamped if previously nil.
         let freshInactive = stamped.filter {
-            !$0.wasActiveOnQuit && now.timeIntervalSince($0.endedAt!) < Self.maxAge
+            !$0.wasActiveOnQuit && ($0.endedAt.map { now.timeIntervalSince($0) < Self.maxAge } ?? false)
         }
         var newestByFolder: [String: RestorableSession] = [:]
         for entry in freshInactive {
-            guard let kept = newestByFolder[entry.cwd] else {
+            guard let entryEnded = entry.endedAt else { continue }
+            guard let kept = newestByFolder[entry.cwd], let keptEnded = kept.endedAt else {
                 newestByFolder[entry.cwd] = entry
                 continue
             }
-            if entry.endedAt! > kept.endedAt! {
+            if entryEnded > keptEnded {
                 newestByFolder[entry.cwd] = entry
-            } else if entry.endedAt! == kept.endedAt!,
+            } else if entryEnded == keptEnded,
                       entry.claudeSessionId != nil || kept.claudeSessionId == nil {
                 // Same-crash orphans tie on the stamped date. A bound conversation id wins
                 // (precise `--resume` beats `--continue`); on a pure tie the later entry —
@@ -163,12 +163,16 @@ public final class WorkspaceManifest {
     }
 
     /// Stamp `endedAt` on an existing entry — it is now restorable. No-op for an unknown id
-    /// and when already stamped (a stop's synchronous cleanup and the child's async exit both
-    /// call this; the first timestamp wins, no redundant disk write).
+    /// or when already ended with wasActiveOnQuit == false (a stop's synchronous cleanup
+    /// and the child's async exit both call this; the first timestamp wins, no redundant disk write).
     public func markEnded(linkcId: String, at date: Date) {
-        guard let i = entries.firstIndex(where: { $0.linkcId == linkcId }),
-              entries[i].endedAt == nil else { return }
-        entries[i].endedAt = date
+        guard let i = entries.firstIndex(where: { $0.linkcId == linkcId }) else { return }
+        let changed = entries[i].wasActiveOnQuit || entries[i].endedAt == nil
+        guard changed else { return }
+        entries[i].wasActiveOnQuit = false
+        if entries[i].endedAt == nil {
+            entries[i].endedAt = date
+        }
         save()
     }
 

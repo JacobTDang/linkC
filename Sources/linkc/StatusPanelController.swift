@@ -387,6 +387,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         // Cmd-W: mirror hide() so the coordinator's watch probe stays correct.
         model.panelVisible = false
+        model.flushStateToDisk()
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {

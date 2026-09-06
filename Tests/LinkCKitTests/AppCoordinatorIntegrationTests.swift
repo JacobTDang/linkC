@@ -614,9 +614,9 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(s2?.agentKind, .shell)
         XCTAssertEqual(s2?.cwd, cwd2.path)
 
-        // Manifest entries should have had wasActiveOnQuit reset to false and endedAt nil while live
-        XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT1" })?.wasActiveOnQuit, false)
-        XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT2" })?.wasActiveOnQuit, false)
+        // Live revived sessions remain wasActiveOnQuit == true and endedAt nil while live
+        XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT1" })?.wasActiveOnQuit, true)
+        XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT2" })?.wasActiveOnQuit, true)
         XCTAssertNil(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT1" })?.endedAt)
         XCTAssertNil(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT2" })?.endedAt)
     }
@@ -667,8 +667,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         // Inactive shell should NOT have been revived into store
         XCTAssertFalse(shellCoordinator.store.rows.contains(where: { $0.id == "SH2" }))
 
-        // Manifest should have wasActiveOnQuit reset to false and endedAt nil while live
-        XCTAssertEqual(shellCoordinator.manifest?.entries.first(where: { $0.id == "SH1" })?.wasActiveOnQuit, false)
+        // Live revived shells remain wasActiveOnQuit == true and endedAt nil while live
+        XCTAssertEqual(shellCoordinator.manifest?.entries.first(where: { $0.id == "SH1" })?.wasActiveOnQuit, true)
         XCTAssertNil(shellCoordinator.manifest?.entries.first(where: { $0.id == "SH1" })?.endedAt)
     }
 
@@ -741,6 +741,37 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertTrue(coordinator.store.sessions.isEmpty)
         XCTAssertTrue(coordinator.restorables.contains(where: { $0.linkcId == "BAD1" }))
         XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "BAD1" })?.wasActiveOnQuit, false)
+    }
+
+    /// Newly launched sessions immediately write to disk with wasActiveOnQuit == true and endedAt == nil.
+    func testNewlyLaunchedSessionImmediatelyWritesToDiskWithActiveOnQuit() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-launch-persist-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: cwd)
+        }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        defer { coordinator.stopSession(session.id) }
+
+        // Manifest in memory:
+        let inMemory = coordinator.manifest.entries.first { $0.linkcId == session.id }
+        XCTAssertEqual(inMemory?.wasActiveOnQuit, true)
+        XCTAssertNil(inMemory?.endedAt)
+
+        // On disk:
+        let fileURL = dir.appendingPathComponent("workspace.json")
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let diskEntries = try decoder.decode([RestorableSession].self, from: data)
+        let diskEntry = diskEntries.first { $0.linkcId == session.id }
+        XCTAssertEqual(diskEntry?.wasActiveOnQuit, true, "newly launched session must immediately write wasActiveOnQuit == true to disk")
+        XCTAssertNil(diskEntry?.endedAt, "newly launched session must have endedAt == nil on disk")
     }
 }
 
