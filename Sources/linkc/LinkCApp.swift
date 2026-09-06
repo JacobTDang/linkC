@@ -306,11 +306,11 @@ final class AppModel {
     var recentFolders: [String] { Array((recents?.paths ?? []).prefix(3)) }
 
     /// The chips' launch path: a new session in a known folder, no picker in the way.
-    func startSession(in cwd: String) {
+    func startSession(in cwd: String, agent: AgentKind = .claude) {
         guard let coordinator else { return }
         do {
             lastError = nil
-            try coordinator.newSession(cwd: cwd, mode: .new)
+            try coordinator.newSession(cwd: cwd, agent: agent, mode: .new)
             recents?.record(cwd)
         } catch {
             lastError = error.localizedDescription
@@ -587,28 +587,29 @@ final class AppModel {
         coordinator?.shutdown()
     }
 
-    func newSession(mode: LaunchMode = .new) {
+    func newSession(agent: AgentKind = .claude, mode: LaunchMode = .new) {
         guard let coordinator else { return }
         NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
+        let name = agent.displayName
         switch mode {
         case .new:
             panel.prompt = "Start"
-            panel.message = "Choose a folder to start a new Claude Code session in"
+            panel.message = "Choose a folder to start a new \(name) session in"
         case .continueLast:
             panel.prompt = "Continue"
-            panel.message = "Choose a folder — continues its most recent Claude Code session"
+            panel.message = "Choose a folder — continues its most recent \(name) session"
         case .resume:
             panel.prompt = "Resume"
-            panel.message = "Choose a folder — then pick a past session to resume in the terminal"
+            panel.message = "Choose a folder — then pick a past \(name) session to resume in the terminal"
         }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             lastError = nil
-            try coordinator.newSession(cwd: url.path, mode: mode)
+            try coordinator.newSession(cwd: url.path, agent: agent, mode: mode)
             recents?.record(url.path)
         } catch {
             lastError = error.localizedDescription

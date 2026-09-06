@@ -10,6 +10,14 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(AgentKind.shell.pillText, "SHELL")
     }
 
+    func testDisplayNameForAllCases() {
+        XCTAssertEqual(AgentKind.claude.displayName, "Claude Code")
+        XCTAssertEqual(AgentKind.agy.displayName, "Antigravity (agy)")
+        XCTAssertEqual(AgentKind.cursor.displayName, "Cursor Agent")
+        XCTAssertEqual(AgentKind.codex.displayName, "Codex")
+        XCTAssertEqual(AgentKind.shell.displayName, "Terminal (zsh)")
+    }
+
     func testBrandColorsDefined() {
         for kind in AgentKind.allCases {
             XCTAssertTrue(kind.brandColorHex.hasPrefix("#"))

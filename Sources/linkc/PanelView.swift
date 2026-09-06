@@ -243,7 +243,7 @@ struct ChromeGlyph: View {
     }
 }
 
-/// The `+` launcher — new / continue / resume are the existing `AppModel` actions.
+/// The `+` launcher — 1-click launch for all supported autonomous agents and terminals.
 private struct LauncherMenu: View {
     let model: AppModel
 
@@ -251,10 +251,28 @@ private struct LauncherMenu: View {
 
     var body: some View {
         Menu {
-            Button("New session…") { model.newSession(mode: .new) }
-            Button("Continue last…") { model.newSession(mode: .continueLast) }
-            Button("Resume…") { model.newSession(mode: .resume) }
-            Button("New terminal…") { model.newShellTerminal() }
+            Section("Autonomous Agent") {
+                Button("New Claude session…") { model.newSession(agent: .claude, mode: .new) }
+                Button("New Antigravity (agy) session…") { model.newSession(agent: .agy, mode: .new) }
+                Button("New Cursor Agent session…") { model.newSession(agent: .cursor, mode: .new) }
+                Button("New Codex session…") { model.newSession(agent: .codex, mode: .new) }
+            }
+            Section("Terminal") {
+                Button("New terminal (zsh)…") { model.newShellTerminal() }
+            }
+            Divider()
+            Menu("Continue last…") {
+                Button("Claude") { model.newSession(agent: .claude, mode: .continueLast) }
+                Button("Antigravity (agy)") { model.newSession(agent: .agy, mode: .continueLast) }
+                Button("Cursor Agent") { model.newSession(agent: .cursor, mode: .continueLast) }
+                Button("Codex") { model.newSession(agent: .codex, mode: .continueLast) }
+            }
+            Menu("Resume…") {
+                Button("Claude") { model.newSession(agent: .claude, mode: .resume) }
+                Button("Antigravity (agy)") { model.newSession(agent: .agy, mode: .resume) }
+                Button("Cursor Agent") { model.newSession(agent: .cursor, mode: .resume) }
+                Button("Codex") { model.newSession(agent: .codex, mode: .resume) }
+            }
             Divider()
             Button("Quit linkC") { NSApplication.shared.terminate(nil) }
         } label: {
@@ -264,7 +282,7 @@ private struct LauncherMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .onHover { hovering = $0 }
-        .help("New session")
+        .help("New session or terminal")
     }
 }
 
@@ -477,7 +495,7 @@ private struct EmptyStateView: View {
                 .font(.system(size: 19, weight: .bold))
                 .foregroundStyle(Theme.textPrimary)
                 .padding(.top, 12)
-            Text("Claude Code sessions run right here.")
+            Text("Autonomous agent & terminal sessions run right here.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textTertiary)
                 .padding(.top, 3)

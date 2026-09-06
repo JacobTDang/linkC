@@ -29,6 +29,17 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .shell: return "#8E8E93"     // neutral grey
         }
     }
+
+    /// Human-readable display name for menus, dialogs, and prompts.
+    public var displayName: String {
+        switch self {
+        case .claude: return "Claude Code"
+        case .agy: return "Antigravity (agy)"
+        case .cursor: return "Cursor Agent"
+        case .codex: return "Codex"
+        case .shell: return "Terminal (zsh)"
+        }
+    }
 }
 
 /// Metadata and argument specifications for AI CLI agents.
