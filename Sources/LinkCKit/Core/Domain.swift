@@ -110,3 +110,21 @@ public struct Session: Sendable, Identifiable, Equatable {
         self.agentKind = agentKind
     }
 }
+
+/// Represents a collaborative swarm of multiple AI agents working in the same workspace directory.
+public struct ProjectSwarm: Sendable, Identifiable, Equatable {
+    public var id: String { workspacePath }
+    public let workspacePath: String
+    public let activeAgents: [AgentKind]
+    public let collisions: [CollisionWarning]
+
+    public init(
+        workspacePath: String,
+        activeAgents: [AgentKind],
+        collisions: [CollisionWarning] = []
+    ) {
+        self.workspacePath = workspacePath
+        self.activeAgents = activeAgents
+        self.collisions = collisions
+    }
+}

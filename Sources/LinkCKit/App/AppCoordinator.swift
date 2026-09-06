@@ -33,6 +33,9 @@ public final class AppCoordinator {
     /// coordinator works headless in tests.
     public var usageTracker: UsageTracker?
 
+    /// Active multi-agent project swarms detected across sessions.
+    public private(set) var swarms: [ProjectSwarm] = []
+
     private let hookServer: HookServer
     private let notifications: NotificationManager
     private let claudePath: String
@@ -103,6 +106,7 @@ public final class AppCoordinator {
 
     public func start() throws {
         sweepOrphanedSettingsFiles()
+        try? MCPRegistrar.registerAll()
         hookServer.requiredToken = hookToken
         notifications.onActivate = { [weak self] id in
             Task { @MainActor in
@@ -357,6 +361,59 @@ public final class AppCoordinator {
     }
 
     public var hookPort: UInt16 { hookServer.port }
+
+    // MARK: - Swarm & Collision Tracking
+
+    /// Computes active multi-agent project swarms and inspects file collisions.
+    public func sampleSwarms(additionalAgents: [String: [AgentKind]] = [:]) {
+        var agentsByPath: [String: Set<AgentKind>] = [:]
+
+        for session in store.sessions where session.state != .ended {
+            let norm = (session.cwd as NSString).standardizingPath
+            agentsByPath[norm, default: []].insert(session.agentKind)
+        }
+
+        for (path, agents) in additionalAgents {
+            let norm = (path as NSString).standardizingPath
+            for a in agents {
+                agentsByPath[norm, default: []].insert(a)
+            }
+        }
+
+        var newSwarms: [ProjectSwarm] = []
+        for (path, agents) in agentsByPath where agents.count >= 2 {
+            let store = BlackboardStore(workspaceRoot: path)
+            var allCollisions: [CollisionWarning] = []
+            if let board = try? store.load() {
+                var seenFiles: [String: (AgentKind, pid_t, String)] = [:]
+                for a in board.activeAgents {
+                    for f in a.claimedFiles {
+                        if let (otherAgent, otherPid, otherGoal) = seenFiles[f], otherPid != a.pid {
+                            allCollisions.append(
+                                CollisionWarning(
+                                    conflictingAgent: otherAgent,
+                                    pid: otherPid,
+                                    conflictingFiles: [f],
+                                    goal: otherGoal
+                                )
+                            )
+                        } else {
+                            seenFiles[f] = (a.agentKind, a.pid, a.goal)
+                        }
+                    }
+                }
+            }
+
+            newSwarms.append(
+                ProjectSwarm(
+                    workspacePath: path,
+                    activeAgents: Array(agents),
+                    collisions: allCollisions
+                )
+            )
+        }
+        self.swarms = newSwarms
+    }
 
     // MARK: - Helpers
 
