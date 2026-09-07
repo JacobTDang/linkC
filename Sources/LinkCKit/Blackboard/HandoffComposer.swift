@@ -41,7 +41,7 @@ public struct HandoffComposer: Sendable {
 
         let resolvedTerminal: String
         if let recentTerminalOutput = recentTerminalOutput?.trimmingCharacters(in: .whitespacesAndNewlines), !recentTerminalOutput.isEmpty {
-            resolvedTerminal = "```\n\(recentTerminalOutput)\n```"
+            resolvedTerminal = "````\n\(recentTerminalOutput)\n````"
         } else {
             resolvedTerminal = placeholder
         }

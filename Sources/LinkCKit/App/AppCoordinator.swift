@@ -628,7 +628,7 @@ public final class AppCoordinator {
         process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
         let stdout = Pipe()
         process.standardOutput = stdout
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
 
         final class DataBox: @unchecked Sendable {
             var data = Data()

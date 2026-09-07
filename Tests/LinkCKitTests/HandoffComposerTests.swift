@@ -37,7 +37,7 @@ final class HandoffComposerTests: XCTestCase {
         XCTAssertTrue(memo.contains("## Git Status Summary"))
         XCTAssertTrue(memo.contains("M Sources/Auth.swift"))
         XCTAssertTrue(memo.contains("## Recent Terminal Output"))
-        XCTAssertTrue(memo.contains("```"))
+        XCTAssertTrue(memo.contains("````"))
         XCTAssertTrue(memo.contains("Executed 4 tests with 0 failures"))
     }
 
@@ -141,5 +141,17 @@ final class HandoffComposerTests: XCTestCase {
         XCTAssertTrue(content.contains("Optimize parser performance"))
         XCTAssertTrue(content.contains("M Sources/Parser.swift"))
         XCTAssertTrue(content.contains("swift test passed"))
+    }
+
+    func testComposeWithEmbeddedTripleBackticks() {
+        let output = "Some output\n```swift\nlet x = 1\n```\nDone."
+        let memo = HandoffComposer.compose(
+            workspacePath: "/Users/dev/project",
+            sourceAgent: .claude,
+            lastGoal: "Fix issue",
+            gitSummary: nil,
+            recentTerminalOutput: output
+        )
+        XCTAssertTrue(memo.contains("````\n\(output)\n````"))
     }
 }

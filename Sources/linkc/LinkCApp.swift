@@ -367,12 +367,14 @@ final class AppModel {
     /// Spawns a teammate agent session in `cwd`, synthesizing and writing a handoff memo.
     func spawnTeammate(in cwd: String, agent: AgentKind) {
         guard let coordinator else { return }
-        do {
-            lastError = nil
-            try coordinator.spawnTeammate(in: cwd, agent: agent)
-            recents?.record(cwd)
-        } catch {
-            lastError = error.localizedDescription
+        Task { @MainActor in
+            do {
+                lastError = nil
+                try coordinator.spawnTeammate(in: cwd, agent: agent)
+                recents?.record(cwd)
+            } catch {
+                lastError = error.localizedDescription
+            }
         }
     }
 

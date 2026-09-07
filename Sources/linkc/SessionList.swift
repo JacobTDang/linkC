@@ -400,6 +400,81 @@ private struct RestorableRow: View {
     }
 }
 
+/// Reusable stacked mini-lane rendering an individual agent session's activity and status in a multi-agent swarm row or card.
+private struct AgentMiniLaneView: View {
+    let session: Session
+    let activity: String?
+    let isSelected: Bool
+    var showsBackground: Bool = false
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 6) {
+                Text("\(session.agentKind.pillText):")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.agentColor(session.agentKind))
+                    .fixedSize()
+
+                if let activity, !activity.isEmpty {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.12))
+                            .frame(width: 14, height: 14)
+                        Image(systemName: activityIcon(for: activity))
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundStyle(Color.white.opacity(0.85))
+                    }
+                    Text(activity)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.white.opacity(0.65))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .smoothShimmer(isWorking: session.state.bucket == .active)
+                } else if session.state.bucket == .needsYou {
+                    Text("Needs input · \(AgeFormat.compact(from: session.stateChangedAt))")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.statusColor(session.state))
+                        .lineLimit(1)
+                } else if session.state.bucket == .active {
+                    Text("Working...")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.65))
+                        .smoothShimmer(isWorking: true)
+                } else {
+                    Text("Idle")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.35))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 4)
+
+                if session.state.bucket == .needsYou && activity != nil {
+                    Text(AgeFormat.compact(from: session.stateChangedAt))
+                        .font(.system(size: 9, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.statusColor(session.state))
+                        .fixedSize()
+                }
+            }
+            .padding(.vertical, showsBackground ? 2 : 1)
+            .padding(.horizontal, showsBackground ? 4 : 0)
+            .background(
+                Group {
+                    if showsBackground {
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(isSelected ? Theme.hover : Color.clear)
+                    }
+                }
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Switch to \(session.agentKind.displayName) session")
+    }
+}
+
 /// A single session card or merged multi-agent project card on home:
 /// Soft fill (faint coral wash when needing attention), status · title · path header line,
 /// interactive agent pills, quick teammate spawning, Option 2 stacked mini-lanes for multi-agent activity,
@@ -419,6 +494,10 @@ private struct HomeCard: View {
     private var activeSession: Session? {
         if let selectedId, let match = group.sessions.first(where: { $0.id == selectedId }) {
             return match
+        }
+        if group.bucket == .needsYou,
+           let urgent = group.sessions.first(where: { $0.state.bucket == .needsYou }) {
+            return urgent
         }
         return group.sessions.first
     }
@@ -546,67 +625,13 @@ private struct HomeCard: View {
             if !isSingle {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(group.sessions) { session in
-                        let activity = model.currentActivity(session)
-                        let isSessionSelected = session.id == selectedId
-                        Button(action: { model.focus(session.id) }) {
-                            HStack(spacing: 6) {
-                                Text("\(session.agentKind.pillText):")
-                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(Theme.agentColor(session.agentKind))
-                                    .fixedSize()
-
-                                if let activity, !activity.isEmpty {
-                                    ZStack {
-                                        Circle()
-                                            .fill(Color.white.opacity(0.12))
-                                            .frame(width: 14, height: 14)
-                                        Image(systemName: activityIcon(for: activity))
-                                            .font(.system(size: 7, weight: .bold))
-                                            .foregroundStyle(Color.white.opacity(0.85))
-                                    }
-                                    Text(activity)
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(isSessionSelected ? Color.white.opacity(0.9) : Color.white.opacity(0.65))
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                        .smoothShimmer(isWorking: session.state.bucket == .active)
-                                } else if session.state.bucket == .needsYou {
-                                    Text("Needs input · \(AgeFormat.compact(from: session.stateChangedAt))")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(Theme.statusColor(session.state))
-                                        .lineLimit(1)
-                                } else if session.state.bucket == .active {
-                                    Text("Working...")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(Color.white.opacity(0.65))
-                                        .smoothShimmer(isWorking: true)
-                                } else {
-                                    Text("Idle")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(Color.white.opacity(0.35))
-                                        .lineLimit(1)
-                                }
-
-                                Spacer(minLength: 4)
-
-                                if session.state.bucket == .needsYou && activity != nil {
-                                    Text(AgeFormat.compact(from: session.stateChangedAt))
-                                        .font(.system(size: 9, weight: .semibold))
-                                        .monospacedDigit()
-                                        .foregroundStyle(Theme.statusColor(session.state))
-                                        .fixedSize()
-                                }
-                            }
-                            .padding(.vertical, 2)
-                            .padding(.horizontal, 4)
-                            .background(
-                                RoundedRectangle(cornerRadius: 3)
-                                    .fill(isSessionSelected ? Theme.hover : Color.clear)
-                            )
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Switch to \(session.agentKind.displayName) session")
+                        AgentMiniLaneView(
+                            session: session,
+                            activity: model.currentActivity(session),
+                            isSelected: session.id == selectedId,
+                            showsBackground: true,
+                            onSelect: { model.focus(session.id) }
+                        )
                     }
                 }
                 .padding(.vertical, 2)
@@ -883,6 +908,10 @@ private struct CompactProjectRow: View {
         if let selectedId, group.sessions.contains(where: { $0.id == selectedId }) {
             return selectedId
         }
+        if group.bucket == .needsYou,
+           let urgent = group.sessions.first(where: { $0.state.bucket == .needsYou }) {
+            return urgent.id
+        }
         return group.sessions.first?.id
     }
 
@@ -937,62 +966,12 @@ private struct CompactProjectRow: View {
                 } else {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(group.sessions) { session in
-                            let activity = model.currentActivity(session)
-                            let isSessionSelected = session.id == selectedId
-                            Button(action: { model.focus(session.id) }) {
-                                HStack(spacing: 6) {
-                                    Text("\(session.agentKind.pillText):")
-                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                        .foregroundStyle(Theme.agentColor(session.agentKind))
-                                        .fixedSize()
-
-                                    if let activity, !activity.isEmpty {
-                                        ZStack {
-                                            Circle()
-                                                .fill(Color.white.opacity(0.12))
-                                                .frame(width: 14, height: 14)
-                                            Image(systemName: activityIcon(for: activity))
-                                                .font(.system(size: 7, weight: .bold))
-                                                .foregroundStyle(Color.white.opacity(0.85))
-                                        }
-                                        Text(activity)
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundStyle(isSessionSelected ? Color.white.opacity(0.9) : Color.white.opacity(0.65))
-                                            .lineLimit(1)
-                                            .truncationMode(.tail)
-                                            .smoothShimmer(isWorking: session.state.bucket == .active)
-                                    } else if session.state.bucket == .needsYou {
-                                        Text("Needs input · \(AgeFormat.compact(from: session.stateChangedAt))")
-                                            .font(.system(size: 10, weight: .semibold))
-                                            .foregroundStyle(Theme.statusColor(session.state))
-                                            .lineLimit(1)
-                                    } else if session.state.bucket == .active {
-                                        Text("Working...")
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundStyle(Color.white.opacity(0.65))
-                                            .smoothShimmer(isWorking: true)
-                                    } else {
-                                        Text("Idle")
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundStyle(Color.white.opacity(0.35))
-                                            .lineLimit(1)
-                                    }
-
-                                    Spacer(minLength: 4)
-
-                                    if session.state.bucket == .needsYou && activity != nil {
-                                        Text(AgeFormat.compact(from: session.stateChangedAt))
-                                            .font(.system(size: 9, weight: .semibold))
-                                            .monospacedDigit()
-                                            .foregroundStyle(Theme.statusColor(session.state))
-                                            .fixedSize()
-                                    }
-                                }
-                                .padding(.vertical, 1)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .help("Switch to \(session.agentKind.displayName) session")
+                            AgentMiniLaneView(
+                                session: session,
+                                activity: model.currentActivity(session),
+                                isSelected: session.id == selectedId,
+                                onSelect: { model.focus(session.id) }
+                            )
                         }
                     }
                     .padding(.top, 2)
