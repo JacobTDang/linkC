@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-and-build:
+    name: Build & Policy Verification
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Brand & Policy Audit
+        run: |
+          echo "Verifying no forbidden terms in Sources/ or Tests/..."
+          ! grep -rnwi "gemini" Sources/ Tests/ || { echo "ERROR: Forbidden term detected"; exit 1; }
+
+      - name: Compile Release Binary with Swift 6 Strict Concurrency
+        run: swift build -c release -Xswiftc -warnings-as-errors
+
+  test-suite:
+    name: Unit & Integration Tests (Parallel)
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Test Suite
+        run: swift test --parallel
+
+  thread-sanitizer:
+    name: Thread Sanitizer & Lock Stress Tests
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run All Tests with Thread Sanitizer (TSan)
+        run: TSAN_OPTIONS="suppressions=.github/tsan.supp" swift test --sanitize=thread
+
+  package-app:
+    name: Package App Bundle & Signing
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build and Sign .app Bundle
+        run: ./build-app.sh
+
+      - name: Verify Bundle Signature and Binaries
+        run: |
+          codesign --verify --deep --strict dist.noindex/linkC.app
+          test -f dist.noindex/linkC.app/Contents/MacOS/linkc
+          test -f dist.noindex/linkC.app/Contents/MacOS/linkc-mcp
+          echo "App bundle signature and binaries verified successfully."

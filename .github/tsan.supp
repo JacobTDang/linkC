@@ -1,0 +1,2 @@
+# Suppress known internal background thread data race in SwiftTerm 1.0.0 dependency
+race:LocalProcess

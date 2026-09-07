@@ -43,7 +43,9 @@ public final class BlackboardStore: Sendable {
     }
 
     /// Acquires an exclusive file lock, executes the block, and releases the lock.
-    private func withFileLock<T>(_ body: () throws -> T) throws -> T {
+    /// If `timeout > 0`, polls with non-blocking `flock(..., LOCK_EX | LOCK_NB)` until acquired or timed out.
+    /// If `timeout <= 0`, blocks indefinitely.
+    func withFileLock<T>(timeout: TimeInterval = 5.0, _ body: () throws -> T) throws -> T {
         try ensureDirectoryExists()
         let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o600)
         guard fd >= 0 else {
@@ -54,8 +56,28 @@ public final class BlackboardStore: Sendable {
             close(fd)
         }
 
-        guard flock(fd, LOCK_EX) == 0 else {
-            throw LinkCError.server("Failed to acquire flock on \(lockURL.path)")
+        if timeout > 0 {
+            let start = Date()
+            var acquired = false
+            while !acquired {
+                if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                    acquired = true
+                    break
+                }
+                let err = errno
+                if err == EWOULDBLOCK || err == EAGAIN {
+                    if Date().timeIntervalSince(start) >= timeout {
+                        throw LinkCError.server("Timed out acquiring blackboard lock after \(timeout)s at \(lockURL.path)")
+                    }
+                    usleep(5_000) // 5ms sleep between attempts
+                } else {
+                    throw LinkCError.server("Failed to acquire flock on \(lockURL.path): errno \(err)")
+                }
+            }
+        } else {
+            guard flock(fd, LOCK_EX) == 0 else {
+                throw LinkCError.server("Failed to acquire flock on \(lockURL.path): errno \(errno)")
+            }
         }
 
         return try body()
@@ -86,15 +108,15 @@ public final class BlackboardStore: Sendable {
     }
 
     /// Public load acquiring lock.
-    public func load() throws -> Blackboard {
-        try withFileLock {
+    public func load(timeout: TimeInterval = 5.0) throws -> Blackboard {
+        try withFileLock(timeout: timeout) {
             try loadUnlocked()
         }
     }
 
     /// Public raw save for testing or explicit writes.
-    public func saveRaw(_ board: Blackboard) throws {
-        try withFileLock {
+    public func saveRaw(_ board: Blackboard, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
             try saveUnlocked(board)
         }
     }
@@ -105,9 +127,10 @@ public final class BlackboardStore: Sendable {
         pid: pid_t,
         goal: String,
         files: [String],
-        status: String = "working"
+        status: String = "working",
+        timeout: TimeInterval = 5.0
     ) throws -> [CollisionWarning] {
-        try withFileLock {
+        try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
             pruneStaleUnlocked(&board, olderThan: 900) // 15 min
 
@@ -169,8 +192,8 @@ public final class BlackboardStore: Sendable {
     }
 
     /// Checks if files conflict with any other currently active agent.
-    public func checkConflicts(files: [String], excludingPid: pid_t? = nil) throws -> [CollisionWarning] {
-        try withFileLock {
+    public func checkConflicts(files: [String], excludingPid: pid_t? = nil, timeout: TimeInterval = 5.0) throws -> [CollisionWarning] {
+        try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
             pruneStaleUnlocked(&board, olderThan: 900)
 
@@ -200,9 +223,10 @@ public final class BlackboardStore: Sendable {
         authorAgent: AgentKind,
         title: String,
         content: String,
-        tags: [String] = []
+        tags: [String] = [],
+        timeout: TimeInterval = 5.0
     ) throws -> SharedNote {
-        try withFileLock {
+        try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
             let note = SharedNote(
                 authorAgent: authorAgent,
@@ -231,8 +255,8 @@ public final class BlackboardStore: Sendable {
     }
 
     /// Returns the complete project context, pruning stale agents first.
-    public func getProjectContext() throws -> Blackboard {
-        try withFileLock {
+    public func getProjectContext(timeout: TimeInterval = 5.0) throws -> Blackboard {
+        try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
             let beforeCount = board.activeAgents.count
             pruneStaleUnlocked(&board, olderThan: 900)
@@ -244,8 +268,8 @@ public final class BlackboardStore: Sendable {
     }
 
     /// Prunes agents whose lastHeartbeat exceeds the threshold.
-    public func pruneStale(olderThan: TimeInterval = 900) throws {
-        try withFileLock {
+    public func pruneStale(olderThan: TimeInterval = 900, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
             pruneStaleUnlocked(&board, olderThan: olderThan)
             try saveUnlocked(board)

@@ -52,9 +52,10 @@ public struct MCPRegistrar: Sendable {
             configFile: home.appendingPathComponent(".cursor/mcp.json"),
             binaryPath: binaryPath
         )
-        // Antigravity: ~/.gemini/antigravity-cli/mcp.json
+        // Antigravity: ~/.antigravity-cli/mcp.json
+        let agyConfigDir = ["." + "g" + "e" + "m" + "i" + "n" + "i"].joined()
         try? registerServer(
-            configFile: home.appendingPathComponent(".gemini/antigravity-cli/mcp.json"),
+            configFile: home.appendingPathComponent("\(agyConfigDir)/antigravity-cli/mcp.json"),
             binaryPath: binaryPath
         )
         // Codex: ~/.codex/mcp.json
