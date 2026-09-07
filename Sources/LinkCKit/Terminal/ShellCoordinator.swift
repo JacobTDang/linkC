@@ -84,10 +84,10 @@ public final class ShellCoordinator {
         return row
     }
 
-    /// Automatically revive shells that were running when the app quit.
+    /// Automatically revive shells that were running when the app quit or were unended.
     public func restoreActiveShells() {
         guard let manifest else { return }
-        let toRestore = manifest.entries.filter { $0.wasActiveOnQuit }
+        let toRestore = manifest.entries.filter { $0.wasActiveOnQuit || $0.endedAt == nil }
         for var entry in toRestore {
             entry.wasActiveOnQuit = false
             if FileManager.default.fileExists(atPath: entry.cwd) {

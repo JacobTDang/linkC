@@ -554,7 +554,11 @@ private struct EmptyStateView: View {
                 .foregroundStyle(Theme.textTertiary)
             HStack(spacing: 8) {
                 ForEach(model.recentFolders, id: \.self) { path in
-                    FolderChip(path: path) { model.startSession(in: path) }
+                    FolderChip(
+                        path: path,
+                        action: { model.startSession(in: path) },
+                        onStartWith: { agent in model.startSession(in: path, agent: agent) }
+                    )
                 }
             }
         }
@@ -578,6 +582,7 @@ private struct HeroGlyph: View {
 private struct FolderChip: View {
     let path: String
     let action: () -> Void
+    var onStartWith: ((AgentKind) -> Void)? = nil
 
     @State private var hovering = false
 
@@ -607,6 +612,13 @@ private struct FolderChip: View {
         .animation(Theme.hoverEase, value: hovering)
         .onHover { hovering = $0 }
         .help("Start a new session in \(name)")
+        .contextMenu {
+            ForEach(AgentKind.allCases.filter { $0 != .shell }, id: \.self) { kind in
+                Button("Start with \(kind.displayName)") {
+                    onStartWith?(kind)
+                }
+            }
+        }
     }
 }
 

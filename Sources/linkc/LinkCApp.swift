@@ -705,11 +705,11 @@ final class AppModel {
     func stop(_ id: String) { coordinator?.stopSession(id) }
 
     /// Resume a previous session as a fresh live one. Surfaces failures inline (fail loud).
-    func restore(_ r: RestorableSession) {
+    func restore(_ r: RestorableSession, as agent: AgentKind? = nil) {
         guard let coordinator else { return }
         do {
             lastError = nil
-            try coordinator.restore(r)
+            try coordinator.restore(r, as: agent)
             recents?.record(r.cwd)
         } catch {
             lastError = error.localizedDescription

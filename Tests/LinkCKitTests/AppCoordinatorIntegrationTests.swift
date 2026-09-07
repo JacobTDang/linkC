@@ -279,6 +279,27 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertTrue(coordinator.restorables.isEmpty, "the restorable must be consumed by restoring it")
     }
 
+    /// Restoring with `as: targetAgent` overrides the recorded agent kind.
+    func testRestoreAsDifferentAgentSpawnsWithTargetAgent() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-restore-agent-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-agent-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        WorkspaceManifest(directory: dir).upsert(
+            RestorableSession(linkcId: "OLD", claudeSessionId: nil, cwd: cwd.path, title: "proj", agentKind: .claude, endedAt: Date())
+        )
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        let r = try XCTUnwrap(coordinator.restorables.first)
+
+        let live = try coordinator.restore(r, as: .shell)
+        defer { coordinator.stopSession(live.id) }
+
+        XCTAssertEqual(live.agentKind, .shell, "session must be restored with requested agent kind")
+        XCTAssertEqual(coordinator.store.session(id: live.id)?.agentKind, .shell)
+    }
+
     /// `restoreAll` restores every card; an empty restorable set makes it a no-op.
     func testRestoreAllRestoresEveryCard() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-restore-\(UUID().uuidString)")

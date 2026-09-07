@@ -334,9 +334,9 @@ public final class AppCoordinator {
 
     // MARK: - Restore
 
-    /// Revives all sessions that were marked active when the app last shut down.
+    /// Revives all sessions that were marked active when the app last shut down or were unended.
     public func restoreActiveSessions() {
-        let activeEntries = manifest.entries.filter { $0.wasActiveOnQuit }
+        let activeEntries = manifest.entries.filter { $0.wasActiveOnQuit || $0.endedAt == nil }
         for var r in activeEntries {
             r.wasActiveOnQuit = false
             if FileManager.default.fileExists(atPath: r.cwd) {
@@ -358,22 +358,31 @@ public final class AppCoordinator {
     }
 
     /// Resume a previous session as a fresh live one. Uses `claude --resume <id>` when the claude
-    /// conversation id was captured, else `claude --continue` in the folder. On success the old
+    /// conversation id was captured, else `--continue` in the folder. On success the old
     /// restorable is consumed (the new live session carries its own fresh manifest entry).
+    /// If `as: agent` is provided, overrides the session's recorded agent kind.
     @discardableResult
-    public func restore(_ r: RestorableSession) throws -> Session {
+    public func restore(_ r: RestorableSession, as agent: AgentKind? = nil) throws -> Session {
+        let targetAgent = agent ?? r.agentKind
         // A restorable with no captured claude id falls back to `--continue`, which attaches to
         // the folder's MOST RECENT conversation. If a live session already occupies that folder
         // (including one restored moments ago in the same Restore-all pass), a second
         // `--continue` would attach to the SAME conversation — two processes writing one
         // transcript. Refuse; the card stays and the user can restore it individually later.
-        if (r.claudeSessionId ?? "").isEmpty,
+        if targetAgent == .claude,
+           (r.claudeSessionId ?? "").isEmpty,
            store.sessions.contains(where: { $0.cwd == r.cwd }) {
             throw LinkCError.process(
                 "a session is already running in \(r.title) — restore this one after it ends, or dismiss it"
             )
         }
-        let session = try launch(cwd: r.cwd, title: r.title, agent: r.agentKind, mode: .continueLast, resumeId: r.claudeSessionId)
+        let session = try launch(
+            cwd: r.cwd,
+            title: r.title,
+            agent: targetAgent,
+            mode: .continueLast,
+            resumeId: targetAgent == .claude ? r.claudeSessionId : nil
+        )
         manifest.remove(linkcId: r.linkcId)
         syncRestorables()
         return session

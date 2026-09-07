@@ -295,7 +295,7 @@ private struct EarlierSection: View {
             ForEach(model.restorables) { session in
                 RestorableRow(
                     session: session,
-                    onRestore: { model.restore(session) },
+                    onRestore: { agent in model.restore(session, as: agent) },
                     onDismiss: { model.dismiss(session) }
                 )
                 .transition(reduceMotion
@@ -310,10 +310,10 @@ private struct EarlierSection: View {
 
 /// One previous session as a quiet row — transparent until hovered, when a soft wash and its
 /// dismiss x appear. History shouldn't compete with live cards: no fill, no preview, just an
-/// ended-grey dot, the title and folder, when it ended, and a plain Restore action.
+/// ended-grey dot, agent badge, the title and folder, when it ended, and restore actions.
 private struct RestorableRow: View {
     let session: RestorableSession
-    let onRestore: () -> Void
+    let onRestore: (AgentKind) -> Void
     let onDismiss: () -> Void
 
     @State private var hovering = false
@@ -321,10 +321,14 @@ private struct RestorableRow: View {
     var body: some View {
         HStack(spacing: 8) {
             StatusDot(state: .ended)
+                .fixedSize()
+            AgentPill(agent: session.agentKind)
+                .fixedSize()
             Text(session.title)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Theme.textSecondary)
                 .lineLimit(1)
+                .truncationMode(.tail)
                 .layoutPriority(1)
             Text((session.cwd as NSString).abbreviatingWithTildeInPath)
                 .font(.system(size: 11))
@@ -340,15 +344,34 @@ private struct RestorableRow: View {
 
             Spacer(minLength: 8)
 
-            Button(action: onRestore) {
-                Text("Restore")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                    .fixedSize()   // starved rows must truncate the title, never wrap the action
-                    .contentShape(Rectangle())
+            HStack(spacing: 2) {
+                Button(action: { onRestore(session.agentKind) }) {
+                    Text("Restore")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .fixedSize()   // starved rows must truncate the title, never wrap the action
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Resume this \(session.agentKind.displayName) session")
+
+                Menu {
+                    ForEach(AgentKind.allCases.filter { $0 != .shell }, id: \.self) { kind in
+                        Button("Restore as \(kind.displayName)") {
+                            onRestore(kind)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .padding(.horizontal, 2)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Restore with another agent")
             }
-            .buttonStyle(.plain)
-            .help("Resume this session")
 
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
@@ -360,6 +383,13 @@ private struct RestorableRow: View {
             .buttonStyle(.plain)
             .opacity(hovering ? 1 : 0)
             .help("Dismiss")
+        }
+        .contextMenu {
+            ForEach(AgentKind.allCases.filter { $0 != .shell }, id: \.self) { kind in
+                Button("Restore as \(kind.displayName)") {
+                    onRestore(kind)
+                }
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
