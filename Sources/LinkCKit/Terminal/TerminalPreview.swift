@@ -62,7 +62,20 @@ public enum TerminalPreview {
     }
 
     /// A prompt marker alone on its row promises input, not output — chrome either way.
-    private static let barePrompts: Set<String> = ["❯", ">", "$", "›", "%"]
+    public static let barePrompts: Set<String> = ["❯", ">", "$", "›", "%", "?", "»"]
+
+    /// Checks if a line is an interactive input prompt awaiting user submission.
+    public static func isPromptRow(_ text: String) -> Bool {
+        if barePrompts.contains(text) { return true }
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if barePrompts.contains(trimmed) { return true }
+        if trimmed == "codex >" || trimmed == "agy >" || trimmed == "cursor >" { return true }
+        if trimmed.hasPrefix("› Ask Codex") || trimmed.contains("Ask Codex to do anything") { return true }
+        if trimmed.hasPrefix("❯ ") && trimmed.count <= 3 { return true }
+        if trimmed.hasPrefix("› ") && trimmed.count <= 3 { return true }
+        if trimmed.hasPrefix("> ") && trimmed.count <= 3 { return true }
+        return false
+    }
 
     /// Scans recent rows from bottom up to find any active spinner or working status phrase.
     public static func liveActivity(from rows: [String]) -> String? {
@@ -72,6 +85,12 @@ public enum TerminalPreview {
             let text = String(String.UnicodeScalarView(stripped)).trimmingCharacters(in: .whitespaces)
             guard !text.isEmpty else { continue }
             guard !text.hasSuffix("(shift+tab to cycle)") && text != "? for shortcuts" else { continue }
+
+            // If an idle prompt is visible near the bottom, the agent is waiting for user input.
+            // Earlier action lines above the prompt belong to previous turns.
+            if isPromptRow(text) {
+                return nil
+            }
 
             var bannerCandidate = text
             if let first = bannerCandidate.first, "⚠✗✘".contains(first) {

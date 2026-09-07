@@ -159,12 +159,13 @@ final class AppModel {
         }
         if let term = selectedTerminal {
             let agent = term.sampleForegroundAgent()
-            let isAgentRunning = agent != .shell
+            let liveActivity = term.liveActivityLine()
+            let isWorking = agent != .shell && liveActivity != nil && !liveActivity!.isEmpty
             return Session(
                 id: term.id,
                 cwd: term.cwd,
                 title: term.title,
-                state: isAgentRunning ? .working : .ready,
+                state: isWorking ? .working : .ready,
                 agentKind: agent
             )
         }
@@ -506,7 +507,7 @@ final class AppModel {
            let liveActivity = term.liveActivityLine(), !liveActivity.isEmpty {
             return liveActivity
         }
-        if session.state.bucket == .active {
+        if session.agentKind == .claude, session.state.bucket == .active {
             return "Thinking…"
         }
         if session.state == .waitingPermission {
@@ -523,7 +524,7 @@ final class AppModel {
         if let liveActivity = term.liveActivityLine(), !liveActivity.isEmpty {
             return liveActivity
         }
-        return "Thinking…"
+        return nil
     }
 
     /// The Docker VM's host CPU — the tax no per-container stat can show.

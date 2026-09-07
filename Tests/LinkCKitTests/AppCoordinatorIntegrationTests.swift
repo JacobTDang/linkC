@@ -905,5 +905,29 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.store.session(id: "A1")?.state, .ready)
         XCTAssertEqual(coordinator.store.session(id: "A1")?.state.bucket, .idle)
     }
+
+    func testPersistentChildProcessesDoNotKeepSessionStuckInWorking() throws {
+        let sink = RecordingSink()
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-idle-\(UUID().uuidString)")
+        let coordinator = makeCoordinator(sink: sink, settingsDir: dir)
+        defer {
+            coordinator.shutdown()
+            try? FileManager.default.removeItem(at: dir)
+        }
+
+        // Create a Cursor session
+        let s = coordinator.store.create(cwd: "/tmp", title: "Cursor Project", id: "C1", agentKind: .cursor)
+        _ = coordinator.terminals.makeSession(id: "C1", cwd: "/tmp", title: "Cursor Project", agentKind: .cursor)
+
+        // Initial state is .starting (.idle bucket)
+        XCTAssertEqual(s.state, .starting)
+        XCTAssertEqual(s.state.bucket, .idle)
+
+        // When sampleAgentStates is called on an idle terminal with no live spinner,
+        // it must never transition to .working or .active
+        coordinator.sampleAgentStates()
+        XCTAssertNotEqual(coordinator.store.session(id: "C1")?.state.bucket, .active, "Session must not be placed in .working when terminal has no live activity")
+        XCTAssertEqual(coordinator.store.session(id: "C1")?.state.bucket, .idle)
+    }
 }
 

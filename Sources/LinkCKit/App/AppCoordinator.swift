@@ -459,8 +459,7 @@ public final class AppCoordinator {
             guard session.agentKind != .claude else { continue }
 
             let liveActivity = term.liveActivityLine()
-            let hasChildren = term.hasActiveChildProcesses()
-            let isWorking = (liveActivity != nil && !liveActivity!.isEmpty) || hasChildren
+            let isWorking = liveActivity != nil && !liveActivity!.isEmpty
 
             if isWorking {
                 if session.state.bucket != .active {
@@ -478,6 +477,8 @@ public final class AppCoordinator {
                     ) {
                         notifications.post(session: updated)
                     }
+                } else if session.state == .starting {
+                    store.updateState(id: session.id, to: .ready)
                 }
             }
         }

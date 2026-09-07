@@ -568,9 +568,11 @@ private struct CompactRowShell<Leading: View, Badge: View, Middle: View, Subrow:
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            leading()
-                .fixedSize()
-                .padding(.top, 1)
+            if Leading.self != EmptyView.self {
+                leading()
+                    .fixedSize()
+                    .padding(.top, 1)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     badge()
@@ -705,6 +707,29 @@ extension CompactRowShell where Middle == EmptyView {
     }
 }
 
+/// Convenience init without leading or middle (badge, subrow, trailing).
+extension CompactRowShell where Leading == EmptyView, Middle == EmptyView {
+    init(
+        title: String,
+        titleColor: Color = Theme.textPrimary,
+        needsYou: Bool = false,
+        isSelected: Bool = false,
+        dimmed: Bool = false,
+        glowsOnHover: Bool = true,
+        help: String,
+        onTap: @escaping () -> Void,
+        @ViewBuilder badge: @escaping () -> Badge,
+        @ViewBuilder subrow: @escaping () -> Subrow,
+        @ViewBuilder trailing: @escaping (_ hovering: Bool) -> Trailing
+    ) {
+        self.init(
+            title: title, titleColor: titleColor, needsYou: needsYou, isSelected: isSelected,
+            dimmed: dimmed, glowsOnHover: glowsOnHover, help: help, onTap: onTap,
+            leading: { EmptyView() }, badge: badge, middle: { EmptyView() }, subrow: subrow, trailing: trailing
+        )
+    }
+}
+
 /// The quiet 8pt infra dot in StatusDot's 18pt box (minus its glow) — terminals, servers,
 /// and cloud rows share it; only claude sessions get the living StatusDot.
 private struct InfraDot: View {
@@ -718,7 +743,7 @@ private struct InfraDot: View {
     }
 }
 
-/// Sidebar-density session row: the dot, the title, and only what demands attention — a
+/// Sidebar-density session row: the title and badge, and only what demands attention — a
 /// needs-you age and a running-agent chip. Working activity sits smoothly in a subrow below the title.
 private struct CompactSessionRow: View {
     let session: Session
@@ -736,9 +761,6 @@ private struct CompactSessionRow: View {
             isSelected: isSelected,
             help: isSelected ? "\(session.title) — current" : "Switch to \(session.title)",
             onTap: onOpen,
-            leading: {
-                StatusDot(state: session.state)
-            },
             badge: {
                 AgentPill(agent: session.agentKind)
             },

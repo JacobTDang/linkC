@@ -304,4 +304,46 @@ final class TerminalPreviewTests: XCTestCase {
         ]
         XCTAssertNil(TerminalPreview.liveActivity(from: rows))
     }
+
+    func testLiveActivityReturnsNilWhenIdlePromptPresentAtBottom() {
+        let rowsWithPastThinking = [
+            "⠋ Thinking...",
+            "Here is the final output from your request.",
+            "❯"
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: rowsWithPastThinking), "Past activity above an idle prompt must return nil")
+
+        let rowsWithPromptSpace = [
+            "Writing Sources/LinkCKit/TerminalSession.swift…",
+            "Done writing file.",
+            "❯ "
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: rowsWithPromptSpace))
+    }
+
+    func testLiveActivityReturnsNilForCodexIdleStartupPrompt() {
+        let codexStartupRows = [
+            "╭───────────────────────────────────────╮",
+            "│ >_ OpenAI Codex (v0.153.4)            │",
+            "│                                       │",
+            "│ model:     loading   /model to change │",
+            "│ directory: loading                    │",
+            "╰───────────────────────────────────────╯",
+            "  › Ask Codex to do anything",
+            "  ? for shortcuts"
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: codexStartupRows), "Codex startup idle prompt must return nil")
+    }
+
+    func testLiveActivityReturnsNilForClaudeIdleBoxPromptWithPastActivity() {
+        let claudeIdleRows = [
+            "✻ Sautéing… (12s · esc to interrupt)",
+            "Fixed the issue in PanelView.",
+            "╭───────────────────────────────────────╮",
+            "│ >                                     │",
+            "╰───────────────────────────────────────╯",
+            "  ? for shortcuts"
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: claudeIdleRows), "Claude idle boxed prompt must return nil even if past sautéing was in recent rows")
+    }
 }
