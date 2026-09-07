@@ -23,7 +23,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
     public var brandColorHex: String {
         switch self {
         case .claude: return "#D97757"    // coral
-        case .agy: return "#7AA2F7"       // gemini soft blue
+        case .agy: return "#7AA2F7"       // antigravity soft blue
         case .cursor: return "#00E5FF"    // cyan / neon
         case .codex: return "#10A37F"     // openAI emerald
         case .shell: return "#8E8E93"     // neutral grey

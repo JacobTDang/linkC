@@ -4,7 +4,7 @@ sync-agent-skills.py
 
 Bi-directional synchronization of agent skills across:
 - Claude Code (~/.claude/skills)
-- Antigravity / Gemini CLI (~/.gemini/config/skills)
+- Antigravity CLI (~/.gemini/config/skills)
 - Cursor (~/.cursor/skills)
 - Codex (~/.codex/skills)
 
@@ -24,7 +24,7 @@ HOME = Path.home()
 # Agent target directories
 TARGET_DIRS = {
     "claude": HOME / ".claude" / "skills",
-    "gemini": HOME / ".gemini" / "config" / "skills",
+    "agy": HOME / ".gemini" / "config" / "skills",
     "cursor": HOME / ".cursor" / "skills",
     "codex": HOME / ".codex" / "skills",
 }

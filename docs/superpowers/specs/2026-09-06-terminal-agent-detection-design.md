@@ -111,7 +111,7 @@ struct AgentPill: View {
 
 Brand Colors:
 - Claude: `#D97757` (Coral)
-- Antigravity: `#7AA2F7` (Gemini Blue)
+- Antigravity: `#7AA2F7` (Soft Blue)
 - Cursor: `#00E5FF` (Cyan)
 - Codex: `#10A37F` (Emerald Green)
 - Shell: `#8E8E93` (Secondary / Muted)
