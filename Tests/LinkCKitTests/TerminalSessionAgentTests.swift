@@ -59,4 +59,50 @@ final class TerminalSessionAgentTests: XCTestCase {
         XCTAssertFalse(run.isRunning)
         XCTAssertEqual(run.resultText, "Found 3 files")
     }
+
+    func testAgentKindBrandColorsAndPills() {
+        XCTAssertEqual(AgentKind.claude.pillText, "CLAUDE")
+        XCTAssertEqual(AgentKind.agy.pillText, "AGY")
+        XCTAssertEqual(AgentKind.cursor.pillText, "CURSOR")
+        XCTAssertEqual(AgentKind.codex.pillText, "CODEX")
+        XCTAssertEqual(AgentKind.shell.pillText, "SHELL")
+
+        XCTAssertEqual(AgentKind.claude.brandColorHex, "#D97757")
+        XCTAssertEqual(AgentKind.agy.brandColorHex, "#7AA2F7")
+        XCTAssertEqual(AgentKind.cursor.brandColorHex, "#00E5FF")
+        XCTAssertEqual(AgentKind.codex.brandColorHex, "#10A37F")
+        XCTAssertEqual(AgentKind.shell.brandColorHex, "#8E8E93")
+    }
+
+    func testAgentDescriptorCLIArgs() {
+        let cursorArgs = AgentDescriptor.arguments(for: .cursor, mode: .continueLast)
+        XCTAssertEqual(cursorArgs, ["agent", "--yolo", "--continue"])
+
+        let agyArgs = AgentDescriptor.arguments(for: .agy, mode: .continueLast)
+        XCTAssertEqual(agyArgs, ["--dangerously-skip-permissions", "--continue"])
+
+        let codexArgs = AgentDescriptor.arguments(for: .codex, mode: .continueLast)
+        XCTAssertEqual(codexArgs, ["--dangerously-bypass-approvals-and-sandbox", "resume", "--last"])
+
+        let claudeArgs = AgentDescriptor.arguments(for: .claude, mode: .continueLast)
+        XCTAssertEqual(claudeArgs, ["--dangerously-skip-permissions", "--continue"])
+    }
+
+    func testAgentDescriptorResolvesInstalledExecutables() {
+        let claudePath = AgentDescriptor.resolveExecutable(for: .claude)
+        XCTAssertNotNil(claudePath)
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: claudePath!))
+
+        let codexPath = AgentDescriptor.resolveExecutable(for: .codex)
+        XCTAssertNotNil(codexPath)
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: codexPath!))
+
+        let cursorPath = AgentDescriptor.resolveExecutable(for: .cursor)
+        XCTAssertNotNil(cursorPath)
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: cursorPath!))
+
+        let agyPath = AgentDescriptor.resolveExecutable(for: .agy)
+        XCTAssertNotNil(agyPath)
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: agyPath!))
+    }
 }

@@ -794,5 +794,83 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(diskEntry?.wasActiveOnQuit, true, "newly launched session must immediately write wasActiveOnQuit == true to disk")
         XCTAssertNil(diskEntry?.endedAt, "newly launched session must have endedAt == nil on disk")
     }
+
+    /// Auto-spawn revives sessions with their respective agent kinds (claude, shell, agy, cursor, codex).
+    func testAutoSpawnRevivesMultipleAgentKinds() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-multi-revive-\(UUID().uuidString)")
+        let cwd1 = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd1-\(UUID().uuidString)")
+        let cwd2 = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd2-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd1, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd2, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: cwd1)
+            try? FileManager.default.removeItem(at: cwd2)
+        }
+
+        let manifest = WorkspaceManifest(directory: dir)
+        manifest.upsert(RestorableSession(
+            linkcId: "S_CLAUDE",
+            claudeSessionId: "cid1",
+            cwd: cwd1.path,
+            title: "ClaudeProj",
+            agentKind: .claude,
+            wasActiveOnQuit: true,
+            endedAt: nil
+        ))
+        manifest.upsert(RestorableSession(
+            linkcId: "S_SHELL",
+            claudeSessionId: nil,
+            cwd: cwd2.path,
+            title: "ShellProj",
+            agentKind: .shell,
+            wasActiveOnQuit: true,
+            endedAt: nil
+        ))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        try coordinator.start()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertEqual(coordinator.store.sessions.count, 2, "both sessions must auto-spawn")
+        XCTAssertEqual(coordinator.store.session(id: "S_CLAUDE")?.agentKind, .claude)
+        XCTAssertEqual(coordinator.store.session(id: "S_SHELL")?.agentKind, .shell)
+    }
+
+    /// Manual restore allows selecting any agent (e.g. restoring Claude session as Shell or vice versa).
+    func testManualRestoreAllowsAnyAgentSelection() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-manual-agent-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: cwd)
+        }
+
+        let manifest = WorkspaceManifest(directory: dir)
+        manifest.upsert(RestorableSession(
+            linkcId: "ENDED1",
+            claudeSessionId: nil,
+            cwd: cwd.path,
+            title: "EndedProj",
+            agentKind: .claude,
+            wasActiveOnQuit: false,
+            endedAt: Date()
+        ))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        XCTAssertEqual(coordinator.restorables.count, 1)
+        let r = try XCTUnwrap(coordinator.restorables.first)
+
+        // Restore as a Shell agent
+        let restored = try coordinator.restore(r, as: .shell)
+        defer { coordinator.stopSession(restored.id) }
+
+        XCTAssertEqual(restored.agentKind, .shell, "must be restored as .shell")
+        XCTAssertEqual(coordinator.store.session(id: restored.id)?.agentKind, .shell)
+        XCTAssertTrue(coordinator.restorables.isEmpty, "restorable must be consumed")
+    }
 }
 
