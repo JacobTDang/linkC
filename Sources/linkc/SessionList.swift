@@ -216,6 +216,10 @@ private struct RestorableShellRow: View {
     var body: some View {
         HStack(spacing: 8) {
             InfraDot(color: Theme.textTertiary)
+            if let agent = shell.detectedAgent {
+                AgentPill(agent: agent)
+                    .fixedSize()
+            }
             Text(shell.title)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Theme.textSecondary)

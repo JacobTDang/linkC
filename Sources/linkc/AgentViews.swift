@@ -71,49 +71,6 @@ struct AgentLine: View {
     }
 }
 
-/// Agent pills riding above the open session's terminal — tap one to read its output.
-struct AgentStrip: View {
-    let agents: [AgentRun]
-    let onOpen: (AgentRun) -> Void
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(agents) { agent in
-                    Button { onOpen(agent) } label: {
-                        HStack(spacing: 6) {
-                            if let type = agent.type {
-                                Text(type.uppercased())
-                                    .font(.system(size: 8, weight: .bold))
-                                    .tracking(0.5)
-                                    .foregroundStyle(Theme.textTertiary)
-                            }
-                            Text(agent.description)
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(Theme.textSecondary)
-                                .lineLimit(1)
-                            if agent.isRunning {
-                                ProgressView().controlSize(.mini).scaleEffect(0.7)
-                            } else {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(Theme.statusRunning)
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(Color.white.opacity(0.05)))
-                        .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .help(agent.isRunning ? "Working — output arrives when it finishes" : "Read this agent's report")
-                }
-            }
-            .padding(.horizontal, 12)
-        }
-        .padding(.bottom, 6)
-    }
-}
 
 /// An agent's report, readable in place — the skill-reader pattern: local back, selectable
 /// monospaced body. A still-running agent shows its identity and age instead of a body.

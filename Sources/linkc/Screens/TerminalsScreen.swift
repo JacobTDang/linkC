@@ -95,6 +95,7 @@ struct TerminalCard: View {
                     .frame(width: 18, height: 18)  // StatusDot's box, minus its glow
                 if let agent = row.detectedAgent {
                     AgentPill(agent: agent)
+                        .fixedSize()
                 }
                 Text(row.title)
                     .font(.system(size: 13, weight: .medium))
@@ -184,6 +185,10 @@ struct RememberedTerminalCard: View {
                 .fill(Theme.textTertiary)
                 .frame(width: 8, height: 8)
                 .frame(width: 18, height: 18)
+            if let agent = shell.detectedAgent {
+                AgentPill(agent: agent)
+                    .fixedSize()
+            }
             Text(shell.title)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Theme.textSecondary)
