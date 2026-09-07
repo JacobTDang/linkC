@@ -615,8 +615,10 @@ public final class AppCoordinator {
     }
 
     private func inspectGitStatus(in workspacePath: String) -> String? {
-        let gitPath = "/usr/bin/git"
-        guard FileManager.default.isExecutableFile(atPath: gitPath) else { return nil }
+        let candidates = ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"]
+        guard let gitPath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            return nil
+        }
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: workspacePath, isDirectory: &isDir), isDir.boolValue else { return nil }
 
@@ -628,6 +630,21 @@ public final class AppCoordinator {
         process.standardOutput = stdout
         process.standardError = Pipe()
 
+        final class DataBox: @unchecked Sendable {
+            var data = Data()
+        }
+        let box = DataBox()
+        let pipeLock = NSLock()
+        let outDone = DispatchSemaphore(value: 0)
+        let drainQueue = DispatchQueue(label: "linkc.git.drain", attributes: .concurrent)
+        drainQueue.async {
+            let data = stdout.fileHandleForReading.readDataToEndOfFile()
+            pipeLock.lock()
+            box.data = data
+            pipeLock.unlock()
+            outDone.signal()
+        }
+
         let exited = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in exited.signal() }
 
@@ -637,14 +654,19 @@ public final class AppCoordinator {
             return nil
         }
 
-        if exited.wait(timeout: .now() + 2.0) == .timedOut {
+        if exited.wait(timeout: .now() + 1.0) == .timedOut {
             process.terminate()
+            _ = exited.wait(timeout: .now() + 0.5)
+            _ = outDone.wait(timeout: .now() + 0.5)
             return nil
         }
 
+        _ = outDone.wait(timeout: .now() + 0.5)
         guard process.terminationStatus == 0 else { return nil }
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        let trimmed = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        pipeLock.lock()
+        let finalData = box.data
+        pipeLock.unlock()
+        let trimmed = String(data: finalData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed?.isEmpty ?? true) ? nil : trimmed
     }
 }
