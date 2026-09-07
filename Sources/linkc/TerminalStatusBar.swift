@@ -1,8 +1,8 @@
 import SwiftUI
 import LinkCKit
 
-/// Sleek status banner displayed above the active terminal showing live agent activity,
-/// an OpenAI-style shimmer highlight while active, and integrated micro-chips for spawned subagents.
+/// Sleek status banner displayed above the active terminal showing the active agent pill,
+/// the session title, live working activity message in native brand color, and integrated micro-chips for spawned subagents.
 struct TerminalStatusBar: View {
     let session: Session?
     let activity: String?
@@ -14,9 +14,14 @@ struct TerminalStatusBar: View {
             if let session {
                 AgentPill(agent: session.agentKind)
 
+                Text(session.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .layoutPriority(2)
+
                 statusView(for: session)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .shimmerHighlight(isWorking: session.state.bucket == .active)
+                    .layoutPriority(1)
 
                 Spacer(minLength: 4)
 
@@ -27,7 +32,7 @@ struct TerminalStatusBar: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .frame(height: 26)
+        .frame(height: 28)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(Color.white.opacity(0.04))
@@ -40,23 +45,41 @@ struct TerminalStatusBar: View {
 
     @ViewBuilder
     private func statusView(for session: Session) -> some View {
-        if let activity, !activity.isEmpty {
-            Text(activity)
-                .foregroundStyle(Theme.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        } else if session.state == .working {
-            Text("Thinking…")
-                .foregroundStyle(Theme.textPrimary)
-                .lineLimit(1)
+        let isWorking = session.state.bucket == .active || (activity != nil && !activity!.isEmpty)
+        let brandColor = Theme.agentColor(session.agentKind)
+
+        if isWorking {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(brandColor)
+                    .frame(width: 5, height: 5)
+                Text(activity ?? "Thinking…")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(brandColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
         } else if session.state.bucket == .needsYou {
-            Text("Waiting for input")
-                .foregroundStyle(Theme.textSecondary)
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(Theme.statusNeedsYou)
+                    .frame(width: 5, height: 5)
+                Text(session.state == .waitingPermission ? (activity ?? "Permission required") : "Waiting for input")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Theme.statusNeedsYou)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
         } else {
-            Text("Ready")
-                .foregroundStyle(Theme.textSecondary)
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(Theme.textTertiary)
+                    .frame(width: 5, height: 5)
+                Text("Ready")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+            }
         }
     }
 

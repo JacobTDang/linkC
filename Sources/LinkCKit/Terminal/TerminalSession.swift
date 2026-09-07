@@ -175,6 +175,23 @@ public final class TerminalSession {
         return TerminalPreview.excerpt(rows: rows, lines: lines)
     }
 
+    /// The live activity or spinner phrase from the terminal's visible screen, as plain text.
+    /// Returns nil when the PTY was never started or no activity indicator is found. Reads the
+    /// private backing store (not `terminalView`) so a never-shown session is never forced to spawn.
+    public func liveActivityLine() -> String? {
+        guard let view = _terminalView else { return nil }
+        let terminal = view.getTerminal()
+        var rows: [String] = []
+        let total = terminal.rows
+        let start = max(0, total - 12)
+        for row in start..<total {
+            if let line = terminal.getLine(row: row)?.translateToString(trimRight: true) {
+                rows.append(line)
+            }
+        }
+        return TerminalPreview.liveActivity(from: rows)
+    }
+
     private func handleTerminated(_ code: Int32?) {
         onTerminated?(code)
     }

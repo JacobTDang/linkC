@@ -154,9 +154,21 @@ final class AppModel {
 
     var selectedSession: Session? {
         guard let id = selectedId else { return nil }
-        return sessions.first { $0.id == id } ?? selectedTerminal.map {
-            Session(id: $0.id, cwd: $0.cwd, title: $0.title, state: .ready, agentKind: $0.agentKind)
+        if let session = sessions.first(where: { $0.id == id }) {
+            return session
         }
+        if let term = selectedTerminal {
+            let agent = term.sampleForegroundAgent()
+            let isAgentRunning = agent != .shell
+            return Session(
+                id: term.id,
+                cwd: term.cwd,
+                title: term.title,
+                state: isAgentRunning ? .working : .ready,
+                agentKind: agent
+            )
+        }
+        return nil
     }
 
     func start() async {
@@ -480,14 +492,23 @@ final class AppModel {
         }
     }
 
-    /// The session's current action ("$ swift test") — while it's working, and while it's
-    /// blocked on a permission prompt (that's exactly when "which command is waiting?"
-    /// matters most). Idle rows never state an absence.
+    /// The session's current action ("$ swift test", "Thinking…", etc.) while it's working,
+    /// and while it's blocked on a permission prompt. Idle rows never state an absence.
     func currentActivity(_ session: Session) -> String? {
         guard session.state.bucket == .active || session.state == .waitingPermission else {
             return nil
         }
-        return usage.sessionActivity(session.id)
+        if let hookActivity = usage.sessionActivity(session.id), !hookActivity.isEmpty {
+            return hookActivity
+        }
+        if let term = coordinator?.terminals.session(id: session.id),
+           let liveActivity = term.liveActivityLine(), !liveActivity.isEmpty {
+            return liveActivity
+        }
+        if session.state.bucket == .active {
+            return "Thinking…"
+        }
+        return nil
     }
 
     /// The Docker VM's host CPU — the tax no per-container stat can show.

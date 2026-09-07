@@ -21,6 +21,17 @@ enum Theme {
     /// Soft gold for a context hairline nearing auto-compact (~#E3C169).
     static let contextWarn = Color(red: 0.89, green: 0.757, blue: 0.412)
 
+    /// Native brand colors for each AI agent kind.
+    static func agentColor(_ agent: AgentKind) -> Color {
+        switch agent {
+        case .claude: return Color(red: 217/255, green: 119/255, blue: 87/255) // #D97757
+        case .agy: return Color(red: 122/255, green: 162/255, blue: 247/255)   // #7AA2F7
+        case .cursor: return Color(red: 0/255, green: 229/255, blue: 255/255)  // #00E5FF
+        case .codex: return Color(red: 16/255, green: 163/255, blue: 127/255)  // #10A37F
+        case .shell: return Color(white: 0.55)
+        }
+    }
+
     // Surfaces: the content plane. One flat translucent fill over the sheet — the model is
     // Control Center, whose tiles are a single wash of light on the material with no
     // gradient, no border and no shadow. Depth comes from the material behind them, not

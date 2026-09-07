@@ -450,7 +450,7 @@ private struct HomeCard: View {
                 if let activity {
                     Text(activity)
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Theme.textTertiary)
+                        .foregroundStyle(session.state.bucket == .active ? Theme.agentColor(session.agentKind) : Theme.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -653,7 +653,7 @@ private struct CompactSessionRow: View {
             if let activity {
                 Text(activity)
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(session.state.bucket == .active ? Theme.agentColor(session.agentKind) : Theme.textTertiary)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }

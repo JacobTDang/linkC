@@ -63,4 +63,65 @@ public enum TerminalPreview {
 
     /// A prompt marker alone on its row promises input, not output — chrome either way.
     private static let barePrompts: Set<String> = ["❯", ">", "$", "›", "%"]
+
+    /// Scans recent rows from bottom up to find any active spinner or working status phrase.
+    public static func liveActivity(from rows: [String]) -> String? {
+        let recent = rows.suffix(12).reversed()
+        for row in recent {
+            let stripped = row.unicodeScalars.filter { !isBoxDrawing($0) }
+            let text = String(String.UnicodeScalarView(stripped)).trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty else { continue }
+            guard !text.hasSuffix("(shift+tab to cycle)") && text != "? for shortcuts" else { continue }
+
+            var bannerCandidate = text
+            if let first = bannerCandidate.first, "⚠✗✘".contains(first) {
+                bannerCandidate = String(bannerCandidate.dropFirst()).trimmingCharacters(in: .whitespaces)
+            }
+            let bannerPrefixes = [
+                "Transcript saving is off",
+                "Context left until auto-compact",
+                "Context low",
+                "Auto-update failed",
+                "Press up to edit queued messages",
+            ]
+            if bannerPrefixes.contains(where: bannerCandidate.hasPrefix) {
+                continue
+            }
+
+            // Spinner row with (esc to interrupt) or token count indicator
+            if text.contains("esc to interrupt") || text.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil {
+                let cleaned = cleanLeadingSpinner(text)
+                if let parenIndex = cleaned.firstIndex(of: "(") {
+                    let extracted = String(cleaned[..<parenIndex]).trimmingCharacters(in: .whitespaces)
+                    if !extracted.isEmpty { return extracted }
+                }
+                if !cleaned.isEmpty { return cleaned }
+            }
+
+            // Spinner row with CLI spinner symbol
+            let cleaned = cleanLeadingSpinner(text)
+            if cleaned != text && (cleaned.hasSuffix("…") || cleaned.hasSuffix("...")) {
+                if !cleaned.isEmpty { return cleaned }
+            }
+
+            // Standalone action line ending in ellipsis
+            let actionPrefixes = ["Thinking", "Generating", "Working", "Running", "Writing", "Reading", "Editing", "Searching", "Building", "Compiling"]
+            if (cleaned.hasSuffix("…") || cleaned.hasSuffix("...")) && actionPrefixes.contains(where: { cleaned.hasPrefix($0) }) {
+                return cleaned
+            }
+        }
+        return nil
+    }
+
+    private static func cleanLeadingSpinner(_ text: String) -> String {
+        var t = text
+        let spinnerChars: Set<Character> = [
+            "✻", "✳", "*", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+            "●", "○", "◐", "◑", "◒", "◓", "✦", "✧", "✨", "-", "|", "/", "\\"
+        ]
+        while let first = t.first, spinnerChars.contains(first) || first.isWhitespace {
+            t.removeFirst()
+        }
+        return t
+    }
 }

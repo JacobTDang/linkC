@@ -112,6 +112,12 @@ final class TerminalSessionTests: XCTestCase {
         session.terminate() // still a safe no-op — proves recentOutput didn't spawn a view
     }
 
+    func testLiveActivityLineBeforeStartIsNil() {
+        let session = TerminalSession(id: "L1", cwd: "/tmp", title: "api")
+        XCTAssertNil(session.liveActivityLine())
+        session.terminate()
+    }
+
     func testScrubbedEnvironmentDropsClaudeCodeMarkers() {
         // linkC may itself be running inside a claude session (opened from a terminal there).
         // Its inherited CLAUDECODE/CLAUDE_CODE_* markers must not leak into spawned sessions,
@@ -239,5 +245,63 @@ final class TerminalPreviewTests: XCTestCase {
     func testEmptyAndChromeOnlyInputGivesEmptyString() {
         XCTAssertEqual(TerminalPreview.excerpt(rows: [], lines: 3), "")
         XCTAssertEqual(TerminalPreview.excerpt(rows: ["────", "", "❯"], lines: 3), "")
+    }
+
+    func testExtractsClaudeSpinnerActivity() {
+        let rows = [
+            "Running build...",
+            "✻ Sautéing… (12s · esc to interrupt)",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Sautéing…")
+
+        let tokenRows = [
+            "Output text",
+            "✳ Boondoggling… (50s · ↓2.5k tokens · thinking with xhigh effort)",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: tokenRows), "Boondoggling…")
+
+        let commandRows = [
+            "Building target...",
+            "Running swift test… (3s · esc to interrupt)",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: commandRows), "Running swift test…")
+    }
+
+    func testExtractsAgyAndOtherAgentSpinners() {
+        let rows = [
+            "Some output",
+            "⠋ Thinking...",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Thinking...")
+
+        let runningRows = [
+            "Some output",
+            "⠙ Running tests...",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: runningRows), "Running tests...")
+    }
+
+    func testExtractsActionEllipsisActivity() {
+        let rows = [
+            "Preparing environment",
+            "Writing Sources/LinkCKit/TerminalSession.swift…",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Writing Sources/LinkCKit/TerminalSession.swift…")
+
+        let thinkingRows = [
+            "Thinking…",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: thinkingRows), "Thinking…")
+    }
+
+    func testLiveActivityIgnoresBannersAndChrome() {
+        let rows = [
+            "Done",
+            "⏵⏵ bypass permissions on (shift+tab to cycle)",
+            "? for shortcuts",
+            "Context left until auto-compact: 8%",
+            "❯",
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: rows))
     }
 }
