@@ -16,17 +16,17 @@ struct SessionListColumn: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var inspectingWorkspace: String? = nil
 
-    /// One row of the sectioned overview: a section header or a live session card. Cards keep a
-    /// stable id (`session.id`) so a state change reorders the flat list and SwiftUI *moves* the
+    /// One row of the sectioned overview: a section header or a live project group banner. Groups keep a
+    /// stable id (`group.id` / workspacePath) so a state change reorders the flat list and SwiftUI *moves* the
     /// card to its new section rather than recreating it — that move is what the spring animates.
     private enum Row: Identifiable {
         case header(String)
-        case card(Session)
+        case group(ProjectGroup)
 
         var id: String {
             switch self {
             case .header(let title): return "header-\(title)"
-            case .card(let session): return session.id
+            case .group(let group): return group.id
             }
         }
     }
@@ -74,7 +74,7 @@ struct SessionListColumn: View {
         }
     }
 
-    /// The live sessions as a priority queue: NEEDS YOU → WORKING → IDLE, each a stable row in one
+    /// The live project groups as a priority queue: NEEDS YOU → WORKING → IDLE, each a stable row in one
     /// flat list so cards glide between sections on a state change. Reduce Motion drops the spring.
     @MainActor @ViewBuilder private var liveSections: some View {
         let _ = model.sampleAgentStates()
@@ -86,29 +86,20 @@ struct SessionListColumn: View {
                     SectionHeader(title: title)
                         .padding(.top, 6)
                         .transition(.opacity)
-                case .card(let session):
+                case .group(let group):
                     Group {
                         if compact {
-                            CompactSessionRow(
-                                session: session,
-                                runningAgents: model.visibleAgents(session.id).count(where: \.isRunning),
-                                activity: model.currentActivity(session),
-                                isSelected: session.id == selectedId,
-                                onOpen: { model.focus(session.id) },
-                                onClose: { model.stop(session.id) }
+                            CompactProjectRow(
+                                group: group,
+                                model: model,
+                                selectedId: selectedId
                             )
                         } else {
                             HomeCard(
-                                session: session,
-                                preview: model.recentOutput(session.id, lines: 3),
-                                contextFill: model.contextFill(session.id),
-                                agents: model.visibleAgents(session.id),
-                                activity: model.currentActivity(session),
-                                swarm: model.swarm(for: session.cwd),
-                                isSelected: session.id == selectedId,
-                                onOpen: { model.focus(session.id) },
-                                onClose: { model.stop(session.id) },
-                                onInspectSwarm: { inspectingWorkspace = session.cwd }
+                                group: group,
+                                model: model,
+                                selectedId: selectedId,
+                                onInspectSwarm: { inspectingWorkspace = group.workspacePath }
                             )
                         }
                     }
@@ -123,20 +114,20 @@ struct SessionListColumn: View {
         .animation(reduceMotion ? nil : Theme.sectionSpring, value: rows.map(\.id))
     }
 
-    /// Group live sessions by urgency bucket, in priority order, preserving each session's relative
+    /// Group live projects by urgency bucket, in priority order, preserving each group's relative
     /// order within its bucket. Empty buckets are dropped; headers are shown only when more than one
     /// bucket is present (a lone group needs no label).
     @MainActor private var rows: [Row] {
-        let sessions = model.sessions
-        let groups: [(String, [Session])] = [
-            ("NEEDS YOU", sessions.filter { $0.state.bucket == .needsYou }),
-            ("WORKING", sessions.filter { $0.state.bucket == .active }),
-            ("IDLE", sessions.filter { $0.state.bucket == .idle }),
+        let projectGroups = ProjectGroup.group(sessions: model.sessions)
+        let sections: [(String, [ProjectGroup])] = [
+            ("NEEDS YOU", projectGroups.filter { $0.bucket == .needsYou }),
+            ("WORKING", projectGroups.filter { $0.bucket == .active }),
+            ("IDLE", projectGroups.filter { $0.bucket == .idle }),
         ].filter { !$0.1.isEmpty }
 
-        let showHeaders = groups.count > 1
-        return groups.flatMap { title, group -> [Row] in
-            (showHeaders ? [Row.header(title)] : []) + group.map(Row.card)
+        let showHeaders = sections.count > 1
+        return sections.flatMap { title, sectionGroups -> [Row] in
+            (showHeaders ? [Row.header(title)] : []) + sectionGroups.map(Row.group)
         }
     }
 }
@@ -409,47 +400,82 @@ private struct RestorableRow: View {
     }
 }
 
-/// A single session card: a soft fill (a faint coral wash when it needs you), a status · title ·
-/// path header line, and a dim monospaced preview of the last few terminal rows aligned under the
-/// title. The state is the dot; words appear only when the session needs you. The whole card is
-/// the tap target. `isSelected` (the sidebar's open item) brightens the plane and hangs an
-/// accent hairline off the leading edge.
+/// A single session card or merged multi-agent project card on home:
+/// Soft fill (faint coral wash when needing attention), status · title · path header line,
+/// interactive agent pills, quick teammate spawning, Option 2 stacked mini-lanes for multi-agent activity,
+/// and terminal preview with context window fill.
 private struct HomeCard: View {
-    let session: Session
-    let preview: String
-    /// 0…1 context-window fill for the hairline along the bottom edge; nil hides it.
-    let contextFill: Double?
-    /// Subagents worth showing: running ones plus the recently finished.
-    let agents: [AgentRun]
-    /// The current command/file/subagent while working — fills the header's middle.
-    var activity: String? = nil
-    var swarm: ProjectSwarm? = nil
-    var isSelected: Bool = false
-    let onOpen: () -> Void
-    let onClose: () -> Void
+    let group: ProjectGroup
+    let model: AppModel
+    var selectedId: String? = nil
     var onInspectSwarm: (() -> Void)? = nil
 
     @State private var hovering = false
 
+    private var isSelected: Bool {
+        group.sessions.contains(where: { $0.id == selectedId })
+    }
+
+    private var activeSession: Session? {
+        if let selectedId, let match = group.sessions.first(where: { $0.id == selectedId }) {
+            return match
+        }
+        return group.sessions.first
+    }
+
+    private var representativeState: SessionState {
+        if group.bucket == .needsYou,
+           let urgent = group.sessions.first(where: { $0.state.bucket == .needsYou }) {
+            return urgent.state
+        }
+        if group.bucket == .active,
+           let active = group.sessions.first(where: { $0.state.bucket == .active }) {
+            return active.state
+        }
+        return activeSession?.state ?? .ready
+    }
+
     var body: some View {
+        let swarm = model.swarm(for: group.workspacePath)
+        let allAgents = group.sessions.flatMap { model.visibleAgents($0.id) }
+        let isSingle = group.sessions.count <= 1
+        let primarySession = activeSession
+
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                StatusDot(state: session.state)
-                AgentPill(agent: session.agentKind)
+                StatusDot(state: representativeState)
+
+                if isSingle, let session = primarySession {
+                    AgentPill(agent: session.agentKind, isSelected: session.id == selectedId)
+                } else {
+                    HStack(spacing: 4) {
+                        ForEach(group.sessions) { session in
+                            Button(action: { model.focus(session.id) }) {
+                                AgentPill(agent: session.agentKind, isSelected: session.id == selectedId)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Switch to \(session.agentKind.displayName) session")
+                        }
+                    }
+                }
+
                 if let swarm {
                     SwarmBadge(swarm: swarm) { onInspectSwarm?() }
                 }
-                Text(session.title)
+
+                Text(group.title)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
                     .layoutPriority(1)
-                Text((session.cwd as NSString).abbreviatingWithTildeInPath)
+
+                Text((group.workspacePath as NSString).abbreviatingWithTildeInPath)
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if let activity {
+
+                if isSingle, let session = primarySession, let activity = model.currentActivity(session), !activity.isEmpty {
                     HStack(spacing: 5) {
                         ZStack {
                             Circle()
@@ -467,21 +493,45 @@ private struct HomeCard: View {
                             .smoothShimmer(isWorking: session.state.bucket == .active)
                     }
                 }
+
                 Spacer(minLength: 8)
-                // State text only when there's something to act on — the dot carries the rest.
-                if session.state.bucket == .needsYou {
-                    // Time-in-state: a 10-second wait and a 20-minute wait are different
-                    // situations — say which this is.
-                    Text("\(statusLabel(session.state)) · \(AgeFormat.compact(from: session.stateChangedAt))")
-                        .font(.system(size: 10, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.statusColor(session.state))
-                        .fixedSize()
+
+                if group.bucket == .needsYou {
+                    if let urgent = group.sessions.first(where: { $0.state.bucket == .needsYou }) {
+                        Text("\(statusLabel(urgent.state)) · \(AgeFormat.compact(from: urgent.stateChangedAt))")
+                            .font(.system(size: 10, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.statusColor(urgent.state))
+                            .fixedSize()
+                    }
                 }
-                if agents.contains(where: \.isRunning) {
-                    AgentChip(count: agents.count { $0.isRunning })
+
+                if allAgents.contains(where: \.isRunning) {
+                    AgentChip(count: allAgents.count(where: \.isRunning))
                 }
-                Button(action: onClose) {
+
+                Menu {
+                    ForEach(AgentKind.allCases.filter { $0 != .shell }, id: \.self) { kind in
+                        Button("Add \(kind.displayName)") {
+                            model.spawnTeammate(in: group.workspacePath, agent: kind)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .opacity(hovering ? 1 : 0)
+                .help("Add teammate agent to this workspace")
+
+                Button(action: {
+                    for s in group.sessions {
+                        model.stop(s.id)
+                    }
+                }) {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Theme.textTertiary)
@@ -490,16 +540,89 @@ private struct HomeCard: View {
                 }
                 .buttonStyle(.plain)
                 .opacity(hovering ? 1 : 0)
-                .help("Stop session")
+                .help(group.sessions.count > 1 ? "Stop all sessions in workspace" : "Stop session")
             }
+
+            if !isSingle {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(group.sessions) { session in
+                        let activity = model.currentActivity(session)
+                        let isSessionSelected = session.id == selectedId
+                        Button(action: { model.focus(session.id) }) {
+                            HStack(spacing: 6) {
+                                Text("\(session.agentKind.pillText):")
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(Theme.agentColor(session.agentKind))
+                                    .fixedSize()
+
+                                if let activity, !activity.isEmpty {
+                                    ZStack {
+                                        Circle()
+                                            .fill(Color.white.opacity(0.12))
+                                            .frame(width: 14, height: 14)
+                                        Image(systemName: activityIcon(for: activity))
+                                            .font(.system(size: 7, weight: .bold))
+                                            .foregroundStyle(Color.white.opacity(0.85))
+                                    }
+                                    Text(activity)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(isSessionSelected ? Color.white.opacity(0.9) : Color.white.opacity(0.65))
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .smoothShimmer(isWorking: session.state.bucket == .active)
+                                } else if session.state.bucket == .needsYou {
+                                    Text("Needs input · \(AgeFormat.compact(from: session.stateChangedAt))")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(Theme.statusColor(session.state))
+                                        .lineLimit(1)
+                                } else if session.state.bucket == .active {
+                                    Text("Working...")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(Color.white.opacity(0.65))
+                                        .smoothShimmer(isWorking: true)
+                                } else {
+                                    Text("Idle")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(Color.white.opacity(0.35))
+                                        .lineLimit(1)
+                                }
+
+                                Spacer(minLength: 4)
+
+                                if session.state.bucket == .needsYou && activity != nil {
+                                    Text(AgeFormat.compact(from: session.stateChangedAt))
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .monospacedDigit()
+                                        .foregroundStyle(Theme.statusColor(session.state))
+                                        .fixedSize()
+                                }
+                            }
+                            .padding(.vertical, 2)
+                            .padding(.horizontal, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(isSessionSelected ? Theme.hover : Color.clear)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Switch to \(session.agentKind.displayName) session")
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
             if let swarm, !swarm.collisions.isEmpty {
                 CollisionBanner(collisions: swarm.collisions)
             }
-            PreviewText(text: preview)
-            // The agent lane: the card grows quietly while the session fans out.
-            if !agents.isEmpty {
+
+            if let primarySession {
+                PreviewText(text: model.recentOutput(primarySession.id, lines: 3))
+            }
+
+            if !allAgents.isEmpty {
                 VStack(spacing: 2) {
-                    ForEach(agents) { AgentLine(agent: $0) }
+                    ForEach(allAgents) { AgentLine(agent: $0) }
                 }
                 .padding(.top, 4)
                 .overlay(alignment: .top) {
@@ -510,11 +633,8 @@ private struct HomeCard: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Context fill as a 2pt hairline flush to the bottom edge — quiet white until the
-        // conversation nears auto-compact, then the warning gold. Clipped to the card shape
-        // before the plane goes on, so the shadow isn't clipped with it.
         .overlay(alignment: .bottomLeading) {
-            if let contextFill {
+            if let primarySession, let contextFill = model.contextFill(primarySession.id) {
                 GeometryReader { geo in
                     Rectangle()
                         .fill(contextFill > 0.75 ? Theme.contextWarn : Color.white.opacity(0.25))
@@ -524,7 +644,7 @@ private struct HomeCard: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
-        .planeCard(needsYou: session.state.bucket == .needsYou, hovering: hovering || isSelected)
+        .planeCard(needsYou: group.bucket == .needsYou, hovering: hovering || isSelected)
         .overlay(alignment: .leading) {
             if isSelected {
                 RoundedRectangle(cornerRadius: 1)
@@ -535,11 +655,15 @@ private struct HomeCard: View {
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
-        .onTapGesture(perform: onOpen)
+        .onTapGesture {
+            if let primarySession {
+                model.focus(primarySession.id)
+            }
+        }
         .onHover { hovering = $0 }
         .animation(Theme.hoverEase, value: hovering)
         .animation(Theme.hoverEase, value: isSelected)
-        .help("Open \(session.title)")
+        .help("Open \(group.title)")
     }
 }
 
@@ -743,66 +867,181 @@ private struct InfraDot: View {
     }
 }
 
-/// Sidebar-density session row: the title and badge, and only what demands attention — a
-/// needs-you age and a running-agent chip. Working activity sits smoothly in a subrow below the title.
-private struct CompactSessionRow: View {
-    let session: Session
-    let runningAgents: Int
-    /// The current command/file/subagent while working — displayed with circular action badge & shimmer below the title.
-    let activity: String?
-    let isSelected: Bool
-    let onOpen: () -> Void
-    let onClose: () -> Void
+/// Sidebar-density project row representing a ProjectGroup (single session or multi-agent swarm):
+/// Tier 1: Agent pill(s) with click-to-switch and active selection highlight, project title, quick `+` teammate menu, and stop button.
+/// Tier 2: Option 2 stacked mini-lanes for live activity across agents with smooth shimmer.
+private struct CompactProjectRow: View {
+    let group: ProjectGroup
+    let model: AppModel
+    let selectedId: String?
+
+    private var isSelected: Bool {
+        group.sessions.contains(where: { $0.id == selectedId })
+    }
+
+    private var activeSessionId: String? {
+        if let selectedId, group.sessions.contains(where: { $0.id == selectedId }) {
+            return selectedId
+        }
+        return group.sessions.first?.id
+    }
 
     var body: some View {
         CompactRowShell(
-            title: session.title,
-            needsYou: session.state.bucket == .needsYou,
+            title: group.title,
+            needsYou: group.bucket == .needsYou,
             isSelected: isSelected,
-            help: isSelected ? "\(session.title) — current" : "Switch to \(session.title)",
-            onTap: onOpen,
+            help: isSelected ? "\(group.title) — current" : "Switch to \(group.title)",
+            onTap: {
+                if let targetId = activeSessionId {
+                    model.focus(targetId)
+                }
+            },
             badge: {
-                AgentPill(agent: session.agentKind)
+                if group.sessions.count <= 1, let session = group.sessions.first {
+                    AgentPill(agent: session.agentKind, isSelected: session.id == selectedId)
+                } else {
+                    HStack(spacing: 3) {
+                        ForEach(group.sessions) { session in
+                            Button(action: { model.focus(session.id) }) {
+                                AgentPill(agent: session.agentKind, isSelected: session.id == selectedId)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Switch to \(session.agentKind.displayName) session")
+                        }
+                    }
+                }
             },
             subrow: {
-                if let activity, !activity.isEmpty {
-                    HStack(spacing: 6) {
-                        ZStack {
-                            Circle()
-                                .fill(Color.white.opacity(0.12))
-                                .frame(width: 15, height: 15)
-                            Image(systemName: activityIcon(for: activity))
-                                .font(.system(size: 7.5, weight: .bold))
-                                .foregroundStyle(Color.white.opacity(0.85))
+                if group.sessions.count <= 1, let session = group.sessions.first {
+                    let activity = model.currentActivity(session)
+                    if let activity, !activity.isEmpty {
+                        HStack(spacing: 6) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.white.opacity(0.12))
+                                    .frame(width: 15, height: 15)
+                                Image(systemName: activityIcon(for: activity))
+                                    .font(.system(size: 7.5, weight: .bold))
+                                    .foregroundStyle(Color.white.opacity(0.85))
+                            }
+                            Text(activity)
+                                .font(.system(size: 11, weight: .regular))
+                                .foregroundStyle(Color.white.opacity(0.50))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .smoothShimmer(isWorking: session.state.bucket == .active)
                         }
-                        Text(activity)
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundStyle(Color.white.opacity(0.50))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .smoothShimmer(isWorking: session.state.bucket == .active)
+                        .transition(.opacity)
                     }
-                    .transition(.opacity)
+                } else {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(group.sessions) { session in
+                            let activity = model.currentActivity(session)
+                            let isSessionSelected = session.id == selectedId
+                            Button(action: { model.focus(session.id) }) {
+                                HStack(spacing: 6) {
+                                    Text("\(session.agentKind.pillText):")
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(Theme.agentColor(session.agentKind))
+                                        .fixedSize()
+
+                                    if let activity, !activity.isEmpty {
+                                        ZStack {
+                                            Circle()
+                                                .fill(Color.white.opacity(0.12))
+                                                .frame(width: 14, height: 14)
+                                            Image(systemName: activityIcon(for: activity))
+                                                .font(.system(size: 7, weight: .bold))
+                                                .foregroundStyle(Color.white.opacity(0.85))
+                                        }
+                                        Text(activity)
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(isSessionSelected ? Color.white.opacity(0.9) : Color.white.opacity(0.65))
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                            .smoothShimmer(isWorking: session.state.bucket == .active)
+                                    } else if session.state.bucket == .needsYou {
+                                        Text("Needs input · \(AgeFormat.compact(from: session.stateChangedAt))")
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundStyle(Theme.statusColor(session.state))
+                                            .lineLimit(1)
+                                    } else if session.state.bucket == .active {
+                                        Text("Working...")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(Color.white.opacity(0.65))
+                                            .smoothShimmer(isWorking: true)
+                                    } else {
+                                        Text("Idle")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(Color.white.opacity(0.35))
+                                            .lineLimit(1)
+                                    }
+
+                                    Spacer(minLength: 4)
+
+                                    if session.state.bucket == .needsYou && activity != nil {
+                                        Text(AgeFormat.compact(from: session.stateChangedAt))
+                                            .font(.system(size: 9, weight: .semibold))
+                                            .monospacedDigit()
+                                            .foregroundStyle(Theme.statusColor(session.state))
+                                            .fixedSize()
+                                    }
+                                }
+                                .padding(.vertical, 1)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Switch to \(session.agentKind.displayName) session")
+                        }
+                    }
+                    .padding(.top, 2)
                 }
             },
             trailing: { hovering in
-                if session.state.bucket == .needsYou {
-                    // The age alone — the pulsing dot already says "needs you"; words don't fit here.
+                if group.sessions.count <= 1, let session = group.sessions.first, session.state.bucket == .needsYou {
                     Text(AgeFormat.compact(from: session.stateChangedAt))
                         .font(.system(size: 10, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(Theme.statusColor(session.state))
                         .fixedSize()
                 }
+
+                let runningAgents = group.sessions.reduce(0) { count, s in
+                    count + model.visibleAgents(s.id).count(where: \.isRunning)
+                }
                 if runningAgents > 0 {
                     AgentChip(count: runningAgents)
                 }
-                Button(action: onClose) {
+
+                Menu {
+                    ForEach(AgentKind.allCases.filter { $0 != .shell }, id: \.self) { kind in
+                        Button("Add \(kind.displayName)") {
+                            model.spawnTeammate(in: group.workspacePath, agent: kind)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .opacity(hovering ? 1 : 0)
+                .help("Add teammate agent to this workspace")
+
+                Button(action: {
+                    for session in group.sessions {
+                        model.stop(session.id)
+                    }
+                }) {
                     CompactRowGlyph()
                 }
                 .buttonStyle(.plain)
                 .opacity(hovering ? 1 : 0)
-                .help("Stop session")
+                .help(group.sessions.count > 1 ? "Stop all sessions in workspace" : "Stop session")
             }
         )
     }
