@@ -278,6 +278,51 @@ public final class AppCoordinator {
 
     // MARK: - UI commands
 
+    /// Spawns a teammate agent session in `workspacePath`, automatically synthesizing
+    /// and writing a handoff memo to `<workspacePath>/.linkc/HANDOFF.md`.
+    @discardableResult
+    public func spawnTeammate(in workspacePath: String, agent: AgentKind = .claude) throws -> Session {
+        let norm = (workspacePath as NSString).standardizingPath
+        let existingSession = store.sessions.last { session in
+            let sessionNorm = (session.cwd as NSString).standardizingPath
+            return sessionNorm == norm && session.state != .ended
+        } ?? store.sessions.last { session in
+            let sessionNorm = (session.cwd as NSString).standardizingPath
+            return sessionNorm == norm
+        }
+
+        let sourceAgent = existingSession?.agentKind
+        let recentOutput: String?
+        if let existingSession {
+            let out = terminals.session(id: existingSession.id)?.recentOutput(lines: 50)
+            recentOutput = (out?.isEmpty ?? true) ? nil : out
+        } else {
+            recentOutput = nil
+        }
+
+        let gitSummary = inspectGitStatus(in: norm)
+
+        var lastGoal: String? = nil
+        let bbStore = BlackboardStore(workspaceRoot: norm)
+        if let board = try? bbStore.load(timeout: 0.5) {
+            if let lastAgent = board.activeAgents.last, !lastAgent.goal.isEmpty {
+                lastGoal = lastAgent.goal
+            } else if let lastEvent = board.recentEvents.first, !lastEvent.details.isEmpty {
+                lastGoal = lastEvent.details
+            }
+        }
+
+        try HandoffComposer.writeHandoffSync(
+            workspacePath: workspacePath,
+            sourceAgent: sourceAgent,
+            lastGoal: lastGoal,
+            gitSummary: gitSummary,
+            recentTerminalOutput: recentOutput
+        )
+
+        return try newSession(cwd: workspacePath, agent: agent, mode: .new)
+    }
+
     @discardableResult
     public func newSession(cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
@@ -567,5 +612,39 @@ public final class AppCoordinator {
         let path = settingsDir.appendingPathComponent("session-\(session.id).json")
         try data.write(to: path)
         return path.path
+    }
+
+    private func inspectGitStatus(in workspacePath: String) -> String? {
+        let gitPath = "/usr/bin/git"
+        guard FileManager.default.isExecutableFile(atPath: gitPath) else { return nil }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: workspacePath, isDirectory: &isDir), isDir.boolValue else { return nil }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: gitPath)
+        process.arguments = ["status", "-s"]
+        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        if exited.wait(timeout: .now() + 2.0) == .timedOut {
+            process.terminate()
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else { return nil }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        let trimmed = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty ?? true) ? nil : trimmed
     }
 }

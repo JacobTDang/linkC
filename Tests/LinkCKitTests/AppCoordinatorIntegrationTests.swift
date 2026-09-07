@@ -929,5 +929,59 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertNotEqual(coordinator.store.session(id: "C1")?.state.bucket, .active, "Session must not be placed in .working when terminal has no live activity")
         XCTAssertEqual(coordinator.store.session(id: "C1")?.state.bucket, .idle)
     }
+
+    /// spawnTeammate finds the active session in the workspace, captures source agent and output,
+    /// writes a handoff memo into .linkc/HANDOFF.md, and launches a new session.
+    func testSpawnTeammateWritesHandoffAndSpawnsSession() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-spawn-teammate-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: cwd)
+        }
+
+        // Initialize git in cwd so git status can be inspected
+        let initProcess = Process()
+        initProcess.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        initProcess.arguments = ["init"]
+        initProcess.currentDirectoryURL = cwd
+        try? initProcess.run()
+        initProcess.waitUntilExit()
+
+        // Create an untracked file so git status -s has output
+        let testFile = cwd.appendingPathComponent("test.txt")
+        try "hello".write(to: testFile, atomically: true, encoding: .utf8)
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        let s1 = try coordinator.newSession(cwd: cwd.path, agent: .claude, mode: .new)
+
+        // Spawn a teammate session in the same workspace as .shell (which resolves to /bin/zsh)
+        let s2 = try coordinator.spawnTeammate(in: cwd.path, agent: .shell)
+        defer {
+            coordinator.stopSession(s1.id)
+            coordinator.stopSession(s2.id)
+        }
+
+        XCTAssertEqual(s2.agentKind, .shell)
+        XCTAssertEqual((s2.cwd as NSString).standardizingPath, (cwd.path as NSString).standardizingPath)
+        XCTAssertEqual(coordinator.store.sessions.count, 2)
+
+        // Verify .linkc/HANDOFF.md exists and contains expected sections
+        let handoffURL = cwd.appendingPathComponent(".linkc/HANDOFF.md")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: handoffURL.path), "HANDOFF.md should be written")
+
+        let handoffContent = try String(contentsOf: handoffURL, encoding: .utf8)
+        XCTAssertTrue(handoffContent.contains("# Project Handoff Memo"))
+        XCTAssertTrue(handoffContent.contains("**Source Agent:** [CLAUDE] Claude Code"))
+        XCTAssertTrue(handoffContent.contains("## Git Status Summary"))
+        XCTAssertTrue(handoffContent.contains("test.txt"))
+
+        // Verify ProjectGroup groups the sessions in this workspace
+        let groups = ProjectGroup.group(sessions: coordinator.store.sessions)
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.sessions.count, 2)
+    }
 }
 

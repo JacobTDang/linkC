@@ -141,6 +141,7 @@ final class AppModel {
     @ObservationIgnored private var healthTimer: Timer?
 
     var sessions: [Session] { coordinator?.store.sessions ?? [] }
+    var projectGroups: [ProjectGroup] { ProjectGroup.group(sessions: sessions) }
     /// Previous sessions no longer live — shown as dimmed restorable cards on the home overview.
     var restorables: [RestorableSession] { coordinator?.restorableStore.restorables ?? [] }
     var activeCount: Int { coordinator?.store.activeCount ?? 0 }
@@ -357,6 +358,18 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.newSession(cwd: cwd, agent: agent, mode: .new)
+            recents?.record(cwd)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Spawns a teammate agent session in `cwd`, synthesizing and writing a handoff memo.
+    func spawnTeammate(in cwd: String, agent: AgentKind) {
+        guard let coordinator else { return }
+        do {
+            lastError = nil
+            try coordinator.spawnTeammate(in: cwd, agent: agent)
             recents?.record(cwd)
         } catch {
             lastError = error.localizedDescription
