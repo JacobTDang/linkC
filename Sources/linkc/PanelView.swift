@@ -420,20 +420,6 @@ private struct TerminalHero: View {
                         }
                         .transition(.opacity)
                     }
-                    // Active terminal status banner: agent pill, live activity with shimmer highlight,
-                    // and inline subagents; TimelineView keeps subagent ages/spinners honest.
-                    if let session = model.selectedSession {
-                        TimelineView(.periodic(from: .now, by: 1.0)) { _ in
-                            TerminalStatusBar(
-                                session: session,
-                                activity: model.currentActivity(session),
-                                agents: model.visibleAgents(session.id),
-                                onOpenAgent: { readerAgent = $0 }
-                            )
-                        }
-                        .padding(.bottom, 6)
-                        .transition(.opacity)
-                    }
                     ZStack {
                         TerminalContainer(session: model.selectedTerminal)
                             .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))

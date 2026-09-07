@@ -163,6 +163,7 @@ private struct TerminalsSection: View {
                     if compact {
                         CompactTerminalRow(
                             row: row,
+                            activity: model.shellActivity(row.id),
                             isSelected: row.id == selectedId,
                             onOpen: { model.focus(row.id) },
                             onStop: { model.stopShell(row.id) },
@@ -544,10 +545,8 @@ private struct HomeCard: View {
 // MARK: - Compact (sidebar) rows
 
 /// The compact rows' shared shell: leading accessory · badge · title · middle · spacer · trailing,
-/// on the plane/hover/tap treatment every sidebar row repeats. Four near-verbatim copies
-/// of this tail existed before it; rows now supply only what actually differs. The
-/// trailing builder receives the hover state (hover-revealed actions live there).
-private struct CompactRowShell<Leading: View, Badge: View, Middle: View, Trailing: View>: View {
+/// and optional subrow underneath, on the plane/hover/tap treatment every sidebar row repeats.
+private struct CompactRowShell<Leading: View, Badge: View, Middle: View, Subrow: View, Trailing: View>: View {
     let title: String
     var titleColor: Color = Theme.textPrimary
     var needsYou: Bool = false
@@ -561,27 +560,31 @@ private struct CompactRowShell<Leading: View, Badge: View, Middle: View, Trailin
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let badge: () -> Badge
     @ViewBuilder let middle: () -> Middle
+    @ViewBuilder let subrow: () -> Subrow
     @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
 
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            leading()
-                .fixedSize()
-            badge()
-                .fixedSize()
-                .layoutPriority(2) // badge is always on the left and never squished
-            Text(title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(titleColor)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .layoutPriority(1) // title truncates if space is constrained
-            middle()
-            Spacer(minLength: 4)
-            trailing(hovering)
-                .fixedSize()
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                leading()
+                    .fixedSize()
+                badge()
+                    .fixedSize()
+                    .layoutPriority(2) // badge is always on the left and never squished
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(titleColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1) // title truncates if space is constrained
+                middle()
+                Spacer(minLength: 4)
+                trailing(hovering)
+                    .fixedSize()
+            }
+            subrow()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
@@ -606,8 +609,8 @@ private struct CompactRowShell<Leading: View, Badge: View, Middle: View, Trailin
     }
 }
 
-/// Convenience init without badge or middle.
-extension CompactRowShell where Badge == EmptyView, Middle == EmptyView {
+/// Convenience init without badge, middle, or subrow.
+extension CompactRowShell where Badge == EmptyView, Middle == EmptyView, Subrow == EmptyView {
     init(
         title: String,
         titleColor: Color = Theme.textPrimary,
@@ -623,13 +626,13 @@ extension CompactRowShell where Badge == EmptyView, Middle == EmptyView {
         self.init(
             title: title, titleColor: titleColor, needsYou: needsYou, isSelected: isSelected,
             dimmed: dimmed, glowsOnHover: glowsOnHover, help: help, onTap: onTap,
-            leading: leading, badge: { EmptyView() }, middle: { EmptyView() }, trailing: trailing
+            leading: leading, badge: { EmptyView() }, middle: { EmptyView() }, subrow: { EmptyView() }, trailing: trailing
         )
     }
 }
 
-/// Convenience init without badge (only leading, middle, trailing).
-extension CompactRowShell where Badge == EmptyView {
+/// Convenience init without badge or subrow (only leading, middle, trailing).
+extension CompactRowShell where Badge == EmptyView, Subrow == EmptyView {
     init(
         title: String,
         titleColor: Color = Theme.textPrimary,
@@ -646,13 +649,13 @@ extension CompactRowShell where Badge == EmptyView {
         self.init(
             title: title, titleColor: titleColor, needsYou: needsYou, isSelected: isSelected,
             dimmed: dimmed, glowsOnHover: glowsOnHover, help: help, onTap: onTap,
-            leading: leading, badge: { EmptyView() }, middle: middle, trailing: trailing
+            leading: leading, badge: { EmptyView() }, middle: middle, subrow: { EmptyView() }, trailing: trailing
         )
     }
 }
 
-/// Convenience init without middle (leading, badge, trailing).
-extension CompactRowShell where Middle == EmptyView {
+/// Convenience init without middle or subrow (leading, badge, trailing).
+extension CompactRowShell where Middle == EmptyView, Subrow == EmptyView {
     init(
         title: String,
         titleColor: Color = Theme.textPrimary,
@@ -669,7 +672,31 @@ extension CompactRowShell where Middle == EmptyView {
         self.init(
             title: title, titleColor: titleColor, needsYou: needsYou, isSelected: isSelected,
             dimmed: dimmed, glowsOnHover: glowsOnHover, help: help, onTap: onTap,
-            leading: leading, badge: badge, middle: { EmptyView() }, trailing: trailing
+            leading: leading, badge: badge, middle: { EmptyView() }, subrow: { EmptyView() }, trailing: trailing
+        )
+    }
+}
+
+/// Convenience init with badge and subrow (without middle).
+extension CompactRowShell where Middle == EmptyView {
+    init(
+        title: String,
+        titleColor: Color = Theme.textPrimary,
+        needsYou: Bool = false,
+        isSelected: Bool = false,
+        dimmed: Bool = false,
+        glowsOnHover: Bool = true,
+        help: String,
+        onTap: @escaping () -> Void,
+        @ViewBuilder leading: @escaping () -> Leading,
+        @ViewBuilder badge: @escaping () -> Badge,
+        @ViewBuilder subrow: @escaping () -> Subrow,
+        @ViewBuilder trailing: @escaping (_ hovering: Bool) -> Trailing
+    ) {
+        self.init(
+            title: title, titleColor: titleColor, needsYou: needsYou, isSelected: isSelected,
+            dimmed: dimmed, glowsOnHover: glowsOnHover, help: help, onTap: onTap,
+            leading: leading, badge: badge, middle: { EmptyView() }, subrow: subrow, trailing: trailing
         )
     }
 }
@@ -688,12 +715,11 @@ private struct InfraDot: View {
 }
 
 /// Sidebar-density session row: the dot, the title, and only what demands attention — a
-/// needs-you age and a running-agent chip. Paths, previews, and agent lanes stay on home;
-/// at rail width they read as clutter, and the strip above the terminal already shows agents.
+/// needs-you age and a running-agent chip. Working activity sits smoothly in a subrow below the title.
 private struct CompactSessionRow: View {
     let session: Session
     let runningAgents: Int
-    /// The current command/file/subagent while working — fills the space after the title.
+    /// The current command/file/subagent while working — displayed with circular action badge & shimmer below the title.
     let activity: String?
     let isSelected: Bool
     let onOpen: () -> Void
@@ -712,52 +738,57 @@ private struct CompactSessionRow: View {
             badge: {
                 AgentPill(agent: session.agentKind)
             },
-            middle: {
-                if let activity {
-                    HStack(spacing: 5) {
+            subrow: {
+                if let activity, !activity.isEmpty {
+                    HStack(spacing: 6) {
                         ZStack {
                             Circle()
                                 .fill(Color.white.opacity(0.12))
-                                .frame(width: 14, height: 14)
+                                .frame(width: 15, height: 15)
                             Image(systemName: activityIcon(for: activity))
-                                .font(.system(size: 7, weight: .bold))
+                                .font(.system(size: 7.5, weight: .bold))
                                 .foregroundStyle(Color.white.opacity(0.85))
                         }
                         Text(activity)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(Color.white.opacity(0.65))
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(Color.white.opacity(0.50))
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .smoothShimmer(isWorking: session.state.bucket == .active)
                     }
+                    .padding(.leading, 26)
+                    .padding(.top, 4)
+                    .transition(.opacity)
                 }
             },
             trailing: { hovering in
-            if session.state.bucket == .needsYou {
-                // The age alone — the pulsing dot already says "needs you"; words don't fit here.
-                Text(AgeFormat.compact(from: session.stateChangedAt))
-                    .font(.system(size: 10, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.statusColor(session.state))
-                    .fixedSize()
+                if session.state.bucket == .needsYou {
+                    // The age alone — the pulsing dot already says "needs you"; words don't fit here.
+                    Text(AgeFormat.compact(from: session.stateChangedAt))
+                        .font(.system(size: 10, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.statusColor(session.state))
+                        .fixedSize()
+                }
+                if runningAgents > 0 {
+                    AgentChip(count: runningAgents)
+                }
+                Button(action: onClose) {
+                    CompactRowGlyph()
+                }
+                .buttonStyle(.plain)
+                .opacity(hovering ? 1 : 0)
+                .help("Stop session")
             }
-            if runningAgents > 0 {
-                AgentChip(count: runningAgents)
-            }
-            Button(action: onClose) {
-                CompactRowGlyph()
-            }
-            .buttonStyle(.plain)
-            .opacity(hovering ? 1 : 0)
-            .help("Stop session")
-        })
+        )
     }
 }
 
 /// Sidebar-density dev-terminal row: the quiet steady dot and the title. Running rows get a
-/// hover stop; exited rows dim, keep Relaunch, and reveal dismiss on hover.
+/// hover stop and live activity in subrow; exited rows dim, keep Relaunch, and reveal dismiss on hover.
 private struct CompactTerminalRow: View {
     let row: ShellRow
+    let activity: String?
     let isSelected: Bool
     let onOpen: () -> Void
     let onStop: () -> Void
@@ -790,32 +821,56 @@ private struct CompactTerminalRow: View {
                     AgentPill(agent: agent)
                 }
             },
+            subrow: {
+                if isRunning, let activity, !activity.isEmpty {
+                    HStack(spacing: 6) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white.opacity(0.12))
+                                .frame(width: 15, height: 15)
+                            Image(systemName: activityIcon(for: activity))
+                                .font(.system(size: 7.5, weight: .bold))
+                                .foregroundStyle(Color.white.opacity(0.85))
+                        }
+                        Text(activity)
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(Color.white.opacity(0.50))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .smoothShimmer(isWorking: true)
+                    }
+                    .padding(.leading, 26)
+                    .padding(.top, 4)
+                    .transition(.opacity)
+                }
+            },
             trailing: { hovering in
-            if isRunning {
-                Button(action: onStop) {
-                    CompactRowGlyph()
+                if isRunning {
+                    Button(action: onStop) {
+                        CompactRowGlyph()
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(hovering ? 1 : 0)
+                    .help("Stop terminal")
+                } else {
+                    Button(action: onRelaunch) {
+                        Text("Relaunch")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                            .fixedSize()
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open a fresh shell in this folder")
+                    Button(action: onDismiss) {
+                        CompactRowGlyph()
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(hovering ? 1 : 0)
+                    .help("Dismiss")
                 }
-                .buttonStyle(.plain)
-                .opacity(hovering ? 1 : 0)
-                .help("Stop terminal")
-            } else {
-                Button(action: onRelaunch) {
-                    Text("Relaunch")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
-                        .fixedSize()
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Open a fresh shell in this folder")
-                Button(action: onDismiss) {
-                    CompactRowGlyph()
-                }
-                .buttonStyle(.plain)
-                .opacity(hovering ? 1 : 0)
-                .help("Dismiss")
             }
-        })
+        )
     }
 }
 

@@ -511,6 +511,17 @@ final class AppModel {
         return nil
     }
 
+    /// The shell/dev-terminal's current activity (command or active agent activity) while running.
+    func shellActivity(_ id: String) -> String? {
+        guard let term = coordinator?.terminals.session(id: id) else { return nil }
+        let agent = term.sampleForegroundAgent()
+        guard agent != .shell else { return nil }
+        if let liveActivity = term.liveActivityLine(), !liveActivity.isEmpty {
+            return liveActivity
+        }
+        return "Thinking…"
+    }
+
     /// The Docker VM's host CPU — the tax no per-container stat can show.
     var dockerVmCpu: Double? { toolServers?.vmCpu }
 
