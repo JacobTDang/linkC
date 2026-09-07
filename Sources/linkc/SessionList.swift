@@ -448,11 +448,22 @@ private struct HomeCard: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if let activity {
-                    Text(activity)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(session.state.bucket == .active ? Theme.agentColor(session.agentKind) : Theme.textTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    HStack(spacing: 5) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white.opacity(0.12))
+                                .frame(width: 14, height: 14)
+                            Image(systemName: activityIcon(for: activity))
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundStyle(Color.white.opacity(0.85))
+                        }
+                        Text(activity)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.65))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .smoothShimmer(isWorking: session.state.bucket == .active)
+                    }
                 }
                 Spacer(minLength: 8)
                 // State text only when there's something to act on — the dot carries the rest.
@@ -703,11 +714,22 @@ private struct CompactSessionRow: View {
             },
             middle: {
                 if let activity {
-                    Text(activity)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(session.state.bucket == .active ? Theme.agentColor(session.agentKind) : Theme.textTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    HStack(spacing: 5) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white.opacity(0.12))
+                                .frame(width: 14, height: 14)
+                            Image(systemName: activityIcon(for: activity))
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundStyle(Color.white.opacity(0.85))
+                        }
+                        Text(activity)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.65))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .smoothShimmer(isWorking: session.state.bucket == .active)
+                    }
                 }
             },
             trailing: { hovering in

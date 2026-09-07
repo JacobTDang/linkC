@@ -46,26 +46,36 @@ struct TerminalStatusBar: View {
     @ViewBuilder
     private func statusView(for session: Session) -> some View {
         let isWorking = session.state.bucket == .active || (activity != nil && !activity!.isEmpty)
-        let brandColor = Theme.agentColor(session.agentKind)
 
         if isWorking {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(brandColor)
-                    .frame(width: 5, height: 5)
+            HStack(spacing: 6) {
+                ZStack {
+                    Circle()
+                        .fill(Color.white.opacity(0.12))
+                        .frame(width: 16, height: 16)
+                    Image(systemName: activityIcon(for: activity))
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(Color.white.opacity(0.9))
+                }
                 Text(activity ?? "Thinking…")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(brandColor)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.65))
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .smoothShimmer(isWorking: true)
             }
         } else if session.state.bucket == .needsYou {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(Theme.statusNeedsYou)
-                    .frame(width: 5, height: 5)
+            HStack(spacing: 6) {
+                ZStack {
+                    Circle()
+                        .fill(Theme.statusNeedsYou.opacity(0.2))
+                        .frame(width: 16, height: 16)
+                    Image(systemName: "exclamationmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(Theme.statusNeedsYou)
+                }
                 Text(session.state == .waitingPermission ? (activity ?? "Permission required") : "Waiting for input")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Theme.statusNeedsYou)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -76,7 +86,7 @@ struct TerminalStatusBar: View {
                     .fill(Theme.textTertiary)
                     .frame(width: 5, height: 5)
                 Text("Ready")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
             }
