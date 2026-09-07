@@ -532,11 +532,11 @@ private struct HomeCard: View {
 
 // MARK: - Compact (sidebar) rows
 
-/// The compact rows' shared shell: leading accessory · title · middle · spacer · trailing,
+/// The compact rows' shared shell: leading accessory · badge · title · middle · spacer · trailing,
 /// on the plane/hover/tap treatment every sidebar row repeats. Four near-verbatim copies
 /// of this tail existed before it; rows now supply only what actually differs. The
 /// trailing builder receives the hover state (hover-revealed actions live there).
-private struct CompactRowShell<Leading: View, Middle: View, Trailing: View>: View {
+private struct CompactRowShell<Leading: View, Badge: View, Middle: View, Trailing: View>: View {
     let title: String
     var titleColor: Color = Theme.textPrimary
     var needsYou: Bool = false
@@ -548,6 +548,7 @@ private struct CompactRowShell<Leading: View, Middle: View, Trailing: View>: Vie
     let help: String
     let onTap: () -> Void
     @ViewBuilder let leading: () -> Leading
+    @ViewBuilder let badge: () -> Badge
     @ViewBuilder let middle: () -> Middle
     @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
 
@@ -557,12 +558,15 @@ private struct CompactRowShell<Leading: View, Middle: View, Trailing: View>: Vie
         HStack(spacing: 8) {
             leading()
                 .fixedSize()
+            badge()
+                .fixedSize()
+                .layoutPriority(2) // badge is always on the left and never squished
             Text(title)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(titleColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .layoutPriority(1)   // title takes precedence over secondary activity, but yields to fixed badges
+                .layoutPriority(1) // title truncates if space is constrained
             middle()
             Spacer(minLength: 4)
             trailing(hovering)
@@ -591,9 +595,8 @@ private struct CompactRowShell<Leading: View, Middle: View, Trailing: View>: Vie
     }
 }
 
-/// Rows with nothing to put between title and trailing edge (terminals, cloud) use this
-/// narrower init rather than passing an empty `middle` closure.
-extension CompactRowShell where Middle == EmptyView {
+/// Convenience init without badge or middle.
+extension CompactRowShell where Badge == EmptyView, Middle == EmptyView {
     init(
         title: String,
         titleColor: Color = Theme.textPrimary,
@@ -609,7 +612,53 @@ extension CompactRowShell where Middle == EmptyView {
         self.init(
             title: title, titleColor: titleColor, needsYou: needsYou, isSelected: isSelected,
             dimmed: dimmed, glowsOnHover: glowsOnHover, help: help, onTap: onTap,
-            leading: leading, middle: { EmptyView() }, trailing: trailing
+            leading: leading, badge: { EmptyView() }, middle: { EmptyView() }, trailing: trailing
+        )
+    }
+}
+
+/// Convenience init without badge (only leading, middle, trailing).
+extension CompactRowShell where Badge == EmptyView {
+    init(
+        title: String,
+        titleColor: Color = Theme.textPrimary,
+        needsYou: Bool = false,
+        isSelected: Bool = false,
+        dimmed: Bool = false,
+        glowsOnHover: Bool = true,
+        help: String,
+        onTap: @escaping () -> Void,
+        @ViewBuilder leading: @escaping () -> Leading,
+        @ViewBuilder middle: @escaping () -> Middle,
+        @ViewBuilder trailing: @escaping (_ hovering: Bool) -> Trailing
+    ) {
+        self.init(
+            title: title, titleColor: titleColor, needsYou: needsYou, isSelected: isSelected,
+            dimmed: dimmed, glowsOnHover: glowsOnHover, help: help, onTap: onTap,
+            leading: leading, badge: { EmptyView() }, middle: middle, trailing: trailing
+        )
+    }
+}
+
+/// Convenience init without middle (leading, badge, trailing).
+extension CompactRowShell where Middle == EmptyView {
+    init(
+        title: String,
+        titleColor: Color = Theme.textPrimary,
+        needsYou: Bool = false,
+        isSelected: Bool = false,
+        dimmed: Bool = false,
+        glowsOnHover: Bool = true,
+        help: String,
+        onTap: @escaping () -> Void,
+        @ViewBuilder leading: @escaping () -> Leading,
+        @ViewBuilder badge: @escaping () -> Badge,
+        @ViewBuilder trailing: @escaping (_ hovering: Bool) -> Trailing
+    ) {
+        self.init(
+            title: title, titleColor: titleColor, needsYou: needsYou, isSelected: isSelected,
+            dimmed: dimmed, glowsOnHover: glowsOnHover, help: help, onTap: onTap,
+            leading: leading, badge: badge, middle: { EmptyView() }, trailing: trailing
         )
     }
 }
@@ -645,19 +694,23 @@ private struct CompactSessionRow: View {
             needsYou: session.state.bucket == .needsYou,
             isSelected: isSelected,
             help: isSelected ? "\(session.title) — current" : "Switch to \(session.title)",
-            onTap: onOpen
-        ) {
-            StatusDot(state: session.state)
-        } middle: {
-            AgentPill(agent: session.agentKind)
-            if let activity {
-                Text(activity)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(session.state.bucket == .active ? Theme.agentColor(session.agentKind) : Theme.textTertiary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-        } trailing: { hovering in
+            onTap: onOpen,
+            leading: {
+                StatusDot(state: session.state)
+            },
+            badge: {
+                AgentPill(agent: session.agentKind)
+            },
+            middle: {
+                if let activity {
+                    Text(activity)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(session.state.bucket == .active ? Theme.agentColor(session.agentKind) : Theme.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            },
+            trailing: { hovering in
             if session.state.bucket == .needsYou {
                 // The age alone — the pulsing dot already says "needs you"; words don't fit here.
                 Text(AgeFormat.compact(from: session.stateChangedAt))
@@ -675,7 +728,7 @@ private struct CompactSessionRow: View {
             .buttonStyle(.plain)
             .opacity(hovering ? 1 : 0)
             .help("Stop session")
-        }
+        })
     }
 }
 
@@ -710,12 +763,12 @@ private struct CompactTerminalRow: View {
             leading: {
                 InfraDot(color: dotColor)
             },
-            middle: {
+            badge: {
                 if let agent = row.detectedAgent {
                     AgentPill(agent: agent)
                 }
-            }
-        ) { hovering in
+            },
+            trailing: { hovering in
             if isRunning {
                 Button(action: onStop) {
                     CompactRowGlyph()
@@ -740,7 +793,7 @@ private struct CompactTerminalRow: View {
                 .opacity(hovering ? 1 : 0)
                 .help("Dismiss")
             }
-        }
+        })
     }
 }
 
