@@ -77,6 +77,7 @@ struct SessionListColumn: View {
     /// The live sessions as a priority queue: NEEDS YOU → WORKING → IDLE, each a stable row in one
     /// flat list so cards glide between sections on a state change. Reduce Motion drops the spring.
     @MainActor @ViewBuilder private var liveSections: some View {
+        let _ = model.sampleAgentStates()
         let rows = self.rows
         VStack(spacing: 6) {
             ForEach(rows) { row in
@@ -566,28 +567,31 @@ private struct CompactRowShell<Leading: View, Badge: View, Middle: View, Subrow:
     @State private var hovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                leading()
-                    .fixedSize()
-                badge()
-                    .fixedSize()
-                    .layoutPriority(2) // badge is always on the left and never squished
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(titleColor)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(1) // title truncates if space is constrained
-                middle()
-                Spacer(minLength: 4)
-                trailing(hovering)
-                    .fixedSize()
+        HStack(alignment: .top, spacing: 8) {
+            leading()
+                .fixedSize()
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    badge()
+                        .fixedSize()
+                        .layoutPriority(2) // badge is always on the left and never squished
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(titleColor)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1) // title truncates if space is constrained
+                    middle()
+                    Spacer(minLength: 4)
+                    trailing(hovering)
+                        .fixedSize()
+                }
+                subrow()
             }
-            subrow()
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .planeCard(needsYou: needsYou, hovering: (hovering && glowsOnHover) || isSelected)
         .overlay(alignment: .leading) {
@@ -756,8 +760,6 @@ private struct CompactSessionRow: View {
                             .truncationMode(.tail)
                             .smoothShimmer(isWorking: session.state.bucket == .active)
                     }
-                    .padding(.leading, 26)
-                    .padding(.top, 4)
                     .transition(.opacity)
                 }
             },
@@ -839,8 +841,6 @@ private struct CompactTerminalRow: View {
                             .truncationMode(.tail)
                             .smoothShimmer(isWorking: true)
                     }
-                    .padding(.leading, 26)
-                    .padding(.top, 4)
                     .transition(.opacity)
                 }
             },

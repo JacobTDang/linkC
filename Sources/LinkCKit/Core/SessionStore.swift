@@ -60,6 +60,23 @@ public final class SessionStore {
 
     public func remove(id: String) { sessions.removeAll { $0.id == id } }
 
+    /// Directly update a session's state and record stateChangedAt on real transitions.
+    public func updateState(id: String, to newState: SessionState) {
+        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        if sessions[idx].state != newState {
+            sessions[idx].state = newState
+            sessions[idx].stateChangedAt = Date()
+        }
+    }
+
+    /// Update a session's detected agent kind if it changes dynamically.
+    public func updateAgentKind(id: String, to agentKind: AgentKind) {
+        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        if sessions[idx].agentKind != agentKind {
+            sessions[idx].agentKind = agentKind
+        }
+    }
+
     /// Apply an incoming hook event. Binds by linkC id, else by Claude session id.
     /// Unknown / external events (no matching session) are ignored.
     @discardableResult

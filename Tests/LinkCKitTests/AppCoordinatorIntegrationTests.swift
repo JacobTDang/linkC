@@ -872,5 +872,38 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.store.session(id: restored.id)?.agentKind, .shell)
         XCTAssertTrue(coordinator.restorables.isEmpty, "restorable must be consumed")
     }
+
+    func testNonClaudeAgentStateSamplingAndFocus() throws {
+        let sink = RecordingSink()
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-sampling-\(UUID().uuidString)")
+        let coordinator = makeCoordinator(sink: sink, settingsDir: dir)
+        defer {
+            coordinator.shutdown()
+            try? FileManager.default.removeItem(at: dir)
+        }
+
+        // Create an AGY session
+        let s = coordinator.store.create(cwd: "/tmp", title: "AGY Session", id: "A1", agentKind: .agy)
+        _ = coordinator.terminals.makeSession(id: "A1", cwd: "/tmp", title: "AGY Session", agentKind: .agy)
+
+        // Initial state is .starting
+        XCTAssertEqual(s.state, .starting)
+        XCTAssertEqual(s.state.bucket, .idle)
+
+        // Simulate active working state
+        coordinator.store.updateState(id: "A1", to: .working)
+        XCTAssertEqual(coordinator.store.session(id: "A1")?.state.bucket, .active)
+
+        // Calling sampleAgentStates with no live activity transitions from .working to .finished (.needsYou)
+        coordinator.sampleAgentStates()
+        XCTAssertEqual(coordinator.store.session(id: "A1")?.state, .finished)
+        XCTAssertEqual(coordinator.store.session(id: "A1")?.state.bucket, .needsYou)
+        XCTAssertEqual(sink.deliveries.count, 1, "Should notify when agent finishes")
+
+        // When user focuses the finished session, it transitions to .ready (.idle)
+        coordinator.focusSession("A1")
+        XCTAssertEqual(coordinator.store.session(id: "A1")?.state, .ready)
+        XCTAssertEqual(coordinator.store.session(id: "A1")?.state.bucket, .idle)
+    }
 }
 

@@ -417,6 +417,10 @@ final class AppModel {
         }
         coordinator?.sampleSwarms(additionalAgents: shellAgents)
     }
+
+    func sampleAgentStates() {
+        coordinator?.sampleAgentStates()
+    }
     /// Dev terminals remembered from a previous run — relaunchable, never auto-started.
     var restorableShells: [RestorableShell] { shells?.restorables ?? [] }
 
@@ -495,9 +499,6 @@ final class AppModel {
     /// The session's current action ("$ swift test", "Thinking…", etc.) while it's working,
     /// and while it's blocked on a permission prompt. Idle rows never state an absence.
     func currentActivity(_ session: Session) -> String? {
-        guard session.state.bucket == .active || session.state == .waitingPermission else {
-            return nil
-        }
         if let hookActivity = usage.sessionActivity(session.id), !hookActivity.isEmpty {
             return hookActivity
         }
@@ -507,6 +508,9 @@ final class AppModel {
         }
         if session.state.bucket == .active {
             return "Thinking…"
+        }
+        if session.state == .waitingPermission {
+            return "Permission required"
         }
         return nil
     }

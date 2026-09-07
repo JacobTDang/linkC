@@ -57,6 +57,7 @@ public final class AppCoordinator {
     private let eventStream: AsyncStream<HookEvent>
     private let eventContinuation: AsyncStream<HookEvent>.Continuation
     private var consumerTask: Task<Void, Never>?
+    private var stateSweepTask: Task<Void, Never>?
 
     /// Designated initializer — all collaborators injected (used by tests).
     public init(
@@ -144,6 +145,15 @@ public final class AppCoordinator {
            terminals.sessions.contains(where: { $0.id == lastId }) {
             terminals.select(lastId)
         }
+        stateSweepTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { break }
+                await MainActor.run {
+                    self?.sampleAgentStates()
+                }
+            }
+        }
     }
 
     /// Snapshot all active sessions to the manifest with wasActiveOnQuit == true before shutdown.
@@ -172,6 +182,8 @@ public final class AppCoordinator {
         eventContinuation.finish()
         consumerTask?.cancel()
         consumerTask = nil
+        stateSweepTask?.cancel()
+        stateSweepTask = nil
         hookServer.stop()
     }
 
@@ -426,6 +438,49 @@ public final class AppCoordinator {
     public func focusSession(_ id: String) {
         terminals.select(id)
         NSApp.activate(ignoringOtherApps: true)
+        if let s = store.session(id: id), s.agentKind != .claude, s.state.bucket == .needsYou {
+            store.updateState(id: id, to: .ready)
+        }
+    }
+
+    /// Periodically inspects all sessions to detect live agent kind and working/finished/idle state
+    /// for non-Claude agents (AGY, Cursor, Codex, etc.) or sessions without hook events.
+    public func sampleAgentStates() {
+        for session in store.sessions where session.state != .ended {
+            guard let term = terminals.session(id: session.id) else { continue }
+
+            // Detect dynamic agent kind changes in child process tree
+            let liveAgent = term.sampleForegroundAgent()
+            if liveAgent != session.agentKind && liveAgent != .shell {
+                store.updateAgentKind(id: session.id, to: liveAgent)
+            }
+
+            // Claude has its own hook server providing exact event transitions.
+            guard session.agentKind != .claude else { continue }
+
+            let liveActivity = term.liveActivityLine()
+            let hasChildren = term.hasActiveChildProcesses()
+            let isWorking = (liveActivity != nil && !liveActivity!.isEmpty) || hasChildren
+
+            if isWorking {
+                if session.state.bucket != .active {
+                    store.updateState(id: session.id, to: .working)
+                }
+            } else {
+                // If it was working and now finished its turn
+                if session.state.bucket == .active {
+                    store.updateState(id: session.id, to: .finished)
+                    let updated = store.session(id: session.id) ?? session
+                    if FocusPolicy.shouldNotify(
+                        session: updated,
+                        enteredNotifiable: true,
+                        isWatchingThisSession: isWatching(session.id)
+                    ) {
+                        notifications.post(session: updated)
+                    }
+                }
+            }
+        }
     }
 
     public func stopSession(_ id: String) {

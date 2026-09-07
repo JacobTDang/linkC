@@ -62,4 +62,17 @@ public struct ProcessSnooper: Sendable {
 
         return nil
     }
+
+    /// Checks if `ppid` has any active running child processes (e.g. running a shell command, tool, compiler, or script).
+    public static func hasChildProcesses(of ppid: pid_t) -> Bool {
+        guard ppid > 0 else { return false }
+        var childPids = [pid_t](repeating: 0, count: 16)
+        let bytesReturned = proc_listpids(
+            UInt32(PROC_PPID_ONLY),
+            UInt32(ppid),
+            &childPids,
+            Int32(MemoryLayout<pid_t>.stride * childPids.count)
+        )
+        return bytesReturned > 0
+    }
 }

@@ -105,4 +105,43 @@ final class TerminalSessionAgentTests: XCTestCase {
         XCTAssertNotNil(agyPath)
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: agyPath!))
     }
+
+    func testSessionStoreUpdateStateAndAgentKind() {
+        let store = SessionStore()
+        let s = store.create(cwd: "/tmp", title: "AGY Project", agentKind: .agy)
+        XCTAssertEqual(s.state, .starting)
+        XCTAssertEqual(s.state.bucket, .idle)
+
+        store.updateState(id: s.id, to: .working)
+        XCTAssertEqual(store.session(id: s.id)?.state, .working)
+        XCTAssertEqual(store.session(id: s.id)?.state.bucket, .active)
+
+        store.updateState(id: s.id, to: .finished)
+        XCTAssertEqual(store.session(id: s.id)?.state, .finished)
+        XCTAssertEqual(store.session(id: s.id)?.state.bucket, .needsYou)
+
+        store.updateAgentKind(id: s.id, to: .cursor)
+        XCTAssertEqual(store.session(id: s.id)?.agentKind, .cursor)
+    }
+
+    func testTerminalPreviewLiveActivityWithoutEllipsis() {
+        let rows = [
+            "Some earlier output",
+            "⠋ Searching 31 websites"
+        ]
+        let activity = TerminalPreview.liveActivity(from: rows)
+        XCTAssertEqual(activity, "Searching 31 websites")
+
+        let actionRows = [
+            "Building project",
+            "Running tests"
+        ]
+        let actionActivity = TerminalPreview.liveActivity(from: actionRows)
+        XCTAssertEqual(actionActivity, "Running tests")
+    }
+
+    func testProcessSnooperHasChildProcesses() {
+        XCTAssertFalse(ProcessSnooper.hasChildProcesses(of: -1))
+        XCTAssertFalse(ProcessSnooper.hasChildProcesses(of: 0))
+    }
 }

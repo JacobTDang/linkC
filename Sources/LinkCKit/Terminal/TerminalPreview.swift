@@ -100,13 +100,28 @@ public enum TerminalPreview {
 
             // Spinner row with CLI spinner symbol
             let cleaned = cleanLeadingSpinner(text)
-            if cleaned != text && (cleaned.hasSuffix("…") || cleaned.hasSuffix("...")) {
-                if !cleaned.isEmpty { return cleaned }
+            if cleaned != text && !cleaned.isEmpty {
+                if let parenIndex = cleaned.firstIndex(of: "(") {
+                    let extracted = String(cleaned[..<parenIndex]).trimmingCharacters(in: .whitespaces)
+                    if !extracted.isEmpty { return extracted }
+                }
+                return cleaned
             }
 
-            // Standalone action line ending in ellipsis
-            let actionPrefixes = ["Thinking", "Generating", "Working", "Running", "Writing", "Reading", "Editing", "Searching", "Building", "Compiling"]
-            if (cleaned.hasSuffix("…") || cleaned.hasSuffix("...")) && actionPrefixes.contains(where: { cleaned.hasPrefix($0) }) {
+            // Standalone action line ending in ellipsis or starting with an action verb
+            let actionPrefixes = [
+                "Thinking", "Generating", "Working", "Running", "Writing",
+                "Reading", "Editing", "Searching", "Building", "Compiling",
+                "Fetching", "Indexing", "Analyzing", "Checking", "Testing"
+            ]
+            if actionPrefixes.contains(where: { cleaned.hasPrefix($0) }) {
+                if let parenIndex = cleaned.firstIndex(of: "(") {
+                    let extracted = String(cleaned[..<parenIndex]).trimmingCharacters(in: .whitespaces)
+                    if !extracted.isEmpty { return extracted }
+                }
+                return cleaned
+            }
+            if (cleaned.hasSuffix("…") || cleaned.hasSuffix("...")) && !cleaned.isEmpty {
                 return cleaned
             }
         }

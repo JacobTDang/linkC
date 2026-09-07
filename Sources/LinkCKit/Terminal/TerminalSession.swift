@@ -62,6 +62,12 @@ public final class TerminalSession {
         return initialAgentKind
     }
 
+    /// Checks if this terminal's process has any running child processes (e.g. running bash commands, tests, compilers).
+    public func hasActiveChildProcesses() -> Bool {
+        guard childPid > 0 else { return false }
+        return ProcessSnooper.hasChildProcesses(of: childPid)
+    }
+
     /// The AppKit view to embed. Created on first access; retains the process delegate and
     /// marshals its callbacks (delivered on SwiftTerm's private queue) onto the main actor.
     public var terminalView: LinkCTerminalView {
