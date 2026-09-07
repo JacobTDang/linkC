@@ -522,14 +522,17 @@ private struct CompactRowShell<Leading: View, Middle: View, Trailing: View>: Vie
     var body: some View {
         HStack(spacing: 8) {
             leading()
+                .fixedSize()
             Text(title)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(titleColor)
                 .lineLimit(1)
-                .layoutPriority(1)   // the title never yields to middle/trailing content
+                .truncationMode(.tail)
+                .layoutPriority(1)   // title takes precedence over secondary activity, but yields to fixed badges
             middle()
-            Spacer(minLength: 8)
+            Spacer(minLength: 4)
             trailing(hovering)
+                .fixedSize()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
