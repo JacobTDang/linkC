@@ -88,22 +88,30 @@ final class TerminalSessionAgentTests: XCTestCase {
         XCTAssertEqual(claudeArgs, ["--dangerously-skip-permissions", "--continue"])
     }
 
+    private final class MockFileManager: FileManager, @unchecked Sendable {
+        let executablePaths: Set<String>
+        init(executablePaths: Set<String>) {
+            self.executablePaths = executablePaths
+            super.init()
+        }
+        override func isExecutableFile(atPath path: String) -> Bool {
+            executablePaths.contains(path)
+        }
+    }
+
     func testAgentDescriptorResolvesInstalledExecutables() {
-        let claudePath = AgentDescriptor.resolveExecutable(for: .claude)
-        XCTAssertNotNil(claudePath)
-        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: claudePath!))
+        // Hermetic resolution verification using mock file manager
+        let mockFM = MockFileManager(executablePaths: ["/opt/homebrew/bin/claude", "/opt/homebrew/bin/codex"])
+        XCTAssertEqual(AgentDescriptor.resolveExecutable(for: .claude, fileManager: mockFM), "/opt/homebrew/bin/claude")
+        XCTAssertEqual(AgentDescriptor.resolveExecutable(for: .codex, fileManager: mockFM), "/opt/homebrew/bin/codex")
+        XCTAssertNil(AgentDescriptor.resolveExecutable(for: .cursor, fileManager: MockFileManager(executablePaths: [])))
 
-        let codexPath = AgentDescriptor.resolveExecutable(for: .codex)
-        XCTAssertNotNil(codexPath)
-        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: codexPath!))
-
-        let cursorPath = AgentDescriptor.resolveExecutable(for: .cursor)
-        XCTAssertNotNil(cursorPath)
-        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: cursorPath!))
-
-        let agyPath = AgentDescriptor.resolveExecutable(for: .agy)
-        XCTAssertNotNil(agyPath)
-        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: agyPath!))
+        // On host machine, any resolved executable must be verified as executable
+        for kind in [AgentKind.claude, .codex, .cursor, .agy] {
+            if let path = AgentDescriptor.resolveExecutable(for: kind) {
+                XCTAssertTrue(FileManager.default.isExecutableFile(atPath: path))
+            }
+        }
     }
 
     func testSessionStoreUpdateStateAndAgentKind() {
