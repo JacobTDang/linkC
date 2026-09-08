@@ -43,7 +43,7 @@ final class MCPServerTests: XCTestCase {
         let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
         let result = resJson?["result"] as? [String: Any]
         let tools = result?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 7)
+        XCTAssertEqual(tools?.count, 10)
 
         let toolNames = Set(tools?.compactMap { $0["name"] as? String } ?? [])
         XCTAssertTrue(toolNames.contains("linkc_broadcast_intent"))
@@ -441,4 +441,26 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(text.contains("No active rate limits recorded"))
         XCTAssertTrue(text.contains("No pending messages in queue"))
     }
+
+    func testSwitchModelCatchesModelSwitcherError() throws {
+        let throwingServer = MCPServer(
+            workspaceRoot: tempDir.path,
+            modelSwitcher: { _, _ in
+                throw LinkCError.process("Failed to switch model in session")
+            }
+        )
+        let req = """
+        {"jsonrpc": "2.0", "id": 90, "method": "tools/call", "params": {"name": "linkc_switch_model", "arguments": {"agent": "  claude  ", "model": "haiku"}}}
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(throwingServer.handleMessage(req))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        XCTAssertNil(resJson?["error"])
+        let result = resJson?["result"] as? [String: Any]
+        XCTAssertEqual(result?["isError"] as? Bool, true)
+        let content = result?["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String ?? ""
+        XCTAssertTrue(text.contains("Failed to switch model in session"))
+    }
 }
+

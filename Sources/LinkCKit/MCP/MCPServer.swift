@@ -414,7 +414,7 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(id: id, text: text)
 
             case "linkc_switch_model":
-                let agentStr = args["agent"] as? String ?? "claude"
+                let agentStr = (args["agent"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "claude"
                 guard let agent = AgentKind(rawValue: agentStr.lowercased()) else {
                     return toolResultResponse(id: id, text: "Error: Unknown agent '\(agentStr)'. Supported agents: claude, agy, cursor, codex.", isError: true)
                 }
@@ -431,8 +431,12 @@ public final class MCPServer: Sendable {
                 }
 
                 if let modelSwitcher {
-                    let result = try modelSwitcher(agent, cleanModel)
-                    return toolResultResponse(id: id, text: result)
+                    do {
+                        let result = try modelSwitcher(agent, cleanModel)
+                        return toolResultResponse(id: id, text: result)
+                    } catch {
+                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    }
                 } else {
                     let cmd = AgentModelCatalog.interactiveSwitchCommand(model: cleanModel, for: agent)
                     _ = try inboxStore.enqueue(
