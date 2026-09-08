@@ -402,9 +402,23 @@ private struct RestorableRow: View {
 private struct AgentMiniLaneView: View {
     let session: Session
     let activity: String?
+    var limitStatus: AgentLimitStatus? = nil
+    var delegatedMessage: PendingMessage? = nil
     let isSelected: Bool
     var showsBackground: Bool = false
     let onSelect: () -> Void
+
+    private var isRateLimited: Bool {
+        session.state == .error || (limitStatus != nil && limitStatus!.cooldownExpiresAt > Date())
+    }
+
+    private var rateLimitText: String {
+        if let limit = limitStatus, limit.cooldownExpiresAt > Date() {
+            let cooldown = AgeFormat.formatCooldown(until: limit.cooldownExpiresAt)
+            return "⚠️ Rate limited (\(cooldown))"
+        }
+        return "⚠️ Rate limited"
+    }
 
     var body: some View {
         Button(action: onSelect) {
@@ -414,7 +428,24 @@ private struct AgentMiniLaneView: View {
                     .foregroundStyle(Theme.agentColor(session.agentKind))
                     .fixedSize()
 
-                if let activity, !activity.isEmpty {
+                if isRateLimited {
+                    Text(rateLimitText)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Theme.statusError)
+                        .lineLimit(1)
+                } else if session.state == .waitingPermission {
+                    Text("Permission required")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.statusColor(session.state))
+                        .lineLimit(1)
+                } else if let delegated = delegatedMessage {
+                    Text(delegatedText(for: delegated, activity: activity))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.white.opacity(0.75))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .smoothShimmer(isWorking: session.state.bucket == .active)
+                } else if let activity, !activity.isEmpty {
                     ZStack {
                         Circle()
                             .fill(Color.white.opacity(0.12))
@@ -448,7 +479,7 @@ private struct AgentMiniLaneView: View {
 
                 Spacer(minLength: 4)
 
-                if session.state.bucket == .needsYou && activity != nil {
+                if !isRateLimited && session.state.bucket == .needsYou && activity != nil {
                     Text(AgeFormat.compact(from: session.stateChangedAt))
                         .font(.system(size: 9, weight: .semibold))
                         .monospacedDigit()
@@ -469,7 +500,7 @@ private struct AgentMiniLaneView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Switch to \(session.agentKind.displayName) session")
+        .help(isRateLimited ? "\(session.agentKind.displayName) is rate limited" : "Switch to \(session.agentKind.displayName) session")
     }
 }
 
@@ -552,22 +583,46 @@ private struct HomeCard: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                if isSingle, let session = primarySession, let activity = model.currentActivity(session), !activity.isEmpty {
-                    HStack(spacing: 5) {
-                        ZStack {
-                            Circle()
-                                .fill(Color.white.opacity(0.12))
-                                .frame(width: 14, height: 14)
-                            Image(systemName: activityIcon(for: activity))
-                                .font(.system(size: 7, weight: .bold))
-                                .foregroundStyle(Color.white.opacity(0.85))
-                        }
-                        Text(activity)
+                if isSingle, let session = primarySession {
+                    let activity = model.currentActivity(session)
+                    let limitStatus = model.agentLimit(for: session)
+                    let delegated = model.delegatedTask(for: session)
+                    let isLimited = session.state == .error || (limitStatus != nil && limitStatus!.cooldownExpiresAt > Date())
+
+                    if isLimited {
+                        let cooldownSuffix: String = {
+                            guard let limit = limitStatus, limit.cooldownExpiresAt > Date() else { return "" }
+                            return " (\(AgeFormat.formatCooldown(until: limit.cooldownExpiresAt)))"
+                        }()
+                        Text("⚠️ Rate limited\(cooldownSuffix)")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Theme.statusError)
+                            .lineLimit(1)
+                    } else if let delegated {
+                        let desc = delegatedText(for: delegated, activity: activity)
+                        Text(desc)
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(Color.white.opacity(0.65))
+                            .foregroundStyle(Color.white.opacity(0.70))
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .smoothShimmer(isWorking: session.state.bucket == .active)
+                    } else if let activity, !activity.isEmpty {
+                        HStack(spacing: 5) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.white.opacity(0.12))
+                                    .frame(width: 14, height: 14)
+                                Image(systemName: activityIcon(for: activity))
+                                    .font(.system(size: 7, weight: .bold))
+                                    .foregroundStyle(Color.white.opacity(0.85))
+                            }
+                            Text(activity)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(Color.white.opacity(0.65))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .smoothShimmer(isWorking: session.state.bucket == .active)
+                        }
                     }
                 }
 
@@ -575,7 +630,13 @@ private struct HomeCard: View {
 
                 if group.bucket == .needsYou {
                     if let urgent = group.sessions.first(where: { $0.state.bucket == .needsYou }) {
-                        Text("\(statusLabel(urgent.state)) · \(AgeFormat.compact(from: urgent.stateChangedAt))")
+                        let label: String = {
+                            if urgent.state == .error, model.agentLimit(for: urgent) != nil {
+                                return "rate limited"
+                            }
+                            return statusLabel(urgent.state)
+                        }()
+                        Text("\(label) · \(AgeFormat.compact(from: urgent.stateChangedAt))")
                             .font(.system(size: 10, weight: .semibold))
                             .monospacedDigit()
                             .foregroundStyle(Theme.statusColor(urgent.state))
@@ -626,6 +687,8 @@ private struct HomeCard: View {
                         AgentMiniLaneView(
                             session: session,
                             activity: model.currentActivity(session),
+                            limitStatus: model.agentLimit(for: session),
+                            delegatedMessage: model.delegatedTask(for: session),
                             isSelected: session.id == selectedId,
                             showsBackground: true,
                             onSelect: { model.focus(session.id) }
@@ -942,7 +1005,34 @@ private struct CompactProjectRow: View {
             subrow: {
                 if group.sessions.count <= 1, let session = group.sessions.first {
                     let activity = model.currentActivity(session)
-                    if let activity, !activity.isEmpty {
+                    let limitStatus = model.agentLimit(for: session)
+                    let delegated = model.delegatedTask(for: session)
+                    let isLimited = session.state == .error || (limitStatus != nil && limitStatus!.cooldownExpiresAt > Date())
+
+                    if isLimited {
+                        let cooldownSuffix: String = {
+                            guard let limit = limitStatus, limit.cooldownExpiresAt > Date() else { return "" }
+                            return " (\(AgeFormat.formatCooldown(until: limit.cooldownExpiresAt)))"
+                        }()
+                        HStack(spacing: 6) {
+                            Text("⚠️ Rate limited\(cooldownSuffix)")
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(Theme.statusError)
+                                .lineLimit(1)
+                        }
+                        .transition(.opacity)
+                    } else if let delegated {
+                        let desc = delegatedText(for: delegated, activity: activity)
+                        HStack(spacing: 6) {
+                            Text(desc)
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .foregroundStyle(Color.white.opacity(0.70))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .smoothShimmer(isWorking: session.state.bucket == .active)
+                        }
+                        .transition(.opacity)
+                    } else if let activity, !activity.isEmpty {
                         HStack(spacing: 6) {
                             ZStack {
                                 Circle()
@@ -967,6 +1057,8 @@ private struct CompactProjectRow: View {
                             AgentMiniLaneView(
                                 session: session,
                                 activity: model.currentActivity(session),
+                                limitStatus: model.agentLimit(for: session),
+                                delegatedMessage: model.delegatedTask(for: session),
                                 isSelected: session.id == selectedId,
                                 onSelect: { model.focus(session.id) }
                             )
@@ -1642,3 +1734,116 @@ private func statusLabel(_ state: SessionState) -> String {
     case .ended: return "ended"
     }
 }
+
+extension AgeFormat {
+    /// Formats the remaining cooldown duration until a target date.
+    public static func formatCooldown(until date: Date, from now: Date = Date()) -> String {
+        let remaining = date.timeIntervalSince(now)
+        guard remaining > 0 else { return "resets soon" }
+        let totalSeconds = Int(ceil(remaining))
+        if totalSeconds < 60 {
+            return "resets in \(max(1, totalSeconds))s"
+        } else {
+            let mins = Int(ceil(Double(totalSeconds) / 60.0))
+            return "resets in \(mins)m"
+        }
+    }
+}
+
+/// Formats the display text for a pending or active delegated task message.
+func delegatedText(for msg: PendingMessage, activity: String?) -> String {
+    let rawPrompt = msg.prompt
+        .split(whereSeparator: \.isNewline)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .first(where: { !$0.isEmpty }) ?? ""
+
+    let taskDesc: String
+    if rawPrompt.isEmpty || rawPrompt.hasPrefix("Task rerouted from") {
+        if let activity, !activity.isEmpty, activity != "Thinking…", activity != "Working..." {
+            taskDesc = activity
+        } else {
+            taskDesc = "resuming task..."
+        }
+    } else {
+        taskDesc = rawPrompt
+    }
+
+    if msg.status == .queued || msg.status == .delivering {
+        if msg.rerouteCount > 0 {
+            return "✨ Resuming task from \(msg.fromAgent.displayName): \(taskDesc)"
+        } else {
+            return "✨ Incoming task from \(msg.fromAgent.displayName): \(taskDesc)"
+        }
+    } else {
+        if msg.rerouteCount > 0 {
+            return "✨ Resuming task from \(msg.fromAgent.displayName): \(taskDesc)"
+        } else {
+            return "✨ Task from \(msg.fromAgent.displayName): \(taskDesc)"
+        }
+    }
+}
+
+extension AppModel {
+    /// Loads the inbox for a workspace root, if the inbox file exists on disk.
+    func inbox(for workspacePath: String) -> Inbox? {
+        let norm = (workspacePath as NSString).standardizingPath
+        let inboxPath = (norm as NSString).appendingPathComponent(".linkc/inbox.json")
+        guard FileManager.default.fileExists(atPath: inboxPath) else { return nil }
+        if let inbox = try? InboxStore(workspaceRoot: norm).load(timeout: 0.1) {
+            return inbox
+        }
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: inboxPath)) {
+            let dec = JSONDecoder()
+            dec.dateDecodingStrategy = .iso8601
+            return try? dec.decode(Inbox.self, from: data)
+        }
+        return nil
+    }
+
+    /// Checks if a session's agent is rate limited either from the inbox or session state.
+    func agentLimit(for session: Session) -> AgentLimitStatus? {
+        let norm = (session.cwd as NSString).standardizingPath
+        let inbox = inbox(for: norm)
+        let now = Date()
+        if let limit = inbox?.agentLimits.first(where: { $0.agent == session.agentKind }),
+           limit.cooldownExpiresAt > now {
+            return limit
+        }
+        if session.state == .error {
+            if let lastLimit = inbox?.agentLimits.first(where: { $0.agent == session.agentKind }) {
+                return lastLimit
+            }
+            return AgentLimitStatus(
+                agent: session.agentKind,
+                reason: "Rate limited",
+                limitedAt: session.stateChangedAt,
+                cooldownExpiresAt: now
+            )
+        }
+        return nil
+    }
+
+    /// Retrieves an active or pending delegated task for the session's agent in this workspace.
+    func delegatedTask(for session: Session) -> PendingMessage? {
+        let norm = (session.cwd as NSString).standardizingPath
+        guard let inbox = inbox(for: norm) else { return nil }
+
+        // 1. Pending (queued or delivering) messages targeted to this agent
+        if let pending = inbox.messages.last(where: {
+            $0.toAgent == session.agentKind && ($0.status == .queued || $0.status == .delivering)
+        }) {
+            return pending
+        }
+
+        // 2. Active delivered message currently being worked on
+        if session.state.bucket == .active,
+           let delivered = inbox.messages.last(where: {
+               $0.toAgent == session.agentKind && $0.status == .delivered
+           }) {
+            return delivered
+        }
+
+        return nil
+    }
+}
+
