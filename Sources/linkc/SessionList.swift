@@ -113,15 +113,28 @@ struct SessionListColumn: View {
         .animation(reduceMotion ? nil : Theme.sectionSpring, value: rows.map(\.id))
     }
 
+    /// Resolves urgency bucket for a project group, elevating to .active if any session has running subagents.
+    @MainActor private func effectiveBucket(for group: ProjectGroup) -> SessionState.Bucket {
+        if group.sessions.contains(where: { $0.state.bucket == .needsYou }) {
+            return .needsYou
+        }
+        if group.sessions.contains(where: { session in
+            session.state.bucket == .active || model.visibleAgents(session.id).contains(where: \.isRunning)
+        }) {
+            return .active
+        }
+        return .idle
+    }
+
     /// Group live projects by urgency bucket, in priority order, preserving each group's relative
     /// order within its bucket. Empty buckets are dropped; headers are shown only when more than one
     /// bucket is present (a lone group needs no label).
     @MainActor private var rows: [Row] {
         let projectGroups = ProjectGroup.group(sessions: model.sessions)
         let sections: [(String, [ProjectGroup])] = [
-            ("NEEDS YOU", projectGroups.filter { $0.bucket == .needsYou }),
-            ("WORKING", projectGroups.filter { $0.bucket == .active }),
-            ("IDLE", projectGroups.filter { $0.bucket == .idle }),
+            ("NEEDS YOU", projectGroups.filter { effectiveBucket(for: $0) == .needsYou }),
+            ("WORKING", projectGroups.filter { effectiveBucket(for: $0) == .active }),
+            ("IDLE", projectGroups.filter { effectiveBucket(for: $0) == .idle }),
         ].filter { !$0.1.isEmpty }
 
         let showHeaders = sections.count > 1
@@ -401,6 +414,7 @@ private struct RestorableRow: View {
 /// Reusable stacked mini-lane rendering an individual agent session's activity and status in a multi-agent swarm row or card.
 private struct AgentMiniLaneView: View {
     let session: Session
+    let model: AppModel
     let activity: String?
     var limitStatus: AgentLimitStatus? = nil
     var delegatedMessage: PendingMessage? = nil
@@ -422,6 +436,7 @@ private struct AgentMiniLaneView: View {
     }
 
     var body: some View {
+        let runningSubagents = model.visibleAgents(session.id).filter(\.isRunning)
         Button(action: onSelect) {
             HStack(spacing: 6) {
                 Text("\(session.agentKind.pillText):")
@@ -446,6 +461,21 @@ private struct AgentMiniLaneView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .smoothShimmer(isWorking: session.state.bucket == .active)
+                } else if let activeSub = runningSubagents.first {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.12))
+                            .frame(width: 14, height: 14)
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundStyle(Color.white.opacity(0.85))
+                    }
+                    Text(activeSub.description)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.white.opacity(0.65))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .smoothShimmer(isWorking: true)
                 } else if let activity, !activity.isEmpty {
                     ZStack {
                         Circle()
@@ -589,6 +619,23 @@ private struct HomeCard: View {
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .smoothShimmer(isWorking: session.state.bucket == .active)
+                    } else if let activeSub = model.visibleAgents(session.id).first(where: \.isRunning) {
+                        HStack(spacing: 5) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.white.opacity(0.12))
+                                    .frame(width: 14, height: 14)
+                                Image(systemName: "arrow.triangle.branch")
+                                    .font(.system(size: 7, weight: .bold))
+                                    .foregroundStyle(Color.white.opacity(0.85))
+                            }
+                            Text(activeSub.description)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(Color.white.opacity(0.65))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .smoothShimmer(isWorking: true)
+                        }
                     } else if let activity, !activity.isEmpty {
                         HStack(spacing: 5) {
                             ZStack {
@@ -682,6 +729,7 @@ private struct HomeCard: View {
                     ForEach(group.sessions) { session in
                         AgentMiniLaneView(
                             session: session,
+                            model: model,
                             activity: model.currentActivity(session),
                             limitStatus: model.agentLimit(for: session),
                             delegatedMessage: model.delegatedTask(for: session),
@@ -1028,6 +1076,24 @@ private struct CompactProjectRow: View {
                                 .smoothShimmer(isWorking: session.state.bucket == .active)
                         }
                         .transition(.opacity)
+                    } else if let activeSub = model.visibleAgents(session.id).first(where: \.isRunning) {
+                        HStack(spacing: 6) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.white.opacity(0.12))
+                                    .frame(width: 15, height: 15)
+                                Image(systemName: "arrow.triangle.branch")
+                                    .font(.system(size: 7.5, weight: .bold))
+                                    .foregroundStyle(Color.white.opacity(0.85))
+                            }
+                            Text(activeSub.description)
+                                .font(.system(size: 11, weight: .regular))
+                                .foregroundStyle(Color.white.opacity(0.50))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .smoothShimmer(isWorking: true)
+                        }
+                        .transition(.opacity)
                     } else if let activity, !activity.isEmpty {
                         HStack(spacing: 6) {
                             ZStack {
@@ -1052,6 +1118,7 @@ private struct CompactProjectRow: View {
                         ForEach(group.sessions) { session in
                             AgentMiniLaneView(
                                 session: session,
+                                model: model,
                                 activity: model.currentActivity(session),
                                 limitStatus: model.agentLimit(for: session),
                                 delegatedMessage: model.delegatedTask(for: session),

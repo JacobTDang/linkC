@@ -34,13 +34,24 @@ struct TranscriptLine {
         let filePath: String?
         let notebookPath: String?
         let description: String?
+        let prompt: String?
+        let task: String?
+        let goal: String?
         let subagentType: String?
 
         enum CodingKeys: String, CodingKey {
-            case command, description
+            case command, description, prompt, task, goal
             case filePath = "file_path"
             case notebookPath = "notebook_path"
             case subagentType = "subagent_type"
+        }
+
+        var effectiveDescription: String? {
+            if let description, !description.isEmpty { return description }
+            if let prompt, !prompt.isEmpty { return prompt }
+            if let task, !task.isEmpty { return task }
+            if let goal, !goal.isEmpty { return goal }
+            return nil
         }
     }
 

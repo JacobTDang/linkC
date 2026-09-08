@@ -27,6 +27,9 @@ public struct AgentRun: Equatable, Sendable, Identifiable {
 /// their completion arrives later as a task-notification naming the original tool-use id.
 public enum AgentEvents {
     private static let asyncLaunchMarker = "Async agent launched"
+    private static let recognizedSubagentTools: Set<String> = [
+        "Agent", "Task", "invoke_subagent", "subagent", "linkc_delegate_task"
+    ]
 
     public static func parse(line: String) -> [AgentEvent] {
         guard let decoded = TranscriptLine.decode(line) else { return [] }
@@ -42,8 +45,11 @@ public enum AgentEvents {
         switch decoded.content {
         case .blocks(let blocks):
             for block in blocks {
-                if block.type == "tool_use", block.name == "Agent" || block.name == "Task",
-                   let id = block.id, let description = block.input?.description {
+                if block.type == "tool_use",
+                   let name = block.name,
+                   recognizedSubagentTools.contains(name),
+                   let id = block.id {
+                    let description = block.input?.effectiveDescription ?? "Subagent \(name)"
                     events.append(.spawned(
                         toolUseId: id, description: description,
                         type: block.input?.subagentType, at: timestamp

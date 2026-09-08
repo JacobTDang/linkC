@@ -206,13 +206,17 @@ public final class AppCoordinator {
             }
             tracker.refreshSession(session.id)
             // The refresh above applies any real completions first; only then does the
-            // backstop end whatever the transcript never closed out. Both turn boundaries
-            // sweep: at turn end nothing sync survives, and at prompt submit anything
-            // already parsed belongs to an earlier turn (a resumed session replays its
-            // whole history — those spawns would otherwise show as running for the entire
-            // first turn). Late async completions still resurface via the sweep flag.
-            if turnIsOver(session.state) || event.kind == .userPromptSubmit {
+            // backstop end whatever the transcript never closed out. User prompt submit
+            // always sweeps previous turns' agents. Turn ends only sweep if no in-flight
+            // subagents are currently running, preventing premature sweeps while parent
+            // pauses for subagent execution.
+            if event.kind == .userPromptSubmit {
                 tracker.sweepAgents(session.id)
+            } else if turnIsOver(session.state) {
+                let hasRunningSubagents = tracker.sessionAgents(session.id).contains { $0.isRunning }
+                if !hasRunningSubagents {
+                    tracker.sweepAgents(session.id)
+                }
             }
         }
 
