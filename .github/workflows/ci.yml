@@ -13,7 +13,7 @@ concurrency:
 jobs:
   static-and-build:
     name: Build & Policy Verification
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
 
   test-suite:
     name: Unit & Integration Tests (Parallel)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,7 +38,7 @@ jobs:
 
   thread-sanitizer:
     name: Thread Sanitizer & Lock Stress Tests
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,7 +48,7 @@ jobs:
 
   package-app:
     name: Package App Bundle & Signing
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

@@ -119,7 +119,7 @@ public final class AppCoordinator {
                 // returned here instead, so clicking a "not responding" banner did
                 // nothing at all.)
                 guard !id.hasPrefix(Self.alertIdPrefix) else {
-                    NSApp.activate(ignoringOtherApps: true)
+                    NSApp?.activate(ignoringOtherApps: true)
                     return
                 }
                 self?.focusSession(id)
@@ -501,7 +501,7 @@ public final class AppCoordinator {
 
     public func focusSession(_ id: String) {
         terminals.select(id)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp?.activate(ignoringOtherApps: true)
         if let s = store.session(id: id), s.agentKind != .claude, s.state.bucket == .needsYou {
             store.updateState(id: id, to: .ready)
         }
