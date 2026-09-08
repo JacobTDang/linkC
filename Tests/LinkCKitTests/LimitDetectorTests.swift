@@ -31,6 +31,46 @@ final class LimitDetectorTests: XCTestCase {
         XCTAssertEqual(match?.matchedPattern, "credit balance too low")
     }
 
+    func testClaudeUnavailableDetected() {
+        let text = "Claude 3.5 Sonnet is currently unavailable. Please try again in a few minutes."
+        let match = LimitDetector.detectLimit(inOutput: text, agent: .claude)
+        XCTAssertNotNil(match)
+        XCTAssertEqual(match?.agent, .claude)
+    }
+
+    func testClaudeReachedLimitForClaudeDetected() {
+        let text = "You have reached your limit for Claude. Try again later."
+        let match = LimitDetector.detectLimit(inOutput: text, agent: .claude)
+        XCTAssertNotNil(match)
+        XCTAssertEqual(match?.agent, .claude)
+    }
+
+    func testClaudeOutOfMessagesUntilDetected() {
+        let text = "You're out of messages until 3:00 PM."
+        let match = LimitDetector.detectLimit(inOutput: text, agent: .claude)
+        XCTAssertNotNil(match)
+        XCTAssertEqual(match?.agent, .claude)
+    }
+
+    func testClaudeExceededUsageLimitDetected() {
+        let text = "You have exceeded your usage limit for this period."
+        let match = LimitDetector.detectLimit(inOutput: text, agent: .claude)
+        XCTAssertNotNil(match)
+        XCTAssertEqual(match?.agent, .claude)
+    }
+
+    func testClaudeResetsInOrAtDetected() {
+        let text1 = "Usage cap hit. Resets in 2 hours."
+        let match1 = LimitDetector.detectLimit(inOutput: text1, agent: .claude)
+        XCTAssertNotNil(match1)
+        XCTAssertEqual(match1?.agent, .claude)
+
+        let text2 = "Cap reached. Resets at 4:00 PM."
+        let match2 = LimitDetector.detectLimit(inOutput: text2, agent: .claude)
+        XCTAssertNotNil(match2)
+        XCTAssertEqual(match2?.agent, .claude)
+    }
+
     // MARK: - Codex Tests
 
     func testCodex429TooManyRequestsDetected() {

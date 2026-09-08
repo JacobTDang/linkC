@@ -48,9 +48,14 @@ public struct LimitDetector: Sendable {
     }()
 
     private static let claudeRules: [LimitRule] = [
-        LimitRule(canonicalPattern: "You've reached your usage limit", regexPattern: "you(?:'|’)?ve reached your usage limit"),
+        LimitRule(canonicalPattern: "You've reached your usage limit", regexPattern: "you(?:'|’)?ve reached your (?:usage )?limit"),
         LimitRule(canonicalPattern: "Rate limit reached", regexPattern: "\\brate limit reached\\b"),
-        LimitRule(canonicalPattern: "credit balance too low", regexPattern: "\\bcredit balance too low\\b")
+        LimitRule(canonicalPattern: "credit balance too low", regexPattern: "\\bcredit balance too low\\b"),
+        LimitRule(canonicalPattern: "Claude is currently unavailable", regexPattern: "claude.*(?:is currently unavailable|temporarily unavailable)"),
+        LimitRule(canonicalPattern: "out of messages until", regexPattern: "out of messages until"),
+        LimitRule(canonicalPattern: "exceeded your usage limit", regexPattern: "exceeded your (?:usage )?limit"),
+        LimitRule(canonicalPattern: "resets in/at", regexPattern: "resets (?:in|at)"),
+        LimitRule(canonicalPattern: "You have reached your limit for Claude", regexPattern: "you have reached your limit for claude")
     ]
 
     private static let codexRules: [LimitRule] = [

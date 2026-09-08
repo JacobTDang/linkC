@@ -677,7 +677,7 @@ public final class AppCoordinator {
     public func checkLimitsAndReroute(for sessionId: String) -> Bool {
         guard let session = store.session(id: sessionId) else { return false }
         guard session.agentKind != .shell else { return false }
-        guard session.state == .working || session.state == .error else { return false }
+        guard session.state != .ended else { return false }
 
         let norm = (session.cwd as NSString).standardizingPath
         let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
@@ -722,8 +722,37 @@ public final class AppCoordinator {
         let inbox = try? inboxStore.load()
         let currentMessage = inbox?.messages.last { msg in
             guard msg.toAgent == session.agentKind, let deliveredAt = msg.deliveredAt else { return false }
-            return deliveredAt >= session.stateChangedAt.addingTimeInterval(-5)
+            if session.state == .working {
+                return deliveredAt >= session.stateChangedAt.addingTimeInterval(-5)
+            }
+            return true
         }
+
+        // Bi-directional notification to delegating peer agent if this was a delegated task
+        if let currentMessage, currentMessage.fromAgent != session.agentKind {
+            let alreadyNotified = inbox?.messages.contains { msg in
+                msg.fromAgent == session.agentKind &&
+                msg.toAgent == currentMessage.fromAgent &&
+                msg.prompt.hasPrefix("[System Notice]") &&
+                msg.createdAt >= currentMessage.createdAt
+            } ?? false
+
+            if !alreadyNotified {
+                let fallback = AgentModelCatalog.fallbackModels(for: session.agentKind).first?.displayName ?? "fallback"
+                let noticePrompt = "[System Notice] \(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available. Task paused."
+                _ = try? inboxStore.enqueue(
+                    from: session.agentKind,
+                    to: currentMessage.fromAgent,
+                    prompt: noticePrompt,
+                    files: currentMessage.claimedFiles
+                )
+                notifications.post(
+                    title: "linkC: \(session.agentKind.displayName) Rate Limited",
+                    body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available."
+                )
+            }
+        }
+
         let currentRerouteCount = currentMessage?.rerouteCount ?? 0
         let reroutedPrompt = currentMessage?.prompt ?? "Task rerouted from \(session.agentKind.displayName) due to rate limit (\(match.matchedPattern)). Please inspect .linkc/HANDOFF.md and continue."
 
