@@ -527,18 +527,20 @@ public final class AppCoordinator {
             // Claude has its own hook server providing exact event transitions.
             guard session.agentKind != .claude else { continue }
 
+            guard let currentSession = store.session(id: session.id), currentSession.state != .error else { continue }
+
             let liveActivity = term.liveActivityLine()
             let isWorking = liveActivity != nil && !liveActivity!.isEmpty
 
             if isWorking {
-                if session.state.bucket != .active {
+                if currentSession.state.bucket != .active {
                     store.updateState(id: session.id, to: .working)
                 }
             } else {
                 // If it was working and now finished its turn
-                if session.state.bucket == .active {
+                if currentSession.state.bucket == .active {
                     store.updateState(id: session.id, to: .finished)
-                    let updated = store.session(id: session.id) ?? session
+                    let updated = store.session(id: session.id) ?? currentSession
                     if FocusPolicy.shouldNotify(
                         session: updated,
                         enteredNotifiable: true,
@@ -546,7 +548,7 @@ public final class AppCoordinator {
                     ) {
                         notifications.post(session: updated)
                     }
-                } else if session.state == .starting {
+                } else if currentSession.state == .starting {
                     store.updateState(id: session.id, to: .ready)
                 }
             }
@@ -684,6 +686,16 @@ public final class AppCoordinator {
         let candidates = supportedPeers.filter { candidate in
             guard candidate != session.agentKind else { return false }
             guard (try? inboxStore.isAgentLimited(agent: candidate)) == nil else { return false }
+            let isInstalled: Bool
+            if candidate == .claude {
+                isInstalled = FileManager.default.isExecutableFile(atPath: claudePath) ||
+                    (agentPathResolver?(candidate) ?? AgentDescriptor.resolveExecutable(for: candidate)) != nil
+            } else if let resolver = agentPathResolver {
+                isInstalled = resolver(candidate) != nil
+            } else {
+                isInstalled = AgentDescriptor.resolveExecutable(for: candidate) != nil
+            }
+            guard isInstalled else { return false }
             return true
         }
 
@@ -691,9 +703,17 @@ public final class AppCoordinator {
         let inbox = try? inboxStore.load()
         let currentMessage = inbox?.messages.last { $0.toAgent == session.agentKind }
         let currentRerouteCount = currentMessage?.rerouteCount ?? 0
+        let reroutedPrompt = currentMessage?.prompt ?? "Task rerouted from \(session.agentKind.displayName) due to rate limit (\(match.matchedPattern)). Please inspect .linkc/HANDOFF.md and continue."
 
         // If this task has already been rerouted by this session, avoid re-entrant duplicates
-        let alreadyRerouted = inbox?.messages.contains { $0.fromAgent == session.agentKind && $0.rerouteCount > currentRerouteCount } ?? false
+        let alreadyRerouted = inbox?.messages.contains { msg in
+            guard msg.fromAgent == session.agentKind && msg.rerouteCount > currentRerouteCount else { return false }
+            if let currentMessage {
+                return msg.createdAt >= currentMessage.createdAt
+            } else {
+                return msg.prompt == reroutedPrompt && msg.createdAt >= session.stateChangedAt.addingTimeInterval(-60)
+            }
+        } ?? false
         if alreadyRerouted {
             return true
         }
@@ -720,7 +740,6 @@ public final class AppCoordinator {
         )
 
         // Enqueue rerouted task to candidate with rerouteCount + 1
-        let reroutedPrompt = currentMessage?.prompt ?? "Task rerouted from \(session.agentKind.displayName) due to rate limit (\(match.matchedPattern)). Please inspect .linkc/HANDOFF.md and continue."
         let claimedFiles = currentMessage?.claimedFiles ?? []
 
         _ = try? inboxStore.enqueue(

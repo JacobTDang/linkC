@@ -287,4 +287,160 @@ final class AppCoordinatorRelayTests: XCTestCase {
         }
         XCTAssertTrue(delivered, "Stop hook should have triggered pending message delivery")
     }
+
+    /// Test 6: sampleAgentStates preserves .error state when rate limit is detected on a non-Claude session.
+    @MainActor
+    func testSampleAgentStatesPreservesErrorStateOnRateLimit() async throws {
+        let ws = tempDir.path
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        // Create a non-Claude session in .working state
+        let session = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: session.id, to: .working)
+
+        // Inject rate limit pattern into terminal buffer
+        coordinator.terminals.sendInput(sessionId: session.id, text: "429 Too Many Requests\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("429 Too Many Requests") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        // Run sampleAgentStates (which runs rate limit check then activity check in same tick)
+        coordinator.sampleAgentStates()
+
+        // Verify the store state remains .error and was not overwritten back to .finished
+        let updatedSession = coordinator.store.session(id: session.id)
+        XCTAssertEqual(updatedSession?.state, .error, "Session state must remain .error and not be overwritten to .finished")
+    }
+
+    /// Test 7: checkLimitsAndReroute scopes alreadyRerouted check to current task and does not abort on old history.
+    @MainActor
+    func testCheckLimitsAndRerouteScopesAlreadyReroutedCheckToCurrentTask() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        // Seed an OLD historical message that was previously rerouted by .claude in this workspace
+        let oldReroutedMsg = try inbox.enqueue(
+            from: .claude,
+            to: .cursor,
+            prompt: "Old task from yesterday",
+            files: [],
+            rerouteCount: 1
+        )
+        // Ensure its createdAt is in the past
+        let pastDate = Date().addingTimeInterval(-3600)
+        var loaded = try inbox.load()
+        if let idx = loaded.messages.firstIndex(where: { $0.id == oldReroutedMsg.id }) {
+            loaded.messages[idx] = PendingMessage(
+                id: oldReroutedMsg.id,
+                fromAgent: oldReroutedMsg.fromAgent,
+                toAgent: oldReroutedMsg.toAgent,
+                prompt: oldReroutedMsg.prompt,
+                claimedFiles: oldReroutedMsg.claimedFiles,
+                status: .delivered,
+                rerouteCount: oldReroutedMsg.rerouteCount,
+                createdAt: pastDate,
+                deliveredAt: pastDate
+            )
+            let data = try JSONEncoder().encode(loaded)
+            let inboxURL = URL(fileURLWithPath: ws).appendingPathComponent(".linkc/inbox.json")
+            try data.write(to: inboxURL)
+        }
+
+        // Spawn claude session
+        let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
+
+        // Enqueue a NEW task for claude
+        let newMsg = try inbox.enqueue(
+            from: .codex,
+            to: .claude,
+            prompt: "New fresh task to run",
+            files: ["Fresh.swift"]
+        )
+        try inbox.markDelivered(id: newMsg.id)
+
+        // Inject rate limit pattern
+        coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached. Try later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: claudeSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        // Check limits and reroute - must NOT be blocked by the old historical rerouted message
+        let rerouted = coordinator.checkLimitsAndReroute(for: claudeSession.id)
+        XCTAssertTrue(rerouted, "Should reroute the new task despite old historical reroute message")
+
+        // Verify new rerouted message was enqueued for peer
+        let updatedInbox = try inbox.load()
+        let newRerouted = updatedInbox.messages.first {
+            $0.fromAgent == .claude && $0.prompt == "New fresh task to run"
+        }
+        XCTAssertNotNil(newRerouted, "New task should have been rerouted")
+        XCTAssertEqual(newRerouted?.rerouteCount, 1)
+    }
+
+    /// Test 8: checkLimitsAndReroute skips uninstalled candidate agents in favor of installed ones.
+    @MainActor
+    func testCheckLimitsAndRerouteSkipsUninstalledCandidateAgents() async throws {
+        let ws = tempDir.path
+        let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
+        if !FileManager.default.fileExists(atPath: scriptURL.path) {
+            let scriptContent = "#!/bin/sh\nexec /bin/cat\n"
+            try? scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
+            var attrs = (try? FileManager.default.attributesOfItem(atPath: scriptURL.path)) ?? [:]
+            attrs[.posixPermissions] = 0o755
+            try? FileManager.default.setAttributes(attrs, ofItemAtPath: scriptURL.path)
+        }
+
+        let settingsDir = tempDir.appendingPathComponent("settings_uninstalled_test")
+        try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+
+        // Create coordinator where .codex is NOT installed (returns nil), but .agy IS installed
+        let coordinator = AppCoordinator(
+            terminals: TerminalSessionManager(),
+            hookServer: HookServer(port: 0),
+            notifications: NotificationManager(sink: RecordingSink(), now: { Date() }),
+            claudePath: scriptURL.path,
+            settingsDir: settingsDir,
+            userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
+            manifestDir: tempDir.appendingPathComponent("manifest_uninstalled_test"),
+            agentPathResolver: { kind in
+                // Simulate .codex being uninstalled on this machine
+                if kind == .codex { return nil }
+                return scriptURL.path
+            },
+            isWatching: { _ in false }
+        )
+        defer { coordinator.shutdown() }
+
+        let inbox = InboxStore(workspaceRoot: ws)
+        let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
+
+        let msg = try inbox.enqueue(
+            from: .cursor,
+            to: .claude,
+            prompt: "Deploy service mesh",
+            files: []
+        )
+        try inbox.markDelivered(id: msg.id)
+
+        coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: claudeSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        let rerouted = coordinator.checkLimitsAndReroute(for: claudeSession.id)
+        XCTAssertTrue(rerouted)
+
+        // Verify that .codex was skipped and .agy was chosen as the target candidate
+        let loaded = try inbox.load()
+        guard let reroutedMsg = loaded.messages.first(where: { $0.fromAgent == .claude && $0.rerouteCount == 1 }) else {
+            return XCTFail("Expected rerouted message")
+        }
+        XCTAssertEqual(reroutedMsg.toAgent, .agy, "Uninstalled .codex must be skipped; .agy must be selected")
+    }
 }
