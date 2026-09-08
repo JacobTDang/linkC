@@ -164,6 +164,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         // Spawn source session for claude
         let sourceSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: sourceSession.id, to: .working)
 
         // Seed initial message that claude was working on
         let initialMsg = try inbox.enqueue(
@@ -212,15 +213,17 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(peerSession, "Candidate peer session should be auto-spawned")
     }
 
-    /// Test 4: Circuit breaker stops re-route after 2 hops.
+    /// Test 4: Circuit breaker stops re-route after 2 hops and posts an alert notification.
     @MainActor
     func testCircuitBreakerStopsRerouteAfterTwoHops() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
-        let coordinator = makeCoordinator()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink)
         defer { coordinator.shutdown() }
 
         let session = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: session.id, to: .working)
 
         // Seed task that has already reached 2 hops (rerouteCount == 2)
         let hop2Msg = try inbox.enqueue(
@@ -251,6 +254,11 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let messagesAfter = loaded.messages
         XCTAssertEqual(messagesAfter.count, 1, "Circuit breaker must prevent enqueuing a 3rd hop message")
         XCTAssertEqual(messagesAfter.first?.id, hop2Msg.id)
+
+        // Notification posted
+        XCTAssertTrue(sink.deliveries.contains(where: {
+            $0.title == "linkC: Swarm Rate Limited" && $0.body.contains("Pausing auto-delegation")
+        }), "Alert notification should be posted when circuit breaker trips")
 
         // No extra sessions spawned
         XCTAssertEqual(coordinator.store.sessions.count, 1)
@@ -352,6 +360,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         // Spawn claude session
         let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: claudeSession.id, to: .working)
 
         // Enqueue a NEW task for claude
         let newMsg = try inbox.enqueue(
@@ -418,6 +427,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let inbox = InboxStore(workspaceRoot: ws)
         let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: claudeSession.id, to: .working)
 
         let msg = try inbox.enqueue(
             from: .cursor,
@@ -442,5 +452,74 @@ final class AppCoordinatorRelayTests: XCTestCase {
             return XCTFail("Expected rerouted message")
         }
         XCTAssertEqual(reroutedMsg.toAgent, .agy, "Uninstalled .codex must be skipped; .agy must be selected")
+    }
+
+    /// Test 9: checkLimitsAndReroute ignores sessions that are not .working or .error (idle/ready guard).
+    @MainActor
+    func testCheckLimitsAndRerouteIgnoredWhenSessionIsIdleOrReady() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        // Transition session to .ready (idle)
+        coordinator.store.updateState(id: claudeSession.id, to: .ready)
+
+        // Inject rate limit pattern
+        coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached. Try later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: claudeSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        // Calling checkLimitsAndReroute on .ready session must return false and not record a limit
+        let rerouted = coordinator.checkLimitsAndReroute(for: claudeSession.id)
+        XCTAssertFalse(rerouted, "checkLimitsAndReroute must ignore idle/ready sessions")
+
+        let limitStatus = try inbox.isAgentLimited(agent: .claude)
+        XCTAssertNil(limitStatus, "No limit should be recorded for an idle session")
+    }
+
+    /// Test 10: checkLimitsAndReroute prioritizes candidates that already have an active session in the workspace.
+    @MainActor
+    func testCheckLimitsAndReroutePrioritizesAgentWithActiveSessionInWorkspace() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        // Spawn claude session that will be working
+        let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: claudeSession.id, to: .working)
+
+        // Spawn an active cursor session in the same workspace (not codex)
+        let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
+        coordinator.store.updateState(id: cursorSession.id, to: .ready)
+
+        let msg = try inbox.enqueue(
+            from: .shell,
+            to: .claude,
+            prompt: "Refactor router",
+            files: ["Router.swift"]
+        )
+        try inbox.markDelivered(id: msg.id)
+
+        coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: claudeSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        let rerouted = coordinator.checkLimitsAndReroute(for: claudeSession.id)
+        XCTAssertTrue(rerouted)
+
+        // In supportedPeers [.claude, .codex, .agy, .cursor], .codex is ahead of .cursor.
+        // But because .cursor has an active session in this workspace, candidate sorting must prioritize .cursor!
+        let loaded = try inbox.load()
+        guard let reroutedMsg = loaded.messages.first(where: { $0.fromAgent == .claude && $0.rerouteCount == 1 }) else {
+            return XCTFail("Expected rerouted message")
+        }
+        XCTAssertEqual(reroutedMsg.toAgent, .cursor, "Active .cursor session in workspace must be prioritized over .codex")
     }
 }

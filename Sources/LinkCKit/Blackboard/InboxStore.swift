@@ -100,9 +100,24 @@ public final class InboxStore: Sendable {
     }
 
     /// Saves the inbox atomically via a temporary file without locking. Internal use inside locked regions.
+    /// Automatically prunes delivered messages older than 24 hours and caps total message history
+    /// to the most recent 100 entries so inbox.json does not grow unboundedly.
     private func saveUnlocked(_ inbox: Inbox) throws {
+        var prunedInbox = inbox
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-24 * 3600)
+        prunedInbox.messages.removeAll { msg in
+            if msg.status == .delivered, let deliveredAt = msg.deliveredAt {
+                return deliveredAt < cutoff
+            }
+            return false
+        }
+        if prunedInbox.messages.count > 100 {
+            prunedInbox.messages = Array(prunedInbox.messages.suffix(100))
+        }
+
         try ensureDirectoryExists()
-        let data = try encoder.encode(inbox)
+        let data = try encoder.encode(prunedInbox)
         let tmpURL = linkcDirectory.appendingPathComponent("inbox.tmp.\(UUID().uuidString)")
         try data.write(to: tmpURL, options: .atomic)
         _ = rename(tmpURL.path, inboxURL.path)

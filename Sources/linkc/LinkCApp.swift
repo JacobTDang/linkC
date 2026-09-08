@@ -143,6 +143,8 @@ final class AppModel {
     /// observable rows, so it runs here and never inside a view body — a body that writes
     /// what it reads re-renders itself forever.
     @ObservationIgnored private var shellSweepTask: Task<Void, Never>?
+    @ObservationIgnored private var cachedInboxes: [String: Inbox] = [:]
+    @ObservationIgnored private var lastInboxFetch: [String: Date] = [:]
 
     var sessions: [Session] { coordinator?.store.sessions ?? [] }
     var projectGroups: [ProjectGroup] { ProjectGroup.group(sessions: sessions) }
@@ -440,6 +442,47 @@ final class AppModel {
         return swarms.first { ($0.workspacePath as NSString).standardizingPath == norm }
     }
 
+    /// Loads the inbox for a workspace root with a 1-second in-memory throttle
+    /// to avoid redundant synchronous disk reads during SwiftUI view body evaluations.
+    func inbox(for workspacePath: String) -> Inbox? {
+        let norm = (workspacePath as NSString).standardizingPath
+        let now = Date()
+        if let last = lastInboxFetch[norm], now.timeIntervalSince(last) < 1.0 {
+            return cachedInboxes[norm]
+        }
+        let loaded = readInboxFromDisk(norm: norm)
+        cachedInboxes[norm] = loaded
+        lastInboxFetch[norm] = now
+        return loaded
+    }
+
+    private func readInboxFromDisk(norm: String) -> Inbox? {
+        let inboxURL = URL(fileURLWithPath: (norm as NSString).appendingPathComponent(".linkc/inbox.json"))
+        guard FileManager.default.fileExists(atPath: inboxURL.path),
+              let data = try? Data(contentsOf: inboxURL) else {
+            return nil
+        }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        return try? dec.decode(Inbox.self, from: data)
+    }
+
+    /// Refreshes cached inboxes for all active workspaces.
+    func refreshCachedInboxes() {
+        var paths = Set<String>()
+        for s in sessions {
+            paths.insert((s.cwd as NSString).standardizingPath)
+        }
+        for r in shellRows {
+            paths.insert((r.cwd as NSString).standardizingPath)
+        }
+        let now = Date()
+        for norm in paths {
+            cachedInboxes[norm] = readInboxFromDisk(norm: norm)
+            lastInboxFetch[norm] = now
+        }
+    }
+
     func sampleShellAgents() {
         shells?.sampleAgents()
         var shellAgents: [String: [AgentKind]] = [:]
@@ -449,6 +492,7 @@ final class AppModel {
             }
         }
         coordinator?.sampleSwarms(additionalAgents: shellAgents)
+        refreshCachedInboxes()
     }
 
     /// Dev terminals remembered from a previous run — relaunchable, never auto-started.

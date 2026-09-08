@@ -156,4 +156,82 @@ final class InboxStoreTests: XCTestCase {
         let inbox = try store.load()
         XCTAssertEqual(inbox.messages.count, writeCount, "All concurrent writes must be preserved without corruption")
     }
+
+    func testPrunesDeliveredMessagesOlderThan24Hours() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+
+        // Seed 1 delivered message from 25 hours ago, 1 delivered message from 1 hour ago, and 1 queued message from 30 hours ago
+        let oldDelivered = PendingMessage(
+            id: "old-delivered",
+            fromAgent: .claude,
+            toAgent: .codex,
+            prompt: "Old task",
+            claimedFiles: [],
+            status: .delivered,
+            rerouteCount: 0,
+            createdAt: Date().addingTimeInterval(-26 * 3600),
+            deliveredAt: Date().addingTimeInterval(-25 * 3600)
+        )
+        let recentDelivered = PendingMessage(
+            id: "recent-delivered",
+            fromAgent: .claude,
+            toAgent: .codex,
+            prompt: "Recent task",
+            claimedFiles: [],
+            status: .delivered,
+            rerouteCount: 0,
+            createdAt: Date().addingTimeInterval(-2 * 3600),
+            deliveredAt: Date().addingTimeInterval(-1 * 3600)
+        )
+        let oldQueued = PendingMessage(
+            id: "old-queued",
+            fromAgent: .cursor,
+            toAgent: .agy,
+            prompt: "Queued task",
+            claimedFiles: [],
+            status: .queued,
+            rerouteCount: 0,
+            createdAt: Date().addingTimeInterval(-30 * 3600),
+            deliveredAt: nil
+        )
+
+        var inbox = Inbox(workspacePath: tempDir.path)
+        inbox.messages = [oldDelivered, recentDelivered, oldQueued]
+        try store.saveRaw(inbox)
+
+        let loaded = try store.load()
+        XCTAssertEqual(loaded.messages.count, 2)
+        XCTAssertFalse(loaded.messages.contains(where: { $0.id == "old-delivered" }))
+        XCTAssertTrue(loaded.messages.contains(where: { $0.id == "recent-delivered" }))
+        XCTAssertTrue(loaded.messages.contains(where: { $0.id == "old-queued" }))
+    }
+
+    func testLimitsMessagesTo100OnSave() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+
+        var messages: [PendingMessage] = []
+        for i in 0..<120 {
+            messages.append(PendingMessage(
+                id: "msg-\(i)",
+                fromAgent: .claude,
+                toAgent: .codex,
+                prompt: "Task \(i)",
+                claimedFiles: [],
+                status: .queued,
+                rerouteCount: 0,
+                createdAt: Date().addingTimeInterval(Double(i)),
+                deliveredAt: nil
+            ))
+        }
+
+        var inbox = Inbox(workspacePath: tempDir.path)
+        inbox.messages = messages
+        try store.saveRaw(inbox)
+
+        let loaded = try store.load()
+        XCTAssertEqual(loaded.messages.count, 100)
+        // Kept the last 100 (msg-20 through msg-119)
+        XCTAssertEqual(loaded.messages.first?.id, "msg-20")
+        XCTAssertEqual(loaded.messages.last?.id, "msg-119")
+    }
 }

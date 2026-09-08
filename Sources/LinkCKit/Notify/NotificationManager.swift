@@ -148,6 +148,11 @@ public final class NotificationManager {
         sink.deliver(id: id, title: title, body: body)
     }
 
+    /// Post a generic alert notification with an auto-generated identifier.
+    public func post(title: String, body: String) {
+        sink.deliver(id: "\(AppCoordinator.alertIdPrefix)\(UUID().uuidString)", title: title, body: body)
+    }
+
     /// Drop a session's dedupe entry. Called when a session is removed/ended so the
     /// `lastDelivery` map doesn't grow unbounded over the app's lifetime.
     public func forget(_ id: String) {

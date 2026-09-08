@@ -666,6 +666,7 @@ public final class AppCoordinator {
     public func checkLimitsAndReroute(for sessionId: String) -> Bool {
         guard let session = store.session(id: sessionId) else { return false }
         guard session.agentKind != .shell else { return false }
+        guard session.state == .working || session.state == .error else { return false }
 
         let norm = (session.cwd as NSString).standardizingPath
         let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
@@ -683,7 +684,7 @@ public final class AppCoordinator {
 
         // Find candidate peer agents (excluding current agent, .shell, and limited agents)
         let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor]
-        let candidates = supportedPeers.filter { candidate in
+        var candidates = supportedPeers.filter { candidate in
             guard candidate != session.agentKind else { return false }
             guard (try? inboxStore.isAgentLimited(agent: candidate)) == nil else { return false }
             let isInstalled: Bool
@@ -699,9 +700,19 @@ public final class AppCoordinator {
             return true
         }
 
+        candidates.sort { a, b in
+            let aActive = store.sessions.contains { ( $0.cwd as NSString).standardizingPath == norm && $0.agentKind == a && $0.state != .ended }
+            let bActive = store.sessions.contains { ( $0.cwd as NSString).standardizingPath == norm && $0.agentKind == b && $0.state != .ended }
+            if aActive != bActive { return aActive && !bActive }
+            return false
+        }
+
         // Determine reroute count of active task (circuit breaker)
         let inbox = try? inboxStore.load()
-        let currentMessage = inbox?.messages.last { $0.toAgent == session.agentKind }
+        let currentMessage = inbox?.messages.last { msg in
+            guard msg.toAgent == session.agentKind, let deliveredAt = msg.deliveredAt else { return false }
+            return deliveredAt >= session.stateChangedAt.addingTimeInterval(-5)
+        }
         let currentRerouteCount = currentMessage?.rerouteCount ?? 0
         let reroutedPrompt = currentMessage?.prompt ?? "Task rerouted from \(session.agentKind.displayName) due to rate limit (\(match.matchedPattern)). Please inspect .linkc/HANDOFF.md and continue."
 
@@ -721,6 +732,7 @@ public final class AppCoordinator {
         guard currentRerouteCount < 2, let targetCandidate = candidates.first else {
             // Circuit breaker tripped or no candidates available: stop re-routing
             store.updateState(id: session.id, to: .error)
+            notifications.post(title: "linkC: Swarm Rate Limited", body: "All candidate agents in \(URL(fileURLWithPath: norm).lastPathComponent) are rate limited. Pausing auto-delegation.")
             return true
         }
 

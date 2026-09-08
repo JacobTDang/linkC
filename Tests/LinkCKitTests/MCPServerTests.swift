@@ -364,6 +364,17 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(resResult3?["isError"] as? Bool, true)
         let text3 = ((resResult3?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
         XCTAssertTrue(text3.contains("Missing required argument 'prompt'"))
+
+        // Cannot delegate to interactive shell
+        let reqShell = """
+        {"jsonrpc": "2.0", "id": 23, "method": "tools/call", "params": {"name": "linkc_delegate_task", "arguments": {"to": "shell", "prompt": "run tests"}}}
+        """.data(using: .utf8)!
+        let resShell = try XCTUnwrap(server.handleMessage(reqShell))
+        let jsonShell = try JSONSerialization.jsonObject(with: resShell) as? [String: Any]
+        let resResultShell = jsonShell?["result"] as? [String: Any]
+        XCTAssertEqual(resResultShell?["isError"] as? Bool, true)
+        let textShell = ((resResultShell?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(textShell.contains("Cannot delegate tasks to interactive terminal shell"))
     }
 
     func testSendMessageValidationErrors() throws {

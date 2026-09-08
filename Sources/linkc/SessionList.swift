@@ -1785,17 +1785,6 @@ func delegatedText(for msg: PendingMessage, activity: String?) -> String {
 }
 
 extension AppModel {
-    /// Loads the inbox for a workspace root directly from disk without lock acquisition.
-    func inbox(for workspacePath: String) -> Inbox? {
-        let norm = (workspacePath as NSString).standardizingPath
-        let inboxURL = URL(fileURLWithPath: (norm as NSString).appendingPathComponent(".linkc/inbox.json"))
-        guard FileManager.default.fileExists(atPath: inboxURL.path) else { return nil }
-        guard let data = try? Data(contentsOf: inboxURL) else { return nil }
-        let dec = JSONDecoder()
-        dec.dateDecodingStrategy = .iso8601
-        return try? dec.decode(Inbox.self, from: data)
-    }
-
     /// Checks if a session's agent has an active rate limit recorded in the inbox.
     func agentLimit(for session: Session) -> AgentLimitStatus? {
         let norm = (session.cwd as NSString).standardizingPath

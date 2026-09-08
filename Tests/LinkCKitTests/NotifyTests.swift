@@ -159,4 +159,14 @@ final class NotificationManagerPostTests: XCTestCase {
         let manager = NotificationManager(sink: sink, now: { Date(timeIntervalSince1970: 0) })
         await manager.requestAuthorization()
     }
+
+    func testPostGenericAlertDeliversImmediately() {
+        let sink = RecordingSink()
+        let manager = NotificationManager(sink: sink, now: { Date(timeIntervalSince1970: 0) })
+        manager.post(title: "linkC: Swarm Rate Limited", body: "All candidates are rate limited.")
+        XCTAssertEqual(sink.deliveries.count, 1)
+        XCTAssertEqual(sink.deliveries.first?.title, "linkC: Swarm Rate Limited")
+        XCTAssertEqual(sink.deliveries.first?.body, "All candidates are rate limited.")
+        XCTAssertTrue(sink.deliveries.first?.id.hasPrefix("alert:") ?? false)
+    }
 }

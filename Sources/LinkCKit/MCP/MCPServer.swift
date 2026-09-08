@@ -252,6 +252,9 @@ public final class MCPServer: Sendable {
                 guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
                     return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: claude, agy, cursor, codex.", isError: true)
                 }
+                guard toAgent != .shell else {
+                    return toolResultResponse(id: id, text: "Error: Cannot delegate tasks to interactive terminal shell. Target an AI CLI agent (claude, codex, agy, cursor).", isError: true)
+                }
                 guard let prompt = args["prompt"] as? String, !prompt.isEmpty else {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'prompt'.", isError: true)
                 }
