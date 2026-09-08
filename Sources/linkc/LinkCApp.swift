@@ -139,6 +139,10 @@ final class AppModel {
     /// notify, making the alert only ever restate a row the user is already looking at.
     /// The cost is a few HTTP HEADs a minute — nothing like a polling loop.
     @ObservationIgnored private var healthTimer: Timer?
+    /// Samples which agent each dev terminal is running, once a second. Sampling writes
+    /// observable rows, so it runs here and never inside a view body — a body that writes
+    /// what it reads re-renders itself forever.
+    @ObservationIgnored private var shellSweepTask: Task<Void, Never>?
 
     var sessions: [Session] { coordinator?.store.sessions ?? [] }
     var projectGroups: [ProjectGroup] { ProjectGroup.group(sessions: sessions) }
@@ -194,6 +198,7 @@ final class AppModel {
             let linkCSupport = support.appendingPathComponent("linkC", isDirectory: true)
             self.shells = ShellCoordinator(terminals: terminals, manifestDir: linkCSupport)
             self.shells?.restoreActiveShells()
+            startShellSweep()
             if let lastId = UserDefaults.standard.string(forKey: "LinkCLastSelectedSessionId"),
                terminals.sessions.contains(where: { $0.id == lastId }) {
                 terminals.select(lastId)
@@ -282,6 +287,18 @@ final class AppModel {
             // Fail loud rather than send Finder to a path that was never written.
             lastError = "Couldn't create endpoints.json: \(error.localizedDescription)"
             return nil
+        }
+    }
+
+    /// Same cadence as the coordinator's session sweep: shells and swarms sampled every second.
+    private func startShellSweep() {
+        guard shellSweepTask == nil else { return }
+        shellSweepTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { break }
+                self?.sampleShellAgents()
+            }
         }
     }
 
@@ -434,9 +451,6 @@ final class AppModel {
         coordinator?.sampleSwarms(additionalAgents: shellAgents)
     }
 
-    func sampleAgentStates() {
-        coordinator?.sampleAgentStates()
-    }
     /// Dev terminals remembered from a previous run — relaunchable, never auto-started.
     var restorableShells: [RestorableShell] { shells?.restorables ?? [] }
 
@@ -688,6 +702,8 @@ final class AppModel {
     func shutdown() {
         healthTimer?.invalidate()
         healthTimer = nil
+        shellSweepTask?.cancel()
+        shellSweepTask = nil
         shells?.prepareForShutdown()
         coordinator?.prepareForShutdown(selectedId: selectedId)
         coordinator?.shutdown()

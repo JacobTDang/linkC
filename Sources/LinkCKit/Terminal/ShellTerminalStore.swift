@@ -62,10 +62,14 @@ public final class ShellTerminalStore {
         rows[index].state = .exited(code)
     }
 
-    /// Update the detected active agent running in this shell terminal.
+    /// Update the detected active agent running in this shell terminal. Writes only on a real
+    /// change: sampling runs every second, and an unconditional write would invalidate every
+    /// observer of `rows` each tick.
     public func updateDetectedAgent(id: String, agent: AgentKind?) {
         guard let index = rows.firstIndex(where: { $0.id == id }) else { return }
-        rows[index].detectedAgent = agent
+        if rows[index].detectedAgent != agent {
+            rows[index].detectedAgent = agent
+        }
     }
 
     public func remove(id: String) {

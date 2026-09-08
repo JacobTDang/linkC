@@ -1,4 +1,5 @@
 import XCTest
+import os
 @testable import LinkCKit
 
 /// The shell rows' bookkeeping. The load-bearing rule: `markExited` KEEPS the row — a crashed
@@ -45,5 +46,39 @@ final class ShellTerminalStoreTests: XCTestCase {
         store.add(id: "B", cwd: "/b", title: "b")
         store.markExited(id: "A", code: 0)
         XCTAssertEqual(store.runningCount, 1)
+    }
+
+    /// Sampling runs once a second against every row. A write that fires observers even when
+    /// nothing changed makes any view that both reads `rows` and drives sampling re-render
+    /// itself forever — main thread pinned, window never painted.
+    func testUpdateDetectedAgentWithUnchangedValueDoesNotNotifyObservers() {
+        let store = ShellTerminalStore()
+        store.add(id: "T1", cwd: "/tmp", title: "t")
+        store.updateDetectedAgent(id: "T1", agent: .codex)
+
+        let fired = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking {
+            _ = store.rows
+        } onChange: {
+            fired.withLock { $0 = true }
+        }
+        store.updateDetectedAgent(id: "T1", agent: .codex)
+        XCTAssertFalse(fired.withLock { $0 }, "an unchanged agent must not invalidate observers")
+        XCTAssertEqual(store.row(id: "T1")?.detectedAgent, .codex)
+    }
+
+    func testUpdateDetectedAgentWithChangedValueNotifiesObservers() {
+        let store = ShellTerminalStore()
+        store.add(id: "T1", cwd: "/tmp", title: "t")
+
+        let fired = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking {
+            _ = store.rows
+        } onChange: {
+            fired.withLock { $0 = true }
+        }
+        store.updateDetectedAgent(id: "T1", agent: .claude)
+        XCTAssertTrue(fired.withLock { $0 })
+        XCTAssertEqual(store.row(id: "T1")?.detectedAgent, .claude)
     }
 }

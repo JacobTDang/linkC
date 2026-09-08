@@ -77,7 +77,6 @@ struct SessionListColumn: View {
     /// The live project groups as a priority queue: NEEDS YOU → WORKING → IDLE, each a stable row in one
     /// flat list so cards glide between sections on a state change. Reduce Motion drops the spring.
     @MainActor @ViewBuilder private var liveSections: some View {
-        let _ = model.sampleAgentStates()
         let rows = self.rows
         VStack(spacing: 6) {
             ForEach(rows) { row in
@@ -144,7 +143,6 @@ private struct TerminalsSection: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let _ = model.sampleShellAgents()
         VStack(spacing: 6) {
             SectionHeader(title: "TERMINALS")
                 .padding(.top, 6)
