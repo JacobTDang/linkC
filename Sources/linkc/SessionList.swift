@@ -439,10 +439,7 @@ private struct AgentMiniLaneView: View {
         let runningSubagents = model.visibleAgents(session.id).filter(\.isRunning)
         Button(action: onSelect) {
             HStack(spacing: 6) {
-                Text("\(session.agentKind.pillText):")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Theme.agentColor(session.agentKind))
-                    .fixedSize()
+                AgentPill(agent: session.agentKind, isSelected: isSelected)
 
                 if isRateLimited {
                     Text(rateLimitText)
@@ -565,25 +562,10 @@ private struct HomeCard: View {
     var body: some View {
         let swarm = model.swarm(for: group.workspacePath)
         let allAgents = group.sessions.flatMap { model.visibleAgents($0.id) }
-        let isSingle = group.sessions.count <= 1
         let primarySession = activeSession
 
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                if isSingle, let session = primarySession {
-                    AgentPill(agent: session.agentKind, isSelected: session.id == selectedId)
-                } else {
-                    HStack(spacing: 4) {
-                        ForEach(group.sessions) { session in
-                            Button(action: { model.focus(session.id) }) {
-                                AgentPill(agent: session.agentKind, isSelected: session.id == selectedId)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Switch to \(session.agentKind.displayName) session")
-                        }
-                    }
-                }
-
                 Text(group.title)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
@@ -595,66 +577,6 @@ private struct HomeCard: View {
                     .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-
-                if isSingle, let session = primarySession {
-                    let activity = model.currentActivity(session)
-                    let limitStatus = model.agentLimit(for: session)
-                    let delegated = model.delegatedTask(for: session)
-                    let isLimited = limitStatus != nil && limitStatus!.cooldownExpiresAt > Date()
-
-                    if isLimited {
-                        let cooldownSuffix: String = {
-                            guard let limit = limitStatus, limit.cooldownExpiresAt > Date() else { return "" }
-                            return " (\(AgeFormat.formatCooldown(until: limit.cooldownExpiresAt)))"
-                        }()
-                        Text("⚠️ Rate limited\(cooldownSuffix)")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(Theme.statusError)
-                            .lineLimit(1)
-                    } else if let delegated {
-                        let desc = delegatedText(for: delegated, activity: activity)
-                        Text(desc)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(Color.white.opacity(0.70))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .smoothShimmer(isWorking: session.state.bucket == .active)
-                    } else if let activeSub = model.visibleAgents(session.id).first(where: \.isRunning) {
-                        HStack(spacing: 5) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.white.opacity(0.12))
-                                    .frame(width: 14, height: 14)
-                                Image(systemName: "arrow.triangle.branch")
-                                    .font(.system(size: 7, weight: .bold))
-                                    .foregroundStyle(Color.white.opacity(0.85))
-                            }
-                            Text(activeSub.description)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Color.white.opacity(0.65))
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .smoothShimmer(isWorking: true)
-                        }
-                    } else if let activity, !activity.isEmpty {
-                        HStack(spacing: 5) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.white.opacity(0.12))
-                                    .frame(width: 14, height: 14)
-                                Image(systemName: activityIcon(for: activity))
-                                    .font(.system(size: 7, weight: .bold))
-                                    .foregroundStyle(Color.white.opacity(0.85))
-                            }
-                            Text(activity)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Color.white.opacity(0.65))
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .smoothShimmer(isWorking: session.state.bucket == .active)
-                        }
-                    }
-                }
 
                 Spacer(minLength: 8)
 
@@ -724,23 +646,21 @@ private struct HomeCard: View {
                 .help(group.sessions.count > 1 ? "Stop all sessions in workspace" : "Stop session")
             }
 
-            if !isSingle {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(group.sessions) { session in
-                        AgentMiniLaneView(
-                            session: session,
-                            model: model,
-                            activity: model.currentActivity(session),
-                            limitStatus: model.agentLimit(for: session),
-                            delegatedMessage: model.delegatedTask(for: session),
-                            isSelected: session.id == selectedId,
-                            showsBackground: true,
-                            onSelect: { model.focus(session.id) }
-                        )
-                    }
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(group.sessions) { session in
+                    AgentMiniLaneView(
+                        session: session,
+                        model: model,
+                        activity: model.currentActivity(session),
+                        limitStatus: model.agentLimit(for: session),
+                        delegatedMessage: model.delegatedTask(for: session),
+                        isSelected: session.id == selectedId,
+                        showsBackground: true,
+                        onSelect: { model.focus(session.id) }
+                    )
                 }
-                .padding(.vertical, 2)
             }
+            .padding(.vertical, 2)
 
             if let swarm, !swarm.collisions.isEmpty {
                 CollisionBanner(collisions: swarm.collisions)
@@ -829,9 +749,11 @@ private struct CompactRowShell<Leading: View, Badge: View, Middle: View, Subrow:
             }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    badge()
-                        .fixedSize()
-                        .layoutPriority(2) // badge is always on the left and never squished
+                    if Badge.self != EmptyView.self {
+                        badge()
+                            .fixedSize()
+                            .layoutPriority(2) // badge is always on the left and never squished
+                    }
                     Text(title)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(titleColor)
@@ -1031,112 +953,33 @@ private struct CompactProjectRow: View {
                     model.focus(targetId)
                 }
             },
-            badge: {
-                if group.sessions.count <= 1, let session = group.sessions.first {
-                    AgentPill(agent: session.agentKind, isSelected: session.id == selectedId)
-                } else {
-                    HStack(spacing: 3) {
-                        ForEach(group.sessions) { session in
-                            Button(action: { model.focus(session.id) }) {
-                                AgentPill(agent: session.agentKind, isSelected: session.id == selectedId)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Switch to \(session.agentKind.displayName) session")
-                        }
-                    }
-                }
-            },
+            badge: { EmptyView() },
             subrow: {
-                if group.sessions.count <= 1, let session = group.sessions.first {
-                    let activity = model.currentActivity(session)
-                    let limitStatus = model.agentLimit(for: session)
-                    let delegated = model.delegatedTask(for: session)
-                    let isLimited = limitStatus != nil && limitStatus!.cooldownExpiresAt > Date()
-
-                    if isLimited {
-                        let cooldownSuffix: String = {
-                            guard let limit = limitStatus, limit.cooldownExpiresAt > Date() else { return "" }
-                            return " (\(AgeFormat.formatCooldown(until: limit.cooldownExpiresAt)))"
-                        }()
-                        HStack(spacing: 6) {
-                            Text("⚠️ Rate limited\(cooldownSuffix)")
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .foregroundStyle(Theme.statusError)
-                                .lineLimit(1)
-                        }
-                        .transition(.opacity)
-                    } else if let delegated {
-                        let desc = delegatedText(for: delegated, activity: activity)
-                        HStack(spacing: 6) {
-                            Text(desc)
-                                .font(.system(size: 11, weight: .regular, design: .monospaced))
-                                .foregroundStyle(Color.white.opacity(0.70))
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .smoothShimmer(isWorking: session.state.bucket == .active)
-                        }
-                        .transition(.opacity)
-                    } else if let activeSub = model.visibleAgents(session.id).first(where: \.isRunning) {
-                        HStack(spacing: 6) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.white.opacity(0.12))
-                                    .frame(width: 15, height: 15)
-                                Image(systemName: "arrow.triangle.branch")
-                                    .font(.system(size: 7.5, weight: .bold))
-                                    .foregroundStyle(Color.white.opacity(0.85))
-                            }
-                            Text(activeSub.description)
-                                .font(.system(size: 11, weight: .regular))
-                                .foregroundStyle(Color.white.opacity(0.50))
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .smoothShimmer(isWorking: true)
-                        }
-                        .transition(.opacity)
-                    } else if let activity, !activity.isEmpty {
-                        HStack(spacing: 6) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.white.opacity(0.12))
-                                    .frame(width: 15, height: 15)
-                                Image(systemName: activityIcon(for: activity))
-                                    .font(.system(size: 7.5, weight: .bold))
-                                    .foregroundStyle(Color.white.opacity(0.85))
-                            }
-                            Text(activity)
-                                .font(.system(size: 11, weight: .regular))
-                                .foregroundStyle(Color.white.opacity(0.50))
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .smoothShimmer(isWorking: session.state.bucket == .active)
-                        }
-                        .transition(.opacity)
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(group.sessions) { session in
+                        AgentMiniLaneView(
+                            session: session,
+                            model: model,
+                            activity: model.currentActivity(session),
+                            limitStatus: model.agentLimit(for: session),
+                            delegatedMessage: model.delegatedTask(for: session),
+                            isSelected: session.id == selectedId,
+                            showsBackground: false,
+                            onSelect: { model.focus(session.id) }
+                        )
                     }
-                } else {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(group.sessions) { session in
-                            AgentMiniLaneView(
-                                session: session,
-                                model: model,
-                                activity: model.currentActivity(session),
-                                limitStatus: model.agentLimit(for: session),
-                                delegatedMessage: model.delegatedTask(for: session),
-                                isSelected: session.id == selectedId,
-                                onSelect: { model.focus(session.id) }
-                            )
-                        }
-                    }
-                    .padding(.top, 2)
                 }
+                .padding(.top, 1)
             },
             trailing: { hovering in
-                if group.sessions.count <= 1, let session = group.sessions.first, session.state.bucket == .needsYou {
-                    Text(AgeFormat.compact(from: session.stateChangedAt))
-                        .font(.system(size: 10, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.statusColor(session.state))
-                        .fixedSize()
+                if group.bucket == .needsYou {
+                    if let urgent = group.sessions.first(where: { $0.state.bucket == .needsYou }) {
+                        Text(AgeFormat.compact(from: urgent.stateChangedAt))
+                            .font(.system(size: 10, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.statusColor(urgent.state))
+                            .fixedSize()
+                    }
                 }
 
                 let runningAgents = group.sessions.reduce(0) { count, s in
