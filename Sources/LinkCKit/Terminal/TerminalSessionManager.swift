@@ -55,4 +55,9 @@ public final class TerminalSessionManager {
             selectedId = sessions.last?.id
         }
     }
+
+    /// Injects input into the terminal session matching `sessionId`, if found.
+    public func sendInput(sessionId: String, text: String) {
+        session(id: sessionId)?.sendInput(text)
+    }
 }

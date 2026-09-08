@@ -166,6 +166,15 @@ public final class TerminalSession {
         }
     }
 
+    /// Sends text input to the running child process via the terminal PTY.
+    /// Formats text to ensure a trailing newline. Safely ignored if the child process
+    /// is not alive.
+    public func sendInput(_ text: String) {
+        guard liveness.withLock({ $0 }) else { return }
+        let formatted = text.hasSuffix("\n") ? text : text + "\n"
+        terminalView.send(txt: formatted)
+    }
+
     /// The last `lines` content rows of the terminal's visible screen, as plain text — for the
     /// home overview's live preview. `TerminalPreview` drops chrome-only rows (frames, rules,
     /// bare prompts) so the preview shows output, not furniture. Returns "" when the PTY was
