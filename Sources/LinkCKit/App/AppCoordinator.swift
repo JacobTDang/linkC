@@ -41,6 +41,7 @@ public final class AppCoordinator {
     private let claudePath: String
     private let settingsDir: URL
     private let userSettingsURL: URL
+    private let claudeJsonURL: URL?
     /// Persists the session manifest so sessions survive quitting/crashing and can be restored.
     let manifest: WorkspaceManifest
     /// Per-run shared secret baked into every composed settings file and required by the hook
@@ -70,6 +71,7 @@ public final class AppCoordinator {
         userSettingsURL: URL,
         manifestDir: URL,
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
+        claudeJsonURL: URL? = nil,
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -80,6 +82,7 @@ public final class AppCoordinator {
         self.userSettingsURL = userSettingsURL
         self.manifest = WorkspaceManifest(directory: manifestDir)
         self.agentPathResolver = agentPathResolver
+        self.claudeJsonURL = claudeJsonURL
         self.isWatching = isWatching
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.
@@ -373,9 +376,10 @@ public final class AppCoordinator {
             let env: [String: String] = ["LINKC_SESSION": session.id]
 
             if agent == .claude {
+                try? DirectoryTrustManager.preApproveTrust(workspacePath: cwd, claudeJsonURL: claudeJsonURL)
                 executable = claudePath
                 let settingsPath = try writeSettings(for: session)
-                args = Self.launchArgs(mode: mode, resumeId: resumeId) + ["--settings", settingsPath]
+                args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
             } else {
                 guard let resolved = agentPathResolver?(agent) ?? AgentDescriptor.resolveExecutable(for: agent) else {
                     throw LinkCError.process("Executable for \(agent.pillText) not found")
@@ -488,9 +492,16 @@ public final class AppCoordinator {
     /// Claude args shared by the new-session and restore paths. A captured claude conversation id
     /// always wins (`--resume <id>`); otherwise the mode's own flag is used, so a restore with no
     /// captured id (`mode: .continueLast`) falls back to `--continue` in the folder.
-    public static func launchArgs(mode: LaunchMode, resumeId: String?) -> [String] {
+    public nonisolated static func launchArgs(mode: LaunchMode, resumeId: String?) -> [String] {
         if let resumeId, !resumeId.isEmpty { return ["--resume", resumeId] }
         return mode.claudeArgs
+    }
+
+    /// Claude launch arguments combining mode/resume flags, YOLO permission bypass flags,
+    /// and the per-session settings file.
+    public nonisolated static func claudeLaunchArgs(mode: LaunchMode, resumeId: String?, settingsPath: String) -> [String] {
+        let yolo = AgentDescriptor.descriptor(for: .claude).yoloFlags
+        return launchArgs(mode: mode, resumeId: resumeId) + yolo + ["--settings", settingsPath]
     }
 
     /// Recompute the restorable set: every manifest entry that is not currently a live session.
