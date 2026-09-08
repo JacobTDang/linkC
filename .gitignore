@@ -6,3 +6,4 @@ DerivedData/
 .superpowers/
 dist.noindex/
 *.app
+.linkc/
