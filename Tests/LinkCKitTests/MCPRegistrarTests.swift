@@ -61,4 +61,86 @@ final class MCPRegistrarTests: XCTestCase {
         XCTAssertNotNil(mcpServers?["existing-tool"])
         XCTAssertNotNil(mcpServers?["linkc-multiplier"])
     }
+
+    func testRegisterTomlIntoEmptyConfig() throws {
+        let configFile = tempDir.appendingPathComponent("config.toml")
+        try MCPRegistrar.registerTomlServer(
+            configFile: configFile,
+            serverName: "linkc-multiplier",
+            binaryPath: "/usr/local/bin/linkc-mcp",
+            args: []
+        )
+
+        let content = try String(contentsOf: configFile, encoding: .utf8)
+        XCTAssertTrue(content.contains("[mcp_servers.linkc-multiplier]"))
+        XCTAssertTrue(content.contains("command = \"/usr/local/bin/linkc-mcp\""))
+    }
+
+    func testRegisterTomlPreservesExistingTablesAndUpdates() throws {
+        let configFile = tempDir.appendingPathComponent("config.toml")
+        let initial = """
+        model = "gpt-5"
+
+        [mcp_servers.existing]
+        command = "/usr/bin/python"
+        args = ["server.py"]
+
+        """
+        try initial.write(to: configFile, atomically: true, encoding: .utf8)
+
+        try MCPRegistrar.registerTomlServer(
+            configFile: configFile,
+            serverName: "linkc-multiplier",
+            binaryPath: "/usr/local/bin/linkc-mcp",
+            args: ["--verbose"]
+        )
+
+        var content = try String(contentsOf: configFile, encoding: .utf8)
+        XCTAssertTrue(content.contains("model = \"gpt-5\""))
+        XCTAssertTrue(content.contains("[mcp_servers.existing]"))
+        XCTAssertTrue(content.contains("[mcp_servers.linkc-multiplier]"))
+        XCTAssertTrue(content.contains("command = \"/usr/local/bin/linkc-mcp\""))
+        XCTAssertTrue(content.contains("args = [\"--verbose\"]"))
+
+        // Now test updating the existing linkc-multiplier entry
+        try MCPRegistrar.registerTomlServer(
+            configFile: configFile,
+            serverName: "linkc-multiplier",
+            binaryPath: "/opt/homebrew/bin/linkc-mcp",
+            args: []
+        )
+
+        content = try String(contentsOf: configFile, encoding: .utf8)
+        XCTAssertTrue(content.contains("model = \"gpt-5\""))
+        XCTAssertTrue(content.contains("[mcp_servers.existing]"))
+        XCTAssertTrue(content.contains("[mcp_servers.linkc-multiplier]"))
+        XCTAssertTrue(content.contains("command = \"/opt/homebrew/bin/linkc-mcp\""))
+        XCTAssertFalse(content.contains("/usr/local/bin/linkc-mcp"))
+    }
+
+    func testRegisterAllWritesToExpectedConfigFiles() throws {
+        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp")
+
+        // 1. Claude Code root config ~/.claude.json
+        let claudeJson = tempDir.appendingPathComponent(".claude.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: claudeJson.path))
+        let claudeData = try Data(contentsOf: claudeJson)
+        let claudeParsed = try JSONSerialization.jsonObject(with: claudeData) as? [String: Any]
+        XCTAssertNotNil((claudeParsed?["mcpServers"] as? [String: Any])?["linkc-multiplier"])
+
+        // 2. Claude Code directory config ~/.claude/claude.json
+        let claudeDirJson = tempDir.appendingPathComponent(".claude/claude.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: claudeDirJson.path))
+
+        // 3. Cursor config ~/.cursor/mcp.json
+        let cursorJson = tempDir.appendingPathComponent(".cursor/mcp.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cursorJson.path))
+
+        // 4. Codex config ~/.codex/config.toml
+        let codexToml = tempDir.appendingPathComponent(".codex/config.toml")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: codexToml.path))
+        let codexContent = try String(contentsOf: codexToml, encoding: .utf8)
+        XCTAssertTrue(codexContent.contains("[mcp_servers.linkc-multiplier]"))
+        XCTAssertTrue(codexContent.contains("command = \"/custom/bin/linkc-mcp\""))
+    }
 }
