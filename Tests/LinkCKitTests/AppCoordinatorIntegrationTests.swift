@@ -428,15 +428,23 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.store.session(id: "L1")?.state, .waitingPermission)
         XCTAssertTrue(tracker.sessionAgents("L1").contains(where: \.isRunning), "a permission pause must not sweep mid-turn")
 
-        // 3: stop -> finished; the turn is over, so the backstop ends the run and flags it.
+        // 3: stop -> finished; in-flight subagents are preserved across stop pauses.
         coordinator.handle(HookEvent(
             kind: .stop, linkcSessionId: "L1", claudeSessionId: nil, cwd: "/tmp",
             transcriptPath: transcript.path
         ))
         XCTAssertEqual(coordinator.store.session(id: "L1")?.state, .finished)
         let runs = tracker.sessionAgents("L1")
-        XCTAssertFalse(runs.contains(where: \.isRunning), "the turn ending must sweep the still-running run")
-        XCTAssertEqual(runs.first?.endedBySweep, true, "the sweep must flag the run it ended")
+        XCTAssertTrue(runs.contains(where: \.isRunning), "in-flight subagents are preserved across stop pauses")
+
+        // 4: userPromptSubmit -> working; sweeps remaining runs from the previous turn.
+        coordinator.handle(HookEvent(
+            kind: .userPromptSubmit, linkcSessionId: "L1", claudeSessionId: nil, cwd: "/tmp",
+            transcriptPath: transcript.path
+        ))
+        let runsAfterSubmit = tracker.sessionAgents("L1")
+        XCTAssertFalse(runsAfterSubmit.contains(where: \.isRunning), "the next turn submit sweeps earlier in-flight runs")
+        XCTAssertEqual(runsAfterSubmit.first?.endedBySweep, true, "the sweep must flag the run it ended")
     }
 
     /// A spawn already in the transcript when a prompt is submitted belongs to an earlier
