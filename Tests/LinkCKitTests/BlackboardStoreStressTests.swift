@@ -28,8 +28,21 @@ final class BlackboardStoreStressTests: XCTestCase {
         let group = DispatchGroup()
         let queue = DispatchQueue(label: "linkc.stress.queue", attributes: .concurrent)
 
-        var failureErrors: [String] = []
-        let lock = NSLock()
+        final class SafeErrorCollector: @unchecked Sendable {
+            private let lock = NSLock()
+            private var errors: [String] = []
+            func record(_ error: String) {
+                lock.lock()
+                defer { lock.unlock() }
+                errors.append(error)
+            }
+            var all: [String] {
+                lock.lock()
+                defer { lock.unlock() }
+                return errors
+            }
+        }
+        let failureErrors = SafeErrorCollector()
 
         for t in 0..<threadCount {
             group.enter()
@@ -61,9 +74,7 @@ final class BlackboardStoreStressTests: XCTestCase {
 
                         _ = try store.checkConflicts(files: ["Sources/Shared.swift"], timeout: 10.0)
                     } catch {
-                        lock.lock()
-                        failureErrors.append("Thread \(t) iter \(iter) failed: \(error)")
-                        lock.unlock()
+                        failureErrors.record("Thread \(t) iter \(iter) failed: \(error)")
                     }
                 }
                 group.leave()
@@ -72,7 +83,7 @@ final class BlackboardStoreStressTests: XCTestCase {
 
         let waitResult = group.wait(timeout: .now() + 20.0)
         XCTAssertEqual(waitResult, .success, "Concurrent operations must complete within 20s without deadlock")
-        XCTAssertTrue(failureErrors.isEmpty, "No errors should occur during concurrent writes: \(failureErrors)")
+        XCTAssertTrue(failureErrors.all.isEmpty, "No errors should occur during concurrent writes: \(failureErrors.all)")
 
         // Verify final state integrity
         let finalBoard = try store.getProjectContext(timeout: 5.0)

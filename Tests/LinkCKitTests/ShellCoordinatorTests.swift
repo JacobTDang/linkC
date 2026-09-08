@@ -7,7 +7,7 @@ import XCTest
 @MainActor
 final class ShellCoordinatorTests: XCTestCase {
 
-    private var terminals: TerminalSessionManager!
+    nonisolated(unsafe) private var terminals: TerminalSessionManager!
 
     override func setUp() async throws {
         terminals = TerminalSessionManager()

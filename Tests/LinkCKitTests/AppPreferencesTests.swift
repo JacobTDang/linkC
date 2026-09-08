@@ -6,8 +6,8 @@ import XCTest
 @MainActor
 final class AppPreferencesTests: XCTestCase {
 
-    private var suiteName: String!
-    private var defaults: UserDefaults!
+    nonisolated(unsafe) private var suiteName: String!
+    nonisolated(unsafe) private var defaults: UserDefaults!
 
     override func setUpWithError() throws {
         suiteName = "linkc-prefs-test-\(UUID().uuidString)"

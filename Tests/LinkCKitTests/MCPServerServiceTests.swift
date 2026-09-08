@@ -6,7 +6,7 @@ import XCTest
 @MainActor
 final class MCPServerServiceTests: XCTestCase {
 
-    private var configURL: URL!
+    nonisolated(unsafe) private var configURL: URL!
 
     override func setUpWithError() throws {
         let dir = FileManager.default.temporaryDirectory
