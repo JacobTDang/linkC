@@ -409,7 +409,8 @@ private struct AgentMiniLaneView: View {
     let onSelect: () -> Void
 
     private var isRateLimited: Bool {
-        session.state == .error || (limitStatus != nil && limitStatus!.cooldownExpiresAt > Date())
+        guard let limit = limitStatus else { return false }
+        return limit.cooldownExpiresAt > Date()
     }
 
     private var rateLimitText: String {
@@ -587,7 +588,7 @@ private struct HomeCard: View {
                     let activity = model.currentActivity(session)
                     let limitStatus = model.agentLimit(for: session)
                     let delegated = model.delegatedTask(for: session)
-                    let isLimited = session.state == .error || (limitStatus != nil && limitStatus!.cooldownExpiresAt > Date())
+                    let isLimited = limitStatus != nil && limitStatus!.cooldownExpiresAt > Date()
 
                     if isLimited {
                         let cooldownSuffix: String = {
@@ -1007,7 +1008,7 @@ private struct CompactProjectRow: View {
                     let activity = model.currentActivity(session)
                     let limitStatus = model.agentLimit(for: session)
                     let delegated = model.delegatedTask(for: session)
-                    let isLimited = session.state == .error || (limitStatus != nil && limitStatus!.cooldownExpiresAt > Date())
+                    let isLimited = limitStatus != nil && limitStatus!.cooldownExpiresAt > Date()
 
                     if isLimited {
                         let cooldownSuffix: String = {
@@ -1784,41 +1785,25 @@ func delegatedText(for msg: PendingMessage, activity: String?) -> String {
 }
 
 extension AppModel {
-    /// Loads the inbox for a workspace root, if the inbox file exists on disk.
+    /// Loads the inbox for a workspace root directly from disk without lock acquisition.
     func inbox(for workspacePath: String) -> Inbox? {
         let norm = (workspacePath as NSString).standardizingPath
-        let inboxPath = (norm as NSString).appendingPathComponent(".linkc/inbox.json")
-        guard FileManager.default.fileExists(atPath: inboxPath) else { return nil }
-        if let inbox = try? InboxStore(workspaceRoot: norm).load(timeout: 0.1) {
-            return inbox
-        }
-        if let data = try? Data(contentsOf: URL(fileURLWithPath: inboxPath)) {
-            let dec = JSONDecoder()
-            dec.dateDecodingStrategy = .iso8601
-            return try? dec.decode(Inbox.self, from: data)
-        }
-        return nil
+        let inboxURL = URL(fileURLWithPath: (norm as NSString).appendingPathComponent(".linkc/inbox.json"))
+        guard FileManager.default.fileExists(atPath: inboxURL.path) else { return nil }
+        guard let data = try? Data(contentsOf: inboxURL) else { return nil }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        return try? dec.decode(Inbox.self, from: data)
     }
 
-    /// Checks if a session's agent is rate limited either from the inbox or session state.
+    /// Checks if a session's agent has an active rate limit recorded in the inbox.
     func agentLimit(for session: Session) -> AgentLimitStatus? {
         let norm = (session.cwd as NSString).standardizingPath
-        let inbox = inbox(for: norm)
+        guard let inbox = inbox(for: norm) else { return nil }
         let now = Date()
-        if let limit = inbox?.agentLimits.first(where: { $0.agent == session.agentKind }),
+        if let limit = inbox.agentLimits.first(where: { $0.agent == session.agentKind }),
            limit.cooldownExpiresAt > now {
             return limit
-        }
-        if session.state == .error {
-            if let lastLimit = inbox?.agentLimits.first(where: { $0.agent == session.agentKind }) {
-                return lastLimit
-            }
-            return AgentLimitStatus(
-                agent: session.agentKind,
-                reason: "Rate limited",
-                limitedAt: session.stateChangedAt,
-                cooldownExpiresAt: now
-            )
         }
         return nil
     }
@@ -1835,10 +1820,12 @@ extension AppModel {
             return pending
         }
 
-        // 2. Active delivered message currently being worked on
+        // 2. Active delivered message currently being worked on in this turn
         if session.state.bucket == .active,
            let delivered = inbox.messages.last(where: {
-               $0.toAgent == session.agentKind && $0.status == .delivered
+               guard $0.toAgent == session.agentKind && $0.status == .delivered else { return false }
+               guard let deliveredAt = $0.deliveredAt else { return false }
+               return deliveredAt >= session.stateChangedAt.addingTimeInterval(-5)
            }) {
             return delivered
         }
