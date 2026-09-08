@@ -4,10 +4,16 @@ import Foundation
 public final class MCPServer: Sendable {
     public let workspaceRoot: String
     public let store: BlackboardStore
+    public let inboxStore: InboxStore
 
-    public init(workspaceRoot: String, store: BlackboardStore? = nil) {
+    public init(
+        workspaceRoot: String,
+        store: BlackboardStore? = nil,
+        inboxStore: InboxStore? = nil
+    ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
+        self.inboxStore = inboxStore ?? InboxStore(workspaceRoot: workspaceRoot)
     }
 
     /// Processes a single JSON-RPC 2.0 message buffer and returns the response Data, or nil if no response is needed (e.g. notifications).
@@ -104,6 +110,42 @@ public final class MCPServer: Sendable {
                         "tags": ["type": "array", "items": ["type": "string"], "description": "Tags"]
                     ],
                     "required": ["title", "content"]
+                ]
+            ],
+            [
+                "name": "linkc_delegate_task",
+                "description": "Delegate a coding task, subtask, or follow-up prompt to a peer agent (e.g. claude, agy, cursor, codex), claiming files and enqueuing the prompt for delivery.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "to": ["type": "string", "description": "Target agent kind (claude, agy, cursor, codex)"],
+                        "prompt": ["type": "string", "description": "Task instructions and context to inject into recipient's terminal"],
+                        "files": ["type": "array", "items": ["type": "string"], "description": "Optional list of files the delegated task will touch"],
+                        "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
+                        "pid": ["type": "integer", "description": "Process ID of the sender"]
+                    ],
+                    "required": ["to", "prompt"]
+                ]
+            ],
+            [
+                "name": "linkc_send_message",
+                "description": "Send a direct message or peer note to another agent in the workspace.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "to": ["type": "string", "description": "Target agent kind (claude, agy, cursor, codex)"],
+                        "message": ["type": "string", "description": "Message or note content to send"],
+                        "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"]
+                    ],
+                    "required": ["to", "message"]
+                ]
+            ],
+            [
+                "name": "linkc_get_inbox",
+                "description": "Get the current queue of pending messages, delivery status, and any active agent rate limits.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [:]
                 ]
             ]
         ]
@@ -203,6 +245,136 @@ public final class MCPServer: Sendable {
 
                 return toolResultResponse(id: id, text: text)
 
+            case "linkc_delegate_task":
+                guard let toStr = args["to"] as? String, !toStr.isEmpty else {
+                    return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
+                }
+                guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+                    return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: claude, agy, cursor, codex.", isError: true)
+                }
+                guard let prompt = args["prompt"] as? String, !prompt.isEmpty else {
+                    return toolResultResponse(id: id, text: "Error: Missing required argument 'prompt'.", isError: true)
+                }
+
+                // Check if recipient is currently in a rate-limit cooldown
+                if let limitStatus = try inboxStore.isAgentLimited(agent: toAgent) {
+                    let peerCandidates: [AgentKind] = [.claude, .agy, .cursor, .codex].filter { $0 != toAgent }
+                    var availablePeers: [String] = []
+                    for peer in peerCandidates {
+                        if (try inboxStore.isAgentLimited(agent: peer)) == nil {
+                            availablePeers.append(peer.rawValue)
+                        }
+                    }
+                    let peerListStr = availablePeers.isEmpty ? "none" : availablePeers.joined(separator: ", ")
+                    let errorMsg = "Cannot delegate to '\(toAgent.rawValue)': agent is currently in limit cooldown (reason: \(limitStatus.reason)). Alternative available peer agents: \(peerListStr)."
+                    return toolResultResponse(id: id, text: errorMsg, isError: true)
+                }
+
+                let fromStr = args["from"] as? String ?? args["agent"] as? String ?? "claude"
+                let fromAgent = AgentKind(rawValue: fromStr.lowercased()) ?? .claude
+                let files = args["files"] as? [String] ?? []
+                let pid = (args["pid"] as? Int).map { pid_t($0) } ?? getpid()
+
+                // Claim files on blackboard to detect collisions
+                var collisionWarnings: [CollisionWarning] = []
+                if !files.isEmpty {
+                    collisionWarnings = try store.broadcastIntent(
+                        agentKind: fromAgent,
+                        pid: pid,
+                        goal: "Delegated to \(toAgent.displayName): \(prompt)",
+                        files: files,
+                        status: "delegating"
+                    )
+                }
+
+                // Enqueue in inbox
+                let message = try inboxStore.enqueue(
+                    from: fromAgent,
+                    to: toAgent,
+                    prompt: prompt,
+                    files: files
+                )
+
+                var responseText = "Task queued for \(toAgent.displayName) (ID: \(message.id)). linkC will dispatch it automatically."
+                if !collisionWarnings.isEmpty {
+                    responseText += "\n\n⚠️ Collision Warnings:"
+                    for w in collisionWarnings {
+                        responseText += "\n- Agent '\(w.conflictingAgent.displayName)' (PID \(w.pid)) is also working on: \(w.conflictingFiles.joined(separator: ", ")) (Goal: '\(w.goal)')"
+                    }
+                }
+
+                return toolResultResponse(id: id, text: responseText)
+
+            case "linkc_send_message":
+                guard let toStr = args["to"] as? String, !toStr.isEmpty else {
+                    return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
+                }
+                guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+                    return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: claude, agy, cursor, codex.", isError: true)
+                }
+                guard let messageText = args["message"] as? String, !messageText.isEmpty else {
+                    return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
+                }
+
+                let fromStr = args["from"] as? String ?? args["agent"] as? String ?? "claude"
+                let fromAgent = AgentKind(rawValue: fromStr.lowercased()) ?? .claude
+
+                let formattedPrompt = "[Peer Note from \(fromAgent.displayName)]: \(messageText)"
+                let pending = try inboxStore.enqueue(
+                    from: fromAgent,
+                    to: toAgent,
+                    prompt: formattedPrompt,
+                    files: []
+                )
+
+                return toolResultResponse(id: id, text: "Message queued for \(toAgent.displayName) (ID: \(pending.id)). linkC will deliver it when idle.")
+
+            case "linkc_get_inbox":
+                let inbox = try inboxStore.load()
+                let now = Date()
+                var text = "# linkC Message Inbox\n\n"
+
+                let activeLimits = inbox.agentLimits.filter { $0.cooldownExpiresAt > now }
+                if !activeLimits.isEmpty {
+                    text += "## Active Agent Limits & Cooldowns\n"
+                    for limit in activeLimits {
+                        let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
+                        let remainingMin = remainingSec / 60
+                        text += "- **\(limit.agent.displayName)** (\(limit.agent.rawValue)): \(limit.reason) (cooldown: \(remainingMin)m remaining)\n"
+                    }
+                    text += "\n"
+                } else {
+                    text += "## Active Agent Limits\n_No active rate limits recorded._\n\n"
+                }
+
+                let pending = inbox.messages.filter { $0.status == .queued || $0.status == .delivering }
+                text += "## Pending Messages (\(pending.count))\n"
+                if pending.isEmpty {
+                    text += "_No pending messages in queue._\n"
+                } else {
+                    for msg in pending {
+                        text += "### Message \(msg.id) [\(msg.status.rawValue.uppercased())]\n"
+                        text += "- **From:** \(msg.fromAgent.displayName) → **To:** \(msg.toAgent.displayName)\n"
+                        if !msg.claimedFiles.isEmpty {
+                            text += "- **Claimed Files:** \(msg.claimedFiles.joined(separator: ", "))\n"
+                        }
+                        if msg.rerouteCount > 0 {
+                            text += "- **Reroute Count:** \(msg.rerouteCount)\n"
+                        }
+                        text += "- **Content:**\n```\n\(msg.prompt)\n```\n\n"
+                    }
+                }
+
+                let history = inbox.messages.filter { $0.status == .delivered || $0.status == .failed }
+                if !history.isEmpty {
+                    text += "## Message History (\(history.count))\n"
+                    for msg in history.suffix(10) {
+                        text += "- [\(msg.status.rawValue)] \(msg.fromAgent.displayName) → \(msg.toAgent.displayName): \(msg.prompt.prefix(40))...\n"
+                    }
+                }
+
+                return toolResultResponse(id: id, text: text)
+
             default:
                 return errorResponse(id: id, code: -32601, message: "Unknown tool: \(name)")
             }
@@ -211,8 +383,8 @@ public final class MCPServer: Sendable {
         }
     }
 
-    private func toolResultResponse(id: Any?, text: String) -> Data? {
-        let result: [String: Any] = [
+    private func toolResultResponse(id: Any?, text: String, isError: Bool = false) -> Data? {
+        var result: [String: Any] = [
             "content": [
                 [
                     "type": "text",
@@ -220,6 +392,9 @@ public final class MCPServer: Sendable {
                 ]
             ]
         ]
+        if isError {
+            result["isError"] = true
+        }
         return successResponse(id: id, result: result)
     }
 

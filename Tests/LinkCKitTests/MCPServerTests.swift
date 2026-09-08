@@ -34,7 +34,7 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(serverInfo?["name"] as? String, "linkc-multiplier")
     }
 
-    func testToolsListDeclaresFourTools() throws {
+    func testToolsListDeclaresSevenTools() throws {
         let req = """
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
         """.data(using: .utf8)!
@@ -43,13 +43,205 @@ final class MCPServerTests: XCTestCase {
         let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
         let result = resJson?["result"] as? [String: Any]
         let tools = result?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 4)
+        XCTAssertEqual(tools?.count, 7)
 
         let toolNames = Set(tools?.compactMap { $0["name"] as? String } ?? [])
         XCTAssertTrue(toolNames.contains("linkc_broadcast_intent"))
         XCTAssertTrue(toolNames.contains("linkc_get_project_context"))
         XCTAssertTrue(toolNames.contains("linkc_check_conflicts"))
         XCTAssertTrue(toolNames.contains("linkc_post_note"))
+        XCTAssertTrue(toolNames.contains("linkc_delegate_task"))
+        XCTAssertTrue(toolNames.contains("linkc_send_message"))
+        XCTAssertTrue(toolNames.contains("linkc_get_inbox"))
+    }
+
+    func testDelegateTaskEnqueuesAndClaimsFiles() throws {
+        let inboxStore = InboxStore(workspaceRoot: tempDir.path)
+        let delegateReq = """
+        {
+          "jsonrpc": "2.0",
+          "id": 10,
+          "method": "tools/call",
+          "params": {
+            "name": "linkc_delegate_task",
+            "arguments": {
+              "to": "codex",
+              "prompt": "Implement tokenizer module",
+              "files": ["Sources/Tokenizer.swift"],
+              "from": "claude",
+              "pid": 1111
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(server.handleMessage(delegateReq))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        let result = resJson?["result"] as? [String: Any]
+        let content = result?["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String ?? ""
+
+        XCTAssertTrue(text.contains("Task queued for Codex"), "Expected success confirmation in: \(text)")
+        XCTAssertFalse(result?["isError"] as? Bool ?? false)
+
+        // Verify message in inbox
+        let pending = try inboxStore.fetchPending()
+        XCTAssertEqual(pending.count, 1)
+        let msg = try XCTUnwrap(pending.first)
+        XCTAssertEqual(msg.toAgent, .codex)
+        XCTAssertEqual(msg.fromAgent, .claude)
+        XCTAssertEqual(msg.prompt, "Implement tokenizer module")
+        XCTAssertEqual(msg.claimedFiles, ["Sources/Tokenizer.swift"])
+        XCTAssertEqual(msg.status, .queued)
+
+        // Verify file was claimed on blackboard (PID 2222 should see conflict)
+        let conflicts = try server.store.checkConflicts(files: ["Sources/Tokenizer.swift"], excludingPid: 2222)
+        XCTAssertFalse(conflicts.isEmpty)
+        XCTAssertEqual(conflicts.first?.conflictingAgent, .claude)
+    }
+
+    func testDelegateTaskRejectsWhenTargetAgentInCooldown() throws {
+        let inboxStore = InboxStore(workspaceRoot: tempDir.path)
+        // Mark codex as rate-limited
+        try inboxStore.recordLimit(agent: .codex, reason: "429 Too Many Requests", cooldown: 900)
+
+        let delegateReq = """
+        {
+          "jsonrpc": "2.0",
+          "id": 11,
+          "method": "tools/call",
+          "params": {
+            "name": "linkc_delegate_task",
+            "arguments": {
+              "to": "codex",
+              "prompt": "Fix database deadlock",
+              "from": "claude"
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(server.handleMessage(delegateReq))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        let result = resJson?["result"] as? [String: Any]
+        XCTAssertEqual(result?["isError"] as? Bool, true)
+
+        let content = result?["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String ?? ""
+        XCTAssertTrue(text.contains("cooldown"), "Error message should mention cooldown: \(text)")
+        XCTAssertTrue(text.contains("429 Too Many Requests"), "Error message should include reason: \(text)")
+        XCTAssertTrue(text.contains("Alternative available peer agents"), "Error message should list alternatives: \(text)")
+        XCTAssertTrue(text.contains("agy"), "Should include agy as alternative: \(text)")
+
+        // Verify no message was enqueued
+        let pending = try inboxStore.fetchPending()
+        XCTAssertTrue(pending.isEmpty)
+    }
+
+    func testSendMessageEnqueuesPeerNote() throws {
+        let inboxStore = InboxStore(workspaceRoot: tempDir.path)
+        let sendReq = """
+        {
+          "jsonrpc": "2.0",
+          "id": 12,
+          "method": "tools/call",
+          "params": {
+            "name": "linkc_send_message",
+            "arguments": {
+              "to": "agy",
+              "message": "Please review the memory layout PR",
+              "from": "claude"
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(server.handleMessage(sendReq))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        let result = resJson?["result"] as? [String: Any]
+        let content = result?["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String ?? ""
+        XCTAssertTrue(text.contains("Antigravity"), "Expected queue confirmation in: \(text)")
+
+        let pending = try inboxStore.fetchPending()
+        XCTAssertEqual(pending.count, 1)
+        let msg = try XCTUnwrap(pending.first)
+        XCTAssertEqual(msg.toAgent, .agy)
+        XCTAssertEqual(msg.fromAgent, .claude)
+        XCTAssertEqual(msg.prompt, "[Peer Note from Claude Code]: Please review the memory layout PR")
+        XCTAssertTrue(msg.claimedFiles.isEmpty)
+    }
+
+    func testDelegateTaskReportsCollisionWarnings() throws {
+        // Pre-claim a file from another agent
+        _ = try server.store.broadcastIntent(
+            agentKind: .agy,
+            pid: 5050,
+            goal: "Refactoring database models",
+            files: ["Sources/Models/User.swift"]
+        )
+
+        let delegateReq = """
+        {
+          "jsonrpc": "2.0",
+          "id": 13,
+          "method": "tools/call",
+          "params": {
+            "name": "linkc_delegate_task",
+            "arguments": {
+              "to": "cursor",
+              "prompt": "Add password hashing to User.swift",
+              "files": ["Sources/Models/User.swift"],
+              "from": "claude",
+              "pid": 6060
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(server.handleMessage(delegateReq))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        let result = resJson?["result"] as? [String: Any]
+        let content = result?["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String ?? ""
+
+        XCTAssertTrue(text.contains("Task queued for Cursor Agent"), "Expected confirmation in: \(text)")
+        XCTAssertTrue(text.contains("Collision Warning"), "Expected collision warning in: \(text)")
+        XCTAssertTrue(text.contains("User.swift"), "Expected file name in warning: \(text)")
+    }
+
+    func testGetInboxReturnsMarkdown() throws {
+        let inboxStore = InboxStore(workspaceRoot: tempDir.path)
+        try inboxStore.recordLimit(agent: .cursor, reason: "Quota exceeded", cooldown: 900)
+        _ = try inboxStore.enqueue(
+            from: .claude,
+            to: .agy,
+            prompt: "Refactor error types",
+            files: ["Sources/Error.swift"]
+        )
+
+        let inboxReq = """
+        {
+          "jsonrpc": "2.0",
+          "id": 14,
+          "method": "tools/call",
+          "params": {
+            "name": "linkc_get_inbox"
+          }
+        }
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(server.handleMessage(inboxReq))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        let result = resJson?["result"] as? [String: Any]
+        let content = result?["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String ?? ""
+
+        XCTAssertTrue(text.contains("# linkC Message Inbox"), "Expected header in: \(text)")
+        XCTAssertTrue(text.contains("Cursor Agent"), "Expected limited agent in: \(text)")
+        XCTAssertTrue(text.contains("Quota exceeded"), "Expected limit reason in: \(text)")
+        XCTAssertTrue(text.contains("Refactor error types"), "Expected prompt in: \(text)")
+        XCTAssertTrue(text.contains("Sources/Error.swift"), "Expected claimed files in: \(text)")
     }
 
     func testToolsCallBroadcastIntentAndCheckConflicts() throws {
@@ -137,5 +329,105 @@ final class MCPServerTests: XCTestCase {
         let ctxContent = (ctxJson?["result"] as? [String: Any])?["content"] as? [[String: Any]]
         let ctxText = ctxContent?.first?["text"] as? String ?? ""
         XCTAssertTrue(ctxText.contains("Config format"), "Context should include the note: \(ctxText)")
+    }
+
+    func testDelegateTaskValidationErrors() throws {
+        // Missing 'to'
+        let req1 = """
+        {"jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": {"name": "linkc_delegate_task", "arguments": {"prompt": "do something"}}}
+        """.data(using: .utf8)!
+        let res1 = try XCTUnwrap(server.handleMessage(req1))
+        let json1 = try JSONSerialization.jsonObject(with: res1) as? [String: Any]
+        let resResult1 = json1?["result"] as? [String: Any]
+        XCTAssertEqual(resResult1?["isError"] as? Bool, true)
+        let text1 = ((resResult1?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(text1.contains("Missing required argument 'to'"))
+
+        // Unknown agent
+        let req2 = """
+        {"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "linkc_delegate_task", "arguments": {"to": "skynet", "prompt": "do something"}}}
+        """.data(using: .utf8)!
+        let res2 = try XCTUnwrap(server.handleMessage(req2))
+        let json2 = try JSONSerialization.jsonObject(with: res2) as? [String: Any]
+        let resResult2 = json2?["result"] as? [String: Any]
+        XCTAssertEqual(resResult2?["isError"] as? Bool, true)
+        let text2 = ((resResult2?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(text2.contains("Unknown agent 'skynet'"))
+
+        // Missing prompt
+        let req3 = """
+        {"jsonrpc": "2.0", "id": 22, "method": "tools/call", "params": {"name": "linkc_delegate_task", "arguments": {"to": "codex"}}}
+        """.data(using: .utf8)!
+        let res3 = try XCTUnwrap(server.handleMessage(req3))
+        let json3 = try JSONSerialization.jsonObject(with: res3) as? [String: Any]
+        let resResult3 = json3?["result"] as? [String: Any]
+        XCTAssertEqual(resResult3?["isError"] as? Bool, true)
+        let text3 = ((resResult3?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(text3.contains("Missing required argument 'prompt'"))
+    }
+
+    func testSendMessageValidationErrors() throws {
+        // Missing 'to'
+        let req1 = """
+        {"jsonrpc": "2.0", "id": 30, "method": "tools/call", "params": {"name": "linkc_send_message", "arguments": {"message": "hello"}}}
+        """.data(using: .utf8)!
+        let res1 = try XCTUnwrap(server.handleMessage(req1))
+        let json1 = try JSONSerialization.jsonObject(with: res1) as? [String: Any]
+        let resResult1 = json1?["result"] as? [String: Any]
+        XCTAssertEqual(resResult1?["isError"] as? Bool, true)
+        let text1 = ((resResult1?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(text1.contains("Missing required argument 'to'"))
+
+        // Unknown agent
+        let req2 = """
+        {"jsonrpc": "2.0", "id": 31, "method": "tools/call", "params": {"name": "linkc_send_message", "arguments": {"to": "unknown", "message": "hello"}}}
+        """.data(using: .utf8)!
+        let res2 = try XCTUnwrap(server.handleMessage(req2))
+        let json2 = try JSONSerialization.jsonObject(with: res2) as? [String: Any]
+        let resResult2 = json2?["result"] as? [String: Any]
+        XCTAssertEqual(resResult2?["isError"] as? Bool, true)
+        let text2 = ((resResult2?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(text2.contains("Unknown agent 'unknown'"))
+
+        // Missing message
+        let req3 = """
+        {"jsonrpc": "2.0", "id": 32, "method": "tools/call", "params": {"name": "linkc_send_message", "arguments": {"to": "agy"}}}
+        """.data(using: .utf8)!
+        let res3 = try XCTUnwrap(server.handleMessage(req3))
+        let json3 = try JSONSerialization.jsonObject(with: res3) as? [String: Any]
+        let resResult3 = json3?["result"] as? [String: Any]
+        XCTAssertEqual(resResult3?["isError"] as? Bool, true)
+        let text3 = ((resResult3?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(text3.contains("Missing required argument 'message'"))
+    }
+
+    func testDelegateTaskAllPeersLimitedReportsNone() throws {
+        let inboxStore = InboxStore(workspaceRoot: tempDir.path)
+        try inboxStore.recordLimit(agent: .codex, reason: "Quota", cooldown: 600)
+        try inboxStore.recordLimit(agent: .claude, reason: "Usage limit", cooldown: 600)
+        try inboxStore.recordLimit(agent: .agy, reason: "ResourceExhausted", cooldown: 600)
+        try inboxStore.recordLimit(agent: .cursor, reason: "429", cooldown: 600)
+
+        let req = """
+        {"jsonrpc": "2.0", "id": 40, "method": "tools/call", "params": {"name": "linkc_delegate_task", "arguments": {"to": "codex", "prompt": "build feature"}}}
+        """.data(using: .utf8)!
+        let res = try XCTUnwrap(server.handleMessage(req))
+        let json = try JSONSerialization.jsonObject(with: res) as? [String: Any]
+        let resResult = json?["result"] as? [String: Any]
+        XCTAssertEqual(resResult?["isError"] as? Bool, true)
+        let text = ((resResult?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(text.contains("Alternative available peer agents: none"))
+    }
+
+    func testGetInboxEmptyState() throws {
+        let req = """
+        {"jsonrpc": "2.0", "id": 50, "method": "tools/call", "params": {"name": "linkc_get_inbox"}}
+        """.data(using: .utf8)!
+        let res = try XCTUnwrap(server.handleMessage(req))
+        let json = try JSONSerialization.jsonObject(with: res) as? [String: Any]
+        let resResult = json?["result"] as? [String: Any]
+        let text = ((resResult?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(text.contains("No active rate limits recorded"))
+        XCTAssertTrue(text.contains("No pending messages in queue"))
     }
 }
