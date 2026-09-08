@@ -62,6 +62,24 @@ extension TerminalSessionTests {
         XCTAssertTrue(manager.sessions.isEmpty)
     }
 
+    func testSendInputCarriageReturnSubmitsInteractiveShellCommand() async throws {
+        let session = TerminalSession(id: "test-sh-live", cwd: "/tmp", title: "sh")
+        try session.start(executable: "/bin/sh", args: [], env: [:])
+
+        // Send input without any newline — sendInput must submit via Return (cmdRet / insertNewline)
+        session.sendInput("echo __AUTO_SUBMITTED__")
+
+        let matched = await waitForOutput(session: session, containing: "__AUTO_SUBMITTED__", timeout: 3.0)
+        XCTAssertTrue(matched, "Expected shell to autonomously execute command and output '__AUTO_SUBMITTED__', got: \(session.recentOutput(lines: 10))")
+
+        // Send input with trailing CR/LF
+        session.sendInput("echo __WITH_CRLF__\r\n")
+        let matchedCrlf = await waitForOutput(session: session, containing: "__WITH_CRLF__", timeout: 3.0)
+        XCTAssertTrue(matchedCrlf, "Expected shell to autonomously execute CRLF command, got: \(session.recentOutput(lines: 10))")
+
+        session.terminate()
+    }
+
     private func waitForOutput(session: TerminalSession, containing snippet: String, timeout: TimeInterval) async -> Bool {
         let start = Date()
         while Date().timeIntervalSince(start) < timeout {

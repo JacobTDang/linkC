@@ -166,13 +166,27 @@ public final class TerminalSession {
         }
     }
 
-    /// Sends text input to the running child process via the terminal PTY.
-    /// Formats text to ensure a trailing newline. Safely ignored if the child process
-    /// is not alive.
+    private static let bracketedPasteStart: [UInt8] = [0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e]
+    private static let bracketedPasteEnd: [UInt8] = [0x1b, 0x5b, 0x32, 0x30, 0x31, 0x7e]
+
+    /// Sends text input to the running child process via the terminal PTY and submits it.
+    /// Safely ignored if the child process is not alive.
     public func sendInput(_ text: String) {
         guard liveness.withLock({ $0 }) else { return }
-        let formatted = text.hasSuffix("\n") ? text : text + "\n"
-        terminalView.send(txt: formatted)
+        var trimmed = text
+        while trimmed.hasSuffix("\n") || trimmed.hasSuffix("\r") {
+            trimmed.removeLast()
+        }
+        if !trimmed.isEmpty {
+            if trimmed.contains("\n") && terminalView.getTerminal().bracketedPasteMode {
+                terminalView.send(data: Self.bracketedPasteStart[0...])
+                terminalView.send(txt: trimmed)
+                terminalView.send(data: Self.bracketedPasteEnd[0...])
+            } else {
+                terminalView.send(txt: trimmed)
+            }
+        }
+        terminalView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
     }
 
     /// The last `lines` content rows of the terminal's visible screen, as plain text — for the
