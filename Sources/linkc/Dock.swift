@@ -23,13 +23,7 @@ struct Dock: View {
         }
         .padding(5)
 
-        // Native Liquid Glass on Tahoe — real lensing over the sheet. One glass element,
-        // never stacked: the selection pill inside is a plain fill, not more glass.
-        if #available(macOS 26.0, *) {
-            stack.glassEffect(.regular, in: Capsule())
-        } else {
-            stack.background(fallbackCapsule)
-        }
+        stack.background(fallbackCapsule)
     }
 
     /// Pre-Tahoe stand-in for the glass effect: a flat wash and one hairline, plus the

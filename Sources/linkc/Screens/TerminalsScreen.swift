@@ -145,7 +145,7 @@ struct TerminalCard: View {
                     .help("Stop terminal")
                 }
             }
-            PreviewText(text: preview)
+            PreviewText(text: preview, leadingPadding: 26)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

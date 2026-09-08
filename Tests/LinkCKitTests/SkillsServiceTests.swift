@@ -6,8 +6,8 @@ import XCTest
 @MainActor
 final class SkillsServiceTests: XCTestCase {
 
-    private var root: URL!
-    private var configURL: URL!
+    nonisolated(unsafe) private var root: URL!
+    nonisolated(unsafe) private var configURL: URL!
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory

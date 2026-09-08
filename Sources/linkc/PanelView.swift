@@ -336,11 +336,11 @@ struct SectionHeader: View {
     }
 }
 
-/// The card's monospaced output preview, sitting directly on the card fill and indented to align
-/// with the title (past the status dot's box). Falls back to a dim placeholder when there's
-/// nothing to show yet, so a fresh card never reads as blank or broken.
+/// The card's monospaced output preview, sitting directly on the card fill.
+/// Falls back to a dim placeholder when there's nothing to show yet, so a fresh card never reads as blank or broken.
 struct PreviewText: View {
     let text: String
+    var leadingPadding: CGFloat = 2
 
     var body: some View {
         Group {
@@ -361,7 +361,7 @@ struct PreviewText: View {
             minHeight: Theme.previewHeight, maxHeight: Theme.previewHeight,
             alignment: .topLeading
         )
-        .padding(.leading, 26)   // dot box (18) + header spacing (8): preview aligns under the title
+        .padding(.leading, leadingPadding)
     }
 }
 

@@ -58,8 +58,8 @@ struct SessionListColumn: View {
                     EarlierSection(model: model)
                 }
             }
-            .readingColumn()
-            .padding(.horizontal, horizontalPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, compact ? horizontalPadding : max(horizontalPadding, 16))
             .padding(.vertical, 12)
         }
         .sheet(isPresented: Binding(
@@ -532,18 +532,6 @@ private struct HomeCard: View {
         return group.sessions.first
     }
 
-    private var representativeState: SessionState {
-        if group.bucket == .needsYou,
-           let urgent = group.sessions.first(where: { $0.state.bucket == .needsYou }) {
-            return urgent.state
-        }
-        if group.bucket == .active,
-           let active = group.sessions.first(where: { $0.state.bucket == .active }) {
-            return active.state
-        }
-        return activeSession?.state ?? .ready
-    }
-
     var body: some View {
         let swarm = model.swarm(for: group.workspacePath)
         let allAgents = group.sessions.flatMap { model.visibleAgents($0.id) }
@@ -552,8 +540,6 @@ private struct HomeCard: View {
 
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                StatusDot(state: representativeState)
-
                 if isSingle, let session = primarySession {
                     AgentPill(agent: session.agentKind, isSelected: session.id == selectedId)
                 } else {
@@ -566,10 +552,6 @@ private struct HomeCard: View {
                             .help("Switch to \(session.agentKind.displayName) session")
                         }
                     }
-                }
-
-                if let swarm {
-                    SwarmBadge(swarm: swarm) { onInspectSwarm?() }
                 }
 
                 Text(group.title)
@@ -647,6 +629,19 @@ private struct HomeCard: View {
 
                 if allAgents.contains(where: \.isRunning) {
                     AgentChip(count: allAgents.count(where: \.isRunning))
+                }
+
+                if swarm != nil, group.sessions.count > 1 {
+                    Button(action: { onInspectSwarm?() }) {
+                        Image(systemName: "circle.hexagongrid")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Theme.textTertiary)
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(hovering ? 1 : 0)
+                    .help("Inspect swarm blackboard & handoff")
                 }
 
                 Menu {

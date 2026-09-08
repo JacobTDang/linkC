@@ -40,7 +40,7 @@ final class RecentFoldersLogTests: XCTestCase {
 
 @MainActor
 final class RecentFoldersStoreTests: XCTestCase {
-    private var dir: URL!
+    nonisolated(unsafe) private var dir: URL!
 
     override func setUp() {
         super.setUp()

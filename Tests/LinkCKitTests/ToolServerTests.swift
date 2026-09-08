@@ -179,7 +179,7 @@ final class DockerImagesTests: XCTestCase {
 @MainActor
 final class KnownStacksStoreTests: XCTestCase {
 
-    private var dir: URL!
+    nonisolated(unsafe) private var dir: URL!
 
     override func setUpWithError() throws {
         dir = FileManager.default.temporaryDirectory
