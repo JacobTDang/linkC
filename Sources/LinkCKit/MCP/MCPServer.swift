@@ -2,18 +2,23 @@ import Foundation
 
 /// Pure-Swift Model Context Protocol (MCP) server speaking JSON-RPC 2.0.
 public final class MCPServer: Sendable {
+    public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String) throws -> String
+
     public let workspaceRoot: String
     public let store: BlackboardStore
     public let inboxStore: InboxStore
+    public let modelSwitcher: ModelSwitcher?
 
     public init(
         workspaceRoot: String,
         store: BlackboardStore? = nil,
-        inboxStore: InboxStore? = nil
+        inboxStore: InboxStore? = nil,
+        modelSwitcher: ModelSwitcher? = nil
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
         self.inboxStore = inboxStore ?? InboxStore(workspaceRoot: workspaceRoot)
+        self.modelSwitcher = modelSwitcher
     }
 
     /// Processes a single JSON-RPC 2.0 message buffer and returns the response Data, or nil if no response is needed (e.g. notifications).
@@ -143,6 +148,36 @@ public final class MCPServer: Sendable {
             [
                 "name": "linkc_get_inbox",
                 "description": "Get the current queue of pending messages, delivery status, and any active agent rate limits.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [:]
+                ]
+            ],
+            [
+                "name": "linkc_switch_model",
+                "description": "Switch the active model for an agent in the workspace using free/subscription tier models (injecting /model <model> into the agent's terminal).",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "agent": ["type": "string", "description": "Agent kind (claude, agy, cursor, codex), defaults to claude"],
+                        "model": ["type": "string", "description": "Model name (e.g. sonnet, haiku, opus, gpt-4o, o3-mini, pro, flash, flash_lite)"]
+                    ],
+                    "required": ["model"]
+                ]
+            ],
+            [
+                "name": "linkc_get_models",
+                "description": "List all available free-tier and subscription-included models for an agent or all agents, indicating the default model and current rate-limit cooldowns.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "agent": ["type": "string", "description": "Agent kind (claude, agy, cursor, codex), optional"]
+                    ]
+                ]
+            ],
+            [
+                "name": "linkc_get_usage_status",
+                "description": "Get current token usage, 5-hour rolling window stats, reset timestamps, and active rate limits across all agents in the workspace.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [:]
@@ -374,6 +409,109 @@ public final class MCPServer: Sendable {
                     for msg in history.suffix(10) {
                         text += "- [\(msg.status.rawValue)] \(msg.fromAgent.displayName) → \(msg.toAgent.displayName): \(msg.prompt.prefix(40))...\n"
                     }
+                }
+
+                return toolResultResponse(id: id, text: text)
+
+            case "linkc_switch_model":
+                let agentStr = args["agent"] as? String ?? "claude"
+                guard let agent = AgentKind(rawValue: agentStr.lowercased()) else {
+                    return toolResultResponse(id: id, text: "Error: Unknown agent '\(agentStr)'. Supported agents: claude, agy, cursor, codex.", isError: true)
+                }
+                guard agent != .shell else {
+                    return toolResultResponse(id: id, text: "Error: Cannot switch model on shell session.", isError: true)
+                }
+                guard let model = args["model"] as? String, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return toolResultResponse(id: id, text: "Error: Missing required argument 'model'.", isError: true)
+                }
+                let cleanModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard AgentModelCatalog.isFreeOrSubscription(model: cleanModel, for: agent) else {
+                    let allowed = AgentModelCatalog.models(for: agent).map { $0.id }.joined(separator: ", ")
+                    return toolResultResponse(id: id, text: "Error: '\(cleanModel)' is not an allowed free or subscription-tier model for \(agent.displayName). Allowed models: \(allowed)", isError: true)
+                }
+
+                if let modelSwitcher {
+                    let result = try modelSwitcher(agent, cleanModel)
+                    return toolResultResponse(id: id, text: result)
+                } else {
+                    let cmd = AgentModelCatalog.interactiveSwitchCommand(model: cleanModel, for: agent)
+                    _ = try inboxStore.enqueue(
+                        from: agent,
+                        to: agent,
+                        prompt: cmd,
+                        files: []
+                    )
+                    return toolResultResponse(id: id, text: "Model switch requested: enqueued '\(cmd)' for \(agent.displayName). linkC will inject it via terminal PTY.")
+                }
+
+            case "linkc_get_models":
+                let targetAgents: [AgentKind]
+                if let agentStr = args["agent"] as? String, !agentStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    guard let a = AgentKind(rawValue: agentStr.lowercased()) else {
+                        return toolResultResponse(id: id, text: "Error: Unknown agent '\(agentStr)'. Supported agents: claude, agy, cursor, codex.", isError: true)
+                    }
+                    guard a != .shell else {
+                        return toolResultResponse(id: id, text: "Error: Shell does not support AI models.", isError: true)
+                    }
+                    targetAgents = [a]
+                } else {
+                    targetAgents = [.claude, .codex, .agy, .cursor]
+                }
+
+                var text = "# Available Free & Subscription Models\n\n"
+                let now = Date()
+                for agent in targetAgents {
+                    text += "## \(agent.displayName) (\(agent.rawValue))\n"
+                    if let limit = try inboxStore.isAgentLimited(agent: agent) {
+                        let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
+                        let remainingMin = remainingSec / 60
+                        text += "⚠️ **Rate Limited**: \(limit.reason) (\(remainingMin)m cooldown remaining)\n\n"
+                    } else {
+                        text += "Status: Active / Available\n\n"
+                    }
+                    let models = AgentModelCatalog.models(for: agent)
+                    if models.isEmpty {
+                        text += "_No models defined._\n\n"
+                    } else {
+                        for m in models {
+                            let defaultTag = m.isDefault ? " (Default)" : ""
+                            text += "- **\(m.id)**: \(m.displayName)\(defaultTag)\n"
+                        }
+                        text += "\n"
+                    }
+                }
+                return toolResultResponse(id: id, text: text)
+
+            case "linkc_get_usage_status":
+                let inbox = try inboxStore.load()
+                let now = Date()
+                var text = "# Workspace Agent Usage & Rate Limits\n\n"
+
+                let activeLimits = inbox.agentLimits.filter { $0.cooldownExpiresAt > now }
+                if activeLimits.isEmpty {
+                    text += "## Active Rate Limits\n_No active rate limits recorded across workspace agents._\n\n"
+                } else {
+                    text += "## Active Rate Limits (\(activeLimits.count))\n"
+                    for limit in activeLimits {
+                        let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
+                        let remainingMin = remainingSec / 60
+                        let fallbacks = AgentModelCatalog.fallbackModels(for: limit.agent)
+                        let fallbackList = fallbacks.isEmpty ? "None" : fallbacks.map { "\($0.displayName) (`\($0.id)`)" }.joined(separator: ", ")
+
+                        text += "### \(limit.agent.displayName) (\(limit.agent.rawValue))\n"
+                        text += "- **Reason:** \(limit.reason)\n"
+                        text += "- **Cooldown Remaining:** \(remainingMin)m (\(remainingSec)s)\n"
+                        text += "- **Expires At:** \(limit.cooldownExpiresAt)\n"
+                        text += "- **Available Free Fallback Models:** \(fallbackList)\n\n"
+                    }
+                }
+
+                text += "## Agent Availability & Default Models\n"
+                for agent in [AgentKind.claude, .codex, .agy, .cursor] {
+                    let isLimited = activeLimits.contains { $0.agent == agent }
+                    let def = AgentModelCatalog.defaultModel(for: agent)
+                    let status = isLimited ? "Rate Limited" : "Available"
+                    text += "- **\(agent.displayName)**: \(status) (Default Model: `\(def.id)` - \(def.displayName))\n"
                 }
 
                 return toolResultResponse(id: id, text: text)

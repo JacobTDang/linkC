@@ -670,6 +670,28 @@ public final class AppCoordinator {
         }
     }
 
+    /// Switches the active model for an agent session in the given workspace using free/subscription tier models.
+    /// Injects the interactive switch command (e.g. `/model <modelName>`) directly into the agent's live terminal PTY.
+    @discardableResult
+    public func switchModel(in workspacePath: String, agent: AgentKind, to modelName: String) throws -> String {
+        guard agent != .shell else {
+            throw LinkCError.process("Cannot switch model on shell session.")
+        }
+        guard AgentModelCatalog.isFreeOrSubscription(model: modelName, for: agent) else {
+            let allowed = AgentModelCatalog.models(for: agent).map { $0.id }.joined(separator: ", ")
+            throw LinkCError.process("'\(modelName)' is not an allowed free or subscription-tier model for \(agent.displayName). Allowed models: \(allowed)")
+        }
+        let norm = (workspacePath as NSString).standardizingPath
+        guard let session = store.sessions.first(where: {
+            ($0.cwd as NSString).standardizingPath == norm && $0.agentKind == agent && $0.state != .ended
+        }) else {
+            throw LinkCError.process("No active session found for \(agent.displayName) in \(workspacePath).")
+        }
+        let cmd = AgentModelCatalog.interactiveSwitchCommand(model: modelName, for: agent)
+        terminals.sendInput(sessionId: session.id, text: cmd)
+        return "Switched \(agent.displayName) model to '\(modelName)' in session \(session.id)."
+    }
+
     /// Evaluates terminal output of `sessionId` for provider rate limits and quota ceiling events.
     /// If a limit is detected, marks the agent limited in the inbox store and autonomous
     /// re-routing passes the task with a handoff memo to an available peer agent (max 2 hops).
