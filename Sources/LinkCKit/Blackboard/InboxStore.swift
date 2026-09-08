@@ -128,6 +128,7 @@ public final class InboxStore: Sendable {
         to: AgentKind,
         prompt: String,
         files: [String] = [],
+        rerouteCount: Int = 0,
         timeout: TimeInterval = 5.0
     ) throws -> PendingMessage {
         try withFileLock(timeout: timeout) {
@@ -140,7 +141,7 @@ public final class InboxStore: Sendable {
                 prompt: prompt,
                 claimedFiles: normalizedFiles,
                 status: .queued,
-                rerouteCount: 0,
+                rerouteCount: rerouteCount,
                 createdAt: Date(),
                 deliveredAt: nil
             )

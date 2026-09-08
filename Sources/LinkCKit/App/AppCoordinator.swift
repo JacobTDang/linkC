@@ -50,6 +50,7 @@ public final class AppCoordinator {
     /// active, and that tab selected. Injected because it depends on UI-layer state the
     /// coordinator can't see. Invoked on the main actor.
     private let isWatching: @MainActor @Sendable (String) -> Bool
+    private let agentPathResolver: (@Sendable (AgentKind) -> String?)?
 
     /// Hook events are funneled through this single stream and drained by one consumer task
     /// so `store.apply` runs strictly in arrival order — unstructured per-event tasks would
@@ -68,6 +69,7 @@ public final class AppCoordinator {
         settingsDir: URL,
         userSettingsURL: URL,
         manifestDir: URL,
+        agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -77,6 +79,7 @@ public final class AppCoordinator {
         self.settingsDir = settingsDir
         self.userSettingsURL = userSettingsURL
         self.manifest = WorkspaceManifest(directory: manifestDir)
+        self.agentPathResolver = agentPathResolver
         self.isWatching = isWatching
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.
@@ -223,6 +226,13 @@ public final class AppCoordinator {
             return
         }
 
+        if event.kind == .stopFailure {
+            checkLimitsAndReroute(for: session.id)
+        } else if event.kind == .stop || event.kind == .sessionStart {
+            checkLimitsAndReroute(for: session.id)
+            processPendingMessages(workspacePath: session.cwd)
+        }
+
         guard outcome.shouldConsiderNotifying else { return }
         if FocusPolicy.shouldNotify(
             session: session,
@@ -281,7 +291,7 @@ public final class AppCoordinator {
     /// Spawns a teammate agent session in `workspacePath`, automatically synthesizing
     /// and writing a handoff memo to `<workspacePath>/.linkc/HANDOFF.md`.
     @discardableResult
-    public func spawnTeammate(in workspacePath: String, agent: AgentKind = .claude) throws -> Session {
+    public func spawnTeammate(in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil) throws -> Session {
         let norm = (workspacePath as NSString).standardizingPath
         let existingSession = store.sessions.last { session in
             let sessionNorm = (session.cwd as NSString).standardizingPath
@@ -302,13 +312,22 @@ public final class AppCoordinator {
 
         let gitSummary = inspectGitStatus(in: norm)
 
-        var lastGoal: String? = nil
-        let bbStore = BlackboardStore(workspaceRoot: norm)
-        if let board = try? bbStore.load(timeout: 0.5) {
-            if let lastAgent = board.activeAgents.last, !lastAgent.goal.isEmpty {
-                lastGoal = lastAgent.goal
-            } else if let lastEvent = board.recentEvents.first, !lastEvent.details.isEmpty {
-                lastGoal = lastEvent.details
+        var lastGoal: String? = goal
+        if lastGoal == nil {
+            let bbStore = BlackboardStore(workspaceRoot: norm)
+            if let board = try? bbStore.load(timeout: 0.5) {
+                if let lastAgent = board.activeAgents.last, !lastAgent.goal.isEmpty {
+                    lastGoal = lastAgent.goal
+                } else if let lastEvent = board.recentEvents.first, !lastEvent.details.isEmpty {
+                    lastGoal = lastEvent.details
+                }
+            }
+        }
+        if lastGoal == nil {
+            let inboxStore = InboxStore(workspaceRoot: norm)
+            if let inbox = try? inboxStore.load(timeout: 0.5),
+               let lastMsg = inbox.messages.last(where: { !$0.prompt.isEmpty }) {
+                lastGoal = lastMsg.prompt
             }
         }
 
@@ -358,7 +377,7 @@ public final class AppCoordinator {
                 let settingsPath = try writeSettings(for: session)
                 args = Self.launchArgs(mode: mode, resumeId: resumeId) + ["--settings", settingsPath]
             } else {
-                guard let resolved = AgentDescriptor.resolveExecutable(for: agent) else {
+                guard let resolved = agentPathResolver?(agent) ?? AgentDescriptor.resolveExecutable(for: agent) else {
                     throw LinkCError.process("Executable for \(agent.pillText) not found")
                 }
                 executable = resolved
@@ -491,8 +510,13 @@ public final class AppCoordinator {
     /// Periodically inspects all sessions to detect live agent kind and working/finished/idle state
     /// for non-Claude agents (AGY, Cursor, Codex, etc.) or sessions without hook events.
     public func sampleAgentStates() {
+        var activePaths: Set<String> = []
         for session in store.sessions where session.state != .ended {
+            activePaths.insert((session.cwd as NSString).standardizingPath)
             guard let term = terminals.session(id: session.id) else { continue }
+
+            // Inspect terminal output for provider rate limits & auto-reroute
+            checkLimitsAndReroute(for: session.id)
 
             // Detect dynamic agent kind changes in child process tree
             let liveAgent = term.sampleForegroundAgent()
@@ -526,6 +550,10 @@ public final class AppCoordinator {
                     store.updateState(id: session.id, to: .ready)
                 }
             }
+        }
+
+        for path in activePaths {
+            processPendingMessages(workspacePath: path)
         }
     }
 
@@ -587,6 +615,127 @@ public final class AppCoordinator {
             )
         }
         self.swarms = newSwarms
+    }
+
+    // MARK: - Inbox Dispatcher & Limit Auto-Rerouting
+
+    /// Dispatches pending queued messages for `workspacePath`. Auto-spawns recipient agents
+    /// if not active, and injects the prompt via terminal PTY when the recipient session is idle/ready.
+    public func processPendingMessages(workspacePath: String) {
+        let norm = (workspacePath as NSString).standardizingPath
+        let inboxStore = InboxStore(workspaceRoot: norm)
+        guard let pending = try? inboxStore.fetchPending(), !pending.isEmpty else { return }
+
+        for message in pending where message.status == .queued {
+            var targetSession = store.sessions.first { s in
+                let sNorm = (s.cwd as NSString).standardizingPath
+                return sNorm == norm && s.agentKind == message.toAgent && s.state != .ended
+            }
+
+            if targetSession == nil {
+                do {
+                    let spawned = try spawnTeammate(in: norm, agent: message.toAgent, goal: message.prompt)
+                    store.updateState(id: spawned.id, to: .ready)
+                    targetSession = store.session(id: spawned.id) ?? spawned
+                } catch {
+                    continue
+                }
+            }
+
+            guard let session = targetSession else { continue }
+
+            switch session.state {
+            case .ready, .finished, .waitingIdle:
+                let formattedPrompt = message.prompt
+                terminals.sendInput(sessionId: session.id, text: formattedPrompt)
+                store.updateState(id: session.id, to: .working)
+                try? inboxStore.markDelivered(id: message.id)
+            case .working, .starting, .waitingPermission, .error, .ended:
+                // Keep in queue until recipient session finishes or becomes ready
+                break
+            }
+        }
+    }
+
+    /// Evaluates terminal output of `sessionId` for provider rate limits and quota ceiling events.
+    /// If a limit is detected, marks the agent limited in the inbox store and autonomous
+    /// re-routing passes the task with a handoff memo to an available peer agent (max 2 hops).
+    @discardableResult
+    public func checkLimitsAndReroute(for sessionId: String) -> Bool {
+        guard let session = store.session(id: sessionId) else { return false }
+        guard session.agentKind != .shell else { return false }
+
+        let norm = (session.cwd as NSString).standardizingPath
+        let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
+
+        guard let match = LimitDetector.detectLimit(inOutput: recentOutput, agent: session.agentKind) else {
+            return false
+        }
+
+        let inboxStore = InboxStore(workspaceRoot: norm)
+        try? inboxStore.recordLimit(
+            agent: session.agentKind,
+            reason: match.matchedPattern,
+            cooldown: match.cooldown
+        )
+
+        // Find candidate peer agents (excluding current agent, .shell, and limited agents)
+        let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor]
+        let candidates = supportedPeers.filter { candidate in
+            guard candidate != session.agentKind else { return false }
+            guard (try? inboxStore.isAgentLimited(agent: candidate)) == nil else { return false }
+            return true
+        }
+
+        // Determine reroute count of active task (circuit breaker)
+        let inbox = try? inboxStore.load()
+        let currentMessage = inbox?.messages.last { $0.toAgent == session.agentKind }
+        let currentRerouteCount = currentMessage?.rerouteCount ?? 0
+
+        // If this task has already been rerouted by this session, avoid re-entrant duplicates
+        let alreadyRerouted = inbox?.messages.contains { $0.fromAgent == session.agentKind && $0.rerouteCount > currentRerouteCount } ?? false
+        if alreadyRerouted {
+            return true
+        }
+
+        guard currentRerouteCount < 2, let targetCandidate = candidates.first else {
+            // Circuit breaker tripped or no candidates available: stop re-routing
+            store.updateState(id: session.id, to: .error)
+            return true
+        }
+
+        // Compose handoff memo
+        let gitSummary = inspectGitStatus(in: norm)
+        var lastGoal = currentMessage?.prompt
+        if lastGoal == nil, let board = try? BlackboardStore(workspaceRoot: norm).load(timeout: 0.5) {
+            lastGoal = board.activeAgents.last?.goal
+        }
+
+        _ = try? HandoffComposer.writeHandoffSync(
+            workspacePath: norm,
+            sourceAgent: session.agentKind,
+            lastGoal: lastGoal,
+            gitSummary: gitSummary,
+            recentTerminalOutput: recentOutput
+        )
+
+        // Enqueue rerouted task to candidate with rerouteCount + 1
+        let reroutedPrompt = currentMessage?.prompt ?? "Task rerouted from \(session.agentKind.displayName) due to rate limit (\(match.matchedPattern)). Please inspect .linkc/HANDOFF.md and continue."
+        let claimedFiles = currentMessage?.claimedFiles ?? []
+
+        _ = try? inboxStore.enqueue(
+            from: session.agentKind,
+            to: targetCandidate,
+            prompt: reroutedPrompt,
+            files: claimedFiles,
+            rerouteCount: currentRerouteCount + 1
+        )
+
+        store.updateState(id: session.id, to: .error)
+
+        // Spawn candidate if needed and dispatch
+        processPendingMessages(workspacePath: norm)
+        return true
     }
 
     // MARK: - Helpers
