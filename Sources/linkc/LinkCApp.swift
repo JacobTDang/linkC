@@ -87,12 +87,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// The rail's destinations — full screens the panel can show in place of home.
-enum PanelScreen: String, CaseIterable, Identifiable, Equatable {
-    case mcpServers, skills, terminals, toolServers, settings
-    var id: String { rawValue }
-}
-
 /// Observable app state backing the panel. Holds the coordinator once preflight succeeds, or
 /// a setup error to show the user. Owns the terminal manager so the coordinator's watch probe
 /// and the panel's terminal view share one source of truth.

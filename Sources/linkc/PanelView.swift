@@ -132,6 +132,7 @@ private struct ScreenHost: View {
         case .terminals: TerminalsScreen(model: model)
         case .toolServers: ToolServersScreen(model: model)
         case .settings: SettingsScreen(model: model)
+        case .activity: ActivityScreen(model: model)
         }
     }
 }
