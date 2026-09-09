@@ -33,40 +33,27 @@ struct PanelView: View {
                     // Pane swap: dock screen > terminal > empty > home. Screens LAYER over an
                     // open terminal instead of evicting it — closing the screen (back) lands
                     // exactly where the user was; focusing a session still clears the screen,
-                    // so a session needing attention keeps outranking a static screen. The
-                    // terminal is a live NSView, so its removal is a plain fade (no reflow);
-                    // pure-translate slides bring the others in. Reduce Motion collapses
-                    // everything to a crossfade. The dock rides every pane but the terminal
-                    // as a trailing overlay — content reserves its inset so nothing hides
-                    // under the glass.
+                    // so a session needing attention keeps outranking a static screen. Pure
+                    // opacity transitions across all panes ensure navigation feels snappy,
+                    // calm, and seamless without jarring reflows or motion. The dock rides
+                    // every pane but the terminal as a trailing overlay — content reserves
+                    // its inset so nothing hides under the glass.
                     GeometryReader { geo in
                         let showsDock = (model.selectedId == nil || model.activeScreen != nil)
                             && geo.size.width >= Theme.dockBreakpoint
                         ZStack {
                             if let screen = model.activeScreen {
                                 ScreenHost(model: model, screen: screen)
-                                    .transition(reduceMotion
-                                        ? .opacity
-                                        : .asymmetric(
-                                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                                            removal: .opacity))
+                                    .transition(.opacity)
                             } else if model.selectedId != nil {
                                 TerminalHero(model: model)
-                                    .transition(reduceMotion
-                                        ? .opacity
-                                        : .asymmetric(
-                                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                                            removal: .opacity))
+                                    .transition(.opacity)
                             } else if model.isEmptyOverview {
                                 EmptyStateView(model: model)
                                     .transition(.opacity)
                             } else {
                                 HomeView(model: model)
-                                    .transition(reduceMotion
-                                        ? .opacity
-                                        : .asymmetric(
-                                            insertion: .move(edge: .leading).combined(with: .opacity),
-                                            removal: .opacity))
+                                    .transition(.opacity)
                             }
                         }
                         .padding(.trailing, showsDock ? Theme.dockInset : 0)
@@ -159,6 +146,8 @@ private struct PanelHeader: View {
             CountBadge(color: Theme.statusRunning, count: model.activeCount)
             CountBadge(color: Theme.statusNeedsYou, count: model.needsYouCount)
             Spacer(minLength: 8)
+            TopNavBar(model: model)
+            Spacer(minLength: 8)
             // The open session's spend, roughly centered in the chrome — tokens always,
             // dollars only when every model in the session is priced.
             if let label = model.selectedUsageLabel {
@@ -168,7 +157,6 @@ private struct PanelHeader: View {
                     .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
                     .transition(.opacity)
-                Spacer(minLength: 8)
             }
             if showsLauncher {
                 LauncherMenu(model: model)
@@ -181,8 +169,63 @@ private struct PanelHeader: View {
         // Badges and the back chevron come and go with the same soft scale-fade.
         .animation(Theme.hoverEase, value: [model.activeCount, model.needsYouCount])
         .animation(Theme.viewSwap, value: model.selectedId != nil)
+        .animation(Theme.viewSwap, value: model.selectedId)
         .animation(Theme.viewSwap, value: model.activeScreen)
         .animation(Theme.viewSwap, value: showsLauncher)
+    }
+}
+
+// MARK: - Top Nav Bar
+
+/// Persistent top navigation bar in the header chrome providing fast, direct access to
+/// home/projects, active terminal, agent activity dashboard, skills, MCP servers, and settings.
+struct TopNavBar: View {
+    let model: AppModel
+
+    var body: some View {
+        HStack(spacing: 4) {
+            navButton(icon: "house", help: "Home / Projects", isSelected: model.selectedId == nil && model.activeScreen == nil) {
+                model.goHome()
+            }
+            if let activeId = model.selectedId ?? model.sessions.first?.id {
+                navButton(icon: "apple.terminal", help: "Active Terminal", isSelected: model.selectedId != nil && model.activeScreen == nil) {
+                    model.focus(activeId)
+                }
+            }
+            navButton(icon: "bubble.left.and.text.bubble.right", help: "Agent Activity & Dashboard", isSelected: model.activeScreen == .activity) {
+                model.open(.activity)
+            }
+            navButton(icon: "wand.and.stars", help: "Skills", isSelected: model.activeScreen == .skills) {
+                model.open(.skills)
+            }
+            navButton(icon: "server.rack", help: "MCP Servers", isSelected: model.activeScreen == .mcpServers) {
+                model.open(.mcpServers)
+            }
+            navButton(icon: "gearshape", help: "Settings", isSelected: model.activeScreen == .settings) {
+                model.open(.settings)
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(Color.white.opacity(0.06)))
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
+    }
+
+    private func navButton(icon: String, help: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(isSelected ? .white : Theme.textSecondary)
+                .frame(width: 26, height: 24)
+                .background {
+                    if isSelected {
+                        Capsule().fill(Theme.accent)
+                    }
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 }
 

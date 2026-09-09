@@ -16,7 +16,7 @@ struct Dock: View {
                        isSelected: selected == .skills) { model.open(.skills) }
             DockButton(icon: "terminal", label: "Terminals",
                        isSelected: selected == .terminals) { model.open(.terminals) }
-            DockButton(icon: "bubble.left.and.text.bubble.right", label: "Activity & Dashboard",
+            DockButton(icon: "bubble.left.and.text.bubble.right", label: "Agent Activity & Dashboard",
                        isSelected: selected == .activity) { model.open(.activity) }
             DockButton(icon: "shippingbox", label: "Tool Servers",
                        isSelected: selected == .toolServers) { model.open(.toolServers) }
