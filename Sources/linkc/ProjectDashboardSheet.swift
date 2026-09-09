@@ -107,33 +107,7 @@ struct ProjectDashboardSheet: View {
                     .foregroundStyle(Theme.textTertiary)
             } else {
                 ForEach(items) { item in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            AgentPill(agent: item.fromAgent)
-                            if let to = item.toAgent {
-                                Image(systemName: "arrow.right")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(Theme.textTertiary)
-                                AgentPill(agent: to)
-                            }
-                            Spacer()
-                            Text(AgeFormat.compact(from: item.timestamp))
-                                .font(.system(size: 9.5))
-                                .foregroundStyle(Theme.textTertiary)
-                        }
-                        Text(item.title)
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(Theme.textPrimary)
-                        if !item.body.isEmpty {
-                            Text(item.body)
-                                .font(.system(size: 10.5, design: .monospaced))
-                                .foregroundStyle(Theme.textSecondary)
-                                .lineLimit(3)
-                        }
-                    }
-                    .padding(10)
-                    .background(Color.white.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    AgentActivityTimelineCard(item: item)
                 }
             }
         }
@@ -147,28 +121,10 @@ struct ProjectDashboardSheet: View {
                     .foregroundStyle(Theme.textTertiary)
             } else {
                 ForEach(dossiers) { dossier in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            AgentPill(agent: dossier.agent)
-                            Spacer()
-                            Text("\(dossier.completedTasksCount) tasks done")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(Theme.statusRunning)
-                        }
-                        if !dossier.claimedFiles.isEmpty {
-                            Text("Claimed: \(dossier.claimedFiles.joined(separator: ", "))")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(Theme.textSecondary)
-                        }
-                        if !dossier.modifiedFiles.isEmpty {
-                            Text("Modified in git: \(dossier.modifiedFiles.joined(separator: ", "))")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(Theme.textTertiary)
-                        }
+                    AgentDossierCard(dossier: dossier) { sid in
+                        model.focus(sid)
+                        onDismiss()
                     }
-                    .padding(10)
-                    .background(Color.white.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
             }
         }
@@ -197,6 +153,7 @@ struct ProjectDashboardSheet: View {
                     .padding(10)
                     .background(Color.white.opacity(0.06))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
                 }
             }
         }

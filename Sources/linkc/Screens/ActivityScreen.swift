@@ -63,53 +63,7 @@ struct ActivityScreen: View {
     }
 
     private func activityCard(_ item: AgentActivityItem) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                AgentPill(agent: item.fromAgent)
-                if let to = item.toAgent {
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(Theme.textTertiary)
-                    AgentPill(agent: to)
-                }
-                Spacer()
-                kindBadge(item.kind)
-                Text(AgeFormat.compact(from: item.timestamp))
-                    .font(.system(size: 10))
-                    .foregroundStyle(Theme.textTertiary)
-            }
-
-            Text(item.title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Theme.textPrimary)
-
-            if !item.body.isEmpty {
-                Text(item.body)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(4)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white.opacity(0.04))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-
-            if !item.claimedFiles.isEmpty {
-                HStack(spacing: 4) {
-                    Image(systemName: "doc.text")
-                        .font(.system(size: 9))
-                        .foregroundStyle(Theme.textTertiary)
-                    Text(item.claimedFiles.joined(separator: ", "))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Theme.textTertiary)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+        AgentActivityTimelineCard(item: item)
     }
 
     private func dossiersView(dossiers: [AgentContributionDossier]) -> some View {
@@ -121,64 +75,63 @@ struct ActivityScreen: View {
     }
 
     private func dossierCard(_ dossier: AgentContributionDossier) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                AgentPill(agent: dossier.agent)
-                if let act = dossier.liveActivity, dossier.status == "working" {
-                    Text(act)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Theme.accent)
-                        .smoothShimmer(isWorking: true)
-                } else {
-                    Text(dossier.status.uppercased())
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(Theme.textTertiary)
-                }
-                Spacer()
-                if let sid = dossier.activeSessionId {
-                    Button("Open Terminal") {
-                        model.focus(sid)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-            }
-
-            HStack(spacing: 12) {
-                metricPill(title: "Completed", value: "\(dossier.completedTasksCount)")
-                metricPill(title: "Claimed Files", value: "\(dossier.claimedFiles.count)")
-                metricPill(title: "Modified", value: "\(dossier.modifiedFiles.count)")
-            }
-
-            if !dossier.claimedFiles.isEmpty {
-                Text("Files Claimed: \(dossier.claimedFiles.joined(separator: ", "))")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Theme.textTertiary)
-            }
-
-            if let deliverable = dossier.lastDeliverable, !deliverable.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Latest Deliverable Output:")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Theme.textTertiary)
-                    Text(deliverable)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(3)
-                        .padding(6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white.opacity(0.04))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-            }
+        AgentDossierCard(dossier: dossier) { sid in
+            model.focus(sid)
         }
-        .padding(12)
-        .background(Color.white.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+    }
+}
+
+// MARK: - Shared Dashboard Components
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if currentX + size.width > maxWidth && currentX > 0 {
+                currentX = 0
+                currentY += lineHeight + spacing
+                lineHeight = 0
+            }
+            lineHeight = max(lineHeight, size.height)
+            currentX += size.width + spacing
+            totalWidth = max(totalWidth, currentX - spacing)
+        }
+
+        return CGSize(width: totalWidth, height: currentY + lineHeight)
     }
 
-    private func metricPill(title: String, value: String) -> some View {
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var currentX: CGFloat = bounds.minX
+        var currentY: CGFloat = bounds.minY
+        var lineHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if currentX + size.width > bounds.maxX && currentX > bounds.minX {
+                currentX = bounds.minX
+                currentY += lineHeight + spacing
+                lineHeight = 0
+            }
+            subview.place(at: CGPoint(x: currentX, y: currentY), proposal: ProposedViewSize(size))
+            lineHeight = max(lineHeight, size.height)
+            currentX += size.width + spacing
+        }
+    }
+}
+
+struct MetricPill: View {
+    let title: String
+    let value: String
+
+    var body: some View {
         HStack(spacing: 4) {
             Text(value)
                 .font(.system(size: 11, weight: .bold))
@@ -192,8 +145,12 @@ struct ActivityScreen: View {
         .background(Color.white.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 5))
     }
+}
 
-    private func kindBadge(_ kind: AgentActivityKind) -> some View {
+struct AgentActivityKindBadge: View {
+    let kind: AgentActivityKind
+
+    var body: some View {
         let (text, color): (String, Color) = {
             switch kind {
             case .completedTask: return ("COMPLETED", Theme.statusRunning)
@@ -212,3 +169,194 @@ struct ActivityScreen: View {
             .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
+
+struct AgentDossierCard: View {
+    let dossier: AgentContributionDossier
+    var onOpenTerminal: ((String) -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Header: AgentPill, live activity phrase with .smoothShimmer(isWorking: dossier.status == "working"), status tag, and prominent Button("Open Terminal") when activeSessionId != nil.
+            HStack(spacing: 8) {
+                AgentPill(agent: dossier.agent)
+
+                if let act = dossier.liveActivity, !act.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: activityIcon(for: act))
+                            .font(.system(size: 10))
+                            .foregroundStyle(dossier.status == "working" ? Theme.accent : Theme.textTertiary)
+                        Text(act)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(dossier.status == "working" ? Theme.accent : Theme.textSecondary)
+                            .lineLimit(1)
+                            .smoothShimmer(isWorking: dossier.status == "working")
+                    }
+                }
+
+                Text(dossier.status.uppercased())
+                    .font(.system(size: 8.5, weight: .bold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(dossier.status == "working" ? Theme.statusRunning.opacity(0.15) : Color.white.opacity(0.06))
+                    .foregroundStyle(dossier.status == "working" ? Theme.statusRunning : Theme.textTertiary)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                Spacer()
+
+                if let sid = dossier.activeSessionId, let onOpenTerminal {
+                    Button("Open Terminal") {
+                        onOpenTerminal(sid)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            }
+
+            // Metrics row: [X Tasks Done] · [Y Files Claimed] · [Z Modified in Git]
+            HStack(spacing: 8) {
+                MetricPill(title: "Tasks Done", value: "\(dossier.completedTasksCount)")
+                MetricPill(title: "Files Claimed", value: "\(dossier.claimedFiles.count)")
+                MetricPill(title: "Modified in Git", value: "\(dossier.modifiedFiles.count)")
+            }
+
+            // Formatted Terminal Thoughts Well
+            if let thoughts = dossier.lastDeliverable, !thoughts.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("LATEST TERMINAL THOUGHTS / OUTPUT")
+                        .font(.system(size: 9, weight: .bold))
+                        .tracking(0.6)
+                        .foregroundStyle(Theme.textTertiary)
+                    Text(thoughts)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(6)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.black.opacity(0.35))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
+                }
+            }
+
+            // Modified Files List
+            if !dossier.modifiedFiles.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("FILES MODIFIED IN WORKSPACE (\(dossier.modifiedFiles.count))")
+                        .font(.system(size: 9, weight: .bold))
+                        .tracking(0.6)
+                        .foregroundStyle(Theme.textTertiary)
+                    FlowLayout(spacing: 4) {
+                        ForEach(dossier.modifiedFiles.prefix(8), id: \.self) { file in
+                            Text(file)
+                                .font(.system(size: 10, design: .monospaced))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                        if dossier.modifiedFiles.count > 8 {
+                            Text("+\(dossier.modifiedFiles.count - 8) more")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Theme.textTertiary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                        }
+                    }
+                }
+            }
+
+            // Claimed Files List
+            if !dossier.claimedFiles.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("FILES CLAIMED (\(dossier.claimedFiles.count))")
+                        .font(.system(size: 9, weight: .bold))
+                        .tracking(0.6)
+                        .foregroundStyle(Theme.textTertiary)
+                    FlowLayout(spacing: 4) {
+                        ForEach(dossier.claimedFiles.prefix(8), id: \.self) { file in
+                            Text(file)
+                                .font(.system(size: 10, design: .monospaced))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                        if dossier.claimedFiles.count > 8 {
+                            Text("+\(dossier.claimedFiles.count - 8) more")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Theme.textTertiary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+    }
+}
+
+struct AgentActivityTimelineCard: View {
+    let item: AgentActivityItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                AgentPill(agent: item.fromAgent)
+                if let to = item.toAgent {
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                    AgentPill(agent: to)
+                }
+                Spacer()
+                AgentActivityKindBadge(kind: item.kind)
+                Text(AgeFormat.compact(from: item.timestamp))
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+
+            Text(item.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+
+            if !item.body.isEmpty {
+                Text(item.body)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(6)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.black.opacity(0.35))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
+            }
+
+            if !item.claimedFiles.isEmpty {
+                FlowLayout(spacing: 4) {
+                    ForEach(item.claimedFiles, id: \.self) { file in
+                        HStack(spacing: 3) {
+                            Image(systemName: "doc.text")
+                                .font(.system(size: 8))
+                            Text(file)
+                                .font(.system(size: 9.5, design: .monospaced))
+                        }
+                        .foregroundStyle(Theme.textTertiary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+    }
+}
+
