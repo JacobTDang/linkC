@@ -7,3 +7,4 @@ DerivedData/
 dist.noindex/
 *.app
 .linkc/
+.worktrees/
