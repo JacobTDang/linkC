@@ -20,6 +20,7 @@ public struct AgentDashboardAggregator: Sendable {
         var completedCounts: [AgentKind: Int] = [:]
         var claimedFilesByAgent: [AgentKind: Set<String>] = [:]
         var lastDeliverables: [AgentKind: String] = [:]
+        var lastDeliverableTimes: [AgentKind: Date] = [:]
 
         // 1. Process Inbox Messages
         for msg in inbox.messages {
@@ -37,7 +38,16 @@ public struct AgentDashboardAggregator: Sendable {
                     itemBody = msg.prompt
                 }
                 completedCounts[msg.fromAgent, default: 0] += 1
-                lastDeliverables[msg.fromAgent] = itemBody
+                let msgTime = msg.deliveredAt ?? msg.createdAt
+                if let prevTime = lastDeliverableTimes[msg.fromAgent] {
+                    if msgTime >= prevTime {
+                        lastDeliverables[msg.fromAgent] = itemBody
+                        lastDeliverableTimes[msg.fromAgent] = msgTime
+                    }
+                } else {
+                    lastDeliverables[msg.fromAgent] = itemBody
+                    lastDeliverableTimes[msg.fromAgent] = msgTime
+                }
             } else {
                 itemTitle = "\(msg.fromAgent.displayName) delegated task to \(msg.toAgent.displayName)"
                 itemBody = msg.prompt
@@ -82,23 +92,61 @@ public struct AgentDashboardAggregator: Sendable {
             )
         }
 
-        // 3. Process Active Agent Records
+        // 3. Process Rate Limits
+        for (idx, limit) in inbox.agentLimits.enumerated() {
+            activityItems.append(
+                AgentActivityItem(
+                    id: "limit-\(limit.agent.rawValue)-\(idx)",
+                    timestamp: limit.limitedAt,
+                    workspacePath: norm,
+                    projectTitle: title,
+                    fromAgent: limit.agent,
+                    toAgent: nil,
+                    kind: .rateLimited,
+                    title: "\(limit.agent.displayName) Rate Limited",
+                    body: limit.reason,
+                    claimedFiles: []
+                )
+            )
+        }
+
+        // 4. Process Intent Broadcasts from recent events
+        for (idx, event) in blackboard.recentEvents.enumerated() where event.action == "broadcast_intent" {
+            activityItems.append(
+                AgentActivityItem(
+                    id: "event-intent-\(idx)-\(event.agentKind.rawValue)",
+                    timestamp: event.timestamp,
+                    workspacePath: norm,
+                    projectTitle: title,
+                    fromAgent: event.agentKind,
+                    toAgent: nil,
+                    kind: .intentBroadcast,
+                    title: "\(event.agentKind.displayName) broadcast goal",
+                    body: event.details,
+                    claimedFiles: []
+                )
+            )
+        }
+
+        // 5. Process Active Agent Records
         for record in blackboard.activeAgents {
             for file in record.claimedFiles {
                 claimedFilesByAgent[record.agentKind, default: []].insert(file)
             }
         }
 
-        // 4. Inspect modified files in git
+        // 6. Inspect modified files in git
         let modifiedFiles = inspectGitModifiedFiles(at: norm)
 
-        // 5. Compile Dossiers
+        // 7. Compile Dossiers
         var dossiers: [AgentContributionDossier] = []
         let allAgentsInProject = Set(liveSessions.map { $0.agent })
             .union(inbox.messages.map { $0.fromAgent })
             .union(inbox.messages.map { $0.toAgent })
+            .union(inbox.agentLimits.map { $0.agent })
             .union(blackboard.activeAgents.map { $0.agentKind })
             .union(blackboard.sharedNotes.map { $0.authorAgent })
+            .union(blackboard.recentEvents.filter { $0.action == "broadcast_intent" }.map { $0.agentKind })
             .filter { $0 != .shell }
 
         for agent in allAgentsInProject {
@@ -122,7 +170,22 @@ public struct AgentDashboardAggregator: Sendable {
         activityItems.sort { $0.timestamp > $1.timestamp }
         dossiers.sort { $0.agent.displayName < $1.agent.displayName }
 
-        let collisions = (try? blackboardStore.checkConflicts(files: Array(claimedFilesByAgent.values.flatMap { $0 }))) ?? []
+        // 8. Check collisions across active agents without self-matching
+        var collisions: [CollisionWarning] = []
+        var seenPairs = Set<String>()
+        for record in blackboard.activeAgents {
+            guard !record.claimedFiles.isEmpty else { continue }
+            let warnings = (try? blackboardStore.checkConflicts(files: record.claimedFiles, excludingPid: record.pid)) ?? []
+            for warning in warnings {
+                let minPid = min(record.pid, warning.pid)
+                let maxPid = max(record.pid, warning.pid)
+                let filesKey = warning.conflictingFiles.sorted().joined(separator: "|")
+                let pairKey = "\(minPid)-\(maxPid):\(filesKey)"
+                if seenPairs.insert(pairKey).inserted {
+                    collisions.append(warning)
+                }
+            }
+        }
 
         return ProjectDashboardData(
             workspacePath: norm,
@@ -141,8 +204,9 @@ public struct AgentDashboardAggregator: Sendable {
         var allItems: [AgentActivityItem] = []
         var allDossiers: [AgentContributionDossier] = []
 
-        for ws in workspaces {
-            let norm = (ws as NSString).standardizingPath
+        let uniqueWorkspaces = Array(Set(workspaces.map { ($0 as NSString).standardizingPath })).sorted()
+
+        for norm in uniqueWorkspaces {
             let matchingSessions = liveSessions
                 .filter { ($0.workspace as NSString).standardizingPath == norm }
                 .map { ($0.id, $0.agent, $0.status, $0.activity) }
@@ -155,7 +219,7 @@ public struct AgentDashboardAggregator: Sendable {
         return GlobalDashboardData(
             activityItems: allItems,
             dossiers: allDossiers,
-            activeProjectCount: workspaces.count
+            activeProjectCount: uniqueWorkspaces.count
         )
     }
 
@@ -180,9 +244,9 @@ public struct AgentDashboardAggregator: Sendable {
 
         do {
             try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else { return [] }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             guard let text = String(data: data, encoding: .utf8) else { return [] }
             return text.split(separator: "\n").compactMap { line -> String? in
                 let lineStr = String(line)

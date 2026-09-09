@@ -139,7 +139,148 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         let data = aggregator.aggregateProject(workspacePath: ws, liveSessions: [])
 
         XCTAssertFalse(data.collisions.isEmpty)
+        XCTAssertEqual(data.collisions.count, 1) // Deduplicated reciprocal warning
         XCTAssertEqual(data.collisions.first?.conflictingFiles, ["Auth.swift"])
+    }
+
+    func testAggregateSingleActiveAgentProducesNoCollision() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let blackboard = BlackboardStore(workspaceRoot: ws)
+
+        _ = try blackboard.broadcastIntent(
+            agentKind: .claude,
+            pid: 1001,
+            goal: "Refactor auth",
+            files: ["Auth.swift"]
+        )
+
+        let aggregator = AgentDashboardAggregator()
+        let data = aggregator.aggregateProject(workspacePath: ws, liveSessions: [])
+
+        XCTAssertTrue(data.collisions.isEmpty)
+    }
+
+    func testAggregateDisjointActiveAgentsProduceNoCollision() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let blackboard = BlackboardStore(workspaceRoot: ws)
+
+        _ = try blackboard.broadcastIntent(
+            agentKind: .claude,
+            pid: 1001,
+            goal: "Refactor auth",
+            files: ["Auth.swift"]
+        )
+        _ = try blackboard.broadcastIntent(
+            agentKind: .cursor,
+            pid: 1002,
+            goal: "Build database",
+            files: ["Database.swift"]
+        )
+
+        let aggregator = AgentDashboardAggregator()
+        let data = aggregator.aggregateProject(workspacePath: ws, liveSessions: [])
+
+        XCTAssertTrue(data.collisions.isEmpty)
+    }
+
+    func testAggregateExtractsRateLimitsAndIntentBroadcasts() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let blackboard = BlackboardStore(workspaceRoot: ws)
+
+        // 1. Record rate limit
+        try inbox.recordLimit(
+            agent: .codex,
+            reason: "HTTP 429 Too Many Requests: TPM limit exceeded",
+            cooldown: 120.0
+        )
+
+        // 2. Broadcast intent
+        _ = try blackboard.broadcastIntent(
+            agentKind: .claude,
+            pid: 2001,
+            goal: "Implement query caching",
+            files: ["Cache.swift"]
+        )
+
+        let aggregator = AgentDashboardAggregator()
+        let data = aggregator.aggregateProject(workspacePath: ws, liveSessions: [])
+
+        // Verify .rateLimited item
+        let rateLimitItem = data.activityItems.first(where: { $0.kind == .rateLimited })
+        XCTAssertNotNil(rateLimitItem)
+        XCTAssertEqual(rateLimitItem?.fromAgent, .codex)
+        XCTAssertNil(rateLimitItem?.toAgent)
+        XCTAssertEqual(rateLimitItem?.title, "Codex Rate Limited")
+        XCTAssertEqual(rateLimitItem?.body, "HTTP 429 Too Many Requests: TPM limit exceeded")
+
+        // Verify .intentBroadcast item
+        let intentItem = data.activityItems.first(where: { $0.kind == .intentBroadcast })
+        XCTAssertNotNil(intentItem)
+        XCTAssertEqual(intentItem?.fromAgent, .claude)
+        XCTAssertNil(intentItem?.toAgent)
+        XCTAssertEqual(intentItem?.title, "Claude Code broadcast goal")
+        XCTAssertTrue(intentItem?.body.contains("Implement query caching") ?? false)
+    }
+
+    func testAggregateRetainsLatestDeliverableByTimestamp() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        let olderDate = Date().addingTimeInterval(-1000)
+        let newerDate = Date().addingTimeInterval(-500)
+
+        // Older completion
+        let olderMsg = PendingMessage(
+            fromAgent: .cursor,
+            toAgent: .claude,
+            prompt: "[Task Completed by Cursor Agent]\nResult / Output:\nOld initial implementation",
+            claimedFiles: ["Auth.swift"],
+            status: .delivered,
+            createdAt: olderDate,
+            deliveredAt: olderDate
+        )
+
+        // Newer completion
+        let newerMsg = PendingMessage(
+            fromAgent: .cursor,
+            toAgent: .claude,
+            prompt: "[Task Completed by Cursor Agent]\nResult / Output:\nNew polished implementation with full test suite",
+            claimedFiles: ["Auth.swift"],
+            status: .delivered,
+            createdAt: newerDate,
+            deliveredAt: newerDate
+        )
+
+        // Save messages in reverse order (newer first, older second) to test order independence
+        var rawInbox = try inbox.load()
+        rawInbox.messages = [newerMsg, olderMsg]
+        try inbox.saveRaw(rawInbox)
+
+        let aggregator = AgentDashboardAggregator()
+        let data = aggregator.aggregateProject(workspacePath: ws, liveSessions: [])
+
+        let cursorDossier = data.dossiers.first(where: { $0.agent == .cursor })
+        XCTAssertNotNil(cursorDossier)
+        XCTAssertEqual(cursorDossier?.lastDeliverable, "New polished implementation with full test suite")
+        XCTAssertEqual(cursorDossier?.completedTasksCount, 2)
+    }
+
+    func testAggregateGlobalDeduplicatesWorkspaces() throws {
+        let ws1URL = tempDir.appendingPathComponent("ws1")
+        try FileManager.default.createDirectory(at: ws1URL, withIntermediateDirectories: true)
+        let ws1 = ws1URL.path
+
+        let inbox1 = InboxStore(workspaceRoot: ws1)
+        _ = try inbox1.enqueue(from: .claude, to: .codex, prompt: "Refactor router")
+
+        let aggregator = AgentDashboardAggregator()
+        // Pass ws1 three times with trailing slash / standardization differences
+        let duplicatedWorkspaces = [ws1, "\(ws1)/", (ws1 as NSString).standardizingPath]
+        let globalData = aggregator.aggregateGlobal(workspaces: duplicatedWorkspaces, liveSessions: [])
+
+        XCTAssertEqual(globalData.activeProjectCount, 1)
+        XCTAssertEqual(globalData.activityItems.count, 1)
     }
 
     func testAggregateWithGitModifiedFiles() throws {
