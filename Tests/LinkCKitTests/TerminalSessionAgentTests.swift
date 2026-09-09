@@ -76,7 +76,7 @@ final class TerminalSessionAgentTests: XCTestCase {
 
     func testAgentDescriptorCLIArgs() {
         let cursorArgs = AgentDescriptor.arguments(for: .cursor, mode: .continueLast)
-        XCTAssertEqual(cursorArgs, ["agent", "--yolo", "--continue"])
+        XCTAssertEqual(cursorArgs, ["agent", "--yolo", "--trust", "--approve-mcps", "--continue"])
 
         let agyArgs = AgentDescriptor.arguments(for: .agy, mode: .continueLast)
         XCTAssertEqual(agyArgs, ["--dangerously-skip-permissions", "--continue"])

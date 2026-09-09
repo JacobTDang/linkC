@@ -346,4 +346,49 @@ final class TerminalPreviewTests: XCTestCase {
         ]
         XCTAssertNil(TerminalPreview.liveActivity(from: claudeIdleRows), "Claude idle boxed prompt must return nil even if past sautéing was in recent rows")
     }
+
+    func testExtractsCursorBrailleSpinnerActivity() {
+        let workingRows1 = [
+            "echo hello",
+            "⠀⠞ Working",
+            "  → Add a follow-up                               ctrl+c to stop",
+            "  Auto                                            Run Everything"
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: workingRows1), "Working")
+
+        let workingRows2 = [
+            "what is 2+2",
+            "⠠⠜ Working",
+            "  → Add a follow-up                               ctrl+c to stop"
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: workingRows2), "Working")
+
+        let runningRows = [
+            "Running that now.",
+            "⠀⠞ Running  23 tokens",
+            "  → Add a follow-up                               ctrl+c to stop"
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: runningRows), "Running")
+    }
+
+    func testLiveActivityReturnsNilForCursorIdleAndFinishedPrompts() {
+        let cursorStartupRows = [
+            "  Cursor Agent",
+            "  v2026.09.08-6caf4ff",
+            "  Tip: Use /config to customize Cursor settings and behavior.",
+            "  → Plan, search, build anything",
+            "  Auto                                    Run Everything",
+            "  ~/projects/linkC · main"
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: cursorStartupRows), "Cursor initial prompt must be idle")
+
+        let cursorFinishedRows = [
+            "echo hello",
+            "hello",
+            "  → Add a follow-up",
+            "  Auto                                    Run Everything",
+            "  ~/projects/linkC · main"
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: cursorFinishedRows), "Cursor prompt without 'ctrl+c to stop' must be idle")
+    }
 }

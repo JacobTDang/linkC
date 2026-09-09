@@ -574,4 +574,59 @@ final class AppCoordinatorRelayTests: XCTestCase {
             $0.title == "linkC: Codex Rate Limited" && $0.body.contains("429 Too Many Requests")
         }), "Desktop notification should be posted for Codex rate limit")
     }
+
+    /// Test 12: Autonotifies delegating orchestrator agent upon task completion.
+    @MainActor
+    func testTaskCompletionAutonotifiesDelegatingOrchestratorAgent() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+
+        // Step 1: Orchestrator (Claude) delegates task to Cursor
+        let delegatedMsg = try inbox.enqueue(
+            from: .claude,
+            to: .cursor,
+            prompt: "Build user authentication module",
+            files: ["Auth.swift"]
+        )
+        try inbox.markDelivered(id: delegatedMsg.id)
+
+        // Step 2: Spawn Cursor session and start in .working state
+        let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
+        coordinator.store.updateState(id: cursorSession.id, to: .working)
+
+        // Inject output into Cursor's terminal
+        coordinator.terminals.sendInput(sessionId: cursorSession.id, text: "Generated Auth.swift with 5 tests passing.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: cursorSession.id)?.recentOutput(lines: 10).contains("Generated Auth.swift") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        // Step 3: Trigger completion notification (simulating turn end)
+        let notified = coordinator.notifyDelegatorOnTaskCompletion(sessionId: cursorSession.id, workspacePath: ws)
+        XCTAssertTrue(notified, "Must successfully notify delegator")
+
+        // Step 4: Verify that inboxStore received a completion message addressed to Claude from Cursor
+        let loaded = try inbox.load()
+        guard let completionMsg = loaded.messages.first(where: {
+            $0.fromAgent == .cursor && $0.toAgent == .claude && $0.prompt.hasPrefix("[Task Completed by Cursor Agent]")
+        }) else {
+            return XCTFail("Expected completion message addressed to Claude from Cursor")
+        }
+
+        XCTAssertTrue(completionMsg.prompt.contains("Build user authentication module"))
+        XCTAssertTrue(completionMsg.prompt.contains("Generated Auth.swift with 5 tests passing."))
+        XCTAssertEqual(completionMsg.claimedFiles, ["Auth.swift"])
+
+        // Step 5: Verify desktop notification
+        XCTAssertTrue(sink.deliveries.contains(where: {
+            $0.title == "linkC: Cursor Agent Completed Task"
+        }), "Desktop notification should be posted for task completion")
+
+        // Step 6: Verify deduplication - calling again should be a no-op
+        let renotified = coordinator.notifyDelegatorOnTaskCompletion(sessionId: cursorSession.id, workspacePath: ws)
+        XCTAssertFalse(renotified, "Duplicate notification must be suppressed")
+    }
 }

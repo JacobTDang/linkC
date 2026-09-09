@@ -44,11 +44,11 @@ final class AgentDescriptorTests: XCTestCase {
 
         // Cursor
         let cursorNew = AgentDescriptor.arguments(for: .cursor, mode: .new)
-        XCTAssertEqual(cursorNew, ["agent", "--yolo"])
+        XCTAssertEqual(cursorNew, ["agent", "--yolo", "--trust", "--approve-mcps"])
         let cursorContinue = AgentDescriptor.arguments(for: .cursor, mode: .continueLast)
-        XCTAssertEqual(cursorContinue, ["agent", "--yolo", "--continue"])
+        XCTAssertEqual(cursorContinue, ["agent", "--yolo", "--trust", "--approve-mcps", "--continue"])
         let cursorResume = AgentDescriptor.arguments(for: .cursor, mode: .resume)
-        XCTAssertEqual(cursorResume, ["agent", "--yolo", "--resume"])
+        XCTAssertEqual(cursorResume, ["agent", "--yolo", "--trust", "--approve-mcps", "--resume"])
 
         // Codex
         let codexNew = AgentDescriptor.arguments(for: .codex, mode: .new)

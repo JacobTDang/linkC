@@ -62,7 +62,7 @@ public enum TerminalPreview {
     }
 
     /// A prompt marker alone on its row promises input, not output — chrome either way.
-    public static let barePrompts: Set<String> = ["❯", ">", "$", "›", "%", "?", "»"]
+    public static let barePrompts: Set<String> = ["❯", ">", "$", "›", "%", "?", "»", "→"]
 
     /// Checks if a line is an interactive input prompt awaiting user submission.
     public static func isPromptRow(_ text: String) -> Bool {
@@ -74,6 +74,11 @@ public enum TerminalPreview {
         if trimmed.hasPrefix("❯ ") && trimmed.count <= 3 { return true }
         if trimmed.hasPrefix("› ") && trimmed.count <= 3 { return true }
         if trimmed.hasPrefix("> ") && trimmed.count <= 3 { return true }
+        if (trimmed.hasPrefix("→") || trimmed.hasPrefix("->")) && !trimmed.contains("ctrl+c to stop") {
+            if trimmed.count <= 3 || trimmed.contains("Plan, search, build anything") || trimmed.contains("Add a follow-up") {
+                return true
+            }
+        }
         return false
     }
 
@@ -117,11 +122,15 @@ public enum TerminalPreview {
                 if !cleaned.isEmpty { return cleaned }
             }
 
-            // Spinner row with CLI spinner symbol
+            // Spinner row with CLI spinner symbol (including Braille patterns)
             let cleaned = cleanLeadingSpinner(text)
             if cleaned != text && !cleaned.isEmpty {
                 if let parenIndex = cleaned.firstIndex(of: "(") {
                     let extracted = String(cleaned[..<parenIndex]).trimmingCharacters(in: .whitespaces)
+                    if !extracted.isEmpty { return extracted }
+                }
+                if let doubleSpace = cleaned.range(of: "  ") {
+                    let extracted = String(cleaned[..<doubleSpace.lowerBound]).trimmingCharacters(in: .whitespaces)
                     if !extracted.isEmpty { return extracted }
                 }
                 return cleaned
@@ -136,6 +145,10 @@ public enum TerminalPreview {
             if actionPrefixes.contains(where: { cleaned.hasPrefix($0) }) {
                 if let parenIndex = cleaned.firstIndex(of: "(") {
                     let extracted = String(cleaned[..<parenIndex]).trimmingCharacters(in: .whitespaces)
+                    if !extracted.isEmpty { return extracted }
+                }
+                if let doubleSpace = cleaned.range(of: "  ") {
+                    let extracted = String(cleaned[..<doubleSpace.lowerBound]).trimmingCharacters(in: .whitespaces)
                     if !extracted.isEmpty { return extracted }
                 }
                 return cleaned
@@ -153,8 +166,13 @@ public enum TerminalPreview {
             "✻", "✳", "*", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
             "●", "○", "◐", "◑", "◒", "◓", "✦", "✧", "✨", "-", "|", "/", "\\"
         ]
-        while let first = t.first, spinnerChars.contains(first) || first.isWhitespace {
-            t.removeFirst()
+        while let first = t.first {
+            let isBraille = first.unicodeScalars.contains { (0x2800...0x28FF).contains($0.value) }
+            if isBraille || spinnerChars.contains(first) || first.isWhitespace {
+                t.removeFirst()
+            } else {
+                break
+            }
         }
         return t
     }

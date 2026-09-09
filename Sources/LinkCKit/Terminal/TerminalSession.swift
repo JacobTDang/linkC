@@ -186,7 +186,20 @@ public final class TerminalSession {
                 terminalView.send(txt: trimmed)
             }
         }
+        terminalView.send(txt: "\r")
         terminalView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+
+        // Delayed newline submission:
+        // CLI agents running on Node.js/Ink/React (e.g. Cursor Agent) or complex TTY runloops
+        // process raw paste input asynchronously in a component state update. If Return is sent
+        // exclusively in the same frame/packet, it can be swallowed or discarded before rendering completes.
+        // A secondary delayed dispatch guarantees autonomous submission without manual Enter.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(75))
+            guard let self = self, self.liveness.withLock({ $0 }) else { return }
+            self.terminalView.send(txt: "\r")
+            self.terminalView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        }
     }
 
     /// The last `lines` content rows of the terminal's visible screen, as plain text — for the
@@ -211,11 +224,12 @@ public final class TerminalSession {
         guard let view = _terminalView else { return nil }
         let terminal = view.getTerminal()
         var rows: [String] = []
-        let total = terminal.rows
-        let start = max(0, total - 12)
-        for row in start..<total {
+        for row in 0..<terminal.rows {
             if let line = terminal.getLine(row: row)?.translateToString(trimRight: true) {
-                rows.append(line)
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty {
+                    rows.append(line)
+                }
             }
         }
         return TerminalPreview.liveActivity(from: rows)

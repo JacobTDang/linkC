@@ -14,6 +14,9 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Applications/Cursor.app/Contents/Resources/app/bin/cursor"), .cursor)
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/usr/local/bin/cursor"), .cursor)
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "cursor"), .cursor)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/user/.local/bin/cursor-agent"), .cursor)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/user/.local/share/cursor-agent/versions/2026.09.08/node"), .cursor)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "cursor-agent"), .cursor)
 
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/codex"), .codex)
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "codex"), .codex)

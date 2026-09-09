@@ -85,7 +85,7 @@ public struct AgentDescriptor: Sendable {
                     "/usr/local/bin/cursor",
                     "/Applications/Cursor.app/Contents/Resources/app/bin/cursor"
                 ],
-                yoloFlags: ["agent", "--yolo"],
+                yoloFlags: ["agent", "--yolo", "--trust", "--approve-mcps"],
                 continueArgs: ["--continue"],
                 resumeArgs: ["--resume"]
             )

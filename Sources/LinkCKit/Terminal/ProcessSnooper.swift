@@ -15,11 +15,14 @@ public struct ProcessSnooper: Sendable {
             return .claude
         case "agy":
             return .agy
-        case "cursor":
+        case "cursor", "cursor-agent":
             return .cursor
         case "codex":
             return .codex
         default:
+            if trimmed.contains("cursor-agent") {
+                return .cursor
+            }
             return nil
         }
     }
