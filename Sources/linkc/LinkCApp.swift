@@ -146,6 +146,20 @@ final class AppModel {
     @ObservationIgnored private var cachedInboxes: [String: Inbox] = [:]
     @ObservationIgnored private var lastInboxFetch: [String: Date] = [:]
 
+    public var globalDashboardData: GlobalDashboardData?
+    public var projectDashboardData: [String: ProjectDashboardData] = [:]
+
+    public func refreshDashboard(workspacePath: String? = nil) {
+        Task { @MainActor in
+            guard let coordinator else { return }
+            globalDashboardData = coordinator.fetchGlobalDashboard()
+            if let ws = workspacePath {
+                let norm = (ws as NSString).standardizingPath
+                projectDashboardData[norm] = coordinator.fetchProjectDashboard(workspacePath: norm)
+            }
+        }
+    }
+
     var sessions: [Session] { coordinator?.store.sessions ?? [] }
     var projectGroups: [ProjectGroup] { ProjectGroup.group(sessions: sessions) }
     /// Previous sessions no longer live — shown as dimmed restorable cards on the home overview.

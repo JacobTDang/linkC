@@ -128,3 +128,15 @@ public struct ProjectSwarm: Sendable, Identifiable, Equatable {
         self.collisions = collisions
     }
 }
+
+/// The rail's destinations — full screens the panel can show in place of home.
+public enum PanelScreen: String, CaseIterable, Identifiable, Sendable {
+    case mcpServers
+    case skills
+    case terminals
+    case toolServers
+    case settings
+    case activity
+
+    public var id: String { rawValue }
+}

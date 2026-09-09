@@ -36,6 +36,9 @@ public final class AppCoordinator {
     /// Active multi-agent project swarms detected across sessions.
     public private(set) var swarms: [ProjectSwarm] = []
 
+    /// Aggregates activity items and dossiers for project and global dashboard screens.
+    public let dashboardAggregator = AgentDashboardAggregator()
+
     private let hookServer: HookServer
     private let notifications: NotificationManager
     private let claudePath: String
@@ -108,6 +111,26 @@ public final class AppCoordinator {
             userSettingsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/settings.json"),
             manifestDir: linkCDir,
             isWatching: isWatching
+        )
+    }
+
+    private struct NullSink: NotificationSink {
+        func deliver(id: String, title: String, body: String) {}
+    }
+
+    /// Headless / testing convenience initializer.
+    public convenience init(
+        workspaceDir: URL = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-\(UUID().uuidString)")
+    ) {
+        self.init(
+            terminals: TerminalSessionManager(),
+            hookServer: HookServer(port: 0),
+            notifications: NotificationManager(sink: NullSink(), now: { Date() }),
+            claudePath: "/usr/bin/true",
+            settingsDir: workspaceDir,
+            userSettingsURL: workspaceDir.appendingPathComponent("user-settings.json"),
+            manifestDir: workspaceDir,
+            isWatching: { _ in false }
         )
     }
 
@@ -636,6 +659,26 @@ public final class AppCoordinator {
             )
         }
         self.swarms = newSwarms
+    }
+
+    // MARK: - Agent Dashboard Integration
+
+    public func fetchProjectDashboard(workspacePath: String) -> ProjectDashboardData {
+        let norm = (workspacePath as NSString).standardizingPath
+        let sessions = store.sessions.filter { ($0.cwd as NSString).standardizingPath == norm }.map { s in
+            let act = terminals.session(id: s.id)?.liveActivityLine()
+            return (id: s.id, agent: s.agentKind, status: s.state.rawValue, activity: act)
+        }
+        return dashboardAggregator.aggregateProject(workspacePath: norm, liveSessions: sessions)
+    }
+
+    public func fetchGlobalDashboard() -> GlobalDashboardData {
+        let workspaces = Array(Set(store.sessions.map { ($0.cwd as NSString).standardizingPath }))
+        let sessions = store.sessions.map { s in
+            let act = terminals.session(id: s.id)?.liveActivityLine()
+            return (id: s.id, workspace: s.cwd, agent: s.agentKind, status: s.state.rawValue, activity: act)
+        }
+        return dashboardAggregator.aggregateGlobal(workspaces: workspaces, liveSessions: sessions)
     }
 
     // MARK: - Inbox Dispatcher & Limit Auto-Rerouting
