@@ -5,7 +5,7 @@ public struct AgentDashboardAggregator: Sendable {
 
     public func aggregateProject(
         workspacePath: String,
-        liveSessions: [(id: String, agent: AgentKind, status: String, activity: String?)]
+        liveSessions: [(id: String, agent: AgentKind, status: String, activity: String?, recentOutput: String)]
     ) -> ProjectDashboardData {
         let norm = (workspacePath as NSString).standardizingPath
         let title = (norm as NSString).lastPathComponent
@@ -135,10 +135,30 @@ public struct AgentDashboardAggregator: Sendable {
             }
         }
 
-        // 6. Inspect modified files in git
+        // 6. Synthesize live session activity items
+        for session in liveSessions where !session.recentOutput.isEmpty || session.activity != nil {
+            let desc = session.activity ?? "Active in terminal"
+            let body = session.recentOutput.isEmpty ? desc : session.recentOutput
+            activityItems.append(
+                AgentActivityItem(
+                    id: "live-session-\(session.id)",
+                    timestamp: Date(),
+                    workspacePath: norm,
+                    projectTitle: title,
+                    fromAgent: session.agent,
+                    toAgent: nil,
+                    kind: .intentBroadcast,
+                    title: "\(session.agent.displayName) active in terminal",
+                    body: body,
+                    claimedFiles: []
+                )
+            )
+        }
+
+        // 7. Inspect modified files in git
         let modifiedFiles = inspectGitModifiedFiles(at: norm)
 
-        // 7. Compile Dossiers
+        // 8. Compile Dossiers
         var dossiers: [AgentContributionDossier] = []
         let allAgentsInProject = Set(liveSessions.map { $0.agent })
             .union(inbox.messages.map { $0.fromAgent })
@@ -151,6 +171,7 @@ public struct AgentDashboardAggregator: Sendable {
 
         for agent in allAgentsInProject {
             let session = liveSessions.first(where: { $0.agent == agent })
+            let deliverable = lastDeliverables[agent] ?? (session?.recentOutput.isEmpty == false ? session?.recentOutput : nil)
             let dossier = AgentContributionDossier(
                 agent: agent,
                 workspacePath: norm,
@@ -160,7 +181,7 @@ public struct AgentDashboardAggregator: Sendable {
                 completedTasksCount: completedCounts[agent] ?? 0,
                 claimedFiles: Array(claimedFilesByAgent[agent] ?? []).sorted(),
                 modifiedFiles: modifiedFiles,
-                lastDeliverable: lastDeliverables[agent],
+                lastDeliverable: deliverable,
                 notesAuthoredCount: blackboard.sharedNotes.filter { $0.authorAgent == agent }.count
             )
             dossiers.append(dossier)
@@ -170,7 +191,7 @@ public struct AgentDashboardAggregator: Sendable {
         activityItems.sort { $0.timestamp > $1.timestamp }
         dossiers.sort { $0.agent.displayName < $1.agent.displayName }
 
-        // 8. Check collisions across active agents directly in memory
+        // 9. Check collisions across active agents directly in memory
         var collisions: [CollisionWarning] = []
         for (i, agentA) in blackboard.activeAgents.enumerated() {
             for agentB in blackboard.activeAgents[(i + 1)...] {
@@ -201,7 +222,7 @@ public struct AgentDashboardAggregator: Sendable {
 
     public func aggregateGlobal(
         workspaces: [String],
-        liveSessions: [(id: String, workspace: String, agent: AgentKind, status: String, activity: String?)]
+        liveSessions: [(id: String, workspace: String, agent: AgentKind, status: String, activity: String?, recentOutput: String)]
     ) -> GlobalDashboardData {
         var allItems: [AgentActivityItem] = []
         var allDossiers: [AgentContributionDossier] = []
@@ -211,7 +232,7 @@ public struct AgentDashboardAggregator: Sendable {
         for norm in uniqueWorkspaces {
             let matchingSessions = liveSessions
                 .filter { ($0.workspace as NSString).standardizingPath == norm }
-                .map { ($0.id, $0.agent, $0.status, $0.activity) }
+                .map { ($0.id, $0.agent, $0.status, $0.activity, $0.recentOutput) }
             let projData = aggregateProject(workspacePath: norm, liveSessions: matchingSessions)
             allItems.append(contentsOf: projData.activityItems)
             allDossiers.append(contentsOf: projData.dossiers)

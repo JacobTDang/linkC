@@ -64,10 +64,10 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         )
 
         let aggregator = AgentDashboardAggregator()
-        let liveSessions = [(id: "s1", agent: AgentKind.cursor, status: "working", activity: Optional("Compiling Auth.swift"))]
+        let liveSessions = [(id: "s1", agent: AgentKind.cursor, status: "working", activity: Optional("Compiling Auth.swift"), recentOutput: "")]
         let data = aggregator.aggregateProject(workspacePath: ws, liveSessions: liveSessions)
 
-        XCTAssertEqual(data.activityItems.count, 3)
+        XCTAssertEqual(data.activityItems.count, 4)
         // Check completed task parsed
         let completed = data.activityItems.first(where: { $0.kind == .completedTask })
         XCTAssertNotNil(completed)
@@ -106,15 +106,15 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         _ = try blackboard2.addSharedNote(authorAgent: .codex, title: "DB Spec", content: "SQLite schema v2")
 
         let aggregator = AgentDashboardAggregator()
-        let liveSessions: [(id: String, workspace: String, agent: AgentKind, status: String, activity: String?)] = [
-            (id: "s1", workspace: ws1, agent: AgentKind.codex, status: "working", activity: "Editing Router.swift"),
-            (id: "s2", workspace: ws2, agent: AgentKind.claude, status: "idle", activity: nil)
+        let liveSessions: [(id: String, workspace: String, agent: AgentKind, status: String, activity: String?, recentOutput: String)] = [
+            (id: "s1", workspace: ws1, agent: AgentKind.codex, status: "working", activity: "Editing Router.swift", recentOutput: ""),
+            (id: "s2", workspace: ws2, agent: AgentKind.claude, status: "idle", activity: nil, recentOutput: "")
         ]
 
         let globalData = aggregator.aggregateGlobal(workspaces: [ws1, ws2], liveSessions: liveSessions)
 
         XCTAssertEqual(globalData.activeProjectCount, 2)
-        XCTAssertEqual(globalData.activityItems.count, 2)
+        XCTAssertEqual(globalData.activityItems.count, 3)
         XCTAssertEqual(globalData.dossiers.count, 4) // (claude, codex) in ws1 + (claude, codex) in ws2
     }
 
@@ -295,12 +295,38 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         let testFile = tempDir.appendingPathComponent("Auth.swift")
         try "func authenticate() {}".write(to: testFile, atomically: true, encoding: .utf8)
 
-        let liveSessions = [(id: "s1", agent: AgentKind.cursor, status: "working", activity: Optional("Writing code"))]
+        let liveSessions = [(id: "s1", agent: AgentKind.cursor, status: "working", activity: Optional("Writing code"), recentOutput: "")]
         let aggregator = AgentDashboardAggregator()
         let data = aggregator.aggregateProject(workspacePath: ws, liveSessions: liveSessions)
 
         let cursorDossier = data.dossiers.first(where: { $0.agent == .cursor })
         XCTAssertNotNil(cursorDossier)
         XCTAssertTrue(cursorDossier?.modifiedFiles.contains("Auth.swift") ?? false)
+    }
+
+    func testAggregateExtractsLiveSessionScrollbackAndGeneratesLiveActivity() {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let aggregator = AgentDashboardAggregator()
+
+        let liveSessions = [(
+            id: "s-live-1",
+            agent: AgentKind.cursor,
+            status: "working",
+            activity: Optional("Compiling Auth.swift"),
+            recentOutput: "Running build step...\nGenerated 12 symbols.\nAll clear."
+        )]
+
+        let data = aggregator.aggregateProject(workspacePath: ws, liveSessions: liveSessions)
+
+        // Dossier should fall back lastDeliverable to recentOutput when no inbox message exists
+        let cursorDossier = data.dossiers.first(where: { $0.agent == .cursor })
+        XCTAssertNotNil(cursorDossier)
+        XCTAssertEqual(cursorDossier?.lastDeliverable, "Running build step...\nGenerated 12 symbols.\nAll clear.")
+        XCTAssertEqual(cursorDossier?.liveActivity, "Compiling Auth.swift")
+
+        // Timeline should include an activity item for the live active session
+        let liveItem = data.activityItems.first(where: { $0.fromAgent == .cursor && $0.title.contains("active in terminal") })
+        XCTAssertNotNil(liveItem)
+        XCTAssertTrue(liveItem?.body.contains("Generated 12 symbols") ?? false)
     }
 }

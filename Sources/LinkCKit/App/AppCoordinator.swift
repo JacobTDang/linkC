@@ -666,8 +666,10 @@ public final class AppCoordinator {
     public func fetchProjectDashboard(workspacePath: String) -> ProjectDashboardData {
         let norm = (workspacePath as NSString).standardizingPath
         let sessions = store.sessions.filter { ($0.cwd as NSString).standardizingPath == norm }.map { s in
-            let act = terminals.session(id: s.id)?.liveActivityLine()
-            return (id: s.id, agent: s.agentKind, status: s.state.rawValue, activity: act)
+            let term = terminals.session(id: s.id)
+            let act = term?.liveActivityLine()
+            let out = term?.recentOutput(lines: 15) ?? ""
+            return (id: s.id, agent: s.agentKind, status: s.state.rawValue, activity: act, recentOutput: out)
         }
         return dashboardAggregator.aggregateProject(workspacePath: norm, liveSessions: sessions)
     }
@@ -675,8 +677,10 @@ public final class AppCoordinator {
     public func fetchProjectDashboardAsync(workspacePath: String) async -> ProjectDashboardData {
         let norm = (workspacePath as NSString).standardizingPath
         let sessions = store.sessions.filter { ($0.cwd as NSString).standardizingPath == norm }.map { s in
-            let act = terminals.session(id: s.id)?.liveActivityLine()
-            return (id: s.id, agent: s.agentKind, status: s.state.rawValue, activity: act)
+            let term = terminals.session(id: s.id)
+            let act = term?.liveActivityLine()
+            let out = term?.recentOutput(lines: 15) ?? ""
+            return (id: s.id, agent: s.agentKind, status: s.state.rawValue, activity: act, recentOutput: out)
         }
         let aggregator = dashboardAggregator
         return await Task.detached {
@@ -687,8 +691,10 @@ public final class AppCoordinator {
     public func fetchGlobalDashboard() -> GlobalDashboardData {
         let workspaces = Array(Set(store.sessions.map { ($0.cwd as NSString).standardizingPath }))
         let sessions = store.sessions.map { s in
-            let act = terminals.session(id: s.id)?.liveActivityLine()
-            return (id: s.id, workspace: s.cwd, agent: s.agentKind, status: s.state.rawValue, activity: act)
+            let term = terminals.session(id: s.id)
+            let act = term?.liveActivityLine()
+            let out = term?.recentOutput(lines: 15) ?? ""
+            return (id: s.id, workspace: s.cwd, agent: s.agentKind, status: s.state.rawValue, activity: act, recentOutput: out)
         }
         return dashboardAggregator.aggregateGlobal(workspaces: workspaces, liveSessions: sessions)
     }
@@ -696,8 +702,10 @@ public final class AppCoordinator {
     public func fetchGlobalDashboardAsync() async -> GlobalDashboardData {
         let workspaces = Array(Set(store.sessions.map { ($0.cwd as NSString).standardizingPath }))
         let sessions = store.sessions.map { s in
-            let act = terminals.session(id: s.id)?.liveActivityLine()
-            return (id: s.id, workspace: s.cwd, agent: s.agentKind, status: s.state.rawValue, activity: act)
+            let term = terminals.session(id: s.id)
+            let act = term?.liveActivityLine()
+            let out = term?.recentOutput(lines: 15) ?? ""
+            return (id: s.id, workspace: s.cwd, agent: s.agentKind, status: s.state.rawValue, activity: act, recentOutput: out)
         }
         let aggregator = dashboardAggregator
         return await Task.detached {
