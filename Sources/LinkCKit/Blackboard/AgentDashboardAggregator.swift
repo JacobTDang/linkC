@@ -170,19 +170,21 @@ public struct AgentDashboardAggregator: Sendable {
         activityItems.sort { $0.timestamp > $1.timestamp }
         dossiers.sort { $0.agent.displayName < $1.agent.displayName }
 
-        // 8. Check collisions across active agents without self-matching
+        // 8. Check collisions across active agents directly in memory
         var collisions: [CollisionWarning] = []
-        var seenPairs = Set<String>()
-        for record in blackboard.activeAgents {
-            guard !record.claimedFiles.isEmpty else { continue }
-            let warnings = (try? blackboardStore.checkConflicts(files: record.claimedFiles, excludingPid: record.pid)) ?? []
-            for warning in warnings {
-                let minPid = min(record.pid, warning.pid)
-                let maxPid = max(record.pid, warning.pid)
-                let filesKey = warning.conflictingFiles.sorted().joined(separator: "|")
-                let pairKey = "\(minPid)-\(maxPid):\(filesKey)"
-                if seenPairs.insert(pairKey).inserted {
-                    collisions.append(warning)
+        for (i, agentA) in blackboard.activeAgents.enumerated() {
+            for agentB in blackboard.activeAgents[(i + 1)...] {
+                guard agentA.pid != agentB.pid else { continue }
+                let overlap = agentA.claimedFiles.filter { agentB.claimedFiles.contains($0) }
+                if !overlap.isEmpty {
+                    collisions.append(
+                        CollisionWarning(
+                            conflictingAgent: agentB.agentKind,
+                            pid: agentB.pid,
+                            conflictingFiles: overlap,
+                            goal: agentB.goal
+                        )
+                    )
                 }
             }
         }

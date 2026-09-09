@@ -672,6 +672,18 @@ public final class AppCoordinator {
         return dashboardAggregator.aggregateProject(workspacePath: norm, liveSessions: sessions)
     }
 
+    public func fetchProjectDashboardAsync(workspacePath: String) async -> ProjectDashboardData {
+        let norm = (workspacePath as NSString).standardizingPath
+        let sessions = store.sessions.filter { ($0.cwd as NSString).standardizingPath == norm }.map { s in
+            let act = terminals.session(id: s.id)?.liveActivityLine()
+            return (id: s.id, agent: s.agentKind, status: s.state.rawValue, activity: act)
+        }
+        let aggregator = dashboardAggregator
+        return await Task.detached {
+            aggregator.aggregateProject(workspacePath: norm, liveSessions: sessions)
+        }.value
+    }
+
     public func fetchGlobalDashboard() -> GlobalDashboardData {
         let workspaces = Array(Set(store.sessions.map { ($0.cwd as NSString).standardizingPath }))
         let sessions = store.sessions.map { s in
@@ -679,6 +691,18 @@ public final class AppCoordinator {
             return (id: s.id, workspace: s.cwd, agent: s.agentKind, status: s.state.rawValue, activity: act)
         }
         return dashboardAggregator.aggregateGlobal(workspaces: workspaces, liveSessions: sessions)
+    }
+
+    public func fetchGlobalDashboardAsync() async -> GlobalDashboardData {
+        let workspaces = Array(Set(store.sessions.map { ($0.cwd as NSString).standardizingPath }))
+        let sessions = store.sessions.map { s in
+            let act = terminals.session(id: s.id)?.liveActivityLine()
+            return (id: s.id, workspace: s.cwd, agent: s.agentKind, status: s.state.rawValue, activity: act)
+        }
+        let aggregator = dashboardAggregator
+        return await Task.detached {
+            aggregator.aggregateGlobal(workspaces: workspaces, liveSessions: sessions)
+        }.value
     }
 
     // MARK: - Inbox Dispatcher & Limit Auto-Rerouting

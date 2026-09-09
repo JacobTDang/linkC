@@ -9,7 +9,6 @@ struct ProjectDashboardSheet: View {
 
     @State private var dashboardData: ProjectDashboardData?
     @State private var selectedTab: Tab = .timeline
-    @State private var refreshTimer: Timer?
 
     enum Tab: String, CaseIterable {
         case timeline = "Dialogue & Tasks"
@@ -90,17 +89,13 @@ struct ProjectDashboardSheet: View {
         }
         .frame(width: 520, height: 460)
         .background(Color(white: 0.12))
-        .onAppear {
-            refresh()
-            refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { _ in
-                Task { @MainActor in
-                    refresh()
-                }
+        .task {
+            await refresh()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1.5))
+                if Task.isCancelled { break }
+                await refresh()
             }
-        }
-        .onDisappear {
-            refreshTimer?.invalidate()
-            refreshTimer = nil
         }
     }
 
@@ -146,29 +141,35 @@ struct ProjectDashboardSheet: View {
 
     private func filesSection(_ dossiers: [AgentContributionDossier]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(dossiers) { dossier in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        AgentPill(agent: dossier.agent)
-                        Spacer()
-                        Text("\(dossier.completedTasksCount) tasks done")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(Theme.statusRunning)
+            if dossiers.isEmpty {
+                Text("No agent dossiers or file claims yet.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+            } else {
+                ForEach(dossiers) { dossier in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            AgentPill(agent: dossier.agent)
+                            Spacer()
+                            Text("\(dossier.completedTasksCount) tasks done")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Theme.statusRunning)
+                        }
+                        if !dossier.claimedFiles.isEmpty {
+                            Text("Claimed: \(dossier.claimedFiles.joined(separator: ", "))")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                        if !dossier.modifiedFiles.isEmpty {
+                            Text("Modified in git: \(dossier.modifiedFiles.joined(separator: ", "))")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Theme.textTertiary)
+                        }
                     }
-                    if !dossier.claimedFiles.isEmpty {
-                        Text("Claimed: \(dossier.claimedFiles.joined(separator: ", "))")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Theme.textSecondary)
-                    }
-                    if !dossier.modifiedFiles.isEmpty {
-                        Text("Modified in git: \(dossier.modifiedFiles.joined(separator: ", "))")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Theme.textTertiary)
-                    }
+                    .padding(10)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                .padding(10)
-                .background(Color.white.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
     }
@@ -201,7 +202,8 @@ struct ProjectDashboardSheet: View {
         }
     }
 
-    private func refresh() {
-        dashboardData = model.coordinator?.fetchProjectDashboard(workspacePath: workspacePath)
+    private func refresh() async {
+        guard let coord = model.coordinator else { return }
+        dashboardData = await coord.fetchProjectDashboardAsync(workspacePath: workspacePath)
     }
 }

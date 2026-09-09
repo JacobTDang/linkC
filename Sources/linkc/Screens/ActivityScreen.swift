@@ -5,7 +5,6 @@ struct ActivityScreen: View {
     let model: AppModel
 
     @State private var selectedTab: Tab = .timeline
-    @State private var refreshTimer: Timer?
 
     enum Tab: String, CaseIterable {
         case timeline = "Timeline"
@@ -45,17 +44,13 @@ struct ActivityScreen: View {
                 )
             }
         }
-        .onAppear {
-            model.refreshDashboard()
-            refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { _ in
-                Task { @MainActor in
-                    model.refreshDashboard()
-                }
+        .task {
+            await model.refreshDashboard()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1.5))
+                if Task.isCancelled { break }
+                await model.refreshDashboard()
             }
-        }
-        .onDisappear {
-            refreshTimer?.invalidate()
-            refreshTimer = nil
         }
     }
 

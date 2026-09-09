@@ -143,14 +143,14 @@ final class AppModel {
     public var globalDashboardData: GlobalDashboardData?
     public var projectDashboardData: [String: ProjectDashboardData] = [:]
 
-    public func refreshDashboard(workspacePath: String? = nil) {
-        Task { @MainActor in
-            guard let coordinator else { return }
-            globalDashboardData = coordinator.fetchGlobalDashboard()
-            if let ws = workspacePath {
-                let norm = (ws as NSString).standardizingPath
-                projectDashboardData[norm] = coordinator.fetchProjectDashboard(workspacePath: norm)
-            }
+    public func refreshDashboard(workspacePath: String? = nil) async {
+        guard let coordinator = self.coordinator else { return }
+        let global = await coordinator.fetchGlobalDashboardAsync()
+        self.globalDashboardData = global
+        if let ws = workspacePath {
+            let norm = (ws as NSString).standardizingPath
+            let project = await coordinator.fetchProjectDashboardAsync(workspacePath: norm)
+            self.projectDashboardData[norm] = project
         }
     }
 

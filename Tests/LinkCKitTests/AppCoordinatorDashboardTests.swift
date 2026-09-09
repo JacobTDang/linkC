@@ -96,4 +96,26 @@ final class AppCoordinatorDashboardTests: XCTestCase {
         XCTAssertTrue(projA.dossiers.contains { $0.agent == .claude })
         XCTAssertFalse(projA.dossiers.contains { $0.agent == .cursor })
     }
+
+    @MainActor
+    func testCoordinatorFetchesProjectAndGlobalDashboardAsync() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let coordinator = AppCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = coordinator.store.create(cwd: tempDir.path, title: "claude-session", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .working)
+
+        let projectData = await coordinator.fetchProjectDashboardAsync(workspacePath: tempDir.path)
+        XCTAssertEqual(projectData.workspacePath, (tempDir.path as NSString).standardizingPath)
+        XCTAssertFalse(projectData.dossiers.isEmpty)
+        XCTAssertEqual(projectData.dossiers.first?.agent, .claude)
+
+        let globalData = await coordinator.fetchGlobalDashboardAsync()
+        XCTAssertEqual(globalData.activeProjectCount, 1)
+        XCTAssertTrue(globalData.dossiers.contains { $0.agent == .claude })
+    }
 }
