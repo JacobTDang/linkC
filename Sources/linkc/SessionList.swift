@@ -67,7 +67,7 @@ struct SessionListColumn: View {
             set: { if !$0 { inspectingWorkspace = nil } }
         )) {
             if let path = inspectingWorkspace {
-                BlackboardSheet(workspacePath: path) {
+                ProjectDashboardSheet(workspacePath: path, model: model) {
                     inspectingWorkspace = nil
                 }
             }
