@@ -44,30 +44,51 @@ extension AppCoordinator {
 
     func expireTasks(workspacePath: String, inboxStore: InboxStore) {
         guard workspaceExists(workspacePath) else { return }
-        guard let open = try? inboxStore.openTasks(), !open.isEmpty else { return }
+        let open: [TaskRecord]
+        do {
+            open = try inboxStore.openTasks()
+        } catch {
+            NSLog("[linkC relay] expireTasks: open tasks — %@", String(describing: error))
+            return
+        }
+        guard !open.isEmpty else { return }
         let now = Date()
 
         for task in open {
             switch task.state {
             case .queued:
                 if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
-                    try? inboxStore.expireTask(taskId: task.id, reason: "undelivered for 60m")
+                    do {
+                        try inboxStore.expireTask(taskId: task.id, reason: "undelivered for 60m")
+                    } catch {
+                        NSLog("[linkC relay] expireTasks: task %@ stale queued — %@", task.shortId, String(describing: error))
+                    }
                 }
             case .delivered, .started:
                 let assigneeAlive = task.assigneeSessionId.flatMap { store.session(id: $0) }.map { $0.state != .ended } ?? false
                 if !assigneeAlive {
                     let summary = "assignee session ended before reporting"
-                    try? inboxStore.completeTask(taskId: task.id, report: TaskReport(status: "failed", summary: summary))
-                    _ = try? inboxStore.enqueue(
-                        from: task.toAgent, to: task.fromAgent, kind: .completion, taskId: task.id,
-                        body: "failed — \(summary). linkc_get_task(\"\(task.id)\") for details."
-                    )
+                    do {
+                        try inboxStore.completeTask(taskId: task.id, report: TaskReport(status: "failed", summary: summary))
+                        try echo(
+                            "failed — \(summary). linkc_get_task(\"\(task.id)\") for details.",
+                            for: task,
+                            inboxStore: inboxStore
+                        )
+                    } catch {
+                        NSLog("[linkC relay] expireTasks: task %@ dead assignee — %@", task.shortId, String(describing: error))
+                    }
                 } else if task.leaseExpiresAt < now {
-                    try? inboxStore.expireTask(taskId: task.id, reason: "lease expired")
-                    _ = try? inboxStore.enqueue(
-                        from: task.toAgent, to: task.fromAgent, kind: .completion, taskId: task.id,
-                        body: "expired — lease lapsed without a report. linkc_get_task(\"\(task.id)\") for details."
-                    )
+                    do {
+                        try inboxStore.expireTask(taskId: task.id, reason: "lease expired")
+                        try echo(
+                            "expired — lease lapsed without a report. linkc_get_task(\"\(task.id)\") for details.",
+                            for: task,
+                            inboxStore: inboxStore
+                        )
+                    } catch {
+                        NSLog("[linkC relay] expireTasks: task %@ expired lease — %@", task.shortId, String(describing: error))
+                    }
                 }
             case .done, .failed, .cancelled, .expired:
                 break
@@ -75,11 +96,28 @@ extension AppCoordinator {
         }
     }
 
+    private func echo(_ body: String, for task: TaskRecord, inboxStore: InboxStore) throws {
+        _ = try inboxStore.enqueue(
+            from: task.toAgent,
+            to: task.fromAgent,
+            kind: .completion,
+            taskId: task.id,
+            body: body
+        )
+    }
+
     // MARK: - Tasks
 
     func dispatchTasks(workspacePath: String, inboxStore: InboxStore) {
         guard workspaceExists(workspacePath) else { return }
-        guard let queued = try? inboxStore.openTasks().filter({ $0.state == .queued }), !queued.isEmpty else { return }
+        let queued: [TaskRecord]
+        do {
+            queued = try inboxStore.openTasks().filter { $0.state == .queued }
+        } catch {
+            NSLog("[linkC relay] dispatchTasks: open tasks — %@", String(describing: error))
+            return
+        }
+        guard !queued.isEmpty else { return }
 
         for task in queued {
             let candidates = store.sessions.filter {
@@ -93,9 +131,14 @@ extension AppCoordinator {
             }
             guard let session = target else { continue } // all busy: wait for a later tick
 
+            do {
+                try inboxStore.markTaskDelivered(taskId: task.id, sessionId: session.id)
+            } catch {
+                NSLog("[linkC relay] dispatchTasks: task %@ mark delivered — %@", task.shortId, String(describing: error))
+                continue
+            }
             terminals.sendInput(sessionId: session.id, text: Self.deliveryFrame(for: task))
             store.updateState(id: session.id, to: .working)
-            try? inboxStore.markTaskDelivered(taskId: task.id, sessionId: session.id)
         }
     }
 
@@ -103,11 +146,22 @@ extension AppCoordinator {
 
     func dispatchMessages(workspacePath: String, inboxStore: InboxStore) {
         guard workspaceExists(workspacePath) else { return }
-        guard let pending = try? inboxStore.fetchPending(), !pending.isEmpty else { return }
+        let pending: [PendingMessage]
+        do {
+            pending = try inboxStore.fetchPending()
+        } catch {
+            NSLog("[linkC relay] dispatchMessages: fetch pending — %@", String(describing: error))
+            return
+        }
+        guard !pending.isEmpty else { return }
 
         for message in pending where message.status == .queued {
             if message.kind == .notice {
-                try? inboxStore.markMessageDelivered(id: message.id)
+                do {
+                    try inboxStore.markMessageDelivered(id: message.id)
+                } catch {
+                    NSLog("[linkC relay] dispatchMessages: message %@ mark notice delivered — %@", message.id, String(describing: error))
+                }
                 continue
             }
 
@@ -124,7 +178,11 @@ extension AppCoordinator {
 
             terminals.sendInput(sessionId: session.id, text: message.prompt)
             if message.kind == .task { store.updateState(id: session.id, to: .working) }
-            try? inboxStore.markMessageDelivered(id: message.id)
+            do {
+                try inboxStore.markMessageDelivered(id: message.id)
+            } catch {
+                NSLog("[linkC relay] dispatchMessages: message %@ mark delivered — %@", message.id, String(describing: error))
+            }
         }
     }
 }

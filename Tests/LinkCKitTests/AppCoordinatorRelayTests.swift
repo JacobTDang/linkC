@@ -194,6 +194,62 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(echo.prompt.contains("failed"))
     }
 
+    @MainActor
+    func testExpireTasksDoesNotEchoWhenTransitionAlreadyTerminal() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "race completion", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: assignee.id)
+        let staleOpenRecord = try XCTUnwrap(inbox.task(id: task.id))
+        try inbox.completeTask(
+            taskId: task.id,
+            report: TaskReport(status: "done", summary: "completed by another process")
+        )
+        coordinator.store.updateState(id: assignee.id, to: .ended)
+
+        // Preserve the stale delivered snapshot that expireTasks could have read immediately
+        // before the other process completed the authoritative record.
+        var seeded = try inbox.load()
+        seeded.tasks.append(staleOpenRecord)
+        try inbox.saveRaw(seeded)
+
+        coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .done)
+        let falseEcho = try inbox.load().messages.first {
+            $0.kind == .completion
+                && $0.taskId == task.id
+                && $0.prompt.contains("assignee session ended")
+        }
+        XCTAssertNil(falseEcho)
+    }
+
+    @MainActor
+    func testDispatchTasksMarksDeliveredAndInjectsFrame() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: assignee.id, to: .ready)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "ordering guard", files: [])
+
+        coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+        let injected = try await waitUntil {
+            coordinator.terminals.session(id: assignee.id)?
+                .recentOutput(lines: 20)
+                .contains("[linkC task \(task.shortId)") ?? false
+        }
+        XCTAssertTrue(injected, "Expected the framed task after it was marked delivered")
+    }
+
     /// Test 2d: Legacy v1 `.task` rows are still dispatched once.
     @MainActor
     func testLegacyV1TaskMessageIsStillDispatched() async throws {
