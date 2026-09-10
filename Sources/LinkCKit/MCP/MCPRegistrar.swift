@@ -7,7 +7,8 @@ public struct MCPRegistrar: Sendable {
         configFile: URL,
         serverName: String = "linkc-multiplier",
         binaryPath: String,
-        args: [String] = []
+        args: [String] = [],
+        env: [String: String] = [:]
     ) throws {
         let parentDir = configFile.deletingLastPathComponent()
         let fm = FileManager.default
@@ -23,10 +24,9 @@ public struct MCPRegistrar: Sendable {
         }
 
         var mcpServers = root["mcpServers"] as? [String: Any] ?? [:]
-        mcpServers[serverName] = [
-            "command": binaryPath,
-            "args": args
-        ]
+        var entry: [String: Any] = ["command": binaryPath, "args": args]
+        if !env.isEmpty { entry["env"] = env }
+        mcpServers[serverName] = entry
         root["mcpServers"] = mcpServers
 
         let outData = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
@@ -39,7 +39,8 @@ public struct MCPRegistrar: Sendable {
         configFile: URL,
         serverName: String = "linkc-multiplier",
         binaryPath: String,
-        args: [String] = []
+        args: [String] = [],
+        env: [String: String] = [:]
     ) throws {
         let parentDir = configFile.deletingLastPathComponent()
         let fm = FileManager.default
@@ -61,14 +62,23 @@ public struct MCPRegistrar: Sendable {
             let quoted = args.map { "\"\($0.replacingOccurrences(of: "\"", with: "\\\""))\"" }.joined(separator: ", ")
             argsToml = "\nargs = [\(quoted)]"
         }
-        let section = """
+        var section = """
         \(header)
         command = "\(binaryPath)"\(argsToml)
         """
+        if !env.isEmpty {
+            let envLines = env.keys.sorted().map { key in
+                "\(key) = \"\(env[key]!.replacingOccurrences(of: "\"", with: "\\\""))\""
+            }.joined(separator: "\n")
+            section += "\n\n[mcp_servers.\(serverName).env]\n\(envLines)"
+        }
 
         if let range = content.range(of: header) {
             let afterHeader = content[range.upperBound...]
-            let nextHeaderRegex = try NSRegularExpression(pattern: #"(\n\[|\Z)"#, options: [])
+            let nextHeaderRegex = try NSRegularExpression(
+                pattern: #"(\n\[(?!mcp_servers\.\#(NSRegularExpression.escapedPattern(for: serverName))\.env\])|\Z)"#,
+                options: []
+            )
             let nsAfter = afterHeader as NSString
             if let match = nextHeaderRegex.firstMatch(in: String(afterHeader), options: [], range: NSRange(location: 0, length: nsAfter.length)) {
                 let endIndex = content.index(range.upperBound, offsetBy: match.range.location)
@@ -103,31 +113,37 @@ public struct MCPRegistrar: Sendable {
         // Claude Code: ~/.claude.json (root) and ~/.claude/claude.json (dir)
         try? registerServer(
             configFile: home.appendingPathComponent(".claude.json"),
-            binaryPath: binaryPath
+            binaryPath: binaryPath,
+            env: ["LINKC_AGENT": "claude"]
         )
         try? registerServer(
             configFile: home.appendingPathComponent(".claude/claude.json"),
-            binaryPath: binaryPath
+            binaryPath: binaryPath,
+            env: ["LINKC_AGENT": "claude"]
         )
         // Cursor: ~/.cursor/mcp.json
         try? registerServer(
             configFile: home.appendingPathComponent(".cursor/mcp.json"),
-            binaryPath: binaryPath
+            binaryPath: binaryPath,
+            env: ["LINKC_AGENT": "cursor"]
         )
         // Antigravity: ~/.antigravity-cli/mcp.json
         let agyConfigDir = ["." + "g" + "e" + "m" + "i" + "n" + "i"].joined()
         try? registerServer(
             configFile: home.appendingPathComponent("\(agyConfigDir)/antigravity-cli/mcp.json"),
-            binaryPath: binaryPath
+            binaryPath: binaryPath,
+            env: ["LINKC_AGENT": "agy"]
         )
         // Codex: ~/.codex/config.toml (primary) and ~/.codex/mcp.json (legacy)
         try? registerTomlServer(
             configFile: home.appendingPathComponent(".codex/config.toml"),
-            binaryPath: binaryPath
+            binaryPath: binaryPath,
+            env: ["LINKC_AGENT": "codex"]
         )
         try? registerServer(
             configFile: home.appendingPathComponent(".codex/mcp.json"),
-            binaryPath: binaryPath
+            binaryPath: binaryPath,
+            env: ["LINKC_AGENT": "codex"]
         )
     }
 }
