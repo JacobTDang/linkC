@@ -725,4 +725,22 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(coordinator.relayTurnEnd(sessionId: codex.id, workspacePath: ws), 0)
         XCTAssertTrue(try inbox.load().messages.isEmpty)
     }
+
+    /// Test 13: sampleAgentStates heartbeats every live non-shell session so presence is truthful.
+    @MainActor
+    func testSampleAgentStatesHeartbeatsLiveSessions() throws {
+        let ws = tempDir.path
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let codex = try coordinator.newSession(cwd: ws, agent: .codex)
+        _ = try coordinator.newSession(cwd: ws, agent: .shell)
+
+        coordinator.sampleAgentStates()
+
+        let board = try BlackboardStore(workspaceRoot: ws).load()
+        let rec = try XCTUnwrap(board.activeAgents.first { $0.agentKind == .codex })
+        XCTAssertEqual(rec.pid, coordinator.terminals.session(id: codex.id)?.processId)
+        XCTAssertGreaterThan(rec.pid, 0)
+        XCTAssertFalse(board.activeAgents.contains { $0.agentKind == .shell })
+    }
 }

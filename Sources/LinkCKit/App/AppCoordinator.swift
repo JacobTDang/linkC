@@ -539,6 +539,11 @@ public final class AppCoordinator {
             activePaths.insert((session.cwd as NSString).standardizingPath)
             guard let term = terminals.session(id: session.id) else { continue }
 
+            if session.agentKind != .shell, term.processId > 0 {
+                try? BlackboardStore(workspaceRoot: (session.cwd as NSString).standardizingPath)
+                    .heartbeat(agentKind: session.agentKind, pid: term.processId, timeout: 0.5)
+            }
+
             // Inspect terminal output for provider rate limits & auto-reroute
             checkLimitsAndReroute(for: session.id)
 
