@@ -24,16 +24,17 @@ public struct AgentDashboardAggregator: Sendable {
 
         // 1. Process Inbox Messages
         for msg in inbox.messages {
-            let isCompletion = msg.prompt.hasPrefix("[Task Completed by")
+            if msg.kind == .notice || msg.kind == .command { continue }
+            let isCompletion = msg.kind == .completion
             let kind: AgentActivityKind = isCompletion ? .completedTask : .delegatedTask
             let itemTitle: String
             let itemBody: String
 
             if isCompletion {
                 itemTitle = "\(msg.fromAgent.displayName) completed task for \(msg.toAgent.displayName)"
-                // Strip header if possible to isolate result
-                if let resultRange = msg.prompt.range(of: "Result / Output:\n") {
-                    itemBody = String(msg.prompt[resultRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                // Strip the linkC frame so the body is just the assignee's report.
+                if let bracket = msg.prompt.firstIndex(of: "]") {
+                    itemBody = String(msg.prompt[msg.prompt.index(after: bracket)...]).trimmingCharacters(in: .whitespacesAndNewlines)
                 } else {
                     itemBody = msg.prompt
                 }
@@ -70,6 +71,27 @@ public struct AgentDashboardAggregator: Sendable {
                     title: itemTitle,
                     body: itemBody,
                     claimedFiles: msg.claimedFiles
+                )
+            )
+        }
+
+        // 1b. Process Tasks
+        for task in inbox.tasks {
+            let done = !task.state.isOpen
+            for file in task.files { claimedFilesByAgent[task.toAgent, default: []].insert(file) }
+            if task.state == .done { completedCounts[task.toAgent, default: 0] += 1 }
+            activityItems.append(
+                AgentActivityItem(
+                    id: "task-\(task.id)",
+                    timestamp: task.finishedAt ?? task.deliveredAt ?? task.createdAt,
+                    workspacePath: norm,
+                    projectTitle: title,
+                    fromAgent: task.fromAgent,
+                    toAgent: task.toAgent,
+                    kind: done ? .completedTask : .delegatedTask,
+                    title: "\(task.fromAgent.displayName) delegated task to \(task.toAgent.displayName) [\(task.state.rawValue)]",
+                    body: task.report?.summary ?? task.prompt,
+                    claimedFiles: task.files
                 )
             )
         }

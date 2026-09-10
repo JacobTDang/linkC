@@ -32,27 +32,21 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         let blackboard = BlackboardStore(workspaceRoot: ws)
 
         // 1. Delegated task from Claude to Cursor
-        let msg1 = try inbox.enqueue(
+        let task = try inbox.createTask(
             from: .claude,
             to: .cursor,
             prompt: "Build authentication module",
             files: ["Auth.swift"]
         )
-        try inbox.markMessageDelivered(id: msg1.id)
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s")
 
         // 2. Completed task returned from Cursor to Claude
-        let completionPrompt = """
-        [Task Completed by Cursor Agent]
-        Original Task: Build authentication module
-
-        Result / Output:
-        Generated Auth.swift with 5 tests passing.
-        """
         _ = try inbox.enqueue(
             from: .cursor,
             to: .claude,
-            prompt: completionPrompt,
-            files: ["Auth.swift"]
+            kind: .completion,
+            taskId: task.id,
+            body: "done by Cursor Agent — Generated Auth.swift with 5 tests passing."
         )
 
         // 3. Shared note on blackboard
@@ -73,13 +67,14 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         XCTAssertNotNil(completed)
         XCTAssertEqual(completed?.fromAgent, .cursor)
         XCTAssertEqual(completed?.toAgent, .claude)
-        XCTAssertTrue(completed?.body.contains("Generated Auth.swift") ?? false)
+        XCTAssertEqual(completed?.body, "done by Cursor Agent — Generated Auth.swift with 5 tests passing.")
 
         // Check delegated task parsed
         let delegated = data.activityItems.first(where: { $0.kind == .delegatedTask })
         XCTAssertNotNil(delegated)
         XCTAssertEqual(delegated?.fromAgent, .claude)
         XCTAssertEqual(delegated?.toAgent, .cursor)
+        XCTAssertTrue(data.activityItems.contains { $0.id == "task-\(task.id)" && $0.kind == .delegatedTask && $0.title.contains("delegated task to Cursor Agent") })
 
         // Check dossier for Cursor
         let cursorDossier = data.dossiers.first(where: { $0.agent == .cursor })
@@ -234,22 +229,26 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         let olderMsg = PendingMessage(
             fromAgent: .cursor,
             toAgent: .claude,
-            prompt: "[Task Completed by Cursor Agent]\nResult / Output:\nOld initial implementation",
+            prompt: "[linkC task abcdef12] Old initial implementation",
             claimedFiles: ["Auth.swift"],
             status: .delivered,
             createdAt: olderDate,
-            deliveredAt: olderDate
+            deliveredAt: olderDate,
+            kind: .completion,
+            taskId: "abcdef12-0000"
         )
 
         // Newer completion
         let newerMsg = PendingMessage(
             fromAgent: .cursor,
             toAgent: .claude,
-            prompt: "[Task Completed by Cursor Agent]\nResult / Output:\nNew polished implementation with full test suite",
+            prompt: "[linkC task abcdef12] New polished implementation with full test suite",
             claimedFiles: ["Auth.swift"],
             status: .delivered,
             createdAt: newerDate,
-            deliveredAt: newerDate
+            deliveredAt: newerDate,
+            kind: .completion,
+            taskId: "abcdef12-0000"
         )
 
         // Save messages in reverse order (newer first, older second) to test order independence
