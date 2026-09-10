@@ -185,4 +185,50 @@ extension AppCoordinator {
             }
         }
     }
+
+    // MARK: - Turn end
+
+    /// For each open task assigned to `sessionId`, sends one short "ended without report" line
+    /// to the delegator — once per task. Reads no terminal output. Returns the number notified.
+    @discardableResult
+    public func relayTurnEnd(sessionId: String, workspacePath: String) -> Int {
+        guard let session = store.session(id: sessionId), session.agentKind != .shell else { return 0 }
+        let norm = (workspacePath as NSString).standardizingPath
+        let inboxStore = InboxStore(workspaceRoot: norm)
+        let open: [TaskRecord]
+        do {
+            open = try inboxStore.openTasks(for: session.agentKind)
+        } catch {
+            NSLog("[linkC relay] relayTurnEnd: open tasks — %@", String(describing: error))
+            return 0
+        }
+
+        var notified = 0
+        for task in open where task.assigneeSessionId == sessionId
+            && (task.state == .delivered || task.state == .started)
+            && !task.unreportedTurnEndNotified {
+            do {
+                try inboxStore.markUnreportedTurnEndNotified(taskId: task.id)
+            } catch {
+                NSLog("[linkC relay] relayTurnEnd: task %@ mark notified — %@", task.shortId, String(describing: error))
+            }
+            do {
+                _ = try inboxStore.enqueue(
+                    from: session.agentKind, to: task.fromAgent, kind: .completion, taskId: task.id,
+                    body: "\(session.agentKind.displayName) turn ended without a report. Task remains \(task.state.rawValue); linkc_get_task(\"\(task.id)\") or linkc_cancel_task(\"\(task.id)\")."
+                )
+            } catch {
+                NSLog("[linkC relay] relayTurnEnd: task %@ enqueue — %@", task.shortId, String(describing: error))
+            }
+            notified += 1
+        }
+        if notified > 0 {
+            notifications.post(
+                title: "linkC: \(session.agentKind.displayName) turn ended",
+                body: "\(notified) task(s) still open without a report; \(open.first?.fromAgent.displayName ?? "the delegator") was told."
+            )
+            processPendingMessages(workspacePath: norm)
+        }
+        return notified
+    }
 }

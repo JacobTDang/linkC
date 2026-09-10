@@ -261,7 +261,7 @@ public final class AppCoordinator {
         } else if event.kind == .stop || event.kind == .sessionStart {
             checkLimitsAndReroute(for: session.id)
             if event.kind == .stop {
-                notifyDelegatorOnTaskCompletion(sessionId: session.id, workspacePath: session.cwd)
+                relayTurnEnd(sessionId: session.id, workspacePath: session.cwd)
             }
             processPendingMessages(workspacePath: session.cwd)
         }
@@ -589,7 +589,7 @@ public final class AppCoordinator {
                     ) {
                         notifications.post(session: updated)
                     }
-                    notifyDelegatorOnTaskCompletion(sessionId: session.id, workspacePath: session.cwd)
+                    relayTurnEnd(sessionId: session.id, workspacePath: session.cwd)
                 } else if currentSession.state == .starting {
                     store.updateState(id: session.id, to: .ready)
                 }
@@ -872,64 +872,6 @@ public final class AppCoordinator {
         store.updateState(id: session.id, to: .error)
 
         // Spawn candidate if needed and dispatch
-        processPendingMessages(workspacePath: norm)
-        return true
-    }
-
-    /// Autonotifies the delegating peer agent / orchestrator when a task assigned via inbox completes.
-    /// Gathers the terminal summary/output and enqueues a completion message back to the delegator,
-    /// triggering immediate dispatch so the orchestrator can autonomously proceed without human intervention.
-    @discardableResult
-    public func notifyDelegatorOnTaskCompletion(sessionId: String, workspacePath: String) -> Bool {
-        guard let session = store.session(id: sessionId) else { return false }
-        guard session.agentKind != .shell else { return false }
-
-        let norm = (workspacePath as NSString).standardizingPath
-        let inboxStore = InboxStore(workspaceRoot: norm)
-        guard let inbox = try? inboxStore.load() else { return false }
-
-        // Find the last delivered task message targeted to this agent
-        guard let currentMessage = inbox.messages.last(where: { msg in
-            msg.toAgent == session.agentKind && msg.status == .delivered
-        }) else { return false }
-
-        // Must be delegated from a different agent (the delegating orchestrator)
-        guard currentMessage.fromAgent != session.agentKind else { return false }
-
-        // Avoid duplicate completion notices for the same delivered task
-        let alreadyNotified = inbox.messages.contains { msg in
-            msg.fromAgent == session.agentKind &&
-            msg.toAgent == currentMessage.fromAgent &&
-            msg.prompt.hasPrefix("[Task Completed by \(session.agentKind.displayName)]") &&
-            msg.createdAt >= (currentMessage.deliveredAt ?? currentMessage.createdAt)
-        }
-        guard !alreadyNotified else { return false }
-
-        let term = terminals.session(id: sessionId)
-        let rawSummary = term?.recentOutput(lines: 30) ?? ""
-        let summary = rawSummary.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let completionPrompt = """
-        [Task Completed by \(session.agentKind.displayName)]
-        Original Task: \(currentMessage.prompt)
-
-        Result / Output:
-        \(summary.isEmpty ? "(Task completed successfully with no terminal output)" : summary)
-        """
-
-        _ = try? inboxStore.enqueue(
-            from: session.agentKind,
-            to: currentMessage.fromAgent,
-            prompt: completionPrompt,
-            files: currentMessage.claimedFiles
-        )
-
-        notifications.post(
-            title: "linkC: \(session.agentKind.displayName) Completed Task",
-            body: "Task completed for \(currentMessage.fromAgent.displayName). Output autonotified to orchestrator."
-        )
-
-        // Immediately deliver to the orchestrator if its session is idle/ready
         processPendingMessages(workspacePath: norm)
         return true
     }

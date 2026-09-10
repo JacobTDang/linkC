@@ -708,58 +708,77 @@ final class AppCoordinatorRelayTests: XCTestCase {
         }), "Desktop notification should be posted for Codex rate limit")
     }
 
-    /// Test 12: Autonotifies delegating orchestrator agent upon task completion.
+    /// Test 12: Turn end without a report sends exactly one short line, never scrollback, and never loops.
     @MainActor
-    func testTaskCompletionAutonotifiesDelegatingOrchestratorAgent() async throws {
+    func testTurnEndWithoutReportSendsOneLineOncePerTaskAndNeverScrapes() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let sink = RecordingSink()
         let coordinator = makeCoordinator(sink: sink)
         defer { coordinator.shutdown() }
 
-        // Step 1: Orchestrator (Claude) delegates task to Cursor
-        let delegatedMsg = try inbox.enqueue(
-            from: .claude,
-            to: .cursor,
-            prompt: "Build user authentication module",
-            files: ["Auth.swift"]
-        )
-        try inbox.markMessageDelivered(id: delegatedMsg.id)
-
-        // Step 2: Spawn Cursor session and start in .working state
         let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
+        let task = try inbox.createTask(from: .claude, to: .cursor, prompt: "Build user authentication module", files: ["Auth.swift"])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: cursorSession.id)
         coordinator.store.updateState(id: cursorSession.id, to: .working)
 
-        // Inject output into Cursor's terminal
         coordinator.terminals.sendInput(sessionId: cursorSession.id, text: "Generated Auth.swift with 5 tests passing.\n")
-        let outputReady = try await waitUntil {
+        _ = try await waitUntil {
             coordinator.terminals.session(id: cursorSession.id)?.recentOutput(lines: 10).contains("Generated Auth.swift") ?? false
         }
-        XCTAssertTrue(outputReady)
 
-        // Step 3: Trigger completion notification (simulating turn end)
-        let notified = coordinator.notifyDelegatorOnTaskCompletion(sessionId: cursorSession.id, workspacePath: ws)
-        XCTAssertTrue(notified, "Must successfully notify delegator")
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: cursorSession.id, workspacePath: ws), 1)
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: cursorSession.id, workspacePath: ws), 0, "second turn end must not notify again")
 
-        // Step 4: Verify that inboxStore received a completion message addressed to Claude from Cursor
-        let loaded = try inbox.load()
-        guard let completionMsg = loaded.messages.first(where: {
-            $0.fromAgent == .cursor && $0.toAgent == .claude && $0.prompt.hasPrefix("[Task Completed by Cursor Agent]")
-        }) else {
-            return XCTFail("Expected completion message addressed to Claude from Cursor")
-        }
+        let msgs = try inbox.load().messages
+        XCTAssertEqual(msgs.count, 1)
+        let line = try XCTUnwrap(msgs.first)
+        XCTAssertEqual(line.kind, .completion)
+        XCTAssertEqual(line.fromAgent, .cursor)
+        XCTAssertEqual(line.toAgent, .claude)
+        XCTAssertEqual(line.taskId, task.id)
+        XCTAssertTrue(line.prompt.hasPrefix("[linkC task \(task.shortId)] Cursor Agent turn ended without a report"))
+        XCTAssertFalse(line.prompt.contains("Generated Auth.swift"), "terminal output must never be relayed")
+        XCTAssertFalse(line.prompt.contains("Build user authentication module"), "brief must not be echoed")
 
-        XCTAssertTrue(completionMsg.prompt.contains("Build user authentication module"))
-        XCTAssertTrue(completionMsg.prompt.contains("Generated Auth.swift with 5 tests passing."))
-        XCTAssertEqual(completionMsg.claimedFiles, ["Auth.swift"])
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "task stays open for the delegator to decide")
+        XCTAssertTrue(sink.deliveries.contains { $0.title == "linkC: Cursor Agent turn ended" })
+    }
 
-        // Step 5: Verify desktop notification
-        XCTAssertTrue(sink.deliveries.contains(where: {
-            $0.title == "linkC: Cursor Agent Completed Task"
-        }), "Desktop notification should be posted for task completion")
+    /// Test 12b: A completion message delivered to the delegator is never treated as a task and never re-echoed.
+    @MainActor
+    func testCompletionEchoIsNeverReEchoed() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
 
-        // Step 6: Verify deduplication - calling again should be a no-op
-        let renotified = coordinator.notifyDelegatorOnTaskCompletion(sessionId: cursorSession.id, workspacePath: ws)
-        XCTAssertFalse(renotified, "Duplicate notification must be suppressed")
+        let claude = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: claude.id, to: .ready)
+        let echo = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: "abcdef12-0000", body: "done by Codex — shipped")
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.load().messages.first { $0.id == echo.id }?.status, .delivered)
+
+        coordinator.store.updateState(id: claude.id, to: .working)
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: claude.id, workspacePath: ws), 0)
+        XCTAssertEqual(try inbox.load().messages.count, 1, "no new message may be produced from an echo")
+    }
+
+    /// Test 12c: Explicit completion before turn end means no 'ended without report' line.
+    @MainActor
+    func testExplicitCompletionSuppressesTurnEndLine() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let codex = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Do it", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: codex.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        try inbox.completeTask(taskId: task.id, report: TaskReport(status: "done", summary: "ok"))
+
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: codex.id, workspacePath: ws), 0)
+        XCTAssertTrue(try inbox.load().messages.isEmpty)
     }
 }
