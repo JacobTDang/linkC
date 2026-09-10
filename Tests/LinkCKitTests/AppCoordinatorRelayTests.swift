@@ -173,7 +173,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             prompt: "Build high-throughput streaming proxy",
             files: ["Proxy.swift"]
         )
-        try inbox.markDelivered(id: initialMsg.id)
+        try inbox.markMessageDelivered(id: initialMsg.id)
 
         // Inject rate limit pattern into source session's terminal via /bin/cat echo
         coordinator.terminals.sendInput(sessionId: sourceSession.id, text: "Rate limit reached. Please try again later.\n")
@@ -233,7 +233,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             files: [],
             rerouteCount: 2
         )
-        try inbox.markDelivered(id: hop2Msg.id)
+        try inbox.markMessageDelivered(id: hop2Msg.id)
 
         // Inject rate limit pattern
         coordinator.terminals.sendInput(sessionId: session.id, text: "You've reached your usage limit\n")
@@ -369,7 +369,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             prompt: "New fresh task to run",
             files: ["Fresh.swift"]
         )
-        try inbox.markDelivered(id: newMsg.id)
+        try inbox.markMessageDelivered(id: newMsg.id)
 
         // Inject rate limit pattern
         coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached. Try later.\n")
@@ -435,7 +435,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             prompt: "Deploy service mesh",
             files: []
         )
-        try inbox.markDelivered(id: msg.id)
+        try inbox.markMessageDelivered(id: msg.id)
 
         coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached\n")
         let outputReady = try await waitUntil {
@@ -503,7 +503,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             prompt: "Refactor router",
             files: ["Router.swift"]
         )
-        try inbox.markDelivered(id: msg.id)
+        try inbox.markMessageDelivered(id: msg.id)
 
         coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached\n")
         let outputReady = try await waitUntil {
@@ -539,7 +539,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             prompt: "Optimize database indices",
             files: ["schema.sql"]
         )
-        try inbox.markDelivered(id: delegatedMsg.id)
+        try inbox.markMessageDelivered(id: delegatedMsg.id)
 
         // Spawn Codex session and transition it to .finished (simulating turn end hook)
         let codexSession = try coordinator.newSession(cwd: ws, agent: .codex)
@@ -591,7 +591,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             prompt: "Build user authentication module",
             files: ["Auth.swift"]
         )
-        try inbox.markDelivered(id: delegatedMsg.id)
+        try inbox.markMessageDelivered(id: delegatedMsg.id)
 
         // Step 2: Spawn Cursor session and start in .working state
         let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)

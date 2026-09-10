@@ -67,7 +67,7 @@ final class InboxStoreTests: XCTestCase {
         let msg1 = try store.enqueue(from: .claude, to: .codex, prompt: "Task 1", files: [])
         let msg2 = try store.enqueue(from: .cursor, to: .agy, prompt: "Task 2", files: [])
 
-        try store.markDelivered(id: msg1.id)
+        try store.markMessageDelivered(id: msg1.id)
 
         let inbox = try store.load()
         let deliveredMsg = inbox.messages.first(where: { $0.id == msg1.id })
@@ -80,7 +80,7 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertEqual(pending.first?.id, msg2.id)
 
         // Non-existent ID throws
-        XCTAssertThrowsError(try store.markDelivered(id: "non-existent-id"))
+        XCTAssertThrowsError(try store.markMessageDelivered(id: "non-existent-id"))
     }
 
     func testRecordLimitAndIsAgentLimitedWithCooldownExpiration() throws {
@@ -294,5 +294,50 @@ final class InboxStoreTests: XCTestCase {
         // Kept the last 100 (msg-20 through msg-119)
         XCTAssertEqual(loaded.messages.first?.id, "msg-20")
         XCTAssertEqual(loaded.messages.last?.id, "msg-119")
+    }
+
+    func testKindAwareEnqueueComposesFrames() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let completion = try store.enqueue(from: .codex, to: .claude, kind: .completion, taskId: "abcdef12-3456", body: "done by Codex — shipped")
+        XCTAssertEqual(completion.prompt, "[linkC task abcdef12] done by Codex — shipped")
+        XCTAssertEqual(completion.kind, .completion)
+        XCTAssertEqual(completion.taskId, "abcdef12-3456")
+
+        let note = try store.enqueue(from: .cursor, to: .agy, kind: .peerNote, body: "heads up")
+        XCTAssertEqual(note.prompt, "[Peer Note from Cursor Agent]: heads up")
+
+        let notice = try store.enqueue(from: .codex, to: .claude, kind: .notice, body: "Codex is rate limited")
+        XCTAssertEqual(notice.prompt, "[linkC notice] Codex is rate limited")
+
+        let cmd = try store.enqueue(from: .claude, to: .claude, kind: .command, body: "/model sonnet")
+        XCTAssertEqual(cmd.prompt, "/model sonnet")
+    }
+
+    func testEnqueueRejectsFramedBodiesTaskKindAndMissingTaskId() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        XCTAssertThrowsError(try store.enqueue(from: .codex, to: .claude, kind: .peerNote, body: "[linkC task 1234abcd] echo")) {
+            XCTAssertEqual($0 as? InboxError, .framedBody)
+        }
+        XCTAssertThrowsError(try store.enqueue(from: .codex, to: .claude, kind: .peerNote, body: "[Task Completed by Codex]\nOriginal Task: x")) {
+            XCTAssertEqual($0 as? InboxError, .framedBody)
+        }
+        XCTAssertThrowsError(try store.enqueue(from: .codex, to: .claude, kind: .task, body: "brief")) {
+            XCTAssertEqual($0 as? InboxError, .kindNotAllowed(.task))
+        }
+        XCTAssertThrowsError(try store.enqueue(from: .codex, to: .claude, kind: .completion, body: "done")) {
+            XCTAssertEqual($0 as? InboxError, .missingTaskId)
+        }
+        XCTAssertTrue(try store.load().messages.isEmpty)
+    }
+
+    func testEnqueueDedupesIdenticalContentWithin24h() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let a = try store.enqueue(from: .codex, to: .claude, kind: .peerNote, body: "same")
+        let b = try store.enqueue(from: .codex, to: .claude, kind: .peerNote, body: "same")
+        XCTAssertEqual(a.id, b.id)
+        XCTAssertEqual(try store.load().messages.count, 1)
+        // Different recipient is not a duplicate
+        _ = try store.enqueue(from: .codex, to: .cursor, kind: .peerNote, body: "same")
+        XCTAssertEqual(try store.load().messages.count, 2)
     }
 }

@@ -745,7 +745,7 @@ public final class AppCoordinator {
                 let formattedPrompt = message.prompt
                 terminals.sendInput(sessionId: session.id, text: formattedPrompt)
                 store.updateState(id: session.id, to: .working)
-                try? inboxStore.markDelivered(id: message.id)
+                try? inboxStore.markMessageDelivered(id: message.id)
             case .working, .starting, .waitingPermission, .error, .ended:
                 // Keep in queue until recipient session finishes or becomes ready
                 break

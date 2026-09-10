@@ -38,7 +38,7 @@ final class AgentDashboardAggregatorTests: XCTestCase {
             prompt: "Build authentication module",
             files: ["Auth.swift"]
         )
-        try inbox.markDelivered(id: msg1.id)
+        try inbox.markMessageDelivered(id: msg1.id)
 
         // 2. Completed task returned from Cursor to Claude
         let completionPrompt = """

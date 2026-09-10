@@ -142,7 +142,8 @@ public final class InboxStore: Sendable {
         }
     }
 
-    /// Appends a new pending message to the queue with `.queued` status.
+    /// Legacy v1 task message. Kept only until every caller migrates to `createTask` / `enqueue(kind:)`.
+    @available(*, deprecated, message: "v1 task messages; use createTask or enqueue(kind:)")
     public func enqueue(
         from: AgentKind,
         to: AgentKind,
@@ -172,6 +173,60 @@ public final class InboxStore: Sendable {
         }
     }
 
+    /// Enqueues a short, kind-tagged message. The store composes the frame; callers pass the bare body.
+    /// Rejects framed bodies (loop guard), `.task` kind, completions without a task id, and 24 h duplicates.
+    public func enqueue(
+        from: AgentKind,
+        to: AgentKind,
+        kind: MessageKind,
+        taskId: String? = nil,
+        body: String,
+        timeout: TimeInterval = 5.0
+    ) throws -> PendingMessage {
+        guard kind != .task else { throw InboxError.kindNotAllowed(.task) }
+        guard !LinkCFrame.beginsWithMarker(body) else { throw InboxError.framedBody }
+
+        let prompt: String
+        switch kind {
+        case .completion:
+            guard let taskId else { throw InboxError.missingTaskId }
+            prompt = "\(LinkCFrame.taskPrefix) \(taskId.prefix(8))] \(body)"
+        case .notice:
+            prompt = "\(LinkCFrame.noticePrefix) \(body)"
+        case .peerNote:
+            prompt = "\(LinkCFrame.peerNotePrefix) \(from.displayName)]: \(body)"
+        case .command:
+            prompt = body
+        case .task:
+            throw InboxError.kindNotAllowed(.task)
+        }
+
+        let hash = LinkCFrame.contentHash(from: from, to: to, kind: kind, prompt: prompt)
+        return try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
+            if let existing = inbox.messages.first(where: {
+                $0.contentHash == hash && $0.fromAgent == from && $0.toAgent == to && $0.createdAt >= dedupeCutoff
+            }) {
+                return existing
+            }
+            let message = PendingMessage(
+                fromAgent: from,
+                toAgent: to,
+                prompt: prompt,
+                claimedFiles: [],
+                status: .queued,
+                kind: kind,
+                taskId: taskId,
+                contentHash: hash
+            )
+            inbox.messages.append(message)
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+            return message
+        }
+    }
+
     /// Returns pending messages in FIFO order (those with status `.queued`).
     public func fetchPending(timeout: TimeInterval = 5.0) throws -> [PendingMessage] {
         try withFileLock(timeout: timeout) {
@@ -181,7 +236,7 @@ public final class InboxStore: Sendable {
     }
 
     /// Marks a message as delivered and stamps `deliveredAt`.
-    public func markDelivered(id: String, timeout: TimeInterval = 5.0) throws {
+    public func markMessageDelivered(id: String, timeout: TimeInterval = 5.0) throws {
         try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             guard let index = inbox.messages.firstIndex(where: { $0.id == id }) else {
