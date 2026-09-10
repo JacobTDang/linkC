@@ -62,6 +62,39 @@ final class MCPServerTests: XCTestCase {
         }
     }
 
+    func testDelegateTaskSuccessResponseIsNotErrorAndTaskPersists() throws {
+        let inboxStore = InboxStore(workspaceRoot: tempDir.path)
+        let delegateReq = """
+        {
+          "jsonrpc": "2.0",
+          "id": 15,
+          "method": "tools/call",
+          "params": {
+            "name": "linkc_delegate_task",
+            "arguments": {
+              "to": "codex",
+              "prompt": "Add unit tests for parser",
+              "from": "claude"
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(server.handleMessage(delegateReq))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        let result = resJson?["result"] as? [String: Any]
+        let content = result?["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String ?? ""
+
+        XCTAssertFalse(result?["isError"] as? Bool ?? false)
+        XCTAssertFalse(text.contains("Warning:"), "Happy path should not include warning: \(text)")
+        XCTAssertTrue(text.contains("queued for Codex"), "Expected success confirmation in: \(text)")
+
+        let tasks = try inboxStore.load().tasks
+        XCTAssertEqual(tasks.count, 1)
+        XCTAssertEqual(tasks.first?.state, .queued)
+    }
+
     func testDelegateTaskEnqueuesAndClaimsFiles() throws {
         let inboxStore = InboxStore(workspaceRoot: tempDir.path)
         let delegateReq = """

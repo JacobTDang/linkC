@@ -408,20 +408,23 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }
 
+                let successText = "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
                 if !files.isEmpty {
-                    _ = try store.broadcastIntent(
-                        agentKind: caller.agent,
-                        pid: caller.pid,
-                        goal: "Delegated task \(task.shortId) to \(toAgent.displayName)",
-                        files: files,
-                        status: "delegating"
-                    )
+                    do {
+                        _ = try store.broadcastIntent(
+                            agentKind: caller.agent,
+                            pid: caller.pid,
+                            goal: "Delegated task \(task.shortId) to \(toAgent.displayName)",
+                            files: files,
+                            status: "delegating"
+                        )
+                    } catch {
+                        let warning = "Warning: task was created but the blackboard broadcast failed: \(error.localizedDescription)."
+                        return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
+                    }
                 }
 
-                return toolResultResponse(
-                    id: id,
-                    text: "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
-                )
+                return toolResultResponse(id: id, text: successText)
 
             case "linkc_send_message":
                 guard let toStr = args["to"] as? String, !toStr.isEmpty else {
