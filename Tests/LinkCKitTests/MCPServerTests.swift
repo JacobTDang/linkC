@@ -32,6 +32,10 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(result?["protocolVersion"] as? String, "2024-11-05")
         let serverInfo = result?["serverInfo"] as? [String: Any]
         XCTAssertEqual(serverInfo?["name"] as? String, "linkc-multiplier")
+        XCTAssertEqual(serverInfo?["version"] as? String, "0.2.0")
+        let caps = result?["capabilities"] as? [String: Any]
+        let toolsCap = caps?["tools"] as? [String: Any]
+        XCTAssertEqual(toolsCap?["listChanged"] as? Bool, false)
     }
 
     func testToolsListDeclaresSevenTools() throws {
@@ -53,6 +57,9 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(toolNames.contains("linkc_delegate_task"))
         XCTAssertTrue(toolNames.contains("linkc_send_message"))
         XCTAssertTrue(toolNames.contains("linkc_get_inbox"))
+        for name in ["linkc_start_task", "linkc_complete_task", "linkc_cancel_task", "linkc_get_task", "linkc_my_tasks", "linkc_switch_model", "linkc_get_models", "linkc_get_usage_status"] {
+            XCTAssertTrue(toolNames.contains(name), "missing \(name)")
+        }
     }
 
     func testDelegateTaskEnqueuesAndClaimsFiles() throws {
@@ -81,20 +88,19 @@ final class MCPServerTests: XCTestCase {
         let content = result?["content"] as? [[String: Any]]
         let text = content?.first?["text"] as? String ?? ""
 
-        XCTAssertTrue(text.contains("Task queued for Codex"), "Expected success confirmation in: \(text)")
+        XCTAssertTrue(text.contains("queued for Codex"), "Expected success confirmation in: \(text)")
+        XCTAssertTrue(text.contains("linkc_get_task"), "Expected tracking hint in: \(text)")
         XCTAssertFalse(result?["isError"] as? Bool ?? false)
 
-        // Verify message in inbox
-        let pending = try inboxStore.fetchPending()
-        XCTAssertEqual(pending.count, 1)
-        let msg = try XCTUnwrap(pending.first)
-        XCTAssertEqual(msg.toAgent, .codex)
-        XCTAssertEqual(msg.fromAgent, .claude)
-        XCTAssertEqual(msg.prompt, "Implement tokenizer module")
-        XCTAssertEqual(msg.claimedFiles, ["Sources/Tokenizer.swift"])
-        XCTAssertEqual(msg.status, .queued)
+        let tasks = try inboxStore.openTasks(for: .codex)
+        XCTAssertEqual(tasks.count, 1)
+        let task = try XCTUnwrap(tasks.first)
+        XCTAssertEqual(task.fromAgent, .claude)
+        XCTAssertEqual(task.prompt, "Implement tokenizer module")
+        XCTAssertEqual(task.files, ["Sources/Tokenizer.swift"])
+        XCTAssertEqual(task.state, .queued)
+        XCTAssertTrue(try inboxStore.load().messages.isEmpty, "v2 delegation creates a task, not a message")
 
-        // Verify file was claimed on blackboard (PID 2222 should see conflict)
         let conflicts = try server.store.checkConflicts(files: ["Sources/Tokenizer.swift"], excludingPid: 2222)
         XCTAssertFalse(conflicts.isEmpty)
         XCTAssertEqual(conflicts.first?.conflictingAgent, .claude)
@@ -172,53 +178,38 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(msg.claimedFiles.isEmpty)
     }
 
-    func testDelegateTaskReportsCollisionWarnings() throws {
-        // Pre-claim a file from another agent
-        _ = try server.store.broadcastIntent(
-            agentKind: .agy,
-            pid: 5050,
-            goal: "Refactoring database models",
-            files: ["Sources/Models/User.swift"]
-        )
+    func testDelegateTaskRefusesLeaseConflictUnlessForced() throws {
+        let inboxStore = InboxStore(workspaceRoot: tempDir.path)
+        let holder = try inboxStore.createTask(from: .claude, to: .codex, prompt: "Own User model", files: ["User.swift"])
 
-        let delegateReq = """
-        {
-          "jsonrpc": "2.0",
-          "id": 13,
-          "method": "tools/call",
-          "params": {
-            "name": "linkc_delegate_task",
-            "arguments": {
-              "to": "cursor",
-              "prompt": "Add password hashing to User.swift",
-              "files": ["Sources/Models/User.swift"],
-              "from": "claude",
-              "pid": 6060
-            }
-          }
+        func delegate(force: Bool?) throws -> (text: String, isError: Bool) {
+            var arguments: [String: Any] = ["to": "cursor", "prompt": "Also touch User model", "files": ["User.swift"], "from": "claude"]
+            if let force { arguments["force"] = force }
+            let req: [String: Any] = ["jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": ["name": "linkc_delegate_task", "arguments": arguments]]
+            let resData = try XCTUnwrap(server.handleMessage(try JSONSerialization.data(withJSONObject: req)))
+            let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+            let result = resJson?["result"] as? [String: Any]
+            let text = ((result?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+            return (text, result?["isError"] as? Bool ?? false)
         }
-        """.data(using: .utf8)!
 
-        let resData = try XCTUnwrap(server.handleMessage(delegateReq))
-        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
-        let result = resJson?["result"] as? [String: Any]
-        let content = result?["content"] as? [[String: Any]]
-        let text = content?.first?["text"] as? String ?? ""
+        let refused = try delegate(force: nil)
+        XCTAssertTrue(refused.isError)
+        XCTAssertTrue(refused.text.contains("Refused"))
+        XCTAssertTrue(refused.text.contains("User.swift"))
+        XCTAssertTrue(refused.text.contains(holder.shortId))
+        XCTAssertEqual(try inboxStore.openTasks(for: .cursor).count, 0)
 
-        XCTAssertTrue(text.contains("Task queued for Cursor Agent"), "Expected confirmation in: \(text)")
-        XCTAssertTrue(text.contains("Collision Warning"), "Expected collision warning in: \(text)")
-        XCTAssertTrue(text.contains("User.swift"), "Expected file name in warning: \(text)")
+        let forced = try delegate(force: true)
+        XCTAssertFalse(forced.isError, forced.text)
+        XCTAssertEqual(try inboxStore.openTasks(for: .cursor).count, 1)
     }
 
     func testGetInboxReturnsMarkdown() throws {
         let inboxStore = InboxStore(workspaceRoot: tempDir.path)
         try inboxStore.recordLimit(agent: .cursor, reason: "Quota exceeded", cooldown: 900)
-        _ = try inboxStore.enqueue(
-            from: .claude,
-            to: .agy,
-            prompt: "Refactor error types",
-            files: ["Sources/Error.swift"]
-        )
+        let task = try inboxStore.createTask(from: .claude, to: .agy, prompt: "Refactor error types", files: ["Sources/Error.swift"])
+        _ = try inboxStore.enqueue(from: .claude, to: .agy, kind: .peerNote, body: "FYI the build is green")
 
         let inboxReq = """
         {
@@ -238,10 +229,13 @@ final class MCPServerTests: XCTestCase {
         let text = content?.first?["text"] as? String ?? ""
 
         XCTAssertTrue(text.contains("# linkC Message Inbox"), "Expected header in: \(text)")
+        XCTAssertTrue(text.contains("## Open Tasks (1)"), "Expected open tasks section in: \(text)")
+        XCTAssertTrue(text.contains(task.shortId))
+        XCTAssertTrue(text.contains("Refactor error types"))
         XCTAssertTrue(text.contains("Cursor Agent"), "Expected limited agent in: \(text)")
         XCTAssertTrue(text.contains("Quota exceeded"), "Expected limit reason in: \(text)")
-        XCTAssertTrue(text.contains("Refactor error types"), "Expected prompt in: \(text)")
-        XCTAssertTrue(text.contains("Sources/Error.swift"), "Expected claimed files in: \(text)")
+        XCTAssertTrue(text.contains("[peerNote]"), "Expected message kind tag in: \(text)")
+        XCTAssertTrue(text.contains("FYI the build is green"))
     }
 
     func testToolsCallBroadcastIntentAndCheckConflicts() throws {

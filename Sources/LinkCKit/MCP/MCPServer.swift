@@ -99,11 +99,11 @@ public final class MCPServer: Sendable {
         let result: [String: Any] = [
             "protocolVersion": "2024-11-05",
             "capabilities": [
-                "tools": [:]
+                "tools": ["listChanged": false]
             ],
             "serverInfo": [
                 "name": "linkc-multiplier",
-                "version": "0.1.0"
+                "version": "0.2.0"
             ]
         ]
         return successResponse(id: id, result: result)
@@ -170,7 +170,8 @@ public final class MCPServer: Sendable {
                         "prompt": ["type": "string", "description": "Task instructions and context to inject into recipient's terminal"],
                         "files": ["type": "array", "items": ["type": "string"], "description": "Optional list of files the delegated task will touch"],
                         "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
-                        "pid": ["type": "integer", "description": "Process ID of the sender"]
+                        "pid": ["type": "integer", "description": "Process ID of the sender"],
+                        "force": ["type": "boolean", "description": "Override an existing lease held by another assignee"]
                     ],
                     "required": ["to", "prompt"]
                 ]
@@ -398,36 +399,29 @@ public final class MCPServer: Sendable {
                 }
 
                 let files = args["files"] as? [String] ?? []
+                let force = args["force"] as? Bool ?? false
 
-                // Claim files on blackboard to detect collisions
-                var collisionWarnings: [CollisionWarning] = []
+                let task: TaskRecord
+                do {
+                    task = try inboxStore.createTask(from: caller.agent, to: toAgent, prompt: prompt, files: files, force: force)
+                } catch let error as InboxError {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
+
                 if !files.isEmpty {
-                    collisionWarnings = try store.broadcastIntent(
+                    _ = try store.broadcastIntent(
                         agentKind: caller.agent,
                         pid: caller.pid,
-                        goal: "Delegated to \(toAgent.displayName): \(prompt)",
+                        goal: "Delegated task \(task.shortId) to \(toAgent.displayName)",
                         files: files,
                         status: "delegating"
                     )
                 }
 
-                // Enqueue in inbox
-                let message = try inboxStore.enqueue(
-                    from: caller.agent,
-                    to: toAgent,
-                    prompt: prompt,
-                    files: files
+                return toolResultResponse(
+                    id: id,
+                    text: "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
                 )
-
-                var responseText = "Task queued for \(toAgent.displayName) (ID: \(message.id)). linkC will dispatch it automatically."
-                if !collisionWarnings.isEmpty {
-                    responseText += "\n\n⚠️ Collision Warnings:"
-                    for w in collisionWarnings {
-                        responseText += "\n- Agent '\(w.conflictingAgent.displayName)' (PID \(w.pid)) is also working on: \(w.conflictingFiles.joined(separator: ", ")) (Goal: '\(w.goal)')"
-                    }
-                }
-
-                return toolResultResponse(id: id, text: responseText)
 
             case "linkc_send_message":
                 guard let toStr = args["to"] as? String, !toStr.isEmpty else {
@@ -440,15 +434,12 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
                 }
 
-                let formattedPrompt = "[Peer Note from \(caller.agent.displayName)]: \(messageText)"
-                let pending = try inboxStore.enqueue(
-                    from: caller.agent,
-                    to: toAgent,
-                    prompt: formattedPrompt,
-                    files: []
-                )
-
-                return toolResultResponse(id: id, text: "Message queued for \(toAgent.displayName) (ID: \(pending.id)). linkC will deliver it when idle.")
+                do {
+                    let pending = try inboxStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote, body: messageText)
+                    return toolResultResponse(id: id, text: "Message queued for \(toAgent.displayName) (ID: \(pending.id)). linkC will deliver it when idle.")
+                } catch let error as InboxError {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
 
             case "linkc_get_inbox":
                 let inbox = try inboxStore.load()
@@ -468,21 +459,34 @@ public final class MCPServer: Sendable {
                     text += "## Active Agent Limits\n_No active rate limits recorded._\n\n"
                 }
 
+                let openTasks = inbox.tasks.filter { $0.state.isOpen }.sorted { $0.createdAt < $1.createdAt }
+                text += "## Open Tasks (\(openTasks.count))\n"
+                if openTasks.isEmpty {
+                    text += "_No open tasks._\n\n"
+                } else {
+                    for t in openTasks {
+                        let age = Int(now.timeIntervalSince(t.createdAt) / 60)
+                        text += "- \(taskLine(t)) — \(age)m old, \(t.files.count) file(s)\n"
+                    }
+                    text += "\n"
+                }
+
                 let pending = inbox.messages.filter { $0.status == .queued || $0.status == .delivering }
                 text += "## Pending Messages (\(pending.count))\n"
                 if pending.isEmpty {
                     text += "_No pending messages in queue._\n"
                 } else {
                     for msg in pending {
-                        text += "### Message \(msg.id) [\(msg.status.rawValue.uppercased())]\n"
+                        text += "### Message \(msg.id) [\(msg.kind.rawValue)] [\(msg.status.rawValue.uppercased())]\n"
                         text += "- **From:** \(msg.fromAgent.displayName) → **To:** \(msg.toAgent.displayName)\n"
+                        if let taskId = msg.taskId { text += "- **Task:** \(taskId.prefix(8))\n" }
                         if !msg.claimedFiles.isEmpty {
                             text += "- **Claimed Files:** \(msg.claimedFiles.joined(separator: ", "))\n"
                         }
                         if msg.rerouteCount > 0 {
                             text += "- **Reroute Count:** \(msg.rerouteCount)\n"
                         }
-                        text += "- **Content:**\n```\n\(msg.prompt)\n```\n\n"
+                        text += "- **Content:** \(msg.prompt.prefix(200))\n\n"
                     }
                 }
 
@@ -522,12 +526,7 @@ public final class MCPServer: Sendable {
                     }
                 } else {
                     let cmd = AgentModelCatalog.interactiveSwitchCommand(model: cleanModel, for: agent)
-                    _ = try inboxStore.enqueue(
-                        from: agent,
-                        to: agent,
-                        prompt: cmd,
-                        files: []
-                    )
+                    _ = try inboxStore.enqueue(from: agent, to: agent, kind: .command, body: cmd)
                     return toolResultResponse(id: id, text: "Model switch requested: enqueued '\(cmd)' for \(agent.displayName). linkC will inject it via terminal PTY.")
                 }
 
