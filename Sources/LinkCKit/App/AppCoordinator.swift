@@ -40,8 +40,8 @@ public final class AppCoordinator {
     public let dashboardAggregator = AgentDashboardAggregator()
 
     private let hookServer: HookServer
-    private let notifications: NotificationManager
-    private let claudePath: String
+    let notifications: NotificationManager
+    let claudePath: String
     private let settingsDir: URL
     private let userSettingsURL: URL
     private let claudeJsonURL: URL?
@@ -54,7 +54,7 @@ public final class AppCoordinator {
     /// active, and that tab selected. Injected because it depends on UI-layer state the
     /// coordinator can't see. Invoked on the main actor.
     private let isWatching: @MainActor @Sendable (String) -> Bool
-    private let agentPathResolver: (@Sendable (AgentKind) -> String?)?
+    let agentPathResolver: (@Sendable (AgentKind) -> String?)?
 
     /// Hook events are funneled through this single stream and drained by one consumer task
     /// so `store.apply` runs strictly in arrival order — unstructured per-event tasks would
@@ -715,44 +715,6 @@ public final class AppCoordinator {
 
     // MARK: - Inbox Dispatcher & Limit Auto-Rerouting
 
-    /// Dispatches pending queued messages for `workspacePath`. Auto-spawns recipient agents
-    /// if not active, and injects the prompt via terminal PTY when the recipient session is idle/ready.
-    public func processPendingMessages(workspacePath: String) {
-        let norm = (workspacePath as NSString).standardizingPath
-        let inboxStore = InboxStore(workspaceRoot: norm)
-        guard let pending = try? inboxStore.fetchPending(), !pending.isEmpty else { return }
-
-        for message in pending where message.status == .queued {
-            var targetSession = store.sessions.first { s in
-                let sNorm = (s.cwd as NSString).standardizingPath
-                return sNorm == norm && s.agentKind == message.toAgent && s.state != .ended
-            }
-
-            if targetSession == nil {
-                do {
-                    let spawned = try spawnTeammate(in: norm, agent: message.toAgent, goal: message.prompt)
-                    store.updateState(id: spawned.id, to: .ready)
-                    targetSession = store.session(id: spawned.id) ?? spawned
-                } catch {
-                    continue
-                }
-            }
-
-            guard let session = targetSession else { continue }
-
-            switch session.state {
-            case .ready, .finished, .waitingIdle:
-                let formattedPrompt = message.prompt
-                terminals.sendInput(sessionId: session.id, text: formattedPrompt)
-                store.updateState(id: session.id, to: .working)
-                try? inboxStore.markMessageDelivered(id: message.id)
-            case .working, .starting, .waitingPermission, .error, .ended:
-                // Keep in queue until recipient session finishes or becomes ready
-                break
-            }
-        }
-    }
-
     /// Switches the active model for an agent session in the given workspace using free/subscription tier models.
     /// Injects the interactive switch command (e.g. `/model <modelName>`) directly into the agent's live terminal PTY.
     @discardableResult
@@ -997,7 +959,7 @@ public final class AppCoordinator {
         return path.path
     }
 
-    private func inspectGitStatus(in workspacePath: String) -> String? {
+    func inspectGitStatus(in workspacePath: String) -> String? {
         let candidates = ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"]
         guard let gitPath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
             return nil
