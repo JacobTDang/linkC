@@ -208,19 +208,16 @@ extension AppCoordinator {
             && (task.state == .delivered || task.state == .started)
             && !task.unreportedTurnEndNotified {
             do {
-                try inboxStore.markUnreportedTurnEndNotified(taskId: task.id)
-            } catch {
-                NSLog("[linkC relay] relayTurnEnd: task %@ mark notified — %@", task.shortId, String(describing: error))
-            }
-            do {
-                _ = try inboxStore.enqueue(
-                    from: session.agentKind, to: task.fromAgent, kind: .completion, taskId: task.id,
-                    body: "\(session.agentKind.displayName) turn ended without a report. Task remains \(task.state.rawValue); linkc_get_task(\"\(task.id)\") or linkc_cancel_task(\"\(task.id)\")."
+                try echo(
+                    "\(session.agentKind.displayName) turn ended without a report. Task remains \(task.state.rawValue); linkc_get_task(\"\(task.id)\") or linkc_cancel_task(\"\(task.id)\").",
+                    for: task,
+                    inboxStore: inboxStore
                 )
+                try inboxStore.markUnreportedTurnEndNotified(taskId: task.id)
+                notified += 1
             } catch {
-                NSLog("[linkC relay] relayTurnEnd: task %@ enqueue — %@", task.shortId, String(describing: error))
+                NSLog("[linkC relay] relayTurnEnd: task %@ — %@", task.shortId, String(describing: error))
             }
-            notified += 1
         }
         if notified > 0 {
             notifications.post(
