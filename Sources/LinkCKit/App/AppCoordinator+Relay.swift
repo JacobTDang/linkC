@@ -264,6 +264,9 @@ extension AppCoordinator {
     public func checkLimitsAndReroute(for sessionId: String) -> Bool {
         guard let session = store.session(id: sessionId) else { return false }
         guard session.agentKind != .shell, session.state != .ended else { return false }
+        // A session already tripped by a previous reroute or breaker is left alone: its buffer
+        // still holds the limit text, so re-processing it every tick would loop forever.
+        guard session.state != .error else { return false }
 
         let norm = (session.cwd as NSString).standardizingPath
         let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
@@ -288,8 +291,11 @@ extension AppCoordinator {
             .filter { $0.assigneeSessionId == sessionId && ($0.state == .delivered || $0.state == .started) }
             .last
 
-        // Tell the delegator (notice: shown in inbox/dashboard, never injected).
-        if let currentTask, currentTask.fromAgent != session.agentKind {
+        // Tell the delegator (notice: shown in inbox/dashboard, never injected). Sent when the
+        // breaker trips or once the current task has actually been cancelled — never for a task
+        // that finished under us.
+        let tellDelegator: () -> Void = {
+            guard let currentTask, currentTask.fromAgent != session.agentKind else { return }
             let fallback = AgentModelCatalog.fallbackModels(for: session.agentKind).first?.displayName ?? "fallback"
             do {
                 _ = try inboxStore.enqueue(
@@ -299,7 +305,7 @@ extension AppCoordinator {
             } catch {
                 NSLog("[linkC relay] checkLimitsAndReroute: task %@ notice — %@", currentTask.shortId, String(describing: error))
             }
-            notifications.post(
+            self.notifications.post(
                 title: "linkC: \(session.agentKind.displayName) Rate Limited",
                 body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available."
             )
@@ -329,6 +335,7 @@ extension AppCoordinator {
 
         let hop = currentTask?.hop ?? 0
         guard hop < 2, let target = candidates.first else {
+            tellDelegator()
             store.updateState(id: session.id, to: .error)
             notifications.post(
                 title: "linkC: Swarm Rate Limited",
@@ -351,28 +358,43 @@ extension AppCoordinator {
         }
 
         if let currentTask {
+            // The copy exists only if the cancel succeeded. If the assignee reached a terminal
+            // state between the openTasks read and here, the transition throws and nothing is
+            // re-dispatched or announced.
             do {
                 try inboxStore.cancelTask(taskId: currentTask.id, reason: "rerouted to \(target.displayName) after limit")
-            } catch {
-                NSLog("[linkC relay] checkLimitsAndReroute: task %@ cancel — %@", currentTask.shortId, String(describing: error))
-            }
-            do {
+                tellDelegator()
                 _ = try inboxStore.createTask(
                     from: currentTask.fromAgent, to: target, prompt: currentTask.prompt,
                     files: currentTask.files, hop: hop + 1, force: true
                 )
             } catch {
-                NSLog("[linkC relay] checkLimitsAndReroute: task %@ hop %d copy — %@", currentTask.shortId, hop + 1, String(describing: error))
+                NSLog("[linkC relay] checkLimitsAndReroute: task %@ cancel/hop %d copy — %@", currentTask.shortId, hop + 1, String(describing: error))
             }
         } else {
+            // No task on this session: synthesize one unless a recent reroute already did.
+            let recentCutoff = session.stateChangedAt.addingTimeInterval(-60)
+            let alreadyRerouted: Bool
             do {
-                _ = try inboxStore.createTask(
-                    from: session.agentKind, to: target,
-                    prompt: "Task rerouted from \(session.agentKind.displayName) due to rate limit (\(match.matchedPattern)). Inspect .linkc/HANDOFF.md and continue.",
-                    files: [], hop: hop + 1, force: true
-                )
+                alreadyRerouted = try inboxStore.openTasks().contains {
+                    $0.fromAgent == session.agentKind && $0.toAgent == target && $0.createdAt >= recentCutoff
+                }
             } catch {
-                NSLog("[linkC relay] checkLimitsAndReroute: reroute task — %@", String(describing: error))
+                NSLog("[linkC relay] checkLimitsAndReroute: open tasks for reroute check — %@", String(describing: error))
+                alreadyRerouted = false
+            }
+            if alreadyRerouted {
+                NSLog("[linkC relay] checkLimitsAndReroute: %@ already rerouted to %@; skipping synthesis", session.agentKind.displayName, target.displayName)
+            } else {
+                do {
+                    _ = try inboxStore.createTask(
+                        from: session.agentKind, to: target,
+                        prompt: "Task rerouted from \(session.agentKind.displayName) due to rate limit (\(match.matchedPattern)). Inspect .linkc/HANDOFF.md and continue.",
+                        files: [], hop: hop + 1, force: true
+                    )
+                } catch {
+                    NSLog("[linkC relay] checkLimitsAndReroute: reroute task — %@", String(describing: error))
+                }
             }
         }
 

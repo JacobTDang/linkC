@@ -572,6 +572,86 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(sink.deliveries.contains { $0.title == "linkC: Codex Rate Limited" && $0.body.contains("429 Too Many Requests") })
     }
 
+    /// Test 11b: A rerouted session is never re-processed on the next tick — the limit text is
+    /// still in its buffer, but the source is `.error`, so no second hop+1 task and no second notice.
+    @MainActor
+    func testRerouteIsIdempotentAcrossTicks() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let sourceSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: sourceSession.id, to: .working)
+        let original = try inbox.createTask(from: .cursor, to: .claude, prompt: "Build high-throughput streaming proxy", files: ["Proxy.swift"])
+        try inbox.markTaskDelivered(taskId: original.id, sessionId: sourceSession.id)
+        try inbox.markTaskStarted(taskId: original.id)
+
+        coordinator.terminals.sendInput(sessionId: sourceSession.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: sourceSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: sourceSession.id))
+        let firstCopy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        let stateAfterFirst = try XCTUnwrap(coordinator.store.session(id: sourceSession.id)).state
+        XCTAssertEqual(stateAfterFirst, .error)
+
+        // Next tick: same session, same buffer.
+        coordinator.sampleAgentStates()
+        _ = coordinator.checkLimitsAndReroute(for: sourceSession.id)
+
+        let hopOne = try inbox.openTasks().filter { $0.hop == 1 }
+        XCTAssertEqual(hopOne.count, 1, "second tick must not synthesize another hop-1 task")
+        XCTAssertEqual(hopOne.first?.id, firstCopy.id)
+        XCTAssertEqual(hopOne.first?.toAgent, firstCopy.toAgent)
+        XCTAssertFalse(try inbox.load().tasks.contains { $0.prompt.hasPrefix("Task rerouted from") }, "no synthesized reroute task")
+
+        let notices = try inbox.load().messages.filter { $0.kind == .notice && $0.toAgent == .cursor }
+        XCTAssertEqual(notices.count, 1, "delegator is told exactly once")
+        XCTAssertEqual(coordinator.store.session(id: sourceSession.id)?.state, stateAfterFirst, "second call leaves the source state alone")
+    }
+
+    /// Test 11c: If the assignee finished between the open-tasks read and the cancel, no hop+1 copy
+    /// may be created — finished work must never be re-dispatched.
+    @MainActor
+    func testRerouteSkipsCopyWhenOriginalAlreadyDone() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let sourceSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: sourceSession.id, to: .working)
+        let original = try inbox.createTask(from: .cursor, to: .claude, prompt: "Build high-throughput streaming proxy", files: ["Proxy.swift"])
+        try inbox.markTaskDelivered(taskId: original.id, sessionId: sourceSession.id)
+        try inbox.markTaskStarted(taskId: original.id)
+
+        // Authoritative record reaches .done; a stale open snapshot with the same id is kept so
+        // openTasks() still reports it as the current task while cancelTask hits the .done row.
+        let staleOpenRecord = try XCTUnwrap(inbox.task(id: original.id))
+        try inbox.completeTask(taskId: original.id, report: TaskReport(status: "done", summary: "shipped before the limit hit"))
+        var seeded = try inbox.load()
+        seeded.tasks.append(staleOpenRecord)
+        try inbox.saveRaw(seeded)
+
+        coordinator.terminals.sendInput(sessionId: sourceSession.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: sourceSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: sourceSession.id))
+
+        XCTAssertEqual(try inbox.task(id: original.id)?.state, .done)
+        XCTAssertFalse(try inbox.load().tasks.contains { $0.hop == 1 }, "finished work must not be re-dispatched")
+        XCTAssertFalse(
+            try inbox.load().messages.contains { $0.kind == .notice && $0.taskId == original.id },
+            "no 'paused' notice for a task that was already done"
+        )
+    }
+
     /// Test 12: Turn end without a report sends exactly one short line, never scrollback, and never loops.
     @MainActor
     func testTurnEndWithoutReportSendsOneLineOncePerTaskAndNeverScrapes() async throws {
