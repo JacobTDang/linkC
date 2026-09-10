@@ -39,6 +39,8 @@ public final class TerminalSession {
     private let liveness = OSAllocatedUnfairLock<Bool>(initialState: false)
     /// Set once at spawn on the main actor; never reused across restarts (sessions start once).
     private var childPid: pid_t = -1
+    /// The spawned shell's pid (`-1` before spawn). Used by the app to heartbeat presence.
+    public var processId: pid_t { childPid }
     /// Idempotence for `terminate()` (main-actor only).
     private var terminationRequested = false
 
