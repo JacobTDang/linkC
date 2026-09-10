@@ -20,10 +20,11 @@ final class InboxStoreTests: XCTestCase {
     func testEmptyInboxInitializesCleanly() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
         let inbox = try store.load()
-        XCTAssertEqual(inbox.version, 1)
+        XCTAssertEqual(inbox.version, 2)
         XCTAssertEqual(inbox.workspacePath, tempDir.path)
         XCTAssertTrue(inbox.messages.isEmpty)
         XCTAssertTrue(inbox.agentLimits.isEmpty)
+        XCTAssertTrue(inbox.tasks.isEmpty)
     }
 
     func testEnqueueAddsMessageWithQueuedStatus() throws {
@@ -123,8 +124,68 @@ final class InboxStoreTests: XCTestCase {
         try "invalid json content".data(using: .utf8)!.write(to: inboxURL)
 
         let inbox = try store.load()
-        XCTAssertEqual(inbox.version, 1)
+        XCTAssertEqual(inbox.version, 2)
         XCTAssertTrue(inbox.messages.isEmpty)
+    }
+
+    func testDecodesV1InboxWithInferredKindsAndEmptyTasks() throws {
+        let v1 = """
+        {
+          "version": 1,
+          "workspacePath": "\(tempDir.path)",
+          "updatedAt": "2026-09-09T10:00:00Z",
+          "agentLimits": [],
+          "messages": [
+            {"id": "a", "fromAgent": "claude", "toAgent": "codex", "prompt": "Build it", "claimedFiles": [], "status": "queued", "rerouteCount": 0, "createdAt": "2026-09-09T10:00:00Z"},
+            {"id": "b", "fromAgent": "codex", "toAgent": "claude", "prompt": "[Task Completed by Codex]\\nOriginal Task: x", "claimedFiles": [], "status": "delivered", "rerouteCount": 0, "createdAt": "2026-09-09T10:00:00Z", "deliveredAt": "2026-09-09T10:01:00Z"},
+            {"id": "c", "fromAgent": "codex", "toAgent": "claude", "prompt": "[System Notice] limit", "claimedFiles": [], "status": "queued", "rerouteCount": 0, "createdAt": "2026-09-09T10:00:00Z"},
+            {"id": "d", "fromAgent": "cursor", "toAgent": "agy", "prompt": "[Peer Note from Cursor Agent]: hi", "claimedFiles": [], "status": "queued", "rerouteCount": 0, "createdAt": "2026-09-09T10:00:00Z"}
+          ]
+        }
+        """
+        let inboxURL = tempDir.appendingPathComponent(".linkc/inbox.json")
+        try FileManager.default.createDirectory(at: inboxURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try v1.data(using: .utf8)!.write(to: inboxURL)
+
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let inbox = try store.load()
+        XCTAssertTrue(inbox.tasks.isEmpty)
+        let byId = Dictionary(uniqueKeysWithValues: inbox.messages.map { ($0.id, $0) })
+        XCTAssertEqual(byId["a"]?.kind, .task)
+        XCTAssertEqual(byId["b"]?.kind, .completion)
+        XCTAssertEqual(byId["c"]?.kind, .notice)
+        XCTAssertEqual(byId["d"]?.kind, .peerNote)
+        XCTAssertNil(byId["a"]?.taskId)
+        XCTAssertEqual(byId["a"]?.contentHash, LinkCFrame.contentHash(from: .claude, to: .codex, kind: .task, prompt: "Build it"))
+    }
+
+    func testTaskStateTransitionTable() {
+        XCTAssertTrue(TaskState.queued.canTransition(to: .delivered))
+        XCTAssertTrue(TaskState.queued.canTransition(to: .cancelled))
+        XCTAssertTrue(TaskState.queued.canTransition(to: .expired))
+        XCTAssertFalse(TaskState.queued.canTransition(to: .started))
+        XCTAssertTrue(TaskState.delivered.canTransition(to: .started))
+        XCTAssertTrue(TaskState.delivered.canTransition(to: .done))
+        XCTAssertTrue(TaskState.delivered.canTransition(to: .failed))
+        XCTAssertTrue(TaskState.started.canTransition(to: .done))
+        XCTAssertFalse(TaskState.started.canTransition(to: .delivered))
+        for terminal in [TaskState.done, .failed, .cancelled, .expired] {
+            for next in [TaskState.queued, .delivered, .started, .done, .failed, .cancelled, .expired] {
+                XCTAssertFalse(terminal.canTransition(to: next), "\(terminal) -> \(next) must be illegal")
+            }
+            XCTAssertFalse(terminal.isOpen)
+        }
+        XCTAssertTrue(TaskState.queued.isOpen && TaskState.delivered.isOpen && TaskState.started.isOpen)
+    }
+
+    func testFrameMarkerDetection() {
+        XCTAssertTrue(LinkCFrame.beginsWithMarker("[linkC task 1234abcd] done"))
+        XCTAssertTrue(LinkCFrame.beginsWithMarker("  [linkC notice] x"))
+        XCTAssertTrue(LinkCFrame.beginsWithMarker("[Peer Note from Codex]: hi"))
+        XCTAssertTrue(LinkCFrame.beginsWithMarker("[Task Completed by Codex]"))
+        XCTAssertTrue(LinkCFrame.beginsWithMarker("[System Notice] limit"))
+        XCTAssertFalse(LinkCFrame.beginsWithMarker("Implement the [linkC task] parser"))
+        XCTAssertFalse(LinkCFrame.beginsWithMarker("plain brief"))
     }
 
     func testConcurrentFlockPreventsCorruption() throws {
