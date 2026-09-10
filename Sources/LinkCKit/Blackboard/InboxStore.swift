@@ -115,6 +115,11 @@ public final class InboxStore: Sendable {
         if prunedInbox.messages.count > 100 {
             prunedInbox.messages = Array(prunedInbox.messages.suffix(100))
         }
+        prunedInbox.tasks.removeAll { task in
+            guard !task.state.isOpen else { return false }
+            return (task.finishedAt ?? task.createdAt) < cutoff
+        }
+        prunedInbox.version = Inbox.currentVersion
 
         try ensureDirectoryExists()
         let data = try encoder.encode(prunedInbox)
@@ -228,6 +233,146 @@ public final class InboxStore: Sendable {
                 return status
             }
             return nil
+        }
+    }
+
+    // MARK: - Task lifecycle
+
+    /// Creates a queued task with an exclusive lease on `files`. Refuses when another assignee
+    /// holds an open lease on any of the files unless `force`. Idempotent for identical `to`+`prompt`.
+    public func createTask(
+        from: AgentKind,
+        to: AgentKind,
+        prompt: String,
+        files: [String],
+        hop: Int = 0,
+        force: Bool = false,
+        timeout: TimeInterval = 5.0
+    ) throws -> TaskRecord {
+        guard hop <= 2 else { throw InboxError.hopLimit(hop) }
+        guard !LinkCFrame.beginsWithMarker(prompt) else { throw InboxError.framedBody }
+
+        return try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            let normalized = files.map { ($0 as NSString).standardizingPath }
+
+            if let existing = inbox.tasks.first(where: { $0.state.isOpen && $0.toAgent == to && $0.prompt == prompt }) {
+                return existing
+            }
+
+            if !force && !normalized.isEmpty {
+                let holders = inbox.tasks.filter { other in
+                    other.state.isOpen && other.toAgent != to && !Set(other.files).isDisjoint(with: normalized)
+                }
+                if !holders.isEmpty { throw InboxError.leaseConflict(holders: holders) }
+            }
+
+            let task = TaskRecord(fromAgent: from, toAgent: to, prompt: prompt, files: normalized, hop: hop)
+            inbox.tasks.append(task)
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+            return task
+        }
+    }
+
+    public func task(id: String, timeout: TimeInterval = 5.0) throws -> TaskRecord? {
+        try withFileLock(timeout: timeout) {
+            try loadUnlocked().tasks.first { $0.id == id }
+        }
+    }
+
+    /// Open tasks, oldest first. `agent == nil` returns all; otherwise tasks assigned to `agent`.
+    public func openTasks(for agent: AgentKind? = nil, timeout: TimeInterval = 5.0) throws -> [TaskRecord] {
+        try withFileLock(timeout: timeout) {
+            try loadUnlocked().tasks
+                .filter { $0.state.isOpen && (agent == nil || $0.toAgent == agent) }
+                .sorted { $0.createdAt < $1.createdAt }
+        }
+    }
+
+    /// Open tasks whose lease overlaps `files`, optionally ignoring a given assignee.
+    public func leaseHolders(for files: [String], excludingAssignee: AgentKind? = nil, timeout: TimeInterval = 5.0) throws -> [TaskRecord] {
+        let normalized = Set(files.map { ($0 as NSString).standardizingPath })
+        return try withFileLock(timeout: timeout) {
+            try loadUnlocked().tasks.filter { task in
+                task.state.isOpen
+                    && (excludingAssignee == nil || task.toAgent != excludingAssignee)
+                    && !Set(task.files).isDisjoint(with: normalized)
+            }
+        }
+    }
+
+    public func markTaskDelivered(taskId: String, sessionId: String, timeout: TimeInterval = 5.0) throws {
+        try transition(taskId: taskId, to: .delivered, timeout: timeout) { task in
+            task.assigneeSessionId = sessionId
+            task.deliveredAt = Date()
+        }
+    }
+
+    public func markTaskStarted(taskId: String, timeout: TimeInterval = 5.0) throws {
+        try transition(taskId: taskId, to: .started, timeout: timeout) { task in
+            let now = Date()
+            task.startedAt = now
+            task.leaseExpiresAt = now.addingTimeInterval(TaskRecord.leaseDuration)
+        }
+    }
+
+    public func completeTask(taskId: String, report: TaskReport, timeout: TimeInterval = 5.0) throws {
+        guard !report.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw InboxError.emptySummary
+        }
+        let target: TaskState = report.status == "failed" ? .failed : .done
+        try transition(taskId: taskId, to: target, timeout: timeout) { task in
+            task.report = report
+            task.finishedAt = Date()
+        }
+    }
+
+    public func cancelTask(taskId: String, reason: String, timeout: TimeInterval = 5.0) throws {
+        try transition(taskId: taskId, to: .cancelled, timeout: timeout) { task in
+            task.cancelReason = reason
+            task.finishedAt = Date()
+        }
+    }
+
+    public func expireTask(taskId: String, reason: String, timeout: TimeInterval = 5.0) throws {
+        try transition(taskId: taskId, to: .expired, timeout: timeout) { task in
+            task.cancelReason = reason
+            task.finishedAt = Date()
+        }
+    }
+
+    public func markUnreportedTurnEndNotified(taskId: String, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            guard let idx = inbox.tasks.firstIndex(where: { $0.id == taskId }) else {
+                throw InboxError.taskNotFound(taskId)
+            }
+            inbox.tasks[idx].unreportedTurnEndNotified = true
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+        }
+    }
+
+    private func transition(
+        taskId: String,
+        to next: TaskState,
+        timeout: TimeInterval,
+        mutate: (inout TaskRecord) -> Void
+    ) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            guard let idx = inbox.tasks.firstIndex(where: { $0.id == taskId }) else {
+                throw InboxError.taskNotFound(taskId)
+            }
+            let current = inbox.tasks[idx].state
+            guard current.canTransition(to: next) else {
+                throw InboxError.illegalTransition(taskId: taskId, from: current, to: next)
+            }
+            inbox.tasks[idx].state = next
+            mutate(&inbox.tasks[idx])
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
         }
     }
 }
