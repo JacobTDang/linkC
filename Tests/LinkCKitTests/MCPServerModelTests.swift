@@ -12,7 +12,7 @@ final class MCPServerModelTests: XCTestCase {
             .appendingPathComponent("linkc-mcp-model-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         inboxStore = InboxStore(workspaceRoot: tempDir.path)
-        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore)
+        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil })
     }
 
     override func tearDownWithError() throws {
@@ -170,7 +170,9 @@ final class MCPServerModelTests: XCTestCase {
                 tracker.invokedAgent = agent
                 tracker.invokedModel = model
                 return "Switched \(agent.displayName) to \(model) via test callback."
-            }
+            },
+            environment: ["LINKC_AGENT": "claude"],
+            ancestorResolver: { _ in nil }
         )
 
         let req = """

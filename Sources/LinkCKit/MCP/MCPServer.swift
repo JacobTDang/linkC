@@ -1,24 +1,67 @@
 import Foundation
 
+/// Who is calling the tool, resolved from the posting process — never assumed.
+public struct MCPCaller: Sendable {
+    public let agent: AgentKind
+    public let pid: pid_t
+    public var isIdentified: Bool { agent != .shell }
+}
+
 /// Pure-Swift Model Context Protocol (MCP) server speaking JSON-RPC 2.0.
 public final class MCPServer: Sendable {
     public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String) throws -> String
+    public typealias AncestorResolver = @Sendable (_ pid: pid_t) -> (agent: AgentKind, pid: pid_t)?
 
     public let workspaceRoot: String
     public let store: BlackboardStore
     public let inboxStore: InboxStore
     public let modelSwitcher: ModelSwitcher?
+    public let environment: [String: String]
+    public let ancestorResolver: AncestorResolver
+
+    /// Tools an unidentified caller may still use.
+    public static let readOnlyTools: Set<String> = [
+        "linkc_get_project_context", "linkc_check_conflicts", "linkc_get_inbox",
+        "linkc_get_task", "linkc_get_models", "linkc_get_usage_status"
+    ]
+
+    /// Tools whose `agent` argument is a target/filter rather than the caller's identity.
+    public static let targetAgentTools: Set<String> = ["linkc_switch_model", "linkc_get_models"]
+
+    public static let unidentifiedCallerMessage =
+        "Cannot identify calling agent; pass agent: \"claude\" | \"agy\" | \"cursor\" | \"codex\"."
 
     public init(
         workspaceRoot: String,
         store: BlackboardStore? = nil,
         inboxStore: InboxStore? = nil,
-        modelSwitcher: ModelSwitcher? = nil
+        modelSwitcher: ModelSwitcher? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        ancestorResolver: @escaping AncestorResolver = { ProcessSnooper.detectAgent(inAncestorsOf: $0) }
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
         self.inboxStore = inboxStore ?? InboxStore(workspaceRoot: workspaceRoot)
         self.modelSwitcher = modelSwitcher
+        self.environment = environment
+        self.ancestorResolver = ancestorResolver
+    }
+
+    /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified).
+    func resolveCaller(_ args: [String: Any]) -> MCPCaller {
+        let explicitPid = (args["pid"] as? Int).map { pid_t($0) }
+        if let s = (args["agent"] as? String) ?? (args["from"] as? String),
+           let kind = AgentKind(rawValue: s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
+           kind != .shell {
+            return MCPCaller(agent: kind, pid: explicitPid ?? getppid())
+        }
+        if let env = environment["LINKC_AGENT"], let kind = AgentKind(rawValue: env.lowercased()), kind != .shell {
+            return MCPCaller(agent: kind, pid: explicitPid ?? getppid())
+        }
+        if let found = ancestorResolver(getpid()) {
+            return MCPCaller(agent: found.agent, pid: explicitPid ?? found.pid)
+        }
+        return MCPCaller(agent: .shell, pid: explicitPid ?? getppid())
     }
 
     /// Processes a single JSON-RPC 2.0 message buffer and returns the response Data, or nil if no response is needed (e.g. notifications).
@@ -192,26 +235,31 @@ public final class MCPServer: Sendable {
             return errorResponse(id: id, code: -32602, message: "Missing tool name")
         }
         let args = params["arguments"] as? [String: Any] ?? [:]
+        let identityArgs = Self.targetAgentTools.contains(name) ? args.filter { $0.key != "agent" } : args
+        let caller = resolveCaller(identityArgs)
+        if !caller.isIdentified && !Self.readOnlyTools.contains(name) {
+            return toolResultResponse(id: id, text: Self.unidentifiedCallerMessage, isError: true)
+        }
+        if caller.isIdentified {
+            try? store.heartbeat(agentKind: caller.agent, pid: caller.pid)
+        }
 
         do {
             switch name {
             case "linkc_broadcast_intent":
                 let goal = args["goal"] as? String ?? "Working"
                 let files = args["files"] as? [String] ?? []
-                let agentStr = args["agent"] as? String ?? "claude"
-                let agentKind = AgentKind(rawValue: agentStr) ?? .claude
-                let pid = (args["pid"] as? Int).map { pid_t($0) } ?? getpid()
                 let status = args["status"] as? String ?? "working"
 
                 let warnings = try store.broadcastIntent(
-                    agentKind: agentKind,
-                    pid: pid,
+                    agentKind: caller.agent,
+                    pid: caller.pid,
                     goal: goal,
                     files: files,
                     status: status
                 )
 
-                var responseText = "Intent recorded: '\(goal)' for \(agentKind.displayName) (PID \(pid)). Claimed \(files.count) files."
+                var responseText = "Intent recorded: '\(goal)' for \(caller.agent.displayName) (PID \(caller.pid)). Claimed \(files.count) files."
                 if !warnings.isEmpty {
                     responseText += "\n\n⚠️ Collision Warnings:"
                     for w in warnings {
@@ -223,7 +271,7 @@ public final class MCPServer: Sendable {
 
             case "linkc_check_conflicts":
                 let files = args["files"] as? [String] ?? []
-                let pid = (args["pid"] as? Int).map { pid_t($0) }
+                let pid: pid_t? = (args["pid"] as? Int).map { pid_t($0) } ?? (caller.isIdentified ? caller.pid : nil)
                 let warnings = try store.checkConflicts(files: files, excludingPid: pid)
 
                 if warnings.isEmpty {
@@ -239,12 +287,10 @@ public final class MCPServer: Sendable {
             case "linkc_post_note":
                 let title = args["title"] as? String ?? "Note"
                 let content = args["content"] as? String ?? ""
-                let agentStr = args["agent"] as? String ?? "claude"
-                let agentKind = AgentKind(rawValue: agentStr) ?? .claude
                 let tags = args["tags"] as? [String] ?? []
 
                 let note = try store.postNote(
-                    authorAgent: agentKind,
+                    authorAgent: caller.agent,
                     title: title,
                     content: content,
                     tags: tags
@@ -308,17 +354,14 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: errorMsg, isError: true)
                 }
 
-                let fromStr = args["from"] as? String ?? args["agent"] as? String ?? "claude"
-                let fromAgent = AgentKind(rawValue: fromStr.lowercased()) ?? .claude
                 let files = args["files"] as? [String] ?? []
-                let pid = (args["pid"] as? Int).map { pid_t($0) } ?? getpid()
 
                 // Claim files on blackboard to detect collisions
                 var collisionWarnings: [CollisionWarning] = []
                 if !files.isEmpty {
                     collisionWarnings = try store.broadcastIntent(
-                        agentKind: fromAgent,
-                        pid: pid,
+                        agentKind: caller.agent,
+                        pid: caller.pid,
                         goal: "Delegated to \(toAgent.displayName): \(prompt)",
                         files: files,
                         status: "delegating"
@@ -327,7 +370,7 @@ public final class MCPServer: Sendable {
 
                 // Enqueue in inbox
                 let message = try inboxStore.enqueue(
-                    from: fromAgent,
+                    from: caller.agent,
                     to: toAgent,
                     prompt: prompt,
                     files: files
@@ -354,12 +397,9 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
                 }
 
-                let fromStr = args["from"] as? String ?? args["agent"] as? String ?? "claude"
-                let fromAgent = AgentKind(rawValue: fromStr.lowercased()) ?? .claude
-
-                let formattedPrompt = "[Peer Note from \(fromAgent.displayName)]: \(messageText)"
+                let formattedPrompt = "[Peer Note from \(caller.agent.displayName)]: \(messageText)"
                 let pending = try inboxStore.enqueue(
-                    from: fromAgent,
+                    from: caller.agent,
                     to: toAgent,
                     prompt: formattedPrompt,
                     files: []
@@ -414,7 +454,7 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(id: id, text: text)
 
             case "linkc_switch_model":
-                let agentStr = (args["agent"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "claude"
+                let agentStr = (args["agent"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? caller.agent.rawValue
                 guard let agent = AgentKind(rawValue: agentStr.lowercased()) else {
                     return toolResultResponse(id: id, text: "Error: Unknown agent '\(agentStr)'. Supported agents: claude, agy, cursor, codex.", isError: true)
                 }
