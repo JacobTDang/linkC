@@ -606,6 +606,9 @@ public final class MCPServer: Sendable {
             case "linkc_start_task":
                 do {
                     let task = try requireTask(args)
+                    guard caller.agent == task.toAgent else {
+                        return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
+                    }
                     try inboxStore.markTaskStarted(taskId: task.id)
                     let updated = try inboxStore.task(id: task.id) ?? task
                     return toolResultResponse(id: id, text: "Started: \(taskLine(updated))")
@@ -616,6 +619,9 @@ public final class MCPServer: Sendable {
             case "linkc_complete_task":
                 do {
                     let task = try requireTask(args)
+                    guard caller.agent == task.toAgent else {
+                        return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
+                    }
                     let status = (args["status"] as? String ?? "").lowercased()
                     guard status == "done" || status == "failed" else {
                         return toolResultResponse(id: id, text: "Error: 'status' must be \"done\" or \"failed\".", isError: true)
@@ -632,17 +638,23 @@ public final class MCPServer: Sendable {
                     )
                     try inboxStore.completeTask(taskId: task.id, report: report)
 
-                    let firstLine = summary.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? summary
-                    let body = "\(status) by \(caller.agent.displayName) — \(firstLine.prefix(200)). linkc_get_task(\"\(task.id)\") for details."
-                    _ = try inboxStore.enqueue(from: caller.agent, to: task.fromAgent, kind: .completion, taskId: task.id, body: body)
+                    let successText = "Reported \(status) for task \(task.shortId). \(task.fromAgent.displayName) will receive a one-line echo."
+                    do {
+                        let firstLine = summary.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? summary
+                        let body = "\(status) by \(caller.agent.displayName) — \(firstLine.prefix(200)). linkc_get_task(\"\(task.id)\") for details."
+                        _ = try inboxStore.enqueue(from: caller.agent, to: task.fromAgent, kind: .completion, taskId: task.id, body: body)
 
-                    var note = "\(summary)\n"
-                    if !report.commits.isEmpty { note += "\n**Commits:** \(report.commits.joined(separator: ", "))\n" }
-                    if !report.tests.isEmpty { note += "\n**Tests:** \(report.tests.joined(separator: "; "))\n" }
-                    note += "\nTask id: \(task.id)\n"
-                    _ = try store.postNote(authorAgent: caller.agent, title: "Task \(task.shortId) \(status)", content: note, tags: ["task", status])
+                        var note = "\(summary)\n"
+                        if !report.commits.isEmpty { note += "\n**Commits:** \(report.commits.joined(separator: ", "))\n" }
+                        if !report.tests.isEmpty { note += "\n**Tests:** \(report.tests.joined(separator: "; "))\n" }
+                        note += "\nTask id: \(task.id)\n"
+                        _ = try store.postNote(authorAgent: caller.agent, title: "Task \(task.shortId) \(status)", content: note, tags: ["task", status])
+                    } catch {
+                        let warning = "Warning: task state was updated but notifying \(task.fromAgent.displayName) failed: \(error.localizedDescription). They can run linkc_get_task(\"\(task.id)\")."
+                        return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
+                    }
 
-                    return toolResultResponse(id: id, text: "Reported \(status) for task \(task.shortId). \(task.fromAgent.displayName) will receive a one-line echo.")
+                    return toolResultResponse(id: id, text: successText)
                 } catch {
                     return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }
@@ -658,10 +670,16 @@ public final class MCPServer: Sendable {
                     let resolvedReason = (reason?.isEmpty == false) ? reason! : "cancelled by \(caller.agent.displayName)"
                     let wasDelivered = task.state == .delivered || task.state == .started
                     try inboxStore.cancelTask(taskId: task.id, reason: resolvedReason)
+                    let successText = "Cancelled task \(task.shortId) (\(resolvedReason))."
                     if wasDelivered {
-                        _ = try inboxStore.enqueue(from: caller.agent, to: task.toAgent, kind: .completion, taskId: task.id, body: "cancelled: \(resolvedReason). Stop work on it.")
+                        do {
+                            _ = try inboxStore.enqueue(from: caller.agent, to: task.toAgent, kind: .completion, taskId: task.id, body: "cancelled: \(resolvedReason). Stop work on it.")
+                        } catch {
+                            let warning = "Warning: task state was updated but notifying \(task.toAgent.displayName) failed: \(error.localizedDescription). They can run linkc_get_task(\"\(task.id)\")."
+                            return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
+                        }
                     }
-                    return toolResultResponse(id: id, text: "Cancelled task \(task.shortId) (\(resolvedReason)).")
+                    return toolResultResponse(id: id, text: successText)
                 } catch {
                     return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }

@@ -48,6 +48,17 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.text.contains("queued"))
     }
 
+    func testStartTaskByNonAssigneeIsRejected() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
+
+        let res = try call(server(as: .agy), "linkc_start_task", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("assigned to Codex"))
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+    }
+
     func testCompleteTaskRecordsReportEnqueuesOneLineAndPostsNote() throws {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build the very long brief that must not be echoed back in full " + String(repeating: "x", count: 500), files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
@@ -75,6 +86,37 @@ final class MCPServerTaskTests: XCTestCase {
 
         let notes = try srv.store.load().sharedNotes
         XCTAssertTrue(notes.contains { $0.title == "Task \(task.shortId) done" && $0.content.contains("abc1234") })
+    }
+
+    func testCompleteTaskByNonAssigneeIsRejected() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
+
+        let res = try call(server(as: .agy), "linkc_complete_task", [
+            "task_id": task.id,
+            "status": "done",
+            "summary": "Implemented."
+        ])
+
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("assigned to Codex"))
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+        XCTAssertFalse(try inbox.load().messages.contains { $0.kind == .completion })
+    }
+
+    func testCompleteTaskSucceedsWhenEchoEnqueueFails() throws {
+        let task = try inbox.createTask(from: .codex, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
+
+        let res = try call(server(as: .codex), "linkc_complete_task", [
+            "task_id": task.id,
+            "status": "done",
+            "summary": "Implemented."
+        ])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.hasPrefix("Reported done"))
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .done)
     }
 
     func testCompleteTaskRequiresSummaryAndValidStatus() throws {
