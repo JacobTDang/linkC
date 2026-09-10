@@ -228,4 +228,156 @@ extension AppCoordinator {
         }
         return notified
     }
+
+    // MARK: - Handoff goal
+
+    /// Explicit goal → newest open task's brief → blackboard goal → nil. Never reads messages.
+    func resolveHandoffGoal(workspacePath: String, explicit: String?) -> String? {
+        if let explicit = explicit?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
+            return explicit
+        }
+        let norm = (workspacePath as NSString).standardizingPath
+        do {
+            if let newest = try InboxStore(workspaceRoot: norm).openTasks().last {
+                return newest.prompt
+            }
+        } catch {
+            NSLog("[linkC relay] resolveHandoffGoal: open tasks — %@", String(describing: error))
+        }
+        do {
+            let board = try BlackboardStore(workspaceRoot: norm).load(timeout: 0.5)
+            if let goal = board.activeAgents.last?.goal, !goal.isEmpty, goal != "(idle)" {
+                return goal
+            }
+        } catch {
+            NSLog("[linkC relay] resolveHandoffGoal: blackboard — %@", String(describing: error))
+        }
+        return nil
+    }
+
+    // MARK: - Limits and reroute
+
+    /// Detects a provider limit in `sessionId`'s recent output (the one place terminal text is read,
+    /// and only for pattern matching). Records the cooldown, tells the delegator via a `.notice`,
+    /// cancels the current task, and creates a hop+1 copy for the best available peer (max 2 hops).
+    @discardableResult
+    public func checkLimitsAndReroute(for sessionId: String) -> Bool {
+        guard let session = store.session(id: sessionId) else { return false }
+        guard session.agentKind != .shell, session.state != .ended else { return false }
+
+        let norm = (session.cwd as NSString).standardizingPath
+        let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
+        guard let match = LimitDetector.detectLimit(inOutput: recentOutput, agent: session.agentKind) else { return false }
+
+        let inboxStore = InboxStore(workspaceRoot: norm)
+        do {
+            try inboxStore.recordLimit(agent: session.agentKind, reason: match.matchedPattern, cooldown: match.cooldown)
+        } catch {
+            NSLog("[linkC relay] checkLimitsAndReroute: record limit — %@", String(describing: error))
+        }
+
+        // Current task: newest open task assigned to this exact session.
+        let assigned: [TaskRecord]
+        do {
+            assigned = try inboxStore.openTasks(for: session.agentKind)
+        } catch {
+            NSLog("[linkC relay] checkLimitsAndReroute: open tasks — %@", String(describing: error))
+            assigned = []
+        }
+        let currentTask = assigned
+            .filter { $0.assigneeSessionId == sessionId && ($0.state == .delivered || $0.state == .started) }
+            .last
+
+        // Tell the delegator (notice: shown in inbox/dashboard, never injected).
+        if let currentTask, currentTask.fromAgent != session.agentKind {
+            let fallback = AgentModelCatalog.fallbackModels(for: session.agentKind).first?.displayName ?? "fallback"
+            do {
+                _ = try inboxStore.enqueue(
+                    from: session.agentKind, to: currentTask.fromAgent, kind: .notice, taskId: currentTask.id,
+                    body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available. Task \(currentTask.shortId) paused."
+                )
+            } catch {
+                NSLog("[linkC relay] checkLimitsAndReroute: task %@ notice — %@", currentTask.shortId, String(describing: error))
+            }
+            notifications.post(
+                title: "linkC: \(session.agentKind.displayName) Rate Limited",
+                body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available."
+            )
+        }
+
+        // Candidates: installed, not limited, not this agent; prefer ones already active here.
+        let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor]
+        var candidates = supportedPeers.filter { candidate in
+            guard candidate != session.agentKind else { return false }
+            do {
+                guard try inboxStore.isAgentLimited(agent: candidate) == nil else { return false }
+            } catch {
+                NSLog("[linkC relay] checkLimitsAndReroute: limit status for %@ — %@", candidate.displayName, String(describing: error))
+            }
+            if candidate == .claude {
+                return FileManager.default.isExecutableFile(atPath: claudePath)
+                    || (agentPathResolver?(candidate) ?? AgentDescriptor.resolveExecutable(for: candidate)) != nil
+            }
+            if let resolver = agentPathResolver { return resolver(candidate) != nil }
+            return AgentDescriptor.resolveExecutable(for: candidate) != nil
+        }
+        candidates.sort { a, b in
+            let aActive = store.sessions.contains { ($0.cwd as NSString).standardizingPath == norm && $0.agentKind == a && $0.state != .ended }
+            let bActive = store.sessions.contains { ($0.cwd as NSString).standardizingPath == norm && $0.agentKind == b && $0.state != .ended }
+            return aActive && !bActive
+        }
+
+        let hop = currentTask?.hop ?? 0
+        guard hop < 2, let target = candidates.first else {
+            store.updateState(id: session.id, to: .error)
+            notifications.post(
+                title: "linkC: Swarm Rate Limited",
+                body: "All candidate agents in \(URL(fileURLWithPath: norm).lastPathComponent) are rate limited or the task has exhausted its reroute hops. Pausing auto-delegation."
+            )
+            return true
+        }
+
+        // Handoff memo from the task's brief (never from messages).
+        do {
+            try HandoffComposer.writeHandoffSync(
+                workspacePath: norm,
+                sourceAgent: session.agentKind,
+                lastGoal: resolveHandoffGoal(workspacePath: norm, explicit: currentTask?.prompt),
+                gitSummary: inspectGitStatus(in: norm),
+                recentTerminalOutput: recentOutput
+            )
+        } catch {
+            NSLog("[linkC relay] checkLimitsAndReroute: write handoff — %@", String(describing: error))
+        }
+
+        if let currentTask {
+            do {
+                try inboxStore.cancelTask(taskId: currentTask.id, reason: "rerouted to \(target.displayName) after limit")
+            } catch {
+                NSLog("[linkC relay] checkLimitsAndReroute: task %@ cancel — %@", currentTask.shortId, String(describing: error))
+            }
+            do {
+                _ = try inboxStore.createTask(
+                    from: currentTask.fromAgent, to: target, prompt: currentTask.prompt,
+                    files: currentTask.files, hop: hop + 1, force: true
+                )
+            } catch {
+                NSLog("[linkC relay] checkLimitsAndReroute: task %@ hop %d copy — %@", currentTask.shortId, hop + 1, String(describing: error))
+            }
+        } else {
+            do {
+                _ = try inboxStore.createTask(
+                    from: session.agentKind, to: target,
+                    prompt: "Task rerouted from \(session.agentKind.displayName) due to rate limit (\(match.matchedPattern)). Inspect .linkc/HANDOFF.md and continue.",
+                    files: [], hop: hop + 1, force: true
+                )
+            } catch {
+                NSLog("[linkC relay] checkLimitsAndReroute: reroute task — %@", String(describing: error))
+            }
+        }
+
+        store.updateState(id: session.id, to: .error)
+        processPendingMessages(workspacePath: norm)
+        return true
+    }
 }
