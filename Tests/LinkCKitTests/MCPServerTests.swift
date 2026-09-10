@@ -43,7 +43,7 @@ final class MCPServerTests: XCTestCase {
         let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
         let result = resJson?["result"] as? [String: Any]
         let tools = result?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 10)
+        XCTAssertEqual(tools?.count, 15)
 
         let toolNames = Set(tools?.compactMap { $0["name"] as? String } ?? [])
         XCTAssertTrue(toolNames.contains("linkc_broadcast_intent"))

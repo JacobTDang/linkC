@@ -225,6 +225,49 @@ public final class MCPServer: Sendable {
                     "type": "object",
                     "properties": [:]
                 ]
+            ],
+            [
+                "name": "linkc_start_task",
+                "description": "Acknowledge and start a task delivered to you (delivered → started). Call this first when you begin work on a [linkC task …] brief.",
+                "inputSchema": ["type": "object", "properties": ["task_id": ["type": "string"]], "required": ["task_id"]]
+            ],
+            [
+                "name": "linkc_complete_task",
+                "description": "Report the result of a task you were assigned. Sends a one-line echo to the delegator and stores the full report on the blackboard.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "task_id": ["type": "string"],
+                        "status": ["type": "string", "enum": ["done", "failed"]],
+                        "summary": ["type": "string", "description": "One paragraph: what changed and how it was verified"],
+                        "commits": ["type": "array", "items": ["type": "string"]],
+                        "tests": ["type": "array", "items": ["type": "string"], "description": "Test commands or test names that passed"]
+                    ],
+                    "required": ["task_id", "status", "summary"]
+                ]
+            ],
+            [
+                "name": "linkc_cancel_task",
+                "description": "Cancel a task you delegated or were assigned. If it was already delivered, a one-line stop notice is injected into the assignee's terminal.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "task_id": ["type": "string"],
+                        "reason": ["type": "string"],
+                        "force": ["type": "boolean", "description": "Cancel a task you are neither delegator nor assignee of"]
+                    ],
+                    "required": ["task_id"]
+                ]
+            ],
+            [
+                "name": "linkc_get_task",
+                "description": "Fetch the full record of a task by id: state, full brief, files, report.",
+                "inputSchema": ["type": "object", "properties": ["task_id": ["type": "string"]], "required": ["task_id"]]
+            ],
+            [
+                "name": "linkc_my_tasks",
+                "description": "List open tasks assigned to you, then open tasks you delegated, one line each.",
+                "inputSchema": ["type": "object", "properties": [:]]
             ]
         ]
         return successResponse(id: id, result: ["tools": tools])
@@ -560,12 +603,130 @@ public final class MCPServer: Sendable {
 
                 return toolResultResponse(id: id, text: text)
 
+            case "linkc_start_task":
+                do {
+                    let task = try requireTask(args)
+                    try inboxStore.markTaskStarted(taskId: task.id)
+                    let updated = try inboxStore.task(id: task.id) ?? task
+                    return toolResultResponse(id: id, text: "Started: \(taskLine(updated))")
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
+
+            case "linkc_complete_task":
+                do {
+                    let task = try requireTask(args)
+                    let status = (args["status"] as? String ?? "").lowercased()
+                    guard status == "done" || status == "failed" else {
+                        return toolResultResponse(id: id, text: "Error: 'status' must be \"done\" or \"failed\".", isError: true)
+                    }
+                    let summary = (args["summary"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !summary.isEmpty else {
+                        return toolResultResponse(id: id, text: InboxError.emptySummary.localizedDescription, isError: true)
+                    }
+                    let report = TaskReport(
+                        status: status,
+                        summary: summary,
+                        commits: args["commits"] as? [String] ?? [],
+                        tests: args["tests"] as? [String] ?? []
+                    )
+                    try inboxStore.completeTask(taskId: task.id, report: report)
+
+                    let firstLine = summary.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? summary
+                    let body = "\(status) by \(caller.agent.displayName) — \(firstLine.prefix(200)). linkc_get_task(\"\(task.id)\") for details."
+                    _ = try inboxStore.enqueue(from: caller.agent, to: task.fromAgent, kind: .completion, taskId: task.id, body: body)
+
+                    var note = "\(summary)\n"
+                    if !report.commits.isEmpty { note += "\n**Commits:** \(report.commits.joined(separator: ", "))\n" }
+                    if !report.tests.isEmpty { note += "\n**Tests:** \(report.tests.joined(separator: "; "))\n" }
+                    note += "\nTask id: \(task.id)\n"
+                    _ = try store.postNote(authorAgent: caller.agent, title: "Task \(task.shortId) \(status)", content: note, tags: ["task", status])
+
+                    return toolResultResponse(id: id, text: "Reported \(status) for task \(task.shortId). \(task.fromAgent.displayName) will receive a one-line echo.")
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
+
+            case "linkc_cancel_task":
+                do {
+                    let task = try requireTask(args)
+                    let force = args["force"] as? Bool ?? false
+                    guard force || caller.agent == task.fromAgent || caller.agent == task.toAgent else {
+                        return toolResultResponse(id: id, text: "Error: only \(task.fromAgent.displayName) or \(task.toAgent.displayName) may cancel task \(task.shortId); pass force: true to override.", isError: true)
+                    }
+                    let reason = (args["reason"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let resolvedReason = (reason?.isEmpty == false) ? reason! : "cancelled by \(caller.agent.displayName)"
+                    let wasDelivered = task.state == .delivered || task.state == .started
+                    try inboxStore.cancelTask(taskId: task.id, reason: resolvedReason)
+                    if wasDelivered {
+                        _ = try inboxStore.enqueue(from: caller.agent, to: task.toAgent, kind: .completion, taskId: task.id, body: "cancelled: \(resolvedReason). Stop work on it.")
+                    }
+                    return toolResultResponse(id: id, text: "Cancelled task \(task.shortId) (\(resolvedReason)).")
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
+
+            case "linkc_get_task":
+                do {
+                    let task = try requireTask(args)
+                    return toolResultResponse(id: id, text: taskMarkdown(task))
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
+
+            case "linkc_my_tasks":
+                guard caller.isIdentified else {
+                    return toolResultResponse(id: id, text: Self.unidentifiedCallerMessage, isError: true)
+                }
+                let assigned = try inboxStore.openTasks(for: caller.agent)
+                let delegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
+                var text = "# Open tasks for \(caller.agent.displayName)\n\n## Assigned to you (\(assigned.count))\n"
+                text += assigned.isEmpty ? "_None._\n" : assigned.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
+                text += "\n## Delegated by you (\(delegated.count))\n"
+                text += delegated.isEmpty ? "_None._\n" : delegated.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
+                return toolResultResponse(id: id, text: text)
+
             default:
                 return errorResponse(id: id, code: -32601, message: "Unknown tool: \(name)")
             }
         } catch {
             return errorResponse(id: id, code: -32000, message: error.localizedDescription)
         }
+    }
+
+    func taskLine(_ t: TaskRecord) -> String {
+        let firstLine = t.prompt.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? t.prompt
+        return "\(t.shortId) [\(t.state.rawValue)] from \(t.fromAgent.displayName) → \(t.toAgent.displayName): \(firstLine.prefix(80))"
+    }
+
+    private func taskMarkdown(_ t: TaskRecord) -> String {
+        let iso = ISO8601DateFormatter()
+        var text = "# Task \(t.shortId) — \(t.state.rawValue)\n\n"
+        text += "- **ID:** \(t.id)\n"
+        text += "- **From:** \(t.fromAgent.displayName) → **To:** \(t.toAgent.displayName)\n"
+        text += "- **Hop:** \(t.hop)\n"
+        text += "- **Created:** \(iso.string(from: t.createdAt))\n"
+        if let d = t.deliveredAt { text += "- **Delivered:** \(iso.string(from: d))\n" }
+        if let s = t.startedAt { text += "- **Started:** \(iso.string(from: s))\n" }
+        if let f = t.finishedAt { text += "- **Finished:** \(iso.string(from: f))\n" }
+        text += "- **Lease expires:** \(iso.string(from: t.leaseExpiresAt))\n"
+        if !t.files.isEmpty { text += "- **Files:** \(t.files.joined(separator: ", "))\n" }
+        if let r = t.cancelReason { text += "- **Reason:** \(r)\n" }
+        text += "\n## Brief\n\(t.prompt)\n"
+        if let r = t.report {
+            text += "\n## Report (\(r.status))\n\(r.summary)\n"
+            if !r.commits.isEmpty { text += "\n**Commits:** \(r.commits.joined(separator: ", "))\n" }
+            if !r.tests.isEmpty { text += "\n**Tests:** \(r.tests.joined(separator: "; "))\n" }
+        }
+        return text
+    }
+
+    private func requireTask(_ args: [String: Any]) throws -> TaskRecord {
+        guard let taskId = (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !taskId.isEmpty else {
+            throw LinkCError.server("Missing required argument 'task_id'.")
+        }
+        guard let task = try inboxStore.task(id: taskId) else { throw InboxError.taskNotFound(taskId) }
+        return task
     }
 
     private func toolResultResponse(id: Any?, text: String, isError: Bool = false) -> Data? {
