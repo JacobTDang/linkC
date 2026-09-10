@@ -129,6 +129,7 @@ public enum MessageKind: String, Codable, Sendable {
     case completion  // one-line "[linkC task <id8> …]" to the delegator
     case peerNote    // linkc_send_message
     case notice      // system notice; never injected into a terminal
+    case command     // raw text injected verbatim (e.g. "/model sonnet" from linkc_switch_model); no frame
 }
 ```
 
@@ -182,6 +183,8 @@ On every successful tool call the server calls `BlackboardStore.heartbeat(agentK
 ### 7.3 Tools
 
 Unchanged: `linkc_broadcast_intent`, `linkc_get_project_context`, `linkc_check_conflicts`, `linkc_post_note`, `linkc_switch_model`, `linkc_get_models`, `linkc_get_usage_status`, `linkc_send_message` (now `kind: .peerNote`).
+
+For `linkc_switch_model`: when no in-process switcher exists, the command is enqueued as `kind: .command` and injected verbatim.
 
 **`linkc_delegate_task`** — same schema plus optional `force: boolean`. Behaviour:
 - Limit check as today.
@@ -246,7 +249,7 @@ For each message in `queued` for this workspace:
 
 ### 8.3 `expireTasks`
 
-- Workspace directory does not exist → every open task for it → `expired("workspace missing")`.
+- Workspace directory does not exist → the relay tick returns without spawning, injecting, or writing. `inbox.json` lives inside the workspace, so there is nothing left to mark and a store write would recreate the deleted directory.
 - `queued` for more than 60 min → `expired("undelivered for 60m")`.
 - `delivered`/`started` whose `assigneeSessionId` no longer exists in `store.sessions` (session ended or was stopped) → `failed` with `report.summary = "assignee session ended before reporting"`, one `.completion` line to the delegator.
 - `leaseExpiresAt` passed while `delivered`/`started` → `expired("lease expired")`, one `.completion` line to the delegator.

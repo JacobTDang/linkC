@@ -142,37 +142,6 @@ public final class InboxStore: Sendable {
         }
     }
 
-    /// Legacy v1 task message. Kept only until every caller migrates to `createTask` / `enqueue(kind:)`.
-    @available(*, deprecated, message: "v1 task messages; use createTask or enqueue(kind:)")
-    public func enqueue(
-        from: AgentKind,
-        to: AgentKind,
-        prompt: String,
-        files: [String] = [],
-        rerouteCount: Int = 0,
-        timeout: TimeInterval = 5.0
-    ) throws -> PendingMessage {
-        try withFileLock(timeout: timeout) {
-            var inbox = try loadUnlocked()
-            let normalizedFiles = files.map { ($0 as NSString).standardizingPath }
-            let message = PendingMessage(
-                id: UUID().uuidString,
-                fromAgent: from,
-                toAgent: to,
-                prompt: prompt,
-                claimedFiles: normalizedFiles,
-                status: .queued,
-                rerouteCount: rerouteCount,
-                createdAt: Date(),
-                deliveredAt: nil
-            )
-            inbox.messages.append(message)
-            inbox.updatedAt = Date()
-            try saveUnlocked(inbox)
-            return message
-        }
-    }
-
     /// Enqueues a short, kind-tagged message. The store composes the frame; callers pass the bare body.
     /// Rejects framed bodies (loop guard), `.task` kind, completions without a task id, and 24 h duplicates.
     public func enqueue(

@@ -97,7 +97,7 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         let inbox1 = InboxStore(workspaceRoot: ws1)
         let blackboard2 = BlackboardStore(workspaceRoot: ws2)
 
-        _ = try inbox1.enqueue(from: .claude, to: .codex, prompt: "Refactor router")
+        _ = try inbox1.createTask(from: .claude, to: .codex, prompt: "Refactor router", files: [])
         _ = try blackboard2.addSharedNote(authorAgent: .codex, title: "DB Spec", content: "SQLite schema v2")
 
         let aggregator = AgentDashboardAggregator()
@@ -271,7 +271,7 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         let ws1 = ws1URL.path
 
         let inbox1 = InboxStore(workspaceRoot: ws1)
-        _ = try inbox1.enqueue(from: .claude, to: .codex, prompt: "Refactor router")
+        _ = try inbox1.createTask(from: .claude, to: .codex, prompt: "Refactor router", files: [])
 
         let aggregator = AgentDashboardAggregator()
         // Pass ws1 three times with trailing slash / standardization differences

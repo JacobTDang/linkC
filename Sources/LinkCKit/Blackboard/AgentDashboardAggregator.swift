@@ -185,6 +185,8 @@ public struct AgentDashboardAggregator: Sendable {
         let allAgentsInProject = Set(liveSessions.map { $0.agent })
             .union(inbox.messages.map { $0.fromAgent })
             .union(inbox.messages.map { $0.toAgent })
+            .union(inbox.tasks.map { $0.fromAgent })
+            .union(inbox.tasks.map { $0.toAgent })
             .union(inbox.agentLimits.map { $0.agent })
             .union(blackboard.activeAgents.map { $0.agentKind })
             .union(blackboard.sharedNotes.map { $0.authorAgent })

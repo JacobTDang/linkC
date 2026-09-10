@@ -32,15 +32,16 @@ final class InboxStoreTests: XCTestCase {
         let msg = try store.enqueue(
             from: .claude,
             to: .codex,
-            prompt: "Implement ShellTerminalStore tests",
-            files: ["Tests/LinkCKitTests/ShellTerminalStoreTests.swift"]
+            kind: .peerNote,
+            body: "Implement ShellTerminalStore tests"
         )
 
         XCTAssertFalse(msg.id.isEmpty)
         XCTAssertEqual(msg.fromAgent, .claude)
         XCTAssertEqual(msg.toAgent, .codex)
-        XCTAssertEqual(msg.prompt, "Implement ShellTerminalStore tests")
-        XCTAssertEqual(msg.claimedFiles, ["Tests/LinkCKitTests/ShellTerminalStoreTests.swift"])
+        XCTAssertEqual(msg.kind, .peerNote)
+        XCTAssertEqual(msg.prompt, "[Peer Note from Claude Code]: Implement ShellTerminalStore tests")
+        XCTAssertTrue(msg.claimedFiles.isEmpty)
         XCTAssertEqual(msg.status, .queued)
         XCTAssertEqual(msg.rerouteCount, 0)
         XCTAssertNil(msg.deliveredAt)
@@ -53,9 +54,9 @@ final class InboxStoreTests: XCTestCase {
 
     func testFetchPendingReturnsQueuedMessagesInFIFOOrder() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
-        let msg1 = try store.enqueue(from: .claude, to: .codex, prompt: "Task 1", files: [])
-        let msg2 = try store.enqueue(from: .cursor, to: .agy, prompt: "Task 2", files: [])
-        let msg3 = try store.enqueue(from: .agy, to: .claude, prompt: "Task 3", files: [])
+        let msg1 = try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "Task 1")
+        let msg2 = try store.enqueue(from: .cursor, to: .agy, kind: .peerNote, body: "Task 2")
+        let msg3 = try store.enqueue(from: .agy, to: .claude, kind: .peerNote, body: "Task 3")
 
         let pending = try store.fetchPending()
         XCTAssertEqual(pending.count, 3)
@@ -64,8 +65,8 @@ final class InboxStoreTests: XCTestCase {
 
     func testMarkDeliveredTransitionsStatusAndStampsDeliveredAt() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
-        let msg1 = try store.enqueue(from: .claude, to: .codex, prompt: "Task 1", files: [])
-        let msg2 = try store.enqueue(from: .cursor, to: .agy, prompt: "Task 2", files: [])
+        let msg1 = try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "Task 1")
+        let msg2 = try store.enqueue(from: .cursor, to: .agy, kind: .peerNote, body: "Task 2")
 
         try store.markMessageDelivered(id: msg1.id)
 
@@ -201,8 +202,8 @@ final class InboxStoreTests: XCTestCase {
                     _ = try store.enqueue(
                         from: .claude,
                         to: .codex,
-                        prompt: "Concurrent prompt \(i)",
-                        files: ["File\(i).swift"]
+                        kind: .peerNote,
+                        body: "Concurrent prompt \(i)"
                     )
                 } catch {
                     XCTFail("Concurrent write \(i) failed: \(error)")

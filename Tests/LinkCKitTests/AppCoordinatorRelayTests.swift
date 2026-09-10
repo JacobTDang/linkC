@@ -372,13 +372,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let session = try coordinator.newSession(cwd: ws, agent: .claude)
 
-        // Enqueue message to claude
-        _ = try inbox.enqueue(
-            from: .codex,
-            to: .claude,
-            prompt: "Review PR #42",
-            files: []
-        )
+        // Delegate a task to claude
+        let task = try inbox.createTask(from: .codex, to: .claude, prompt: "Review PR #42", files: [])
 
         // Session starts in .working
         coordinator.store.updateState(id: session.id, to: .working)
@@ -388,7 +383,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         // State is now finished, and processPendingMessages should have been triggered by .stop hook
         let delivered = try await waitUntil {
-            (try? inbox.fetchPending().isEmpty) ?? false
+            (try? inbox.task(id: task.id))?.state == .delivered
         }
         XCTAssertTrue(delivered, "Stop hook should have triggered pending message delivery")
     }
