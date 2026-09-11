@@ -1058,6 +1058,31 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(AppCoordinator.deliveryFrame(for: copy).contains("Work on branch"))
     }
 
+    /// Only a hand-edited inbox holds a gating task with no verification. It is cancelled with
+    /// one line and never blocks the other runs in its workspace.
+    @MainActor
+    func testGatingTaskWithoutVerificationIsCancelledAndDoesNotBlockTheWorkspace() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let verifier = ScriptedVerifier(gate: .fixture(passed: true, sha: base40, exit: 1))
+        let coordinator = makeCoordinator(verifier: verifier)
+        defer { coordinator.shutdown() }
+        let broken = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "Hand edited", state: .gating,
+                                createdAt: Date().addingTimeInterval(-60))
+        try inbox.saveRaw(Inbox(workspacePath: ws, tasks: [broken]))
+        let valid = try inbox.createTask(from: .claude, to: .codex, prompt: "Make check pass", files: [], verification: verification())
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+
+        let cancelled = try XCTUnwrap(inbox.task(id: broken.id))
+        XCTAssertEqual(cancelled.state, .cancelled)
+        XCTAssertEqual(cancelled.cancelReason, "gate failed: task has no verification")
+        XCTAssertEqual(try lines(inbox, broken), ["[linkC task \(broken.shortId)] cancelled — gate failed: task has no verification"])
+        let gated = try await waitUntil { (try? inbox.task(id: valid.id))?.state == .queued }
+        XCTAssertTrue(gated, "the valid task behind it is gated")
+        XCTAssertEqual(verifier.calls, ["gate \(tempDir.lastPathComponent)"])
+    }
+
     // MARK: - End to end: MCP, relay, real git, a real login shell
 
     /// A repository whose check.sh fails until marker.txt exists, committed on branch task/x.

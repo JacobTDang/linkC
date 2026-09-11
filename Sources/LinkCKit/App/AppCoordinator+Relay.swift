@@ -203,9 +203,10 @@ extension AppCoordinator {
 
     // MARK: - Verification
 
-    /// Settles reports that need no run, then starts at most one verification run for this
-    /// workspace, and at most `maxConcurrentVerifications` overall. Never blocks the main actor:
-    /// the run awaits the verifier off the main actor and hops back to record the verdict.
+    /// Settles what needs no run (reports, and a gating task with nothing to gate), then starts
+    /// at most one verification run for this workspace, and at most `maxConcurrentVerifications`
+    /// overall. Never blocks the main actor: the run awaits the verifier off the main actor and
+    /// hops back to record the verdict.
     func launchVerifications(workspacePath: String, inboxStore: InboxStore) {
         guard workspaceExists(workspacePath) else { return }
         let open: [TaskRecord]
@@ -218,12 +219,17 @@ extension AppCoordinator {
 
         var runnable: [TaskRecord] = []
         for task in open where task.state == .gating || task.state == .reported {
-            guard task.state == .reported else {
-                runnable.append(task)
-                continue
-            }
             do {
-                if task.verification == nil {
+                if task.state == .gating {
+                    if task.verification == nil {
+                        // Only a hand-edited inbox holds this. Cancel it so it cannot block the workspace.
+                        let reason = "gate failed: task has no verification"
+                        try inboxStore.resolveGate(taskId: task.id, verdict: .notRun(reason: reason))
+                        try echo("cancelled — \(reason)", for: task, inboxStore: inboxStore)
+                    } else {
+                        runnable.append(task)
+                    }
+                } else if task.verification == nil {
                     try inboxStore.acceptUnverified(taskId: task.id)
                     let line = task.report?.status == "done" ? "done (unverified)" : "failed — worker reported failure"
                     try echo(line, for: task, inboxStore: inboxStore)
@@ -241,19 +247,31 @@ extension AppCoordinator {
 
         guard !verificationsInFlight.contains(workspacePath),
               verificationsInFlight.count < Self.maxConcurrentVerifications,
-              let next = runnable.min(by: { $0.createdAt < $1.createdAt }),
-              let verification = next.verification else { return }
+              let next = runnable.min(by: { $0.createdAt < $1.createdAt }) else { return }
+
+        // The state alone decides the run: a missing sha must never fall through to a gate.
+        let run: VerificationRun
+        switch (next.state, next.verification, next.report?.sha) {
+        case (.gating, let verification?, _):
+            run = .gate(verification)
+        case (.reported, let verification?, let sha?):
+            run = .verify(verification, sha: sha)
+        default:
+            NSLog("[linkC relay] launchVerifications: task %@ is %@ and has nothing to run; starting nothing",
+                  next.shortId, next.state.rawValue)
+            return
+        }
 
         verificationsInFlight.insert(workspacePath)
         let verifier = self.verifier
         let workspace = URL(fileURLWithPath: workspacePath)
-        let sha = next.report?.sha
         Task { [weak self] in
             let verdict: Verdict
-            if next.state == .reported, let sha {
-                verdict = await verifier.verify(verification, sha: sha, in: workspace)
-            } else {
+            switch run {
+            case .gate(let verification):
                 verdict = await verifier.gate(verification, in: workspace)
+            case .verify(let verification, let sha):
+                verdict = await verifier.verify(verification, sha: sha, in: workspace)
             }
             self?.finishVerification(of: next, verdict: verdict, workspacePath: workspacePath)
         }
@@ -509,4 +527,10 @@ extension AppCoordinator {
         processPendingMessages(workspacePath: norm)
         return true
     }
+}
+
+/// The run `launchVerifications` starts: the gate at base, or verification at the reported sha.
+private enum VerificationRun: Sendable {
+    case gate(Verification)
+    case verify(Verification, sha: String)
 }
