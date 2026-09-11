@@ -449,3 +449,15 @@ Two sources changed the design while the implementation plan was written: the co
 12. **The delivery frame.** The brief for a verified task gives the branch, the command, and the test paths that the worker must not change. It asks for `linkc_complete_task(id, status, summary, sha)`.
 13. **A finished run does not start a relay tick (§8.4).** The next state sweep, about one second later, delivers a task that is newly queued and starts the next run. If a run's workspace was deleted, the run discards its verdict. It does not create the directory again.
 14. **This spec removes `inspectGitStatus` (§13).** Its callers are `spawnTeammate` and the handoff memo for reroutes, so reroute code is not its only caller. The reason for moving it to spec two was wrong. Both callers move to `AppCoordinator.gitStatusSummary(in:)`, which is built on `GitClient`. The "Moved to spec two" paragraph in §13 no longer applies.
+
+## 16. Amendments from the final review (2026-09-11)
+
+The whole-branch review found problems in paths that cross the whole feature, which the per-task reviews could not see. Where this section and an earlier section do not agree, this section applies.
+
+1. **An undecodable inbox is an error (§6, §14).** `InboxStore` no longer treats an `inbox.json` it cannot decode as empty. It throws and leaves the file untouched. Before this change, a linkC binary that could not decode a newer file read it as empty, and its next write replaced the file.
+2. **Rollout (§14).** An older linkC binary cannot decode an inbox that contains a verified task, and binaries built before item 1 would discard that inbox. After you upgrade, quit linkC and restart every MCP client that has `linkc-mcp` loaded before you delegate a verified task.
+3. **A timeout stops the whole command (§8.1, §8.3).** Commands run in their own process group. On timeout, linkC sends SIGTERM to the group, then SIGKILL after 2 seconds.
+4. **Task ids accept a unique prefix (§7).** The task tools accept the full id, or a unique prefix of at least 8 characters, matched case-insensitively. An ambiguous prefix is an error.
+5. **A rerouted verified task keeps its verification (§8.4).** After a rate limit, the copy made for a new agent keeps its verification and the gate it already passed, and it starts in `queued` without a new gate. Its report is verified at the new worker's sha.
+6. **A malformed `verify` is an error (§7.1).** A `verify` that is not an object, or a `timeout_seconds` that is not an integer, returns `isError` and creates no task. A JSON `null` for either one counts as absent.
+7. **A gating task with no verification is cancelled (§8.4).** Such a task can only come from a hand-edited inbox. It is cancelled with `cancelled — gate failed: task has no verification`, so it cannot block other runs.
