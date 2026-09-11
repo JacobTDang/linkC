@@ -217,28 +217,33 @@ extension AppCoordinator {
             return
         }
 
-        var runnable: [TaskRecord] = []
+        // Each runnable task pairs with the run it needs, decided right here — the one place
+        // that decides it. No branch may return without either starting a run or settling the
+        // task, so the two can never drift apart and leave a task stuck.
+        var runnable: [(task: TaskRecord, run: VerificationRun)] = []
         for task in open where task.state == .gating || task.state == .reported {
             do {
                 if task.state == .gating {
-                    if task.verification == nil {
+                    if let verification = task.verification {
+                        runnable.append((task, .gate(verification)))
+                    } else {
                         // Only a hand-edited inbox holds this. Cancel it so it cannot block the workspace.
                         let reason = "gate failed: task has no verification"
                         try inboxStore.resolveGate(taskId: task.id, verdict: .notRun(reason: reason))
                         try echo("cancelled — \(reason)", for: task, inboxStore: inboxStore)
-                    } else {
-                        runnable.append(task)
                     }
-                } else if task.verification == nil {
+                } else if let verification = task.verification {
+                    if task.report?.status != "done" {
+                        try settle(task, reason: "worker reported failure", inboxStore: inboxStore)
+                    } else if let sha = task.report?.sha {
+                        runnable.append((task, .verify(verification, sha: sha)))
+                    } else {
+                        try settle(task, reason: "report is missing its sha", inboxStore: inboxStore)
+                    }
+                } else {
                     try inboxStore.acceptUnverified(taskId: task.id)
                     let line = task.report?.status == "done" ? "done (unverified)" : "failed — worker reported failure"
                     try echo(line, for: task, inboxStore: inboxStore)
-                } else if task.report?.status != "done" {
-                    try settle(task, reason: "worker reported failure", inboxStore: inboxStore)
-                } else if task.report?.sha == nil {
-                    try settle(task, reason: "report is missing its sha", inboxStore: inboxStore)
-                } else {
-                    runnable.append(task)
                 }
             } catch {
                 NSLog("[linkC relay] launchVerifications: task %@ settle — %@", task.shortId, String(describing: error))
@@ -247,20 +252,7 @@ extension AppCoordinator {
 
         guard !verificationsInFlight.contains(workspacePath),
               verificationsInFlight.count < Self.maxConcurrentVerifications,
-              let next = runnable.min(by: { $0.createdAt < $1.createdAt }) else { return }
-
-        // The state alone decides the run: a missing sha must never fall through to a gate.
-        let run: VerificationRun
-        switch (next.state, next.verification, next.report?.sha) {
-        case (.gating, let verification?, _):
-            run = .gate(verification)
-        case (.reported, let verification?, let sha?):
-            run = .verify(verification, sha: sha)
-        default:
-            NSLog("[linkC relay] launchVerifications: task %@ is %@ and has nothing to run; starting nothing",
-                  next.shortId, next.state.rawValue)
-            return
-        }
+              let (next, run) = runnable.min(by: { $0.task.createdAt < $1.task.createdAt }) else { return }
 
         verificationsInFlight.insert(workspacePath)
         let verifier = self.verifier
