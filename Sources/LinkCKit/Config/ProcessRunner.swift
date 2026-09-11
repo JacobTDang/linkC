@@ -6,11 +6,16 @@ public struct ProcessResult: Sendable, Equatable {
     public let status: Int32
     public let stdout: String
     public let stderr: String
+    /// The signal that ended the process, or nil when it exited normally. A login shell can run
+    /// its last command in place of itself, so a signal death can reach `status` directly as the
+    /// raw signal number instead of the shell's usual 128 + N — `signal` disambiguates the two.
+    public let signal: Int32?
 
-    public init(status: Int32, stdout: String, stderr: String) {
+    public init(status: Int32, stdout: String, stderr: String, signal: Int32? = nil) {
         self.status = status
         self.stdout = stdout
         self.stderr = stderr
+        self.signal = signal
     }
 }
 
@@ -77,15 +82,17 @@ private final class ExitCollector: @unchecked Sendable {
         }
     }
 
-    /// What Foundation's `terminationStatus` reported: the exit code, or the number of the
-    /// signal that ended the child.
-    func terminationStatus(of executable: String, pid: pid_t) throws -> Int32 {
+    /// What Foundation's `terminationStatus` reported (the exit code, or the number of the
+    /// signal that ended the child — unchanged by the `signal` field below) together with that
+    /// signal number, or nil when the child exited normally.
+    func termination(of executable: String, pid: pid_t) throws -> (status: Int32, signal: Int32?) {
         let (status, waitError) = lock.withLock { (_status, _waitError) }
         guard waitError == 0 else {
             throw LinkCError.process("waitpid for \(executable) (pid \(pid)) failed: \(String(cString: strerror(waitError)))")
         }
         let signal = status & 0o177
-        return signal == 0 ? (status >> 8) & 0xff : signal
+        guard signal != 0 else { return ((status >> 8) & 0xff, nil) }
+        return (signal, signal)
     }
 }
 
@@ -179,10 +186,12 @@ public struct LiveProcessRunner: ProcessRunner {
         // Both reads finish once the child exits and its pipe ends close.
         _ = outDone.wait(timeout: .now() + 5)
         _ = errDone.wait(timeout: .now() + 5)
+        let termination = try reaped.termination(of: executable, pid: pid)
         return ProcessResult(
-            status: try reaped.terminationStatus(of: executable, pid: pid),
+            status: termination.status,
             stdout: String(decoding: collected.out, as: UTF8.self),
-            stderr: String(decoding: collected.err, as: UTF8.self)
+            stderr: String(decoding: collected.err, as: UTF8.self),
+            signal: termination.signal
         )
     }
 

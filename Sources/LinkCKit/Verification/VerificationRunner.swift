@@ -40,6 +40,9 @@ public struct VerificationRunner: TaskVerifier {
         if checkout(v.baseSha, label: "base ", in: workspace) != nil {
             return Self.verdict(result, sha: v.baseSha, reason: "gate failed: workspace changed during the gate")
         }
+        if let signal = result.signal {
+            return Self.verdict(result, sha: v.baseSha, reason: "gate failed: command was killed (signal \(signal))")
+        }
         switch result.status {
         case 1...125:
             return Self.verdict(result, sha: v.baseSha, reason: nil)
@@ -77,8 +80,15 @@ public struct VerificationRunner: TaskVerifier {
         if checkout(sha, label: "", in: workspace) != nil {
             return Self.verdict(result, sha: sha, reason: "workspace changed during verification")
         }
-        return Self.verdict(result, sha: sha,
-                            reason: result.status == 0 ? nil : "tests failed at \(Self.short(sha)) (exit \(result.status))")
+        let reason: String?
+        if let signal = result.signal {
+            reason = "tests failed at \(Self.short(sha)) (signal \(signal))"
+        } else if result.status != 0 {
+            reason = "tests failed at \(Self.short(sha)) (exit \(result.status))"
+        } else {
+            reason = nil
+        }
+        return Self.verdict(result, sha: sha, reason: reason)
     }
 
     /// Nil when HEAD is `expected` and the tree is clean; otherwise what is wrong.

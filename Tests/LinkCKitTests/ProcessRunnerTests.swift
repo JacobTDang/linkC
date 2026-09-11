@@ -207,6 +207,20 @@ final class ProcessRunnerSpawnTests: XCTestCase {
     func testAChildEndedByASignalReportsTheSignalNumber() throws {
         let result = try LiveProcessRunner.runCapturingSync(executable: "/bin/sh", args: ["-c", "kill -KILL $$"], cwd: nil, timeout: 5)
         XCTAssertEqual(result.status, SIGKILL)
+        XCTAssertEqual(result.signal, SIGKILL)
+    }
+
+    /// A normal exit must leave `signal` nil — only a signal death sets it.
+    func testANormalExitReportsNoSignal() throws {
+        let result = try LiveProcessRunner.runCapturingSync(executable: "/bin/sh", args: ["-c", "exit 0"], cwd: nil, timeout: 5)
+        XCTAssertNil(result.signal)
+    }
+
+    /// `kill -9 $$` inside a login-shell `-c` string: some shells replace themselves with the
+    /// last command, so the signal death reaches the runner directly rather than as exit 128 + N.
+    func testASignalKillReportsTheSignalNumberViaShellDashC() throws {
+        let result = try LiveProcessRunner.runCapturingSync(executable: "/bin/sh", args: ["-c", "kill -9 $$"], cwd: nil, timeout: 5)
+        XCTAssertEqual(result.signal, 9)
     }
 
     /// Unique to this test, so pgrep matches nothing else.

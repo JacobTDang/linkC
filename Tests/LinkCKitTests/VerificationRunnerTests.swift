@@ -56,6 +56,10 @@ final class VerificationRunnerTests: XCTestCase {
         CommandStub(.success(ProcessResult(status: status, stdout: stdout, stderr: "")))
     }
 
+    private func killed(bySignal signal: Int32, status: Int32? = nil) -> CommandStub {
+        CommandStub(.success(ProcessResult(status: status ?? signal, stdout: "", stderr: "", signal: signal)))
+    }
+
     private func runner(_ git: ScriptedGit, _ command: CommandStub) -> VerificationRunner {
         VerificationRunner(git: git, runner: command, shell: "/bin/zsh")
     }
@@ -83,6 +87,12 @@ final class VerificationRunnerTests: XCTestCase {
         XCTAssertEqual(missing.reason, "gate failed: command could not run (exit 127)")
         let killed = await runner(ScriptedGit(heads: [base]), exits(130)).gate(verification, in: workspace)
         XCTAssertEqual(killed.reason, "gate failed: command was killed (exit 130)")
+    }
+
+    func testGateRefusesACommandKilledBySignal() async {
+        let verdict = await runner(ScriptedGit(heads: [base]), killed(bySignal: 9)).gate(verification, in: workspace)
+        XCTAssertFalse(verdict.passed)
+        XCTAssertEqual(verdict.reason, "gate failed: command was killed (signal 9)")
     }
 
     func testGateChecksTheCheckoutBeforeRunning() async {
@@ -127,6 +137,12 @@ final class VerificationRunnerTests: XCTestCase {
         XCTAssertEqual(verdict.reason, "tests failed at ccccccc (exit 1)")
         XCTAssertEqual(verdict.stdoutTail.count, Verdict.tailLimit)
         XCTAssertTrue(verdict.stdoutTail.hasSuffix("FIXTURE_TAIL_MARKER"))
+    }
+
+    func testVerifyFailureFromASignalReportsTheSignalNotTheExitCode() async {
+        let verdict = await runner(ScriptedGit(heads: [head]), killed(bySignal: 9)).verify(verification, sha: head, in: workspace)
+        XCTAssertFalse(verdict.passed)
+        XCTAssertEqual(verdict.reason, "tests failed at ccccccc (signal 9)")
     }
 
     func testVerifyRejectsTheWrongCheckout() async {
