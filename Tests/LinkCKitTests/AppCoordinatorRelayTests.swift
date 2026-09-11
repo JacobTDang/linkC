@@ -776,7 +776,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let queued = try await waitUntil { (try? inbox.task(id: task.id))?.state == .queued }
         XCTAssertTrue(queued)
-        XCTAssertEqual(verifier.calls.count, 1)
+        XCTAssertEqual(verifier.calls, ["gate \(tempDir.lastPathComponent)"])
         XCTAssertEqual(try inbox.task(id: task.id)?.gate?.exitStatus, 1)
         XCTAssertTrue(try lines(inbox, task).isEmpty, "a red gate sends nothing")
     }
@@ -1121,7 +1121,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let task = try XCTUnwrap(inbox.load().tasks.first)
         XCTAssertEqual(task.state, .gating)
 
-        coordinator.launchVerifications(workspacePath: repo.path, inboxStore: inbox)
+        coordinator.processPendingMessages(workspacePath: repo.path)
         let gated = try await waitUntil({ (try? inbox.task(id: task.id))?.state == .queued }, iterations: 500)
         XCTAssertTrue(gated, "gate: \(String(describing: try? inbox.task(id: task.id)?.gate))")
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "worker")
@@ -1149,7 +1149,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let task = try await delegateAndGate(repo, coordinator)
 
         let sha = try commitAndReport(repo, task, file: "marker.txt", contents: "ok\n")
-        coordinator.launchVerifications(workspacePath: repo.path, inboxStore: inbox)
+        coordinator.processPendingMessages(workspacePath: repo.path)
 
         let done = try await waitUntil({ (try? inbox.task(id: task.id))?.state == .done }, iterations: 500)
         XCTAssertTrue(done, "verdict: \(String(describing: try? inbox.task(id: task.id)?.verdict))")
@@ -1165,7 +1165,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let task = try await delegateAndGate(repo, coordinator)
 
         _ = try commitAndReport(repo, task, file: "check.sh", contents: "#!/bin/sh\nexit 0\n")
-        coordinator.launchVerifications(workspacePath: repo.path, inboxStore: inbox)
+        coordinator.processPendingMessages(workspacePath: repo.path)
 
         let failed = try await waitUntil({ (try? inbox.task(id: task.id))?.state == .failed }, iterations: 500)
         XCTAssertTrue(failed, "verdict: \(String(describing: try? inbox.task(id: task.id)?.verdict))")
