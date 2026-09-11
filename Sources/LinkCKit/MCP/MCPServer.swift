@@ -1,24 +1,67 @@
 import Foundation
 
+/// Who is calling the tool, resolved from the posting process — never assumed.
+public struct MCPCaller: Sendable {
+    public let agent: AgentKind
+    public let pid: pid_t
+    public var isIdentified: Bool { agent != .shell }
+}
+
 /// Pure-Swift Model Context Protocol (MCP) server speaking JSON-RPC 2.0.
 public final class MCPServer: Sendable {
     public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String) throws -> String
+    public typealias AncestorResolver = @Sendable (_ pid: pid_t) -> (agent: AgentKind, pid: pid_t)?
 
     public let workspaceRoot: String
     public let store: BlackboardStore
     public let inboxStore: InboxStore
     public let modelSwitcher: ModelSwitcher?
+    public let environment: [String: String]
+    public let ancestorResolver: AncestorResolver
+
+    /// Tools an unidentified caller may still use.
+    public static let readOnlyTools: Set<String> = [
+        "linkc_get_project_context", "linkc_check_conflicts", "linkc_get_inbox",
+        "linkc_get_task", "linkc_get_models", "linkc_get_usage_status"
+    ]
+
+    /// Tools whose `agent` argument is a target/filter rather than the caller's identity.
+    public static let targetAgentTools: Set<String> = ["linkc_switch_model", "linkc_get_models"]
+
+    public static let unidentifiedCallerMessage =
+        "Cannot identify calling agent; pass agent: \"claude\" | \"agy\" | \"cursor\" | \"codex\"."
 
     public init(
         workspaceRoot: String,
         store: BlackboardStore? = nil,
         inboxStore: InboxStore? = nil,
-        modelSwitcher: ModelSwitcher? = nil
+        modelSwitcher: ModelSwitcher? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        ancestorResolver: @escaping AncestorResolver = { ProcessSnooper.detectAgent(inAncestorsOf: $0) }
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
         self.inboxStore = inboxStore ?? InboxStore(workspaceRoot: workspaceRoot)
         self.modelSwitcher = modelSwitcher
+        self.environment = environment
+        self.ancestorResolver = ancestorResolver
+    }
+
+    /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified).
+    func resolveCaller(_ args: [String: Any]) -> MCPCaller {
+        let explicitPid = (args["pid"] as? Int).map { pid_t($0) }
+        if let s = (args["agent"] as? String) ?? (args["from"] as? String),
+           let kind = AgentKind(rawValue: s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
+           kind != .shell {
+            return MCPCaller(agent: kind, pid: explicitPid ?? getppid())
+        }
+        if let env = environment["LINKC_AGENT"], let kind = AgentKind(rawValue: env.lowercased()), kind != .shell {
+            return MCPCaller(agent: kind, pid: explicitPid ?? getppid())
+        }
+        if let found = ancestorResolver(getpid()) {
+            return MCPCaller(agent: found.agent, pid: explicitPid ?? found.pid)
+        }
+        return MCPCaller(agent: .shell, pid: explicitPid ?? getppid())
     }
 
     /// Processes a single JSON-RPC 2.0 message buffer and returns the response Data, or nil if no response is needed (e.g. notifications).
@@ -56,11 +99,11 @@ public final class MCPServer: Sendable {
         let result: [String: Any] = [
             "protocolVersion": "2024-11-05",
             "capabilities": [
-                "tools": [:]
+                "tools": ["listChanged": false]
             ],
             "serverInfo": [
                 "name": "linkc-multiplier",
-                "version": "0.1.0"
+                "version": "0.2.0"
             ]
         ]
         return successResponse(id: id, result: result)
@@ -127,7 +170,8 @@ public final class MCPServer: Sendable {
                         "prompt": ["type": "string", "description": "Task instructions and context to inject into recipient's terminal"],
                         "files": ["type": "array", "items": ["type": "string"], "description": "Optional list of files the delegated task will touch"],
                         "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
-                        "pid": ["type": "integer", "description": "Process ID of the sender"]
+                        "pid": ["type": "integer", "description": "Process ID of the sender"],
+                        "force": ["type": "boolean", "description": "Override an existing lease held by another assignee"]
                     ],
                     "required": ["to", "prompt"]
                 ]
@@ -182,6 +226,49 @@ public final class MCPServer: Sendable {
                     "type": "object",
                     "properties": [:]
                 ]
+            ],
+            [
+                "name": "linkc_start_task",
+                "description": "Acknowledge and start a task delivered to you (delivered → started). Call this first when you begin work on a [linkC task …] brief.",
+                "inputSchema": ["type": "object", "properties": ["task_id": ["type": "string"]], "required": ["task_id"]]
+            ],
+            [
+                "name": "linkc_complete_task",
+                "description": "Report the result of a task you were assigned. Sends a one-line echo to the delegator and stores the full report on the blackboard.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "task_id": ["type": "string"],
+                        "status": ["type": "string", "enum": ["done", "failed"]],
+                        "summary": ["type": "string", "description": "One paragraph: what changed and how it was verified"],
+                        "commits": ["type": "array", "items": ["type": "string"]],
+                        "tests": ["type": "array", "items": ["type": "string"], "description": "Test commands or test names that passed"]
+                    ],
+                    "required": ["task_id", "status", "summary"]
+                ]
+            ],
+            [
+                "name": "linkc_cancel_task",
+                "description": "Cancel a task you delegated or were assigned. If it was already delivered, a one-line stop notice is injected into the assignee's terminal.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "task_id": ["type": "string"],
+                        "reason": ["type": "string"],
+                        "force": ["type": "boolean", "description": "Cancel a task you are neither delegator nor assignee of"]
+                    ],
+                    "required": ["task_id"]
+                ]
+            ],
+            [
+                "name": "linkc_get_task",
+                "description": "Fetch the full record of a task by id: state, full brief, files, report.",
+                "inputSchema": ["type": "object", "properties": ["task_id": ["type": "string"]], "required": ["task_id"]]
+            ],
+            [
+                "name": "linkc_my_tasks",
+                "description": "List open tasks assigned to you, then open tasks you delegated, one line each.",
+                "inputSchema": ["type": "object", "properties": [:]]
             ]
         ]
         return successResponse(id: id, result: ["tools": tools])
@@ -192,26 +279,31 @@ public final class MCPServer: Sendable {
             return errorResponse(id: id, code: -32602, message: "Missing tool name")
         }
         let args = params["arguments"] as? [String: Any] ?? [:]
+        let identityArgs = Self.targetAgentTools.contains(name) ? args.filter { $0.key != "agent" } : args
+        let caller = resolveCaller(identityArgs)
+        if !caller.isIdentified && !Self.readOnlyTools.contains(name) {
+            return toolResultResponse(id: id, text: Self.unidentifiedCallerMessage, isError: true)
+        }
+        if caller.isIdentified {
+            try? store.heartbeat(agentKind: caller.agent, pid: caller.pid)
+        }
 
         do {
             switch name {
             case "linkc_broadcast_intent":
                 let goal = args["goal"] as? String ?? "Working"
                 let files = args["files"] as? [String] ?? []
-                let agentStr = args["agent"] as? String ?? "claude"
-                let agentKind = AgentKind(rawValue: agentStr) ?? .claude
-                let pid = (args["pid"] as? Int).map { pid_t($0) } ?? getpid()
                 let status = args["status"] as? String ?? "working"
 
                 let warnings = try store.broadcastIntent(
-                    agentKind: agentKind,
-                    pid: pid,
+                    agentKind: caller.agent,
+                    pid: caller.pid,
                     goal: goal,
                     files: files,
                     status: status
                 )
 
-                var responseText = "Intent recorded: '\(goal)' for \(agentKind.displayName) (PID \(pid)). Claimed \(files.count) files."
+                var responseText = "Intent recorded: '\(goal)' for \(caller.agent.displayName) (PID \(caller.pid)). Claimed \(files.count) files."
                 if !warnings.isEmpty {
                     responseText += "\n\n⚠️ Collision Warnings:"
                     for w in warnings {
@@ -223,7 +315,7 @@ public final class MCPServer: Sendable {
 
             case "linkc_check_conflicts":
                 let files = args["files"] as? [String] ?? []
-                let pid = (args["pid"] as? Int).map { pid_t($0) }
+                let pid: pid_t? = (args["pid"] as? Int).map { pid_t($0) } ?? (caller.isIdentified ? caller.pid : nil)
                 let warnings = try store.checkConflicts(files: files, excludingPid: pid)
 
                 if warnings.isEmpty {
@@ -239,12 +331,10 @@ public final class MCPServer: Sendable {
             case "linkc_post_note":
                 let title = args["title"] as? String ?? "Note"
                 let content = args["content"] as? String ?? ""
-                let agentStr = args["agent"] as? String ?? "claude"
-                let agentKind = AgentKind(rawValue: agentStr) ?? .claude
                 let tags = args["tags"] as? [String] ?? []
 
                 let note = try store.postNote(
-                    authorAgent: agentKind,
+                    authorAgent: caller.agent,
                     title: title,
                     content: content,
                     tags: tags
@@ -308,40 +398,33 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: errorMsg, isError: true)
                 }
 
-                let fromStr = args["from"] as? String ?? args["agent"] as? String ?? "claude"
-                let fromAgent = AgentKind(rawValue: fromStr.lowercased()) ?? .claude
                 let files = args["files"] as? [String] ?? []
-                let pid = (args["pid"] as? Int).map { pid_t($0) } ?? getpid()
+                let force = args["force"] as? Bool ?? false
 
-                // Claim files on blackboard to detect collisions
-                var collisionWarnings: [CollisionWarning] = []
-                if !files.isEmpty {
-                    collisionWarnings = try store.broadcastIntent(
-                        agentKind: fromAgent,
-                        pid: pid,
-                        goal: "Delegated to \(toAgent.displayName): \(prompt)",
-                        files: files,
-                        status: "delegating"
-                    )
+                let task: TaskRecord
+                do {
+                    task = try inboxStore.createTask(from: caller.agent, to: toAgent, prompt: prompt, files: files, force: force)
+                } catch let error as InboxError {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }
 
-                // Enqueue in inbox
-                let message = try inboxStore.enqueue(
-                    from: fromAgent,
-                    to: toAgent,
-                    prompt: prompt,
-                    files: files
-                )
-
-                var responseText = "Task queued for \(toAgent.displayName) (ID: \(message.id)). linkC will dispatch it automatically."
-                if !collisionWarnings.isEmpty {
-                    responseText += "\n\n⚠️ Collision Warnings:"
-                    for w in collisionWarnings {
-                        responseText += "\n- Agent '\(w.conflictingAgent.displayName)' (PID \(w.pid)) is also working on: \(w.conflictingFiles.joined(separator: ", ")) (Goal: '\(w.goal)')"
+                let successText = "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
+                if !files.isEmpty {
+                    do {
+                        _ = try store.broadcastIntent(
+                            agentKind: caller.agent,
+                            pid: caller.pid,
+                            goal: "Delegated task \(task.shortId) to \(toAgent.displayName)",
+                            files: files,
+                            status: "delegating"
+                        )
+                    } catch {
+                        let warning = "Warning: task was created but the blackboard broadcast failed: \(error.localizedDescription)."
+                        return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
                     }
                 }
 
-                return toolResultResponse(id: id, text: responseText)
+                return toolResultResponse(id: id, text: successText)
 
             case "linkc_send_message":
                 guard let toStr = args["to"] as? String, !toStr.isEmpty else {
@@ -354,18 +437,12 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
                 }
 
-                let fromStr = args["from"] as? String ?? args["agent"] as? String ?? "claude"
-                let fromAgent = AgentKind(rawValue: fromStr.lowercased()) ?? .claude
-
-                let formattedPrompt = "[Peer Note from \(fromAgent.displayName)]: \(messageText)"
-                let pending = try inboxStore.enqueue(
-                    from: fromAgent,
-                    to: toAgent,
-                    prompt: formattedPrompt,
-                    files: []
-                )
-
-                return toolResultResponse(id: id, text: "Message queued for \(toAgent.displayName) (ID: \(pending.id)). linkC will deliver it when idle.")
+                do {
+                    let pending = try inboxStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote, body: messageText)
+                    return toolResultResponse(id: id, text: "Message queued for \(toAgent.displayName) (ID: \(pending.id)). linkC will deliver it when idle.")
+                } catch let error as InboxError {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
 
             case "linkc_get_inbox":
                 let inbox = try inboxStore.load()
@@ -385,21 +462,34 @@ public final class MCPServer: Sendable {
                     text += "## Active Agent Limits\n_No active rate limits recorded._\n\n"
                 }
 
+                let openTasks = inbox.tasks.filter { $0.state.isOpen }.sorted { $0.createdAt < $1.createdAt }
+                text += "## Open Tasks (\(openTasks.count))\n"
+                if openTasks.isEmpty {
+                    text += "_No open tasks._\n\n"
+                } else {
+                    for t in openTasks {
+                        let age = Int(now.timeIntervalSince(t.createdAt) / 60)
+                        text += "- \(taskLine(t)) — \(age)m old, \(t.files.count) file(s)\n"
+                    }
+                    text += "\n"
+                }
+
                 let pending = inbox.messages.filter { $0.status == .queued || $0.status == .delivering }
                 text += "## Pending Messages (\(pending.count))\n"
                 if pending.isEmpty {
                     text += "_No pending messages in queue._\n"
                 } else {
                     for msg in pending {
-                        text += "### Message \(msg.id) [\(msg.status.rawValue.uppercased())]\n"
+                        text += "### Message \(msg.id) [\(msg.kind.rawValue)] [\(msg.status.rawValue.uppercased())]\n"
                         text += "- **From:** \(msg.fromAgent.displayName) → **To:** \(msg.toAgent.displayName)\n"
+                        if let taskId = msg.taskId { text += "- **Task:** \(taskId.prefix(8))\n" }
                         if !msg.claimedFiles.isEmpty {
                             text += "- **Claimed Files:** \(msg.claimedFiles.joined(separator: ", "))\n"
                         }
                         if msg.rerouteCount > 0 {
                             text += "- **Reroute Count:** \(msg.rerouteCount)\n"
                         }
-                        text += "- **Content:**\n```\n\(msg.prompt)\n```\n\n"
+                        text += "- **Content:** \(msg.prompt.prefix(200))\n\n"
                     }
                 }
 
@@ -414,7 +504,7 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(id: id, text: text)
 
             case "linkc_switch_model":
-                let agentStr = (args["agent"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "claude"
+                let agentStr = (args["agent"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? caller.agent.rawValue
                 guard let agent = AgentKind(rawValue: agentStr.lowercased()) else {
                     return toolResultResponse(id: id, text: "Error: Unknown agent '\(agentStr)'. Supported agents: claude, agy, cursor, codex.", isError: true)
                 }
@@ -439,12 +529,7 @@ public final class MCPServer: Sendable {
                     }
                 } else {
                     let cmd = AgentModelCatalog.interactiveSwitchCommand(model: cleanModel, for: agent)
-                    _ = try inboxStore.enqueue(
-                        from: agent,
-                        to: agent,
-                        prompt: cmd,
-                        files: []
-                    )
+                    _ = try inboxStore.enqueue(from: agent, to: agent, kind: .command, body: cmd)
                     return toolResultResponse(id: id, text: "Model switch requested: enqueued '\(cmd)' for \(agent.displayName). linkC will inject it via terminal PTY.")
                 }
 
@@ -520,12 +605,148 @@ public final class MCPServer: Sendable {
 
                 return toolResultResponse(id: id, text: text)
 
+            case "linkc_start_task":
+                do {
+                    let task = try requireTask(args)
+                    guard caller.agent == task.toAgent else {
+                        return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
+                    }
+                    try inboxStore.markTaskStarted(taskId: task.id)
+                    let updated = try inboxStore.task(id: task.id) ?? task
+                    return toolResultResponse(id: id, text: "Started: \(taskLine(updated))")
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
+
+            case "linkc_complete_task":
+                do {
+                    let task = try requireTask(args)
+                    guard caller.agent == task.toAgent else {
+                        return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
+                    }
+                    let status = (args["status"] as? String ?? "").lowercased()
+                    guard status == "done" || status == "failed" else {
+                        return toolResultResponse(id: id, text: "Error: 'status' must be \"done\" or \"failed\".", isError: true)
+                    }
+                    let summary = (args["summary"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !summary.isEmpty else {
+                        return toolResultResponse(id: id, text: InboxError.emptySummary.localizedDescription, isError: true)
+                    }
+                    let report = TaskReport(
+                        status: status,
+                        summary: summary,
+                        commits: args["commits"] as? [String] ?? [],
+                        tests: args["tests"] as? [String] ?? []
+                    )
+                    try inboxStore.completeTask(taskId: task.id, report: report)
+
+                    let successText = "Reported \(status) for task \(task.shortId). \(task.fromAgent.displayName) will receive a one-line echo."
+                    do {
+                        let firstLine = summary.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? summary
+                        let body = "\(status) by \(caller.agent.displayName) — \(firstLine.prefix(200)). linkc_get_task(\"\(task.id)\") for details."
+                        _ = try inboxStore.enqueue(from: caller.agent, to: task.fromAgent, kind: .completion, taskId: task.id, body: body)
+
+                        var note = "\(summary)\n"
+                        if !report.commits.isEmpty { note += "\n**Commits:** \(report.commits.joined(separator: ", "))\n" }
+                        if !report.tests.isEmpty { note += "\n**Tests:** \(report.tests.joined(separator: "; "))\n" }
+                        note += "\nTask id: \(task.id)\n"
+                        _ = try store.postNote(authorAgent: caller.agent, title: "Task \(task.shortId) \(status)", content: note, tags: ["task", status])
+                    } catch {
+                        let warning = "Warning: task state was updated but notifying \(task.fromAgent.displayName) failed: \(error.localizedDescription). They can run linkc_get_task(\"\(task.id)\")."
+                        return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
+                    }
+
+                    return toolResultResponse(id: id, text: successText)
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
+
+            case "linkc_cancel_task":
+                do {
+                    let task = try requireTask(args)
+                    let force = args["force"] as? Bool ?? false
+                    guard force || caller.agent == task.fromAgent || caller.agent == task.toAgent else {
+                        return toolResultResponse(id: id, text: "Error: only \(task.fromAgent.displayName) or \(task.toAgent.displayName) may cancel task \(task.shortId); pass force: true to override.", isError: true)
+                    }
+                    let reason = (args["reason"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let resolvedReason = (reason?.isEmpty == false) ? reason! : "cancelled by \(caller.agent.displayName)"
+                    let wasDelivered = task.state == .delivered || task.state == .started
+                    try inboxStore.cancelTask(taskId: task.id, reason: resolvedReason)
+                    let successText = "Cancelled task \(task.shortId) (\(resolvedReason))."
+                    if wasDelivered {
+                        do {
+                            _ = try inboxStore.enqueue(from: caller.agent, to: task.toAgent, kind: .completion, taskId: task.id, body: "cancelled: \(resolvedReason). Stop work on it.")
+                        } catch {
+                            let warning = "Warning: task state was updated but notifying \(task.toAgent.displayName) failed: \(error.localizedDescription). They can run linkc_get_task(\"\(task.id)\")."
+                            return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
+                        }
+                    }
+                    return toolResultResponse(id: id, text: successText)
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
+
+            case "linkc_get_task":
+                do {
+                    let task = try requireTask(args)
+                    return toolResultResponse(id: id, text: taskMarkdown(task))
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
+
+            case "linkc_my_tasks":
+                guard caller.isIdentified else {
+                    return toolResultResponse(id: id, text: Self.unidentifiedCallerMessage, isError: true)
+                }
+                let assigned = try inboxStore.openTasks(for: caller.agent)
+                let delegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
+                var text = "# Open tasks for \(caller.agent.displayName)\n\n## Assigned to you (\(assigned.count))\n"
+                text += assigned.isEmpty ? "_None._\n" : assigned.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
+                text += "\n## Delegated by you (\(delegated.count))\n"
+                text += delegated.isEmpty ? "_None._\n" : delegated.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
+                return toolResultResponse(id: id, text: text)
+
             default:
                 return errorResponse(id: id, code: -32601, message: "Unknown tool: \(name)")
             }
         } catch {
             return errorResponse(id: id, code: -32000, message: error.localizedDescription)
         }
+    }
+
+    func taskLine(_ t: TaskRecord) -> String {
+        let firstLine = t.prompt.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? t.prompt
+        return "\(t.shortId) [\(t.state.rawValue)] from \(t.fromAgent.displayName) → \(t.toAgent.displayName): \(firstLine.prefix(80))"
+    }
+
+    private func taskMarkdown(_ t: TaskRecord) -> String {
+        let iso = ISO8601DateFormatter()
+        var text = "# Task \(t.shortId) — \(t.state.rawValue)\n\n"
+        text += "- **ID:** \(t.id)\n"
+        text += "- **From:** \(t.fromAgent.displayName) → **To:** \(t.toAgent.displayName)\n"
+        text += "- **Hop:** \(t.hop)\n"
+        text += "- **Created:** \(iso.string(from: t.createdAt))\n"
+        if let d = t.deliveredAt { text += "- **Delivered:** \(iso.string(from: d))\n" }
+        if let s = t.startedAt { text += "- **Started:** \(iso.string(from: s))\n" }
+        if let f = t.finishedAt { text += "- **Finished:** \(iso.string(from: f))\n" }
+        text += "- **Lease expires:** \(iso.string(from: t.leaseExpiresAt))\n"
+        if !t.files.isEmpty { text += "- **Files:** \(t.files.joined(separator: ", "))\n" }
+        if let r = t.cancelReason { text += "- **Reason:** \(r)\n" }
+        text += "\n## Brief\n\(t.prompt)\n"
+        if let r = t.report {
+            text += "\n## Report (\(r.status))\n\(r.summary)\n"
+            if !r.commits.isEmpty { text += "\n**Commits:** \(r.commits.joined(separator: ", "))\n" }
+            if !r.tests.isEmpty { text += "\n**Tests:** \(r.tests.joined(separator: "; "))\n" }
+        }
+        return text
+    }
+
+    private func requireTask(_ args: [String: Any]) throws -> TaskRecord {
+        guard let taskId = (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !taskId.isEmpty else {
+            throw LinkCError.server("Missing required argument 'task_id'.")
+        }
+        guard let task = try inboxStore.task(id: taskId) else { throw InboxError.taskNotFound(taskId) }
+        return task
     }
 
     private func toolResultResponse(id: Any?, text: String, isError: Bool = false) -> Data? {

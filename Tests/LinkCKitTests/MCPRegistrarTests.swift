@@ -143,4 +143,41 @@ final class MCPRegistrarTests: XCTestCase {
         XCTAssertTrue(codexContent.contains("[mcp_servers.linkc-multiplier]"))
         XCTAssertTrue(codexContent.contains("command = \"/custom/bin/linkc-mcp\""))
     }
+
+    func testRegisterServerWritesEnv() throws {
+        let configFile = tempDir.appendingPathComponent("mcp.json")
+        try MCPRegistrar.registerServer(configFile: configFile, binaryPath: "/x/linkc-mcp", env: ["LINKC_AGENT": "cursor"])
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: configFile)) as? [String: Any]
+        let server = (json?["mcpServers"] as? [String: Any])?["linkc-multiplier"] as? [String: Any]
+        XCTAssertEqual(server?["env"] as? [String: String], ["LINKC_AGENT": "cursor"])
+    }
+
+    func testRegisterTomlWritesEnvTableAndRewritesInPlace() throws {
+        let configFile = tempDir.appendingPathComponent("config.toml")
+        try "model = \"gpt-5\"\n".write(to: configFile, atomically: true, encoding: .utf8)
+        try MCPRegistrar.registerTomlServer(configFile: configFile, binaryPath: "/x/linkc-mcp", env: ["LINKC_AGENT": "codex"])
+        var content = try String(contentsOf: configFile, encoding: .utf8)
+        XCTAssertTrue(content.contains("[mcp_servers.linkc-multiplier]"))
+        XCTAssertTrue(content.contains("[mcp_servers.linkc-multiplier.env]"))
+        XCTAssertTrue(content.contains("LINKC_AGENT = \"codex\""))
+
+        try MCPRegistrar.registerTomlServer(configFile: configFile, binaryPath: "/y/linkc-mcp", env: ["LINKC_AGENT": "codex"])
+        content = try String(contentsOf: configFile, encoding: .utf8)
+        XCTAssertEqual(content.components(separatedBy: "[mcp_servers.linkc-multiplier.env]").count - 1, 1, "env table must not duplicate")
+        XCTAssertTrue(content.contains("model = \"gpt-5\""))
+        XCTAssertFalse(content.contains("/x/linkc-mcp"))
+    }
+
+    func testRegisterAllSetsAgentIdentityPerClient() throws {
+        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp")
+        func env(_ rel: String) throws -> [String: String]? {
+            let json = try JSONSerialization.jsonObject(with: Data(contentsOf: tempDir.appendingPathComponent(rel))) as? [String: Any]
+            return ((json?["mcpServers"] as? [String: Any])?["linkc-multiplier"] as? [String: Any])?["env"] as? [String: String]
+        }
+        XCTAssertEqual(try env(".claude.json")?["LINKC_AGENT"], "claude")
+        XCTAssertEqual(try env(".cursor/mcp.json")?["LINKC_AGENT"], "cursor")
+        XCTAssertEqual(try env(".codex/mcp.json")?["LINKC_AGENT"], "codex")
+        let codexToml = try String(contentsOf: tempDir.appendingPathComponent(".codex/config.toml"), encoding: .utf8)
+        XCTAssertTrue(codexToml.contains("LINKC_AGENT = \"codex\""))
+    }
 }

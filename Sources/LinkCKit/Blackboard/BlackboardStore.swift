@@ -267,6 +267,32 @@ public final class BlackboardStore: Sendable {
         }
     }
 
+    /// Refreshes presence for `pid`. Inserts an idle record when none exists; never overwrites
+    /// an existing goal or claimed files.
+    public func heartbeat(agentKind: AgentKind, pid: pid_t, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
+            var board = try loadUnlocked()
+            pruneStaleUnlocked(&board, olderThan: 900)
+            if let idx = board.activeAgents.firstIndex(where: { $0.pid == pid }) {
+                board.activeAgents[idx].lastHeartbeat = Date()
+            } else {
+                board.activeAgents.append(
+                    AgentRecord(
+                        agentId: "agent-\(agentKind.rawValue)-\(pid)",
+                        agentKind: agentKind,
+                        pid: pid,
+                        goal: "(idle)",
+                        claimedFiles: [],
+                        lastHeartbeat: Date(),
+                        status: "active"
+                    )
+                )
+            }
+            board.updatedAt = Date()
+            try saveUnlocked(board)
+        }
+    }
+
     /// Prunes agents whose lastHeartbeat exceeds the threshold.
     public func pruneStale(olderThan: TimeInterval = 900, timeout: TimeInterval = 5.0) throws {
         try withFileLock(timeout: timeout) {

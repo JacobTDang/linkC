@@ -31,4 +31,16 @@ final class ProcessSnooperTests: XCTestCase {
         // PID 0 (kernel task) or invalid negative PID has no child agent
         XCTAssertNil(ProcessSnooper.detectAgent(inProcessTreeOf: -1))
     }
+
+    func testParentPidOfSelfMatchesGetppid() {
+        XCTAssertEqual(ProcessSnooper.parentPid(of: getpid()), getppid())
+        XCTAssertNil(ProcessSnooper.parentPid(of: -1))
+    }
+
+    func testDetectAgentInAncestorsRespectsDepthAndInvalidPid() {
+        XCTAssertNil(ProcessSnooper.detectAgent(inAncestorsOf: -1))
+        XCTAssertNil(ProcessSnooper.detectAgent(inAncestorsOf: getpid(), maxDepth: 0))
+        // With a real depth this either finds a CLI (when run inside one) or returns nil; it must not crash.
+        _ = ProcessSnooper.detectAgent(inAncestorsOf: getpid())
+    }
 }

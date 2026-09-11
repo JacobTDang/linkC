@@ -130,4 +130,25 @@ final class BlackboardStoreTests: XCTestCase {
         let updated = try store.load()
         XCTAssertTrue(updated.activeAgents.isEmpty, "Stale agent should be pruned")
     }
+
+    func testHeartbeatInsertsIdleRecordAndRefreshesWithoutOverwritingGoal() throws {
+        let store = BlackboardStore(workspaceRoot: tempDir.path)
+        try store.heartbeat(agentKind: .cursor, pid: 4242)
+        var board = try store.load()
+        let inserted = try XCTUnwrap(board.activeAgents.first { $0.pid == 4242 })
+        XCTAssertEqual(inserted.agentKind, .cursor)
+        XCTAssertEqual(inserted.goal, "(idle)")
+        XCTAssertEqual(inserted.status, "active")
+        XCTAssertTrue(inserted.claimedFiles.isEmpty)
+
+        _ = try store.broadcastIntent(agentKind: .cursor, pid: 4242, goal: "Real goal", files: ["A.swift"])
+        let before = try XCTUnwrap(try store.load().activeAgents.first { $0.pid == 4242 }).lastHeartbeat
+        try store.heartbeat(agentKind: .cursor, pid: 4242)
+        board = try store.load()
+        let refreshed = try XCTUnwrap(board.activeAgents.first { $0.pid == 4242 })
+        XCTAssertEqual(refreshed.goal, "Real goal")
+        XCTAssertEqual(refreshed.claimedFiles, ["A.swift"])
+        XCTAssertGreaterThanOrEqual(refreshed.lastHeartbeat, before)
+        XCTAssertEqual(board.activeAgents.filter { $0.pid == 4242 }.count, 1)
+    }
 }

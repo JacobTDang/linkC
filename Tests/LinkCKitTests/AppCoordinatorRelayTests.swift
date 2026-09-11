@@ -66,151 +66,269 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
     // MARK: - Test Cases
 
-    /// Test 1: Processing pending message auto-spawns session if missing and dispatches prompt.
+    /// Test 1: A queued task auto-spawns the assignee and is delivered exactly once with the v2 frame.
     @MainActor
-    func testProcessPendingMessageAutoSpawnsSessionAndDispatchesPrompt() async throws {
+    func testQueuedTaskAutoSpawnsAssigneeAndDeliversFramedBrief() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
-        let msg = try inbox.enqueue(
-            from: .claude,
-            to: .codex,
-            prompt: "Refactor database migrations",
-            files: ["db/migrations.sql"]
-        )
-        XCTAssertEqual(msg.status, .queued)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Refactor database migrations", files: ["db/migrations.sql"])
 
         let coordinator = makeCoordinator()
         defer { coordinator.shutdown() }
 
-        XCTAssertNil(coordinator.store.sessions.first(where: { $0.agentKind == .codex }))
-
         coordinator.processPendingMessages(workspacePath: ws)
 
-        // 1. Target session was auto-spawned for codex
         guard let codexSession = coordinator.store.sessions.first(where: { $0.agentKind == .codex }) else {
             return XCTFail("Expected codex session to be auto-spawned")
         }
-        XCTAssertEqual((codexSession.cwd as NSString).standardizingPath, (ws as NSString).standardizingPath)
+        let delivered = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(delivered.state, .delivered)
+        XCTAssertEqual(delivered.assigneeSessionId, codexSession.id)
+        XCTAssertNotNil(delivered.deliveredAt)
 
-        // 2. Message was marked delivered
-        let pending = try inbox.fetchPending()
-        XCTAssertTrue(pending.isEmpty, "Message should no longer be pending")
-
-        let loaded = try inbox.load()
-        let deliveredMsg = loaded.messages.first(where: { $0.id == msg.id })
-        XCTAssertEqual(deliveredMsg?.status, .delivered)
-        XCTAssertNotNil(deliveredMsg?.deliveredAt)
-
-        // 3. Prompt was dispatched to terminal
         let term = coordinator.terminals.session(id: codexSession.id)
-        XCTAssertNotNil(term)
         let echoed = try await waitUntil {
-            term?.recentOutput(lines: 10).contains("Refactor database migrations") ?? false
+            let out = term?.recentOutput(lines: 20) ?? ""
+            // Substrings kept short: the PTY may wrap long lines at the terminal width.
+            return out.contains("[linkC task \(task.shortId)")
+                && out.contains("Refactor database migrations")
+                && out.contains("linkc_start_task")
         }
-        XCTAssertTrue(echoed, "Expected prompt to be dispatched and echoed in terminal")
+        XCTAssertTrue(echoed, "Expected framed brief in terminal")
+
+        // Second tick must not redeliver
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+        XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .codex }.count, 1)
     }
 
-    /// Test 2: Busy session delays prompt until .ready/.finished.
+    /// Test 2: Busy assignee delays the task until idle; only one session of that kind receives it.
     @MainActor
-    func testBusySessionDelaysPromptUntilReadyOrFinished() async throws {
+    func testBusyAssigneeDelaysTaskAndOnlyOneSessionReceivesIt() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let coordinator = makeCoordinator()
         defer { coordinator.shutdown() }
 
-        // Pre-create session and put it in .working state
-        let session = try coordinator.newSession(cwd: ws, agent: .codex)
-        coordinator.store.updateState(id: session.id, to: .working)
+        let busy = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: busy.id, to: .working)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Analyze test coverage", files: [])
 
-        let msg = try inbox.enqueue(
-            from: .claude,
-            to: .codex,
-            prompt: "Analyze test coverage",
-            files: []
-        )
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
 
-        // Process while session is .working
+        let idle = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: idle.id, to: .ready)
         coordinator.processPendingMessages(workspacePath: ws)
 
-        // Message must remain queued
-        var pending = try inbox.fetchPending()
-        XCTAssertEqual(pending.count, 1)
-        XCTAssertEqual(pending.first?.id, msg.id)
-        XCTAssertEqual(pending.first?.status, .queued)
+        let t = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(t.state, .delivered)
+        XCTAssertEqual(t.assigneeSessionId, idle.id)
+        XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .codex }.count, 2)
+    }
 
-        // Transition session to .finished (turn complete)
-        coordinator.store.updateState(id: session.id, to: .finished)
+    /// Test 2b: Notices are never injected; completions and peer notes are injected once.
+    @MainActor
+    func testNoticesAreNeverInjectedButCompletionsAre() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
 
-        // Process again
+        let claude = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: claude.id, to: .ready)
+
+        let notice = try inbox.enqueue(from: .codex, to: .claude, kind: .notice, body: "Codex is rate limited")
+        let echo = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: "abcdef12-0000", body: "done by Codex — shipped")
+
         coordinator.processPendingMessages(workspacePath: ws)
-
-        // Message should now be delivered
-        pending = try inbox.fetchPending()
-        XCTAssertTrue(pending.isEmpty, "Message should be delivered now that session is finished")
 
         let loaded = try inbox.load()
-        let deliveredMsg = loaded.messages.first(where: { $0.id == msg.id })
-        XCTAssertEqual(deliveredMsg?.status, .delivered)
-        XCTAssertNotNil(deliveredMsg?.deliveredAt)
+        XCTAssertEqual(loaded.messages.first { $0.id == notice.id }?.status, .delivered)
+        XCTAssertEqual(loaded.messages.first { $0.id == echo.id }?.status, .delivered)
+
+        let out = try await waitUntil {
+            coordinator.terminals.session(id: claude.id)?.recentOutput(lines: 20).contains("[linkC task abcdef12] done by Codex") ?? false
+        }
+        XCTAssertTrue(out)
+        let noticeLeaked = coordinator.terminals.session(id: claude.id)?.recentOutput(lines: 20).contains("rate limited") ?? false
+        XCTAssertFalse(noticeLeaked, "notice text must never reach a terminal")
     }
 
-    /// Test 3: Rate limit detection triggers re-routing to peer agent with handoff memo.
+    /// Test 2c: Expiry rules — stale queue and dead assignee.
     @MainActor
-    func testRateLimitDetectionTriggersRerouteToPeerAgentWithHandoff() async throws {
+    func testExpireTasksForStaleQueueAndDeadAssignee() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        // Stale queue
+        let ws2 = tempDir.appendingPathComponent("ws2").path
+        let inbox2 = InboxStore(workspaceRoot: ws2)
+        let t2 = try inbox2.createTask(from: .claude, to: .codex, prompt: "stale", files: [])
+        var seeded = try inbox2.load()
+        seeded.tasks[0] = TaskRecord(
+            id: t2.id, fromAgent: .claude, toAgent: .codex, prompt: "stale", state: .queued,
+            createdAt: Date().addingTimeInterval(-61 * 60)
+        )
+        try inbox2.saveRaw(seeded)
+        coordinator.processPendingMessages(workspacePath: ws2)
+        let stale = try XCTUnwrap(inbox2.task(id: t2.id))
+        XCTAssertEqual(stale.state, .expired)
+        XCTAssertEqual(stale.cancelReason, "undelivered for 60m")
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "expired task must not spawn an assignee")
+
+        // Dead assignee
+        let ws3 = tempDir.appendingPathComponent("ws3").path
+        try FileManager.default.createDirectory(atPath: ws3, withIntermediateDirectories: true)
+        let inbox3 = InboxStore(workspaceRoot: ws3)
+        let t3 = try inbox3.createTask(from: .claude, to: .codex, prompt: "started then died", files: [])
+        try inbox3.markTaskDelivered(taskId: t3.id, sessionId: "no-such-session")
+        try inbox3.markTaskStarted(taskId: t3.id)
+        coordinator.processPendingMessages(workspacePath: ws3)
+        let dead = try XCTUnwrap(inbox3.task(id: t3.id))
+        XCTAssertEqual(dead.state, .failed)
+        XCTAssertEqual(dead.report?.summary, "assignee session ended before reporting")
+        let echo = try XCTUnwrap(inbox3.load().messages.first { $0.taskId == t3.id })
+        XCTAssertEqual(echo.kind, .completion)
+        XCTAssertEqual(echo.toAgent, .claude)
+        XCTAssertTrue(echo.prompt.contains("failed"))
+    }
+
+    @MainActor
+    func testExpireTasksDoesNotEchoWhenTransitionAlreadyTerminal() throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let coordinator = makeCoordinator()
         defer { coordinator.shutdown() }
 
-        // Spawn source session for claude
+        let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "race completion", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: assignee.id)
+        let staleOpenRecord = try XCTUnwrap(inbox.task(id: task.id))
+        try inbox.completeTask(
+            taskId: task.id,
+            report: TaskReport(status: "done", summary: "completed by another process")
+        )
+        coordinator.store.updateState(id: assignee.id, to: .ended)
+
+        // Preserve the stale delivered snapshot that expireTasks could have read immediately
+        // before the other process completed the authoritative record.
+        var seeded = try inbox.load()
+        seeded.tasks.append(staleOpenRecord)
+        try inbox.saveRaw(seeded)
+
+        coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .done)
+        let falseEcho = try inbox.load().messages.first {
+            $0.kind == .completion
+                && $0.taskId == task.id
+                && $0.prompt.contains("assignee session ended")
+        }
+        XCTAssertNil(falseEcho)
+    }
+
+    @MainActor
+    func testDispatchTasksMarksDeliveredAndInjectsFrame() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: assignee.id, to: .ready)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "ordering guard", files: [])
+
+        coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+        let injected = try await waitUntil {
+            coordinator.terminals.session(id: assignee.id)?
+                .recentOutput(lines: 20)
+                .contains("[linkC task \(task.shortId)") ?? false
+        }
+        XCTAssertTrue(injected, "Expected the framed task after it was marked delivered")
+    }
+
+    /// Test 2d: Legacy v1 `.task` rows are still dispatched once.
+    @MainActor
+    func testLegacyV1TaskMessageIsStillDispatched() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var seeded = Inbox(workspacePath: ws)
+        seeded.messages = [PendingMessage(id: "legacy-1", fromAgent: .claude, toAgent: .codex, prompt: "Old style brief", status: .queued, kind: .task)]
+        try inbox.saveRaw(seeded)
+
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.load().messages.first?.status, .delivered)
+        let codex = try XCTUnwrap(coordinator.store.sessions.first { $0.agentKind == .codex })
+        let echoed = try await waitUntil {
+            coordinator.terminals.session(id: codex.id)?.recentOutput(lines: 10).contains("Old style brief") ?? false
+        }
+        XCTAssertTrue(echoed)
+    }
+
+    /// Test 2e: A tick for a workspace that no longer exists spawns nothing and does not recreate the directory.
+    @MainActor
+    func testMissingWorkspaceTickSpawnsNothingAndDoesNotRecreateDirectory() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let ws = tempDir.appendingPathComponent("vanishing").path
+        let inbox = InboxStore(workspaceRoot: ws)
+        _ = try inbox.createTask(from: .claude, to: .codex, prompt: "brief", files: [])
+        try FileManager.default.removeItem(atPath: ws)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "nothing may be spawned for a missing workspace")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ws), "relay must not recreate a deleted workspace")
+    }
+
+    /// Test 3: Rate limit on a started task cancels it, writes the handoff with the task's brief, and creates a hop+1 task.
+    @MainActor
+    func testRateLimitCancelsOriginalTaskWritesHandoffAndCreatesHopOneTask() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
         let sourceSession = try coordinator.newSession(cwd: ws, agent: .claude)
         coordinator.store.updateState(id: sourceSession.id, to: .working)
+        let original = try inbox.createTask(from: .cursor, to: .claude, prompt: "Build high-throughput streaming proxy", files: ["Proxy.swift"])
+        try inbox.markTaskDelivered(taskId: original.id, sessionId: sourceSession.id)
+        try inbox.markTaskStarted(taskId: original.id)
 
-        // Seed initial message that claude was working on
-        let initialMsg = try inbox.enqueue(
-            from: .cursor,
-            to: .claude,
-            prompt: "Build high-throughput streaming proxy",
-            files: ["Proxy.swift"]
-        )
-        try inbox.markDelivered(id: initialMsg.id)
-
-        // Inject rate limit pattern into source session's terminal via /bin/cat echo
         coordinator.terminals.sendInput(sessionId: sourceSession.id, text: "Rate limit reached. Please try again later.\n")
-
-        // Allow /bin/cat PTY time to echo the line into terminal buffer
         let outputReady = try await waitUntil {
             coordinator.terminals.session(id: sourceSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
         }
         XCTAssertTrue(outputReady)
 
-        // Trigger checkLimitsAndReroute
-        let rerouted = coordinator.checkLimitsAndReroute(for: sourceSession.id)
-        XCTAssertTrue(rerouted, "Rate limit should have been detected and rerouted")
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: sourceSession.id))
+        XCTAssertNotNil(try inbox.isAgentLimited(agent: .claude))
 
-        // 1. Limit recorded in inbox store
-        let limitStatus = try inbox.isAgentLimited(agent: .claude)
-        XCTAssertNotNil(limitStatus)
-        XCTAssertEqual(limitStatus?.agent, .claude)
+        let cancelled = try XCTUnwrap(inbox.task(id: original.id))
+        XCTAssertEqual(cancelled.state, .cancelled)
+        XCTAssertTrue(cancelled.cancelReason?.hasPrefix("rerouted to") ?? false)
 
-        // 2. Handoff memo written to disk
-        let handoffURL = URL(fileURLWithPath: ws).appendingPathComponent(".linkc/HANDOFF.md")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: handoffURL.path), "HANDOFF.md must be written")
-        let handoffContent = try String(contentsOf: handoffURL, encoding: .utf8)
-        XCTAssertTrue(handoffContent.contains("Build high-throughput streaming proxy"))
+        let handoff = try String(contentsOf: URL(fileURLWithPath: ws).appendingPathComponent(".linkc/HANDOFF.md"), encoding: .utf8)
+        XCTAssertTrue(handoff.contains("Build high-throughput streaming proxy"))
+        XCTAssertFalse(handoff.contains("[linkC task"), "handoff goal must be the brief, never a frame")
 
-        // 3. New message enqueued for peer agent with rerouteCount == 1
-        let loaded = try inbox.load()
-        guard let reroutedMsg = loaded.messages.first(where: { $0.fromAgent == .claude && $0.rerouteCount == 1 }) else {
-            return XCTFail("Expected rerouted message from claude")
-        }
-        XCTAssertNotEqual(reroutedMsg.toAgent, .claude)
-        XCTAssertNotEqual(reroutedMsg.toAgent, .shell)
-        XCTAssertEqual(reroutedMsg.rerouteCount, 1)
+        let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        XCTAssertEqual(copy.fromAgent, .cursor, "delegator is preserved across hops")
+        XCTAssertNotEqual(copy.toAgent, .claude)
+        XCTAssertEqual(copy.prompt, original.prompt)
+        XCTAssertEqual(copy.files, ["Proxy.swift"])
+        XCTAssertNotNil(coordinator.store.sessions.first { $0.agentKind == copy.toAgent })
 
-        // 4. Candidate peer session was spawned
-        let peerSession = coordinator.store.sessions.first(where: { $0.agentKind == reroutedMsg.toAgent })
-        XCTAssertNotNil(peerSession, "Candidate peer session should be auto-spawned")
+        let notice = try XCTUnwrap(inbox.load().messages.first { $0.kind == .notice })
+        XCTAssertEqual(notice.toAgent, .cursor)
+        XCTAssertTrue(notice.prompt.hasPrefix("[linkC notice]"))
+        XCTAssertTrue(notice.prompt.contains("reached usage limit"))
     }
 
     /// Test 4: Circuit breaker stops re-route after 2 hops and posts an alert notification.
@@ -224,43 +342,22 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let session = try coordinator.newSession(cwd: ws, agent: .claude)
         coordinator.store.updateState(id: session.id, to: .working)
+        let hop2 = try inbox.createTask(from: .codex, to: .claude, prompt: "Complex distributed algorithm", files: [], hop: 2)
+        try inbox.markTaskDelivered(taskId: hop2.id, sessionId: session.id)
 
-        // Seed task that has already reached 2 hops (rerouteCount == 2)
-        let hop2Msg = try inbox.enqueue(
-            from: .codex,
-            to: .claude,
-            prompt: "Complex distributed algorithm",
-            files: [],
-            rerouteCount: 2
-        )
-        try inbox.markDelivered(id: hop2Msg.id)
-
-        // Inject rate limit pattern
         coordinator.terminals.sendInput(sessionId: session.id, text: "You've reached your usage limit\n")
         let outputReady = try await waitUntil {
             coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("reached your usage limit") ?? false
         }
         XCTAssertTrue(outputReady)
 
-        // Check limits and attempt reroute
         _ = coordinator.checkLimitsAndReroute(for: session.id)
 
-        // Limit is recorded
-        let limitStatus = try inbox.isAgentLimited(agent: .claude)
-        XCTAssertNotNil(limitStatus)
-
-        // Circuit breaker tripped: NO 3rd hop message added to inbox
-        let loaded = try inbox.load()
-        let messagesAfter = loaded.messages
-        XCTAssertFalse(messagesAfter.contains(where: { $0.rerouteCount > 2 }), "Circuit breaker must prevent enqueuing a 3rd hop message")
-        XCTAssertTrue(messagesAfter.contains(where: { $0.fromAgent == .claude && $0.toAgent == .codex && $0.prompt.hasPrefix("[System Notice]") }), "Notice message should be sent to delegating agent")
-
-        // Notification posted
-        XCTAssertTrue(sink.deliveries.contains(where: {
-            $0.title == "linkC: Swarm Rate Limited" && $0.body.contains("Pausing auto-delegation")
-        }), "Alert notification should be posted when circuit breaker trips")
-
-        // No extra sessions spawned
+        XCTAssertNotNil(try inbox.isAgentLimited(agent: .claude))
+        XCTAssertFalse(try inbox.load().tasks.contains { $0.hop > 2 })
+        XCTAssertEqual(try inbox.task(id: hop2.id)?.state, .delivered, "breaker leaves the task for the delegator")
+        XCTAssertTrue(try inbox.load().messages.contains { $0.kind == .notice && $0.toAgent == .codex })
+        XCTAssertTrue(sink.deliveries.contains { $0.title == "linkC: Swarm Rate Limited" && $0.body.contains("Pausing auto-delegation") })
         XCTAssertEqual(coordinator.store.sessions.count, 1)
     }
 
@@ -275,13 +372,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let session = try coordinator.newSession(cwd: ws, agent: .claude)
 
-        // Enqueue message to claude
-        _ = try inbox.enqueue(
-            from: .codex,
-            to: .claude,
-            prompt: "Review PR #42",
-            files: []
-        )
+        // Delegate a task to claude
+        let task = try inbox.createTask(from: .codex, to: .claude, prompt: "Review PR #42", files: [])
 
         // Session starts in .working
         coordinator.store.updateState(id: session.id, to: .working)
@@ -291,7 +383,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         // State is now finished, and processPendingMessages should have been triggered by .stop hook
         let delivered = try await waitUntil {
-            (try? inbox.fetchPending().isEmpty) ?? false
+            (try? inbox.task(id: task.id))?.state == .delivered
         }
         XCTAssertTrue(delivered, "Stop hook should have triggered pending message delivery")
     }
@@ -322,92 +414,47 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(updatedSession?.state, .error, "Session state must remain .error and not be overwritten to .finished")
     }
 
-    /// Test 7: checkLimitsAndReroute scopes alreadyRerouted check to current task and does not abort on old history.
+    /// Test 7: Old cancelled/rerouted history does not block rerouting the current task.
     @MainActor
-    func testCheckLimitsAndRerouteScopesAlreadyReroutedCheckToCurrentTask() async throws {
+    func testRerouteIsScopedToCurrentTaskNotHistory() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let coordinator = makeCoordinator()
         defer { coordinator.shutdown() }
 
-        // Seed an OLD historical message that was previously rerouted by .claude in this workspace
-        let oldReroutedMsg = try inbox.enqueue(
-            from: .claude,
-            to: .cursor,
-            prompt: "Old task from yesterday",
-            files: [],
-            rerouteCount: 1
-        )
-        // Ensure its createdAt is in the past
-        let pastDate = Date().addingTimeInterval(-3600)
-        var loaded = try inbox.load()
-        if let idx = loaded.messages.firstIndex(where: { $0.id == oldReroutedMsg.id }) {
-            loaded.messages[idx] = PendingMessage(
-                id: oldReroutedMsg.id,
-                fromAgent: oldReroutedMsg.fromAgent,
-                toAgent: oldReroutedMsg.toAgent,
-                prompt: oldReroutedMsg.prompt,
-                claimedFiles: oldReroutedMsg.claimedFiles,
-                status: .delivered,
-                rerouteCount: oldReroutedMsg.rerouteCount,
-                createdAt: pastDate,
-                deliveredAt: pastDate
-            )
-            let data = try JSONEncoder().encode(loaded)
-            let inboxURL = URL(fileURLWithPath: ws).appendingPathComponent(".linkc/inbox.json")
-            try data.write(to: inboxURL)
-        }
+        let old = try inbox.createTask(from: .claude, to: .cursor, prompt: "Old task from yesterday", files: [], hop: 1)
+        try inbox.cancelTask(taskId: old.id, reason: "rerouted to Codex after limit")
 
-        // Spawn claude session
         let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
         coordinator.store.updateState(id: claudeSession.id, to: .working)
+        let fresh = try inbox.createTask(from: .codex, to: .claude, prompt: "New fresh task to run", files: ["Fresh.swift"])
+        try inbox.markTaskDelivered(taskId: fresh.id, sessionId: claudeSession.id)
 
-        // Enqueue a NEW task for claude
-        let newMsg = try inbox.enqueue(
-            from: .codex,
-            to: .claude,
-            prompt: "New fresh task to run",
-            files: ["Fresh.swift"]
-        )
-        try inbox.markDelivered(id: newMsg.id)
-
-        // Inject rate limit pattern
         coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached. Try later.\n")
         let outputReady = try await waitUntil {
             coordinator.terminals.session(id: claudeSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
         }
         XCTAssertTrue(outputReady)
 
-        // Check limits and reroute - must NOT be blocked by the old historical rerouted message
-        let rerouted = coordinator.checkLimitsAndReroute(for: claudeSession.id)
-        XCTAssertTrue(rerouted, "Should reroute the new task despite old historical reroute message")
-
-        // Verify new rerouted message was enqueued for peer
-        let updatedInbox = try inbox.load()
-        let newRerouted = updatedInbox.messages.first {
-            $0.fromAgent == .claude && $0.prompt == "New fresh task to run"
-        }
-        XCTAssertNotNil(newRerouted, "New task should have been rerouted")
-        XCTAssertEqual(newRerouted?.rerouteCount, 1)
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: claudeSession.id))
+        let copy = try XCTUnwrap(inbox.openTasks().first { $0.prompt == "New fresh task to run" })
+        XCTAssertEqual(copy.hop, 1)
+        XCTAssertEqual(try inbox.task(id: fresh.id)?.state, .cancelled)
     }
 
-    /// Test 8: checkLimitsAndReroute skips uninstalled candidate agents in favor of installed ones.
+    /// Test 8: Uninstalled candidates are skipped.
     @MainActor
     func testCheckLimitsAndRerouteSkipsUninstalledCandidateAgents() async throws {
         let ws = tempDir.path
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
-            let scriptContent = "#!/bin/sh\nexec /bin/cat\n"
-            try? scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
+            try? "#!/bin/sh\nexec /bin/cat\n".write(to: scriptURL, atomically: true, encoding: .utf8)
             var attrs = (try? FileManager.default.attributesOfItem(atPath: scriptURL.path)) ?? [:]
             attrs[.posixPermissions] = 0o755
             try? FileManager.default.setAttributes(attrs, ofItemAtPath: scriptURL.path)
         }
-
         let settingsDir = tempDir.appendingPathComponent("settings_uninstalled_test")
         try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
-
-        // Create coordinator where .codex is NOT installed (returns nil), but .agy IS installed
         let coordinator = AppCoordinator(
             terminals: TerminalSessionManager(),
             hookServer: HookServer(port: 0),
@@ -416,11 +463,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             settingsDir: settingsDir,
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest_uninstalled_test"),
-            agentPathResolver: { kind in
-                // Simulate .codex being uninstalled on this machine
-                if kind == .codex { return nil }
-                return scriptURL.path
-            },
+            agentPathResolver: { kind in kind == .codex ? nil : scriptURL.path },
             isWatching: { _ in false }
         )
         defer { coordinator.shutdown() }
@@ -428,14 +471,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let inbox = InboxStore(workspaceRoot: ws)
         let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
         coordinator.store.updateState(id: claudeSession.id, to: .working)
-
-        let msg = try inbox.enqueue(
-            from: .cursor,
-            to: .claude,
-            prompt: "Deploy service mesh",
-            files: []
-        )
-        try inbox.markDelivered(id: msg.id)
+        let task = try inbox.createTask(from: .cursor, to: .claude, prompt: "Deploy service mesh", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: claudeSession.id)
 
         coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached\n")
         let outputReady = try await waitUntil {
@@ -443,15 +480,9 @@ final class AppCoordinatorRelayTests: XCTestCase {
         }
         XCTAssertTrue(outputReady)
 
-        let rerouted = coordinator.checkLimitsAndReroute(for: claudeSession.id)
-        XCTAssertTrue(rerouted)
-
-        // Verify that .codex was skipped and .agy was chosen as the target candidate
-        let loaded = try inbox.load()
-        guard let reroutedMsg = loaded.messages.first(where: { $0.fromAgent == .claude && $0.rerouteCount == 1 }) else {
-            return XCTFail("Expected rerouted message")
-        }
-        XCTAssertEqual(reroutedMsg.toAgent, .agy, "Uninstalled .codex must be skipped; .agy must be selected")
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: claudeSession.id))
+        let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        XCTAssertEqual(copy.toAgent, .agy, "Uninstalled .codex must be skipped; .agy must be selected")
     }
 
     /// Test 9: checkLimitsAndReroute ignores ended sessions.
@@ -481,7 +512,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNil(limitStatus, "No limit should be recorded for an ended session")
     }
 
-    /// Test 10: checkLimitsAndReroute prioritizes candidates that already have an active session in the workspace.
+    /// Test 10: Candidates with an active session in the workspace are preferred.
     @MainActor
     func testCheckLimitsAndReroutePrioritizesAgentWithActiveSessionInWorkspace() async throws {
         let ws = tempDir.path
@@ -489,21 +520,13 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let coordinator = makeCoordinator()
         defer { coordinator.shutdown() }
 
-        // Spawn claude session that will be working
         let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
         coordinator.store.updateState(id: claudeSession.id, to: .working)
-
-        // Spawn an active cursor session in the same workspace (not codex)
         let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
         coordinator.store.updateState(id: cursorSession.id, to: .ready)
 
-        let msg = try inbox.enqueue(
-            from: .shell,
-            to: .claude,
-            prompt: "Refactor router",
-            files: ["Router.swift"]
-        )
-        try inbox.markDelivered(id: msg.id)
+        let task = try inbox.createTask(from: .shell, to: .claude, prompt: "Refactor router", files: ["Router.swift"])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: claudeSession.id)
 
         coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached\n")
         let outputReady = try await waitUntil {
@@ -511,122 +534,208 @@ final class AppCoordinatorRelayTests: XCTestCase {
         }
         XCTAssertTrue(outputReady)
 
-        let rerouted = coordinator.checkLimitsAndReroute(for: claudeSession.id)
-        XCTAssertTrue(rerouted)
-
-        // In supportedPeers [.claude, .codex, .agy, .cursor], .codex is ahead of .cursor.
-        // But because .cursor has an active session in this workspace, candidate sorting must prioritize .cursor!
-        let loaded = try inbox.load()
-        guard let reroutedMsg = loaded.messages.first(where: { $0.fromAgent == .claude && $0.rerouteCount == 1 }) else {
-            return XCTFail("Expected rerouted message")
-        }
-        XCTAssertEqual(reroutedMsg.toAgent, .cursor, "Active .cursor session in workspace must be prioritized over .codex")
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: claudeSession.id))
+        let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        XCTAssertEqual(copy.toAgent, .cursor, "Active .cursor session in workspace must be prioritized over .codex")
     }
 
-    /// Test 11: checkLimitsAndReroute sends reply notice to delegating agent and works when session is .finished.
+    /// Test 11: The limit alert to the delegator is a notice (never injected) and a desktop notification.
     @MainActor
-    func testLimitDetectionSendsReplyMessageToDelegatingAgent() async throws {
+    func testLimitDetectionSendsNoticeToDelegatingAgent() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let sink = RecordingSink()
         let coordinator = makeCoordinator(sink: sink)
         defer { coordinator.shutdown() }
 
-        // Session A (Claude) delegates task to Session B (Codex)
-        let delegatedMsg = try inbox.enqueue(
-            from: .claude,
-            to: .codex,
-            prompt: "Optimize database indices",
-            files: ["schema.sql"]
-        )
-        try inbox.markDelivered(id: delegatedMsg.id)
-
-        // Spawn Codex session and transition it to .finished (simulating turn end hook)
         let codexSession = try coordinator.newSession(cwd: ws, agent: .codex)
         coordinator.store.updateState(id: codexSession.id, to: .finished)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Optimize database indices", files: ["schema.sql"])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: codexSession.id)
 
-        // Inject rate limit pattern into Codex session output
         coordinator.terminals.sendInput(sessionId: codexSession.id, text: "429 Too Many Requests\n")
         let outputReady = try await waitUntil {
             coordinator.terminals.session(id: codexSession.id)?.recentOutput(lines: 10).contains("429 Too Many Requests") ?? false
         }
         XCTAssertTrue(outputReady)
 
-        // Trigger limit check (session state is .finished)
-        let detected = coordinator.checkLimitsAndReroute(for: codexSession.id)
-        XCTAssertTrue(detected, "Limit check must succeed even when session state is .finished")
-
-        // Assert that inboxStore receives a notice message addressed to Claude from Codex reporting the limit
-        let loaded = try inbox.load()
-        guard let notice = loaded.messages.first(where: {
-            $0.fromAgent == .codex && $0.toAgent == .claude && $0.prompt.hasPrefix("[System Notice]")
-        }) else {
-            return XCTFail("Expected system notice message addressed to Claude from Codex")
-        }
-
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: codexSession.id))
+        let notice = try XCTUnwrap(inbox.load().messages.first { $0.kind == .notice && $0.fromAgent == .codex && $0.toAgent == .claude })
         XCTAssertTrue(notice.prompt.contains("Codex reached usage limit: '429 Too Many Requests'"))
         XCTAssertTrue(notice.prompt.contains("Free fallback model"))
-        XCTAssertTrue(notice.prompt.contains("Task paused."))
-        XCTAssertEqual(notice.claimedFiles, ["schema.sql"])
-
-        // Assert desktop notification was posted explaining the limit and fallback
-        XCTAssertTrue(sink.deliveries.contains(where: {
-            $0.title == "linkC: Codex Rate Limited" && $0.body.contains("429 Too Many Requests")
-        }), "Desktop notification should be posted for Codex rate limit")
+        XCTAssertEqual(notice.taskId, task.id)
+        XCTAssertTrue(sink.deliveries.contains { $0.title == "linkC: Codex Rate Limited" && $0.body.contains("429 Too Many Requests") })
     }
 
-    /// Test 12: Autonotifies delegating orchestrator agent upon task completion.
+    /// Test 11b: A rerouted session is never re-processed on the next tick — the limit text is
+    /// still in its buffer, but the source is `.error`, so no second hop+1 task and no second notice.
     @MainActor
-    func testTaskCompletionAutonotifiesDelegatingOrchestratorAgent() async throws {
+    func testRerouteIsIdempotentAcrossTicks() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let sourceSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: sourceSession.id, to: .working)
+        let original = try inbox.createTask(from: .cursor, to: .claude, prompt: "Build high-throughput streaming proxy", files: ["Proxy.swift"])
+        try inbox.markTaskDelivered(taskId: original.id, sessionId: sourceSession.id)
+        try inbox.markTaskStarted(taskId: original.id)
+
+        coordinator.terminals.sendInput(sessionId: sourceSession.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: sourceSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: sourceSession.id))
+        let firstCopy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        let stateAfterFirst = try XCTUnwrap(coordinator.store.session(id: sourceSession.id)).state
+        XCTAssertEqual(stateAfterFirst, .error)
+
+        // Next tick: same session, same buffer.
+        coordinator.sampleAgentStates()
+        _ = coordinator.checkLimitsAndReroute(for: sourceSession.id)
+
+        let hopOne = try inbox.openTasks().filter { $0.hop == 1 }
+        XCTAssertEqual(hopOne.count, 1, "second tick must not synthesize another hop-1 task")
+        XCTAssertEqual(hopOne.first?.id, firstCopy.id)
+        XCTAssertEqual(hopOne.first?.toAgent, firstCopy.toAgent)
+        XCTAssertFalse(try inbox.load().tasks.contains { $0.prompt.hasPrefix("Task rerouted from") }, "no synthesized reroute task")
+
+        let notices = try inbox.load().messages.filter { $0.kind == .notice && $0.toAgent == .cursor }
+        XCTAssertEqual(notices.count, 1, "delegator is told exactly once")
+        XCTAssertEqual(coordinator.store.session(id: sourceSession.id)?.state, stateAfterFirst, "second call leaves the source state alone")
+    }
+
+    /// Test 11c: If the assignee finished between the open-tasks read and the cancel, no hop+1 copy
+    /// may be created — finished work must never be re-dispatched.
+    @MainActor
+    func testRerouteSkipsCopyWhenOriginalAlreadyDone() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let sourceSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: sourceSession.id, to: .working)
+        let original = try inbox.createTask(from: .cursor, to: .claude, prompt: "Build high-throughput streaming proxy", files: ["Proxy.swift"])
+        try inbox.markTaskDelivered(taskId: original.id, sessionId: sourceSession.id)
+        try inbox.markTaskStarted(taskId: original.id)
+
+        // Authoritative record reaches .done; a stale open snapshot with the same id is kept so
+        // openTasks() still reports it as the current task while cancelTask hits the .done row.
+        let staleOpenRecord = try XCTUnwrap(inbox.task(id: original.id))
+        try inbox.completeTask(taskId: original.id, report: TaskReport(status: "done", summary: "shipped before the limit hit"))
+        var seeded = try inbox.load()
+        seeded.tasks.append(staleOpenRecord)
+        try inbox.saveRaw(seeded)
+
+        coordinator.terminals.sendInput(sessionId: sourceSession.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: sourceSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: sourceSession.id))
+
+        XCTAssertEqual(try inbox.task(id: original.id)?.state, .done)
+        XCTAssertFalse(try inbox.load().tasks.contains { $0.hop == 1 }, "finished work must not be re-dispatched")
+        XCTAssertFalse(
+            try inbox.load().messages.contains { $0.kind == .notice && $0.taskId == original.id },
+            "no 'paused' notice for a task that was already done"
+        )
+    }
+
+    /// Test 12: Turn end without a report sends exactly one short line, never scrollback, and never loops.
+    @MainActor
+    func testTurnEndWithoutReportSendsOneLineOncePerTaskAndNeverScrapes() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let sink = RecordingSink()
         let coordinator = makeCoordinator(sink: sink)
         defer { coordinator.shutdown() }
 
-        // Step 1: Orchestrator (Claude) delegates task to Cursor
-        let delegatedMsg = try inbox.enqueue(
-            from: .claude,
-            to: .cursor,
-            prompt: "Build user authentication module",
-            files: ["Auth.swift"]
-        )
-        try inbox.markDelivered(id: delegatedMsg.id)
-
-        // Step 2: Spawn Cursor session and start in .working state
         let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
+        let task = try inbox.createTask(from: .claude, to: .cursor, prompt: "Build user authentication module", files: ["Auth.swift"])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: cursorSession.id)
         coordinator.store.updateState(id: cursorSession.id, to: .working)
 
-        // Inject output into Cursor's terminal
         coordinator.terminals.sendInput(sessionId: cursorSession.id, text: "Generated Auth.swift with 5 tests passing.\n")
-        let outputReady = try await waitUntil {
+        _ = try await waitUntil {
             coordinator.terminals.session(id: cursorSession.id)?.recentOutput(lines: 10).contains("Generated Auth.swift") ?? false
         }
-        XCTAssertTrue(outputReady)
 
-        // Step 3: Trigger completion notification (simulating turn end)
-        let notified = coordinator.notifyDelegatorOnTaskCompletion(sessionId: cursorSession.id, workspacePath: ws)
-        XCTAssertTrue(notified, "Must successfully notify delegator")
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: cursorSession.id, workspacePath: ws), 1)
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: cursorSession.id, workspacePath: ws), 0, "second turn end must not notify again")
 
-        // Step 4: Verify that inboxStore received a completion message addressed to Claude from Cursor
-        let loaded = try inbox.load()
-        guard let completionMsg = loaded.messages.first(where: {
-            $0.fromAgent == .cursor && $0.toAgent == .claude && $0.prompt.hasPrefix("[Task Completed by Cursor Agent]")
-        }) else {
-            return XCTFail("Expected completion message addressed to Claude from Cursor")
-        }
+        let msgs = try inbox.load().messages
+        XCTAssertEqual(msgs.count, 1)
+        let line = try XCTUnwrap(msgs.first)
+        XCTAssertEqual(line.kind, .completion)
+        XCTAssertEqual(line.fromAgent, .cursor)
+        XCTAssertEqual(line.toAgent, .claude)
+        XCTAssertEqual(line.taskId, task.id)
+        XCTAssertTrue(line.prompt.hasPrefix("[linkC task \(task.shortId)] Cursor Agent turn ended without a report"))
+        XCTAssertFalse(line.prompt.contains("Generated Auth.swift"), "terminal output must never be relayed")
+        XCTAssertFalse(line.prompt.contains("Build user authentication module"), "brief must not be echoed")
 
-        XCTAssertTrue(completionMsg.prompt.contains("Build user authentication module"))
-        XCTAssertTrue(completionMsg.prompt.contains("Generated Auth.swift with 5 tests passing."))
-        XCTAssertEqual(completionMsg.claimedFiles, ["Auth.swift"])
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "task stays open for the delegator to decide")
+        XCTAssertTrue(sink.deliveries.contains { $0.title == "linkC: Cursor Agent turn ended" })
+    }
 
-        // Step 5: Verify desktop notification
-        XCTAssertTrue(sink.deliveries.contains(where: {
-            $0.title == "linkC: Cursor Agent Completed Task"
-        }), "Desktop notification should be posted for task completion")
+    /// Test 12b: A completion message delivered to the delegator is never treated as a task and never re-echoed.
+    @MainActor
+    func testCompletionEchoIsNeverReEchoed() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
 
-        // Step 6: Verify deduplication - calling again should be a no-op
-        let renotified = coordinator.notifyDelegatorOnTaskCompletion(sessionId: cursorSession.id, workspacePath: ws)
-        XCTAssertFalse(renotified, "Duplicate notification must be suppressed")
+        let claude = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: claude.id, to: .ready)
+        let echo = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: "abcdef12-0000", body: "done by Codex — shipped")
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.load().messages.first { $0.id == echo.id }?.status, .delivered)
+
+        coordinator.store.updateState(id: claude.id, to: .working)
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: claude.id, workspacePath: ws), 0)
+        XCTAssertEqual(try inbox.load().messages.count, 1, "no new message may be produced from an echo")
+    }
+
+    /// Test 12c: Explicit completion before turn end means no 'ended without report' line.
+    @MainActor
+    func testExplicitCompletionSuppressesTurnEndLine() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let codex = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Do it", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: codex.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        try inbox.completeTask(taskId: task.id, report: TaskReport(status: "done", summary: "ok"))
+
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: codex.id, workspacePath: ws), 0)
+        XCTAssertTrue(try inbox.load().messages.isEmpty)
+    }
+
+    /// Test 13: sampleAgentStates heartbeats every live non-shell session so presence is truthful.
+    @MainActor
+    func testSampleAgentStatesHeartbeatsLiveSessions() throws {
+        let ws = tempDir.path
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let codex = try coordinator.newSession(cwd: ws, agent: .codex)
+        _ = try coordinator.newSession(cwd: ws, agent: .shell)
+
+        coordinator.sampleAgentStates()
+
+        let board = try BlackboardStore(workspaceRoot: ws).load()
+        let rec = try XCTUnwrap(board.activeAgents.first { $0.agentKind == .codex })
+        XCTAssertEqual(rec.pid, coordinator.terminals.session(id: codex.id)?.processId)
+        XCTAssertGreaterThan(rec.pid, 0)
+        XCTAssertFalse(board.activeAgents.contains { $0.agentKind == .shell })
     }
 }
