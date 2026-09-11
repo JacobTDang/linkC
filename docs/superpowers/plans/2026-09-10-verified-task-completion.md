@@ -43,7 +43,7 @@
 | `Sources/LinkCKit/App/AppCoordinator+Relay.swift` | Start and finish verification runs; new expiry cases; the delivery frame | 6 |
 | `Sources/LinkCKit/MCP/MCPServer.swift` | `verify` on delegate; `sha` on complete; verdicts in `linkc_get_task`; v0.3.0 | 7 |
 
-Test files: `ProcessRunnerTests.swift`, `GitClientTests.swift` (new), `TaskVerificationModelTests.swift` (new), `InboxVerificationTests.swift` (new), `VerificationRunnerTests.swift` (new), `AppCoordinatorRelayTests.swift`, `MCPServerTaskTests.swift`, `MCPServerTests.swift`, `AgentDashboardAggregatorTests.swift`, `InboxTaskLifecycleTests.swift`, and `InboxStoreTests.swift`. The doubles are in `MCPServerServiceTests.swift` and `OracleDetailTests.swift`.
+Test files: `ProcessRunnerTests.swift`, `GitClientTests.swift` (new), `Support/GitFixture.swift` (new, the shared git helper), `TaskVerificationModelTests.swift` (new), `InboxVerificationTests.swift` (new), `VerificationRunnerTests.swift` (new), `AppCoordinatorRelayTests.swift`, `MCPServerTaskTests.swift`, `MCPServerTests.swift`, `AgentDashboardAggregatorTests.swift`, `InboxTaskLifecycleTests.swift`, and `InboxStoreTests.swift`. The doubles are in `MCPServerServiceTests.swift` and `OracleDetailTests.swift`.
 
 ---
 
@@ -307,6 +307,7 @@ git commit -m "refactor(process): return the exit status as data from runCapturi
 
 **Files:**
 - Create: `Sources/LinkCKit/Git/GitClient.swift`
+- Create: `Tests/LinkCKitTests/Support/GitFixture.swift` (the shared git helper for tests)
 - Test: `Tests/LinkCKitTests/GitClientTests.swift`
 - Modify: `Sources/LinkCKit/Blackboard/AgentDashboardAggregator.swift`. Delete `inspectGitModifiedFiles(at:)` (about lines 273–311) and replace its call (about line 181).
 - Modify: `Sources/LinkCKit/App/AppCoordinator.swift`. Delete `inspectGitStatus(in:)` (starts at about line 753), add `gitStatusSummary(in:)`, and change the call in `spawnTeammate` (about line 346).
@@ -325,6 +326,8 @@ git commit -m "refactor(process): return the exit status as data from runCapturi
   - Extension methods on `GitInspecting`: `isClean(in:) throws -> Bool` and `modifiedFiles(in:) throws -> [String]`.
   - `GitClient(timeout: TimeInterval = 10, gitPath: String? = GitClient.resolveGit())`
   - `GitClient.resolveGit() -> String?`
+  - `GitClient.isRepository(_ workspace: URL) -> Bool` (static). This is a filesystem check for a `.git` entry in the folder or one of its parents. A folder outside any repository is an answer, not an error.
+  - Test support: `runGit(_ args: [String], in directory: URL) throws -> String` in `Tests/LinkCKitTests/Support/GitFixture.swift`. Tasks 7 and 10 use it too. No test file defines its own git helper.
   - `AppCoordinator.gitStatusSummary(in: String) -> String?`
 
 Each exit status in this task was checked against git 2.50.1:
@@ -336,7 +339,26 @@ Each exit status in this task was checked against git 2.50.1:
 | `cat-file -e rev:path` for a missing path | 128, so it cannot tell a missing path from an error. Use `ls-tree`, which returns 0 with empty output. |
 | `status --porcelain -- . ':(exclude).linkc'` | Hides `.linkc/`. Returns 128 outside a repository. |
 
-- [ ] **Step 1: Write the failing tests.** Create `Tests/LinkCKitTests/GitClientTests.swift`:
+- [ ] **Step 1: Write the failing tests.** First create the shared helper `Tests/LinkCKitTests/Support/GitFixture.swift`:
+
+```swift
+import XCTest
+@testable import LinkCKit
+
+/// Runs git in `directory` with a fixed identity, so commits work on a machine with no git
+/// config. Fails the calling test on a non-zero exit and returns trimmed stdout.
+@discardableResult
+func runGit(_ args: [String], in directory: URL, file: StaticString = #filePath, line: UInt = #line) throws -> String {
+    let result = try LiveProcessRunner.runCapturingSync(
+        executable: try XCTUnwrap(GitClient.resolveGit(), "git not found", file: file, line: line),
+        args: ["-c", "user.email=t@t", "-c", "user.name=t"] + args, cwd: directory, timeout: 10
+    )
+    XCTAssertEqual(result.status, 0, "git \(args.joined(separator: " ")): \(result.stderr)", file: file, line: line)
+    return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+```
+
+Then create `Tests/LinkCKitTests/GitClientTests.swift`:
 
 ```swift
 import XCTest
@@ -351,27 +373,16 @@ final class GitClientTests: XCTestCase {
         try super.setUpWithError()
         repo = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-git-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
-        try sh("init", "-q", "-b", "main")
+        try runGit(["init", "-q", "-b", "main"], in: repo)
         try write("a\n", "Tests/Sub/X.swift")
         try write("build/\n", ".gitignore")
-        try sh("add", "-A")
-        try sh("commit", "-q", "-m", "base")
+        try runGit(["add", "-A"], in: repo)
+        try runGit(["commit", "-q", "-m", "base"], in: repo)
     }
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: repo)
         try super.tearDownWithError()
-    }
-
-    /// Runs git in the test repository with a fixed identity; fails the test on a non-zero exit.
-    @discardableResult
-    private func sh(_ args: String...) throws -> String {
-        let result = try LiveProcessRunner.runCapturingSync(
-            executable: try XCTUnwrap(GitClient.resolveGit()),
-            args: ["-c", "user.email=t@t", "-c", "user.name=t"] + args, cwd: repo, timeout: 10
-        )
-        XCTAssertEqual(result.status, 0, "git \(args.joined(separator: " ")): \(result.stderr)")
-        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func write(_ text: String, _ path: String) throws {
@@ -382,8 +393,8 @@ final class GitClientTests: XCTestCase {
 
     private func commitNewFile() throws -> String {
         try write("c\n", "new.txt")
-        try sh("add", "new.txt")
-        try sh("commit", "-q", "-m", "next")
+        try runGit(["add", "new.txt"], in: repo)
+        try runGit(["commit", "-q", "-m", "next"], in: repo)
         return try git.headSha(in: repo)
     }
 
@@ -433,6 +444,15 @@ final class GitClientTests: XCTestCase {
         try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: plain) }
         XCTAssertThrowsError(try git.statusPorcelain(in: plain))
+    }
+
+    func testIsRepository() throws {
+        XCTAssertTrue(GitClient.isRepository(repo))
+        XCTAssertTrue(GitClient.isRepository(repo.appendingPathComponent("Tests/Sub")))
+        let plain = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-plain-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: plain) }
+        XCTAssertFalse(GitClient.isRepository(plain))
     }
 
     func testMissingGitFailsLoud() {
@@ -498,6 +518,18 @@ public struct GitClient: GitInspecting {
 
     public static func resolveGit() -> String? {
         candidatePaths.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// True when `workspace` or one of its ancestors holds a `.git` entry — a directory, or the
+    /// file a linked worktree uses. A folder outside any repository is an answer, not an error.
+    public static func isRepository(_ workspace: URL) -> Bool {
+        var path = (workspace.path as NSString).standardizingPath
+        while true {
+            if FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent(".git")) { return true }
+            let parent = (path as NSString).deletingLastPathComponent
+            if parent == path || parent.isEmpty { return false }
+            path = parent
+        }
     }
 
     public func headSha(in workspace: URL) throws -> String {
@@ -566,7 +598,7 @@ public struct GitClient: GitInspecting {
 - [ ] **Step 4: Run the tests and make sure that they pass.**
 
 Run: `swift test --filter GitClientTests 2>&1 | tail -10`
-Expected: PASS, 6 tests.
+Expected: PASS, 7 tests.
 
 - [ ] **Step 5: Replace the aggregator's git spawner.** In `AgentDashboardAggregator.swift`, delete the whole `private func inspectGitModifiedFiles(at path: String) -> [String]`. Then replace these two lines:
 
@@ -578,19 +610,38 @@ Expected: PASS, 6 tests.
 with:
 
 ```swift
-        // 7. Modified files in git. A workspace that is not a git repository has none.
-        let modifiedFiles = (try? GitClient().modifiedFiles(in: URL(fileURLWithPath: norm))) ?? []
+        // 7. Modified files in git. A folder that is not a git repository has none; a git
+        // failure inside one is logged, not hidden.
+        let modifiedFiles: [String]
+        let workspaceURL = URL(fileURLWithPath: norm)
+        if GitClient.isRepository(workspaceURL) {
+            do {
+                modifiedFiles = try GitClient().modifiedFiles(in: workspaceURL)
+            } catch {
+                NSLog("[linkC dashboard] modified files for %@ — %@", norm, String(describing: error))
+                modifiedFiles = []
+            }
+        } else {
+            modifiedFiles = []
+        }
 ```
 
 - [ ] **Step 6: Replace the coordinator's git spawner.** In `AppCoordinator.swift`, delete the whole `func inspectGitStatus(in workspacePath: String) -> String?`, including its nested `DataBox` class. Add this in its place:
 
 ```swift
     /// `git status --porcelain` for the handoff memo, or nil when the folder is not a git
-    /// repository or has no changes. One-second timeout: callers run on the main actor.
+    /// repository or has no changes. A git failure inside a repository is logged. One-second
+    /// timeout: callers run on the main actor.
     func gitStatusSummary(in workspacePath: String) -> String? {
-        guard let text = try? GitClient(timeout: 1).statusPorcelain(in: URL(fileURLWithPath: workspacePath)),
-              !text.isEmpty else { return nil }
-        return text
+        let workspace = URL(fileURLWithPath: workspacePath)
+        guard GitClient.isRepository(workspace) else { return nil }
+        do {
+            let text = try GitClient(timeout: 1).statusPorcelain(in: workspace)
+            return text.isEmpty ? nil : text
+        } catch {
+            NSLog("[linkC] git status for %@ — %@", workspacePath, String(describing: error))
+            return nil
+        }
     }
 ```
 
@@ -609,7 +660,7 @@ Expected: PASS.
 - [ ] **Step 9: Commit.**
 
 ```bash
-git add Sources/LinkCKit/Git/GitClient.swift Tests/LinkCKitTests/GitClientTests.swift Sources/LinkCKit/Blackboard/AgentDashboardAggregator.swift Sources/LinkCKit/App/AppCoordinator.swift Sources/LinkCKit/App/AppCoordinator+Relay.swift
+git add Sources/LinkCKit/Git/GitClient.swift Tests/LinkCKitTests/GitClientTests.swift Tests/LinkCKitTests/Support/GitFixture.swift Sources/LinkCKit/Blackboard/AgentDashboardAggregator.swift Sources/LinkCKit/App/AppCoordinator.swift Sources/LinkCKit/App/AppCoordinator+Relay.swift
 git commit -m "feat(git): add GitClient and replace both hand-rolled git spawners"
 ```
 
@@ -2221,7 +2272,7 @@ git commit -m "feat(relay): gate and verify tasks off the main actor, one run pe
 - Test: `Tests/LinkCKitTests/MCPServerTaskTests.swift`, `Tests/LinkCKitTests/MCPServerTests.swift`
 
 **Interfaces:**
-- Consumes: `GitClient` (Task 2); `createTask(…verification:)` and `reportTask` (Task 4); `VerificationRunner.short` (Task 5).
+- Consumes: `GitClient` and the `runGit(_:in:)` test helper (Task 2); `createTask(…verification:)` and `reportTask` (Task 4); `VerificationRunner.short` (Task 5).
 - Produces:
   - `linkc_delegate_task` accepts an optional `verify` object (`branch`, `base_sha`, `command`, `test_paths`, and the optional `timeout_seconds`). The tool validates it with git and stores the base SHA in full.
   - `linkc_complete_task` accepts an optional `sha` and resolves it to a full SHA.
@@ -2258,25 +2309,14 @@ git commit -m "feat(relay): gate and verify tasks off the main actor, one run pe
 ```swift
     // MARK: - Verified tasks
 
-    /// Runs git in tempDir with a fixed identity; fails the test on a non-zero exit.
-    @discardableResult
-    private func git(_ args: String...) throws -> String {
-        let result = try LiveProcessRunner.runCapturingSync(
-            executable: try XCTUnwrap(GitClient.resolveGit()),
-            args: ["-c", "user.email=t@t", "-c", "user.name=t"] + args, cwd: tempDir, timeout: 10
-        )
-        XCTAssertEqual(result.status, 0, "git \(args.joined(separator: " ")): \(result.stderr)")
-        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     /// tempDir as a repository with check.sh committed on branch task/x; returns that commit.
     private func repoWithTests() throws -> String {
-        try git("init", "-q", "-b", "main")
+        try runGit(["init", "-q", "-b", "main"], in: tempDir)
         try "#!/bin/sh\ntest -f marker.txt\n".write(to: tempDir.appendingPathComponent("check.sh"), atomically: true, encoding: .utf8)
-        try git("add", "check.sh")
-        try git("commit", "-q", "-m", "tests")
-        try git("checkout", "-q", "-b", "task/x")
-        return try git("rev-parse", "HEAD")
+        try runGit(["add", "check.sh"], in: tempDir)
+        try runGit(["commit", "-q", "-m", "tests"], in: tempDir)
+        try runGit(["checkout", "-q", "-b", "task/x"], in: tempDir)
+        return try runGit(["rev-parse", "HEAD"], in: tempDir)
     }
 
     private func verify(base: String, branch: String = "task/x", paths: [String] = ["check.sh"]) -> [String: Any] {
@@ -2306,10 +2346,10 @@ git commit -m "feat(relay): gate and verify tasks off the main actor, one run pe
         XCTAssertTrue(missingPath.isError)
         XCTAssertTrue(missingPath.text.contains("'nope.sh' does not exist at \(base.prefix(7))"), missingPath.text)
 
-        try git("checkout", "-q", "-b", "other")
+        try runGit(["checkout", "-q", "-b", "other"], in: tempDir)
         try "x\n".write(to: tempDir.appendingPathComponent("extra.txt"), atomically: true, encoding: .utf8)
-        try git("add", "extra.txt")
-        try git("commit", "-q", "-m", "moved")
+        try runGit(["add", "extra.txt"], in: tempDir)
+        try runGit(["commit", "-q", "-m", "moved"], in: tempDir)
         let movedBranch = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "C", "verify": verify(base: base, branch: "other")])
         XCTAssertTrue(movedBranch.isError)
         XCTAssertTrue(movedBranch.text.contains("not base \(base.prefix(7))"), movedBranch.text)
@@ -2334,9 +2374,9 @@ git commit -m "feat(relay): gate and verify tasks off the main actor, one run pe
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
 
         try "ok\n".write(to: tempDir.appendingPathComponent("marker.txt"), atomically: true, encoding: .utf8)
-        try git("add", "marker.txt")
-        try git("commit", "-q", "-m", "fix")
-        let sha = try git("rev-parse", "HEAD")
+        try runGit(["add", "marker.txt"], in: tempDir)
+        try runGit(["commit", "-q", "-m", "fix"], in: tempDir)
+        let sha = try runGit(["rev-parse", "HEAD"], in: tempDir)
         let reported = try call(worker, "linkc_complete_task",
                                 ["task_id": task.id, "status": "done", "summary": "added marker", "sha": String(sha.prefix(7))])
         XCTAssertFalse(reported.isError, reported.text)
@@ -2797,23 +2837,13 @@ git commit -m "refactor(inbox): remove completeTask and the direct done transiti
 - Test: `Tests/LinkCKitTests/AppCoordinatorRelayTests.swift` (add inside the class)
 
 **Interfaces:**
-- Consumes: everything above. `makeCoordinator()` uses the real `VerificationRunner()` by default.
+- Consumes: everything above, including the `runGit(_:in:)` test helper (Task 2). `makeCoordinator()` uses the real `VerificationRunner()` by default.
 - This test would have caught the `.linkc` bug. `.linkc/inbox.json` is created in the repository during the test, and the gate still has to see a clean tree.
 
 - [ ] **Step 1: Write the tests.** Add this inside `AppCoordinatorRelayTests`:
 
 ```swift
     // MARK: - End to end: MCP, relay, real git, a real login shell
-
-    @discardableResult
-    private func repoGit(_ repo: URL, _ args: String...) throws -> String {
-        let result = try LiveProcessRunner.runCapturingSync(
-            executable: try XCTUnwrap(GitClient.resolveGit()),
-            args: ["-c", "user.email=t@t", "-c", "user.name=t"] + args, cwd: repo, timeout: 10
-        )
-        XCTAssertEqual(result.status, 0, "git \(args.joined(separator: " ")): \(result.stderr)")
-        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 
     /// A repository whose check.sh fails until marker.txt exists, committed on branch task/x.
     private func makeCheckRepo() throws -> URL {
@@ -2822,10 +2852,10 @@ git commit -m "refactor(inbox): remove completeTask and the direct done transiti
         let check = repo.appendingPathComponent("check.sh")
         try "#!/bin/sh\ntest -f marker.txt\n".write(to: check, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: check.path)
-        try repoGit(repo, "init", "-q", "-b", "main")
-        try repoGit(repo, "add", "check.sh")
-        try repoGit(repo, "commit", "-q", "-m", "tests")
-        try repoGit(repo, "checkout", "-q", "-b", "task/x")
+        try runGit(["init", "-q", "-b", "main"], in: repo)
+        try runGit(["add", "check.sh"], in: repo)
+        try runGit(["commit", "-q", "-m", "tests"], in: repo)
+        try runGit(["checkout", "-q", "-b", "task/x"], in: repo)
         return repo
     }
 
@@ -2842,7 +2872,7 @@ git commit -m "refactor(inbox): remove completeTask and the direct done transiti
     private func delegateAndGate(_ repo: URL, _ coordinator: AppCoordinator) async throws -> TaskRecord {
         let inbox = InboxStore(workspaceRoot: repo.path)
         let delegator = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil })
-        let base = try repoGit(repo, "rev-parse", "HEAD")
+        let base = try runGit(["rev-parse", "HEAD"], in: repo)
         let delegated = try mcp(delegator, "linkc_delegate_task", [
             "to": "codex", "prompt": "Make check.sh pass",
             "verify": ["branch": "task/x", "base_sha": base, "command": "./check.sh", "test_paths": ["check.sh"], "timeout_seconds": 60]
@@ -2861,9 +2891,9 @@ git commit -m "refactor(inbox): remove completeTask and the direct done transiti
     /// The worker: commit one file, then report that commit's sha through MCP.
     private func commitAndReport(_ repo: URL, _ task: TaskRecord, file: String, contents: String) throws -> String {
         try contents.write(to: repo.appendingPathComponent(file), atomically: true, encoding: .utf8)
-        try repoGit(repo, "add", file)
-        try repoGit(repo, "commit", "-q", "-m", "worker")
-        let sha = try repoGit(repo, "rev-parse", "HEAD")
+        try runGit(["add", file], in: repo)
+        try runGit(["commit", "-q", "-m", "worker"], in: repo)
+        let sha = try runGit(["rev-parse", "HEAD"], in: repo)
         let worker = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in nil })
         let reported = try mcp(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "worker change", "sha": sha])
         XCTAssertFalse(reported.isError, reported.text)
@@ -2971,7 +3001,8 @@ Do these steps after the branch merges to `main`. They are not tasks in the bran
 
 | Name | Defined in | Used in |
 |---|---|---|
-| `runCapturingSync(executable:args:cwd:timeout:)` | 1 | 2, 7, 10 |
+| `runCapturingSync(executable:args:cwd:timeout:)` | 1 | 2 |
+| `runGit(_:in:)` (test helper) | 2 | 7, 10 |
 | `GitInspecting` members | 2 | 5 |
 | `Verdict.notRun(reason:sha:)` | 3 | 5, 6 |
 | `VerificationRunner.short(_:)` | 5 | 6, 7, 8 |
