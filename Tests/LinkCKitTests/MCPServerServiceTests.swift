@@ -77,8 +77,8 @@ final class FakeRunner: ProcessRunner, @unchecked Sendable {
 
     init(result: Result<String, Error>) { self._result = result }
 
-    func run(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> String {
+    func runCapturing(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> ProcessResult {
         lock.withLock { recorded.append(Call(executable: executable, args: args)) }
-        return try result.get()
+        return ProcessResult(status: 0, stdout: try result.get(), stderr: "")
     }
 }

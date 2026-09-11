@@ -153,3 +153,45 @@ final class ProcessRunnerBackpressureTests: XCTestCase {
         }
     }
 }
+
+/// `runCapturing` treats the exit status as data: verification needs a failing test run's
+/// status and output, not an exception.
+final class ProcessRunnerCapturingTests: XCTestCase {
+    private func script(_ body: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-capture-\(UUID().uuidString).sh")
+        try body.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    func testNonZeroExitIsReturnedNotThrown() async throws {
+        // Markers come from a script FILE, so they cannot appear in the command string.
+        let s = try script("printf 'OUT_MARKER_41\\n'\nprintf 'ERR_MARKER_42\\n' >&2\nexit 3\n")
+        defer { try? FileManager.default.removeItem(at: s) }
+        let result = try await LiveProcessRunner().runCapturing("/bin/sh", args: [s.path], cwd: nil, timeout: 10)
+        XCTAssertEqual(result.status, 3)
+        XCTAssertEqual(result.stdout, "OUT_MARKER_41\n")
+        XCTAssertEqual(result.stderr, "ERR_MARKER_42\n")
+    }
+
+    func testTimeoutThrowsTypedError() async {
+        do {
+            _ = try await LiveProcessRunner().runCapturing("/bin/sleep", args: ["5"], cwd: nil, timeout: 1)
+            XCTFail("expected a timeout")
+        } catch {
+            XCTAssertEqual(error as? ProcessRunnerError, .timedOut(seconds: 1))
+        }
+    }
+
+    func testSyncCoreRunsInTheWorkingDirectory() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let result = try LiveProcessRunner.runCapturingSync(executable: "/bin/pwd", args: ["-P"], cwd: dir, timeout: 5)
+        XCTAssertEqual(result.status, 0)
+        // Resolve both paths to handle macOS symlink differences (/var vs /private/var)
+        let pwdPath = URL(fileURLWithPath: result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)).resolvingSymlinksInPath().path
+        let expectedPath = dir.resolvingSymlinksInPath().path
+        XCTAssertEqual(pwdPath, expectedPath)
+    }
+}

@@ -132,11 +132,11 @@ final class ScriptedRunner: ProcessRunner, @unchecked Sendable {
         lock.withLock { answers[token] = answer }
     }
 
-    func run(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> String {
+    func runCapturing(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> ProcessResult {
         lock.withLock { recorded.append(Call(executable: executable, args: args)) }
         let snapshot = lock.withLock { answers }
         for (token, answer) in snapshot where args.contains(token) {
-            return try answer.get()
+            return ProcessResult(status: 0, stdout: try answer.get(), stderr: "")
         }
         throw LinkCError.process("unscripted command: \(args.joined(separator: " "))")
     }

@@ -1,10 +1,53 @@
 import Foundation
 
-/// The seam every subprocess call goes through (MCP health, plugin list, plugin toggles) —
-/// faked in tests, timeout-enforced in the live implementation. Fail loud: a stalled CLI must
-/// never hang the panel.
+/// What a finished subprocess did: its exit status and both captured streams.
+public struct ProcessResult: Sendable, Equatable {
+    public let status: Int32
+    public let stdout: String
+    public let stderr: String
+
+    public init(status: Int32, stdout: String, stderr: String) {
+        self.status = status
+        self.stdout = stdout
+        self.stderr = stderr
+    }
+}
+
+public enum ProcessRunnerError: Error, Equatable {
+    case timedOut(seconds: Int)
+}
+
+/// The seam every subprocess call goes through (MCP health, plugin list, plugin toggles, task
+/// verification) — faked in tests, timeout-enforced in the live implementation. Fail loud: a
+/// stalled CLI must never hang the panel.
 public protocol ProcessRunner: Sendable {
-    func run(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> String
+    /// Runs to completion and returns the exit status as data. Throws only when the process
+    /// cannot start, or `ProcessRunnerError.timedOut`.
+    func runCapturing(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> ProcessResult
+}
+
+extension ProcessRunner {
+    /// stdout of a command that must succeed. A non-zero status throws `LinkCError.process`
+    /// carrying the CLI's own stderr reason; a timeout throws `LinkCError.process` too.
+    public func run(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> String {
+        let command = "\(executable) \(args.joined(separator: " "))"
+        let result: ProcessResult
+        do {
+            result = try await runCapturing(executable, args: args, cwd: cwd, timeout: timeout)
+        } catch ProcessRunnerError.timedOut(let seconds) {
+            throw LinkCError.process("\(command) timed out after \(seconds)s")
+        }
+        guard result.status == 0 else {
+            // The CLI's own words first — they carry the actionable part.
+            let detail = LiveProcessRunner.meaningfulStderr(Data(result.stderr.utf8))
+            throw LinkCError.process(
+                detail.isEmpty
+                    ? "\(command) exited with status \(result.status)"
+                    : "\(detail) (\(command) exited with status \(result.status))"
+            )
+        }
+        return result.stdout
+    }
 }
 
 /// Holds what the two drain tasks read. Locked because the reads run concurrently.
@@ -42,28 +85,24 @@ public struct LiveProcessRunner: ProcessRunner {
 
     public init() {}
 
-    public func run(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> String {
-        let cwdPath = cwd?.path
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.runBlocking(executable: executable, args: args, cwdPath: cwdPath, timeout: timeout)
+    public func runCapturing(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> ProcessResult {
+        try await Task.detached(priority: .userInitiated) {
+            try Self.runCapturingSync(executable: executable, args: args, cwd: cwd, timeout: timeout)
         }.value
     }
 
-    /// Synchronous core — the Process/Pipe pair never crosses a concurrency boundary.
-    /// BOTH streams are drained on background queues WHILE the child runs: a pipe holds
-    /// ~64KB, so a chatty CLI (docker progress, anything with --debug) that fills it while
-    /// nobody reads would block forever and burn the timeout. Reading only after exit was
-    /// a latent landmine for stdout and a live bug once stderr was captured too.
-    /// stderr is captured because CLIs say WHY they failed there — "Access token not
-    /// provided", "Cannot connect to the Docker daemon" — and discarding it left callers
-    /// unable to tell an auth prompt from a crash.
-    private static func runBlocking(
-        executable: String, args: [String], cwdPath: String?, timeout: TimeInterval
-    ) throws -> String {
+    /// Synchronous core, public for callers outside an async context (`GitClient`, the MCP
+    /// stdio server). The Process/Pipe pair never crosses a concurrency boundary. BOTH
+    /// streams are drained on background queues WHILE the child runs: a pipe holds ~64KB, so
+    /// a chatty child that fills it while nobody reads would block forever and burn the
+    /// timeout. stderr is captured because CLIs say WHY they failed there.
+    public static func runCapturingSync(
+        executable: String, args: [String], cwd: URL?, timeout: TimeInterval
+    ) throws -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
-        if let cwdPath { process.currentDirectoryURL = URL(fileURLWithPath: cwdPath) }
+        if let cwd { process.currentDirectoryURL = cwd }
         let stdout = Pipe()
         process.standardOutput = stdout
         let stderr = Pipe()
@@ -93,24 +132,16 @@ public struct LiveProcessRunner: ProcessRunner {
             // The drains end when the child's pipe ends close.
             _ = outDone.wait(timeout: .now() + 2)
             _ = errDone.wait(timeout: .now() + 2)
-            throw LinkCError.process("\(executable) \(args.joined(separator: " ")) timed out after \(Int(timeout))s")
+            throw ProcessRunnerError.timedOut(seconds: Int(timeout))
         }
 
         // Both reads finish once the child exits and its pipe ends close.
         _ = outDone.wait(timeout: .now() + 5)
         _ = errDone.wait(timeout: .now() + 5)
-        let data = collected.out
-        let errorData = collected.err
-        guard process.terminationStatus == 0 else {
-            // The CLI's own words first — they carry the actionable part.
-            let detail = Self.meaningfulStderr(errorData)
-            let command = "\(executable) \(args.joined(separator: " "))"
-            throw LinkCError.process(
-                detail.isEmpty
-                    ? "\(command) exited with status \(process.terminationStatus)"
-                    : "\(detail) (\(command) exited with status \(process.terminationStatus))"
-            )
-        }
-        return String(data: data, encoding: .utf8) ?? ""
+        return ProcessResult(
+            status: process.terminationStatus,
+            stdout: String(decoding: collected.out, as: UTF8.self),
+            stderr: String(decoding: collected.err, as: UTF8.self)
+        )
     }
 }
