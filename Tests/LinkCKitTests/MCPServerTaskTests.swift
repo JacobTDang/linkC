@@ -307,4 +307,33 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertFalse(res.isError, res.text)
         XCTAssertEqual(try inbox.load().tasks.first?.state, .queued)
     }
+
+    // MARK: - An unreadable inbox (re-review M1)
+
+    /// An undecodable inbox.json must come back as an `isError` tool result, not a JSON-RPC
+    /// -32000 error — in every tool that reads or writes the inbox, including the rate-limit
+    /// check inside linkc_delegate_task.
+    func testAnUnreadableInboxIsAnIsErrorResultInEveryTool() throws {
+        let inboxURL = tempDir.appendingPathComponent(".linkc/inbox.json")
+        try FileManager.default.createDirectory(at: inboxURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not valid json".utf8).write(to: inboxURL)
+
+        let srv = server(as: .claude)
+
+        let delegate = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass"])
+        XCTAssertTrue(delegate.isError, delegate.text)
+        XCTAssertTrue(delegate.text.contains("could not be decoded"), delegate.text)
+
+        let send = try call(srv, "linkc_send_message", ["to": "codex", "message": "hi"])
+        XCTAssertTrue(send.isError, send.text)
+        XCTAssertTrue(send.text.contains("could not be decoded"), send.text)
+
+        let getInbox = try call(srv, "linkc_get_inbox")
+        XCTAssertTrue(getInbox.isError, getInbox.text)
+        XCTAssertTrue(getInbox.text.contains("could not be decoded"), getInbox.text)
+
+        let myTasks = try call(srv, "linkc_my_tasks")
+        XCTAssertTrue(myTasks.isError, myTasks.text)
+        XCTAssertTrue(myTasks.text.contains("could not be decoded"), myTasks.text)
+    }
 }

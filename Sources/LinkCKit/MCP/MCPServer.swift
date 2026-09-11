@@ -398,17 +398,21 @@ public final class MCPServer: Sendable {
                 }
 
                 // Check if recipient is currently in a rate-limit cooldown
-                if let limitStatus = try inboxStore.isAgentLimited(agent: toAgent) {
-                    let peerCandidates: [AgentKind] = [.claude, .agy, .cursor, .codex].filter { $0 != toAgent }
-                    var availablePeers: [String] = []
-                    for peer in peerCandidates {
-                        if (try inboxStore.isAgentLimited(agent: peer)) == nil {
-                            availablePeers.append(peer.rawValue)
+                do {
+                    if let limitStatus = try inboxStore.isAgentLimited(agent: toAgent) {
+                        let peerCandidates: [AgentKind] = [.claude, .agy, .cursor, .codex].filter { $0 != toAgent }
+                        var availablePeers: [String] = []
+                        for peer in peerCandidates {
+                            if (try inboxStore.isAgentLimited(agent: peer)) == nil {
+                                availablePeers.append(peer.rawValue)
+                            }
                         }
+                        let peerListStr = availablePeers.isEmpty ? "none" : availablePeers.joined(separator: ", ")
+                        let errorMsg = "Cannot delegate to '\(toAgent.rawValue)': agent is currently in limit cooldown (reason: \(limitStatus.reason)). Alternative available peer agents: \(peerListStr)."
+                        return toolResultResponse(id: id, text: errorMsg, isError: true)
                     }
-                    let peerListStr = availablePeers.isEmpty ? "none" : availablePeers.joined(separator: ", ")
-                    let errorMsg = "Cannot delegate to '\(toAgent.rawValue)': agent is currently in limit cooldown (reason: \(limitStatus.reason)). Alternative available peer agents: \(peerListStr)."
-                    return toolResultResponse(id: id, text: errorMsg, isError: true)
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }
 
                 let files = args["files"] as? [String] ?? []
@@ -432,7 +436,7 @@ public final class MCPServer: Sendable {
                 do {
                     task = try inboxStore.createTask(from: caller.agent, to: toAgent, prompt: prompt, files: files,
                                                      force: force, verification: verification)
-                } catch let error as InboxError {
+                } catch {
                     return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }
 
@@ -470,12 +474,17 @@ public final class MCPServer: Sendable {
                 do {
                     let pending = try inboxStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote, body: messageText)
                     return toolResultResponse(id: id, text: "Message queued for \(toAgent.displayName) (ID: \(pending.id)). linkC will deliver it when idle.")
-                } catch let error as InboxError {
+                } catch {
                     return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }
 
             case "linkc_get_inbox":
-                let inbox = try inboxStore.load()
+                let inbox: Inbox
+                do {
+                    inbox = try inboxStore.load()
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
                 let now = Date()
                 var text = "# linkC Message Inbox\n\n"
 
@@ -724,8 +733,14 @@ public final class MCPServer: Sendable {
                 guard caller.isIdentified else {
                     return toolResultResponse(id: id, text: Self.unidentifiedCallerMessage, isError: true)
                 }
-                let assigned = try inboxStore.openTasks(for: caller.agent)
-                let delegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
+                let assigned: [TaskRecord]
+                let delegated: [TaskRecord]
+                do {
+                    assigned = try inboxStore.openTasks(for: caller.agent)
+                    delegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
                 var text = "# Open tasks for \(caller.agent.displayName)\n\n## Assigned to you (\(assigned.count))\n"
                 text += assigned.isEmpty ? "_None._\n" : assigned.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
                 text += "\n## Delegated by you (\(delegated.count))\n"
