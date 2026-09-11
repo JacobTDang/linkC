@@ -66,7 +66,9 @@ extension AppCoordinator {
                         NSLog("[linkC relay] expireTasks: task %@ stale queued — %@", task.shortId, String(describing: error))
                     }
                 }
-            case .delivered, .started, .reported:
+            case .reported:
+                break
+            case .delivered, .started:
                 let assigneeAlive = task.assigneeSessionId.flatMap { store.session(id: $0) }.map { $0.state != .ended } ?? false
                 if !assigneeAlive {
                     let summary = "assignee session ended before reporting"

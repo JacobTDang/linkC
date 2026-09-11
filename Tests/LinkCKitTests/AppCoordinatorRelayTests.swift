@@ -738,4 +738,26 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertGreaterThan(rec.pid, 0)
         XCTAssertFalse(board.activeAgents.contains { $0.agentKind == .shell })
     }
+
+    /// A worker's session may end after it reports; that must not fail the task or replace its report.
+    @MainActor
+    func testReportedTaskIsNotFailedWhenItsAssigneeSessionEnds() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Reported then exited", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "no-such-session")
+        var raw = try inbox.load()
+        let idx = try XCTUnwrap(raw.tasks.firstIndex { $0.id == task.id })
+        raw.tasks[idx].state = .reported
+        raw.tasks[idx].report = TaskReport(status: "done", summary: "the real report")
+        try inbox.saveRaw(raw)
+
+        coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
+
+        let after = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(after.state, .reported)
+        XCTAssertEqual(after.report?.summary, "the real report")
+    }
 }
