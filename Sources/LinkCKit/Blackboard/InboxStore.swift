@@ -262,8 +262,10 @@ public final class InboxStore: Sendable {
 
     // MARK: - Task lifecycle
 
-    /// Creates a queued task with an exclusive lease on `files`. Refuses when another assignee
-    /// holds an open lease on any of the files unless `force`. Idempotent for identical `to`+`prompt`.
+    /// Creates a task with an exclusive lease on `files`. A task with a verification starts in
+    /// `gating`; linkC delivers it only after confirming its tests fail at base. Refuses when
+    /// another assignee holds an open lease on any of the files unless `force`. Idempotent for
+    /// an identical assignee, prompt, and base.
     public func createTask(
         from: AgentKind,
         to: AgentKind,
@@ -271,16 +273,21 @@ public final class InboxStore: Sendable {
         files: [String],
         hop: Int = 0,
         force: Bool = false,
+        verification: Verification? = nil,
         timeout: TimeInterval = 5.0
     ) throws -> TaskRecord {
         guard hop <= 2 else { throw InboxError.hopLimit(hop) }
         guard !LinkCFrame.beginsWithMarker(prompt) else { throw InboxError.framedBody }
+        if let reason = verification?.validationError { throw InboxError.invalidVerification(reason) }
 
         return try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             let normalized = files.map { ($0 as NSString).standardizingPath }
 
-            if let existing = inbox.tasks.first(where: { $0.state.isOpen && $0.toAgent == to && $0.prompt == prompt }) {
+            if let existing = inbox.tasks.first(where: {
+                $0.state.isOpen && $0.toAgent == to && $0.prompt == prompt
+                    && $0.verification?.baseSha == verification?.baseSha
+            }) {
                 return existing
             }
 
@@ -291,7 +298,10 @@ public final class InboxStore: Sendable {
                 if !holders.isEmpty { throw InboxError.leaseConflict(holders: holders) }
             }
 
-            let task = TaskRecord(fromAgent: from, toAgent: to, prompt: prompt, files: normalized, hop: hop)
+            let task = TaskRecord(
+                fromAgent: from, toAgent: to, prompt: prompt, files: normalized,
+                state: verification == nil ? .queued : .gating, hop: hop, verification: verification
+            )
             inbox.tasks.append(task)
             inbox.updatedAt = Date()
             try saveUnlocked(inbox)
@@ -359,6 +369,76 @@ public final class InboxStore: Sendable {
         }
     }
 
+    /// The worker's report: `delivered | started → reported`. Enqueues nothing — the relay
+    /// settles the task and tells the delegator. Extends the lease so a late report cannot
+    /// expire while it waits for its verdict.
+    public func reportTask(taskId: String, report: TaskReport, timeout: TimeInterval = 5.0) throws {
+        let summary = report.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !summary.isEmpty else { throw InboxError.emptySummary }
+        guard summary.count <= TaskReport.summaryLimit else { throw InboxError.summaryTooLong(count: summary.count) }
+        guard report.status == "done" || report.status == "failed" else { throw InboxError.invalidReportStatus(report.status) }
+        try transition(taskId: taskId, timeout: timeout, target: { task in
+            if task.verification != nil && report.status == "done" && report.sha == nil { throw InboxError.shaRequired }
+            return .reported
+        }, mutate: { task in
+            task.report = report
+            task.leaseExpiresAt = Date().addingTimeInterval(TaskRecord.leaseDuration)
+        })
+    }
+
+    /// Records the gate: `gating → queued` when the tests failed at base, else `→ cancelled`.
+    public func resolveGate(taskId: String, verdict: Verdict, timeout: TimeInterval = 5.0) throws {
+        let next: TaskState = verdict.passed ? .queued : .cancelled
+        try transition(taskId: taskId, timeout: timeout, target: { task in
+            guard task.state == .gating else { throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: next) }
+            return next
+        }, mutate: { task in
+            task.gate = verdict
+            if !verdict.passed {
+                task.cancelReason = verdict.reason
+                task.finishedAt = Date()
+            }
+        })
+    }
+
+    /// linkC's verdict on a verified task: `reported → done | failed`.
+    public func adjudicate(taskId: String, verdict: Verdict, timeout: TimeInterval = 5.0) throws {
+        let next: TaskState = verdict.passed ? .done : .failed
+        try transition(taskId: taskId, timeout: timeout, target: { task in
+            guard task.state == .reported else { throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: next) }
+            guard task.verification != nil else { throw InboxError.notVerified(taskId) }
+            return next
+        }, mutate: { task in
+            task.verdict = verdict
+            task.finishedAt = Date()
+        })
+    }
+
+    /// Settles an unverified task on the worker's word: `reported → done | failed`.
+    public func acceptUnverified(taskId: String, timeout: TimeInterval = 5.0) throws {
+        try transition(taskId: taskId, timeout: timeout, target: { task in
+            let next: TaskState = task.report?.status == "done" ? .done : .failed
+            guard task.state == .reported else { throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: next) }
+            guard task.verification == nil else { throw InboxError.verificationPresent(taskId) }
+            return next
+        }, mutate: { task in
+            task.finishedAt = Date()
+        })
+    }
+
+    /// linkC failing a task whose assignee can no longer report (its session ended).
+    public func failTask(taskId: String, reason: String, timeout: TimeInterval = 5.0) throws {
+        try transition(taskId: taskId, timeout: timeout, target: { task in
+            guard task.state == .delivered || task.state == .started else {
+                throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: .failed)
+            }
+            return .failed
+        }, mutate: { task in
+            task.cancelReason = reason
+            task.finishedAt = Date()
+        })
+    }
+
     public func expireTask(taskId: String, reason: String, timeout: TimeInterval = 5.0) throws {
         try transition(taskId: taskId, to: .expired, timeout: timeout) { task in
             task.cancelReason = reason
@@ -384,12 +464,23 @@ public final class InboxStore: Sendable {
         timeout: TimeInterval,
         mutate: (inout TaskRecord) -> Void
     ) throws {
+        try transition(taskId: taskId, timeout: timeout, target: { _ in next }, mutate: mutate)
+    }
+
+    /// `target` runs under the lock with the current record; it validates and names the next state.
+    private func transition(
+        taskId: String,
+        timeout: TimeInterval,
+        target: (TaskRecord) throws -> TaskState,
+        mutate: (inout TaskRecord) -> Void
+    ) throws {
         try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             guard let idx = inbox.tasks.firstIndex(where: { $0.id == taskId }) else {
                 throw InboxError.taskNotFound(taskId)
             }
             let current = inbox.tasks[idx].state
+            let next = try target(inbox.tasks[idx])
             guard current.canTransition(to: next) else {
                 throw InboxError.illegalTransition(taskId: taskId, from: current, to: next)
             }
