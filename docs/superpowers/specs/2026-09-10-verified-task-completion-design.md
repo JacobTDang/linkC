@@ -427,3 +427,25 @@ Write each test before its implementation. The test doubles stay in the test tar
 - A task that is still open when this change ships has no verification. When its worker reports, the task goes from `reported` to `done` (unverified).
 - MCP `serverInfo.version` changes to `0.3.0`. Every change to an existing tool is a new optional parameter, except for the summary limit in §7.2. Clients must reconnect to see the new parameters.
 - Ship this change with `./build-app.sh`. Do not copy `linkc-mcp` over `~/.local/bin/linkc-mcp`. That path is a symlink into the signed bundle, and copying over it breaks the signature.
+
+## 15. Amendments from planning (2026-09-10)
+
+Two sources changed the design while the implementation plan was written: the code itself, and the real git commands run against it. Where this section and an earlier section do not agree, this section applies.
+
+1. **`GitClient` is synchronous (§8.2, §7.1, §10).** `MCPServer.handleMessage` is synchronous, and the MCP tools must run git. So `GitClient` has synchronous methods, built on a new `LiveProcessRunner.runCapturingSync`.
+   - Consumers depend on a `GitInspecting` protocol. Its methods are `headSha`, `resolveCommit`, `statusPorcelain`, `isAncestor`, `changedFiles`, and `fileExists`. `isClean` and `modifiedFiles` are derived from `statusPorcelain`.
+   - `GitClient` has no runner parameter. Its tests use a real repository.
+   - Because git is synchronous, `aggregateProject` and `aggregateGlobal` stay synchronous.
+2. **Status checks exclude `.linkc` (§8.2).** `InboxStore` writes `.linkc/inbox.json` inside the workspace, and most repositories do not ignore that directory. `git status --porcelain` always reported it, so every gate would have failed. `statusPorcelain` runs `git status --porcelain -- . ':(exclude).linkc'` instead.
+3. **`fileExists` uses `git ls-tree --name-only <rev> -- <path>` (§8.2, §7.1).** For a missing path, `git cat-file -e` exits with 128, not 1. That is the same status as a real error, so it cannot tell the two apart. `ls-tree` exits with 0 and prints nothing.
+4. **`failTask(taskId:reason:)` (§6).** When `completeTask` was removed, the expiry sweep lost its way to fail a task whose assignee's session ended. `failTask` moves a task from `delivered` or `started` to `failed`, and stores the reason in `cancelReason`.
+5. **Error names (§6).** The existing `emptySummary` stays. The new errors are `invalidVerification(String)`, `summaryTooLong(count:)`, `shaRequired`, `invalidReportStatus(String)`, `notVerified(String)`, and `verificationPresent(String)`.
+6. **`TaskVerifier` protocol (§8.3, §8.4).** The relay depends on `TaskVerifier`, which has `gate` and `verify`. `VerificationRunner` conforms to it. `AppCoordinator` takes `verifier: any TaskVerifier = VerificationRunner()`.
+7. **Gate reasons include the refusal wording (§8.3, §9).** Every gate reason starts with `gate failed: `, except "tests already pass at `<b7>`; brief refused". The relay sends `cancelled — <reason>`, and that gives both gate rows in §9 exactly.
+8. **Seven-character SHAs.** In §8–§10, `<sha8>`, `<base8>`, and `<head8>` all mean seven characters, as in the examples.
+9. **Reports without a sha (§8.4).** A verified task in `reported` whose report says `done` but has no `sha` fails without a run: `failed — report is missing its sha`. This can only happen when someone edits `inbox.json` by hand.
+10. **Expiry lines (§8.5, §9).** Expiry sends `expired — gate did not run within 60m` for a `gating` task, and `expired — lease lapsed before verification` for a `reported` task. The v2 expiry lines no longer end with `linkc_get_task(...) for details.`
+11. **A third `linkc_complete_task` response (§7.2).** When a verified task is reported `failed`, the tool returns `Reported. linkC will mark the task failed.`
+12. **The delivery frame.** The brief for a verified task gives the branch, the command, and the test paths that the worker must not change. It asks for `linkc_complete_task(id, status, summary, sha)`.
+13. **A finished run does not start a relay tick (§8.4).** The next state sweep, about one second later, delivers a task that is newly queued and starts the next run. If a run's workspace was deleted, the run discards its verdict. It does not create the directory again.
+14. **This spec removes `inspectGitStatus` (§13).** Its callers are `spawnTeammate` and the handoff memo for reroutes, so reroute code is not its only caller. The reason for moving it to spec two was wrong. Both callers move to `AppCoordinator.gitStatusSummary(in:)`, which is built on `GitClient`. The "Moved to spec two" paragraph in §13 no longer applies.
