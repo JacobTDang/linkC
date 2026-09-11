@@ -328,4 +328,38 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         XCTAssertNotNil(liveItem)
         XCTAssertTrue(liveItem?.body.contains("Generated 12 symbols") ?? false)
     }
+
+    func testTaskItemBodyShowsTheVerdict() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let base = String(repeating: "b", count: 40)
+        let sha = String(repeating: "d", count: 40)
+        let verification = Verification(branch: "task/x", baseSha: base, command: "./check.sh", testPaths: ["check.sh"])
+        func verdict(_ passed: Bool, _ sha: String, _ exit: Int32, _ reason: String? = nil) -> Verdict {
+            Verdict(passed: passed, sha: sha, exitStatus: exit, reason: reason, stdoutTail: "", stderrTail: "")
+        }
+
+        let passed = try inbox.createTask(from: .claude, to: .codex, prompt: "Pass", files: [], verification: verification)
+        try inbox.resolveGate(taskId: passed.id, verdict: verdict(true, base, 1))
+        try inbox.markTaskDelivered(taskId: passed.id, sessionId: "s")
+        try inbox.reportTask(taskId: passed.id, report: TaskReport(status: "done", summary: "ok", sha: sha))
+        try inbox.adjudicate(taskId: passed.id, verdict: verdict(true, sha, 0))
+
+        let refused = try inbox.createTask(from: .claude, to: .cursor, prompt: "Refused", files: [], verification: verification)
+        try inbox.resolveGate(taskId: refused.id, verdict: verdict(false, base, 0, "tests already pass at bbbbbbb; brief refused"))
+
+        let plain = try inbox.createTask(from: .claude, to: .agy, prompt: "Plain", files: [])
+        try inbox.markTaskDelivered(taskId: plain.id, sessionId: "s2")
+        try inbox.reportTask(taskId: plain.id, report: TaskReport(status: "done", summary: "ok"))
+        try inbox.acceptUnverified(taskId: plain.id)
+
+        let open = try inbox.createTask(from: .claude, to: .codex, prompt: "Still open", files: [])
+
+        let data = AgentDashboardAggregator().aggregateProject(workspacePath: ws, liveSessions: [])
+        func body(_ t: TaskRecord) -> String? { data.activityItems.first { $0.id == "task-\(t.id)" }?.body }
+        XCTAssertEqual(body(passed), "verified at ddddddd")
+        XCTAssertEqual(body(refused), "tests already pass at bbbbbbb; brief refused")
+        XCTAssertEqual(body(plain), "unverified")
+        XCTAssertEqual(body(open), "Still open")
+    }
 }

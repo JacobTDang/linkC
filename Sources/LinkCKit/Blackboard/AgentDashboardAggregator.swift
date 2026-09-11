@@ -90,7 +90,7 @@ public struct AgentDashboardAggregator: Sendable {
                     toAgent: task.toAgent,
                     kind: done ? .completedTask : .delegatedTask,
                     title: "\(task.fromAgent.displayName) delegated task to \(task.toAgent.displayName) [\(task.state.rawValue)]",
-                    body: task.report?.summary ?? task.prompt,
+                    body: Self.taskBody(task),
                     claimedFiles: task.files
                 )
             )
@@ -254,6 +254,20 @@ public struct AgentDashboardAggregator: Sendable {
             sharedNotes: blackboard.sharedNotes,
             collisions: collisions
         )
+    }
+
+    /// What the dashboard shows for a task: the prompt while open, the outcome once settled.
+    /// Every failure reason reaches the UI through this body.
+    static func taskBody(_ task: TaskRecord) -> String {
+        switch task.state {
+        case .done:
+            guard task.verification != nil else { return "unverified" }
+            return "verified at \(VerificationRunner.short(task.verdict?.sha ?? ""))"
+        case .failed, .cancelled, .expired:
+            return task.verdict?.reason ?? task.cancelReason ?? task.report?.summary ?? task.prompt
+        case .gating, .queued, .delivered, .started, .reported:
+            return task.prompt
+        }
     }
 
     public func aggregateGlobal(
