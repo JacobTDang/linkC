@@ -29,7 +29,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
     @MainActor
     private func makeCoordinator(
-        sink: NotificationSink = RecordingSink()
+        sink: NotificationSink = RecordingSink(),
+        verifier: any TaskVerifier = VerificationRunner()
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -51,6 +52,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
             agentPathResolver: { _ in scriptURL.path },
+            verifier: verifier,
             isWatching: { _ in false }
         )
     }
@@ -187,7 +189,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         coordinator.processPendingMessages(workspacePath: ws3)
         let dead = try XCTUnwrap(inbox3.task(id: t3.id))
         XCTAssertEqual(dead.state, .failed)
-        XCTAssertEqual(dead.report?.summary, "assignee session ended before reporting")
+        XCTAssertEqual(dead.cancelReason, "assignee session ended before reporting")
         let echo = try XCTUnwrap(inbox3.load().messages.first { $0.taskId == t3.id })
         XCTAssertEqual(echo.kind, .completion)
         XCTAssertEqual(echo.toAgent, .claude)
@@ -739,25 +741,343 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertFalse(board.activeAgents.contains { $0.agentKind == .shell })
     }
 
-    /// A worker's session may end after it reports; that must not fail the task or replace its report.
+    // MARK: - Verification
+
+    private let base40 = String(repeating: "b", count: 40)
+    private let sha40 = String(repeating: "d", count: 40)
+
+    private func verification() -> Verification {
+        Verification(branch: "task/x", baseSha: base40, command: "./check.sh", testPaths: ["check.sh"])
+    }
+
+    /// A verified task moved through its gate and delivery to `reported`.
+    private func reportedVerifiedTask(_ inbox: InboxStore, status: String = "done") throws -> TaskRecord {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Make check pass", files: [], verification: verification())
+        try inbox.resolveGate(taskId: task.id, verdict: .fixture(passed: true, sha: base40, exit: 1))
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "worker")
+        try inbox.reportTask(taskId: task.id, report: TaskReport(status: status, summary: "did it", sha: status == "done" ? sha40 : nil))
+        return try XCTUnwrap(inbox.task(id: task.id))
+    }
+
+    /// The outcome lines the delegator received for `task`.
+    private func lines(_ inbox: InboxStore, _ task: TaskRecord) throws -> [String] {
+        try inbox.load().messages.filter { $0.taskId == task.id && $0.kind == .completion }.map(\.prompt)
+    }
+
     @MainActor
-    func testReportedTaskIsNotFailedWhenItsAssigneeSessionEnds() throws {
+    func testGateRedQueuesTheTaskSilently() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
-        let coordinator = makeCoordinator()
+        let verifier = ScriptedVerifier(gate: .fixture(passed: true, sha: base40, exit: 1))
+        let coordinator = makeCoordinator(verifier: verifier)
         defer { coordinator.shutdown() }
-        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Reported then exited", files: [])
-        try inbox.markTaskDelivered(taskId: task.id, sessionId: "no-such-session")
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Make check pass", files: [], verification: verification())
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+
+        let queued = try await waitUntil { (try? inbox.task(id: task.id))?.state == .queued }
+        XCTAssertTrue(queued)
+        XCTAssertEqual(verifier.calls.count, 1)
+        XCTAssertEqual(try inbox.task(id: task.id)?.gate?.exitStatus, 1)
+        XCTAssertTrue(try lines(inbox, task).isEmpty, "a red gate sends nothing")
+    }
+
+    @MainActor
+    func testGateRefusalCancelsWithOneLine() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let reason = "tests already pass at bbbbbbb; brief refused"
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier(gate: .fixture(passed: false, sha: base40, exit: 0, reason: reason)))
+        defer { coordinator.shutdown() }
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Make check pass", files: [], verification: verification())
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+
+        let cancelled = try await waitUntil { (try? inbox.task(id: task.id))?.state == .cancelled }
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(try inbox.task(id: task.id)?.cancelReason, reason)
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] cancelled — \(reason)"])
+    }
+
+    @MainActor
+    func testVerifiedPassMovesToDoneWithOneLine() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let verifier = ScriptedVerifier(verify: .fixture(passed: true, sha: sha40, exit: 0))
+        let coordinator = makeCoordinator(verifier: verifier)
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox)
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+
+        let done = try await waitUntil { (try? inbox.task(id: task.id))?.state == .done }
+        XCTAssertTrue(done)
+        XCTAssertEqual(verifier.calls, ["verify ddddddd"])
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] done — verified at ddddddd"])
+    }
+
+    @MainActor
+    func testVerifiedFailureCarriesTheReason() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let reason = "tests failed at ddddddd (exit 1)"
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier(verify: .fixture(passed: false, sha: sha40, exit: 1, reason: reason)))
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox)
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+
+        let failed = try await waitUntil { (try? inbox.task(id: task.id))?.state == .failed }
+        XCTAssertTrue(failed)
+        XCTAssertEqual(try inbox.task(id: task.id)?.verdict?.reason, reason)
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] failed — \(reason)"])
+    }
+
+    @MainActor
+    func testUnverifiedReportSettlesWithoutARun() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let verifier = ScriptedVerifier()
+        let coordinator = makeCoordinator(verifier: verifier)
+        defer { coordinator.shutdown() }
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Plain", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "worker")
+        try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "did it"))
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .done)
+        XCTAssertTrue(verifier.calls.isEmpty)
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] done (unverified)"])
+    }
+
+    @MainActor
+    func testWorkerFailureSettlesWithoutARun() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let verifier = ScriptedVerifier()
+        let coordinator = makeCoordinator(verifier: verifier)
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox, status: "failed")
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+
+        let settled = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(settled.state, .failed)
+        XCTAssertEqual(settled.verdict?.reason, "worker reported failure")
+        XCTAssertTrue(verifier.calls.isEmpty)
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] failed — worker reported failure"])
+    }
+
+    @MainActor
+    func testReportWithoutShaFailsWithoutARun() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let verifier = ScriptedVerifier()
+        let coordinator = makeCoordinator(verifier: verifier)
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox)
+        // reportTask refuses this shape; a hand-edited inbox.json can still contain it.
         var raw = try inbox.load()
         let idx = try XCTUnwrap(raw.tasks.firstIndex { $0.id == task.id })
-        raw.tasks[idx].state = .reported
-        raw.tasks[idx].report = TaskReport(status: "done", summary: "the real report")
+        raw.tasks[idx].report = TaskReport(status: "done", summary: "did it")
+        try inbox.saveRaw(raw)
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .failed)
+        XCTAssertTrue(verifier.calls.isEmpty)
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] failed — report is missing its sha"])
+    }
+
+    @MainActor
+    func testRunsAreSerializedPerWorkspace() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let verifier = ScriptedVerifier(hold: true)
+        let coordinator = makeCoordinator(verifier: verifier)
+        defer { coordinator.shutdown() }
+        let first = try inbox.createTask(from: .claude, to: .codex, prompt: "First", files: [], verification: verification())
+        let second = try inbox.createTask(from: .claude, to: .codex, prompt: "Second", files: [], verification: verification())
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+        let one = try await waitUntil { verifier.calls.count == 1 }
+        XCTAssertTrue(one)
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(verifier.calls.count, 1, "a second run in the same workspace must wait")
+
+        verifier.release()
+        let firstQueued = try await waitUntil { (try? inbox.task(id: first.id))?.state == .queued }
+        XCTAssertTrue(firstQueued)
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+        let two = try await waitUntil { verifier.calls.count == 2 }
+        XCTAssertTrue(two)
+        verifier.release()
+        let secondQueued = try await waitUntil { (try? inbox.task(id: second.id))?.state == .queued }
+        XCTAssertTrue(secondQueued)
+    }
+
+    @MainActor
+    func testAtMostTwoRunsAtOnce() async throws {
+        let verifier = ScriptedVerifier(hold: true)
+        let coordinator = makeCoordinator(verifier: verifier)
+        defer { coordinator.shutdown() }
+        var workspaces: [(path: String, inbox: InboxStore)] = []
+        for name in ["w1", "w2", "w3"] {
+            let path = tempDir.appendingPathComponent(name).path
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+            let inbox = InboxStore(workspaceRoot: path)
+            _ = try inbox.createTask(from: .claude, to: .codex, prompt: "Task in \(name)", files: [], verification: verification())
+            workspaces.append((path, inbox))
+        }
+
+        for w in workspaces { coordinator.launchVerifications(workspacePath: w.path, inboxStore: w.inbox) }
+        let two = try await waitUntil { verifier.calls.count == 2 }
+        XCTAssertTrue(two)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(verifier.calls.count, AppCoordinator.maxConcurrentVerifications)
+
+        verifier.release()
+        let drained = try await waitUntil { coordinator.verificationsInFlight.isEmpty }
+        XCTAssertTrue(drained)
+        coordinator.launchVerifications(workspacePath: workspaces[2].path, inboxStore: workspaces[2].inbox)
+        let three = try await waitUntil { verifier.calls.count == 3 }
+        XCTAssertTrue(three)
+        verifier.release()
+        let finished = try await waitUntil { coordinator.verificationsInFlight.isEmpty }
+        XCTAssertTrue(finished)
+    }
+
+    @MainActor
+    func testGatingTaskExpiresAfterSixtyMinutes() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier())
+        defer { coordinator.shutdown() }
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Old gate", files: [], verification: verification())
+        var raw = try inbox.load()
+        raw.tasks[0] = TaskRecord(id: task.id, fromAgent: .claude, toAgent: .codex, prompt: "Old gate", state: .gating,
+                                  createdAt: Date().addingTimeInterval(-61 * 60), verification: verification())
         try inbox.saveRaw(raw)
 
         coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
 
-        let after = try XCTUnwrap(inbox.task(id: task.id))
-        XCTAssertEqual(after.state, .reported)
-        XCTAssertEqual(after.report?.summary, "the real report")
+        let expired = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(expired.state, .expired)
+        XCTAssertEqual(expired.cancelReason, "gate did not run within 60m")
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] expired — gate did not run within 60m"])
+    }
+
+    @MainActor
+    func testReportedTaskSurvivesAssigneeExitButNotItsLease() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier())
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox) // its session "worker" does not exist
+
+        coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .reported, "a worker may exit after reporting")
+
+        var raw = try inbox.load()
+        let idx = try XCTUnwrap(raw.tasks.firstIndex { $0.id == task.id })
+        raw.tasks[idx].leaseExpiresAt = Date().addingTimeInterval(-1)
+        try inbox.saveRaw(raw)
+        coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .expired)
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] expired — lease lapsed before verification"])
+    }
+
+    @MainActor
+    func testVerdictForAnEndedTaskIsDropped() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let verifier = ScriptedVerifier(verify: .fixture(passed: true, sha: sha40, exit: 0), hold: true)
+        let coordinator = makeCoordinator(verifier: verifier)
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox)
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+        let running = try await waitUntil { verifier.calls.count == 1 }
+        XCTAssertTrue(running)
+        try inbox.cancelTask(taskId: task.id, reason: "scope changed")
+        verifier.release()
+        let finished = try await waitUntil { coordinator.verificationsInFlight.isEmpty }
+        XCTAssertTrue(finished)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled)
+        XCTAssertNil(try inbox.task(id: task.id)?.verdict)
+        XCTAssertTrue(try lines(inbox, task).isEmpty, "a dropped verdict sends nothing")
+    }
+
+    @MainActor
+    func testDeliveryFrameNamesBranchCommandAndProtectedTests() {
+        let verified = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "Make check pass", verification: verification())
+        let frame = AppCoordinator.deliveryFrame(for: verified)
+        XCTAssertTrue(frame.hasPrefix("[linkC task \(verified.shortId) from Claude Code]\nMake check pass\n"))
+        XCTAssertTrue(frame.contains("Work on branch task/x. linkC verifies by running `./check.sh` at the sha you report. Do not modify: check.sh."))
+        XCTAssertTrue(frame.contains("linkc_complete_task(\"\(verified.id)\", status, summary, sha)"))
+
+        let plain = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "Plain")
+        XCTAssertFalse(AppCoordinator.deliveryFrame(for: plain).contains("Work on branch"))
+    }
+}
+
+/// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.
+private final class ScriptedVerifier: TaskVerifier, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    private var held: [CheckedContinuation<Void, Never>] = []
+    private let hold: Bool
+    private let gateVerdict: Verdict
+    private let verifyVerdict: Verdict
+
+    init(gate: Verdict = .fixture(passed: true, exit: 1), verify: Verdict = .fixture(passed: true, exit: 0), hold: Bool = false) {
+        self.gateVerdict = gate
+        self.verifyVerdict = verify
+        self.hold = hold
+    }
+
+    var calls: [String] { lock.withLock { recorded } }
+
+    func gate(_ verification: Verification, in workspace: URL) async -> Verdict {
+        await record("gate \(workspace.lastPathComponent)")
+        return gateVerdict
+    }
+
+    func verify(_ verification: Verification, sha: String, in workspace: URL) async -> Verdict {
+        await record("verify \(sha.prefix(7))")
+        return verifyVerdict
+    }
+
+    /// Lets every waiting run finish.
+    func release() {
+        let waiting = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            defer { held.removeAll() }
+            return held
+        }
+        waiting.forEach { $0.resume() }
+    }
+
+    private func record(_ call: String) async {
+        guard hold else {
+            lock.withLock { recorded.append(call) }
+            return
+        }
+        // Record and park under one lock, so a run counted in `calls` can always be released.
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                recorded.append(call)
+                held.append(continuation)
+            }
+        }
+    }
+}
+
+private extension Verdict {
+    static func fixture(passed: Bool, sha: String? = nil, exit: Int32? = nil, reason: String? = nil) -> Verdict {
+        Verdict(passed: passed, sha: sha, exitStatus: exit, reason: reason, stdoutTail: "", stderrTail: "")
     }
 }

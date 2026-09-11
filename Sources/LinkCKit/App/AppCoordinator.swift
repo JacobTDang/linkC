@@ -55,6 +55,10 @@ public final class AppCoordinator {
     /// coordinator can't see. Invoked on the main actor.
     private let isWatching: @MainActor @Sendable (String) -> Bool
     let agentPathResolver: (@Sendable (AgentKind) -> String?)?
+    /// Runs task gates and verifications off the main actor; injected so tests can script verdicts.
+    let verifier: any TaskVerifier
+    /// Workspaces with a verification run in flight — at most one run per workspace.
+    var verificationsInFlight: Set<String> = []
 
     /// Hook events are funneled through this single stream and drained by one consumer task
     /// so `store.apply` runs strictly in arrival order — unstructured per-event tasks would
@@ -75,6 +79,7 @@ public final class AppCoordinator {
         manifestDir: URL,
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         claudeJsonURL: URL? = nil,
+        verifier: any TaskVerifier = VerificationRunner(),
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -86,6 +91,7 @@ public final class AppCoordinator {
         self.manifest = WorkspaceManifest(directory: manifestDir)
         self.agentPathResolver = agentPathResolver
         self.claudeJsonURL = claudeJsonURL
+        self.verifier = verifier
         self.isWatching = isWatching
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.

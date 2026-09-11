@@ -5,14 +5,17 @@ import Foundation
 extension AppCoordinator {
     /// Queued tasks older than this are expired rather than delivered.
     static let queuedTaskExpiry: TimeInterval = 60 * 60
+    /// Verification runs in flight across all workspaces; each is a full build and test run.
+    static let maxConcurrentVerifications = 2
 
-    /// One relay tick for `workspacePath`: expire, deliver tasks, deliver messages.
+    /// One relay tick for `workspacePath`: expire, deliver tasks, deliver messages, verify.
     public func processPendingMessages(workspacePath: String) {
         let norm = (workspacePath as NSString).standardizingPath
         let inboxStore = InboxStore(workspaceRoot: norm)
         expireTasks(workspacePath: norm, inboxStore: inboxStore)
         dispatchTasks(workspacePath: norm, inboxStore: inboxStore)
         dispatchMessages(workspacePath: norm, inboxStore: inboxStore)
+        launchVerifications(workspacePath: norm, inboxStore: inboxStore)
     }
 
     func isIdle(_ state: SessionState) -> Bool {
@@ -24,12 +27,13 @@ extension AppCoordinator {
 
     /// The text injected into the assignee's terminal. Composed at injection time; never stored as a message.
     static func deliveryFrame(for task: TaskRecord) -> String {
-        """
-        [linkC task \(task.shortId) from \(task.fromAgent.displayName)]
-        \(task.prompt)
-
-        When you begin, call linkc_start_task("\(task.id)"). When finished, call linkc_complete_task("\(task.id)", status, summary, commits, tests). Do not paste this brief into any reply.
-        """
+        var lines = ["[linkC task \(task.shortId) from \(task.fromAgent.displayName)]", task.prompt, ""]
+        if let v = task.verification {
+            lines.append("Work on branch \(v.branch). linkC verifies by running `\(v.command)` at the sha you report. Do not modify: \(v.testPaths.joined(separator: ", ")).")
+            lines.append("")
+        }
+        lines.append("When you begin, call linkc_start_task(\"\(task.id)\"). When finished, commit your work and call linkc_complete_task(\"\(task.id)\", status, summary, sha). Do not paste this brief into any reply.")
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Expiry
@@ -57,7 +61,14 @@ extension AppCoordinator {
         for task in open {
             switch task.state {
             case .gating:
-                break
+                if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
+                    do {
+                        try inboxStore.expireTask(taskId: task.id, reason: "gate did not run within 60m")
+                        try echo("expired — gate did not run within 60m", for: task, inboxStore: inboxStore)
+                    } catch {
+                        NSLog("[linkC relay] expireTasks: task %@ stale gate — %@", task.shortId, String(describing: error))
+                    }
+                }
             case .queued:
                 if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
                     do {
@@ -66,32 +77,32 @@ extension AppCoordinator {
                         NSLog("[linkC relay] expireTasks: task %@ stale queued — %@", task.shortId, String(describing: error))
                     }
                 }
-            case .reported:
-                break
             case .delivered, .started:
                 let assigneeAlive = task.assigneeSessionId.flatMap { store.session(id: $0) }.map { $0.state != .ended } ?? false
                 if !assigneeAlive {
-                    let summary = "assignee session ended before reporting"
+                    let reason = "assignee session ended before reporting"
                     do {
-                        try inboxStore.completeTask(taskId: task.id, report: TaskReport(status: "failed", summary: summary))
-                        try echo(
-                            "failed — \(summary). linkc_get_task(\"\(task.id)\") for details.",
-                            for: task,
-                            inboxStore: inboxStore
-                        )
+                        try inboxStore.failTask(taskId: task.id, reason: reason)
+                        try echo("failed — \(reason)", for: task, inboxStore: inboxStore)
                     } catch {
                         NSLog("[linkC relay] expireTasks: task %@ dead assignee — %@", task.shortId, String(describing: error))
                     }
                 } else if task.leaseExpiresAt < now {
                     do {
                         try inboxStore.expireTask(taskId: task.id, reason: "lease expired")
-                        try echo(
-                            "expired — lease lapsed without a report. linkc_get_task(\"\(task.id)\") for details.",
-                            for: task,
-                            inboxStore: inboxStore
-                        )
+                        try echo("expired — lease lapsed without a report", for: task, inboxStore: inboxStore)
                     } catch {
                         NSLog("[linkC relay] expireTasks: task %@ expired lease — %@", task.shortId, String(describing: error))
+                    }
+                }
+            case .reported:
+                // A worker may exit after reporting, so only the lease applies here.
+                if task.leaseExpiresAt < now {
+                    do {
+                        try inboxStore.expireTask(taskId: task.id, reason: "lease expired before verification")
+                        try echo("expired — lease lapsed before verification", for: task, inboxStore: inboxStore)
+                    } catch {
+                        NSLog("[linkC relay] expireTasks: task %@ reported lease — %@", task.shortId, String(describing: error))
                     }
                 }
             case .done, .failed, .cancelled, .expired:
@@ -187,6 +198,96 @@ extension AppCoordinator {
             } catch {
                 NSLog("[linkC relay] dispatchMessages: message %@ mark delivered — %@", message.id, String(describing: error))
             }
+        }
+    }
+
+    // MARK: - Verification
+
+    /// Settles reports that need no run, then starts at most one verification run for this
+    /// workspace, and at most `maxConcurrentVerifications` overall. Never blocks the main actor:
+    /// the run awaits the verifier off the main actor and hops back to record the verdict.
+    func launchVerifications(workspacePath: String, inboxStore: InboxStore) {
+        guard workspaceExists(workspacePath) else { return }
+        let open: [TaskRecord]
+        do {
+            open = try inboxStore.openTasks()
+        } catch {
+            NSLog("[linkC relay] launchVerifications: open tasks — %@", String(describing: error))
+            return
+        }
+
+        var runnable: [TaskRecord] = []
+        for task in open where task.state == .gating || task.state == .reported {
+            guard task.state == .reported else {
+                runnable.append(task)
+                continue
+            }
+            do {
+                if task.verification == nil {
+                    try inboxStore.acceptUnverified(taskId: task.id)
+                    let line = task.report?.status == "done" ? "done (unverified)" : "failed — worker reported failure"
+                    try echo(line, for: task, inboxStore: inboxStore)
+                } else if task.report?.status != "done" {
+                    try settle(task, reason: "worker reported failure", inboxStore: inboxStore)
+                } else if task.report?.sha == nil {
+                    try settle(task, reason: "report is missing its sha", inboxStore: inboxStore)
+                } else {
+                    runnable.append(task)
+                }
+            } catch {
+                NSLog("[linkC relay] launchVerifications: task %@ settle — %@", task.shortId, String(describing: error))
+            }
+        }
+
+        guard !verificationsInFlight.contains(workspacePath),
+              verificationsInFlight.count < Self.maxConcurrentVerifications,
+              let next = runnable.min(by: { $0.createdAt < $1.createdAt }),
+              let verification = next.verification else { return }
+
+        verificationsInFlight.insert(workspacePath)
+        let verifier = self.verifier
+        let workspace = URL(fileURLWithPath: workspacePath)
+        let sha = next.report?.sha
+        Task { [weak self] in
+            let verdict: Verdict
+            if next.state == .reported, let sha {
+                verdict = await verifier.verify(verification, sha: sha, in: workspace)
+            } else {
+                verdict = await verifier.gate(verification, in: workspace)
+            }
+            self?.finishVerification(of: next, verdict: verdict, workspacePath: workspacePath)
+        }
+    }
+
+    private func settle(_ task: TaskRecord, reason: String, inboxStore: InboxStore) throws {
+        try inboxStore.adjudicate(taskId: task.id, verdict: .notRun(reason: reason))
+        try echo("failed — \(reason)", for: task, inboxStore: inboxStore)
+    }
+
+    /// Records the verdict and sends the delegator its one line. A task that ended while its run
+    /// was in flight rejects the transition; the verdict is logged and dropped.
+    func finishVerification(of task: TaskRecord, verdict: Verdict, workspacePath: String) {
+        defer { verificationsInFlight.remove(workspacePath) }
+        guard workspaceExists(workspacePath) else {
+            NSLog("[linkC relay] finishVerification: task %@ workspace is gone; verdict dropped", task.shortId)
+            return
+        }
+        let inboxStore = InboxStore(workspaceRoot: workspacePath)
+        do {
+            if task.state == .gating {
+                try inboxStore.resolveGate(taskId: task.id, verdict: verdict)
+                if !verdict.passed {
+                    try echo("cancelled — \(verdict.reason ?? "gate failed")", for: task, inboxStore: inboxStore)
+                }
+            } else {
+                try inboxStore.adjudicate(taskId: task.id, verdict: verdict)
+                let line = verdict.passed
+                    ? "done — verified at \(VerificationRunner.short(verdict.sha ?? ""))"
+                    : "failed — \(verdict.reason ?? "verification failed")"
+                try echo(line, for: task, inboxStore: inboxStore)
+            }
+        } catch {
+            NSLog("[linkC relay] finishVerification: task %@ verdict dropped — %@", task.shortId, String(describing: error))
         }
     }
 
