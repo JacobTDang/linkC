@@ -236,6 +236,7 @@ public enum InboxError: Error, LocalizedError, Equatable {
     case leaseConflict(holders: [TaskRecord])
     case illegalTransition(taskId: String, from: TaskState, to: TaskState)
     case taskNotFound(String)
+    case ambiguousTaskId(prefix: String, matches: [String])
     case framedBody
     case hopLimit(Int)
     case kindNotAllowed(MessageKind)
@@ -259,6 +260,9 @@ public enum InboxError: Error, LocalizedError, Equatable {
             return "Task \(taskId.prefix(8)) is \(from.rawValue); cannot move to \(to.rawValue)."
         case .taskNotFound(let id):
             return "Task \(id) not found."
+        case .ambiguousTaskId(let prefix, let matches):
+            let list = matches.map { "\($0.prefix(8)) (\($0))" }.joined(separator: ", ")
+            return "Task id '\(prefix)' is ambiguous; it matches \(list). Pass the full id."
         case .framedBody:
             return "Rejected: body begins with a linkC frame marker; forwarded messages cannot be re-sent."
         case .hopLimit(let hop):

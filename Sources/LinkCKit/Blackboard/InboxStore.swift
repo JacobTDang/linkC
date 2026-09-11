@@ -318,6 +318,25 @@ public final class InboxStore: Sendable {
         }
     }
 
+    /// The shortest id prefix `task(matching:)` accepts — the length of `TaskRecord.shortId`.
+    static let minimumTaskIdPrefix = 8
+
+    /// The task whose id is `idOrPrefix`, or the one task whose id begins with it, ignoring case.
+    /// A prefix shorter than `minimumTaskIdPrefix` matches nothing. Throws when several tasks match.
+    public func task(matching idOrPrefix: String, timeout: TimeInterval = 5.0) throws -> TaskRecord? {
+        try withFileLock(timeout: timeout) {
+            let tasks = try loadUnlocked().tasks
+            if let exact = tasks.first(where: { $0.id == idOrPrefix }) { return exact }
+            guard idOrPrefix.count >= Self.minimumTaskIdPrefix else { return nil }
+            let prefix = idOrPrefix.lowercased()
+            let matches = tasks.filter { $0.id.lowercased().hasPrefix(prefix) }
+            guard matches.count <= 1 else {
+                throw InboxError.ambiguousTaskId(prefix: idOrPrefix, matches: matches.map(\.id))
+            }
+            return matches.first
+        }
+    }
+
     /// Open tasks, oldest first. `agent == nil` returns all; otherwise tasks assigned to `agent`.
     public func openTasks(for agent: AgentKind? = nil, timeout: TimeInterval = 5.0) throws -> [TaskRecord] {
         try withFileLock(timeout: timeout) {

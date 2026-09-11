@@ -244,4 +244,37 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.text.contains("tests already pass at bbbbbbb; brief refused"))
         XCTAssertTrue(res.text.contains("GATE_STDOUT_MARKER"))
     }
+
+    // MARK: - Task ids by prefix
+
+    func testGetAndCancelTaskAcceptTheEightCharacterIdShownToTheDelegator() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build by short id", files: [])
+        let delegator = server(as: .claude)
+
+        let get = try call(delegator, "linkc_get_task", ["task_id": task.shortId.lowercased()])
+        XCTAssertFalse(get.isError, get.text)
+        XCTAssertTrue(get.text.contains("Build by short id"), get.text)
+
+        let cancel = try call(delegator, "linkc_cancel_task", ["task_id": task.shortId])
+        XCTAssertFalse(cancel.isError, cancel.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled)
+    }
+
+    func testTaskToolsRejectAShortOrAmbiguousPrefix() throws {
+        let one = "ABCDEF12-0000-4000-8000-000000000001", two = "ABCDEF12-0000-4000-8000-000000000002"
+        try inbox.saveRaw(Inbox(workspacePath: tempDir.path, tasks: [
+            TaskRecord(id: one, fromAgent: .claude, toAgent: .codex, prompt: "One"),
+            TaskRecord(id: two, fromAgent: .claude, toAgent: .cursor, prompt: "Two"),
+        ]))
+        let delegator = server(as: .claude)
+
+        let short = try call(delegator, "linkc_get_task", ["task_id": "ABCDEF1"])
+        XCTAssertTrue(short.isError)
+        XCTAssertEqual(short.text, InboxError.taskNotFound("ABCDEF1").localizedDescription)
+
+        let ambiguous = try call(delegator, "linkc_cancel_task", ["task_id": "abcdef12"])
+        XCTAssertTrue(ambiguous.isError)
+        XCTAssertTrue(ambiguous.text.contains(one) && ambiguous.text.contains(two), ambiguous.text)
+        XCTAssertEqual(try inbox.load().tasks.map(\.state), [.queued, .queued], "an ambiguous id cancels nothing")
+    }
 }

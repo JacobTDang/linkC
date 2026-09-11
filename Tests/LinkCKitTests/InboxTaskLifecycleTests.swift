@@ -153,4 +153,32 @@ final class InboxTaskLifecycleTests: XCTestCase {
         let ids = Set(try store.load().tasks.map(\.id))
         XCTAssertEqual(ids, ["old-open", "new-done"])
     }
+
+    // MARK: - Lookup by id or prefix
+
+    func testTaskMatchingAcceptsTheFullIdOrAUniquePrefixOfAtLeastEightCharacters() throws {
+        let task = try store.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        _ = try store.createTask(from: .claude, to: .cursor, prompt: "Other", files: [])
+
+        XCTAssertEqual(try store.task(matching: task.id)?.id, task.id, "exact id")
+        XCTAssertEqual(try store.task(matching: task.shortId)?.id, task.id, "8-character prefix")
+        XCTAssertEqual(try store.task(matching: task.shortId.lowercased())?.id, task.id, "lowercase prefix")
+        XCTAssertNil(try store.task(matching: String(task.id.prefix(7))), "a prefix shorter than 8 characters matches nothing")
+        XCTAssertNil(try store.task(matching: "ZZZZZZZZ"), "no task has this prefix")
+    }
+
+    func testTaskMatchingRejectsAnAmbiguousPrefix() throws {
+        let one = "ABCDEF12-0000-4000-8000-000000000001", two = "ABCDEF12-0000-4000-8000-000000000002"
+        var inbox = Inbox(workspacePath: tempDir.path)
+        inbox.tasks = [
+            TaskRecord(id: one, fromAgent: .claude, toAgent: .codex, prompt: "One"),
+            TaskRecord(id: two, fromAgent: .claude, toAgent: .cursor, prompt: "Two"),
+        ]
+        try store.saveRaw(inbox)
+
+        XCTAssertThrowsError(try store.task(matching: "abcdef12")) { error in
+            XCTAssertEqual(error as? InboxError, .ambiguousTaskId(prefix: "abcdef12", matches: [one, two]))
+        }
+        XCTAssertEqual(try store.task(matching: two)?.prompt, "Two", "the full id is never ambiguous")
+    }
 }

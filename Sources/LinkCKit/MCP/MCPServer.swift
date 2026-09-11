@@ -819,7 +819,7 @@ public final class MCPServer: Sendable {
         guard let taskId = (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !taskId.isEmpty else {
             throw LinkCError.server("Missing required argument 'task_id'.")
         }
-        guard let task = try inboxStore.task(id: taskId) else { throw InboxError.taskNotFound(taskId) }
+        guard let task = try inboxStore.task(matching: taskId) else { throw InboxError.taskNotFound(taskId) }
         return task
     }
 
