@@ -183,6 +183,14 @@ final class InboxVerificationTests: XCTestCase {
         XCTAssertEqual(stored.gate?.passed, true)
     }
 
+    func testCreateTaskRejectsAGateThatWasNotRunAtBase() throws {
+        let wrongBase = verdict(passed: true, sha: sha, exit: 1)
+        XCTAssertThrowsError(try store.createTask(from: .claude, to: .codex, prompt: "Rerouted", files: [], verification: verification(), gate: wrongBase)) {
+            XCTAssertEqual($0 as? InboxError, .invalidVerification("gate was not run at base_sha"))
+        }
+        XCTAssertTrue(try store.load().tasks.isEmpty, "a rejected gate creates no task")
+    }
+
     func testCreateTaskRejectsAGateThatDidNotPass() throws {
         let refused = verdict(passed: false, sha: base, exit: 0, reason: "tests already pass at bbbbbbb; brief refused")
         XCTAssertThrowsError(try store.createTask(from: .claude, to: .codex, prompt: "Rerouted", files: [], verification: verification(), gate: refused)) {

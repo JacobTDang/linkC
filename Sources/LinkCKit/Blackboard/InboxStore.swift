@@ -285,8 +285,9 @@ public final class InboxStore: Sendable {
         guard !LinkCFrame.beginsWithMarker(prompt) else { throw InboxError.framedBody }
         if let reason = verification?.validationError { throw InboxError.invalidVerification(reason) }
         if let gate {
-            guard verification != nil else { throw InboxError.invalidVerification("a gate needs a verification") }
+            guard let verification else { throw InboxError.invalidVerification("a gate needs a verification") }
             guard gate.passed else { throw InboxError.invalidVerification("the gate did not pass") }
+            guard gate.sha == verification.baseSha else { throw InboxError.invalidVerification("gate was not run at base_sha") }
         }
 
         return try withFileLock(timeout: timeout) {
