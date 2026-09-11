@@ -4,6 +4,7 @@ import XCTest
 @MainActor
 final class CursorPtyTests: XCTestCase {
     func testCursorSendInputAutoSubmitsAndDetectsWorkingActivity() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["LINKC_LIVE_CURSOR_TESTS"] == "1", "Drives the real Cursor CLI over the network; set LINKC_LIVE_CURSOR_TESTS=1 to run it.")
         guard let cursorPath = AgentDescriptor.resolveExecutable(for: .cursor),
               FileManager.default.isExecutableFile(atPath: cursorPath) else { return }
 
