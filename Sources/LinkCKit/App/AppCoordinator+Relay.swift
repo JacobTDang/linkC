@@ -56,6 +56,8 @@ extension AppCoordinator {
 
         for task in open {
             switch task.state {
+            case .gating:
+                break
             case .queued:
                 if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
                     do {
@@ -64,7 +66,7 @@ extension AppCoordinator {
                         NSLog("[linkC relay] expireTasks: task %@ stale queued — %@", task.shortId, String(describing: error))
                     }
                 }
-            case .delivered, .started:
+            case .delivered, .started, .reported:
                 let assigneeAlive = task.assigneeSessionId.flatMap { store.session(id: $0) }.map { $0.state != .ended } ?? false
                 if !assigneeAlive {
                     let summary = "assignee session ended before reporting"

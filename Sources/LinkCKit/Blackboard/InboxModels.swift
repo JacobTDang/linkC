@@ -5,23 +5,27 @@ import CryptoKit
 
 /// Lifecycle state of a delegated task. See spec §5.1 for the transition table.
 public enum TaskState: String, Codable, Sendable, CaseIterable {
-    case queued, delivered, started, done, failed, cancelled, expired
+    case gating, queued, delivered, started, reported, done, failed, cancelled, expired
 
     public var isOpen: Bool {
         switch self {
-        case .queued, .delivered, .started: return true
+        case .gating, .queued, .delivered, .started, .reported: return true
         case .done, .failed, .cancelled, .expired: return false
         }
     }
 
     public func canTransition(to next: TaskState) -> Bool {
         switch (self, next) {
+        case (.gating, .queued), (.gating, .cancelled), (.gating, .expired):
+            return true
         case (.queued, .delivered), (.queued, .cancelled), (.queued, .expired):
             return true
-        case (.delivered, .started), (.delivered, .done), (.delivered, .failed),
+        case (.delivered, .started), (.delivered, .reported), (.delivered, .done), (.delivered, .failed),
              (.delivered, .cancelled), (.delivered, .expired):
             return true
-        case (.started, .done), (.started, .failed), (.started, .cancelled), (.started, .expired):
+        case (.started, .reported), (.started, .done), (.started, .failed), (.started, .cancelled), (.started, .expired):
+            return true
+        case (.reported, .done), (.reported, .failed), (.reported, .cancelled), (.reported, .expired):
             return true
         default:
             return false
@@ -29,18 +33,86 @@ public enum TaskState: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// The assignee's explicit report, supplied through `linkc_complete_task`.
+/// The assignee's report, supplied through `linkc_complete_task`. For a verified task it is a
+/// claim: linkC decides the outcome by running the verification at `sha`.
 public struct TaskReport: Codable, Sendable, Equatable {
+    public static let summaryLimit = 1_000
+
     public let status: String   // "done" | "failed"
     public let summary: String
+    public let sha: String?
     public let commits: [String]
     public let tests: [String]
 
-    public init(status: String, summary: String, commits: [String] = [], tests: [String] = []) {
+    public init(status: String, summary: String, sha: String? = nil, commits: [String] = [], tests: [String] = []) {
         self.status = status
         self.summary = summary
+        self.sha = sha
         self.commits = commits
         self.tests = tests
+    }
+}
+
+/// How linkC checks a task: the delegator's tests, committed at `baseSha` on `branch`, run by `command`.
+public struct Verification: Codable, Sendable, Equatable {
+    public static let defaultTimeoutSeconds = 600
+    public static let timeoutRange = 1...3600
+
+    public let branch: String
+    public let baseSha: String
+    public let command: String
+    public let testPaths: [String]
+    public let timeoutSeconds: Int
+
+    public init(branch: String, baseSha: String, command: String, testPaths: [String],
+                timeoutSeconds: Int = Verification.defaultTimeoutSeconds) {
+        self.branch = branch
+        self.baseSha = baseSha
+        self.command = command
+        self.testPaths = testPaths
+        self.timeoutSeconds = timeoutSeconds
+    }
+
+    /// Nil when valid; otherwise what is wrong.
+    public var validationError: String? {
+        if branch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "branch is empty" }
+        if command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "command is empty" }
+        if testPaths.isEmpty { return "test_paths is empty" }
+        if baseSha.count != 40 || !baseSha.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) {
+            return "base_sha must be a full 40-character lowercase SHA"
+        }
+        if !Verification.timeoutRange.contains(timeoutSeconds) { return "timeout_seconds must be between 1 and 3600" }
+        return nil
+    }
+}
+
+/// The result of a gate or a verification. `passed` means the check succeeded: for the gate,
+/// that the tests ran and failed at base; for verification, that they passed at `sha`.
+public struct Verdict: Codable, Sendable, Equatable {
+    public static let tailLimit = 2_000
+
+    public let passed: Bool
+    public let sha: String?        // the commit the command ran at; nil if it never ran
+    public let exitStatus: Int32?  // nil if the command never finished
+    public let reason: String?     // set whenever passed == false
+    public let stdoutTail: String
+    public let stderrTail: String
+    public let ranAt: Date
+
+    public init(passed: Bool, sha: String?, exitStatus: Int32?, reason: String?,
+                stdoutTail: String, stderrTail: String, ranAt: Date = Date()) {
+        self.passed = passed
+        self.sha = sha
+        self.exitStatus = exitStatus
+        self.reason = reason
+        self.stdoutTail = stdoutTail
+        self.stderrTail = stderrTail
+        self.ranAt = ranAt
+    }
+
+    /// A failed verdict reached without the command finishing.
+    public static func notRun(reason: String, sha: String? = nil) -> Verdict {
+        Verdict(passed: false, sha: sha, exitStatus: nil, reason: reason, stdoutTail: "", stderrTail: "")
     }
 }
 
@@ -64,6 +136,9 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     public var report: TaskReport?
     public var cancelReason: String?
     public var unreportedTurnEndNotified: Bool
+    public var verification: Verification?
+    public var gate: Verdict?
+    public var verdict: Verdict?
 
     public var shortId: String { String(id.prefix(8)) }
 
@@ -83,7 +158,10 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         leaseExpiresAt: Date? = nil,
         report: TaskReport? = nil,
         cancelReason: String? = nil,
-        unreportedTurnEndNotified: Bool = false
+        unreportedTurnEndNotified: Bool = false,
+        verification: Verification? = nil,
+        gate: Verdict? = nil,
+        verdict: Verdict? = nil
     ) {
         self.id = id
         self.fromAgent = fromAgent
@@ -101,6 +179,9 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.report = report
         self.cancelReason = cancelReason
         self.unreportedTurnEndNotified = unreportedTurnEndNotified
+        self.verification = verification
+        self.gate = gate
+        self.verdict = verdict
     }
 }
 
@@ -162,6 +243,12 @@ public enum InboxError: Error, LocalizedError, Equatable {
     case kindNotAllowed(MessageKind)
     case missingTaskId
     case emptySummary
+    case invalidVerification(String)
+    case summaryTooLong(count: Int)
+    case shaRequired
+    case invalidReportStatus(String)
+    case notVerified(String)
+    case verificationPresent(String)
 
     public var errorDescription: String? {
         switch self {
@@ -184,6 +271,18 @@ public enum InboxError: Error, LocalizedError, Equatable {
             return "Rejected: completion messages require a task id."
         case .emptySummary:
             return "Rejected: summary must not be empty."
+        case .invalidVerification(let reason):
+            return "Rejected: invalid verify — \(reason)."
+        case .summaryTooLong(let count):
+            return "Rejected: summary is \(count) characters; the limit is 1,000."
+        case .shaRequired:
+            return "Rejected: this task is verified; report the sha of your commit."
+        case .invalidReportStatus(let status):
+            return "Rejected: status must be \"done\" or \"failed\", not \"\(status)\"."
+        case .notVerified(let id):
+            return "Task \(id.prefix(8)) has no verification."
+        case .verificationPresent(let id):
+            return "Task \(id.prefix(8)) is verified; linkC must adjudicate it."
         }
     }
 }
