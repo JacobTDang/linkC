@@ -56,8 +56,8 @@ final class VerificationRunnerTests: XCTestCase {
         CommandStub(.success(ProcessResult(status: status, stdout: stdout, stderr: "")))
     }
 
-    private func killed(bySignal signal: Int32, status: Int32? = nil) -> CommandStub {
-        CommandStub(.success(ProcessResult(status: status ?? signal, stdout: "", stderr: "", signal: signal)))
+    private func killed(bySignal signal: Int32) -> CommandStub {
+        CommandStub(.success(ProcessResult(status: signal, stdout: "", stderr: "", signal: signal)))
     }
 
     private func runner(_ git: ScriptedGit, _ command: CommandStub) -> VerificationRunner {

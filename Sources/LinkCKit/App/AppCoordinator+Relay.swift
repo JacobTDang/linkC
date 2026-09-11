@@ -217,9 +217,9 @@ extension AppCoordinator {
             return
         }
 
-        // Each runnable task pairs with the run it needs, decided right here — the one place
-        // that decides it. No branch may return without either starting a run or settling the
-        // task, so the two can never drift apart and leave a task stuck.
+        // Each task's run is decided where the task is classified, below: gating decides gate
+        // vs. cancel-with-no-verification, reported decides verify vs. settle. A store error
+        // while settling a task here is logged, and the task is left for the next tick.
         var runnable: [(task: TaskRecord, run: VerificationRun)] = []
         for task in open where task.state == .gating || task.state == .reported {
             do {

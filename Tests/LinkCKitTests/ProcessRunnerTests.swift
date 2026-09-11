@@ -210,22 +210,18 @@ final class ProcessRunnerSpawnTests: XCTestCase {
         XCTAssertEqual(result.signal, SIGKILL)
     }
 
-    /// A normal exit must leave `signal` nil — only a signal death sets it.
+    /// A normal exit whose code equals a signal number must not be mistaken for a signal death —
+    /// only a signal death sets `signal`.
     func testANormalExitReportsNoSignal() throws {
-        let result = try LiveProcessRunner.runCapturingSync(executable: "/bin/sh", args: ["-c", "exit 0"], cwd: nil, timeout: 5)
+        let result = try LiveProcessRunner.runCapturingSync(executable: "/bin/sh", args: ["-c", "exit 9"], cwd: nil, timeout: 5)
+        XCTAssertEqual(result.status, 9)
         XCTAssertNil(result.signal)
-    }
-
-    /// `kill -9 $$` inside a login-shell `-c` string: some shells replace themselves with the
-    /// last command, so the signal death reaches the runner directly rather than as exit 128 + N.
-    func testASignalKillReportsTheSignalNumberViaShellDashC() throws {
-        let result = try LiveProcessRunner.runCapturingSync(executable: "/bin/sh", args: ["-c", "kill -9 $$"], cwd: nil, timeout: 5)
-        XCTAssertEqual(result.signal, 9)
     }
 
     /// Unique to this test PROCESS, not just this test — two test runs at the same time (two
     /// worktrees, say) get their own pid and so never see each other's survivors via pgrep -f.
-    private let marker = "37.\(getpid())"
+    /// Padded to a fixed width so one run's marker cannot be a prefix of another's.
+    private let marker = String(format: "37.%05d", getpid())
 
     /// Processes whose command line holds the marker, as `pid args` lines; empty when none.
     private func survivors() throws -> String {

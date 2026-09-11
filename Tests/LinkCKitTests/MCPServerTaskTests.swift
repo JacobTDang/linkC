@@ -308,7 +308,7 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertEqual(try inbox.load().tasks.first?.state, .queued)
     }
 
-    // MARK: - An unreadable inbox (re-review M1)
+    // MARK: - An unreadable inbox
 
     /// An undecodable inbox.json must come back as an `isError` tool result, not a JSON-RPC
     /// -32000 error — in every tool that reads or writes the inbox, including the rate-limit
