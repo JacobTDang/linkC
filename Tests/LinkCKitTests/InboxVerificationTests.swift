@@ -172,4 +172,25 @@ final class InboxVerificationTests: XCTestCase {
         try store.reportTask(taskId: reported.id, report: TaskReport(status: "done", summary: "x"))
         XCTAssertThrowsError(try store.failTask(taskId: reported.id, reason: "x"), "the relay settles a reported task")
     }
+
+    func testCreateTaskWithAPassedGateStartsQueuedAndKeepsTheGate() throws {
+        let gate = verdict(passed: true, sha: base, exit: 1)
+        let task = try store.createTask(from: .claude, to: .codex, prompt: "Rerouted", files: [], verification: verification(), gate: gate)
+        XCTAssertEqual(task.state, .queued)
+        XCTAssertEqual(task.gate, gate)
+        let stored = try XCTUnwrap(store.task(id: task.id))
+        XCTAssertEqual(stored.state, .queued)
+        XCTAssertEqual(stored.gate?.passed, true)
+    }
+
+    func testCreateTaskRejectsAGateThatDidNotPass() throws {
+        let refused = verdict(passed: false, sha: base, exit: 0, reason: "tests already pass at bbbbbbb; brief refused")
+        XCTAssertThrowsError(try store.createTask(from: .claude, to: .codex, prompt: "Rerouted", files: [], verification: verification(), gate: refused)) {
+            XCTAssertEqual($0 as? InboxError, .invalidVerification("the gate did not pass"))
+        }
+        XCTAssertThrowsError(try store.createTask(from: .claude, to: .codex, prompt: "Plain", files: [], gate: verdict(passed: true, sha: base, exit: 1))) {
+            XCTAssertEqual($0 as? InboxError, .invalidVerification("a gate needs a verification"))
+        }
+        XCTAssertTrue(try store.load().tasks.isEmpty, "a rejected gate creates no task")
+    }
 }

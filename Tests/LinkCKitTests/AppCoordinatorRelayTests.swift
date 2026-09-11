@@ -1023,6 +1023,41 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertFalse(AppCoordinator.deliveryFrame(for: plain).contains("Work on branch"))
     }
 
+    /// The copy made for a new agent keeps its verification and the gate it already passed. It
+    /// is not gated again: HEAD has moved and the tree may hold the first worker's partial work.
+    @MainActor
+    func testRerouteOfAVerifiedTaskKeepsItsVerificationAndGate() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier())
+        defer { coordinator.shutdown() }
+
+        let source = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: source.id, to: .working)
+        let peer = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: peer.id, to: .working) // busy, so the copy waits in the queue
+        let original = try inbox.createTask(from: .cursor, to: .claude, prompt: "Make check pass", files: [], verification: verification())
+        try inbox.resolveGate(taskId: original.id, verdict: .fixture(passed: true, sha: base40, exit: 1))
+        try inbox.markTaskDelivered(taskId: original.id, sessionId: source.id)
+
+        coordinator.terminals.sendInput(sessionId: source.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: source.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: source.id))
+
+        let gated = try XCTUnwrap(inbox.task(id: original.id))
+        let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        XCTAssertEqual(copy.toAgent, .codex)
+        XCTAssertEqual(copy.state, .queued, "the copy skips the gate")
+        XCTAssertEqual(copy.verification, original.verification)
+        XCTAssertNotNil(copy.gate)
+        XCTAssertEqual(copy.gate, gated.gate)
+        XCTAssertTrue(coordinator.verificationsInFlight.isEmpty, "no gate runs for the copy")
+        XCTAssertTrue(AppCoordinator.deliveryFrame(for: copy).contains("Work on branch"))
+    }
+
     // MARK: - End to end: MCP, relay, real git, a real login shell
 
     /// A repository whose check.sh fails until marker.txt exists, committed on branch task/x.

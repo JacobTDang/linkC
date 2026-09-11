@@ -465,13 +465,15 @@ extension AppCoordinator {
         if let currentTask {
             // The copy exists only if the cancel succeeded. If the assignee reached a terminal
             // state between the openTasks read and here, the transition throws and nothing is
-            // re-dispatched or announced.
+            // re-dispatched or announced. A verified copy keeps its verification and the gate it
+            // passed, and is not gated again: HEAD has moved and the tree may hold partial work.
             do {
                 try inboxStore.cancelTask(taskId: currentTask.id, reason: "rerouted to \(target.displayName) after limit")
                 tellDelegator()
                 _ = try inboxStore.createTask(
                     from: currentTask.fromAgent, to: target, prompt: currentTask.prompt,
-                    files: currentTask.files, hop: hop + 1, force: true
+                    files: currentTask.files, hop: hop + 1, force: true,
+                    verification: currentTask.verification, gate: currentTask.gate
                 )
             } catch {
                 NSLog("[linkC relay] checkLimitsAndReroute: task %@ cancel/hop %d copy — %@", currentTask.shortId, hop + 1, String(describing: error))

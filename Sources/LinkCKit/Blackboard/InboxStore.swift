@@ -266,7 +266,8 @@ public final class InboxStore: Sendable {
     // MARK: - Task lifecycle
 
     /// Creates a task with an exclusive lease on `files`. A task with a verification starts in
-    /// `gating`; linkC delivers it only after confirming its tests fail at base. Refuses when
+    /// `gating`; linkC delivers it only after confirming its tests fail at base. Given the gate
+    /// it already passed (a rerouted copy), it starts `queued` and keeps that gate. Refuses when
     /// another assignee holds an open lease on any of the files unless `force`. Idempotent for
     /// an identical assignee, prompt, and base.
     public func createTask(
@@ -277,11 +278,16 @@ public final class InboxStore: Sendable {
         hop: Int = 0,
         force: Bool = false,
         verification: Verification? = nil,
+        gate: Verdict? = nil,
         timeout: TimeInterval = 5.0
     ) throws -> TaskRecord {
         guard hop <= 2 else { throw InboxError.hopLimit(hop) }
         guard !LinkCFrame.beginsWithMarker(prompt) else { throw InboxError.framedBody }
         if let reason = verification?.validationError { throw InboxError.invalidVerification(reason) }
+        if let gate {
+            guard verification != nil else { throw InboxError.invalidVerification("a gate needs a verification") }
+            guard gate.passed else { throw InboxError.invalidVerification("the gate did not pass") }
+        }
 
         return try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
@@ -303,7 +309,8 @@ public final class InboxStore: Sendable {
 
             let task = TaskRecord(
                 fromAgent: from, toAgent: to, prompt: prompt, files: normalized,
-                state: verification == nil ? .queued : .gating, hop: hop, verification: verification
+                state: verification == nil || gate != nil ? .queued : .gating, hop: hop,
+                verification: verification, gate: gate
             )
             inbox.tasks.append(task)
             inbox.updatedAt = Date()
