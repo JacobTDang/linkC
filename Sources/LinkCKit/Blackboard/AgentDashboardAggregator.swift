@@ -177,8 +177,20 @@ public struct AgentDashboardAggregator: Sendable {
             )
         }
 
-        // 7. Inspect modified files in git
-        let modifiedFiles = inspectGitModifiedFiles(at: norm)
+        // 7. Modified files in git. A folder that is not a git repository has none; a git
+        // failure inside one is logged, not hidden.
+        let modifiedFiles: [String]
+        let workspaceURL = URL(fileURLWithPath: norm)
+        if GitClient.isRepository(workspaceURL) {
+            do {
+                modifiedFiles = try GitClient().modifiedFiles(in: workspaceURL)
+            } catch {
+                NSLog("[linkC dashboard] modified files for %@ — %@", norm, String(describing: error))
+                modifiedFiles = []
+            }
+        } else {
+            modifiedFiles = []
+        }
 
         // 8. Compile Dossiers
         var dossiers: [AgentContributionDossier] = []
@@ -268,46 +280,6 @@ public struct AgentDashboardAggregator: Sendable {
             dossiers: allDossiers,
             activeProjectCount: uniqueWorkspaces.count
         )
-    }
-
-    private func inspectGitModifiedFiles(at path: String) -> [String] {
-        let gitPath: String
-        if FileManager.default.isExecutableFile(atPath: "/usr/bin/git") {
-            gitPath = "/usr/bin/git"
-        } else if FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/git") {
-            gitPath = "/opt/homebrew/bin/git"
-        } else if FileManager.default.isExecutableFile(atPath: "/usr/local/bin/git") {
-            gitPath = "/usr/local/bin/git"
-        } else {
-            return []
-        }
-
-        let pipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: gitPath)
-        process.arguments = ["-C", path, "status", "-s"]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return [] }
-            guard let text = String(data: data, encoding: .utf8) else { return [] }
-            return text.split(separator: "\n").compactMap { line -> String? in
-                let lineStr = String(line)
-                guard lineStr.count >= 4 else { return nil }
-                var pathPart = String(lineStr.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-                if let arrowRange = pathPart.range(of: " -> ") {
-                    pathPart = String(pathPart[arrowRange.upperBound...])
-                }
-                pathPart = pathPart.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                return pathPart.isEmpty ? nil : pathPart
-            }
-        } catch {
-            return []
-        }
     }
 }
 

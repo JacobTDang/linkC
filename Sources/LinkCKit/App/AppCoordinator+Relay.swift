@@ -350,7 +350,7 @@ extension AppCoordinator {
                 workspacePath: norm,
                 sourceAgent: session.agentKind,
                 lastGoal: resolveHandoffGoal(workspacePath: norm, explicit: currentTask?.prompt),
-                gitSummary: inspectGitStatus(in: norm),
+                gitSummary: gitStatusSummary(in: norm),
                 recentTerminalOutput: recentOutput
             )
         } catch {

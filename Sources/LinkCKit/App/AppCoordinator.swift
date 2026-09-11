@@ -343,7 +343,7 @@ public final class AppCoordinator {
             recentOutput = nil
         }
 
-        let gitSummary = inspectGitStatus(in: norm)
+        let gitSummary = gitStatusSummary(in: norm)
 
         let lastGoal = resolveHandoffGoal(workspacePath: norm, explicit: goal)
 
@@ -750,59 +750,18 @@ public final class AppCoordinator {
         return path.path
     }
 
-    func inspectGitStatus(in workspacePath: String) -> String? {
-        let candidates = ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"]
-        guard let gitPath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            return nil
-        }
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: workspacePath, isDirectory: &isDir), isDir.boolValue else { return nil }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: gitPath)
-        process.arguments = ["status", "-s"]
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        let stdout = Pipe()
-        process.standardOutput = stdout
-        process.standardError = FileHandle.nullDevice
-
-        final class DataBox: @unchecked Sendable {
-            var data = Data()
-        }
-        let box = DataBox()
-        let pipeLock = NSLock()
-        let outDone = DispatchSemaphore(value: 0)
-        let drainQueue = DispatchQueue(label: "linkc.git.drain", attributes: .concurrent)
-        drainQueue.async {
-            let data = stdout.fileHandleForReading.readDataToEndOfFile()
-            pipeLock.lock()
-            box.data = data
-            pipeLock.unlock()
-            outDone.signal()
-        }
-
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-
+    /// `git status --porcelain` for the handoff memo, or nil when the folder is not a git
+    /// repository or has no changes. A git failure inside a repository is logged. One-second
+    /// timeout: callers run on the main actor.
+    func gitStatusSummary(in workspacePath: String) -> String? {
+        let workspace = URL(fileURLWithPath: workspacePath)
+        guard GitClient.isRepository(workspace) else { return nil }
         do {
-            try process.run()
+            let text = try GitClient(timeout: 1).statusPorcelain(in: workspace)
+            return text.isEmpty ? nil : text
         } catch {
+            NSLog("[linkC] git status for %@ — %@", workspacePath, String(describing: error))
             return nil
         }
-
-        if exited.wait(timeout: .now() + 1.0) == .timedOut {
-            process.terminate()
-            _ = exited.wait(timeout: .now() + 0.5)
-            _ = outDone.wait(timeout: .now() + 0.5)
-            return nil
-        }
-
-        _ = outDone.wait(timeout: .now() + 0.5)
-        guard process.terminationStatus == 0 else { return nil }
-        pipeLock.lock()
-        let finalData = box.data
-        pipeLock.unlock()
-        let trimmed = String(data: finalData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (trimmed?.isEmpty ?? true) ? nil : trimmed
     }
 }
