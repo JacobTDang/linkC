@@ -81,7 +81,10 @@ final class InboxTaskLifecycleTests: XCTestCase {
         XCTAssertNotNil(t.startedAt)
         XCTAssertGreaterThanOrEqual(t.leaseExpiresAt, leaseBefore)
 
-        try store.completeTask(taskId: task.id, report: TaskReport(status: "done", summary: "Shipped", commits: ["abc123"], tests: ["swift test"]))
+        try store.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "Shipped", commits: ["abc123"]))
+        t = try XCTUnwrap(store.task(id: task.id))
+        XCTAssertEqual(t.state, .reported)
+        try store.acceptUnverified(taskId: task.id)
         t = try XCTUnwrap(store.task(id: task.id))
         XCTAssertEqual(t.state, .done)
         XCTAssertEqual(t.report?.summary, "Shipped")
@@ -91,7 +94,8 @@ final class InboxTaskLifecycleTests: XCTestCase {
     func testCompleteWithFailedStatusSetsFailedState() throws {
         let task = try store.createTask(from: .claude, to: .codex, prompt: "Do it", files: [])
         try store.markTaskDelivered(taskId: task.id, sessionId: "s")
-        try store.completeTask(taskId: task.id, report: TaskReport(status: "failed", summary: "Build broke"))
+        try store.reportTask(taskId: task.id, report: TaskReport(status: "failed", summary: "Build broke"))
+        try store.acceptUnverified(taskId: task.id)
         XCTAssertEqual(try store.task(id: task.id)?.state, .failed)
     }
 
@@ -102,7 +106,7 @@ final class InboxTaskLifecycleTests: XCTestCase {
         }
         try store.cancelTask(taskId: task.id, reason: "nah")
         XCTAssertThrowsError(try store.markTaskDelivered(taskId: task.id, sessionId: "s"))
-        XCTAssertThrowsError(try store.completeTask(taskId: task.id, report: TaskReport(status: "done", summary: "x")))
+        XCTAssertThrowsError(try store.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "x")))
         XCTAssertNil(try store.task(id: "missing"))
         XCTAssertThrowsError(try store.markTaskStarted(taskId: "missing")) {
             XCTAssertEqual($0 as? InboxError, .taskNotFound("missing"))
@@ -112,7 +116,7 @@ final class InboxTaskLifecycleTests: XCTestCase {
     func testCompleteRejectsEmptySummary() throws {
         let task = try store.createTask(from: .claude, to: .codex, prompt: "Do it", files: [])
         try store.markTaskDelivered(taskId: task.id, sessionId: "s")
-        XCTAssertThrowsError(try store.completeTask(taskId: task.id, report: TaskReport(status: "done", summary: "   "))) {
+        XCTAssertThrowsError(try store.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "   "))) {
             XCTAssertEqual($0 as? InboxError, .emptySummary)
         }
     }

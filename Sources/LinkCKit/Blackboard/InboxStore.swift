@@ -351,17 +351,6 @@ public final class InboxStore: Sendable {
         }
     }
 
-    public func completeTask(taskId: String, report: TaskReport, timeout: TimeInterval = 5.0) throws {
-        guard !report.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw InboxError.emptySummary
-        }
-        let target: TaskState = report.status == "failed" ? .failed : .done
-        try transition(taskId: taskId, to: target, timeout: timeout) { task in
-            task.report = report
-            task.finishedAt = Date()
-        }
-    }
-
     public func cancelTask(taskId: String, reason: String, timeout: TimeInterval = 5.0) throws {
         try transition(taskId: taskId, to: .cancelled, timeout: timeout) { task in
             task.cancelReason = reason

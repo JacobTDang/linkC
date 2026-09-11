@@ -207,10 +207,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "race completion", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: assignee.id)
         let staleOpenRecord = try XCTUnwrap(inbox.task(id: task.id))
-        try inbox.completeTask(
-            taskId: task.id,
-            report: TaskReport(status: "done", summary: "completed by another process")
-        )
+        try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "completed by another process"))
+        try inbox.acceptUnverified(taskId: task.id)
         coordinator.store.updateState(id: assignee.id, to: .ended)
 
         // Preserve the stale delivered snapshot that expireTasks could have read immediately
@@ -628,7 +626,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
         // Authoritative record reaches .done; a stale open snapshot with the same id is kept so
         // openTasks() still reports it as the current task while cancelTask hits the .done row.
         let staleOpenRecord = try XCTUnwrap(inbox.task(id: original.id))
-        try inbox.completeTask(taskId: original.id, report: TaskReport(status: "done", summary: "shipped before the limit hit"))
+        try inbox.reportTask(taskId: original.id, report: TaskReport(status: "done", summary: "shipped before the limit hit"))
+        try inbox.acceptUnverified(taskId: original.id)
         var seeded = try inbox.load()
         seeded.tasks.append(staleOpenRecord)
         try inbox.saveRaw(seeded)
@@ -717,7 +716,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Do it", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: codex.id)
         try inbox.markTaskStarted(taskId: task.id)
-        try inbox.completeTask(taskId: task.id, report: TaskReport(status: "done", summary: "ok"))
+        try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "ok"))
 
         XCTAssertEqual(coordinator.relayTurnEnd(sessionId: codex.id, workspacePath: ws), 0)
         XCTAssertTrue(try inbox.load().messages.isEmpty)

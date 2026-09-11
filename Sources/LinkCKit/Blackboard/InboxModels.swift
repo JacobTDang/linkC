@@ -20,10 +20,10 @@ public enum TaskState: String, Codable, Sendable, CaseIterable {
             return true
         case (.queued, .delivered), (.queued, .cancelled), (.queued, .expired):
             return true
-        case (.delivered, .started), (.delivered, .reported), (.delivered, .done), (.delivered, .failed),
+        case (.delivered, .started), (.delivered, .reported), (.delivered, .failed),
              (.delivered, .cancelled), (.delivered, .expired):
             return true
-        case (.started, .reported), (.started, .done), (.started, .failed), (.started, .cancelled), (.started, .expired):
+        case (.started, .reported), (.started, .failed), (.started, .cancelled), (.started, .expired):
             return true
         case (.reported, .done), (.reported, .failed), (.reported, .cancelled), (.reported, .expired):
             return true
@@ -42,14 +42,12 @@ public struct TaskReport: Codable, Sendable, Equatable {
     public let summary: String
     public let sha: String?
     public let commits: [String]
-    public let tests: [String]
 
-    public init(status: String, summary: String, sha: String? = nil, commits: [String] = [], tests: [String] = []) {
+    public init(status: String, summary: String, sha: String? = nil, commits: [String] = []) {
         self.status = status
         self.summary = summary
         self.sha = sha
         self.commits = commits
-        self.tests = tests
     }
 }
 

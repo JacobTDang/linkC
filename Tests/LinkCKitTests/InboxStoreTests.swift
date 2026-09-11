@@ -166,9 +166,9 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertTrue(TaskState.queued.canTransition(to: .expired))
         XCTAssertFalse(TaskState.queued.canTransition(to: .started))
         XCTAssertTrue(TaskState.delivered.canTransition(to: .started))
-        XCTAssertTrue(TaskState.delivered.canTransition(to: .done))
+        XCTAssertFalse(TaskState.delivered.canTransition(to: .done))
         XCTAssertTrue(TaskState.delivered.canTransition(to: .failed))
-        XCTAssertTrue(TaskState.started.canTransition(to: .done))
+        XCTAssertFalse(TaskState.started.canTransition(to: .done))
         XCTAssertFalse(TaskState.started.canTransition(to: .delivered))
         for terminal in [TaskState.done, .failed, .cancelled, .expired] {
             for next in [TaskState.queued, .delivered, .started, .done, .failed, .cancelled, .expired] {
