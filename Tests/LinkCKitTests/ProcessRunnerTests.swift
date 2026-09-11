@@ -223,8 +223,9 @@ final class ProcessRunnerSpawnTests: XCTestCase {
         XCTAssertEqual(result.signal, 9)
     }
 
-    /// Unique to this test, so pgrep matches nothing else.
-    private let marker = "37.4242"
+    /// Unique to this test PROCESS, not just this test — two test runs at the same time (two
+    /// worktrees, say) get their own pid and so never see each other's survivors via pgrep -f.
+    private let marker = "37.\(getpid())"
 
     /// Processes whose command line holds the marker, as `pid args` lines; empty when none.
     private func survivors() throws -> String {
