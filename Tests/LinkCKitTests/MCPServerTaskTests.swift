@@ -277,4 +277,34 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(ambiguous.text.contains(one) && ambiguous.text.contains(two), ambiguous.text)
         XCTAssertEqual(try inbox.load().tasks.map(\.state), [.queued, .queued], "an ambiguous id cancels nothing")
     }
+
+    // MARK: - Malformed verify
+
+    func testDelegateRejectsAVerifyThatIsNotAnObject() throws {
+        let res = try call(server(as: .claude), "linkc_delegate_task",
+                           ["to": "codex", "prompt": "Make check pass", "verify": #"{"branch": "task/x"}"#])
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("verify must be an object"), res.text)
+        XCTAssertTrue(try inbox.load().tasks.isEmpty, "a malformed verify creates no task")
+    }
+
+    func testDelegateRejectsATimeoutThatIsNotAnInteger() throws {
+        let base = try repoWithTests()
+        let srv = server(as: .claude)
+        for bad: Any in ["600", 600.5, true] {
+            var v = verify(base: base)
+            v["timeout_seconds"] = bad
+            let res = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass", "verify": v])
+            XCTAssertTrue(res.isError, "\(bad): \(res.text)")
+            XCTAssertTrue(res.text.contains("timeout_seconds"), res.text)
+        }
+        XCTAssertTrue(try inbox.load().tasks.isEmpty, "a malformed timeout creates no task")
+    }
+
+    /// JSON null is how some clients send an optional argument they did not set.
+    func testDelegateTreatsANullVerifyAsAbsent() throws {
+        let res = try call(server(as: .claude), "linkc_delegate_task", ["to": "codex", "prompt": "Plain", "verify": NSNull()])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertEqual(try inbox.load().tasks.first?.state, .queued)
+    }
 }

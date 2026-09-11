@@ -415,12 +415,17 @@ public final class MCPServer: Sendable {
                 let force = args["force"] as? Bool ?? false
 
                 var verification: Verification?
-                if let verify = args["verify"] as? [String: Any] {
+                switch args["verify"] {
+                case nil, is NSNull:
+                    break
+                case let verify as [String: Any]:
                     do {
                         verification = try resolveVerification(verify)
                     } catch {
                         return toolResultResponse(id: id, text: "Error: \(error.localizedDescription)", isError: true)
                     }
+                default:
+                    return toolResultResponse(id: id, text: "Error: verify must be an object.", isError: true)
                 }
 
                 let task: TaskRecord
@@ -792,7 +797,19 @@ public final class MCPServer: Sendable {
         guard let paths = raw["test_paths"] as? [String], !paths.isEmpty else {
             throw LinkCError.server("verify.test_paths is required")
         }
-        let timeout = raw["timeout_seconds"] as? Int ?? Verification.defaultTimeoutSeconds
+        let timeout: Int
+        switch raw["timeout_seconds"] {
+        case nil, is NSNull:
+            timeout = Verification.defaultTimeoutSeconds
+        case let number as NSNumber where CFGetTypeID(number) != CFBooleanGetTypeID():
+            // JSON has one number type: 600 and 600.0 are integers, 600.5 is not.
+            guard let whole = Int(exactly: number.doubleValue) else {
+                throw LinkCError.server("verify.timeout_seconds must be an integer")
+            }
+            timeout = whole
+        default:
+            throw LinkCError.server("verify.timeout_seconds must be an integer")
+        }
 
         let git = GitClient()
         let workspace = URL(fileURLWithPath: workspaceRoot)
