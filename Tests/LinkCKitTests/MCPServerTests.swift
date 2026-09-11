@@ -32,7 +32,7 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(result?["protocolVersion"] as? String, "2024-11-05")
         let serverInfo = result?["serverInfo"] as? [String: Any]
         XCTAssertEqual(serverInfo?["name"] as? String, "linkc-multiplier")
-        XCTAssertEqual(serverInfo?["version"] as? String, "0.2.0")
+        XCTAssertEqual(serverInfo?["version"] as? String, "0.3.0")
         let caps = result?["capabilities"] as? [String: Any]
         let toolsCap = caps?["tools"] as? [String: Any]
         XCTAssertEqual(toolsCap?["listChanged"] as? Bool, false)

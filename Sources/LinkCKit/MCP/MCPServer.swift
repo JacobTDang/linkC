@@ -103,7 +103,7 @@ public final class MCPServer: Sendable {
             ],
             "serverInfo": [
                 "name": "linkc-multiplier",
-                "version": "0.2.0"
+                "version": "0.3.0"
             ]
         ]
         return successResponse(id: id, result: result)
@@ -171,7 +171,19 @@ public final class MCPServer: Sendable {
                         "files": ["type": "array", "items": ["type": "string"], "description": "Optional list of files the delegated task will touch"],
                         "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
                         "pid": ["type": "integer", "description": "Process ID of the sender"],
-                        "force": ["type": "boolean", "description": "Override an existing lease held by another assignee"]
+                        "force": ["type": "boolean", "description": "Override an existing lease held by another assignee"],
+                        "verify": [
+                            "type": "object",
+                            "description": "Make this a verified task. linkC confirms the tests fail at base_sha before delivery, then runs command at the worker's reported sha and decides done or failed itself.",
+                            "properties": [
+                                "branch": ["type": "string", "description": "Branch the worker commits on; its tip must equal base_sha"],
+                                "base_sha": ["type": "string", "description": "Commit holding the tests you wrote"],
+                                "command": ["type": "string", "description": "Shell command that runs those tests; exit 0 means they pass"],
+                                "test_paths": ["type": "array", "items": ["type": "string"], "description": "Test files the worker must not modify"],
+                                "timeout_seconds": ["type": "integer", "description": "1-3600, default 600"]
+                            ],
+                            "required": ["branch", "base_sha", "command", "test_paths"]
+                        ]
                     ],
                     "required": ["to", "prompt"]
                 ]
@@ -234,15 +246,16 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_complete_task",
-                "description": "Report the result of a task you were assigned. Sends a one-line echo to the delegator and stores the full report on the blackboard.",
+                "description": "Report the result of a task you were assigned. Commit first and pass that commit's sha. For a verified task linkC runs the tests itself and tells the delegator the outcome in one line.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
                         "task_id": ["type": "string"],
                         "status": ["type": "string", "enum": ["done", "failed"]],
-                        "summary": ["type": "string", "description": "One paragraph: what changed and how it was verified"],
+                        "summary": ["type": "string", "description": "What changed, at most 1,000 characters"],
+                        "sha": ["type": "string", "description": "The commit holding your work; required for a verified task reported done"],
                         "commits": ["type": "array", "items": ["type": "string"]],
-                        "tests": ["type": "array", "items": ["type": "string"], "description": "Test commands or test names that passed"]
+                        "tests": ["type": "array", "items": ["type": "string"], "description": "Deprecated; ignored"]
                     ],
                     "required": ["task_id", "status", "summary"]
                 ]
@@ -401,14 +414,26 @@ public final class MCPServer: Sendable {
                 let files = args["files"] as? [String] ?? []
                 let force = args["force"] as? Bool ?? false
 
+                var verification: Verification?
+                if let verify = args["verify"] as? [String: Any] {
+                    do {
+                        verification = try resolveVerification(verify)
+                    } catch {
+                        return toolResultResponse(id: id, text: "Error: \(error.localizedDescription)", isError: true)
+                    }
+                }
+
                 let task: TaskRecord
                 do {
-                    task = try inboxStore.createTask(from: caller.agent, to: toAgent, prompt: prompt, files: files, force: force)
+                    task = try inboxStore.createTask(from: caller.agent, to: toAgent, prompt: prompt, files: files,
+                                                     force: force, verification: verification)
                 } catch let error as InboxError {
                     return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }
 
-                let successText = "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
+                let successText = verification.map {
+                    "Task \(task.shortId) created. linkC will confirm the tests fail at \(VerificationRunner.short($0.baseSha)) before delivery."
+                } ?? "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
                 if !files.isEmpty {
                     do {
                         _ = try store.broadcastIntent(
@@ -632,31 +657,27 @@ public final class MCPServer: Sendable {
                     guard !summary.isEmpty else {
                         return toolResultResponse(id: id, text: InboxError.emptySummary.localizedDescription, isError: true)
                     }
-                    let report = TaskReport(
-                        status: status,
-                        summary: summary,
-                        commits: args["commits"] as? [String] ?? [],
-                        tests: args["tests"] as? [String] ?? []
-                    )
-                    try inboxStore.completeTask(taskId: task.id, report: report)
-
-                    let successText = "Reported \(status) for task \(task.shortId). \(task.fromAgent.displayName) will receive a one-line echo."
-                    do {
-                        let firstLine = summary.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? summary
-                        let body = "\(status) by \(caller.agent.displayName) — \(firstLine.prefix(200)). linkc_get_task(\"\(task.id)\") for details."
-                        _ = try inboxStore.enqueue(from: caller.agent, to: task.fromAgent, kind: .completion, taskId: task.id, body: body)
-
-                        var note = "\(summary)\n"
-                        if !report.commits.isEmpty { note += "\n**Commits:** \(report.commits.joined(separator: ", "))\n" }
-                        if !report.tests.isEmpty { note += "\n**Tests:** \(report.tests.joined(separator: "; "))\n" }
-                        note += "\nTask id: \(task.id)\n"
-                        _ = try store.postNote(authorAgent: caller.agent, title: "Task \(task.shortId) \(status)", content: note, tags: ["task", status])
-                    } catch {
-                        let warning = "Warning: task state was updated but notifying \(task.fromAgent.displayName) failed: \(error.localizedDescription). They can run linkc_get_task(\"\(task.id)\")."
-                        return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
+                    var sha: String?
+                    if let raw = (args["sha"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+                        do {
+                            sha = try GitClient().resolveCommit(raw, in: URL(fileURLWithPath: workspaceRoot))
+                        } catch {
+                            return toolResultResponse(id: id, text: "Error: sha: \(error.localizedDescription). Commit your work, then report that commit's sha.", isError: true)
+                        }
                     }
+                    // `tests` is still accepted from older callers and ignored: linkC runs the tests itself.
+                    let report = TaskReport(status: status, summary: summary, sha: sha, commits: args["commits"] as? [String] ?? [])
+                    try inboxStore.reportTask(taskId: task.id, report: report)
 
-                    return toolResultResponse(id: id, text: successText)
+                    let text: String
+                    if task.verification == nil {
+                        text = "Reported. Unverified task."
+                    } else if status == "done", let sha {
+                        text = "Reported. linkC is verifying at \(VerificationRunner.short(sha))."
+                    } else {
+                        text = "Reported. linkC will mark the task failed."
+                    }
+                    return toolResultResponse(id: id, text: text)
                 } catch {
                     return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }
@@ -735,10 +756,63 @@ public final class MCPServer: Sendable {
         text += "\n## Brief\n\(t.prompt)\n"
         if let r = t.report {
             text += "\n## Report (\(r.status))\n\(r.summary)\n"
+            if let sha = r.sha { text += "\n**Sha:** \(sha)\n" }
             if !r.commits.isEmpty { text += "\n**Commits:** \(r.commits.joined(separator: ", "))\n" }
-            if !r.tests.isEmpty { text += "\n**Tests:** \(r.tests.joined(separator: "; "))\n" }
         }
+        if let v = t.verification {
+            text += "\n## Verification\n- **Branch:** \(v.branch)\n- **Base:** \(v.baseSha)\n- **Command:** `\(v.command)`\n"
+            text += "- **Protected tests:** \(v.testPaths.joined(separator: ", "))\n- **Timeout:** \(v.timeoutSeconds)s\n"
+        }
+        if let gate = t.gate { text += "\n## Gate\n" + verdictMarkdown(gate) }
+        if let verdict = t.verdict { text += "\n## Verdict\n" + verdictMarkdown(verdict) }
         return text
+    }
+
+    private func verdictMarkdown(_ v: Verdict) -> String {
+        var text = "- **Result:** \(v.passed ? "passed" : "failed")\n"
+        if let sha = v.sha { text += "- **At:** \(sha)\n" }
+        if let exit = v.exitStatus { text += "- **Exit:** \(exit)\n" }
+        if let reason = v.reason { text += "- **Reason:** \(reason)\n" }
+        if !v.stdoutTail.isEmpty { text += "\n**stdout (tail)**\n```\n\(v.stdoutTail)\n```\n" }
+        if !v.stderrTail.isEmpty { text += "\n**stderr (tail)**\n```\n\(v.stderrTail)\n```\n" }
+        return text
+    }
+
+    /// Checks `verify` against the workspace's git and returns it with base_sha fully resolved.
+    private func resolveVerification(_ raw: [String: Any]) throws -> Verification {
+        func field(_ key: String) throws -> String {
+            guard let value = (raw[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+                throw LinkCError.server("verify.\(key) is required")
+            }
+            return value
+        }
+        let branch = try field("branch")
+        let baseArg = try field("base_sha")
+        let command = try field("command")
+        guard let paths = raw["test_paths"] as? [String], !paths.isEmpty else {
+            throw LinkCError.server("verify.test_paths is required")
+        }
+        let timeout = raw["timeout_seconds"] as? Int ?? Verification.defaultTimeoutSeconds
+
+        let git = GitClient()
+        let workspace = URL(fileURLWithPath: workspaceRoot)
+        let base: String
+        do { base = try git.resolveCommit(baseArg, in: workspace) } catch {
+            throw LinkCError.server("verify.base_sha: \(error.localizedDescription)")
+        }
+        let tip: String
+        do { tip = try git.resolveCommit(branch, in: workspace) } catch {
+            throw LinkCError.server("verify.branch: \(error.localizedDescription)")
+        }
+        guard tip == base else {
+            throw LinkCError.server("verify.branch '\(branch)' is at \(VerificationRunner.short(tip)), not base \(VerificationRunner.short(base)); commit the tests on that branch first")
+        }
+        for path in paths {
+            guard try git.fileExists(path, at: base, in: workspace) else {
+                throw LinkCError.server("verify.test_paths '\(path)' does not exist at \(VerificationRunner.short(base))")
+            }
+        }
+        return Verification(branch: branch, baseSha: base, command: command, testPaths: paths, timeoutSeconds: timeout)
     }
 
     private func requireTask(_ args: [String: Any]) throws -> TaskRecord {

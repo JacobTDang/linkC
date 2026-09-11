@@ -59,33 +59,21 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
     }
 
-    func testCompleteTaskRecordsReportEnqueuesOneLineAndPostsNote() throws {
-        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build the very long brief that must not be echoed back in full " + String(repeating: "x", count: 500), files: [])
+    func testCompleteTaskRecordsReportAndWritesNothingElse() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
         let srv = server(as: .codex)
         let res = try call(srv, "linkc_complete_task", [
             "task_id": task.id, "status": "done", "summary": "Implemented and tested.",
-            "commits": ["abc1234"], "tests": ["swift test --filter Foo"]
+            "commits": ["abc1234"], "tests": ["accepted and ignored"]
         ])
         XCTAssertFalse(res.isError, res.text)
-
+        XCTAssertEqual(res.text, "Reported. Unverified task.")
         let t = try XCTUnwrap(inbox.task(id: task.id))
-        XCTAssertEqual(t.state, .done)
+        XCTAssertEqual(t.state, .reported)
         XCTAssertEqual(t.report?.commits, ["abc1234"])
-
-        let msgs = try inbox.load().messages
-        XCTAssertEqual(msgs.count, 1)
-        let echo = try XCTUnwrap(msgs.first)
-        XCTAssertEqual(echo.kind, .completion)
-        XCTAssertEqual(echo.toAgent, .claude)
-        XCTAssertEqual(echo.fromAgent, .codex)
-        XCTAssertEqual(echo.taskId, task.id)
-        XCTAssertTrue(echo.prompt.hasPrefix("[linkC task \(task.shortId)] done by Codex"))
-        XCTAssertFalse(echo.prompt.contains("xxxxxxxxxx"), "echo must not carry the brief")
-        XCTAssertLessThan(echo.prompt.count, 400)
-
-        let notes = try srv.store.load().sharedNotes
-        XCTAssertTrue(notes.contains { $0.title == "Task \(task.shortId) done" && $0.content.contains("abc1234") })
+        XCTAssertTrue(try inbox.load().messages.isEmpty, "the relay sends the outcome line, not the tool")
+        XCTAssertTrue(try srv.store.load().sharedNotes.isEmpty, "the report lives only on the task")
     }
 
     func testCompleteTaskByNonAssigneeIsRejected() throws {
@@ -102,21 +90,6 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.text.contains("assigned to Codex"))
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
         XCTAssertFalse(try inbox.load().messages.contains { $0.kind == .completion })
-    }
-
-    func testCompleteTaskSucceedsWhenEchoEnqueueFails() throws {
-        let task = try inbox.createTask(from: .codex, to: .codex, prompt: "Build", files: [])
-        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
-
-        let res = try call(server(as: .codex), "linkc_complete_task", [
-            "task_id": task.id,
-            "status": "done",
-            "summary": "Implemented."
-        ])
-
-        XCTAssertFalse(res.isError, res.text)
-        XCTAssertTrue(res.text.hasPrefix("Reported done"))
-        XCTAssertEqual(try inbox.task(id: task.id)?.state, .done)
     }
 
     func testCompleteTaskRequiresSummaryAndValidStatus() throws {
@@ -165,5 +138,110 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(list.text.contains(mine.shortId))
         XCTAssertTrue(list.text.contains(delegated.shortId))
         XCTAssertFalse(list.text.contains("Unrelated"))
+    }
+
+    // MARK: - Verified tasks
+
+    /// tempDir as a repository with check.sh committed on branch task/x; returns that commit.
+    private func repoWithTests() throws -> String {
+        try runGit(["init", "-q", "-b", "main"], in: tempDir)
+        try "#!/bin/sh\ntest -f marker.txt\n".write(to: tempDir.appendingPathComponent("check.sh"), atomically: true, encoding: .utf8)
+        try runGit(["add", "check.sh"], in: tempDir)
+        try runGit(["commit", "-q", "-m", "tests"], in: tempDir)
+        try runGit(["checkout", "-q", "-b", "task/x"], in: tempDir)
+        return try runGit(["rev-parse", "HEAD"], in: tempDir)
+    }
+
+    private func verify(base: String, branch: String = "task/x", paths: [String] = ["check.sh"]) -> [String: Any] {
+        ["branch": branch, "base_sha": base, "command": "./check.sh", "test_paths": paths]
+    }
+
+    func testDelegateWithVerifyCreatesAGatingTaskAtTheFullBase() throws {
+        let base = try repoWithTests()
+        let res = try call(server(as: .claude), "linkc_delegate_task",
+                           ["to": "codex", "prompt": "Make check pass", "verify": verify(base: String(base.prefix(7)))])
+        XCTAssertFalse(res.isError, res.text)
+        let task = try XCTUnwrap(inbox.load().tasks.first)
+        XCTAssertEqual(task.state, .gating)
+        XCTAssertEqual(task.verification?.baseSha, base)
+        XCTAssertEqual(task.verification?.timeoutSeconds, 600)
+        XCTAssertEqual(res.text, "Task \(task.shortId) created. linkC will confirm the tests fail at \(base.prefix(7)) before delivery.")
+    }
+
+    func testDelegateWithVerifyRejectsBadReferences() throws {
+        let base = try repoWithTests()
+        let srv = server(as: .claude)
+        let badBase = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "A", "verify": verify(base: "deadbeef")])
+        XCTAssertTrue(badBase.isError)
+        XCTAssertTrue(badBase.text.contains("verify.base_sha"), badBase.text)
+
+        let missingPath = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "B", "verify": verify(base: base, paths: ["nope.sh"])])
+        XCTAssertTrue(missingPath.isError)
+        XCTAssertTrue(missingPath.text.contains("'nope.sh' does not exist at \(base.prefix(7))"), missingPath.text)
+
+        try runGit(["checkout", "-q", "-b", "other"], in: tempDir)
+        try "x\n".write(to: tempDir.appendingPathComponent("extra.txt"), atomically: true, encoding: .utf8)
+        try runGit(["add", "extra.txt"], in: tempDir)
+        try runGit(["commit", "-q", "-m", "moved"], in: tempDir)
+        let movedBranch = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "C", "verify": verify(base: base, branch: "other")])
+        XCTAssertTrue(movedBranch.isError)
+        XCTAssertTrue(movedBranch.text.contains("not base \(base.prefix(7))"), movedBranch.text)
+
+        XCTAssertTrue(try inbox.load().tasks.isEmpty, "a rejected verify creates no task")
+    }
+
+    func testVerifiedCompleteNeedsTheShaOfARealCommit() throws {
+        let base = try repoWithTests()
+        _ = try call(server(as: .claude), "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass", "verify": verify(base: base)])
+        let task = try XCTUnwrap(inbox.load().tasks.first)
+        try inbox.resolveGate(taskId: task.id, verdict: Verdict(passed: true, sha: base, exitStatus: 1, reason: nil, stdoutTail: "", stderrTail: ""))
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
+        let worker = server(as: .codex)
+
+        let noSha = try call(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "added marker"])
+        XCTAssertTrue(noSha.isError)
+        XCTAssertEqual(noSha.text, InboxError.shaRequired.localizedDescription)
+        let bogus = try call(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "added marker", "sha": "deadbeef"])
+        XCTAssertTrue(bogus.isError)
+        XCTAssertTrue(bogus.text.hasPrefix("Error: sha:"), bogus.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+
+        try "ok\n".write(to: tempDir.appendingPathComponent("marker.txt"), atomically: true, encoding: .utf8)
+        try runGit(["add", "marker.txt"], in: tempDir)
+        try runGit(["commit", "-q", "-m", "fix"], in: tempDir)
+        let sha = try runGit(["rev-parse", "HEAD"], in: tempDir)
+        let reported = try call(worker, "linkc_complete_task",
+                                ["task_id": task.id, "status": "done", "summary": "added marker", "sha": String(sha.prefix(7))])
+        XCTAssertFalse(reported.isError, reported.text)
+        XCTAssertEqual(reported.text, "Reported. linkC is verifying at \(sha.prefix(7)).")
+        let t = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(t.state, .reported)
+        XCTAssertEqual(t.report?.sha, sha)
+    }
+
+    func testCompleteTaskEnforcesTheSummaryLimit() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
+        let res = try call(server(as: .codex), "linkc_complete_task",
+                           ["task_id": task.id, "status": "done", "summary": String(repeating: "a", count: 1_001)])
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("the limit is 1,000"), res.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+    }
+
+    func testGetTaskShowsVerificationAndVerdict() throws {
+        let base = String(repeating: "b", count: 40)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Make check pass", files: [],
+                                        verification: Verification(branch: "task/x", baseSha: base, command: "./check.sh", testPaths: ["check.sh"]))
+        try inbox.resolveGate(taskId: task.id, verdict: Verdict(passed: false, sha: base, exitStatus: 0,
+                                                                reason: "tests already pass at bbbbbbb; brief refused",
+                                                                stdoutTail: "GATE_STDOUT_MARKER", stderrTail: ""))
+        let res = try call(server(as: .claude), "linkc_get_task", ["task_id": task.id])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("## Verification"))
+        XCTAssertTrue(res.text.contains("`./check.sh`"))
+        XCTAssertTrue(res.text.contains("## Gate"))
+        XCTAssertTrue(res.text.contains("tests already pass at bbbbbbb; brief refused"))
+        XCTAssertTrue(res.text.contains("GATE_STDOUT_MARKER"))
     }
 }
