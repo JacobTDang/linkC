@@ -118,15 +118,59 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertNil(try store.isAgentLimited(agent: .codex))
     }
 
-    func testCorruptFileFallbackInitializesCleanInbox() throws {
+    // MARK: - An inbox this build cannot decode
+
+    /// Garbage, or a file written by a newer linkC (an unknown task state).
+    private let undecodableInboxes = [
+        "invalid json content",
+        #"{"version": 3, "workspacePath": "/w", "tasks": [{"id": "T1", "state": "teleported"}]}"#
+    ]
+
+    private func writeInbox(_ contents: String) throws -> (url: URL, bytes: Data) {
+        let url = tempDir.appendingPathComponent(".linkc/inbox.json")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let bytes = Data(contents.utf8)
+        try bytes.write(to: url)
+        return (url, bytes)
+    }
+
+    private func assertUndecodable(_ error: Error, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(error.localizedDescription.contains("could not be decoded"), "\(error)", file: file, line: line)
+    }
+
+    /// Read as empty, the next write would replace the file and destroy every task in it.
+    func testUndecodableInboxThrowsOnLoad() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
-        let inboxURL = tempDir.appendingPathComponent(".linkc/inbox.json")
-        try FileManager.default.createDirectory(at: inboxURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "invalid json content".data(using: .utf8)!.write(to: inboxURL)
+        for contents in undecodableInboxes {
+            _ = try writeInbox(contents)
+            XCTAssertThrowsError(try store.load(), contents) { error in
+                let message = error.localizedDescription
+                XCTAssertTrue(message.contains("\(tempDir.lastPathComponent)/.linkc/inbox.json"), message)
+                XCTAssertTrue(message.contains("leaving it untouched"), message)
+            }
+        }
+    }
+
+    func testUndecodableInboxRefusesEveryWriteAndLeavesTheFileUntouched() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let file = try writeInbox(undecodableInboxes[1])
+
+        XCTAssertThrowsError(try store.createTask(from: .claude, to: .codex, prompt: "Build", files: [])) { assertUndecodable($0) }
+        XCTAssertThrowsError(try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "hi")) { assertUndecodable($0) }
+        XCTAssertThrowsError(try store.recordLimit(agent: .codex, reason: "429", cooldown: 60)) { assertUndecodable($0) }
+        XCTAssertThrowsError(try store.cancelTask(taskId: "T1", reason: "stop")) { assertUndecodable($0) }
+
+        XCTAssertEqual(try Data(contentsOf: file.url), file.bytes, "a refused write leaves inbox.json byte-for-byte unchanged")
+    }
+
+    func testMissingInboxFileStillLoadsAsEmpty() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        try FileManager.default.createDirectory(at: tempDir.appendingPathComponent(".linkc"), withIntermediateDirectories: true)
 
         let inbox = try store.load()
-        XCTAssertEqual(inbox.version, 2)
-        XCTAssertTrue(inbox.messages.isEmpty)
+
+        XCTAssertTrue(inbox.messages.isEmpty && inbox.tasks.isEmpty && inbox.agentLimits.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent(".linkc/inbox.json").path), "a load never writes")
     }
 
     func testDecodesV1InboxWithInferredKindsAndEmptyTasks() throws {

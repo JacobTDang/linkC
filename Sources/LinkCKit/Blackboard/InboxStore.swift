@@ -85,6 +85,8 @@ public final class InboxStore: Sendable {
     }
 
     /// Loads the inbox from disk without locking. Internal use inside locked regions.
+    /// A missing file is an empty inbox. A file that does not decode throws: every write loads
+    /// first, so the file is never replaced, and the tasks a newer linkC wrote there survive.
     private func loadUnlocked() throws -> Inbox {
         let fm = FileManager.default
         guard fm.fileExists(atPath: inboxURL.path) else {
@@ -94,8 +96,9 @@ public final class InboxStore: Sendable {
         do {
             return try decoder.decode(Inbox.self, from: data)
         } catch {
-            // Corrupt file fallback
-            return Inbox(workspacePath: workspaceRoot)
+            throw LinkCError.server(
+                "inbox.json at \(inboxURL.path) could not be decoded (\(error)); leaving it untouched. It may have been written by a newer linkC."
+            )
         }
     }
 

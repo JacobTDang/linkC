@@ -466,13 +466,16 @@ final class AppModel {
 
     private func readInboxFromDisk(norm: String) -> Inbox? {
         let inboxURL = URL(fileURLWithPath: (norm as NSString).appendingPathComponent(".linkc/inbox.json"))
-        guard FileManager.default.fileExists(atPath: inboxURL.path),
-              let data = try? Data(contentsOf: inboxURL) else {
+        guard FileManager.default.fileExists(atPath: inboxURL.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: inboxURL)
+            let dec = JSONDecoder()
+            dec.dateDecodingStrategy = .iso8601
+            return try dec.decode(Inbox.self, from: data)
+        } catch {
+            NSLog("[linkC] inbox for %@ could not be read — %@", norm, String(describing: error))
             return nil
         }
-        let dec = JSONDecoder()
-        dec.dateDecodingStrategy = .iso8601
-        return try? dec.decode(Inbox.self, from: data)
     }
 
     /// Refreshes cached inboxes for all active workspaces.
