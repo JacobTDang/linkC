@@ -1022,6 +1022,95 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let plain = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "Plain")
         XCTAssertFalse(AppCoordinator.deliveryFrame(for: plain).contains("Work on branch"))
     }
+
+    // MARK: - End to end: MCP, relay, real git, a real login shell
+
+    /// A repository whose check.sh fails until marker.txt exists, committed on branch task/x.
+    private func makeCheckRepo() throws -> URL {
+        let repo = tempDir.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let check = repo.appendingPathComponent("check.sh")
+        try "#!/bin/sh\ntest -f marker.txt\n".write(to: check, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: check.path)
+        try runGit(["init", "-q", "-b", "main"], in: repo)
+        try runGit(["add", "check.sh"], in: repo)
+        try runGit(["commit", "-q", "-m", "tests"], in: repo)
+        try runGit(["checkout", "-q", "-b", "task/x"], in: repo)
+        return repo
+    }
+
+    private func mcp(_ server: MCPServer, _ name: String, _ args: [String: Any]) throws -> (text: String, isError: Bool) {
+        let request: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["name": name, "arguments": args]]
+        let response = try XCTUnwrap(server.handleMessage(try JSONSerialization.data(withJSONObject: request)))
+        let result = (try JSONSerialization.jsonObject(with: response) as? [String: Any])?["result"] as? [String: Any]
+        let text = ((result?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        return (text, result?["isError"] as? Bool ?? false)
+    }
+
+    /// Delegates a verified task through MCP, waits for the real gate to queue it, and delivers it.
+    @MainActor
+    private func delegateAndGate(_ repo: URL, _ coordinator: AppCoordinator) async throws -> TaskRecord {
+        let inbox = InboxStore(workspaceRoot: repo.path)
+        let delegator = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil })
+        let base = try runGit(["rev-parse", "HEAD"], in: repo)
+        let delegated = try mcp(delegator, "linkc_delegate_task", [
+            "to": "codex", "prompt": "Make check.sh pass",
+            "verify": ["branch": "task/x", "base_sha": base, "command": "./check.sh", "test_paths": ["check.sh"], "timeout_seconds": 60]
+        ])
+        XCTAssertFalse(delegated.isError, delegated.text)
+        let task = try XCTUnwrap(inbox.load().tasks.first)
+        XCTAssertEqual(task.state, .gating)
+
+        coordinator.launchVerifications(workspacePath: repo.path, inboxStore: inbox)
+        let gated = try await waitUntil({ (try? inbox.task(id: task.id))?.state == .queued }, iterations: 500)
+        XCTAssertTrue(gated, "gate: \(String(describing: try? inbox.task(id: task.id)?.gate))")
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "worker")
+        return task
+    }
+
+    /// The worker: commit one file, then report that commit's sha through MCP.
+    private func commitAndReport(_ repo: URL, _ task: TaskRecord, file: String, contents: String) throws -> String {
+        try contents.write(to: repo.appendingPathComponent(file), atomically: true, encoding: .utf8)
+        try runGit(["add", file], in: repo)
+        try runGit(["commit", "-q", "-m", "worker"], in: repo)
+        let sha = try runGit(["rev-parse", "HEAD"], in: repo)
+        let worker = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in nil })
+        let reported = try mcp(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "worker change", "sha": sha])
+        XCTAssertFalse(reported.isError, reported.text)
+        return sha
+    }
+
+    @MainActor
+    func testVerifiedTaskEndToEnd() async throws {
+        let repo = try makeCheckRepo()
+        let inbox = InboxStore(workspaceRoot: repo.path)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let task = try await delegateAndGate(repo, coordinator)
+
+        let sha = try commitAndReport(repo, task, file: "marker.txt", contents: "ok\n")
+        coordinator.launchVerifications(workspacePath: repo.path, inboxStore: inbox)
+
+        let done = try await waitUntil({ (try? inbox.task(id: task.id))?.state == .done }, iterations: 500)
+        XCTAssertTrue(done, "verdict: \(String(describing: try? inbox.task(id: task.id)?.verdict))")
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] done — verified at \(sha.prefix(7))"])
+    }
+
+    @MainActor
+    func testVerifiedTaskFailsWhenTheWorkerEditsTheTests() async throws {
+        let repo = try makeCheckRepo()
+        let inbox = InboxStore(workspaceRoot: repo.path)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let task = try await delegateAndGate(repo, coordinator)
+
+        _ = try commitAndReport(repo, task, file: "check.sh", contents: "#!/bin/sh\nexit 0\n")
+        coordinator.launchVerifications(workspacePath: repo.path, inboxStore: inbox)
+
+        let failed = try await waitUntil({ (try? inbox.task(id: task.id))?.state == .failed }, iterations: 500)
+        XCTAssertTrue(failed, "verdict: \(String(describing: try? inbox.task(id: task.id)?.verdict))")
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] failed — test files modified: check.sh"])
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.
