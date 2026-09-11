@@ -335,5 +335,18 @@ final class MCPServerTaskTests: XCTestCase {
         let myTasks = try call(srv, "linkc_my_tasks")
         XCTAssertTrue(myTasks.isError, myTasks.text)
         XCTAssertTrue(myTasks.text.contains("could not be decoded"), myTasks.text)
+
+        // No modelSwitcher, so linkc_switch_model takes the enqueue path.
+        let switchModel = try call(srv, "linkc_switch_model", ["model": "sonnet"])
+        XCTAssertTrue(switchModel.isError, switchModel.text)
+        XCTAssertTrue(switchModel.text.contains("could not be decoded"), switchModel.text)
+
+        let getModels = try call(srv, "linkc_get_models")
+        XCTAssertTrue(getModels.isError, getModels.text)
+        XCTAssertTrue(getModels.text.contains("could not be decoded"), getModels.text)
+
+        let usageStatus = try call(srv, "linkc_get_usage_status")
+        XCTAssertTrue(usageStatus.isError, usageStatus.text)
+        XCTAssertTrue(usageStatus.text.contains("could not be decoded"), usageStatus.text)
     }
 }

@@ -568,7 +568,11 @@ public final class MCPServer: Sendable {
                     }
                 } else {
                     let cmd = AgentModelCatalog.interactiveSwitchCommand(model: cleanModel, for: agent)
-                    _ = try inboxStore.enqueue(from: agent, to: agent, kind: .command, body: cmd)
+                    do {
+                        _ = try inboxStore.enqueue(from: agent, to: agent, kind: .command, body: cmd)
+                    } catch {
+                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    }
                     return toolResultResponse(id: id, text: "Model switch requested: enqueued '\(cmd)' for \(agent.displayName). linkC will inject it via terminal PTY.")
                 }
 
@@ -590,7 +594,13 @@ public final class MCPServer: Sendable {
                 let now = Date()
                 for agent in targetAgents {
                     text += "## \(agent.displayName) (\(agent.rawValue))\n"
-                    if let limit = try inboxStore.isAgentLimited(agent: agent) {
+                    let limit: AgentLimitStatus?
+                    do {
+                        limit = try inboxStore.isAgentLimited(agent: agent)
+                    } catch {
+                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    }
+                    if let limit {
                         let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
                         let remainingMin = remainingSec / 60
                         text += "⚠️ **Rate Limited**: \(limit.reason) (\(remainingMin)m cooldown remaining)\n\n"
@@ -611,7 +621,12 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(id: id, text: text)
 
             case "linkc_get_usage_status":
-                let inbox = try inboxStore.load()
+                let inbox: Inbox
+                do {
+                    inbox = try inboxStore.load()
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                }
                 let now = Date()
                 var text = "# Workspace Agent Usage & Rate Limits\n\n"
 
