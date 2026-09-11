@@ -195,3 +195,57 @@ final class ProcessRunnerCapturingTests: XCTestCase {
         XCTAssertEqual(pwdPath, expectedPath)
     }
 }
+
+/// `runCapturingSync` spawns the child itself, as the leader of its own process group.
+final class ProcessRunnerSpawnTests: XCTestCase {
+    func testTheChildInheritsTheEnvironment() throws {
+        let result = try LiveProcessRunner.runCapturingSync(executable: "/bin/sh", args: ["-c", "printf %s \"$HOME\""], cwd: nil, timeout: 5)
+        XCTAssertEqual(result.stdout, ProcessInfo.processInfo.environment["HOME"])
+    }
+
+    /// As Foundation's `terminationStatus` reported it: the signal number, not a shell-style 128 + n.
+    func testAChildEndedByASignalReportsTheSignalNumber() throws {
+        let result = try LiveProcessRunner.runCapturingSync(executable: "/bin/sh", args: ["-c", "kill -KILL $$"], cwd: nil, timeout: 5)
+        XCTAssertEqual(result.status, SIGKILL)
+    }
+
+    /// Unique to this test, so pgrep matches nothing else.
+    private let marker = "37.4242"
+
+    /// Processes whose command line holds the marker, as `pid args` lines; empty when none.
+    private func survivors() throws -> String {
+        let result = try LiveProcessRunner.runCapturingSync(executable: "/usr/bin/pgrep", args: ["-fl", marker], cwd: nil, timeout: 5)
+        XCTAssertTrue(result.status == 0 || result.status == 1, "pgrep failed: \(result.stderr)")
+        return result.stdout
+    }
+
+    /// Verification runs `shell -l -c <command>`. For a compound command such as
+    /// `cd pkg && swift test`, the shell forks the real work, and a timeout must stop all of it:
+    /// a survivor keeps SwiftPM's lock and holds both pipes open. SIGTERM goes to the command's
+    /// process group; whatever ignores it gets SIGKILL after a 2 s grace.
+    func testTimeoutKillsEverythingTheCommandStarted() async throws {
+        let commands = [
+            "cd . && sleep \(marker)",
+            "sleep \(marker) & wait",
+            // The grandchild ignores SIGTERM, so only SIGKILL stops it.
+            "(trap '' TERM; exec sleep \(marker)) & wait",
+        ]
+        for command in commands {
+            let started = Date()
+            do {
+                _ = try await LiveProcessRunner().runCapturing("/bin/sh", args: ["-c", command], cwd: nil, timeout: 1)
+                XCTFail("expected a timeout: \(command)")
+            } catch {
+                XCTAssertEqual(error as? ProcessRunnerError, .timedOut(seconds: 1), command)
+            }
+            XCTAssertLessThan(Date().timeIntervalSince(started), 4.5, "must return within a few seconds: \(command)")
+
+            var remaining = try survivors()
+            for _ in 0..<20 where !remaining.isEmpty {
+                try await Task.sleep(for: .milliseconds(100))
+                remaining = try survivors()
+            }
+            XCTAssertEqual(remaining, "", "`\(command)` left processes running after its timeout")
+        }
+    }
+}
