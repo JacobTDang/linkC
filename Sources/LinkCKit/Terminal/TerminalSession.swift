@@ -203,14 +203,18 @@ public final class TerminalSession {
             trimmed.removeLast()
         }
         let multiLine = !trimmed.isEmpty && trimmed.contains("\n")
-        if multiLine && !terminalView.getTerminal().bracketedPasteMode {
-            // The child never negotiated bracketed paste (or hasn't yet), but the alternative — raw
-            // text with embedded newlines — is worse: a line-oriented TUI submits each line
-            // separately and shreds the brief. A TUI that ignores the wrapper bytes is no worse off;
-            // one that honours them is saved.
-            NSLog("linkC: session %@ has not negotiated bracketed paste; sending the paste sequence anyway", id)
+        let negotiatedPaste = terminalView.getTerminal().bracketedPasteMode
+        if multiLine && !negotiatedPaste {
+            // Wrapping this in a bracketed paste anyway would not help: a raw-mode readline shell
+            // (bash, a python or node REPL) that never negotiated paste has no parser looking for
+            // the ESC[200~/ESC[201~ markers, so those bytes can be consumed as partial key
+            // sequences instead of shown as text — worse than sending raw text, not safer. Delivery
+            // now waits for negotiation before a brief is ever injected (see `AppCoordinator.
+            // deliverySettle`), so a caller reaching this path is sending multi-line text directly,
+            // outside that gate — send it raw and let the shell submit it line by line.
+            NSLog("linkC: session %@ has not negotiated bracketed paste; sending raw multi-line text", id)
         }
-        let pasted = multiLine
+        let pasted = multiLine && negotiatedPaste
         if !trimmed.isEmpty {
             if pasted {
                 terminalView.send(data: Self.bracketedPasteStart[0...])
