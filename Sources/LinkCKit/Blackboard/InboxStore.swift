@@ -228,7 +228,13 @@ public final class InboxStore: Sendable {
         }
     }
 
-    /// Records a rate limit or exhaustion cooldown for an agent kind.
+    /// Records a rate limit or exhaustion cooldown for an agent kind. A limit is re-detected
+    /// from the same terminal output on every relay tick until something actually clears it —
+    /// a successful reroute, a person's own intervention, or the cooldown simply expiring — so
+    /// this is called far more than once per real limit. If a live cooldown for this agent
+    /// already exists, its expiry is kept rather than pushed out to `now + cooldown` again:
+    /// overwriting it on every re-record would re-arm the cooldown once a second, forever, and
+    /// the agent would never actually clear. Only an expired cooldown is replaced.
     public func recordLimit(
         agent: AgentKind,
         reason: String,
@@ -238,17 +244,14 @@ public final class InboxStore: Sendable {
         try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             let now = Date()
-            let expiresAt = now.addingTimeInterval(cooldown)
-            let status = AgentLimitStatus(
-                agent: agent,
-                reason: reason,
-                limitedAt: now,
-                cooldownExpiresAt: expiresAt
-            )
             if let index = inbox.agentLimits.firstIndex(where: { $0.agent == agent }) {
-                inbox.agentLimits[index] = status
+                guard inbox.agentLimits[index].cooldownExpiresAt <= now else {
+                    // Still live: nothing to change, so nothing to write.
+                    return
+                }
+                inbox.agentLimits[index] = AgentLimitStatus(agent: agent, reason: reason, limitedAt: now, cooldownExpiresAt: now.addingTimeInterval(cooldown))
             } else {
-                inbox.agentLimits.append(status)
+                inbox.agentLimits.append(AgentLimitStatus(agent: agent, reason: reason, limitedAt: now, cooldownExpiresAt: now.addingTimeInterval(cooldown)))
             }
             inbox.updatedAt = now
             try saveUnlocked(inbox)

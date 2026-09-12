@@ -623,10 +623,14 @@ extension AppCoordinator {
             if let currentTask, let tier = currentTask.tier {
                 // No peer can serve this tier. Cancelling the task and announcing a reroute
                 // would be a lie — nothing was rerouted, and the hop copy could never be
-                // delivered. Leave the task, the session and the delegator untouched; the
-                // session's own rate limit may still clear on its own.
+                // delivered — so the task and the delegator stay untouched. The session must
+                // still be marked, though: leaving it as it was let the top-of-function guard
+                // never trip, so the very next tick re-detected the same banner still sitting
+                // in the scrollback and re-recorded the limit, pushing its own cooldown out
+                // forever. The session's own rate limit may still clear on its own.
                 NSLog("[linkC relay] checkLimitsAndReroute: task %@ tier %@ has no capable peer to reroute to — leaving in place",
                       currentTask.shortId, tier.label)
+                store.updateState(id: session.id, to: .error)
                 return true
             }
             tellDelegator()

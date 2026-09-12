@@ -118,6 +118,44 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertNil(try store.isAgentLimited(agent: .codex))
     }
 
+    /// The relay re-detects an unhandled limit from the same terminal output on every tick, so
+    /// `recordLimit` is called far more than once per real limit. Overwriting a still-live
+    /// cooldown's expiry on every re-record would push it out by another full cooldown window
+    /// each time — the agent would never actually clear. No sleep needed: two back-to-back
+    /// calls already land at measurably different wall-clock times (recordLimit itself does a
+    /// disk write in between), so an overwrite is caught by exact equality without waiting.
+    func testRecordLimitKeepsALiveCooldownsEarlierExpiryInsteadOfPushingItOut() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        try store.recordLimit(agent: .claude, reason: "Rate limit reached", cooldown: 900)
+        let first = try XCTUnwrap(try store.isAgentLimited(agent: .claude)?.cooldownExpiresAt)
+
+        // Re-recording the same still-live limit, as a relay tick that keeps re-detecting the
+        // same banner would, must not push the expiry out.
+        try store.recordLimit(agent: .claude, reason: "Rate limit reached", cooldown: 900)
+        let second = try XCTUnwrap(try store.isAgentLimited(agent: .claude)?.cooldownExpiresAt)
+
+        XCTAssertEqual(first, second, "a live cooldown must keep its expiry, not be pushed out by a re-record")
+    }
+
+    /// An expired cooldown, unlike a live one, may still be replaced — recordLimit must not get
+    /// stuck refusing forever once the earlier limit has actually cleared.
+    func testRecordLimitReplacesAnExpiredCooldown() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        var inbox = try store.load()
+        inbox.agentLimits.append(AgentLimitStatus(
+            agent: .claude,
+            reason: "Rate limit reached",
+            limitedAt: Date().addingTimeInterval(-1000),
+            cooldownExpiresAt: Date().addingTimeInterval(-10) // already expired
+        ))
+        try store.saveRaw(inbox)
+
+        try store.recordLimit(agent: .claude, reason: "Rate limit reached", cooldown: 900)
+
+        let status = try XCTUnwrap(try store.isAgentLimited(agent: .claude))
+        XCTAssertTrue(status.cooldownExpiresAt > Date().addingTimeInterval(800), "an expired cooldown may be replaced with a fresh one")
+    }
+
     // MARK: - An inbox this build cannot decode
 
     /// Garbage, or a file written by a newer linkC (an unknown task state).
