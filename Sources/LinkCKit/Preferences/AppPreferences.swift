@@ -64,12 +64,21 @@ public final class AppPreferences {
         didSet { defaults.set(showsUsageFooter, forKey: Keys.usageFooter) }
     }
 
-    private let defaults: UserDefaults
+    /// Tier → model per agent. Backed by `models.json`, not UserDefaults: `linkc-mcp` is a
+    /// separate process with its own defaults domain and needs to read the same mapping.
+    public var agentModels: AgentModelSettings {
+        didSet { modelStore.save(agentModels) }
+    }
 
-    public init(defaults: UserDefaults = .standard) {
+    private let defaults: UserDefaults
+    private let modelStore: AgentModelStore
+
+    public init(defaults: UserDefaults = .standard, modelStore: AgentModelStore = .applicationSupport) {
         self.defaults = defaults
+        self.modelStore = modelStore
         self.hotKeyPreset = defaults.string(forKey: Keys.hotKey)
             .flatMap(HotKeyPreset.init(rawValue:)) ?? .none
         self.showsUsageFooter = defaults.object(forKey: Keys.usageFooter) as? Bool ?? true
+        self.agentModels = modelStore.load()
     }
 }

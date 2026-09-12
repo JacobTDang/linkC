@@ -51,4 +51,21 @@ final class AppPreferencesTests: XCTestCase {
         defaults.set("not-a-preset", forKey: "hotKeyPreset")
         XCTAssertEqual(AppPreferences(defaults: defaults).hotKeyPreset, .none)
     }
+
+    func testAgentModelsDefaultToTheSeededMappingAndPersistEdits() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-prefs-models-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = AgentModelStore(directory: dir)
+
+        let prefs = AppPreferences(defaults: defaults, modelStore: store)
+        XCTAssertEqual(prefs.agentModels.model(for: .codex, tier: .standard), "gpt-6-sol")
+
+        var edited = prefs.agentModels
+        edited.setModel("gpt-7-nova", for: .codex, tier: .standard)
+        prefs.agentModels = edited
+
+        let reloaded = AppPreferences(defaults: defaults, modelStore: store)
+        XCTAssertEqual(reloaded.agentModels.model(for: .codex, tier: .standard), "gpt-7-nova")
+    }
 }
