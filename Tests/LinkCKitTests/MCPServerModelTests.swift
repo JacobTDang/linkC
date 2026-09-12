@@ -126,6 +126,63 @@ final class MCPServerModelTests: XCTestCase {
         XCTAssertTrue(text.contains("Claude 3.5 Sonnet limit reached"), "Should include limit reason: \(text)")
     }
 
+    // MARK: - modelSettings freshness
+
+    /// The refusal text ("set it in linkC settings") is a lie unless a later call actually sees
+    /// an edit made after the server was constructed. `linkc-mcp` builds one `MCPServer` for the
+    /// life of the CLI process, so a stored snapshot would never notice a settings change.
+    private final class SettingsBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var current: AgentModelSettings
+        init(_ initial: AgentModelSettings) { current = initial }
+        var value: AgentModelSettings {
+            get { lock.lock(); defer { lock.unlock() }; return current }
+            set { lock.lock(); current = newValue; lock.unlock() }
+        }
+    }
+
+    private func getModelsText(_ server: MCPServer, agent: String = "codex") throws -> String {
+        let req = """
+        {
+          "jsonrpc": "2.0",
+          "id": 20,
+          "method": "tools/call",
+          "params": { "name": "linkc_get_models", "arguments": { "agent": "\(agent)" } }
+        }
+        """.data(using: .utf8)!
+        let resData = try XCTUnwrap(server.handleMessage(req))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        let result = resJson?["result"] as? [String: Any]
+        let content = result?["content"] as? [[String: Any]]
+        return content?.first?["text"] as? String ?? ""
+    }
+
+    func testModelSettingsIsReadFreshOnEachCallRatherThanFrozenAtConstruction() throws {
+        var initial = AgentModelSettings.seeded
+        initial.setModel("gpt-6-astra", for: .codex, tier: .deep)
+        let box = SettingsBox(initial)
+
+        let liveServer = MCPServer(
+            workspaceRoot: tempDir.path,
+            inboxStore: inboxStore,
+            environment: ["LINKC_AGENT": "claude"],
+            ancestorResolver: { _ in nil },
+            modelSettings: { box.value }
+        )
+
+        let before = try getModelsText(liveServer)
+        XCTAssertTrue(before.contains("gpt-6-astra"), "Expected the initial mapping: \(before)")
+
+        var edited = box.value
+        edited.setModel("gpt-7-nova", for: .codex, tier: .deep)
+        box.value = edited
+
+        let after = try getModelsText(liveServer)
+        XCTAssertTrue(after.contains("gpt-7-nova"),
+                       "A later call on the same server must see a settings edit, not a snapshot frozen at construction: \(after)")
+        XCTAssertFalse(after.contains("gpt-6-astra"), after)
+    }
+
     // MARK: - linkc_switch_model
 
     func testSwitchModelRejectsPaidOrUnknownModels() throws {

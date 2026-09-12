@@ -26,7 +26,7 @@ final class MCPServerTaskTests: XCTestCase {
         MCPServer(workspaceRoot: tempDir.path,
                   environment: ["LINKC_AGENT": agent.rawValue],
                   ancestorResolver: { _ in nil },
-                  modelSettings: models)
+                  modelSettings: { models })
     }
 
     private func call(_ server: MCPServer, _ name: String, _ args: [String: Any] = [:]) throws -> (text: String, isError: Bool) {

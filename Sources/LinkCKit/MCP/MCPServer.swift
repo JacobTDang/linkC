@@ -11,6 +11,7 @@ public struct MCPCaller: Sendable {
 public final class MCPServer: Sendable {
     public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String) throws -> String
     public typealias AncestorResolver = @Sendable (_ pid: pid_t) -> (agent: AgentKind, pid: pid_t)?
+    public typealias ModelSettingsProvider = @Sendable () -> AgentModelSettings
 
     public let workspaceRoot: String
     public let store: BlackboardStore
@@ -18,7 +19,11 @@ public final class MCPServer: Sendable {
     public let modelSwitcher: ModelSwitcher?
     public let environment: [String: String]
     public let ancestorResolver: AncestorResolver
-    public let modelSettings: AgentModelSettings
+    /// Read fresh on every call, never cached: `linkc-mcp` builds one `MCPServer` for the life
+    /// of the CLI process, so a stored value would freeze the mapping at startup and make the
+    /// "set it in linkC settings" refusal a lie — an edit would never take effect. Mirrors how
+    /// `AppCoordinator` reads its own copy of the same settings.
+    public let modelSettings: ModelSettingsProvider
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -39,7 +44,7 @@ public final class MCPServer: Sendable {
         modelSwitcher: ModelSwitcher? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         ancestorResolver: @escaping AncestorResolver = { ProcessSnooper.detectAgent(inAncestorsOf: $0) },
-        modelSettings: AgentModelSettings = AgentModelStore.applicationSupport.load()
+        modelSettings: @escaping ModelSettingsProvider = { AgentModelStore.applicationSupport.load() }
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -436,6 +441,9 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: verify must be an object.", isError: true)
                 }
 
+                // Read once per request: a stable view of the mapping for the whole handler,
+                // never cached across calls — the next request reads whatever is on disk then.
+                let settings = modelSettings()
                 let tier: ModelTier?
                 if let raw = (args["tier"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
                     guard let parsed = ModelTier(rawValue: raw.lowercased()) else {
@@ -449,10 +457,10 @@ public final class MCPServer: Sendable {
                     // Cursor was never tiered; an omitted tier keeps working exactly as before.
                     tier = nil
                 } else {
-                    tier = modelSettings.defaultTier(for: toAgent)
+                    tier = settings.defaultTier(for: toAgent)
                 }
                 if let tier {
-                    guard modelSettings.model(for: toAgent, tier: tier) != nil else {
+                    guard settings.model(for: toAgent, tier: tier) != nil else {
                         return toolResultResponse(
                             id: id,
                             text: "Error: no model configured for \(toAgent.rawValue) tier \(tier.rawValue) — set it in linkC settings.",
@@ -621,6 +629,7 @@ public final class MCPServer: Sendable {
                     targetAgents = [.claude, .codex, .agy, .cursor]
                 }
 
+                let settings = modelSettings()
                 var text = "# Configured Models by Tier\n\n"
                 let now = Date()
                 for agent in targetAgents {
@@ -643,8 +652,8 @@ public final class MCPServer: Sendable {
                         continue
                     }
                     for tier in ModelTier.resolutionOrder {
-                        let id = modelSettings.model(for: agent, tier: tier) ?? "(not set)"
-                        let marker = tier == modelSettings.defaultTier(for: agent) ? " — default" : ""
+                        let id = settings.model(for: agent, tier: tier) ?? "(not set)"
+                        let marker = tier == settings.defaultTier(for: agent) ? " — default" : ""
                         text += "- **\(tier.rawValue)**: \(id)\(marker)\n"
                     }
                     text += "\n"
