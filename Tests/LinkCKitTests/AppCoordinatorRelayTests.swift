@@ -1071,6 +1071,35 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] expired — gate did not run within 60m"])
     }
 
+    /// A gate may legitimately run for its whole timeout, and may have queued behind another
+    /// run. Expiring it mid-flight tells the delegator the gate never ran and then throws the
+    /// real verdict away.
+    @MainActor
+    func testAGateInFlightIsNotExpired() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let gateStarted = expectation(description: "gate started")
+        let release = expectation(description: "released")
+        let coordinator = makeCoordinator(verifier: BlockingVerifier(started: gateStarted, release: release))
+        defer { coordinator.shutdown(); release.fulfill() }
+
+        let task = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "needs a gate", files: [],
+                                        verification: Verification(branch: "main", baseSha: String(repeating: "a", count: 40),
+                                                                   command: "true", testPaths: ["t"]))
+        coordinator.processPendingMessages(workspacePath: ws)
+        await fulfillment(of: [gateStarted], timeout: 5)
+
+        // Age the row past the expiry window while its gate is still running.
+        var raw = try inbox.load()
+        if let i = raw.tasks.firstIndex(where: { $0.id == task.id }) {
+            raw.tasks[i] = raw.tasks[i].with(createdAt: Date().addingTimeInterval(-2 * 3600))
+        }
+        try inbox.saveRaw(raw)
+
+        coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .gating, "an in-flight gate is not stale")
+    }
+
     @MainActor
     func testReportedTaskSurvivesAssigneeExitButNotItsLease() throws {
         let ws = tempDir.path
@@ -1546,5 +1575,20 @@ private final class BlockingVerifier: TaskVerifier, @unchecked Sendable {
 
     func verify(_ verification: Verification, sha: String, in workspace: URL) async -> Verdict {
         .fixture(passed: true, exit: 0)
+    }
+}
+
+/// Test-only: ages a row without a production setter. Rebuilds through `TaskRecord.init`,
+/// preserving every field.
+private extension TaskRecord {
+    func with(createdAt: Date) -> TaskRecord {
+        TaskRecord(
+            id: id, fromAgent: fromAgent, fromSessionId: fromSessionId, tier: tier, toAgent: toAgent,
+            assigneeSessionId: assigneeSessionId, prompt: prompt, files: files, state: state, hop: hop,
+            createdAt: createdAt, deliveredAt: deliveredAt, startedAt: startedAt, finishedAt: finishedAt,
+            leaseExpiresAt: leaseExpiresAt, report: report, cancelReason: cancelReason,
+            unreportedTurnEndNotified: unreportedTurnEndNotified, verification: verification, gate: gate,
+            verdict: verdict
+        )
     }
 }

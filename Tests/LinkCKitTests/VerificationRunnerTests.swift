@@ -145,6 +145,12 @@ final class VerificationRunnerTests: XCTestCase {
         XCTAssertEqual(verdict.reason, "tests failed at ccccccc (signal 9)")
     }
 
+    func testVerifyDistinguishesACommandThatCouldNotRunFromAFailingTest() async {
+        let verdict = await runner(ScriptedGit(heads: [head]), exits(127)).verify(verification, sha: head, in: workspace)
+        XCTAssertFalse(verdict.passed)
+        XCTAssertEqual(verdict.reason, "command could not run at ccccccc (exit 127)")
+    }
+
     func testVerifyRejectsTheWrongCheckout() async {
         let verdict = await runner(ScriptedGit(heads: [base]), exits(0)).verify(verification, sha: head, in: workspace)
         XCTAssertEqual(verdict.reason, "HEAD is bbbbbbb, expected ccccccc")

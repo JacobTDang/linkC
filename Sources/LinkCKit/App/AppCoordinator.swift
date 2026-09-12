@@ -57,8 +57,9 @@ public final class AppCoordinator {
     let agentPathResolver: (@Sendable (AgentKind) -> String?)?
     /// Runs task gates and verifications off the main actor; injected so tests can script verdicts.
     let verifier: any TaskVerifier
-    /// Workspaces with a verification run in flight — at most one run per workspace.
-    var verificationsInFlight: Set<String> = []
+    /// Workspaces with a verification run in flight, mapped to the task id running there — at
+    /// most one run per workspace. The task id lets expiry skip exactly the task being verified.
+    var verificationsInFlight: [String: String] = [:]
     /// The current tier → model mapping. A closure, not a value, so a settings edit is seen on
     /// the next spawn without anyone re-injecting anything.
     private let modelSettings: @MainActor @Sendable () -> AgentModelSettings

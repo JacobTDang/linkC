@@ -83,6 +83,8 @@ public struct VerificationRunner: TaskVerifier {
         let reason: String?
         if let signal = result.signal {
             reason = "tests failed at \(Self.short(sha)) (signal \(signal))"
+        } else if result.status == 126 || result.status == 127 {
+            reason = "command could not run at \(Self.short(sha)) (exit \(result.status))"
         } else if result.status != 0 {
             reason = "tests failed at \(Self.short(sha)) (exit \(result.status))"
         } else {

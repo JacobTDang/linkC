@@ -60,6 +60,8 @@ extension AppCoordinator {
         let now = Date()
 
         for task in open {
+            // A run in flight is not a stale task. Its own timeout bounds it.
+            if verificationsInFlight[workspacePath] == task.id { continue }
             switch task.state {
             case .gating:
                 if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
@@ -128,7 +130,7 @@ extension AppCoordinator {
         guard workspaceExists(workspacePath) else { return }
         // A verification owns this checkout until it finishes: injecting a brief now would let a
         // worker edit the tree the verdict is about to be measured against.
-        guard !verificationsInFlight.contains(workspacePath) else { return }
+        guard verificationsInFlight[workspacePath] == nil else { return }
         let queued: [TaskRecord]
         do {
             queued = try inboxStore.openTasks().filter { $0.state == .queued }
@@ -182,7 +184,7 @@ extension AppCoordinator {
         guard workspaceExists(workspacePath) else { return }
         // A verification owns this checkout until it finishes: injecting a brief now would let a
         // worker edit the tree the verdict is about to be measured against.
-        guard !verificationsInFlight.contains(workspacePath) else { return }
+        guard verificationsInFlight[workspacePath] == nil else { return }
         let pending: [PendingMessage]
         do {
             pending = try inboxStore.fetchPending()
@@ -280,11 +282,11 @@ extension AppCoordinator {
             }
         }
 
-        guard !verificationsInFlight.contains(workspacePath),
+        guard verificationsInFlight[workspacePath] == nil,
               verificationsInFlight.count < Self.maxConcurrentVerifications,
               let (next, run) = runnable.min(by: { $0.task.createdAt < $1.task.createdAt }) else { return }
 
-        verificationsInFlight.insert(workspacePath)
+        verificationsInFlight[workspacePath] = next.id
         let verifier = self.verifier
         let workspace = URL(fileURLWithPath: workspacePath)
         Task { [weak self] in
@@ -307,7 +309,7 @@ extension AppCoordinator {
     /// Records the verdict and sends the delegator its one line. A task that ended while its run
     /// was in flight rejects the transition; the verdict is logged and dropped.
     func finishVerification(of task: TaskRecord, verdict: Verdict, workspacePath: String) {
-        defer { verificationsInFlight.remove(workspacePath) }
+        defer { verificationsInFlight.removeValue(forKey: workspacePath) }
         guard workspaceExists(workspacePath) else {
             NSLog("[linkC relay] finishVerification: task %@ workspace is gone; verdict dropped", task.shortId)
             return
