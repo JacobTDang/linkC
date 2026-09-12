@@ -7,6 +7,26 @@ public struct MCPCaller: Sendable {
     public var isIdentified: Bool { agent != .shell }
 }
 
+/// Caches the ancestor-walk session lookup for the life of the process: a process's ancestry
+/// never changes while it runs, so re-walking `sysctl`'s `KERN_PROCARGS2` on every guarded tool
+/// call for the life of a long-running `linkc-mcp` process would be wasted work. Only
+/// `MCPServer`'s *default* `sessionResolver` goes through this cache — a resolver a caller
+/// injects (every test, and any future caller that wants a fresh read) bypasses it entirely.
+public enum AncestorSessionCache {
+    /// The real walk. `value`'s `static let` memoizes whatever this returns the first time it is
+    /// read, via Swift's thread-safe one-time static initialization — no hand-rolled locking
+    /// needed for that part. `walk` itself is `nonisolated(unsafe)` only because a mutable global
+    /// needs an escape from strict concurrency checking; production code never reassigns it, and
+    /// a test may reassign it solely to stand in for the real walk *before* first touching
+    /// `value`, letting it count invocations without reading real processes. `public` only
+    /// because `MCPServer.init` is public and its default `sessionResolver` argument reads
+    /// `value` directly, which Swift requires to be at least as visible as the initializer.
+    nonisolated(unsafe) public static var walk: @Sendable () -> String? = {
+        ProcessSnooper.sessionId(inAncestorsOf: getpid())
+    }
+    public static let value: String? = walk()
+}
+
 /// Pure-Swift Model Context Protocol (MCP) server speaking JSON-RPC 2.0.
 public final class MCPServer: Sendable {
     public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String) throws -> String
@@ -23,6 +43,8 @@ public final class MCPServer: Sendable {
     /// Falls back to an ancestor's real environment when ours has no `LINKC_SESSION` — Codex
     /// launches its MCP servers with only `LINKC_AGENT` in the registration's `env` block, so the
     /// session id never reaches `environment` there even though the Codex CLI process has it.
+    /// The default resolver reads `AncestorSessionCache`, so the real ancestor walk runs at most
+    /// once per process; an injected resolver (every test) bypasses that cache entirely.
     public let sessionResolver: SessionResolver
     /// Read fresh on every call, never cached: `linkc-mcp` builds one `MCPServer` for the life
     /// of the CLI process, so a stored value would freeze the mapping at startup and make the
@@ -50,7 +72,7 @@ public final class MCPServer: Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         ancestorResolver: @escaping AncestorResolver = { ProcessSnooper.detectAgent(inAncestorsOf: $0) },
         modelSettings: @escaping ModelSettingsProvider = { AgentModelStore.applicationSupport.load() },
-        sessionResolver: @escaping SessionResolver = { ProcessSnooper.sessionId(inAncestorsOf: getpid()) }
+        sessionResolver: @escaping SessionResolver = { AncestorSessionCache.value }
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)

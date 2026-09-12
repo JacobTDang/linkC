@@ -203,6 +203,35 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertEqual(task.fromSessionId, "session-Z")
     }
 
+    /// A process's ancestry never changes while it runs, so the default resolver's real ancestor
+    /// walk must run at most once for the life of a long-running `linkc-mcp` process rather than
+    /// re-walking `sysctl` on every guarded tool call. `AncestorSessionCache.walk` stands in for
+    /// that walk so this test can count invocations without reading real processes; this is the
+    /// only place in the suite that ever touches the cache, so the result does not depend on test
+    /// execution order.
+    func testDefaultSessionResolverWalksTheAncestryAtMostOnce() throws {
+        final class Counter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var invocations = 0
+            var count: Int { lock.withLock { invocations } }
+            func increment() -> String? {
+                lock.withLock { invocations += 1 }
+                return "stub-session"
+            }
+        }
+        let counter = Counter()
+        AncestorSessionCache.walk = counter.increment
+
+        // No `sessionResolver` argument: this is the real default, which now goes through the
+        // cache instead of walking the ancestry fresh on every call.
+        let server = MCPServer(workspaceRoot: tempDir.path, ancestorResolver: { _ in nil })
+
+        XCTAssertEqual(server.sessionResolver(), "stub-session")
+        XCTAssertEqual(server.sessionResolver(), "stub-session")
+        XCTAssertEqual(server.sessionResolver(), "stub-session")
+        XCTAssertEqual(counter.count, 1, "the ancestor walk must run at most once per process")
+    }
+
     // MARK: - linkc_start_task session scoping (Finding 2)
 
     func testStartTaskBySiblingSessionIsRefusedAndByAssigneeSucceeds() throws {
