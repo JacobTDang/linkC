@@ -18,6 +18,7 @@ public final class MCPServer: Sendable {
     public let modelSwitcher: ModelSwitcher?
     public let environment: [String: String]
     public let ancestorResolver: AncestorResolver
+    public let modelSettings: AgentModelSettings
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -37,7 +38,8 @@ public final class MCPServer: Sendable {
         inboxStore: InboxStore? = nil,
         modelSwitcher: ModelSwitcher? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        ancestorResolver: @escaping AncestorResolver = { ProcessSnooper.detectAgent(inAncestorsOf: $0) }
+        ancestorResolver: @escaping AncestorResolver = { ProcessSnooper.detectAgent(inAncestorsOf: $0) },
+        modelSettings: AgentModelSettings = AgentModelStore.applicationSupport.load()
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -45,6 +47,7 @@ public final class MCPServer: Sendable {
         self.modelSwitcher = modelSwitcher
         self.environment = environment
         self.ancestorResolver = ancestorResolver
+        self.modelSettings = modelSettings
     }
 
     /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified).
@@ -172,6 +175,7 @@ public final class MCPServer: Sendable {
                         "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
                         "pid": ["type": "integer", "description": "Process ID of the sender"],
                         "force": ["type": "boolean", "description": "Override an existing lease held by another assignee"],
+                        "tier": ["type": "string", "description": "Model tier for this task: light, standard or deep. Defaults to the agent's configured default tier."],
                         "verify": [
                             "type": "object",
                             "description": "Make this a verified task. linkC confirms the tests fail at base_sha before delivery, then runs command at the worker's reported sha and decides done or failed itself.",
@@ -432,10 +436,30 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: verify must be an object.", isError: true)
                 }
 
+                let tier: ModelTier
+                if let raw = (args["tier"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+                    guard let parsed = ModelTier(rawValue: raw.lowercased()) else {
+                        return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
+                    }
+                    tier = parsed
+                } else {
+                    tier = modelSettings.defaultTier(for: toAgent)
+                }
+                guard toAgent != .cursor else {
+                    return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
+                }
+                guard modelSettings.model(for: toAgent, tier: tier) != nil else {
+                    return toolResultResponse(
+                        id: id,
+                        text: "Error: no model configured for \(toAgent.rawValue) tier \(tier.rawValue) — set it in linkC settings.",
+                        isError: true)
+                }
+
                 let task: TaskRecord
                 do {
                     task = try inboxStore.createTask(from: caller.agent, to: toAgent,
                                                      fromSessionId: environment["LINKC_SESSION"],
+                                                     tier: tier,
                                                      prompt: prompt, files: files,
                                                      force: force, verification: verification)
                 } catch {
@@ -592,34 +616,29 @@ public final class MCPServer: Sendable {
                     targetAgents = [.claude, .codex, .agy, .cursor]
                 }
 
-                var text = "# Available Free & Subscription Models\n\n"
-                let now = Date()
-                for agent in targetAgents {
-                    text += "## \(agent.displayName) (\(agent.rawValue))\n"
-                    let limit: AgentLimitStatus?
-                    do {
-                        limit = try inboxStore.isAgentLimited(agent: agent)
-                    } catch {
-                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
-                    }
-                    if let limit {
-                        let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
-                        let remainingMin = remainingSec / 60
-                        text += "⚠️ **Rate Limited**: \(limit.reason) (\(remainingMin)m cooldown remaining)\n\n"
-                    } else {
-                        text += "Status: Active / Available\n\n"
-                    }
-                    let models = AgentModelCatalog.models(for: agent)
-                    if models.isEmpty {
-                        text += "_No models defined._\n\n"
-                    } else {
-                        for m in models {
-                            let defaultTag = m.isDefault ? " (Default)" : ""
-                            text += "- **\(m.id)**: \(m.displayName)\(defaultTag)\n"
-                        }
-                        text += "\n"
-                    }
+                // Surface a corrupted inbox the same way every other tool does, even though this
+                // tool otherwise reads only the configured mapping, not task/message state.
+                do {
+                    _ = try inboxStore.load()
+                } catch {
+                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }
+
+                var text = "# Configured Models by Tier\n\n"
+                for agent in targetAgents {
+                    text += "## \(agent.displayName)\n"
+                    if agent == .cursor {
+                        text += "- cursor cannot be pinned to a model\n\n"
+                        continue
+                    }
+                    for tier in ModelTier.resolutionOrder {
+                        let id = modelSettings.model(for: agent, tier: tier) ?? "(not set)"
+                        let marker = tier == modelSettings.defaultTier(for: agent) ? " — default" : ""
+                        text += "- **\(tier.rawValue)**: \(id)\(marker)\n"
+                    }
+                    text += "\n"
+                }
+                text += "Edit these in linkC settings under MODELS.\n"
                 return toolResultResponse(id: id, text: text)
 
             case "linkc_get_usage_status":

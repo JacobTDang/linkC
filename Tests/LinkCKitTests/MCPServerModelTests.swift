@@ -61,20 +61,17 @@ final class MCPServerModelTests: XCTestCase {
         let text = content?.first?["text"] as? String ?? ""
 
         // Header and agent sections
-        XCTAssertTrue(text.contains("Available Free & Subscription Models"), "Missing title: \(text)")
+        XCTAssertTrue(text.contains("Configured Models by Tier"), "Missing title: \(text)")
         XCTAssertTrue(text.contains("Claude"), "Missing Claude section: \(text)")
         XCTAssertTrue(text.contains("Codex"), "Missing Codex section: \(text)")
 
         // Default marker
-        XCTAssertTrue(text.contains("(Default)"), "Expected (Default) tag in: \(text)")
+        XCTAssertTrue(text.contains("— default"), "Expected a default-tier marker in: \(text)")
         XCTAssertTrue(text.contains("sonnet"), "Expected sonnet model in Claude: \(text)")
-        XCTAssertTrue(text.contains("gpt-4o"), "Expected gpt-4o model in Codex: \(text)")
+        XCTAssertTrue(text.contains("gpt-6-sol"), "Expected gpt-6-sol model in Codex: \(text)")
     }
 
-    func testGetModelsForSpecificAgentAndShowsRateLimit() throws {
-        // Record rate limit for Claude
-        try inboxStore.recordLimit(agent: .claude, reason: "Claude 3.5 Sonnet limit reached", cooldown: 600)
-
+    func testGetModelsForSpecificAgentFiltersOutOthers() throws {
         let req = """
         {
           "jsonrpc": "2.0",
@@ -97,8 +94,6 @@ final class MCPServerModelTests: XCTestCase {
 
         XCTAssertTrue(text.contains("Claude"), "Should contain Claude: \(text)")
         XCTAssertFalse(text.contains("Codex"), "Should not contain Codex when agent is claude: \(text)")
-        XCTAssertTrue(text.contains("Rate Limited"), "Should indicate rate limit cooldown: \(text)")
-        XCTAssertTrue(text.contains("Claude 3.5 Sonnet limit reached"), "Should include limit reason: \(text)")
     }
 
     // MARK: - linkc_switch_model

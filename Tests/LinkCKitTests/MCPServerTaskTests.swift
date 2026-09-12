@@ -22,6 +22,13 @@ final class MCPServerTaskTests: XCTestCase {
         MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": agent.rawValue], ancestorResolver: { _ in nil })
     }
 
+    private func server(as agent: AgentKind, models: AgentModelSettings) -> MCPServer {
+        MCPServer(workspaceRoot: tempDir.path,
+                  environment: ["LINKC_AGENT": agent.rawValue],
+                  ancestorResolver: { _ in nil },
+                  modelSettings: models)
+    }
+
     private func call(_ server: MCPServer, _ name: String, _ args: [String: Any] = [:]) throws -> (text: String, isError: Bool) {
         let req: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["name": name, "arguments": args]]
         let data = try JSONSerialization.data(withJSONObject: req)
@@ -348,5 +355,57 @@ final class MCPServerTaskTests: XCTestCase {
         let usageStatus = try call(srv, "linkc_get_usage_status")
         XCTAssertTrue(usageStatus.isError, usageStatus.text)
         XCTAssertTrue(usageStatus.text.contains("could not be decoded"), usageStatus.text)
+    }
+
+    // MARK: - Delegation tiers
+
+    func testDelegateAppliesTheAgentDefaultTierWhenNoneIsGiven() throws {
+        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                           ["to": "codex", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        let task = try XCTUnwrap(inbox.openTasks().first)
+        XCTAssertEqual(task.tier, .standard)
+    }
+
+    func testDelegateRecordsAnExplicitTier() throws {
+        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                           ["to": "codex", "prompt": "Rename a file", "tier": "light"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertEqual(try XCTUnwrap(inbox.openTasks().first).tier, .light)
+    }
+
+    func testDelegateRefusesAnUnknownTier() throws {
+        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                           ["to": "codex", "prompt": "Rename a file", "tier": "cheapest"])
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("tier must be light, standard or deep"), res.text)
+        XCTAssertTrue(try inbox.openTasks().isEmpty, "A refused delegation creates no task")
+    }
+
+    func testDelegateRefusesATierWithNoModelConfigured() throws {
+        var models = AgentModelSettings.seeded
+        models.setModel("", for: .codex, tier: .light)
+        let res = try call(server(as: .claude, models: models), "linkc_delegate_task",
+                           ["to": "codex", "prompt": "Rename a file", "tier": "light"])
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("no model configured for codex tier light — set it in linkC settings"), res.text)
+        XCTAssertTrue(try inbox.openTasks().isEmpty)
+    }
+
+    func testDelegateRefusesATieredTaskForCursor() throws {
+        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                           ["to": "cursor", "prompt": "Rename a file", "tier": "light"])
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("cursor cannot be pinned to a model"), res.text)
+        XCTAssertTrue(try inbox.openTasks().isEmpty)
+    }
+
+    func testGetModelsReportsTheConfiguredMapping() throws {
+        var models = AgentModelSettings.seeded
+        models.setModel("gpt-7-nova", for: .codex, tier: .deep)
+        let res = try call(server(as: .claude, models: models), "linkc_get_models", ["agent": "codex"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("gpt-7-nova"), res.text)
+        XCTAssertTrue(res.text.contains("deep"), res.text)
     }
 }
