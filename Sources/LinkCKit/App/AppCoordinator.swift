@@ -381,6 +381,13 @@ public final class AppCoordinator {
         return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier)
     }
 
+    /// The model configured for `agent` at `tier`, or nil when the mapping has no entry — a
+    /// missing or emptied model, not a substitute. Shared by `launch` (which then leaves the
+    /// session unpinned) and the relay's dispatch (which refuses to spawn at all).
+    func resolvedModel(for agent: AgentKind, tier: ModelTier) -> String? {
+        modelSettings().model(for: agent, tier: tier)
+    }
+
     /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it,
     /// and record it (live, no `endedAt`) in the manifest. The single launch path for both new
     /// sessions and restores. Fails loud: a launch error prunes any partial state and rethrows.
@@ -394,7 +401,7 @@ public final class AppCoordinator {
         id: String? = nil,
         tier: ModelTier? = nil
     ) throws -> Session {
-        let model = tier.flatMap { modelSettings().model(for: agent, tier: $0) }
+        let model = tier.flatMap { resolvedModel(for: agent, tier: $0) }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
                                    model: model, modelTier: model == nil ? nil : tier)
         do {

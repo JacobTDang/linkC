@@ -143,6 +143,15 @@ extension AppCoordinator {
                     && (task.tier == nil || $0.modelTier == task.tier)
             }
             if candidates.isEmpty {
+                // A tiered task whose tier no longer resolves to a model (settings edited while
+                // the task sat queued) must not spawn an unpinned session — that session could
+                // never satisfy `$0.modelTier == task.tier` above, so the next tick would spawn
+                // another one, forever. Leave it queued and say why; do not invent a model.
+                if let tier = task.tier, resolvedModel(for: task.toAgent, tier: tier) == nil {
+                    NSLog("[linkC relay] dispatchTasks: task %@ has no %@ model configured for tier %@ — leaving queued",
+                          task.shortId, task.toAgent.displayName, tier.label)
+                    continue
+                }
                 // Spawn now, deliver on a later tick. A CLI needs seconds to reach its prompt, and a
                 // frame typed into a booting TUI is lost — the worker never sees the task. The session
                 // stays `.starting` until its agent is really running: Claude's SessionStart hook, or

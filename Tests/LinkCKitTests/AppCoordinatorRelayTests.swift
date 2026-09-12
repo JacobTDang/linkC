@@ -1295,6 +1295,26 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
         XCTAssertEqual(copy.tier, .light, "A rerouted task keeps its tier and resolves it through the new agent's mapping")
     }
+
+    /// A tier the settings mapping cannot resolve must never spawn an unpinned session — that
+    /// session could never satisfy the tiered task, so the next tick would spawn another one.
+    @MainActor
+    func testATieredTaskWithNoConfiguredModelStaysQueuedRatherThanSpawning() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var models = AgentModelSettings.seeded
+        models.setModel("", for: .codex, tier: .light)
+        let coordinator = makeCoordinator(models: models)
+        defer { coordinator.shutdown() }
+
+        let task = try inbox.createTask(from: .claude, to: .codex, tier: .light, prompt: "Rename a file", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued, "no candidate and no model to spawn — the task stays queued")
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "an unresolvable tier must never spawn a session, not even once")
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.
