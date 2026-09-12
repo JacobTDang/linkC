@@ -1590,10 +1590,11 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNil(coordinator.store.session(id: session.id)?.modelTier, "An unmapped model leaves no pin to trust")
     }
 
-    /// The mark must land before the text, or a failed mark re-injects the same message every
-    /// tick. dispatchTasks already marks first.
+    /// A mark that throws — lock contention, a read-only workspace, anything under
+    /// `saveUnlocked` — must never let the text reach the terminal, and the row must stay
+    /// `.queued` so the next tick can retry instead of silently losing or doubling it.
     @MainActor
-    func testAMessageIsMarkedDeliveredBeforeItIsInjected() async throws {
+    func testAFailedMarkNeverInjectsTheMessage() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let coordinator = makeCoordinator()
@@ -1601,18 +1602,36 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let session = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new)
         coordinator.store.updateState(id: session.id, to: .ready)
-        let msg = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "one delivery only")
+        let msg = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "should never land")
+
+        // `saveUnlocked` writes a temp file inside `.linkc` and renames it into place; a
+        // read-only `.linkc` makes that write fail while the lock file (already created by
+        // `enqueue` above) still opens fine and `loadUnlocked`'s plain file read still succeeds —
+        // so the read half of the tick works and only the mark's write half throws.
+        let fm = FileManager.default
+        let linkcPath = (ws as NSString).appendingPathComponent(".linkc")
+        let originalPerms = (try fm.attributesOfItem(atPath: linkcPath)[.posixPermissions] as? NSNumber)?.intValue ?? 0o755
+        defer { try? fm.setAttributes([.posixPermissions: originalPerms], ofItemAtPath: linkcPath) }
+        try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: linkcPath)
+
+        // Confirm both halves before relying on them.
+        let stillPending = try inbox.fetchPending()
+        XCTAssertEqual(stillPending.map(\.id), [msg.id], "a read-only .linkc must not break the read")
+        XCTAssertThrowsError(try inbox.markMessageDelivered(id: msg.id), "a read-only .linkc must make the mark throw")
 
         coordinator.processPendingMessages(workspacePath: ws)
-        XCTAssertEqual(try inbox.load().messages.first { $0.id == msg.id }?.status, .delivered)
 
-        // A second tick must not re-inject: assert the text appears exactly once.
-        coordinator.processPendingMessages(workspacePath: ws)
-        let out = try await waitUntil { coordinator.terminals.session(id: session.id)?.recentOutput(lines: 40).contains("one delivery only") ?? false }
-        XCTAssertTrue(out)
-        let occurrences = (coordinator.terminals.session(id: session.id)?.recentOutput(lines: 40) ?? "")
-            .components(separatedBy: "one delivery only").count - 1
-        XCTAssertEqual(occurrences, 1, "a delivered message is never injected twice")
+        try fm.setAttributes([.posixPermissions: originalPerms], ofItemAtPath: linkcPath)
+
+        XCTAssertEqual(try inbox.load().messages.first { $0.id == msg.id }?.status, .queued,
+                       "a failed mark must leave the row queued for the next tick")
+        // The mock agent's echo is asynchronous (pty write → `cat` → SwiftTerm parse), so absence
+        // must be confirmed by polling rather than reading the buffer once: an injection that
+        // hasn't landed yet would otherwise look indistinguishable from one that never happens.
+        let injected = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 40).contains("should never land") ?? false
+        }
+        XCTAssertFalse(injected, "a failed mark must never inject the message")
     }
 }
 
