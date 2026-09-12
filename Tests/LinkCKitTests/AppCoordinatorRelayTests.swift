@@ -1,5 +1,6 @@
 import XCTest
 import os
+import Darwin
 @testable import LinkCKit
 
 /// A wall clock a test can move forward instantly instead of sleeping through it. `Sendable`
@@ -1670,6 +1671,28 @@ final class AppCoordinatorRelayTests: XCTestCase {
                        "a target whose child already exited must never be marked delivered")
         XCTAssertEqual(coordinator.store.session(id: session.id)?.state, .ready,
                        "only the message is skipped; this check does not touch the session record")
+    }
+
+    /// The relay must not hold the main actor waiting on a contended lock. With the inbox lock
+    /// held by another holder, a tick has to give up quickly rather than stalling the UI.
+    @MainActor
+    func testATickDoesNotBlockTheMainActorOnAContendedLock() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        _ = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "brief", files: [])
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let lockPath = tempDir.appendingPathComponent(".linkc/.inbox.lock").path
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        XCTAssertGreaterThan(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        defer { flock(fd, LOCK_UN); close(fd) }
+
+        let start = Date()
+        coordinator.processPendingMessages(workspacePath: ws)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 1.5, "a contended tick must yield quickly, not wait out a 5s timeout per call")
     }
 }
 

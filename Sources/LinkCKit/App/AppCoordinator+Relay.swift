@@ -7,6 +7,14 @@ extension AppCoordinator {
     static let queuedTaskExpiry: TimeInterval = 60 * 60
     /// Verification runs in flight across all workspaces; each is a full build and test run.
     static let maxConcurrentVerifications = 2
+    /// Lock-wait budget for every store call the relay tick itself makes. The default `InboxStore`
+    /// timeout (5s) is sized for a person waiting on one CLI command, not for a `@MainActor` tick
+    /// that runs once a second across every workspace: eight to ten `linkc-mcp` processes write
+    /// the same `inbox.json`, so a single slow writer would otherwise stall the whole UI for up to
+    /// 5s, several times per tick. A contended lock is not a failure here — the tick simply skips
+    /// and the next one retries a second later — so this budget only needs to be short, not zero.
+    /// Matches the blackboard heartbeat's own 0.5s timeout a few lines below in `sampleAgentStates`.
+    static let relayLockTimeout: TimeInterval = 0.5
     /// Minimum time a session must have been paste-ready (see `TerminalSession.pasteReadySince`)
     /// before `dispatchTasks` will deliver to it. Measured against the real Claude CLI:
     /// bracketed-paste negotiation flips true roughly 250-300ms after start, but the CLI cannot
@@ -23,13 +31,44 @@ extension AppCoordinator {
 
     /// One relay tick for `workspacePath`: expire, start verification, then deliver only if no
     /// run holds this checkout. A verification owns HEAD and the tree while it runs.
+    ///
+    /// Each phase gives up on the inbox lock after `Self.relayLockTimeout` rather than the store's
+    /// default 5s. A timeout there is not a failure — the row it would have touched just waits for
+    /// the next tick — but once one phase hits a contended lock, the others almost certainly would
+    /// too (it's the same file), so the tick stops rather than paying the wait four times over.
     public func processPendingMessages(workspacePath: String) {
         let norm = (workspacePath as NSString).standardizingPath
         let inboxStore = InboxStore(workspaceRoot: norm)
-        expireTasks(workspacePath: norm, inboxStore: inboxStore)
-        launchVerifications(workspacePath: norm, inboxStore: inboxStore)
-        dispatchTasks(workspacePath: norm, inboxStore: inboxStore)
-        dispatchMessages(workspacePath: norm, inboxStore: inboxStore)
+        guard !expireTasks(workspacePath: norm, inboxStore: inboxStore) else {
+            return logRelayLockContention(workspacePath: norm)
+        }
+        guard !launchVerifications(workspacePath: norm, inboxStore: inboxStore) else {
+            return logRelayLockContention(workspacePath: norm)
+        }
+        guard !dispatchTasks(workspacePath: norm, inboxStore: inboxStore) else {
+            return logRelayLockContention(workspacePath: norm)
+        }
+        if dispatchMessages(workspacePath: norm, inboxStore: inboxStore) {
+            logRelayLockContention(workspacePath: norm)
+        }
+    }
+
+    /// True when `error` is the store's own lock-acquisition timeout rather than a real failure
+    /// (a corrupt `inbox.json`, a missing row, an illegal transition, ...). `InboxStore` throws
+    /// `LinkCError.server` for all of these and carries no dedicated case for this one, so the
+    /// message text is what distinguishes it — matching the same pattern already used to identify
+    /// a `BlackboardStore` lock timeout.
+    private func isRelayLockTimeout(_ error: Error) -> Bool {
+        guard let linkCError = error as? LinkCError, case .server(let message) = linkCError else { return false }
+        return message.contains("Timed out acquiring inbox lock")
+    }
+
+    /// Logs once that this tick ended early because the inbox lock was still held by another
+    /// writer after `Self.relayLockTimeout`. Never called more than once per `processPendingMessages`
+    /// call — a permanently contended workspace must be visible, not merely idle every tick.
+    private func logRelayLockContention(workspacePath: String) {
+        NSLog("[linkC relay] processPendingMessages: %@ — inbox lock still contended after %.1fs; retrying next tick",
+              workspacePath, Self.relayLockTimeout)
     }
 
     func isIdle(_ state: SessionState) -> Bool {
@@ -60,16 +99,20 @@ extension AppCoordinator {
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
     }
 
-    func expireTasks(workspacePath: String, inboxStore: InboxStore) {
-        guard workspaceExists(workspacePath) else { return }
+    /// Returns `true` when the phase ended early because the inbox lock was still contended after
+    /// `Self.relayLockTimeout` — the caller stops the tick there rather than logging per call.
+    @discardableResult
+    func expireTasks(workspacePath: String, inboxStore: InboxStore) -> Bool {
+        guard workspaceExists(workspacePath) else { return false }
         let open: [TaskRecord]
         do {
-            open = try inboxStore.openTasks()
+            open = try inboxStore.openTasks(timeout: Self.relayLockTimeout)
         } catch {
+            if isRelayLockTimeout(error) { return true }
             NSLog("[linkC relay] expireTasks: open tasks — %@", String(describing: error))
-            return
+            return false
         }
-        guard !open.isEmpty else { return }
+        guard !open.isEmpty else { return false }
         let now = Date()
 
         for task in open {
@@ -79,17 +122,19 @@ extension AppCoordinator {
             case .gating:
                 if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
                     do {
-                        try inboxStore.expireTask(taskId: task.id, reason: "gate did not run within 60m")
-                        try echo("expired — gate did not run within 60m", for: task, inboxStore: inboxStore)
+                        try inboxStore.expireTask(taskId: task.id, reason: "gate did not run within 60m", timeout: Self.relayLockTimeout)
+                        try echo("expired — gate did not run within 60m", for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
                     } catch {
+                        if isRelayLockTimeout(error) { return true }
                         NSLog("[linkC relay] expireTasks: task %@ stale gate — %@", task.shortId, String(describing: error))
                     }
                 }
             case .queued:
                 if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
                     do {
-                        try inboxStore.expireTask(taskId: task.id, reason: "undelivered for 60m")
+                        try inboxStore.expireTask(taskId: task.id, reason: "undelivered for 60m", timeout: Self.relayLockTimeout)
                     } catch {
+                        if isRelayLockTimeout(error) { return true }
                         NSLog("[linkC relay] expireTasks: task %@ stale queued — %@", task.shortId, String(describing: error))
                     }
                 }
@@ -98,16 +143,18 @@ extension AppCoordinator {
                 if !assigneeAlive {
                     let reason = "assignee session ended before reporting"
                     do {
-                        try inboxStore.failTask(taskId: task.id, reason: reason)
-                        try echo("failed — \(reason)", for: task, inboxStore: inboxStore)
+                        try inboxStore.failTask(taskId: task.id, reason: reason, timeout: Self.relayLockTimeout)
+                        try echo("failed — \(reason)", for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
                     } catch {
+                        if isRelayLockTimeout(error) { return true }
                         NSLog("[linkC relay] expireTasks: task %@ dead assignee — %@", task.shortId, String(describing: error))
                     }
                 } else if task.leaseExpiresAt < now {
                     do {
-                        try inboxStore.expireTask(taskId: task.id, reason: "lease expired")
-                        try echo("expired — lease lapsed without a report", for: task, inboxStore: inboxStore)
+                        try inboxStore.expireTask(taskId: task.id, reason: "lease expired", timeout: Self.relayLockTimeout)
+                        try echo("expired — lease lapsed without a report", for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
                     } catch {
+                        if isRelayLockTimeout(error) { return true }
                         NSLog("[linkC relay] expireTasks: task %@ expired lease — %@", task.shortId, String(describing: error))
                     }
                 }
@@ -115,9 +162,10 @@ extension AppCoordinator {
                 // A worker may exit after reporting, so only the lease applies here.
                 if task.leaseExpiresAt < now {
                     do {
-                        try inboxStore.expireTask(taskId: task.id, reason: "lease expired before verification")
-                        try echo("expired — lease lapsed before verification", for: task, inboxStore: inboxStore)
+                        try inboxStore.expireTask(taskId: task.id, reason: "lease expired before verification", timeout: Self.relayLockTimeout)
+                        try echo("expired — lease lapsed before verification", for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
                     } catch {
+                        if isRelayLockTimeout(error) { return true }
                         NSLog("[linkC relay] expireTasks: task %@ reported lease — %@", task.shortId, String(describing: error))
                     }
                 }
@@ -125,33 +173,39 @@ extension AppCoordinator {
                 break
             }
         }
+        return false
     }
 
-    private func echo(_ body: String, for task: TaskRecord, inboxStore: InboxStore) throws {
+    private func echo(_ body: String, for task: TaskRecord, inboxStore: InboxStore, timeout: TimeInterval = 5.0) throws {
         _ = try inboxStore.enqueue(
             from: task.toAgent,
             to: task.fromAgent,
             kind: .completion,
             taskId: task.id,
-            body: body
+            body: body,
+            timeout: timeout
         )
     }
 
     // MARK: - Tasks
 
-    func dispatchTasks(workspacePath: String, inboxStore: InboxStore) {
-        guard workspaceExists(workspacePath) else { return }
+    /// Returns `true` when the phase ended early because the inbox lock was still contended after
+    /// `Self.relayLockTimeout` — the caller stops the tick there rather than logging per call.
+    @discardableResult
+    func dispatchTasks(workspacePath: String, inboxStore: InboxStore) -> Bool {
+        guard workspaceExists(workspacePath) else { return false }
         // A verification owns this checkout until it finishes: injecting a brief now would let a
         // worker edit the tree the verdict is about to be measured against.
-        guard verificationsInFlight[workspacePath] == nil else { return }
+        guard verificationsInFlight[workspacePath] == nil else { return false }
         let queued: [TaskRecord]
         do {
-            queued = try inboxStore.openTasks().filter { $0.state == .queued }
+            queued = try inboxStore.openTasks(timeout: Self.relayLockTimeout).filter { $0.state == .queued }
         } catch {
+            if isRelayLockTimeout(error) { return true }
             NSLog("[linkC relay] dispatchTasks: open tasks — %@", String(describing: error))
-            return
+            return false
         }
-        guard !queued.isEmpty else { return }
+        guard !queued.isEmpty else { return false }
 
         for task in queued {
             let candidates = store.sessions.filter {
@@ -203,37 +257,44 @@ extension AppCoordinator {
             }
 
             do {
-                try inboxStore.markTaskDelivered(taskId: task.id, sessionId: session.id)
+                try inboxStore.markTaskDelivered(taskId: task.id, sessionId: session.id, timeout: Self.relayLockTimeout)
             } catch {
+                if isRelayLockTimeout(error) { return true }
                 NSLog("[linkC relay] dispatchTasks: task %@ mark delivered — %@", task.shortId, String(describing: error))
                 continue
             }
             terminals.sendInput(sessionId: session.id, text: Self.deliveryFrame(for: task))
             store.updateState(id: session.id, to: .working)
         }
+        return false
     }
 
     // MARK: - Messages
 
-    func dispatchMessages(workspacePath: String, inboxStore: InboxStore) {
-        guard workspaceExists(workspacePath) else { return }
+    /// Returns `true` when the phase ended early because the inbox lock was still contended after
+    /// `Self.relayLockTimeout` — the caller stops the tick there rather than logging per call.
+    @discardableResult
+    func dispatchMessages(workspacePath: String, inboxStore: InboxStore) -> Bool {
+        guard workspaceExists(workspacePath) else { return false }
         // A verification owns this checkout until it finishes: injecting a brief now would let a
         // worker edit the tree the verdict is about to be measured against.
-        guard verificationsInFlight[workspacePath] == nil else { return }
+        guard verificationsInFlight[workspacePath] == nil else { return false }
         let pending: [PendingMessage]
         do {
-            pending = try inboxStore.fetchPending()
+            pending = try inboxStore.fetchPending(timeout: Self.relayLockTimeout)
         } catch {
+            if isRelayLockTimeout(error) { return true }
             NSLog("[linkC relay] dispatchMessages: fetch pending — %@", String(describing: error))
-            return
+            return false
         }
-        guard !pending.isEmpty else { return }
+        guard !pending.isEmpty else { return false }
 
         for message in pending where message.status == .queued {
             if message.kind == .notice {
                 do {
-                    try inboxStore.markMessageDelivered(id: message.id)
+                    try inboxStore.markMessageDelivered(id: message.id, timeout: Self.relayLockTimeout)
                 } catch {
+                    if isRelayLockTimeout(error) { return true }
                     NSLog("[linkC relay] dispatchMessages: message %@ mark notice delivered — %@", message.id, String(describing: error))
                 }
                 continue
@@ -263,8 +324,9 @@ extension AppCoordinator {
             // row stays queued and must not be sent this tick, or the next tick injects the same
             // text again on top of it. `dispatchTasks` marks first for the same reason.
             do {
-                try inboxStore.markMessageDelivered(id: message.id)
+                try inboxStore.markMessageDelivered(id: message.id, timeout: Self.relayLockTimeout)
             } catch {
+                if isRelayLockTimeout(error) { return true }
                 NSLog("[linkC relay] dispatchMessages: message %@ mark delivered — %@", message.id, String(describing: error))
                 continue
             }
@@ -279,6 +341,7 @@ extension AppCoordinator {
             }
             if message.kind == .task { store.updateState(id: session.id, to: .working) }
         }
+        return false
     }
 
     // MARK: - Verification
@@ -287,14 +350,18 @@ extension AppCoordinator {
     /// at most one verification run for this workspace, and at most `maxConcurrentVerifications`
     /// overall. Never blocks the main actor: the run awaits the verifier off the main actor and
     /// hops back to record the verdict.
-    func launchVerifications(workspacePath: String, inboxStore: InboxStore) {
-        guard workspaceExists(workspacePath) else { return }
+    /// Returns `true` when the phase ended early because the inbox lock was still contended after
+    /// `Self.relayLockTimeout` — the caller stops the tick there rather than logging per call.
+    @discardableResult
+    func launchVerifications(workspacePath: String, inboxStore: InboxStore) -> Bool {
+        guard workspaceExists(workspacePath) else { return false }
         let open: [TaskRecord]
         do {
-            open = try inboxStore.openTasks()
+            open = try inboxStore.openTasks(timeout: Self.relayLockTimeout)
         } catch {
+            if isRelayLockTimeout(error) { return true }
             NSLog("[linkC relay] launchVerifications: open tasks — %@", String(describing: error))
-            return
+            return false
         }
 
         // Each task's run is decided where the task is classified, below: gating decides gate
@@ -309,30 +376,31 @@ extension AppCoordinator {
                     } else {
                         // Only a hand-edited inbox holds this. Cancel it so it cannot block the workspace.
                         let reason = "gate failed: task has no verification"
-                        try inboxStore.resolveGate(taskId: task.id, verdict: .notRun(reason: reason))
-                        try echo("cancelled — \(reason)", for: task, inboxStore: inboxStore)
+                        try inboxStore.resolveGate(taskId: task.id, verdict: .notRun(reason: reason), timeout: Self.relayLockTimeout)
+                        try echo("cancelled — \(reason)", for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
                     }
                 } else if let verification = task.verification {
                     if task.report?.status != "done" {
-                        try settle(task, reason: "worker reported failure", inboxStore: inboxStore)
+                        try settle(task, reason: "worker reported failure", inboxStore: inboxStore, timeout: Self.relayLockTimeout)
                     } else if let sha = task.report?.sha {
                         runnable.append((task, .verify(verification, sha: sha)))
                     } else {
-                        try settle(task, reason: "report is missing its sha", inboxStore: inboxStore)
+                        try settle(task, reason: "report is missing its sha", inboxStore: inboxStore, timeout: Self.relayLockTimeout)
                     }
                 } else {
-                    try inboxStore.acceptUnverified(taskId: task.id)
+                    try inboxStore.acceptUnverified(taskId: task.id, timeout: Self.relayLockTimeout)
                     let line = task.report?.status == "done" ? "done (unverified)" : "failed — worker reported failure"
-                    try echo(line, for: task, inboxStore: inboxStore)
+                    try echo(line, for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
                 }
             } catch {
+                if isRelayLockTimeout(error) { return true }
                 NSLog("[linkC relay] launchVerifications: task %@ settle — %@", task.shortId, String(describing: error))
             }
         }
 
         guard verificationsInFlight[workspacePath] == nil,
               verificationsInFlight.count < Self.maxConcurrentVerifications,
-              let (next, run) = runnable.min(by: { $0.task.createdAt < $1.task.createdAt }) else { return }
+              let (next, run) = runnable.min(by: { $0.task.createdAt < $1.task.createdAt }) else { return false }
 
         verificationsInFlight[workspacePath] = next.id
         let verifier = self.verifier
@@ -347,11 +415,12 @@ extension AppCoordinator {
             }
             self?.finishVerification(of: next, verdict: verdict, workspacePath: workspacePath)
         }
+        return false
     }
 
-    private func settle(_ task: TaskRecord, reason: String, inboxStore: InboxStore) throws {
-        try inboxStore.adjudicate(taskId: task.id, verdict: .notRun(reason: reason))
-        try echo("failed — \(reason)", for: task, inboxStore: inboxStore)
+    private func settle(_ task: TaskRecord, reason: String, inboxStore: InboxStore, timeout: TimeInterval = 5.0) throws {
+        try inboxStore.adjudicate(taskId: task.id, verdict: .notRun(reason: reason), timeout: timeout)
+        try echo("failed — \(reason)", for: task, inboxStore: inboxStore, timeout: timeout)
     }
 
     /// Records the verdict and sends the delegator its one line. A task that ended while its run
