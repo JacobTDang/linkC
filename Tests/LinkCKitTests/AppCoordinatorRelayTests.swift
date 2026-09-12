@@ -1021,6 +1021,36 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(finished)
     }
 
+    /// A verification owns the checkout while it runs: it executes the delegator's command and
+    /// then requires HEAD and a clean tree to still match the reported sha. Delivering another
+    /// brief into that same working copy mid-run corrupts the verdict.
+    @MainActor
+    func testNoTaskIsDeliveredWhileAVerificationIsInFlight() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let gateStarted = expectation(description: "gate started")
+        let release = expectation(description: "released")
+        let verifier = BlockingVerifier(started: gateStarted, release: release)
+        let coordinator = makeCoordinator(verifier: verifier)
+        defer { coordinator.shutdown(); release.fulfill() }
+
+        let idle = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new, tier: .standard)
+        coordinator.store.updateState(id: idle.id, to: .ready)
+
+        // One task needing a gate, and one already queued and deliverable.
+        _ = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "needs a gate", files: [],
+                                 verification: Verification(branch: "main", baseSha: String(repeating: "a", count: 40),
+                                                            command: "true", testPaths: ["t"]))
+        let deliverable = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "plain brief", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        await fulfillment(of: [gateStarted], timeout: 5)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.task(id: deliverable.id)?.state, .queued,
+                       "nothing may be injected into a checkout under verification")
+    }
+
     @MainActor
     func testGatingTaskExpiresAfterSixtyMinutes() throws {
         let ws = tempDir.path
@@ -1493,5 +1523,28 @@ private final class ScriptedVerifier: TaskVerifier, @unchecked Sendable {
 private extension Verdict {
     static func fixture(passed: Bool, sha: String? = nil, exit: Int32? = nil, reason: String? = nil) -> Verdict {
         Verdict(passed: passed, sha: sha, exitStatus: exit, reason: reason, stdoutTail: "", stderrTail: "")
+    }
+}
+
+/// Parks `gate` until `release` is fulfilled, after signalling `started` — so a test can pump the
+/// relay while a run genuinely holds the checkout. `gate` runs off the main actor, so it parks
+/// with a plain `XCTWaiter` rather than an async continuation crossing actors.
+private final class BlockingVerifier: TaskVerifier, @unchecked Sendable {
+    private let started: XCTestExpectation
+    private let release: XCTestExpectation
+
+    init(started: XCTestExpectation, release: XCTestExpectation) {
+        self.started = started
+        self.release = release
+    }
+
+    func gate(_ verification: Verification, in workspace: URL) async -> Verdict {
+        started.fulfill()
+        _ = await XCTWaiter.fulfillment(of: [release], timeout: 10)
+        return .fixture(passed: true, exit: 1)
+    }
+
+    func verify(_ verification: Verification, sha: String, in workspace: URL) async -> Verdict {
+        .fixture(passed: true, exit: 0)
     }
 }

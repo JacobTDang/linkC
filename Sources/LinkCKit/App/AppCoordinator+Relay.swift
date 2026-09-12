@@ -8,14 +8,15 @@ extension AppCoordinator {
     /// Verification runs in flight across all workspaces; each is a full build and test run.
     static let maxConcurrentVerifications = 2
 
-    /// One relay tick for `workspacePath`: expire, deliver tasks, deliver messages, verify.
+    /// One relay tick for `workspacePath`: expire, start verification, then deliver only if no
+    /// run holds this checkout. A verification owns HEAD and the tree while it runs.
     public func processPendingMessages(workspacePath: String) {
         let norm = (workspacePath as NSString).standardizingPath
         let inboxStore = InboxStore(workspaceRoot: norm)
         expireTasks(workspacePath: norm, inboxStore: inboxStore)
+        launchVerifications(workspacePath: norm, inboxStore: inboxStore)
         dispatchTasks(workspacePath: norm, inboxStore: inboxStore)
         dispatchMessages(workspacePath: norm, inboxStore: inboxStore)
-        launchVerifications(workspacePath: norm, inboxStore: inboxStore)
     }
 
     func isIdle(_ state: SessionState) -> Bool {
@@ -125,6 +126,9 @@ extension AppCoordinator {
 
     func dispatchTasks(workspacePath: String, inboxStore: InboxStore) {
         guard workspaceExists(workspacePath) else { return }
+        // A verification owns this checkout until it finishes: injecting a brief now would let a
+        // worker edit the tree the verdict is about to be measured against.
+        guard !verificationsInFlight.contains(workspacePath) else { return }
         let queued: [TaskRecord]
         do {
             queued = try inboxStore.openTasks().filter { $0.state == .queued }
@@ -176,6 +180,9 @@ extension AppCoordinator {
 
     func dispatchMessages(workspacePath: String, inboxStore: InboxStore) {
         guard workspaceExists(workspacePath) else { return }
+        // A verification owns this checkout until it finishes: injecting a brief now would let a
+        // worker edit the tree the verdict is about to be measured against.
+        guard !verificationsInFlight.contains(workspacePath) else { return }
         let pending: [PendingMessage]
         do {
             pending = try inboxStore.fetchPending()
