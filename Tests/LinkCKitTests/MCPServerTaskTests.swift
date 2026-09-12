@@ -400,6 +400,14 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(try inbox.openTasks().isEmpty)
     }
 
+    func testDelegateToCursorWithNoTierStillWorks() throws {
+        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                           ["to": "cursor", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        let task = try XCTUnwrap(inbox.openTasks().first)
+        XCTAssertNil(task.tier)
+    }
+
     func testGetModelsReportsTheConfiguredMapping() throws {
         var models = AgentModelSettings.seeded
         models.setModel("gpt-7-nova", for: .codex, tier: .deep)

@@ -436,23 +436,28 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: verify must be an object.", isError: true)
                 }
 
-                let tier: ModelTier
+                let tier: ModelTier?
                 if let raw = (args["tier"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
                     guard let parsed = ModelTier(rawValue: raw.lowercased()) else {
                         return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
                     }
+                    guard toAgent != .cursor else {
+                        return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
+                    }
                     tier = parsed
+                } else if toAgent == .cursor {
+                    // Cursor was never tiered; an omitted tier keeps working exactly as before.
+                    tier = nil
                 } else {
                     tier = modelSettings.defaultTier(for: toAgent)
                 }
-                guard toAgent != .cursor else {
-                    return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
-                }
-                guard modelSettings.model(for: toAgent, tier: tier) != nil else {
-                    return toolResultResponse(
-                        id: id,
-                        text: "Error: no model configured for \(toAgent.rawValue) tier \(tier.rawValue) — set it in linkC settings.",
-                        isError: true)
+                if let tier {
+                    guard modelSettings.model(for: toAgent, tier: tier) != nil else {
+                        return toolResultResponse(
+                            id: id,
+                            text: "Error: no model configured for \(toAgent.rawValue) tier \(tier.rawValue) — set it in linkC settings.",
+                            isError: true)
+                    }
                 }
 
                 let task: TaskRecord

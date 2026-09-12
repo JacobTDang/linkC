@@ -214,13 +214,9 @@ final class MCPServerTests: XCTestCase {
     func testDelegateTaskRefusesLeaseConflictUnlessForced() throws {
         let inboxStore = InboxStore(workspaceRoot: tempDir.path)
         let holder = try inboxStore.createTask(from: .claude, to: .codex, prompt: "Own User model", files: ["User.swift"])
-        // Explicit seeded settings: this delegates to agy (not cursor, which can never be
-        // pinned to a model) and must not depend on this machine's real Application Support.
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "claude"],
-                                ancestorResolver: { _ in nil }, modelSettings: .seeded)
 
         func delegate(force: Bool?) throws -> (text: String, isError: Bool) {
-            var arguments: [String: Any] = ["to": "agy", "prompt": "Also touch User model", "files": ["User.swift"], "from": "claude"]
+            var arguments: [String: Any] = ["to": "cursor", "prompt": "Also touch User model", "files": ["User.swift"], "from": "claude"]
             if let force { arguments["force"] = force }
             let req: [String: Any] = ["jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": ["name": "linkc_delegate_task", "arguments": arguments]]
             let resData = try XCTUnwrap(server.handleMessage(try JSONSerialization.data(withJSONObject: req)))
@@ -235,11 +231,11 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(refused.text.contains("Refused"))
         XCTAssertTrue(refused.text.contains("User.swift"))
         XCTAssertTrue(refused.text.contains(holder.shortId))
-        XCTAssertEqual(try inboxStore.openTasks(for: .agy).count, 0)
+        XCTAssertEqual(try inboxStore.openTasks(for: .cursor).count, 0)
 
         let forced = try delegate(force: true)
         XCTAssertFalse(forced.isError, forced.text)
-        XCTAssertEqual(try inboxStore.openTasks(for: .agy).count, 1)
+        XCTAssertEqual(try inboxStore.openTasks(for: .cursor).count, 1)
     }
 
     func testGetInboxReturnsMarkdown() throws {
