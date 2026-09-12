@@ -96,6 +96,36 @@ final class MCPServerModelTests: XCTestCase {
         XCTAssertFalse(text.contains("Codex"), "Should not contain Codex when agent is claude: \(text)")
     }
 
+    func testGetModelsForSpecificAgentAndShowsRateLimit() throws {
+        // Record rate limit for Claude
+        try inboxStore.recordLimit(agent: .claude, reason: "Claude 3.5 Sonnet limit reached", cooldown: 600)
+
+        let req = """
+        {
+          "jsonrpc": "2.0",
+          "id": 3,
+          "method": "tools/call",
+          "params": {
+            "name": "linkc_get_models",
+            "arguments": {
+              "agent": "claude"
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(server.handleMessage(req))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        let result = resJson?["result"] as? [String: Any]
+        let content = result?["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String ?? ""
+
+        XCTAssertTrue(text.contains("Claude"), "Should contain Claude: \(text)")
+        XCTAssertFalse(text.contains("Codex"), "Should not contain Codex when agent is claude: \(text)")
+        XCTAssertTrue(text.contains("Rate Limited"), "Should indicate rate limit cooldown: \(text)")
+        XCTAssertTrue(text.contains("Claude 3.5 Sonnet limit reached"), "Should include limit reason: \(text)")
+    }
+
     // MARK: - linkc_switch_model
 
     func testSwitchModelRejectsPaidOrUnknownModels() throws {

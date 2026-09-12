@@ -621,17 +621,23 @@ public final class MCPServer: Sendable {
                     targetAgents = [.claude, .codex, .agy, .cursor]
                 }
 
-                // Surface a corrupted inbox the same way every other tool does, even though this
-                // tool otherwise reads only the configured mapping, not task/message state.
-                do {
-                    _ = try inboxStore.load()
-                } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
-                }
-
                 var text = "# Configured Models by Tier\n\n"
+                let now = Date()
                 for agent in targetAgents {
                     text += "## \(agent.displayName)\n"
+                    let limit: AgentLimitStatus?
+                    do {
+                        limit = try inboxStore.isAgentLimited(agent: agent)
+                    } catch {
+                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    }
+                    if let limit {
+                        let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
+                        let remainingMin = remainingSec / 60
+                        text += "⚠️ **Rate Limited**: \(limit.reason) (\(remainingMin)m cooldown remaining)\n\n"
+                    } else {
+                        text += "Status: Active / Available\n\n"
+                    }
                     if agent == .cursor {
                         text += "- cursor cannot be pinned to a model\n\n"
                         continue
