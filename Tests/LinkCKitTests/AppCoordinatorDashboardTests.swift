@@ -2,6 +2,16 @@ import XCTest
 @testable import LinkCKit
 
 final class AppCoordinatorDashboardTests: XCTestCase {
+    /// Polls until `predicate` holds (or times out) instead of sleeping a fixed duration.
+    @MainActor
+    private func waitUntil(_ predicate: @MainActor () -> Bool, iterations: Int = 100) async throws -> Bool {
+        for _ in 0..<iterations {
+            if predicate() { return true }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return predicate()
+    }
+
     @MainActor
     func testCoordinatorFetchesProjectAndGlobalDashboard() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -134,12 +144,15 @@ final class AppCoordinatorDashboardTests: XCTestCase {
         let termSession = coordinator.terminals.makeSession(id: session.id, cwd: tempDir.path, title: "claude-session", agentKind: .claude)
         // `stty -echo` matches a real CLI's raw-mode input loop: plain `/bin/cat` leaves the pty's
         // kernel echo on, which would double this multi-line input (once from the kernel, once
-        // from `cat`'s own copy-through) now that `sendInput` always wraps multi-line text in a
-        // bracketed paste.
-        try termSession.start(executable: "/bin/sh", args: ["-c", "stty -echo; exec cat"], env: [:])
-        // Give the shell a moment to actually run `stty -echo` and exec into `cat` before writing:
-        // sending immediately can race the shell's own startup, catching it before echo is off.
-        try await Task.sleep(for: .milliseconds(150))
+        // from `cat`'s own copy-through).
+        try termSession.start(executable: "/bin/sh", args: ["-c", "stty -echo; printf 'MOCK_SHELL_READY\\n'; exec cat"], env: [:])
+        // Poll for the shell's own confirmation that `stty -echo` already ran, instead of
+        // sleeping a fixed duration: writing before that lands would race the shell's own
+        // startup and catch the pty with kernel echo still on.
+        let shellReady = try await waitUntil {
+            termSession.recentOutput(lines: 5).contains("MOCK_SHELL_READY")
+        }
+        XCTAssertTrue(shellReady, "mock shell never confirmed it disabled pty echo")
         termSession.sendInput("Compiling project files\nAll 15 modules built successfully\n")
 
         // Wait for cat to echo the full frame back — not just the first line — before reading it.
