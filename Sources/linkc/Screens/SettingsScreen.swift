@@ -58,17 +58,7 @@ struct SettingsScreen: View {
                         ) {
                             HStack(spacing: 6) {
                                 ForEach(ModelTier.resolutionOrder, id: \.self) { tier in
-                                    TextField(tier.label, text: Binding(
-                                        get: { model.preferences.agentModels.model(for: agent, tier: tier) ?? "" },
-                                        set: { newValue in
-                                            var edited = model.preferences.agentModels
-                                            edited.setModel(newValue, for: agent, tier: tier)
-                                            model.preferences.agentModels = edited
-                                        }
-                                    ))
-                                    .textFieldStyle(.roundedBorder)
-                                    .controlSize(.mini)
-                                    .frame(width: 96)
+                                    TierModelField(preferences: model.preferences, agent: agent, tier: tier)
                                 }
                                 Picker("", selection: Binding(
                                     get: { model.preferences.agentModels.defaultTier(for: agent) },
@@ -187,5 +177,41 @@ private struct SettingRow<Control: View>: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+}
+
+/// One model-id text field. Holds the typed text locally and commits it to preferences only
+/// on submit or on losing focus — never per keystroke, so a half-typed id (e.g. mid-edit
+/// "gpt-6-ast") is never briefly the live mapping a relay tick could launch a session with.
+private struct TierModelField: View {
+    let preferences: AppPreferences
+    let agent: AgentKind
+    let tier: ModelTier
+
+    @State private var text: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField(tier.label, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.mini)
+            .frame(width: 96)
+            .focused($isFocused)
+            .onAppear { text = currentValue }
+            .onSubmit { commit() }
+            .onChange(of: isFocused) { wasFocused, nowFocused in
+                if wasFocused && !nowFocused { commit() }
+            }
+    }
+
+    private var currentValue: String {
+        preferences.agentModels.model(for: agent, tier: tier) ?? ""
+    }
+
+    private func commit() {
+        guard text != currentValue else { return }
+        var edited = preferences.agentModels
+        edited.setModel(text, for: agent, tier: tier)
+        preferences.agentModels = edited
     }
 }
