@@ -185,6 +185,37 @@ final class MCPServerModelTests: XCTestCase {
 
     // MARK: - linkc_switch_model
 
+    /// linkc_get_models advertises the configured tier mapping; switch_model must accept exactly
+    /// what that tool prints, not the separate, stale AgentModelCatalog whitelist.
+    func testSwitchModelAcceptsAModelConfiguredInTheTierMapping() throws {
+        let server = MCPServer(
+            workspaceRoot: tempDir.path,
+            inboxStore: inboxStore,
+            environment: ["LINKC_AGENT": "claude"],
+            ancestorResolver: { _ in nil },
+            modelSettings: { .seeded }
+        )
+        let req = """
+        {
+          "jsonrpc": "2.0",
+          "id": 21,
+          "method": "tools/call",
+          "params": {
+            "name": "linkc_switch_model",
+            "arguments": { "agent": "codex", "model": "gpt-6-astra" }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(server.handleMessage(req))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        let result = resJson?["result"] as? [String: Any]
+        let content = result?["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String ?? ""
+        XCTAssertFalse(result?["isError"] as? Bool ?? false,
+                        "gpt-6-astra is exactly what linkc_get_models advertises for codex's deep tier: \(text)")
+    }
+
     func testSwitchModelRejectsPaidOrUnknownModels() throws {
         let req = """
         {
@@ -208,8 +239,8 @@ final class MCPServerModelTests: XCTestCase {
 
         let content = result?["content"] as? [[String: Any]]
         let text = content?.first?["text"] as? String ?? ""
-        XCTAssertTrue(text.contains("not an allowed free or subscription-tier model"), "Expected rejection: \(text)")
-        XCTAssertTrue(text.contains("Allowed models:"), "Expected allowed list in: \(text)")
+        XCTAssertTrue(text.contains("is not a configured model"), "Expected rejection: \(text)")
+        XCTAssertTrue(text.contains("Configured models:"), "Expected configured list in: \(text)")
     }
 
     func testSwitchModelRejectsShellAgent() throws {
@@ -294,7 +325,7 @@ final class MCPServerModelTests: XCTestCase {
             "name": "linkc_switch_model",
             "arguments": {
               "agent": "codex",
-              "model": "o3-mini"
+              "model": "gpt-6-astra"
             }
           }
         }
@@ -307,7 +338,7 @@ final class MCPServerModelTests: XCTestCase {
 
         let content = result?["content"] as? [[String: Any]]
         let text = content?.first?["text"] as? String ?? ""
-        XCTAssertTrue(text.contains("Model switch requested: enqueued '/model o3-mini' for Codex"), "Unexpected text: \(text)")
+        XCTAssertTrue(text.contains("Model switch requested: enqueued '/model gpt-6-astra' for Codex"), "Unexpected text: \(text)")
 
         // Verify message was enqueued into inboxStore
         let pending = try inboxStore.fetchPending()
@@ -315,7 +346,7 @@ final class MCPServerModelTests: XCTestCase {
         let msg = try XCTUnwrap(pending.first)
         XCTAssertEqual(msg.fromAgent, .codex)
         XCTAssertEqual(msg.toAgent, .codex)
-        XCTAssertEqual(msg.prompt, "/model o3-mini")
+        XCTAssertEqual(msg.prompt, "/model gpt-6-astra")
     }
 
     // MARK: - linkc_get_usage_status

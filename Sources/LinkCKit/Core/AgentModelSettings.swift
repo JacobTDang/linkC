@@ -65,6 +65,21 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
         }
     }
 
+    /// Every model id configured for `agent`, across all tiers, in light → standard → deep
+    /// order and de-duplicated case-insensitively. `switch_model` validates a hand switch
+    /// against this — the live mapping the delegator actually sees via `get_models` — rather
+    /// than `AgentModelCatalog`, which is seed suggestions only, not a whitelist.
+    public func configuredModels(for agent: AgentKind) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for tier in ModelTier.resolutionOrder {
+            guard let id = model(for: agent, tier: tier) else { continue }
+            guard seen.insert(id.lowercased()).inserted else { continue }
+            result.append(id)
+        }
+        return result
+    }
+
     public mutating func setModel(_ id: String, for agent: AgentKind, tier: ModelTier) {
         models[agent.rawValue, default: [:]][tier.rawValue] = id.trimmingCharacters(in: .whitespacesAndNewlines)
     }

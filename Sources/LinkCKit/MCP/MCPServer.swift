@@ -593,9 +593,13 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'model'.", isError: true)
                 }
                 let cleanModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard AgentModelCatalog.isFreeOrSubscription(model: cleanModel, for: agent) else {
-                    let allowed = AgentModelCatalog.models(for: agent).map { $0.id }.joined(separator: ", ")
-                    return toolResultResponse(id: id, text: "Error: '\(cleanModel)' is not an allowed free or subscription-tier model for \(agent.displayName). Allowed models: \(allowed)", isError: true)
+                // Validate against the mapping `linkc_get_models` actually reports — not the
+                // separate, stale AgentModelCatalog whitelist, which would reject every id this
+                // agent is really configured to run.
+                let configured = modelSettings().configuredModels(for: agent)
+                guard configured.contains(where: { $0.caseInsensitiveCompare(cleanModel) == .orderedSame }) else {
+                    let allowed = configured.isEmpty ? "none configured — set one in linkC settings" : configured.joined(separator: ", ")
+                    return toolResultResponse(id: id, text: "Error: '\(cleanModel)' is not a configured model for \(agent.displayName). Configured models: \(allowed)", isError: true)
                 }
 
                 if let modelSwitcher {
