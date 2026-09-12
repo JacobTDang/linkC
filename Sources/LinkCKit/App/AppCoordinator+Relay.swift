@@ -250,6 +250,15 @@ extension AppCoordinator {
             }
             guard let session = target, isIdle(session.state) else { continue }
 
+            // The mark durably records delivery before the terminal ever shows the text, and its
+            // own disk I/O and lock wait sit inside the window between reading `target` above and
+            // `sendInput` below. A child that dies in that window makes `sendInput` drop the text
+            // silently, so the message would be recorded delivered and never shown, with no trace.
+            // This check cannot close the window completely — the child can still die between here
+            // and the send — but it closes the common case, and `sendInput` itself now logs the
+            // residual one.
+            guard terminals.session(id: session.id)?.isRunning == true else { continue }
+
             // Mark before injecting: if the mark throws — a lock timeout under contention — the
             // row stays queued and must not be sent this tick, or the next tick injects the same
             // text again on top of it. `dispatchTasks` marks first for the same reason.

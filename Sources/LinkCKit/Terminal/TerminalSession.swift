@@ -41,6 +41,11 @@ public final class TerminalSession {
     private var childPid: pid_t = -1
     /// The spawned shell's pid (`-1` before spawn). Used by the app to heartbeat presence.
     public var processId: pid_t { childPid }
+    /// True while the child process is alive, reading the same lock `sendInput` and
+    /// `terminate()` guard on. The relay checks this immediately before recording a message as
+    /// delivered — durably marking delivery for a child that is already gone would lose the
+    /// message silently, since `sendInput` drops input for a dead child without a trace.
+    public var isRunning: Bool { liveness.withLock { $0 } }
     /// Idempotence for `terminate()` (main-actor only).
     private var terminationRequested = false
 
@@ -197,7 +202,14 @@ public final class TerminalSession {
     /// Sends text input to the running child process via the terminal PTY and submits it.
     /// Safely ignored if the child process is not alive.
     public func sendInput(_ text: String) {
-        guard liveness.withLock({ $0 }) else { return }
+        guard liveness.withLock({ $0 }) else {
+            // The residual window between a liveness check upstream and this call can never be
+            // closed completely (see `liveness`'s doc). Log rather than drop silently, so a
+            // message a caller believes was delivered — or thinks it sent — leaves a trace here
+            // when it wasn't shown.
+            NSLog("linkC: session %@ dropped input — child process is not running", id)
+            return
+        }
         var trimmed = text
         while trimmed.hasSuffix("\n") || trimmed.hasSuffix("\r") {
             trimmed.removeLast()

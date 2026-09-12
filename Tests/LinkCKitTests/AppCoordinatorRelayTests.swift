@@ -1633,6 +1633,44 @@ final class AppCoordinatorRelayTests: XCTestCase {
         }
         XCTAssertFalse(injected, "a failed mark must never inject the message")
     }
+
+    /// Mark-before-inject means the mark's own disk I/O and lock wait sit inside the window
+    /// between reading the target session and calling `sendInput` — a child that dies in that
+    /// window would otherwise get its message marked `.delivered` and then silently dropped by
+    /// `sendInput`'s liveness guard, with no trace anywhere. The liveness check right before the
+    /// mark must catch a session whose child has already exited and leave the row `.queued`.
+    @MainActor
+    func testDispatchMessagesLeavesTheMessageQueuedWhenTheTargetsChildHasAlreadyExited() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        let terminal = try XCTUnwrap(coordinator.terminals.session(id: session.id))
+
+        // Neutralize the real onTerminated → cleanup wiring: in production, a dead child is
+        // pruned from both the store and terminals as soon as the exit is observed, which would
+        // make `target` nil in `dispatchMessages` and exercise a different path (spawn a fresh
+        // session) than the one this test covers. Killing the child directly, without letting
+        // cleanup run, reproduces the actual race this fix targets: a session that is still
+        // `.ready` and present in the store, but whose process has already exited.
+        terminal.onTerminated = nil
+
+        let msg = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "should never land")
+
+        terminal.terminate()
+        let exited = try await waitUntil { !terminal.isRunning }
+        XCTAssertTrue(exited, "mock agent child never exited")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.load().messages.first { $0.id == msg.id }?.status, .queued,
+                       "a target whose child already exited must never be marked delivered")
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.state, .ready,
+                       "only the message is skipped; this check does not touch the session record")
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.
