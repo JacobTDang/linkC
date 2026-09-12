@@ -54,7 +54,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
         verifier: any TaskVerifier = VerificationRunner(),
         models: AgentModelSettings = .seeded,
         deliverySettle: TimeInterval = 0,
-        now: @escaping @MainActor @Sendable () -> Date = Date.init
+        now: @escaping @MainActor @Sendable () -> Date = Date.init,
+        agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -81,7 +82,9 @@ final class AppCoordinatorRelayTests: XCTestCase {
             settingsDir: settingsDir,
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
-            agentPathResolver: { _ in scriptURL.path },
+            // nil means "use the mock agent script for every kind", matching today's default;
+            // a test overrides it (e.g. to simulate a missing executable) by passing its own.
+            agentPathResolver: agentPathResolver ?? { _ in scriptURL.path },
             verifier: verifier,
             modelSettings: { models },
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
@@ -418,6 +421,41 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertTrue(coordinator.store.sessions.isEmpty, "nothing may be spawned for a missing workspace")
         XCTAssertFalse(FileManager.default.fileExists(atPath: ws), "relay must not recreate a deleted workspace")
+    }
+
+    /// A spawn that cannot happen must say so. Otherwise the task is retried every second for
+    /// four hours and the only symptom is silence.
+    @MainActor
+    func testASpawnFailureIsLoggedAndLeavesTheTaskQueued() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        // No resolver entry for codex: the executable cannot be found.
+        let coordinator = makeCoordinator(agentPathResolver: { _ in nil })
+        defer { coordinator.shutdown() }
+
+        let task = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "brief", files: [])
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "nothing was spawned")
+        XCTAssertEqual(coordinator.lastSpawnFailure?.agent, .codex, "the failure is recorded, not swallowed")
+    }
+
+    /// The `dispatchMessages` spawn site has the identical bug: a peer note with no live target
+    /// session tries to spawn one, and a failure there must be just as visible.
+    @MainActor
+    func testAMessageDispatchSpawnFailureIsLoggedAndLeavesTheMessageQueued() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(agentPathResolver: { _ in nil })
+        defer { coordinator.shutdown() }
+
+        let msg = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "should never land")
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.load().messages.first { $0.id == msg.id }?.status, .queued)
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "nothing was spawned")
+        XCTAssertEqual(coordinator.lastSpawnFailure?.agent, .codex, "the failure is recorded, not swallowed")
     }
 
     /// A limit on a session with nothing in flight records the limit and stops. It must never

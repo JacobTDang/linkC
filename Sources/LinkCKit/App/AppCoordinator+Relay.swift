@@ -229,7 +229,16 @@ extension AppCoordinator {
                 // frame typed into a booting TUI is lost — the worker never sees the task. The session
                 // stays `.starting` until its agent is really running: Claude's SessionStart hook, or
                 // `sampleAgentStates` for every other kind.
-                _ = try? spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier)
+                do {
+                    _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier)
+                } catch {
+                    // Swallowing this used to leave the task `.queued` forever, retried every
+                    // second, with nothing anywhere saying why — the same silence the sibling
+                    // "no model configured" branch above no longer has.
+                    lastSpawnFailure = SpawnFailure(agent: task.toAgent, workspacePath: workspacePath, error: String(describing: error))
+                    NSLog("[linkC relay] dispatchTasks: task %@ could not spawn %@ — %@",
+                          task.shortId, task.toAgent.displayName, String(describing: error))
+                }
                 continue
             }
             let idleCandidates = candidates.filter { isIdle($0.state) }
@@ -306,7 +315,13 @@ extension AppCoordinator {
             if target == nil {
                 // Same rule as tasks: a just-spawned CLI cannot read its terminal yet.
                 let goal: String? = message.kind == .task ? message.prompt : nil
-                _ = try? spawnTeammate(in: workspacePath, agent: message.toAgent, goal: goal)
+                do {
+                    _ = try spawnTeammate(in: workspacePath, agent: message.toAgent, goal: goal)
+                } catch {
+                    lastSpawnFailure = SpawnFailure(agent: message.toAgent, workspacePath: workspacePath, error: String(describing: error))
+                    NSLog("[linkC relay] dispatchMessages: message %@ could not spawn %@ — %@",
+                          message.id, message.toAgent.displayName, String(describing: error))
+                }
                 continue
             }
             guard let session = target, isIdle(session.state) else { continue }

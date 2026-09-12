@@ -60,6 +60,20 @@ public final class AppCoordinator {
     /// Workspaces with a verification run in flight, mapped to the task id running there — at
     /// most one run per workspace. The task id lets expiry skip exactly the task being verified.
     var verificationsInFlight: [String: String] = [:]
+    /// A teammate spawn the relay could not complete.
+    struct SpawnFailure: Equatable, Sendable {
+        let agent: AgentKind
+        let workspacePath: String
+        let error: String
+    }
+    /// The most recent spawn failure (missing executable, a launch error, ...). Without this,
+    /// `_ = try? spawnTeammate(...)` swallowed the failure entirely: the task just sat
+    /// `.queued`, retried once a second, with nothing anywhere saying why. Holds only the
+    /// latest failure — a "last known problem" marker, not a log — so it's assertable in tests
+    /// and available for the UI to surface later. Set from `AppCoordinator+Relay.swift`; no
+    /// access modifier (matches `verificationsInFlight` above) since that setter lives in a
+    /// different file in the same module.
+    var lastSpawnFailure: SpawnFailure?
     /// The current tier → model mapping. A closure, not a value, so a settings edit is seen on
     /// the next spawn without anyone re-injecting anything.
     private let modelSettings: @MainActor @Sendable () -> AgentModelSettings
@@ -453,7 +467,20 @@ public final class AppCoordinator {
                 args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
             } else {
-                guard let resolved = agentPathResolver?(agent) ?? AgentDescriptor.resolveExecutable(for: agent) else {
+                // An injected resolver's own "not found" answer (nil) must not be papered over
+                // by a fallback to the real disk: `agentPathResolver?(agent) ?? ...` cannot
+                // distinguish "no resolver was given" from "the resolver was asked and said no",
+                // so a caller that deliberately simulates a missing executable would silently
+                // find whatever the same kind happens to have installed for real. Only fall
+                // back to disk when no resolver was injected at all — matching how
+                // `checkLimitsAndReroute`'s own candidate check already treats it.
+                let resolved: String?
+                if let agentPathResolver {
+                    resolved = agentPathResolver(agent)
+                } else {
+                    resolved = AgentDescriptor.resolveExecutable(for: agent)
+                }
+                guard let resolved else {
                     throw LinkCError.process("Executable for \(agent.pillText) not found")
                 }
                 executable = resolved
