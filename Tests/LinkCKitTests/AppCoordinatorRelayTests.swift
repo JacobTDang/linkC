@@ -330,6 +330,36 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: ws), "relay must not recreate a deleted workspace")
     }
 
+    /// A limit on a session with nothing in flight records the limit and stops. It must never
+    /// invent work: linkC used to create a "continue from the handoff" task for a peer, and a
+    /// false-positive match then spent that peer's quota on work nobody requested — six times in
+    /// one sitting, because each invented task failed within seconds and so never counted as the
+    /// "recent reroute" that was supposed to suppress the next one.
+    @MainActor
+    func testALimitWithNothingInFlightNeverInventsATask() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: session.id, to: .working)
+
+        coordinator.terminals.sendInput(sessionId: session.id, text: "Usage cap hit.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("Usage cap hit") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id))
+        XCTAssertNotNil(try inbox.isAgentLimited(agent: .claude), "the limit itself is still recorded")
+        XCTAssertTrue(try inbox.openTasks().isEmpty, "no task may be invented")
+
+        // A second tick must not invent one either, however the first was suppressed.
+        _ = coordinator.checkLimitsAndReroute(for: session.id)
+        XCTAssertTrue(try inbox.openTasks().isEmpty, "still no invented task on a later tick")
+    }
+
     /// Test 3: Rate limit on a started task cancels it, writes the handoff with the task's brief, and creates a hop+1 task.
     @MainActor
     func testRateLimitCancelsOriginalTaskWritesHandoffAndCreatesHopOneTask() async throws {

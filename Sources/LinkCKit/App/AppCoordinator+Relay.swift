@@ -527,30 +527,13 @@ extension AppCoordinator {
                 NSLog("[linkC relay] checkLimitsAndReroute: task %@ cancel/hop %d copy — %@", currentTask.shortId, hop + 1, String(describing: error))
             }
         } else {
-            // No task on this session: synthesize one unless a recent reroute already did.
-            let recentCutoff = session.stateChangedAt.addingTimeInterval(-60)
-            let alreadyRerouted: Bool
-            do {
-                alreadyRerouted = try inboxStore.openTasks().contains {
-                    $0.fromAgent == session.agentKind && $0.toAgent == target && $0.createdAt >= recentCutoff
-                }
-            } catch {
-                NSLog("[linkC relay] checkLimitsAndReroute: open tasks for reroute check — %@", String(describing: error))
-                alreadyRerouted = false
-            }
-            if alreadyRerouted {
-                NSLog("[linkC relay] checkLimitsAndReroute: %@ already rerouted to %@; skipping synthesis", session.agentKind.displayName, target.displayName)
-            } else {
-                do {
-                    _ = try inboxStore.createTask(
-                        from: session.agentKind, to: target,
-                        prompt: "Task rerouted from \(session.agentKind.displayName) due to rate limit (\(match.matchedPattern)). Inspect .linkc/HANDOFF.md and continue.",
-                        files: [], hop: hop + 1, force: true
-                    )
-                } catch {
-                    NSLog("[linkC relay] checkLimitsAndReroute: reroute task — %@", String(describing: error))
-                }
-            }
+            // Nothing is in flight, so there is nothing to move. linkC does NOT invent work
+            // here. It used to create a "continue from the handoff" task for a peer, so a
+            // single false-positive match spent another agent's quota on work nobody asked
+            // for. The limit is recorded and the session marked; what to do next is the
+            // person's call.
+            NSLog("[linkC relay] checkLimitsAndReroute: %@ limited (%@) with nothing in flight; recorded only",
+                  session.agentKind.displayName, match.matchedPattern)
         }
 
         store.updateState(id: session.id, to: .error)
