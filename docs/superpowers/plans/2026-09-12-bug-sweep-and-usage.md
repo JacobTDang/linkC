@@ -839,12 +839,13 @@ git commit -m "fix(models): never overwrite a settings file we could not read"
 **Real data.** A Codex rollout line looks like this, and the reader must parse exactly it:
 
 ```json
-{"type":"token_count","info":{"total_token_usage":{"total_tokens":210936}},
- "rate_limits":{"limit_id":"codex","primary":{"used_percent":23.0,"window_minutes":300,"resets_at":1789200270},
- "secondary":{"used_percent":39.0,"window_minutes":10080,"resets_at":1789500060},"plan_type":"plus"}}
+{"timestamp":"2026-09-12T21:09:02.650Z","type":"event_msg","ordinal":46,
+ "payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":210936}},
+  "rate_limits":{"limit_id":"codex","primary":{"used_percent":23.0,"window_minutes":300,"resets_at":1789200270},
+  "secondary":{"used_percent":39.0,"window_minutes":10080,"resets_at":1789500060},"plan_type":"plus"}}}
 ```
 
-`resets_at` is epoch seconds. `window_minutes` 300 renders as `5h`, 10080 as `7d`; any other value renders as `\(minutes)m` rather than being dropped.
+`rate_limits` is nested under `payload`, never at the top level: a real rollout line's envelope is `timestamp` (ISO 8601 with milliseconds), `type` (`"event_msg"`), `ordinal` (an integer) and `payload`, and `payload` holds `type: "token_count"`, `info` and `rate_limits`. `resets_at` is epoch seconds. `window_minutes` 300 renders as `5h`, 10080 as `7d`; any other value renders as `\(minutes)m` rather than being dropped.
 
 - [ ] **Step 1: Write the model and its tests**
 
@@ -903,7 +904,7 @@ final class CodexUsageReaderTests: XCTestCase {
     }
 
     private let record = """
-    {"type":"token_count","info":{"total_token_usage":{"total_tokens":210936}},"rate_limits":{"limit_id":"codex","primary":{"used_percent":23.0,"window_minutes":300,"resets_at":1789200270},"secondary":{"used_percent":39.0,"window_minutes":10080,"resets_at":1789500060},"plan_type":"plus"}}
+    {"timestamp":"2026-09-12T21:09:02.650Z","type":"event_msg","ordinal":46,"payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":210936}},"rate_limits":{"limit_id":"codex","primary":{"used_percent":23.0,"window_minutes":300,"resets_at":1789200270},"secondary":{"used_percent":39.0,"window_minutes":10080,"resets_at":1789500060},"plan_type":"plus"}}}
     """
 
     func testItReadsTheNewestFileThatCarriesLimits() throws {
