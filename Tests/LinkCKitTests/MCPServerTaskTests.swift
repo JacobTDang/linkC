@@ -527,6 +527,16 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.text.contains("tier must be light, standard or deep"), res.text)
     }
 
+    /// An empty string is how some clients send an optional argument they left unset; it must
+    /// resolve to the agent's default tier exactly like an omitted `tier`, not be refused.
+    func testAnEmptyStringTierIsTreatedAsAbsent() throws {
+        // agy, not codex: see testDelegateAppliesTheAgentDefaultTierWhenNoneIsGiven above.
+        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                           ["to": "agy", "prompt": "Rename a file", "tier": ""])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertEqual(try XCTUnwrap(inbox.openTasks().first).tier, .standard)
+    }
+
     func testDelegateRefusesATierWithNoModelConfigured() throws {
         var models = AgentModelSettings.seeded
         models.setModel("", for: .codex, tier: .light)

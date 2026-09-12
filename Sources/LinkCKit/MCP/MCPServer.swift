@@ -459,10 +459,21 @@ public final class MCPServer: Sendable {
                 // Read once per request: a stable view of the mapping for the whole handler,
                 // never cached across calls — the next request reads whatever is on disk then.
                 let settings = modelSettings()
-                let tier: ModelTier?
+                // A non-string `tier` is malformed and refused outright; a string is trimmed and,
+                // if empty or all whitespace, treated the same as an absent argument.
+                let tierArg: String?
                 if let raw = args["tier"] {
-                    guard let text = raw as? String,
-                          let parsed = ModelTier(rawValue: text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+                    guard let text = raw as? String else {
+                        return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
+                    }
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    tierArg = trimmed.isEmpty ? nil : trimmed
+                } else {
+                    tierArg = nil
+                }
+                let tier: ModelTier?
+                if let tierArg {
+                    guard let parsed = ModelTier(rawValue: tierArg.lowercased()) else {
                         return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
                     }
                     guard toAgent != .cursor else {
@@ -943,7 +954,7 @@ public final class MCPServer: Sendable {
     /// the brief must not be able to settle it. A task with no assignee yet is open to its kind,
     /// and a caller with no session id is not locked out — linkC cannot prove it is not the
     /// assignee, and refusing would break agents started outside linkC.
-    func callerMayAct(on task: TaskRecord) -> Bool {
+    private func callerMayAct(on task: TaskRecord) -> Bool {
         guard let assignee = task.assigneeSessionId,
               let caller = callerSessionId() else { return true }
         return assignee == caller
