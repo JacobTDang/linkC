@@ -134,7 +134,27 @@ public final class InboxStore: Sendable {
         let data = try encoder.encode(prunedInbox)
         let tmpURL = linkcDirectory.appendingPathComponent("inbox.tmp.\(UUID().uuidString)")
         try data.write(to: tmpURL, options: .atomic)
-        _ = rename(tmpURL.path, inboxURL.path)
+        guard rename(tmpURL.path, inboxURL.path) == 0 else {
+            let failure = errno
+            throw LinkCError.server("Failed to rename \(tmpURL.path) to \(inboxURL.path): errno \(failure)")
+        }
+        sweepStaleTempFiles()
+    }
+
+    /// Deletes `.linkc/inbox.tmp.*` siblings older than an hour. A crash between the temp write
+    /// above and its rename leaves one of these behind forever — nothing else ever revisits
+    /// them. Piggybacks on every successful save rather than adding a timer; a failed removal
+    /// here is dropped on purpose, not masked: the file is inert (never read by `loadUnlocked`)
+    /// and the next successful save tries the sweep again.
+    private func sweepStaleTempFiles() {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: linkcDirectory, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        let cutoff = Date().addingTimeInterval(-3600)
+        for url in entries where url.lastPathComponent.hasPrefix("inbox.tmp.") {
+            guard let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                  modified < cutoff else { continue }
+            try? fm.removeItem(at: url)
+        }
     }
 
     /// Public load acquiring lock.

@@ -151,4 +151,28 @@ final class BlackboardStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(refreshed.lastHeartbeat, before)
         XCTAssertEqual(board.activeAgents.filter { $0.pid == 4242 }.count, 1)
     }
+
+    /// A crash between the temp write and its rename leaves `.linkc/blackboard.tmp.<uuid>`
+    /// behind forever unless something sweeps it. Every successful save does, but only for a
+    /// sibling old enough to actually be orphaned — a temp file mid-write by a concurrent
+    /// process must survive.
+    func testSaveSweepsAStaleTempFileButKeepsAFreshOne() throws {
+        let store = BlackboardStore(workspaceRoot: tempDir.path)
+        try store.heartbeat(agentKind: .cursor, pid: 1) // prime the .linkc directory
+
+        let linkcDir = tempDir.appendingPathComponent(".linkc")
+        let stale = linkcDir.appendingPathComponent("blackboard.tmp.\(UUID().uuidString)")
+        let fresh = linkcDir.appendingPathComponent("blackboard.tmp.\(UUID().uuidString)")
+        try Data("stale".utf8).write(to: stale)
+        try Data("fresh".utf8).write(to: fresh)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-3700)], // just past the 1h cutoff
+            ofItemAtPath: stale.path
+        )
+
+        try store.heartbeat(agentKind: .cursor, pid: 2) // trigger another save
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path), "a temp file crash-orphaned over an hour ago must be swept")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.path), "a fresh temp file must survive the sweep")
+    }
 }
