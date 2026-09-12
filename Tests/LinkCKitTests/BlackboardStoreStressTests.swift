@@ -130,43 +130,30 @@ final class BlackboardStoreStressTests: XCTestCase {
         XCTAssertEqual(board.projectPath, tempDir.path)
     }
 
-    /// 3. Verifies that a corrupted or truncated blackboard.json on disk does not crash
-    /// the store or cause unhandled exceptions; it resets safely to a fresh blackboard.
-    func testCorruptedJSONRecovery() throws {
+    /// An unreadable blackboard is preserved, not replaced. The app heartbeats every session
+    /// once a second, and each heartbeat is a load-modify-save: if a decode failure read as
+    /// "empty board", the next heartbeat would overwrite the file and every shared note in it.
+    func testCorruptedJSONIsPreservedRatherThanErased() throws {
         let store = BlackboardStore(workspaceRoot: tempDir.path)
+        _ = try store.broadcastIntent(agentKind: .claude, pid: 501, goal: "Initial setup", files: ["Sources/Main.swift"])
+        _ = try store.postNote(authorAgent: .claude, title: "Note", content: "a note nobody can afford to lose")
 
-        // Seed an initial valid state
-        _ = try store.broadcastIntent(
-            agentKind: .claude,
-            pid: 501,
-            goal: "Initial setup",
-            files: ["Sources/Main.swift"]
-        )
+        let path = tempDir.appendingPathComponent(".linkc/blackboard.json").path
+        let good = try Data(contentsOf: URL(fileURLWithPath: path))
+        try Data("{\"version\": 1, \"activeAgents\": [{\"incomplete\": tr".utf8).write(to: URL(fileURLWithPath: path))
 
-        let blackboardPath = tempDir.appendingPathComponent(".linkc/blackboard.json").path
-        XCTAssertTrue(FileManager.default.fileExists(atPath: blackboardPath))
+        XCTAssertThrowsError(try store.load(), "an undecodable board must surface, not read as empty")
+        XCTAssertThrowsError(try store.heartbeat(agentKind: .claude, pid: 501),
+                             "a heartbeat must not be able to overwrite a file it could not read")
 
-        // Deliberately corrupt the file with truncated invalid JSON bytes
-        let garbage = "{\"version\": 1, \"activeAgents\": [{\"incomplete\": tr".data(using: .utf8)!
-        try garbage.write(to: URL(fileURLWithPath: blackboardPath))
+        let after = try Data(contentsOf: URL(fileURLWithPath: path))
+        XCTAssertNotEqual(after, good, "sanity: the file is still the corrupt bytes we wrote")
+        XCTAssertEqual(after.count, 49, "the corrupt file is left exactly as found")
 
-        // Store should gracefully recover to an empty blackboard rather than crashing
-        let recovered = try store.load()
-        XCTAssertEqual(recovered.projectPath, tempDir.path)
-        XCTAssertTrue(recovered.activeAgents.isEmpty)
-
-        // Subsequent writes should succeed cleanly and repair the file
-        let warnings = try store.broadcastIntent(
-            agentKind: .cursor,
-            pid: 502,
-            goal: "After recovery",
-            files: ["Sources/New.swift"]
-        )
-        XCTAssertTrue(warnings.isEmpty)
-
-        let refreshed = try store.load()
-        XCTAssertEqual(refreshed.activeAgents.count, 1)
-        XCTAssertEqual(refreshed.activeAgents.first?.goal, "After recovery")
+        // Repair is a deliberate act: once the bytes are valid again, writes resume.
+        try good.write(to: URL(fileURLWithPath: path))
+        let repaired = try store.load()
+        XCTAssertEqual(repaired.sharedNotes.count, 1)
     }
 
     /// 4. Verifies multiple independent store instances in the same process pointing to the same

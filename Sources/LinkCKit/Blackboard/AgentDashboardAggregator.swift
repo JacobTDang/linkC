@@ -20,7 +20,13 @@ public struct AgentDashboardAggregator: Sendable {
             NSLog("[linkC dashboard] inbox for %@ — %@", norm, String(describing: error))
             inbox = Inbox(workspacePath: norm)
         }
-        let blackboard = (try? blackboardStore.load()) ?? Blackboard(projectPath: norm)
+        let blackboard: Blackboard
+        do {
+            blackboard = try blackboardStore.load()
+        } catch {
+            NSLog("[linkC dashboard] blackboard for %@ — %@", norm, String(describing: error))
+            blackboard = Blackboard(projectPath: norm)
+        }
 
         var activityItems: [AgentActivityItem] = []
         var completedCounts: [AgentKind: Int] = [:]

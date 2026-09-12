@@ -93,8 +93,12 @@ public final class BlackboardStore: Sendable {
         do {
             return try decoder.decode(Blackboard.self, from: data)
         } catch {
-            // Corrupt file fallback
-            return Blackboard(projectPath: workspaceRoot)
+            // Never substitute an empty board. Every mutation here is load-modify-save, and the
+            // app heartbeats once a second per session: returning empty would overwrite the file
+            // and lose every shared note in it. A missing file is legitimately empty (handled
+            // above); an unreadable one is a problem the caller must see.
+            NSLog("linkC: blackboard.json at %@ is unreadable — %@", blackboardURL.path, String(describing: error))
+            throw error
         }
     }
 
