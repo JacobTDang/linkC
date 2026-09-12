@@ -130,6 +130,32 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(try inbox.load().messages.isEmpty, "queued cancel must not inject anything")
     }
 
+    func testOnlyTheAssigneeSessionMayCompleteATask() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "session-A")
+
+        let sibling = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
+                                environment: ["LINKC_AGENT": "codex", "LINKC_SESSION": "session-B"],
+                                ancestorResolver: { _ in nil }, modelSettings: { .seeded })
+        let refused = try call(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "I did it"])
+        XCTAssertTrue(refused.isError, refused.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "a sibling may not settle another session's task")
+
+        let assignee = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
+                                 environment: ["LINKC_AGENT": "codex", "LINKC_SESSION": "session-A"],
+                                 ancestorResolver: { _ in nil }, modelSettings: { .seeded })
+        let ok = try call(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
+        XCTAssertFalse(ok.isError, ok.text)
+    }
+
+    func testAnUnknownSessionMayStillActWhenTheTaskHasNoAssignee() throws {
+        // A queued task has no assignee yet, and a session-less caller (an agent started outside
+        // linkC) must not be locked out of its own kind's work.
+        let task = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "Build", files: [])
+        let res = try call(server(as: .codex, models: .seeded), "linkc_cancel_task", ["task_id": task.id, "reason": "not needed"])
+        XCTAssertFalse(res.isError, res.text)
+    }
+
     func testGetTaskAndMyTasks() throws {
         let mine = try inbox.createTask(from: .claude, to: .codex, prompt: "Assigned to me", files: ["A.swift"])
         let delegated = try inbox.createTask(from: .codex, to: .cursor, prompt: "I delegated this", files: [])
@@ -382,6 +408,13 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.isError)
         XCTAssertTrue(res.text.contains("tier must be light, standard or deep"), res.text)
         XCTAssertTrue(try inbox.openTasks().isEmpty, "A refused delegation creates no task")
+    }
+
+    func testANonStringTierIsRefusedRatherThanIgnored() throws {
+        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                           ["to": "codex", "prompt": "Rename a file", "tier": 3])
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("tier must be light, standard or deep"), res.text)
     }
 
     func testDelegateRefusesATierWithNoModelConfigured() throws {

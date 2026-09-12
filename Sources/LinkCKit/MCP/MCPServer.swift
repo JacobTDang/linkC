@@ -445,8 +445,9 @@ public final class MCPServer: Sendable {
                 // never cached across calls — the next request reads whatever is on disk then.
                 let settings = modelSettings()
                 let tier: ModelTier?
-                if let raw = (args["tier"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-                    guard let parsed = ModelTier(rawValue: raw.lowercased()) else {
+                if let raw = args["tier"] {
+                    guard let text = raw as? String,
+                          let parsed = ModelTier(rawValue: text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
                         return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
                     }
                     guard toAgent != .cursor else {
@@ -710,6 +711,9 @@ public final class MCPServer: Sendable {
                     guard caller.agent == task.toAgent else {
                         return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
                     }
+                    guard callerMayAct(on: task) else {
+                        return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to another session.", isError: true)
+                    }
                     try inboxStore.markTaskStarted(taskId: task.id)
                     let updated = try inboxStore.task(id: task.id) ?? task
                     return toolResultResponse(id: id, text: "Started: \(taskLine(updated))")
@@ -722,6 +726,9 @@ public final class MCPServer: Sendable {
                     let task = try requireTask(args)
                     guard caller.agent == task.toAgent else {
                         return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
+                    }
+                    guard callerMayAct(on: task) else {
+                        return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to another session.", isError: true)
                     }
                     let status = (args["status"] as? String ?? "").lowercased()
                     guard status == "done" || status == "failed" else {
@@ -760,7 +767,8 @@ public final class MCPServer: Sendable {
                 do {
                     let task = try requireTask(args)
                     let force = args["force"] as? Bool ?? false
-                    guard force || caller.agent == task.fromAgent || caller.agent == task.toAgent else {
+                    let isAssignee = caller.agent == task.toAgent && callerMayAct(on: task)
+                    guard force || caller.agent == task.fromAgent || isAssignee else {
                         return toolResultResponse(id: id, text: "Error: only \(task.fromAgent.displayName) or \(task.toAgent.displayName) may cancel task \(task.shortId); pass force: true to override.", isError: true)
                     }
                     let reason = (args["reason"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -796,7 +804,7 @@ public final class MCPServer: Sendable {
                 let assigned: [TaskRecord]
                 let delegated: [TaskRecord]
                 do {
-                    assigned = try inboxStore.openTasks(for: caller.agent)
+                    assigned = try inboxStore.openTasks(for: caller.agent).filter { callerMayAct(on: $0) }
                     delegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
                 } catch {
                     return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
@@ -913,6 +921,17 @@ public final class MCPServer: Sendable {
         }
         guard let task = try inboxStore.task(matching: taskId) else { throw InboxError.taskNotFound(taskId) }
         return task
+    }
+
+    /// A task delivered to a specific session belongs to that session. Several sessions of one
+    /// kind run at once now that sessions are pinned per tier, and a sibling that never received
+    /// the brief must not be able to settle it. A task with no assignee yet is open to its kind,
+    /// and a caller with no session id is not locked out — linkC cannot prove it is not the
+    /// assignee, and refusing would break agents started outside linkC.
+    func callerMayAct(on task: TaskRecord) -> Bool {
+        guard let assignee = task.assigneeSessionId,
+              let caller = environment["LINKC_SESSION"], !caller.isEmpty else { return true }
+        return assignee == caller
     }
 
     private func toolResultResponse(id: Any?, text: String, isError: Bool = false) -> Data? {
