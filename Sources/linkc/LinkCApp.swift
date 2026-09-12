@@ -191,10 +191,11 @@ final class AppModel {
         do {
             let preflight = try Preflight.resolve()
             let terminals = TerminalSessionManager()
+            let prefs = preferences
             let coordinator = AppCoordinator(
                 claudePath: preflight.claudePath,
                 terminals: terminals,
-                modelSettings: { [weak self] in self?.preferences.agentModels ?? .seeded },
+                modelSettings: { prefs.agentModels },
                 isWatching: { [weak self] id in
                     guard let self else { return false }
                     return self.panelVisible && NSApp.isActive && terminals.selectedId == id

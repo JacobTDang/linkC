@@ -41,7 +41,15 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         manifestDir: URL? = nil,
         models: AgentModelSettings = .seeded
     ) -> AppCoordinator {
-        AppCoordinator(
+        let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
+        if !FileManager.default.fileExists(atPath: scriptURL.path) {
+            let scriptContent = "#!/bin/sh\nexec /bin/cat\n"
+            try? scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
+            var attrs = (try? FileManager.default.attributesOfItem(atPath: scriptURL.path)) ?? [:]
+            attrs[.posixPermissions] = 0o755
+            try? FileManager.default.setAttributes(attrs, ofItemAtPath: scriptURL.path)
+        }
+        return AppCoordinator(
             terminals: TerminalSessionManager(),
             hookServer: HookServer(port: 0),
             notifications: NotificationManager(sink: sink, now: { Date() }),
@@ -49,6 +57,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             settingsDir: settingsDir,
             userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-settings.json"),
             manifestDir: manifestDir ?? settingsDir,
+            agentPathResolver: { _ in scriptURL.path },
             modelSettings: { models },
             isWatching: { _ in false }
         )
