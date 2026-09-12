@@ -60,7 +60,7 @@ final class AgentSubmitPtyTests: XCTestCase {
     /// flag flips true roughly 250-300ms after start, but the CLI cannot actually consume input
     /// until roughly 1.5-2s after start — a frame delivered right at negotiation lands in a
     /// composer that isn't listening yet and is lost. `dispatchTasks` now also requires
-    /// `AppCoordinator.deliverySettle` (2s) to have passed since paste was first observed ready.
+    /// `AppCoordinator.defaultDeliverySettle` (2s) to have passed since paste was first observed ready.
     /// This is that boundary: poll for negotiation, wait exactly the settle margin, inject with
     /// no extra slack, and require the frame to arrive whole and be answered.
     func testAMultiLineFrameSurvivesInjectionAfterTheSettleMargin() async throws {
@@ -81,7 +81,7 @@ final class AgentSubmitPtyTests: XCTestCase {
 
         // Negotiation alone is not enough — wait the same settle margin dispatchTasks requires
         // before treating a session as a delivery candidate.
-        try await Task.sleep(for: .seconds(AppCoordinator.deliverySettle))
+        try await Task.sleep(for: .seconds(AppCoordinator.defaultDeliverySettle))
 
         session.sendInput("[linkC test frame]\nAdd one hundred thirty seven to forty two. Reply with the digits only, nothing else.\n\nA second paragraph, so the input takes the bracketed-paste path.")
 

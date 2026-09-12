@@ -13,10 +13,13 @@ extension AppCoordinator {
     /// actually consume input until roughly 1.5-2s after start — a brief delivered right at
     /// negotiation lands in a composer that isn't listening yet and is lost. 2 seconds covers
     /// the measured gap with margin. Production always uses this value; tests override the
-    /// per-instance `AppCoordinator.deliverySettle` to 0 instead of sleeping. Public: it is the
-    /// default for the public designated initializer's `deliverySettle` parameter, and the live
-    /// test waits on it directly.
-    public static let deliverySettle: TimeInterval = 2
+    /// per-instance `deliverySettle` to 0 instead of sleeping. Public: it is the default for the
+    /// public designated initializer's `deliverySettle` parameter, and the live test waits on it
+    /// directly. Named separately from the instance property `deliverySettle` — a static and an
+    /// instance member of the same name resolve unambiguously in Swift, but relying on that
+    /// shadowing here would make the constant harder to spot; `defaultDeliverySettle` is the
+    /// value, `deliverySettle` is whatever's actually in effect.
+    public static let defaultDeliverySettle: TimeInterval = 2
 
     /// One relay tick for `workspacePath`: expire, start verification, then deliver only if no
     /// run holds this checkout. A verification owns HEAD and the tree while it runs.
@@ -185,7 +188,7 @@ extension AppCoordinator {
             // every tick instead of waiting for this one to finish negotiating.
             //
             // Negotiation alone is not enough: a real CLI's flag flips well before it can
-            // actually consume input (see `Self.deliverySettle`), so also require the session to
+            // actually consume input (see `Self.defaultDeliverySettle`), so also require the session to
             // have been ready for at least the settle margin. A session that never settles is
             // simply not a candidate this tick — never dropped, never silently skipped forever —
             // and the log line below fires every tick it's waited on, so it can't starve in

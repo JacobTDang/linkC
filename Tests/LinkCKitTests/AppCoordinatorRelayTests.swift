@@ -346,7 +346,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let clock = ControllableClock()
-        let coordinator = makeCoordinator(deliverySettle: AppCoordinator.deliverySettle, now: clock.now)
+        let coordinator = makeCoordinator(deliverySettle: AppCoordinator.defaultDeliverySettle, now: clock.now)
         defer { coordinator.shutdown() }
 
         let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
@@ -366,7 +366,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         // Move the clock well past the threshold — no real sleep required — and the same idle,
         // negotiated session becomes a valid candidate.
-        clock.set(Date().addingTimeInterval(AppCoordinator.deliverySettle + 1))
+        clock.set(Date().addingTimeInterval(AppCoordinator.defaultDeliverySettle + 1))
         coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "must deliver once the settle margin has elapsed")
         let injected = try await waitUntil {

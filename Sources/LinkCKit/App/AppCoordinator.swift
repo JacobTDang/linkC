@@ -64,9 +64,10 @@ public final class AppCoordinator {
     /// the next spawn without anyone re-injecting anything.
     private let modelSettings: @MainActor @Sendable () -> AgentModelSettings
     /// How long `dispatchTasks` requires a session to have been paste-ready before delivering
-    /// to it. Defaults to `AppCoordinator.deliverySettle`; tests inject 0 so a mock's near-instant
-    /// negotiation is immediately a candidate without a real sleep. Production never overrides
-    /// this — see `AppCoordinator.deliverySettle` for the measurement behind the default.
+    /// to it. Defaults to `AppCoordinator.defaultDeliverySettle`; tests inject 0 so a mock's
+    /// near-instant negotiation is immediately a candidate without a real sleep. Production
+    /// never overrides this — see `AppCoordinator.defaultDeliverySettle` for the measurement
+    /// behind the default.
     let deliverySettle: TimeInterval
     /// Clock `dispatchTasks` reads when comparing `deliverySettle` against a session's
     /// `pasteReadySince`. Defaults to the real wall clock; tests inject a controllable one so
@@ -95,7 +96,7 @@ public final class AppCoordinator {
         claudeJsonURL: URL? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
-        deliverySettle: TimeInterval = AppCoordinator.deliverySettle,
+        deliverySettle: TimeInterval = AppCoordinator.defaultDeliverySettle,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {

@@ -173,7 +173,7 @@ public final class TerminalSession {
     /// set, including if the child later exits. `dispatchTasks` reads this, not the flag alone,
     /// to require a settle margin before treating a session as a delivery candidate: the flag
     /// negotiates well before the CLI can actually consume input (see `AppCoordinator.
-    /// deliverySettle` for the measurement).
+    /// defaultDeliverySettle` for the measurement).
     public private(set) var pasteReadySince: Date?
 
     /// True once the child has turned on bracketed paste — the first moment a multi-line frame
@@ -210,7 +210,7 @@ public final class TerminalSession {
             // the ESC[200~/ESC[201~ markers, so those bytes can be consumed as partial key
             // sequences instead of shown as text — worse than sending raw text, not safer. Delivery
             // now waits for negotiation before a brief is ever injected (see `AppCoordinator.
-            // deliverySettle`), so a caller reaching this path is sending multi-line text directly,
+            // defaultDeliverySettle`), so a caller reaching this path is sending multi-line text directly,
             // outside that gate — send it raw and let the shell submit it line by line.
             NSLog("linkC: session %@ has not negotiated bracketed paste; sending raw multi-line text", id)
         }
