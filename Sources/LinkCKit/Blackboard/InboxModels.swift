@@ -120,6 +120,10 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
 
     public let id: String
     public let fromAgent: AgentKind
+    /// The delegator's own linkC session (its `LINKC_SESSION`), when the caller runs inside one.
+    /// The relay never assigns a task back to it: that terminal is mid-turn, so the frame would
+    /// land in its composer unsent.
+    public let fromSessionId: String?
     public let toAgent: AgentKind
     public var assigneeSessionId: String?
     public let prompt: String
@@ -143,6 +147,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     public init(
         id: String = UUID().uuidString,
         fromAgent: AgentKind,
+        fromSessionId: String? = nil,
         toAgent: AgentKind,
         assigneeSessionId: String? = nil,
         prompt: String,
@@ -163,6 +168,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     ) {
         self.id = id
         self.fromAgent = fromAgent
+        self.fromSessionId = fromSessionId
         self.toAgent = toAgent
         self.assigneeSessionId = assigneeSessionId
         self.prompt = prompt

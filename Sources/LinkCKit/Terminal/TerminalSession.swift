@@ -168,6 +168,10 @@ public final class TerminalSession {
         }
     }
 
+    /// How long a TUI needs to apply a bracketed paste before it will accept Return. Measured
+    /// against the real Claude and Codex CLIs: a Return sent immediately is swallowed.
+    static let pasteSettleMilliseconds = 300
+
     private static let bracketedPasteStart: [UInt8] = [0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e]
     private static let bracketedPasteEnd: [UInt8] = [0x1b, 0x5b, 0x32, 0x30, 0x31, 0x7e]
 
@@ -179,8 +183,9 @@ public final class TerminalSession {
         while trimmed.hasSuffix("\n") || trimmed.hasSuffix("\r") {
             trimmed.removeLast()
         }
+        let pasted = !trimmed.isEmpty && trimmed.contains("\n") && terminalView.getTerminal().bracketedPasteMode
         if !trimmed.isEmpty {
-            if trimmed.contains("\n") && terminalView.getTerminal().bracketedPasteMode {
+            if pasted {
                 terminalView.send(data: Self.bracketedPasteStart[0...])
                 terminalView.send(txt: trimmed)
                 terminalView.send(data: Self.bracketedPasteEnd[0...])
@@ -188,12 +193,26 @@ public final class TerminalSession {
                 terminalView.send(txt: trimmed)
             }
         }
+
+        if pasted {
+            // A task frame is multi-line, so it arrives as a bracketed paste. Agent TUIs buffer that
+            // paste and apply it on a later runloop tick; a Return arriving in the same read is
+            // absorbed by the buffer, leaving the frame sitting in the composer unsent. Let the paste
+            // land first, then submit once.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(Self.pasteSettleMilliseconds))
+                guard let self = self, self.liveness.withLock({ $0 }) else { return }
+                self.terminalView.send(txt: "\r")
+            }
+            return
+        }
+
         terminalView.send(txt: "\r")
         terminalView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
 
         // Delayed newline submission:
         // CLI agents running on Node.js/Ink/React (e.g. Cursor Agent) or complex TTY runloops
-        // process raw paste input asynchronously in a component state update. If Return is sent
+        // process raw input asynchronously in a component state update. If Return is sent
         // exclusively in the same frame/packet, it can be swallowed or discarded before rendering completes.
         // A secondary delayed dispatch guarantees autonomous submission without manual Enter.
         Task { @MainActor [weak self] in

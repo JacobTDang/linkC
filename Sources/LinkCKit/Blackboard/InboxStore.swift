@@ -273,6 +273,7 @@ public final class InboxStore: Sendable {
     public func createTask(
         from: AgentKind,
         to: AgentKind,
+        fromSessionId: String? = nil,
         prompt: String,
         files: [String],
         hop: Int = 0,
@@ -309,7 +310,7 @@ public final class InboxStore: Sendable {
             }
 
             let task = TaskRecord(
-                fromAgent: from, toAgent: to, prompt: prompt, files: normalized,
+                fromAgent: from, fromSessionId: fromSessionId, toAgent: to, prompt: prompt, files: normalized,
                 state: verification == nil || gate != nil ? .queued : .gating, hop: hop,
                 verification: verification, gate: gate
             )

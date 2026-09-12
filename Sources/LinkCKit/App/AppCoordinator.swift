@@ -584,7 +584,10 @@ public final class AppCoordinator {
                         notifications.post(session: updated)
                     }
                     relayTurnEnd(sessionId: session.id, workspacePath: session.cwd)
-                } else if currentSession.state == .starting {
+                } else if currentSession.state == .starting,
+                          ProcessSnooper.detectAgent(inProcessTreeOf: term.processId) != nil {
+                    // A booting TUI is also silent. Promote only once the agent CLI is actually
+                    // running, or the relay types the next frame into a process that cannot read it.
                     store.updateState(id: session.id, to: .ready)
                 }
             }

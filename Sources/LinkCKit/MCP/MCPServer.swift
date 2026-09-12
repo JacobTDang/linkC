@@ -434,7 +434,9 @@ public final class MCPServer: Sendable {
 
                 let task: TaskRecord
                 do {
-                    task = try inboxStore.createTask(from: caller.agent, to: toAgent, prompt: prompt, files: files,
+                    task = try inboxStore.createTask(from: caller.agent, to: toAgent,
+                                                     fromSessionId: environment["LINKC_SESSION"],
+                                                     prompt: prompt, files: files,
                                                      force: force, verification: verification)
                 } catch {
                     return toolResultResponse(id: id, text: error.localizedDescription, isError: true)

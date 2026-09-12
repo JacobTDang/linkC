@@ -68,9 +68,11 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
     // MARK: - Test Cases
 
-    /// Test 1: A queued task auto-spawns the assignee and is delivered exactly once with the v2 frame.
+    /// Test 1: A queued task auto-spawns the assignee but waits for it to come up before injecting.
+    /// A CLI needs seconds to reach its prompt; a frame typed into a booting TUI is lost, and the
+    /// worker never sees the task.
     @MainActor
-    func testQueuedTaskAutoSpawnsAssigneeAndDeliversFramedBrief() async throws {
+    func testQueuedTaskSpawnsAssigneeAndWaitsForItToBeReadyBeforeDelivering() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Refactor database migrations", files: ["db/migrations.sql"])
@@ -83,12 +85,20 @@ final class AppCoordinatorRelayTests: XCTestCase {
         guard let codexSession = coordinator.store.sessions.first(where: { $0.agentKind == .codex }) else {
             return XCTFail("Expected codex session to be auto-spawned")
         }
+        XCTAssertEqual(codexSession.state, .starting, "A freshly spawned session is not ready to receive input")
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued, "Nothing may be injected until the agent is up")
+
+        let term = coordinator.terminals.session(id: codexSession.id)
+        XCTAssertFalse((term?.recentOutput(lines: 20) ?? "").contains("[linkC task \(task.shortId)"), "No frame may reach a booting TUI")
+
+        coordinator.store.updateState(id: codexSession.id, to: .ready)
+        coordinator.processPendingMessages(workspacePath: ws)
+
         let delivered = try XCTUnwrap(inbox.task(id: task.id))
         XCTAssertEqual(delivered.state, .delivered)
         XCTAssertEqual(delivered.assigneeSessionId, codexSession.id)
         XCTAssertNotNil(delivered.deliveredAt)
 
-        let term = coordinator.terminals.session(id: codexSession.id)
         let echoed = try await waitUntil {
             let out = term?.recentOutput(lines: 20) ?? ""
             // Substrings kept short: the PTY may wrap long lines at the terminal width.
@@ -102,6 +112,32 @@ final class AppCoordinatorRelayTests: XCTestCase {
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
         XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .codex }.count, 1)
+    }
+
+    /// Test 1b: A task is never handed back to the session that delegated it. That session is the
+    /// delegator's own terminal — it is mid-turn, and the frame lands in its composer unsent.
+    @MainActor
+    func testTaskIsNeverDeliveredToTheDelegatorsOwnSession() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let delegator = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: delegator.id, to: .ready)
+
+        let task = try inbox.createTask(from: .codex, to: .codex, fromSessionId: delegator.id, prompt: "Summarize the failing spec", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued, "The delegator's own session must not be its own assignee")
+
+        let peer = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: peer.id, to: .ready)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        let delivered = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(delivered.state, .delivered)
+        XCTAssertEqual(delivered.assigneeSessionId, peer.id)
     }
 
     /// Test 2: Busy assignee delays the task until idle; only one session of that kind receives it.
@@ -263,8 +299,13 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
         coordinator.processPendingMessages(workspacePath: ws)
 
-        XCTAssertEqual(try inbox.load().messages.first?.status, .delivered)
+        // The first tick only spawns: a booting CLI cannot read its terminal yet.
+        XCTAssertEqual(try inbox.load().messages.first?.status, .queued)
         let codex = try XCTUnwrap(coordinator.store.sessions.first { $0.agentKind == .codex })
+        coordinator.store.updateState(id: codex.id, to: .ready)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.load().messages.first?.status, .delivered)
         let echoed = try await waitUntil {
             coordinator.terminals.session(id: codex.id)?.recentOutput(lines: 10).contains("Old style brief") ?? false
         }

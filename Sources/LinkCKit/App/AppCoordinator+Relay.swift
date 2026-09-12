@@ -136,15 +136,18 @@ extension AppCoordinator {
 
         for task in queued {
             let candidates = store.sessions.filter {
-                ($0.cwd as NSString).standardizingPath == workspacePath && $0.agentKind == task.toAgent && $0.state != .ended
+                ($0.cwd as NSString).standardizingPath == workspacePath && $0.agentKind == task.toAgent
+                    && $0.state != .ended && $0.id != task.fromSessionId
             }
-            var target = candidates.first { isIdle($0.state) }
-            if target == nil && candidates.isEmpty {
-                guard let spawned = try? spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt) else { continue }
-                store.updateState(id: spawned.id, to: .ready)
-                target = store.session(id: spawned.id) ?? spawned
+            if candidates.isEmpty {
+                // Spawn now, deliver on a later tick. A CLI needs seconds to reach its prompt, and a
+                // frame typed into a booting TUI is lost — the worker never sees the task. The session
+                // stays `.starting` until its agent is really running: Claude's SessionStart hook, or
+                // `sampleAgentStates` for every other kind.
+                _ = try? spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt)
+                continue
             }
-            guard let session = target else { continue } // all busy: wait for a later tick
+            guard let session = candidates.first(where: { isIdle($0.state) }) else { continue } // all busy: wait for a later tick
 
             do {
                 try inboxStore.markTaskDelivered(taskId: task.id, sessionId: session.id)
@@ -184,10 +187,10 @@ extension AppCoordinator {
                 ($0.cwd as NSString).standardizingPath == workspacePath && $0.agentKind == message.toAgent && $0.state != .ended
             }
             if target == nil {
+                // Same rule as tasks: a just-spawned CLI cannot read its terminal yet.
                 let goal: String? = message.kind == .task ? message.prompt : nil
-                guard let spawned = try? spawnTeammate(in: workspacePath, agent: message.toAgent, goal: goal) else { continue }
-                store.updateState(id: spawned.id, to: .ready)
-                target = store.session(id: spawned.id) ?? spawned
+                _ = try? spawnTeammate(in: workspacePath, agent: message.toAgent, goal: goal)
+                continue
             }
             guard let session = target, isIdle(session.state) else { continue }
 
