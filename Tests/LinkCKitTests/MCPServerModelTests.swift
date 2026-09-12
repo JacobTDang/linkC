@@ -69,7 +69,29 @@ final class MCPServerModelTests: XCTestCase {
         XCTAssertTrue(text.contains("— default"), "Expected a default-tier marker in: \(text)")
         XCTAssertTrue(text.contains("sonnet"), "Expected sonnet model in Claude: \(text)")
         XCTAssertTrue(text.contains("gpt-6-astra"), "Expected gpt-6-astra model in Codex: \(text)")
-        XCTAssertTrue(text.contains("(not set)"), "Codex's light and standard tiers are unconfigured in the seed: \(text)")
+        XCTAssertTrue(text.contains("gpt-5.6-sol"), "Expected the seeded codex standard model: \(text)")
+    }
+
+    /// A tier nobody has configured must say so, rather than rendering as an empty value that
+    /// reads like a model name.
+    func testGetModelsMarksAnUnconfiguredTierAsNotSet() throws {
+        var edited = AgentModelSettings.seeded
+        edited.setModel("", for: .codex, tier: .light)
+        let settings = edited   // a @Sendable closure cannot capture a var
+        let bare = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore,
+                             environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
+                             modelSettings: { settings })
+
+        let req = """
+        {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "linkc_get_models", "arguments": {"agent": "codex"}}}
+        """.data(using: .utf8)!
+        let resData = try XCTUnwrap(bare.handleMessage(req))
+        let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
+        let result = resJson?["result"] as? [String: Any]
+        let text = ((result?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+
+        XCTAssertTrue(text.contains("**light**: (not set)"), "An unconfigured tier must render as (not set): \(text)")
+        XCTAssertTrue(text.contains("gpt-5.6-sol"), "Configured tiers still render their id: \(text)")
     }
 
     func testGetModelsForSpecificAgentFiltersOutOthers() throws {
