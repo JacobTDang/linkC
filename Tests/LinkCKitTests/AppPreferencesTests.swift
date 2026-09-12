@@ -59,7 +59,7 @@ final class AppPreferencesTests: XCTestCase {
         let store = AgentModelStore(directory: dir)
 
         let prefs = AppPreferences(defaults: defaults, modelStore: store)
-        XCTAssertEqual(prefs.agentModels.model(for: .codex, tier: .standard), "gpt-6-sol")
+        XCTAssertEqual(prefs.agentModels.model(for: .codex, tier: .deep), "gpt-6-astra")
 
         var edited = prefs.agentModels
         edited.setModel("gpt-7-nova", for: .codex, tier: .standard)

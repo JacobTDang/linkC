@@ -12,7 +12,7 @@
 
 - Spec: `docs/superpowers/specs/2026-09-11-per-task-model-selection-design.md`. Where this plan and the spec disagree, ask — do not guess.
 - Tiers are exactly `light`, `standard`, `deep`. Delegation never names a raw model id.
-- Seeded mapping, verbatim: claude `light: haiku`, `standard: sonnet`, `deep: opus`; codex `light: gpt-6-luna`, `standard: gpt-6-sol`, `deep: gpt-6-astra`; agy `light: flash_lite`, `standard: flash`, `deep: pro`. Default tier for every agent: `standard`. Cursor has no mapping.
+- Seeded mapping, verbatim: claude `light: haiku`, `standard: sonnet`, `deep: opus`; codex `light: ` (unconfigured), `standard: ` (unconfigured), `deep: gpt-6-astra`; agy `light: gemini-3.8-flash-low`, `standard: gemini-3.8-flash-medium`, `deep: gemini-3.1-pro-high`. Default tier for every agent: `standard`. Cursor has no mapping. An empty entry means that tier is unconfigured and delegation refuses loudly — codex's `light` and `standard` are empty because `gpt-6-sol` and `gpt-6-luna` both failed against the real CLI (HTTP 400); only `gpt-6-astra` is verified.
 - Refusal texts, verbatim: `tier must be light, standard or deep`; `no model configured for <agent> tier <tier> — set it in linkC settings`; `cursor cannot be pinned to a model`.
 - `TaskRecord.tier` is `ModelTier?`, never required. `loadUnlocked` throws on a decode error, so a required field would make pre-existing task rows unreadable and take the inbox with them.
 - A model id that maps to two tiers resolves to the lighter one, scanning `light`, then `standard`, then `deep`.

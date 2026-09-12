@@ -46,19 +46,27 @@ A tier never names a raw model id. Providers rename models often, and a rate-lim
 - `modelForTier: [AgentKind: [ModelTier: String]]` — the model id launched for each tier.
 - `defaultTier: [AgentKind: ModelTier]` — the tier a task gets when the delegator does not name one.
 
-Seeded on first run with today's models, which is the only place they are written down:
+Seeded on first run with today's models, which is the only place they are written down. Only
+ids verified against the real CLIs are seeded; an empty entry means that tier is unconfigured,
+and delegation refuses loudly (§9) rather than launching a session pinned to a model nobody
+confirmed works:
 
-| Agent  | light      | standard   | deep         | default  |
-|--------|------------|------------|--------------|----------|
-| claude | haiku      | sonnet     | opus         | standard |
-| codex  | gpt-6-luna | gpt-6-sol  | gpt-6-astra  | standard |
+| Agent  | light                     | standard                     | deep                     | default  |
+|--------|---------------------------|-------------------------------|--------------------------|----------|
+| claude | haiku                     | sonnet                        | opus                     | standard |
+| codex  | *(unconfigured)*          | *(unconfigured)*              | gpt-6-astra              | standard |
+| agy    | gemini-3.8-flash-low      | gemini-3.8-flash-medium       | gemini-3.1-pro-high      | standard |
 
-`gpt-6-astra` is verified — it is what `~/.codex/config.toml` holds today. The `sol` and `luna`
-ids follow the same pattern but are unconfirmed; the settings fields exist precisely so a wrong
-seed is a one-line edit, and §9 refuses rather than guesses if a launch with an unknown id fails.
-| agy    | flash_lite | flash      | pro          | standard |
+`gpt-6-astra` is verified — it is what `~/.codex/config.toml` holds today, and a live run confirms
+Codex accepts it. Two other ids were tried against the real CLI and rejected: `codex exec --model
+gpt-6-sol` and `--model gpt-6-luna` both came back HTTP 400 ("not supported when using Codex with
+a ChatGPT account"). Codex validates nothing locally, so a wrong id does not fail fast — it starts
+a session that then fails every request. Rather than seed a guess that silently breaks delegation,
+codex's `light` and `standard` tiers ship empty; the settings fields exist precisely so a real id
+for either can be typed in as a one-line edit, and §9 refuses rather than guesses in the meantime.
+`agy models` lists the agy ids above verbatim, so they need no such caveat.
 
-A Models section in `SettingsScreen` renders one row per agent kind with three model fields and a default-tier picker. Each field is free text with the known ids as suggestions — a renamed model must be typeable without a linkC release.
+A Models section in `SettingsScreen` renders one row per agent kind with three model fields and a default-tier picker. Each field is free text with the known ids as suggestions — a renamed model must be typeable without a linkC release. `AgentModelCatalog`'s own id lists are seed suggestions only, never a validator: `linkc_switch_model` accepts any id configured in this mapping, not the catalog's hardcoded list.
 
 ## 6. Delegation
 
@@ -80,6 +88,8 @@ the pre-tier rule in §7. Every task created from here on carries a tier.
 
 `spawnTeammate(in:agent:goal:)` gains a `tier:` argument. It resolves the model id from settings and appends `AgentModelCatalog.launchArguments(model:for:)` — `--model <id>`, which `claude`, `codex` and `agy` all accept — to the launch argv.
 
+A tier only ever pins a brand-new process: `launch` refuses (`LinkCError.process`, no session or terminal created) rather than combine a `tier` with `.continueLast` or `.resume`. For Codex, that argv starts with the `resume` subcommand (`AgentDescriptor.continueArgs`/`resumeArgs`), so appending `--model <id>` after it — the way `.new` does — would land the flag after the subcommand instead of before it. No caller pairs a tier with anything but `.new` today, so refusing the combination outright costs nothing and avoids ever constructing that argv.
+
 `dispatchTasks` adds one clause to its candidate filter: a session is a candidate only when
 `session.modelTier == task.tier`. If no candidate exists, it spawns one pinned to that tier and
 waits for readiness exactly as it does today; the frame goes in on a later tick once the agent is up.
@@ -99,6 +109,8 @@ session running a model nobody asked for.
 
 `checkLimitsAndReroute` copies a rate-limited task to another agent kind. The copy keeps the task's `tier`, and the new agent resolves that tier through its own mapping. A `standard` task rerouted from Codex to Claude runs on `sonnet`, not on whatever Claude defaults to.
 
+A candidate that cannot serve that tier — Cursor, always, or any agent with no model configured for it — is not a reroute target; picking one would strand the copy in `dispatchTasks` forever while the original had already been cancelled. When no candidate can serve the tier, the reroute does nothing: the original task is left exactly as it was, no reroute is announced to the delegator, and one line is logged saying why. This is distinct from every candidate being rate-limited or the hop limit being reached, which still trips the existing circuit breaker (session marked `.error`, delegator notified, swarm-rate-limited alert posted).
+
 ## 9. Failing loud
 
 Three refusals, all returned as MCP errors naming exactly what is wrong:
@@ -116,8 +128,13 @@ No branch of this design falls back to "use the session that exists" or "use the
   surviving a reload, and two tiers mapped to one model id resolving to the lighter tier.
 - `AppCoordinatorRelayTests`: a task reaches only a session of its tier; a spawn passes `--model <id>`
   for that tier; a session whose tier is nil is never a candidate for a tiered task; a legacy task
-  with no tier still reaches any idle session of its kind; a reroute preserves the tier across agent kinds.
+  with no tier still reaches any idle session of its kind; a reroute preserves the tier across agent kinds;
+  a reroute never picks a candidate that cannot serve the tier and picks one that can; a tiered task with
+  no capable peer is left in place rather than cancelled and stranded.
 - `MCPServerTaskTests`: delegation accepts a tier, rejects an unknown one, applies the agent default when omitted, stamps the tier on the record, and returns each of the three refusals in §9.
+- `MCPServerModelTests`: `linkc_switch_model` accepts any id `linkc_get_models` reports as configured (not the `AgentModelCatalog` seed list) and names the configured models on refusal; a settings edit made after the server is constructed is visible to the very next tool call, not frozen at construction.
+- `AgentModelArgvLiveTests` (opt-in, `LINKC_LIVE_AGENT_TESTS=1`): the exact argv linkC builds for a pinned session is accepted by the real Codex CLI — the process starts and stays alive rather than exiting on an argument error.
+- `AppCoordinatorIntegrationTests`: a tier combined with `.continueLast` or `.resume` is refused outright, with no session or terminal created.
 
 ## 11. Rollout
 

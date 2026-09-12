@@ -68,7 +68,8 @@ final class MCPServerModelTests: XCTestCase {
         // Default marker
         XCTAssertTrue(text.contains("— default"), "Expected a default-tier marker in: \(text)")
         XCTAssertTrue(text.contains("sonnet"), "Expected sonnet model in Claude: \(text)")
-        XCTAssertTrue(text.contains("gpt-6-sol"), "Expected gpt-6-sol model in Codex: \(text)")
+        XCTAssertTrue(text.contains("gpt-6-astra"), "Expected gpt-6-astra model in Codex: \(text)")
+        XCTAssertTrue(text.contains("(not set)"), "Codex's light and standard tiers are unconfigured in the seed: \(text)")
     }
 
     func testGetModelsForSpecificAgentFiltersOutOthers() throws {

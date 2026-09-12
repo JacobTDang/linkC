@@ -1157,7 +1157,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let delegator = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil })
         let base = try runGit(["rev-parse", "HEAD"], in: repo)
         let delegated = try mcp(delegator, "linkc_delegate_task", [
-            "to": "codex", "prompt": "Make check.sh pass",
+            "to": "codex", "prompt": "Make check.sh pass", "tier": "deep",
             "verify": ["branch": "task/x", "base_sha": base, "command": "./check.sh", "test_paths": ["check.sh"], "timeout_seconds": 60]
         ])
         XCTAssertFalse(delegated.isError, delegated.text)
@@ -1223,14 +1223,16 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let coordinator = makeCoordinator(models: .seeded)
         defer { coordinator.shutdown() }
 
-        let deep = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new, tier: .deep)
+        // claude, not codex: codex only has its deep tier configured in the seed, so it cannot
+        // exercise two distinct tiers of the same agent kind.
+        let deep = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .deep)
         coordinator.store.updateState(id: deep.id, to: .ready)
-        let task = try inbox.createTask(from: .claude, to: .codex, tier: .light, prompt: "Rename a file", files: [])
+        let task = try inbox.createTask(from: .codex, to: .claude, tier: .light, prompt: "Rename a file", files: [])
 
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued, "A deep session must not take a light task")
 
-        let light = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new, tier: .light)
+        let light = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light)
         coordinator.store.updateState(id: light.id, to: .ready)
         coordinator.processPendingMessages(workspacePath: ws)
 
@@ -1392,14 +1394,16 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let coordinator = makeCoordinator(models: .seeded)
         defer { coordinator.shutdown() }
 
-        let session = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new, tier: .deep)
+        // agy, not codex: codex only has its deep tier configured in the seed, so switching it
+        // to another of its own tiers can never be exercised.
+        let session = try coordinator.newSession(cwd: ws, agent: .agy, mode: .new, tier: .deep)
         coordinator.store.updateState(id: session.id, to: .ready)
 
-        _ = try inbox.enqueue(from: .codex, to: .codex, kind: .command, body: "/model gpt-6-luna")
+        _ = try inbox.enqueue(from: .agy, to: .agy, kind: .command, body: "/model gemini-3.8-flash-low")
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertEqual(coordinator.store.session(id: session.id)?.modelTier, .light)
 
-        _ = try inbox.enqueue(from: .codex, to: .codex, kind: .command, body: "/model something-nobody-configured")
+        _ = try inbox.enqueue(from: .agy, to: .agy, kind: .command, body: "/model something-nobody-configured")
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertNil(coordinator.store.session(id: session.id)?.modelTier, "An unmapped model leaves no pin to trust")
     }

@@ -166,7 +166,7 @@ final class MCPServerTaskTests: XCTestCase {
     func testDelegateWithVerifyCreatesAGatingTaskAtTheFullBase() throws {
         let base = try repoWithTests()
         let res = try call(server(as: .claude), "linkc_delegate_task",
-                           ["to": "codex", "prompt": "Make check pass", "verify": verify(base: String(base.prefix(7)))])
+                           ["to": "codex", "prompt": "Make check pass", "verify": verify(base: String(base.prefix(7))), "tier": "deep"])
         XCTAssertFalse(res.isError, res.text)
         let task = try XCTUnwrap(inbox.load().tasks.first)
         XCTAssertEqual(task.state, .gating)
@@ -199,7 +199,7 @@ final class MCPServerTaskTests: XCTestCase {
 
     func testVerifiedCompleteNeedsTheShaOfARealCommit() throws {
         let base = try repoWithTests()
-        _ = try call(server(as: .claude), "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass", "verify": verify(base: base)])
+        _ = try call(server(as: .claude), "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass", "verify": verify(base: base), "tier": "deep"])
         let task = try XCTUnwrap(inbox.load().tasks.first)
         try inbox.resolveGate(taskId: task.id, verdict: Verdict(passed: true, sha: base, exitStatus: 1, reason: nil, stdoutTail: "", stderrTail: ""))
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
@@ -310,7 +310,7 @@ final class MCPServerTaskTests: XCTestCase {
 
     /// JSON null is how some clients send an optional argument they did not set.
     func testDelegateTreatsANullVerifyAsAbsent() throws {
-        let res = try call(server(as: .claude), "linkc_delegate_task", ["to": "codex", "prompt": "Plain", "verify": NSNull()])
+        let res = try call(server(as: .claude), "linkc_delegate_task", ["to": "codex", "prompt": "Plain", "verify": NSNull(), "tier": "deep"])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertEqual(try inbox.load().tasks.first?.state, .queued)
     }
@@ -360,8 +360,10 @@ final class MCPServerTaskTests: XCTestCase {
     // MARK: - Delegation tiers
 
     func testDelegateAppliesTheAgentDefaultTierWhenNoneIsGiven() throws {
+        // agy, not codex: codex's own default tier ("standard") has no model configured in the
+        // seed, so it would refuse here regardless of this mechanism — see the refusal test below.
         let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
-                           ["to": "codex", "prompt": "Rename a file"])
+                           ["to": "agy", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
         let task = try XCTUnwrap(inbox.openTasks().first)
         XCTAssertEqual(task.tier, .standard)
@@ -369,7 +371,7 @@ final class MCPServerTaskTests: XCTestCase {
 
     func testDelegateRecordsAnExplicitTier() throws {
         let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
-                           ["to": "codex", "prompt": "Rename a file", "tier": "light"])
+                           ["to": "agy", "prompt": "Rename a file", "tier": "light"])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertEqual(try XCTUnwrap(inbox.openTasks().first).tier, .light)
     }

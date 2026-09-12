@@ -74,7 +74,8 @@ final class MCPServerTests: XCTestCase {
             "arguments": {
               "to": "codex",
               "prompt": "Add unit tests for parser",
-              "from": "claude"
+              "from": "claude",
+              "tier": "deep"
             }
           }
         }
@@ -109,7 +110,8 @@ final class MCPServerTests: XCTestCase {
               "prompt": "Implement tokenizer module",
               "files": ["Sources/Tokenizer.swift"],
               "from": "claude",
-              "pid": 1111
+              "pid": 1111,
+              "tier": "deep"
             }
           }
         }

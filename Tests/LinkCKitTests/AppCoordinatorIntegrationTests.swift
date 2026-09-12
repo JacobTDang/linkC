@@ -1022,10 +1022,12 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let coordinator = makeCoordinator(models: .seeded)
         defer { coordinator.shutdown() }
 
-        let session = try coordinator.newSession(cwd: tempDir.path, agent: .codex, mode: .new, tier: .light)
+        // .deep: codex's only configured tier in the seed — light and standard are deliberately
+        // left unconfigured (see AgentModelSettings.seeded).
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .codex, mode: .new, tier: .deep)
 
-        XCTAssertEqual(session.modelTier, .light)
-        XCTAssertEqual(session.model, "gpt-6-luna")
+        XCTAssertEqual(session.modelTier, .deep)
+        XCTAssertEqual(session.model, "gpt-6-astra")
     }
 
     @MainActor
