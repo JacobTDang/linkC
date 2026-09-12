@@ -465,6 +465,12 @@ extension AppCoordinator {
             if let resolver = agentPathResolver { return resolver(candidate) != nil }
             return AgentDescriptor.resolveExecutable(for: candidate) != nil
         }
+        // A tiered task can only move to a peer that can actually run its tier. Cursor never
+        // resolves one; anyone else with no model configured for it is just as unusable — a
+        // "reroute" onto either would only strand the copy in `dispatchTasks` forever.
+        if let tier = currentTask?.tier {
+            candidates = candidates.filter { resolvedModel(for: $0, tier: tier) != nil }
+        }
         candidates.sort { a, b in
             let aActive = store.sessions.contains { ($0.cwd as NSString).standardizingPath == norm && $0.agentKind == a && $0.state != .ended }
             let bActive = store.sessions.contains { ($0.cwd as NSString).standardizingPath == norm && $0.agentKind == b && $0.state != .ended }
@@ -473,6 +479,15 @@ extension AppCoordinator {
 
         let hop = currentTask?.hop ?? 0
         guard hop < 2, let target = candidates.first else {
+            if let currentTask, let tier = currentTask.tier {
+                // No peer can serve this tier. Cancelling the task and announcing a reroute
+                // would be a lie — nothing was rerouted, and the hop copy could never be
+                // delivered. Leave the task, the session and the delegator untouched; the
+                // session's own rate limit may still clear on its own.
+                NSLog("[linkC relay] checkLimitsAndReroute: task %@ tier %@ has no capable peer to reroute to — leaving in place",
+                      currentTask.shortId, tier.label)
+                return true
+            }
             tellDelegator()
             store.updateState(id: session.id, to: .error)
             notifications.post(

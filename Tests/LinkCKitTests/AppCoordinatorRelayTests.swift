@@ -1296,6 +1296,73 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(copy.tier, .light, "A rerouted task keeps its tier and resolves it through the new agent's mapping")
     }
 
+    /// No peer can serve the task's tier (cursor never can, and the one remaining agent has no
+    /// model configured for it): the reroute must not cancel the original task, must not create
+    /// an undeliverable hop copy, must not announce a reroute, and must leave the session state
+    /// exactly as it was — rerouting here would only strand the task forever.
+    @MainActor
+    func testATieredTaskWithNoCapablePeerIsLeftAloneOnReroute() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var models = AgentModelSettings.seeded
+        models.setModel("", for: .codex, tier: .light)
+        models.setModel("", for: .agy, tier: .light)
+        let coordinator = makeCoordinator(models: models)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light)
+        coordinator.store.updateState(id: session.id, to: .working)
+        let task = try inbox.createTask(from: .cursor, to: .claude, tier: .light, prompt: "Build a streaming proxy", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+        try inbox.markTaskStarted(taskId: task.id)
+
+        coordinator.terminals.sendInput(sessionId: session.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id))
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started, "no peer can serve the tier — the original task must not be cancelled")
+        XCTAssertFalse(try inbox.openTasks().contains { $0.hop == 1 }, "no undeliverable hop copy must ever be created")
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.state, .working, "left exactly as it was, not forced into .error")
+        XCTAssertFalse(try inbox.load().messages.contains { $0.kind == .notice }, "no reroute is announced to the delegator")
+    }
+
+    /// codex has no `light` model configured here and cursor never can be pinned — only agy is
+    /// a real candidate. `supportedPeers` still lists codex before agy, so a fix that just picks
+    /// the first installed, unlimited peer (ignoring tier capability) would wrongly choose codex;
+    /// the reroute must pick agy instead.
+    @MainActor
+    func testARerouteChoosesAPeerThatCanServeTheTier() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var models = AgentModelSettings.seeded
+        models.setModel("", for: .codex, tier: .light)
+        let coordinator = makeCoordinator(models: models)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light)
+        coordinator.store.updateState(id: session.id, to: .working)
+        let task = try inbox.createTask(from: .cursor, to: .claude, tier: .light, prompt: "Rename a file", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+        try inbox.markTaskStarted(taskId: task.id)
+
+        coordinator.terminals.sendInput(sessionId: session.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id))
+
+        let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        XCTAssertEqual(copy.toAgent, .agy, "codex has no light model configured and cursor never can — only agy is a candidate")
+        XCTAssertEqual(copy.tier, .light)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled)
+    }
+
     /// A tier the settings mapping cannot resolve must never spawn an unpinned session — that
     /// session could never satisfy the tiered task, so the next tick would spawn another one.
     @MainActor
