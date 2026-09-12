@@ -50,6 +50,45 @@ struct SettingsScreen: View {
                         .fixedSize()
                     }
 
+                    SectionHeader(title: "MODELS").padding(.top, 6)
+                    ForEach([AgentKind.claude, .codex, .agy], id: \.self) { agent in
+                        SettingRow(
+                            title: agent.displayName,
+                            detail: "Which model each tier launches. A renamed model can be typed in."
+                        ) {
+                            HStack(spacing: 6) {
+                                ForEach(ModelTier.resolutionOrder, id: \.self) { tier in
+                                    TextField(tier.label, text: Binding(
+                                        get: { model.preferences.agentModels.model(for: agent, tier: tier) ?? "" },
+                                        set: { newValue in
+                                            var edited = model.preferences.agentModels
+                                            edited.setModel(newValue, for: agent, tier: tier)
+                                            model.preferences.agentModels = edited
+                                        }
+                                    ))
+                                    .textFieldStyle(.roundedBorder)
+                                    .controlSize(.mini)
+                                    .frame(width: 96)
+                                }
+                                Picker("", selection: Binding(
+                                    get: { model.preferences.agentModels.defaultTier(for: agent) },
+                                    set: { newValue in
+                                        var edited = model.preferences.agentModels
+                                        edited.setDefaultTier(newValue, for: agent)
+                                        model.preferences.agentModels = edited
+                                    }
+                                )) {
+                                    ForEach(ModelTier.resolutionOrder, id: \.self) { tier in
+                                        Text(tier.label).tag(tier)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .labelsHidden()
+                                .fixedSize()
+                            }
+                        }
+                    }
+
                     SectionHeader(title: "PANEL").padding(.top, 6)
                     SettingRow(
                         title: "Show plan usage",

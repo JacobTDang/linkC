@@ -1315,6 +1315,27 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued, "no candidate and no model to spawn — the task stays queued")
         XCTAssertTrue(coordinator.store.sessions.isEmpty, "an unresolvable tier must never spawn a session, not even once")
     }
+
+    /// A hand-switched session re-derives its tier, and an unmapped model clears the pin so the
+    /// relay stops sending it tiered work.
+    @MainActor
+    func testAModelSwitchCommandRederivesTheSessionTier() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(models: .seeded)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new, tier: .deep)
+        coordinator.store.updateState(id: session.id, to: .ready)
+
+        _ = try inbox.enqueue(from: .codex, to: .codex, kind: .command, body: "/model gpt-6-luna")
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.modelTier, .light)
+
+        _ = try inbox.enqueue(from: .codex, to: .codex, kind: .command, body: "/model something-nobody-configured")
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertNil(coordinator.store.session(id: session.id)?.modelTier, "An unmapped model leaves no pin to trust")
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.

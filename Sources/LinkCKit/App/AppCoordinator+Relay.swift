@@ -207,6 +207,14 @@ extension AppCoordinator {
             guard let session = target, isIdle(session.state) else { continue }
 
             terminals.sendInput(sessionId: session.id, text: message.prompt)
+            // A hand switch makes the pin a lie. Re-derive it here, where the switch actually
+            // happens: an id that maps to a tier takes it, an unmapped one clears the pin, and a
+            // session with no pin receives no tiered work.
+            if message.kind == .command, message.prompt.hasPrefix("/model ") {
+                let id = String(message.prompt.dropFirst("/model ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                store.updateModel(id: session.id, model: id.isEmpty ? nil : id,
+                                  modelTier: tier(forModel: id, agent: session.agentKind))
+            }
             if message.kind == .task { store.updateState(id: session.id, to: .working) }
             do {
                 try inboxStore.markMessageDelivered(id: message.id)

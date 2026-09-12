@@ -388,6 +388,13 @@ public final class AppCoordinator {
         modelSettings().model(for: agent, tier: tier)
     }
 
+    /// The tier `model` belongs to for `agent`, or nil when nothing maps to it — used to
+    /// re-derive a session's pin after a hand switch. `modelSettings` is private to this file;
+    /// this is the relay's access point onto it.
+    func tier(forModel model: String, agent: AgentKind) -> ModelTier? {
+        modelSettings().tier(forModel: model, agent: agent)
+    }
+
     /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it,
     /// and record it (live, no `endedAt`) in the manifest. The single launch path for both new
     /// sessions and restores. Fails loud: a launch error prunes any partial state and rethrows.

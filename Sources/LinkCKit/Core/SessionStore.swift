@@ -70,6 +70,13 @@ public final class SessionStore {
         }
     }
 
+    /// Record what a session is actually running after a hand switch.
+    public func updateModel(id: String, model: String?, modelTier: ModelTier?) {
+        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[idx].model = model
+        sessions[idx].modelTier = modelTier
+    }
+
     /// Update a session's detected agent kind if it changes dynamically.
     public func updateAgentKind(id: String, to agentKind: AgentKind) {
         guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
