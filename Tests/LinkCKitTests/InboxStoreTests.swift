@@ -312,33 +312,44 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertTrue(loaded.messages.contains(where: { $0.id == "old-queued" }))
     }
 
-    func testLimitsMessagesTo100OnSave() throws {
+    /// Replaces the old `testLimitsMessagesTo100OnSave`, which asserted that the cap dropped the
+    /// oldest 20 of 120 queued rows — encoding the very loss this task fixes. The cap must never
+    /// sacrifice undelivered work: it may only trim delivered rows, and only once queued rows
+    /// alone fit within it.
+    func testTheMessageCapDropsDeliveredRowsBeforeQueuedOnes() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
-
-        var messages: [PendingMessage] = []
-        for i in 0..<120 {
-            messages.append(PendingMessage(
-                id: "msg-\(i)",
-                fromAgent: .claude,
-                toAgent: .codex,
-                prompt: "Task \(i)",
-                claimedFiles: [],
-                status: .queued,
-                rerouteCount: 0,
-                createdAt: Date().addingTimeInterval(Double(i)),
-                deliveredAt: nil
-            ))
-        }
-
         var inbox = Inbox(workspacePath: tempDir.path)
-        inbox.messages = messages
+        // 95 delivered, then 20 queued: the cap must sacrifice delivered rows, not undelivered work.
+        for i in 0..<95 {
+            inbox.messages.append(PendingMessage(id: "old-\(i)", fromAgent: .claude, toAgent: .codex,
+                                                 prompt: "old \(i)", status: .delivered, deliveredAt: Date(),
+                                                 kind: .completion))
+        }
+        for i in 0..<20 {
+            inbox.messages.append(PendingMessage(id: "new-\(i)", fromAgent: .codex, toAgent: .claude,
+                                                 prompt: "result \(i)", status: .queued, kind: .completion))
+        }
         try store.saveRaw(inbox)
 
-        let loaded = try store.load()
-        XCTAssertEqual(loaded.messages.count, 100)
-        // Kept the last 100 (msg-20 through msg-119)
-        XCTAssertEqual(loaded.messages.first?.id, "msg-20")
-        XCTAssertEqual(loaded.messages.last?.id, "msg-119")
+        let saved = try store.load().messages
+        XCTAssertEqual(saved.filter { $0.status == .queued }.count, 20, "no undelivered message may be dropped")
+        XCTAssertLessThanOrEqual(saved.count, 100)
+    }
+
+    /// If queued rows alone exceed the cap, every one of them is kept — the cap is cosmetic,
+    /// never a reason to lose undelivered work.
+    func testTheMessageCapNeverDropsQueuedRowsEvenWhenTheyAloneExceedIt() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        var inbox = Inbox(workspacePath: tempDir.path)
+        for i in 0..<110 {
+            inbox.messages.append(PendingMessage(id: "queued-\(i)", fromAgent: .claude, toAgent: .codex,
+                                                 prompt: "result \(i)", status: .queued, kind: .completion))
+        }
+        try store.saveRaw(inbox)
+
+        let saved = try store.load().messages
+        XCTAssertEqual(saved.count, 110, "queued rows alone exceeding the cap must all be kept")
+        XCTAssertTrue(saved.allSatisfy { $0.status == .queued })
     }
 
     func testKindAwareEnqueueComposesFrames() throws {
@@ -384,5 +395,17 @@ final class InboxStoreTests: XCTestCase {
         // Different recipient is not a duplicate
         _ = try store.enqueue(from: .codex, to: .cursor, kind: .peerNote, body: "same")
         XCTAssertEqual(try store.load().messages.count, 2)
+    }
+
+    /// The dedupe must only match an undelivered row. Once a message is delivered, an identical
+    /// re-send is a fresh request, not a duplicate — `dispatchMessages` only ever picks up
+    /// `.queued` rows, so returning the delivered one silently drops the re-send.
+    func testResendingAfterDeliveryQueuesAgainRatherThanReturningTheDeliveredRow() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let first = try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "same body")
+        try store.markMessageDelivered(id: first.id)
+        let second = try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "same body")
+        XCTAssertNotEqual(second.id, first.id, "a delivered row must not satisfy a fresh send")
+        XCTAssertEqual(second.status, .queued)
     }
 }

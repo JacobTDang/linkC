@@ -116,7 +116,13 @@ public final class InboxStore: Sendable {
             return false
         }
         if prunedInbox.messages.count > 100 {
-            prunedInbox.messages = Array(prunedInbox.messages.suffix(100))
+            // Sacrifice delivered rows before undelivered ones: a dropped queued completion means
+            // a delegator never learns its task finished. If queued rows alone exceed the cap,
+            // keep them all — the cap is cosmetic and must never cost undelivered work.
+            let queued = prunedInbox.messages.filter { $0.status != .delivered }
+            let delivered = prunedInbox.messages.filter { $0.status == .delivered }
+            let room = max(0, 100 - queued.count)
+            prunedInbox.messages = (delivered.suffix(room) + queued).sorted { $0.createdAt < $1.createdAt }
         }
         prunedInbox.tasks.removeAll { task in
             guard !task.state.isOpen else { return false }
@@ -179,6 +185,7 @@ public final class InboxStore: Sendable {
             let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
             if let existing = inbox.messages.first(where: {
                 $0.contentHash == hash && $0.fromAgent == from && $0.toAgent == to && $0.createdAt >= dedupeCutoff
+                    && $0.status != .delivered
             }) {
                 return existing
             }

@@ -250,6 +250,15 @@ extension AppCoordinator {
             }
             guard let session = target, isIdle(session.state) else { continue }
 
+            // Mark before injecting: if the mark throws — a lock timeout under contention — the
+            // row stays queued and must not be sent this tick, or the next tick injects the same
+            // text again on top of it. `dispatchTasks` marks first for the same reason.
+            do {
+                try inboxStore.markMessageDelivered(id: message.id)
+            } catch {
+                NSLog("[linkC relay] dispatchMessages: message %@ mark delivered — %@", message.id, String(describing: error))
+                continue
+            }
             terminals.sendInput(sessionId: session.id, text: message.prompt)
             // A hand switch makes the pin a lie. Re-derive it here, where the switch actually
             // happens: an id that maps to a tier takes it, an unmapped one clears the pin, and a
@@ -260,11 +269,6 @@ extension AppCoordinator {
                                   modelTier: tier(forModel: id, agent: session.agentKind))
             }
             if message.kind == .task { store.updateState(id: session.id, to: .working) }
-            do {
-                try inboxStore.markMessageDelivered(id: message.id)
-            } catch {
-                NSLog("[linkC relay] dispatchMessages: message %@ mark delivered — %@", message.id, String(describing: error))
-            }
         }
     }
 

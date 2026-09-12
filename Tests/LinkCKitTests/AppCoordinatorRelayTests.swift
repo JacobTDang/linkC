@@ -1589,6 +1589,31 @@ final class AppCoordinatorRelayTests: XCTestCase {
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertNil(coordinator.store.session(id: session.id)?.modelTier, "An unmapped model leaves no pin to trust")
     }
+
+    /// The mark must land before the text, or a failed mark re-injects the same message every
+    /// tick. dispatchTasks already marks first.
+    @MainActor
+    func testAMessageIsMarkedDeliveredBeforeItIsInjected() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        let msg = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "one delivery only")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.load().messages.first { $0.id == msg.id }?.status, .delivered)
+
+        // A second tick must not re-inject: assert the text appears exactly once.
+        coordinator.processPendingMessages(workspacePath: ws)
+        let out = try await waitUntil { coordinator.terminals.session(id: session.id)?.recentOutput(lines: 40).contains("one delivery only") ?? false }
+        XCTAssertTrue(out)
+        let occurrences = (coordinator.terminals.session(id: session.id)?.recentOutput(lines: 40) ?? "")
+            .components(separatedBy: "one delivery only").count - 1
+        XCTAssertEqual(occurrences, 1, "a delivered message is never injected twice")
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.
