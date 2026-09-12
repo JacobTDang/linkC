@@ -319,15 +319,23 @@ final class InboxStoreTests: XCTestCase {
     func testTheMessageCapDropsDeliveredRowsBeforeQueuedOnes() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
         var inbox = Inbox(workspacePath: tempDir.path)
-        // 95 delivered, then 20 queued: the cap must sacrifice delivered rows, not undelivered work.
-        for i in 0..<95 {
-            inbox.messages.append(PendingMessage(id: "old-\(i)", fromAgent: .claude, toAgent: .codex,
-                                                 prompt: "old \(i)", status: .delivered, deliveredAt: Date(),
-                                                 kind: .completion))
-        }
+        let base = Date().addingTimeInterval(-1000)
+        // 20 queued first, then 95 delivered, and OLDER than the delivered rows: a plain
+        // array-order `suffix(100)` would drop the oldest of the 115 rows first — sacrificing
+        // queued rows to keep newer delivered ones. The cap must instead sacrifice delivered
+        // rows regardless of age, so every queued row must survive.
         for i in 0..<20 {
             inbox.messages.append(PendingMessage(id: "new-\(i)", fromAgent: .codex, toAgent: .claude,
-                                                 prompt: "result \(i)", status: .queued, kind: .completion))
+                                                 prompt: "result \(i)", status: .queued,
+                                                 createdAt: base.addingTimeInterval(Double(i)),
+                                                 kind: .completion))
+        }
+        for i in 0..<95 {
+            inbox.messages.append(PendingMessage(id: "old-\(i)", fromAgent: .claude, toAgent: .codex,
+                                                 prompt: "old \(i)", status: .delivered,
+                                                 createdAt: base.addingTimeInterval(100 + Double(i)),
+                                                 deliveredAt: Date(),
+                                                 kind: .completion))
         }
         try store.saveRaw(inbox)
 
