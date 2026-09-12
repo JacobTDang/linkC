@@ -91,6 +91,11 @@ public struct Session: Sendable, Identifiable, Equatable {
     /// identical state never resets it.
     public var stateChangedAt: Date
     public var agentKind: AgentKind
+    /// The model this session was launched with, and the tier it was launched for. Set once at
+    /// launch: a pinned session is never switched out from under the person using it, so the
+    /// relay can trust this when it picks an assignee.
+    public var model: String?
+    public var modelTier: ModelTier?
 
     public init(
         id: String,
@@ -99,7 +104,9 @@ public struct Session: Sendable, Identifiable, Equatable {
         state: SessionState = .starting,
         claudeSessionId: String? = nil,
         stateChangedAt: Date = Date(),
-        agentKind: AgentKind = .claude
+        agentKind: AgentKind = .claude,
+        model: String? = nil,
+        modelTier: ModelTier? = nil
     ) {
         self.id = id
         self.cwd = cwd
@@ -108,6 +115,8 @@ public struct Session: Sendable, Identifiable, Equatable {
         self.claudeSessionId = claudeSessionId
         self.stateChangedAt = stateChangedAt
         self.agentKind = agentKind
+        self.model = model
+        self.modelTier = modelTier
     }
 }
 

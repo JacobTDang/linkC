@@ -59,6 +59,9 @@ public final class AppCoordinator {
     let verifier: any TaskVerifier
     /// Workspaces with a verification run in flight — at most one run per workspace.
     var verificationsInFlight: Set<String> = []
+    /// The current tier → model mapping. A closure, not a value, so a settings edit is seen on
+    /// the next spawn without anyone re-injecting anything.
+    private let modelSettings: @MainActor @Sendable () -> AgentModelSettings
 
     /// Hook events are funneled through this single stream and drained by one consumer task
     /// so `store.apply` runs strictly in arrival order — unstructured per-event tasks would
@@ -80,6 +83,7 @@ public final class AppCoordinator {
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         claudeJsonURL: URL? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
+        modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -92,6 +96,7 @@ public final class AppCoordinator {
         self.agentPathResolver = agentPathResolver
         self.claudeJsonURL = claudeJsonURL
         self.verifier = verifier
+        self.modelSettings = modelSettings
         self.isWatching = isWatching
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.
@@ -104,6 +109,7 @@ public final class AppCoordinator {
     public convenience init(
         claudePath: String,
         terminals: TerminalSessionManager,
+        modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -116,6 +122,7 @@ public final class AppCoordinator {
             settingsDir: linkCDir,
             userSettingsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/settings.json"),
             manifestDir: linkCDir,
+            modelSettings: modelSettings,
             isWatching: isWatching
         )
     }
@@ -330,7 +337,9 @@ public final class AppCoordinator {
     /// Spawns a teammate agent session in `workspacePath`, automatically synthesizing
     /// and writing a handoff memo to `<workspacePath>/.linkc/HANDOFF.md`.
     @discardableResult
-    public func spawnTeammate(in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil) throws -> Session {
+    public func spawnTeammate(
+        in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil, tier: ModelTier? = nil
+    ) throws -> Session {
         let norm = (workspacePath as NSString).standardizingPath
         let existingSession = store.sessions.last { session in
             let sessionNorm = (session.cwd as NSString).standardizingPath
@@ -361,13 +370,15 @@ public final class AppCoordinator {
             recentTerminalOutput: recentOutput
         )
 
-        return try newSession(cwd: workspacePath, agent: agent, mode: .new)
+        return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier)
     }
 
     @discardableResult
-    public func newSession(cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new) throws -> Session {
+    public func newSession(
+        cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil
+    ) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
-        return try launch(cwd: cwd, title: title, agent: agent, mode: mode)
+        return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier)
     }
 
     /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it,
@@ -380,9 +391,12 @@ public final class AppCoordinator {
         agent: AgentKind = .claude,
         mode: LaunchMode,
         resumeId: String? = nil,
-        id: String? = nil
+        id: String? = nil,
+        tier: ModelTier? = nil
     ) throws -> Session {
-        let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent)
+        let model = tier.flatMap { modelSettings().model(for: agent, tier: $0) }
+        let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
+                                   model: model, modelTier: model == nil ? nil : tier)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent)
             // A terminated child = an ended session: prune everything when the child exits.
@@ -399,12 +413,14 @@ public final class AppCoordinator {
                 executable = claudePath
                 let settingsPath = try writeSettings(for: session)
                 args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
+                    + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
             } else {
                 guard let resolved = agentPathResolver?(agent) ?? AgentDescriptor.resolveExecutable(for: agent) else {
                     throw LinkCError.process("Executable for \(agent.pillText) not found")
                 }
                 executable = resolved
                 args = AgentDescriptor.arguments(for: agent, mode: mode)
+                    + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
             }
 
             try terminal.start(

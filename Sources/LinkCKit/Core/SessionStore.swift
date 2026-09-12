@@ -50,8 +50,9 @@ public final class SessionStore {
 
     /// Register a linkC session before its tab is launched.
     @discardableResult
-    public func create(cwd: String, title: String, id: String = UUID().uuidString, agentKind: AgentKind = .claude) -> Session {
-        let s = Session(id: id, cwd: cwd, title: title, agentKind: agentKind)
+    public func create(cwd: String, title: String, id: String = UUID().uuidString, agentKind: AgentKind = .claude,
+                       model: String? = nil, modelTier: ModelTier? = nil) -> Session {
+        let s = Session(id: id, cwd: cwd, title: title, agentKind: agentKind, model: model, modelTier: modelTier)
         sessions.append(s)
         return s
     }

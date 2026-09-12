@@ -7,6 +7,20 @@ import XCTest
 @MainActor
 final class AppCoordinatorIntegrationTests: XCTestCase {
 
+    nonisolated(unsafe) private var tempDir: URL!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-model-pin-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: tempDir)
+        try super.tearDownWithError()
+    }
+
     private final class RecordingSink: NotificationSink, @unchecked Sendable {
         private let lock = NSLock()
         private var _deliveries: [(id: String, title: String, body: String)] = []
@@ -21,10 +35,11 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     /// Builds a coordinator wired to a real (but un-spawned) terminal manager and a fake
     /// notification center. `isWatching` returns false so notifiable states would notify.
     private func makeCoordinator(
-        sink: NotificationSink,
+        sink: NotificationSink = RecordingSink(),
         claudePath: String = "/x/claude",
         settingsDir: URL = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-\(UUID().uuidString)"),
-        manifestDir: URL? = nil
+        manifestDir: URL? = nil,
+        models: AgentModelSettings = .seeded
     ) -> AppCoordinator {
         AppCoordinator(
             terminals: TerminalSessionManager(),
@@ -34,6 +49,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             settingsDir: settingsDir,
             userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-settings.json"),
             manifestDir: manifestDir ?? settingsDir,
+            modelSettings: { models },
             isWatching: { _ in false }
         )
     }
@@ -990,6 +1006,28 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let groups = ProjectGroup.group(sessions: coordinator.store.sessions)
         XCTAssertEqual(groups.count, 1)
         XCTAssertEqual(groups.first?.sessions.count, 2)
+    }
+
+    @MainActor
+    func testSpawningForATierPinsTheSessionToThatModel() throws {
+        let coordinator = makeCoordinator(models: .seeded)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .codex, mode: .new, tier: .light)
+
+        XCTAssertEqual(session.modelTier, .light)
+        XCTAssertEqual(session.model, "gpt-6-luna")
+    }
+
+    @MainActor
+    func testASessionSpawnedWithNoTierIsNotPinned() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .codex, mode: .new)
+
+        XCTAssertNil(session.modelTier)
+        XCTAssertNil(session.model)
     }
 }
 
