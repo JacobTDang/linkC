@@ -408,6 +408,14 @@ public final class AppCoordinator {
         id: String? = nil,
         tier: ModelTier? = nil
     ) throws -> Session {
+        // A tier only ever pins a brand-new process. For Codex, `.continueLast`/`.resume` argv
+        // starts with the `resume` subcommand (see AgentDescriptor), so appending `--model <id>`
+        // after it — as this function does for `.new` — would land the flag after the subcommand
+        // instead of before it. No caller pairs a tier with anything but `.new` today; refuse the
+        // combination outright rather than ever build that argv.
+        guard tier == nil || mode == .new else {
+            throw LinkCError.process("a tier can only pin a new session; \(mode) reuses an existing session's model")
+        }
         let model = tier.flatMap { resolvedModel(for: agent, tier: $0) }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
                                    model: model, modelTier: model == nil ? nil : tier)

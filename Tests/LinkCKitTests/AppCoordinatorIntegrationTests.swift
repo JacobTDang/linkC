@@ -1040,5 +1040,26 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertNil(session.modelTier)
         XCTAssertNil(session.model)
     }
+
+    /// For Codex, `.continueLast`/`.resume` argv starts with the `resume` subcommand, so
+    /// appending `--model <id>` after it (as `launch` does for `.new`) would put the flag in
+    /// the wrong place — after the subcommand rather than before it. No caller pairs a tier
+    /// with anything but `.new` today; this combination is refused outright rather than ever
+    /// building that argv, and no session or terminal is created when it is.
+    @MainActor
+    func testATierCannotBeCombinedWithContinueOrResume() throws {
+        let coordinator = makeCoordinator(models: .seeded)
+        defer { coordinator.shutdown() }
+
+        XCTAssertThrowsError(try coordinator.newSession(cwd: tempDir.path, agent: .codex, mode: .continueLast, tier: .deep)) { error in
+            guard case LinkCError.process(let message) = error else {
+                return XCTFail("Expected LinkCError.process, got: \(error)")
+            }
+            XCTAssertTrue(message.contains("tier"), message)
+        }
+        XCTAssertThrowsError(try coordinator.newSession(cwd: tempDir.path, agent: .codex, mode: .resume, tier: .deep))
+
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "a refused launch must leave no ghost session")
+    }
 }
 
