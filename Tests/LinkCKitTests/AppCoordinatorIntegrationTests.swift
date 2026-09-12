@@ -43,7 +43,13 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
-            let scriptContent = "#!/bin/sh\nexec /bin/cat\n"
+            // Emit the bracketed-paste enable sequence before handing off to `cat`, so
+            // `acceptsPaste` flips true through the real SwiftTerm negotiation path — the same
+            // way a live agent CLI announces support — instead of the mock always looking unready.
+            // `stty -echo` matches how a real CLI's raw-mode input loop behaves: without it the
+            // pty's own kernel echo doubles every injected frame (once from the kernel, once from
+            // `cat`'s own copy-through), which a real agent never exhibits.
+            let scriptContent = "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
             try? scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
             var attrs = (try? FileManager.default.attributesOfItem(atPath: scriptURL.path)) ?? [:]
             attrs[.posixPermissions] = 0o755

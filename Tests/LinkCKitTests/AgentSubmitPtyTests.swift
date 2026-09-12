@@ -55,4 +55,34 @@ final class AgentSubmitPtyTests: XCTestCase {
         session.terminate()
         XCTAssertTrue(answered, "A multi-line frame must submit itself to Codex; it stayed in the composer unsent.")
     }
+
+    /// Delivery used to be allowed as soon as the process existed. This is the boundary case:
+    /// inject the moment the process is up, with no warm-up sleep, and the frame must still
+    /// arrive as one message rather than as a run of submitted lines.
+    func testAMultiLineFrameSurvivesInjectionRightAfterStart() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["LINKC_LIVE_AGENT_TESTS"] == "1", "Drives the real Claude CLI; set LINKC_LIVE_AGENT_TESTS=1 to run it.")
+        guard let path = AgentDescriptor.resolveExecutable(for: .claude),
+              FileManager.default.isExecutableFile(atPath: path) else { return }
+
+        let session = TerminalSession(id: "test-claude-paste-boundary", cwd: FileManager.default.currentDirectoryPath, title: "claude", agentKind: .claude)
+        try session.start(executable: path, args: AgentDescriptor.arguments(for: .claude, mode: .new), env: [:])
+
+        // No warm-up: poll the negotiated flag, which is what delivery must wait for.
+        var ready = false
+        for _ in 0..<200 {
+            try await Task.sleep(for: .milliseconds(50))
+            if session.acceptsPaste { ready = true; break }
+        }
+        XCTAssertTrue(ready, "the CLI must negotiate bracketed paste; delivery keys off this")
+
+        session.sendInput("[linkC test frame]\nAdd one hundred thirty seven to forty two. Reply with the digits only, nothing else.\n\nA second paragraph, so the input takes the bracketed-paste path.")
+
+        var answered = false
+        for _ in 0..<80 {
+            try await Task.sleep(for: .milliseconds(250))
+            if session.recentOutput(lines: 40).contains(Self.marker) { answered = true; break }
+        }
+        session.terminate()
+        XCTAssertTrue(answered, "the frame must arrive whole and be answered")
+    }
 }

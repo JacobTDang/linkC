@@ -165,7 +165,18 @@ extension AppCoordinator {
                 _ = try? spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier)
                 continue
             }
-            guard let session = candidates.first(where: { isIdle($0.state) }) else { continue } // all busy: wait for a later tick
+            let idleCandidates = candidates.filter { isIdle($0.state) }
+            guard !idleCandidates.isEmpty else { continue } // all busy: wait for a later tick
+            // The brief is always multi-line, so it must arrive as one bracketed paste — never as
+            // raw text a line-oriented TUI would submit line by line. Require negotiation here,
+            // among the idle candidates, rather than folding it into the `candidates` filter above:
+            // that filter also decides whether to spawn a new session, and an idle-but-not-yet-
+            // negotiated session would look like "no session exists" there, spawning a duplicate
+            // every tick instead of waiting for this one to finish negotiating.
+            guard let session = idleCandidates.first(where: { terminals.session(id: $0.id)?.acceptsPaste ?? false }) else {
+                NSLog("[linkC relay] dispatchTasks: task %@ has an idle session but none has negotiated bracketed paste yet — waiting", task.shortId)
+                continue
+            }
 
             do {
                 try inboxStore.markTaskDelivered(taskId: task.id, sessionId: session.id)

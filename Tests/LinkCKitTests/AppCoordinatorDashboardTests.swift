@@ -132,12 +132,19 @@ final class AppCoordinatorDashboardTests: XCTestCase {
         coordinator.store.updateState(id: session.id, to: .working)
 
         let termSession = coordinator.terminals.makeSession(id: session.id, cwd: tempDir.path, title: "claude-session", agentKind: .claude)
-        try termSession.start(executable: "/bin/cat", args: [], env: [:])
+        // `stty -echo` matches a real CLI's raw-mode input loop: plain `/bin/cat` leaves the pty's
+        // kernel echo on, which would double this multi-line input (once from the kernel, once
+        // from `cat`'s own copy-through) now that `sendInput` always wraps multi-line text in a
+        // bracketed paste.
+        try termSession.start(executable: "/bin/sh", args: ["-c", "stty -echo; exec cat"], env: [:])
+        // Give the shell a moment to actually run `stty -echo` and exec into `cat` before writing:
+        // sending immediately can race the shell's own startup, catching it before echo is off.
+        try await Task.sleep(for: .milliseconds(150))
         termSession.sendInput("Compiling project files\nAll 15 modules built successfully\n")
 
-        // Wait brief moment for cat to echo to terminal view
+        // Wait for cat to echo the full frame back — not just the first line — before reading it.
         for _ in 0..<30 {
-            if !termSession.recentOutput(lines: 5).isEmpty {
+            if termSession.recentOutput(lines: 5).contains("modules built successfully") {
                 break
             }
             try? await Task.sleep(for: .milliseconds(50))

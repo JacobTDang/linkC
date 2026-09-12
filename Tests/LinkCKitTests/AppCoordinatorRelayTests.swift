@@ -35,7 +35,13 @@ final class AppCoordinatorRelayTests: XCTestCase {
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
-            let scriptContent = "#!/bin/sh\nexec /bin/cat\n"
+            // Emit the bracketed-paste enable sequence before handing off to `cat`, so
+            // `acceptsPaste` flips true through the real SwiftTerm negotiation path — the same
+            // way a live agent CLI announces support — instead of the mock always looking unready.
+            // `stty -echo` matches how a real CLI's raw-mode input loop behaves: without it the
+            // pty's own kernel echo doubles every injected frame (once from the kernel, once from
+            // `cat`'s own copy-through), which a real agent never exhibits.
+            let scriptContent = "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
             try? scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
             var attrs = (try? FileManager.default.attributesOfItem(atPath: scriptURL.path)) ?? [:]
             attrs[.posixPermissions] = 0o755
@@ -68,6 +74,18 @@ final class AppCoordinatorRelayTests: XCTestCase {
         return predicate()
     }
 
+    /// The mock agent negotiates bracketed paste asynchronously: the shell writes the enable
+    /// sequence and SwiftTerm's PTY reader parses it off-thread, so a session is never
+    /// paste-ready in the same tick it is spawned. A test that expects synchronous delivery
+    /// must wait for this exactly as the relay itself now does.
+    @MainActor
+    private func waitForPasteReady(_ coordinator: AppCoordinator, sessionId: String) async throws {
+        let ready = try await waitUntil {
+            coordinator.terminals.session(id: sessionId)?.acceptsPaste ?? false
+        }
+        XCTAssertTrue(ready, "mock agent session \(sessionId) never negotiated bracketed paste")
+    }
+
     // MARK: - Test Cases
 
     /// Test 1: A queued task auto-spawns the assignee but waits for it to come up before injecting.
@@ -94,6 +112,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertFalse((term?.recentOutput(lines: 20) ?? "").contains("[linkC task \(task.shortId)"), "No frame may reach a booting TUI")
 
         coordinator.store.updateState(id: codexSession.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: codexSession.id)
         coordinator.processPendingMessages(workspacePath: ws)
 
         let delivered = try XCTUnwrap(inbox.task(id: task.id))
@@ -135,6 +154,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let peer = try coordinator.newSession(cwd: ws, agent: .codex)
         coordinator.store.updateState(id: peer.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: peer.id)
         coordinator.processPendingMessages(workspacePath: ws)
 
         let delivered = try XCTUnwrap(inbox.task(id: task.id))
@@ -159,6 +179,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let idle = try coordinator.newSession(cwd: ws, agent: .codex)
         coordinator.store.updateState(id: idle.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: idle.id)
         coordinator.processPendingMessages(workspacePath: ws)
 
         let t = try XCTUnwrap(inbox.task(id: task.id))
@@ -275,6 +296,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
         coordinator.store.updateState(id: assignee.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: assignee.id)
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "ordering guard", files: [])
 
         coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
@@ -521,7 +543,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let ws = tempDir.path
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
-            try? "#!/bin/sh\nexec /bin/cat\n".write(to: scriptURL, atomically: true, encoding: .utf8)
+            try? "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n".write(to: scriptURL, atomically: true, encoding: .utf8)
             var attrs = (try? FileManager.default.attributesOfItem(atPath: scriptURL.path)) ?? [:]
             attrs[.posixPermissions] = 0o755
             try? FileManager.default.setAttributes(attrs, ofItemAtPath: scriptURL.path)
@@ -1323,6 +1345,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let light = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light)
         coordinator.store.updateState(id: light.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: light.id)
         coordinator.processPendingMessages(workspacePath: ws)
 
         let delivered = try XCTUnwrap(inbox.task(id: task.id))
@@ -1356,6 +1379,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let any = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new)
         coordinator.store.updateState(id: any.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: any.id)
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Legacy brief", files: [])
         XCTAssertNil(task.tier, "createTask without a tier records none")
 

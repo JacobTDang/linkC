@@ -168,6 +168,13 @@ public final class TerminalSession {
         }
     }
 
+    /// True once the child has turned on bracketed paste — the first moment a multi-line frame
+    /// can be delivered as one unit rather than as a run of submitted lines.
+    public var acceptsPaste: Bool {
+        guard liveness.withLock({ $0 }) else { return false }
+        return _terminalView?.getTerminal().bracketedPasteMode ?? false
+    }
+
     /// How long a TUI needs to apply a bracketed paste before it will accept Return. Measured
     /// against the real Claude and Codex CLIs: a Return sent immediately is swallowed.
     static let pasteSettleMilliseconds = 300
@@ -183,7 +190,15 @@ public final class TerminalSession {
         while trimmed.hasSuffix("\n") || trimmed.hasSuffix("\r") {
             trimmed.removeLast()
         }
-        let pasted = !trimmed.isEmpty && trimmed.contains("\n") && terminalView.getTerminal().bracketedPasteMode
+        let multiLine = !trimmed.isEmpty && trimmed.contains("\n")
+        if multiLine && !terminalView.getTerminal().bracketedPasteMode {
+            // The child never negotiated bracketed paste (or hasn't yet), but the alternative — raw
+            // text with embedded newlines — is worse: a line-oriented TUI submits each line
+            // separately and shreds the brief. A TUI that ignores the wrapper bytes is no worse off;
+            // one that honours them is saved.
+            NSLog("linkC: session %@ has not negotiated bracketed paste; sending the paste sequence anyway", id)
+        }
+        let pasted = multiLine
         if !trimmed.isEmpty {
             if pasted {
                 terminalView.send(data: Self.bracketedPasteStart[0...])
