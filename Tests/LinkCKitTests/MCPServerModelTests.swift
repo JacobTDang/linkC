@@ -12,7 +12,7 @@ final class MCPServerModelTests: XCTestCase {
             .appendingPathComponent("linkc-mcp-model-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         inboxStore = InboxStore(workspaceRoot: tempDir.path)
-        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil })
+        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil })
     }
 
     override func tearDownWithError() throws {
@@ -80,7 +80,7 @@ final class MCPServerModelTests: XCTestCase {
         let settings = edited   // a @Sendable closure cannot capture a var
         let bare = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore,
                              environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
-                             modelSettings: { settings })
+                             modelSettings: { settings }, sessionResolver: { nil })
 
         let req = """
         {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "linkc_get_models", "arguments": {"agent": "codex"}}}
@@ -190,7 +190,8 @@ final class MCPServerModelTests: XCTestCase {
             inboxStore: inboxStore,
             environment: ["LINKC_AGENT": "claude"],
             ancestorResolver: { _ in nil },
-            modelSettings: { box.value }
+            modelSettings: { box.value },
+            sessionResolver: { nil }
         )
 
         let before = try getModelsText(liveServer)
@@ -216,7 +217,8 @@ final class MCPServerModelTests: XCTestCase {
             inboxStore: inboxStore,
             environment: ["LINKC_AGENT": "claude"],
             ancestorResolver: { _ in nil },
-            modelSettings: { .seeded }
+            modelSettings: { .seeded },
+            sessionResolver: { nil }
         )
         let req = """
         {
@@ -308,7 +310,8 @@ final class MCPServerModelTests: XCTestCase {
                 return "Switched \(agent.displayName) to \(model) via test callback."
             },
             environment: ["LINKC_AGENT": "claude"],
-            ancestorResolver: { _ in nil }
+            ancestorResolver: { _ in nil },
+            sessionResolver: { nil }
         )
 
         let req = """

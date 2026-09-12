@@ -27,35 +27,35 @@ final class MCPServerIdentityTests: XCTestCase {
     }
 
     func testExplicitAgentArgumentWins() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in (.agy, 77) })
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in (.agy, 77) }, sessionResolver: { nil })
         let caller = server.resolveCaller(["agent": "cursor", "pid": 5])
         XCTAssertEqual(caller.agent, .cursor)
         XCTAssertEqual(caller.pid, 5)
     }
 
     func testEnvironmentIsUsedWhenNoArgument() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in nil })
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in nil }, sessionResolver: { nil })
         let caller = server.resolveCaller([:])
         XCTAssertEqual(caller.agent, .codex)
         XCTAssertEqual(caller.pid, getppid())
     }
 
     func testAncestorResolverIsUsedWhenNoArgumentOrEnvironment() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in (.agy, 77) })
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in (.agy, 77) }, sessionResolver: { nil })
         let caller = server.resolveCaller([:])
         XCTAssertEqual(caller.agent, .agy)
         XCTAssertEqual(caller.pid, 77)
     }
 
     func testUnidentifiedCallerIsShellNotClaude() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in nil })
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in nil }, sessionResolver: { nil })
         let caller = server.resolveCaller([:])
         XCTAssertEqual(caller.agent, .shell)
         XCTAssertFalse(caller.isIdentified)
     }
 
     func testUnidentifiedCallerCanReadButNotWrite() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in nil })
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in nil }, sessionResolver: { nil })
         let read = try call(server, "linkc_get_project_context")
         XCTAssertFalse(read.isError)
         let write = try call(server, "linkc_broadcast_intent", ["goal": "x"])
@@ -66,7 +66,7 @@ final class MCPServerIdentityTests: XCTestCase {
     }
 
     func testEveryIdentifiedCallHeartbeatsTheBlackboard() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "cursor"], ancestorResolver: { _ in nil })
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "cursor"], ancestorResolver: { _ in nil }, sessionResolver: { nil })
         _ = try call(server, "linkc_get_models")
         let board = try server.store.load()
         let rec = try XCTUnwrap(board.activeAgents.first { $0.agentKind == .cursor })

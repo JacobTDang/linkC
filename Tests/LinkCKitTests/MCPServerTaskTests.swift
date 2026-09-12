@@ -146,14 +146,14 @@ final class MCPServerTaskTests: XCTestCase {
 
         let sibling = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                                 environment: ["LINKC_AGENT": "codex", "LINKC_SESSION": "session-B"],
-                                ancestorResolver: { _ in nil }, modelSettings: { .seeded })
+                                ancestorResolver: { _ in nil }, modelSettings: { .seeded }, sessionResolver: { nil })
         let refused = try call(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "I did it"])
         XCTAssertTrue(refused.isError, refused.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "a sibling may not settle another session's task")
 
         let assignee = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                                  environment: ["LINKC_AGENT": "codex", "LINKC_SESSION": "session-A"],
-                                 ancestorResolver: { _ in nil }, modelSettings: { .seeded })
+                                 ancestorResolver: { _ in nil }, modelSettings: { .seeded }, sessionResolver: { nil })
         let ok = try call(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
         XCTAssertFalse(ok.isError, ok.text)
     }
