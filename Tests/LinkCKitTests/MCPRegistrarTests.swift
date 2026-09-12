@@ -168,6 +168,29 @@ final class MCPRegistrarTests: XCTestCase {
         XCTAssertFalse(content.contains("/x/linkc-mcp"))
     }
 
+    /// A dropped `_ = rename(...)` used to tell the caller a write landed when the config file
+    /// was actually untouched. Occupying the destination with a directory makes the real
+    /// `rename(2)` fail with EISDIR — deterministic, no permission bits or timing needed — so
+    /// this proves the failure now actually throws instead of returning silently.
+    func testRegisterServerThrowsWhenTheRenameDestinationCannotBeReplaced() throws {
+        let configFile = tempDir.appendingPathComponent("blocked.json")
+        try FileManager.default.createDirectory(at: configFile, withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerServer(configFile: configFile, binaryPath: "/usr/local/bin/linkc-mcp")) { error in
+            XCTAssertTrue("\(error)".contains("errno"), "\(error)")
+        }
+    }
+
+    /// Same failure mode as above, for the TOML writer used by Codex's config.
+    func testRegisterTomlServerThrowsWhenTheRenameDestinationCannotBeReplaced() throws {
+        let configFile = tempDir.appendingPathComponent("blocked.toml")
+        try FileManager.default.createDirectory(at: configFile, withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerTomlServer(configFile: configFile, binaryPath: "/usr/local/bin/linkc-mcp")) { error in
+            XCTAssertTrue("\(error)".contains("errno"), "\(error)")
+        }
+    }
+
     func testRegisterAllSetsAgentIdentityPerClient() throws {
         try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp")
         func env(_ rel: String) throws -> [String: String]? {
