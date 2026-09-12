@@ -203,6 +203,69 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertEqual(task.fromSessionId, "session-Z")
     }
 
+    // MARK: - linkc_start_task session scoping (Finding 2)
+
+    func testStartTaskBySiblingSessionIsRefusedAndByAssigneeSucceeds() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "session-A")
+
+        let refused = try call(server(as: .codex, session: "session-B"), "linkc_start_task", ["task_id": task.id])
+        XCTAssertTrue(refused.isError, refused.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+
+        let ok = try call(server(as: .codex, session: "session-A"), "linkc_start_task", ["task_id": task.id])
+        XCTAssertFalse(ok.isError, ok.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started)
+    }
+
+    // MARK: - linkc_cancel_task session scoping (Finding 3)
+
+    func testCancelTaskSessionScoping() throws {
+        // A sibling session of the assignee's kind, without the assignee's session, is refused.
+        let assignedTask = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: assignedTask.id, sessionId: "session-A")
+        let siblingRefused = try call(server(as: .codex, session: "session-B"), "linkc_cancel_task", ["task_id": assignedTask.id])
+        XCTAssertTrue(siblingRefused.isError, siblingRefused.text)
+        XCTAssertEqual(try inbox.task(id: assignedTask.id)?.state, .delivered)
+
+        // The assignee can cancel its own task.
+        let ownTask = try inbox.createTask(from: .claude, to: .codex, prompt: "Build 2", files: [])
+        try inbox.markTaskDelivered(taskId: ownTask.id, sessionId: "session-A")
+        let ownCancel = try call(server(as: .codex, session: "session-A"), "linkc_cancel_task", ["task_id": ownTask.id])
+        XCTAssertFalse(ownCancel.isError, ownCancel.text)
+        XCTAssertEqual(try inbox.task(id: ownTask.id)?.state, .cancelled)
+
+        // The delegator can cancel a task assigned to another session — the delegator branch is
+        // unconditional and does not consult callerMayAct at all.
+        let delegated = try inbox.createTask(from: .claude, to: .codex, prompt: "Build 3", files: [])
+        try inbox.markTaskDelivered(taskId: delegated.id, sessionId: "session-A")
+        let delegatorCancel = try call(server(as: .claude), "linkc_cancel_task", ["task_id": delegated.id])
+        XCTAssertFalse(delegatorCancel.isError, delegatorCancel.text)
+        XCTAssertEqual(try inbox.task(id: delegated.id)?.state, .cancelled)
+
+        // force overrides a sibling that is neither the assignee nor the delegator.
+        let forced = try inbox.createTask(from: .claude, to: .codex, prompt: "Build 4", files: [])
+        try inbox.markTaskDelivered(taskId: forced.id, sessionId: "session-A")
+        let forceCancel = try call(server(as: .codex, session: "session-B"), "linkc_cancel_task", ["task_id": forced.id, "force": true])
+        XCTAssertFalse(forceCancel.isError, forceCancel.text)
+        XCTAssertEqual(try inbox.task(id: forced.id)?.state, .cancelled)
+    }
+
+    // MARK: - linkc_my_tasks session scoping (Finding 4)
+
+    func testMyTasksHidesATaskAssignedToASiblingSessionButKeepsUnassignedAndDelegatedRows() throws {
+        let assignedToSibling = try inbox.createTask(from: .claude, to: .codex, prompt: "Sibling's task", files: [])
+        try inbox.markTaskDelivered(taskId: assignedToSibling.id, sessionId: "session-A")
+        let unassigned = try inbox.createTask(from: .claude, to: .codex, prompt: "Unassigned task", files: [])
+        let delegatedByMe = try inbox.createTask(from: .codex, to: .cursor, prompt: "Delegated by me", files: [])
+
+        let list = try call(server(as: .codex, session: "session-B"), "linkc_my_tasks")
+
+        XCTAssertFalse(list.text.contains(assignedToSibling.shortId), "a sibling's assigned task must not be listed: \(list.text)")
+        XCTAssertTrue(list.text.contains(unassigned.shortId), "an unassigned task stays visible: \(list.text)")
+        XCTAssertTrue(list.text.contains(delegatedByMe.shortId), "the caller's own delegated section still lists it: \(list.text)")
+    }
+
     func testGetTaskAndMyTasks() throws {
         let mine = try inbox.createTask(from: .claude, to: .codex, prompt: "Assigned to me", files: ["A.swift"])
         let delegated = try inbox.createTask(from: .codex, to: .cursor, prompt: "I delegated this", files: [])
