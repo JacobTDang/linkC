@@ -138,13 +138,16 @@ extension AppCoordinator {
             let candidates = store.sessions.filter {
                 ($0.cwd as NSString).standardizingPath == workspacePath && $0.agentKind == task.toAgent
                     && $0.state != .ended && $0.id != task.fromSessionId
+                    // A tiered task runs only on a session pinned to that tier. A row written
+                    // before tiers has none, and keeps the pre-tier rule: any session of its kind.
+                    && (task.tier == nil || $0.modelTier == task.tier)
             }
             if candidates.isEmpty {
                 // Spawn now, deliver on a later tick. A CLI needs seconds to reach its prompt, and a
                 // frame typed into a booting TUI is lost — the worker never sees the task. The session
                 // stays `.starting` until its agent is really running: Claude's SessionStart hook, or
                 // `sampleAgentStates` for every other kind.
-                _ = try? spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt)
+                _ = try? spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier)
                 continue
             }
             guard let session = candidates.first(where: { isIdle($0.state) }) else { continue } // all busy: wait for a later tick
@@ -484,7 +487,7 @@ extension AppCoordinator {
                 try inboxStore.cancelTask(taskId: currentTask.id, reason: "rerouted to \(target.displayName) after limit")
                 tellDelegator()
                 _ = try inboxStore.createTask(
-                    from: currentTask.fromAgent, to: target, prompt: currentTask.prompt,
+                    from: currentTask.fromAgent, to: target, tier: currentTask.tier, prompt: currentTask.prompt,
                     files: currentTask.files, hop: hop + 1, force: true,
                     verification: currentTask.verification, gate: currentTask.gate
                 )

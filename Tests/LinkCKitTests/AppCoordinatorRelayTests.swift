@@ -30,7 +30,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
     @MainActor
     private func makeCoordinator(
         sink: NotificationSink = RecordingSink(),
-        verifier: any TaskVerifier = VerificationRunner()
+        verifier: any TaskVerifier = VerificationRunner(),
+        models: AgentModelSettings = .seeded
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -53,6 +54,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             manifestDir: tempDir.appendingPathComponent("manifest"),
             agentPathResolver: { _ in scriptURL.path },
             verifier: verifier,
+            modelSettings: { models },
             isWatching: { _ in false }
         )
     }
@@ -1211,6 +1213,87 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let failed = try await waitUntil({ (try? inbox.task(id: task.id))?.state == .failed }, iterations: 500)
         XCTAssertTrue(failed, "verdict: \(String(describing: try? inbox.task(id: task.id)?.verdict))")
         XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] failed — test files modified: check.sh"])
+    }
+
+    /// A tiered task only ever reaches a session pinned to that tier.
+    @MainActor
+    func testATieredTaskOnlyReachesASessionOfThatTier() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(models: .seeded)
+        defer { coordinator.shutdown() }
+
+        let deep = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new, tier: .deep)
+        coordinator.store.updateState(id: deep.id, to: .ready)
+        let task = try inbox.createTask(from: .claude, to: .codex, tier: .light, prompt: "Rename a file", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued, "A deep session must not take a light task")
+
+        let light = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new, tier: .light)
+        coordinator.store.updateState(id: light.id, to: .ready)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        let delivered = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(delivered.state, .delivered)
+        XCTAssertEqual(delivered.assigneeSessionId, light.id)
+    }
+
+    /// An unpinned session is not a candidate for tiered work — it is running a model nobody asked for.
+    @MainActor
+    func testAnUnpinnedSessionNeverTakesATieredTask() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let unpinned = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new)
+        coordinator.store.updateState(id: unpinned.id, to: .ready)
+        let task = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "Rename a file", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
+    }
+
+    /// A row written before tiers keeps the old routing rather than stalling forever.
+    @MainActor
+    func testALegacyTaskWithNoTierStillReachesAnIdleSession() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let any = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new)
+        coordinator.store.updateState(id: any.id, to: .ready)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Legacy brief", files: [])
+        XCTAssertNil(task.tier, "createTask without a tier records none")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.task(id: task.id)?.assigneeSessionId, any.id)
+    }
+
+    @MainActor
+    func testARerouteKeepsTheTaskTier() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(models: .seeded)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light)
+        coordinator.store.updateState(id: session.id, to: .working)
+        let task = try inbox.createTask(from: .cursor, to: .claude, tier: .light, prompt: "Build a streaming proxy", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+        try inbox.markTaskStarted(taskId: task.id)
+
+        coordinator.terminals.sendInput(sessionId: session.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id))
+
+        let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        XCTAssertEqual(copy.tier, .light, "A rerouted task keeps its tier and resolves it through the new agent's mapping")
     }
 }
 
