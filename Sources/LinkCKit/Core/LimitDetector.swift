@@ -48,13 +48,18 @@ public struct LimitDetector: Sendable {
     }()
 
     private static let claudeRules: [LimitRule] = [
-        LimitRule(canonicalPattern: "You've reached your usage limit", regexPattern: "you(?:'|’)?ve reached your (?:usage )?limit"),
+        LimitRule(canonicalPattern: "You've reached your usage limit", regexPattern: "you(?:'|’)?ve (?:reached|hit) your (?:(?:usage|session|rate) )?limit"),
         LimitRule(canonicalPattern: "Rate limit reached", regexPattern: "\\brate limit reached\\b"),
         LimitRule(canonicalPattern: "credit balance too low", regexPattern: "\\bcredit balance too low\\b"),
         LimitRule(canonicalPattern: "Claude is currently unavailable", regexPattern: "claude.*(?:is currently unavailable|temporarily unavailable)"),
         LimitRule(canonicalPattern: "out of messages until", regexPattern: "out of messages until"),
         LimitRule(canonicalPattern: "exceeded your usage limit", regexPattern: "exceeded your (?:usage )?limit"),
-        LimitRule(canonicalPattern: "resets in/at", regexPattern: "resets (?:in|at)"),
+        // Never match on reset wording alone. "resets at 3am" appears in ordinary prose — an
+        // agent discussing a limit, or linkC's own notice about one — and reading that as
+        // exhaustion made linkC cancel real work and synthesize tasks for peers that nobody
+        // asked for. Only an agent's own exhaustion banner counts.
+        LimitRule(canonicalPattern: "usage or session limit reached", regexPattern: "\\b(?:usage|session) limit reached\\b"),
+        LimitRule(canonicalPattern: "usage cap hit or reached", regexPattern: "\\b(?:usage )?cap (?:hit|reached)\\b"),
         LimitRule(canonicalPattern: "You have reached your limit for Claude", regexPattern: "you have reached your limit for claude")
     ]
 

@@ -59,7 +59,8 @@ final class LimitDetectorTests: XCTestCase {
         XCTAssertEqual(match?.agent, .claude)
     }
 
-    func testClaudeResetsInOrAtDetected() {
+    /// A cap banner is exhaustion; the reset sentence beside it is incidental, not the signal.
+    func testClaudeUsageCapBannerDetected() {
         let text1 = "Usage cap hit. Resets in 2 hours."
         let match1 = LimitDetector.detectLimit(inOutput: text1, agent: .claude)
         XCTAssertNotNil(match1)
@@ -224,5 +225,42 @@ final class LimitDetectorTests: XCTestCase {
         XCTAssertEqual(status.reason, "Rate limit reached")
         XCTAssertEqual(status.limitedAt, now)
         XCTAssertEqual(status.cooldownExpiresAt, Date(timeIntervalSince1970: 1_000_900))
+    }
+
+    // MARK: - Prose must not trigger a limit
+
+    /// Regression: the reset-phrase rule matched any text containing those words, so an agent
+    /// merely *discussing* a limit — or linkC's own notice about one — was read as that agent
+    /// being exhausted. linkC then cancelled its work and synthesized a task for a peer, which
+    /// spent another agent's quota on work nobody asked for. Only an agent's own exhaustion
+    /// banner may match.
+    func testProseAboutALimitIsNotALimit() {
+        let prose = [
+            "Two hunters died on your session limit — it resets at 3am.",
+            "The cooldown resets in 15 minutes, so we can retry after that.",
+            "I logged the finding: the detector treats a reset phrase as exhaustion.",
+            "Reading the docs on how quotas reset at midnight UTC."
+        ]
+        for text in prose {
+            XCTAssertNil(
+                LimitDetector.detectLimit(inOutput: text, agent: .claude),
+                "Prose must not be read as exhaustion: \(text)"
+            )
+        }
+    }
+
+    /// The real banner still has to be caught, reset wording and all.
+    func testActualExhaustionBannerIsStillDetected() {
+        let banners = [
+            "You've hit your session limit · resets 3am (America/Chicago)",
+            "You've reached your usage limit. Visit your console to upgrade.",
+            "Claude usage limit reached · resets at 4pm"
+        ]
+        for text in banners {
+            XCTAssertNotNil(
+                LimitDetector.detectLimit(inOutput: text, agent: .claude),
+                "A real exhaustion banner must be detected: \(text)"
+            )
+        }
     }
 }
