@@ -7,11 +7,10 @@ final class AgentModelSettingsTests: XCTestCase {
         XCTAssertEqual(s.model(for: .claude, tier: .light), "haiku")
         XCTAssertEqual(s.model(for: .claude, tier: .standard), "sonnet")
         XCTAssertEqual(s.model(for: .claude, tier: .deep), "opus")
-        // Only gpt-6-astra is verified against this user's ~/.codex/config.toml; gpt-6-sol and
-        // gpt-6-luna both failed with an HTTP 400 when tried against the real CLI, so light and
-        // standard are left unconfigured rather than seeded with ids that silently fail.
-        XCTAssertNil(s.model(for: .codex, tier: .light))
-        XCTAssertNil(s.model(for: .codex, tier: .standard))
+        // Every codex id was confirmed by a live `codex exec --model <id>` run. The first
+        // guesses, gpt-6-sol and gpt-6-luna, came back HTTP 400; these spellings answered.
+        XCTAssertEqual(s.model(for: .codex, tier: .light), "gpt-5.6-luna")
+        XCTAssertEqual(s.model(for: .codex, tier: .standard), "gpt-5.6-sol")
         XCTAssertEqual(s.model(for: .codex, tier: .deep), "gpt-6-astra")
         XCTAssertEqual(s.model(for: .agy, tier: .light), "gemini-3.8-flash-low")
         XCTAssertEqual(s.model(for: .agy, tier: .standard), "gemini-3.8-flash-medium")

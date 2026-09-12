@@ -33,14 +33,15 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
     /// from `~/.codex/config.toml` and a live run; `gpt-6-sol` and `gpt-6-luna` both came back
     /// HTTP 400 ("not supported when using Codex with a ChatGPT account") when tried for real,
     /// and Codex validates nothing locally — a wrong id starts a session that then fails every
-    /// request rather than refusing up front. So codex's `light` and `standard` are left empty:
-    /// an empty entry means that tier is unconfigured, and delegation refuses loudly rather
-    /// than launching a session pinned to a model nobody confirmed works. `agy models` lists
-    /// the agy ids below verbatim. All are editable in settings if a provider changes them.
+    /// request rather than refusing up front, so every codex id below was confirmed by running
+    /// `codex exec --model <id>` and watching it answer. `gpt-6-sol` and `gpt-6-luna` were tried
+    /// first and rejected with HTTP 400; the working spellings are `gpt-5.6-sol` and
+    /// `gpt-5.6-luna`. `agy models` lists the agy ids verbatim. An empty entry means that tier
+    /// is unconfigured and delegation refuses loudly. All are editable in settings.
     public static let seeded = AgentModelSettings(
         models: [
             AgentKind.claude.rawValue: ["light": "haiku", "standard": "sonnet", "deep": "opus"],
-            AgentKind.codex.rawValue: ["light": "", "standard": "", "deep": "gpt-6-astra"],
+            AgentKind.codex.rawValue: ["light": "gpt-5.6-luna", "standard": "gpt-5.6-sol", "deep": "gpt-6-astra"],
             AgentKind.agy.rawValue: [
                 "light": "gemini-3.8-flash-low", "standard": "gemini-3.8-flash-medium", "deep": "gemini-3.1-pro-high"
             ]

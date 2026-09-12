@@ -54,14 +54,14 @@ confirmed works:
 | Agent  | light                     | standard                     | deep                     | default  |
 |--------|---------------------------|-------------------------------|--------------------------|----------|
 | claude | haiku                     | sonnet                        | opus                     | standard |
-| codex  | *(unconfigured)*          | *(unconfigured)*              | gpt-6-astra              | standard |
+| codex  | gpt-5.6-luna              | gpt-5.6-sol                   | gpt-6-astra              | standard |
 | agy    | gemini-3.8-flash-low      | gemini-3.8-flash-medium       | gemini-3.1-pro-high      | standard |
 
-`gpt-6-astra` is verified — it is what `~/.codex/config.toml` holds today, and a live run confirms
-Codex accepts it. Two other ids were tried against the real CLI and rejected: `codex exec --model
-gpt-6-sol` and `--model gpt-6-luna` both came back HTTP 400 ("not supported when using Codex with
-a ChatGPT account"). Codex validates nothing locally, so a wrong id does not fail fast — it starts
-a session that then fails every request. Rather than seed a guess that silently breaks delegation,
+Every id above was confirmed against the real CLI. `gpt-6-sol` and `gpt-6-luna` were tried first
+and came back HTTP 400 ("not supported when using Codex with a ChatGPT account"); the working
+spellings are `gpt-5.6-sol` and `gpt-5.6-luna`. Codex validates nothing locally, so a wrong id does
+not fail fast — it starts a session that then fails every request. That is why an id is only seeded
+once a live run has answered on it, and why an unconfirmed tier is left empty rather than guessed:
 codex's `light` and `standard` tiers ship empty; the settings fields exist precisely so a real id
 for either can be typed in as a one-line edit, and §9 refuses rather than guesses in the meantime.
 `agy models` lists the agy ids above verbatim, so they need no such caveat.
