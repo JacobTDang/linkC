@@ -19,14 +19,24 @@ final class MCPServerTaskTests: XCTestCase {
     }
 
     private func server(as agent: AgentKind) -> MCPServer {
-        MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": agent.rawValue], ancestorResolver: { _ in nil })
+        MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": agent.rawValue],
+                  ancestorResolver: { _ in nil }, sessionResolver: { nil })
     }
 
     private func server(as agent: AgentKind, models: AgentModelSettings) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path,
                   environment: ["LINKC_AGENT": agent.rawValue],
                   ancestorResolver: { _ in nil },
-                  modelSettings: { models })
+                  modelSettings: { models },
+                  sessionResolver: { nil })
+    }
+
+    /// A caller with a fixed session, delivered through `LINKC_SESSION` the way most agents pass
+    /// it, but with the ancestry fallback stubbed so the test never reads real processes.
+    private func server(as agent: AgentKind, session: String) -> MCPServer {
+        MCPServer(workspaceRoot: tempDir.path,
+                  environment: ["LINKC_AGENT": agent.rawValue, "LINKC_SESSION": session],
+                  ancestorResolver: { _ in nil }, sessionResolver: { nil })
     }
 
     private func call(_ server: MCPServer, _ name: String, _ args: [String: Any] = [:]) throws -> (text: String, isError: Bool) {
@@ -154,6 +164,43 @@ final class MCPServerTaskTests: XCTestCase {
         let task = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "Build", files: [])
         let res = try call(server(as: .codex, models: .seeded), "linkc_cancel_task", ["task_id": task.id, "reason": "not needed"])
         XCTAssertFalse(res.isError, res.text)
+    }
+
+    // MARK: - Session resolution (Codex: environment has no LINKC_SESSION)
+
+    /// Codex spawns its MCP servers with only `LINKC_AGENT` set — the session id never lands in
+    /// `environment`. `sessionResolver` stands in for the ancestry walk that recovers it from the
+    /// Codex CLI process; `callerMayAct` must key off whatever it returns, exactly as if the
+    /// session had arrived through `LINKC_SESSION` directly.
+    func testSessionResolverStandsInForAnAbsentEnvironmentSession() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "session-A")
+
+        let sibling = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
+                                environment: ["LINKC_AGENT": "codex"],
+                                ancestorResolver: { _ in nil }, sessionResolver: { "session-B" })
+        let refused = try call(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "nope"])
+        XCTAssertTrue(refused.isError, refused.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "a sibling recovered via the resolver still may not settle another session's task")
+
+        let assignee = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
+                                 environment: ["LINKC_AGENT": "codex"],
+                                 ancestorResolver: { _ in nil }, sessionResolver: { "session-A" })
+        let ok = try call(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
+        XCTAssertFalse(ok.isError, ok.text)
+    }
+
+    /// The relay must never hand a task back to its own delegator; that stamp is written from the
+    /// same session lookup, so it must also work when the session only comes from the resolver.
+    func testDelegateStampsFromSessionIdFromTheResolverWhenEnvironmentHasNoSession() throws {
+        let srv = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
+                            environment: ["LINKC_AGENT": "claude"],
+                            ancestorResolver: { _ in nil }, modelSettings: { .seeded },
+                            sessionResolver: { "session-Z" })
+        let res = try call(srv, "linkc_delegate_task", ["to": "agy", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        let task = try XCTUnwrap(inbox.openTasks().first)
+        XCTAssertEqual(task.fromSessionId, "session-Z")
     }
 
     func testGetTaskAndMyTasks() throws {

@@ -1332,7 +1332,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
     @MainActor
     private func delegateAndGate(_ repo: URL, _ coordinator: AppCoordinator) async throws -> TaskRecord {
         let inbox = InboxStore(workspaceRoot: repo.path)
-        let delegator = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil })
+        let delegator = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "claude"],
+                                   ancestorResolver: { _ in nil }, sessionResolver: { nil })
         let base = try runGit(["rev-parse", "HEAD"], in: repo)
         let delegated = try mcp(delegator, "linkc_delegate_task", [
             "to": "codex", "prompt": "Make check.sh pass", "tier": "deep",
@@ -1355,7 +1356,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try runGit(["add", file], in: repo)
         try runGit(["commit", "-q", "-m", "worker"], in: repo)
         let sha = try runGit(["rev-parse", "HEAD"], in: repo)
-        let worker = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in nil })
+        let worker = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "codex"],
+                                ancestorResolver: { _ in nil }, sessionResolver: { nil })
         let reported = try mcp(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "worker change", "sha": sha])
         XCTAssertFalse(reported.isError, reported.text)
         return sha

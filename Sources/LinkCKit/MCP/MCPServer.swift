@@ -12,6 +12,7 @@ public final class MCPServer: Sendable {
     public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String) throws -> String
     public typealias AncestorResolver = @Sendable (_ pid: pid_t) -> (agent: AgentKind, pid: pid_t)?
     public typealias ModelSettingsProvider = @Sendable () -> AgentModelSettings
+    public typealias SessionResolver = @Sendable () -> String?
 
     public let workspaceRoot: String
     public let store: BlackboardStore
@@ -19,6 +20,10 @@ public final class MCPServer: Sendable {
     public let modelSwitcher: ModelSwitcher?
     public let environment: [String: String]
     public let ancestorResolver: AncestorResolver
+    /// Falls back to an ancestor's real environment when ours has no `LINKC_SESSION` — Codex
+    /// launches its MCP servers with only `LINKC_AGENT` in the registration's `env` block, so the
+    /// session id never reaches `environment` there even though the Codex CLI process has it.
+    public let sessionResolver: SessionResolver
     /// Read fresh on every call, never cached: `linkc-mcp` builds one `MCPServer` for the life
     /// of the CLI process, so a stored value would freeze the mapping at startup and make the
     /// "set it in linkC settings" refusal a lie — an edit would never take effect. Mirrors how
@@ -44,7 +49,8 @@ public final class MCPServer: Sendable {
         modelSwitcher: ModelSwitcher? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         ancestorResolver: @escaping AncestorResolver = { ProcessSnooper.detectAgent(inAncestorsOf: $0) },
-        modelSettings: @escaping ModelSettingsProvider = { AgentModelStore.applicationSupport.load() }
+        modelSettings: @escaping ModelSettingsProvider = { AgentModelStore.applicationSupport.load() },
+        sessionResolver: @escaping SessionResolver = { ProcessSnooper.sessionId(inAncestorsOf: getpid()) }
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -53,6 +59,7 @@ public final class MCPServer: Sendable {
         self.environment = environment
         self.ancestorResolver = ancestorResolver
         self.modelSettings = modelSettings
+        self.sessionResolver = sessionResolver
     }
 
     /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified).
@@ -70,6 +77,14 @@ public final class MCPServer: Sendable {
             return MCPCaller(agent: found.agent, pid: explicitPid ?? found.pid)
         }
         return MCPCaller(agent: .shell, pid: explicitPid ?? getppid())
+    }
+
+    /// The caller's linkC session: `LINKC_SESSION` env → `sessionResolver` (an ancestor's real
+    /// environment). A caller whose registration never passed the variable down — Codex's MCP
+    /// servers, notably — still resolves to the session its CLI process carries.
+    private func callerSessionId() -> String? {
+        if let session = environment["LINKC_SESSION"], !session.isEmpty { return session }
+        return sessionResolver()
     }
 
     /// Processes a single JSON-RPC 2.0 message buffer and returns the response Data, or nil if no response is needed (e.g. notifications).
@@ -472,7 +487,7 @@ public final class MCPServer: Sendable {
                 let task: TaskRecord
                 do {
                     task = try inboxStore.createTask(from: caller.agent, to: toAgent,
-                                                     fromSessionId: environment["LINKC_SESSION"],
+                                                     fromSessionId: callerSessionId(),
                                                      tier: tier,
                                                      prompt: prompt, files: files,
                                                      force: force, verification: verification)
@@ -930,7 +945,7 @@ public final class MCPServer: Sendable {
     /// assignee, and refusing would break agents started outside linkC.
     func callerMayAct(on task: TaskRecord) -> Bool {
         guard let assignee = task.assigneeSessionId,
-              let caller = environment["LINKC_SESSION"], !caller.isEmpty else { return true }
+              let caller = callerSessionId() else { return true }
         return assignee == caller
     }
 
