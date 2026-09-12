@@ -63,6 +63,11 @@ public final class AppCoordinator {
     /// The current tier → model mapping. A closure, not a value, so a settings edit is seen on
     /// the next spawn without anyone re-injecting anything.
     private let modelSettings: @MainActor @Sendable () -> AgentModelSettings
+    /// How long `dispatchTasks` requires a session to have been paste-ready before delivering
+    /// to it. Defaults to `AppCoordinator.deliverySettle`; tests inject 0 so a mock's near-instant
+    /// negotiation is immediately a candidate without a real sleep. Production never overrides
+    /// this — see `AppCoordinator.deliverySettle` for the measurement behind the default.
+    let deliverySettle: TimeInterval
 
     /// Hook events are funneled through this single stream and drained by one consumer task
     /// so `store.apply` runs strictly in arrival order — unstructured per-event tasks would
@@ -85,6 +90,7 @@ public final class AppCoordinator {
         claudeJsonURL: URL? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
+        deliverySettle: TimeInterval = AppCoordinator.deliverySettle,
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -98,6 +104,7 @@ public final class AppCoordinator {
         self.claudeJsonURL = claudeJsonURL
         self.verifier = verifier
         self.modelSettings = modelSettings
+        self.deliverySettle = deliverySettle
         self.isWatching = isWatching
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.

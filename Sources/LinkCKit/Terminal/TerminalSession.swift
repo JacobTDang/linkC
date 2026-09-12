@@ -168,11 +168,23 @@ public final class TerminalSession {
         }
     }
 
+    /// The instant `acceptsPaste` was first observed to be true. Recorded lazily on first true
+    /// read (main-actor only, like everything else here) — monotonic, and never cleared once
+    /// set, including if the child later exits. `dispatchTasks` reads this, not the flag alone,
+    /// to require a settle margin before treating a session as a delivery candidate: the flag
+    /// negotiates well before the CLI can actually consume input (see `AppCoordinator.
+    /// deliverySettle` for the measurement).
+    public private(set) var pasteReadySince: Date?
+
     /// True once the child has turned on bracketed paste — the first moment a multi-line frame
     /// can be delivered as one unit rather than as a run of submitted lines.
     public var acceptsPaste: Bool {
         guard liveness.withLock({ $0 }) else { return false }
-        return _terminalView?.getTerminal().bracketedPasteMode ?? false
+        let ready = _terminalView?.getTerminal().bracketedPasteMode ?? false
+        if ready && pasteReadySince == nil {
+            pasteReadySince = Date()
+        }
+        return ready
     }
 
     /// How long a TUI needs to apply a bracketed paste before it will accept Return. Measured

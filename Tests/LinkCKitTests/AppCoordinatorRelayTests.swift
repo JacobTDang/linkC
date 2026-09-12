@@ -61,6 +61,9 @@ final class AppCoordinatorRelayTests: XCTestCase {
             agentPathResolver: { _ in scriptURL.path },
             verifier: verifier,
             modelSettings: { models },
+            // The mock negotiates paste almost immediately, but a 2s settle margin would still
+            // make every dispatch test wait for real. Zero here; production keeps the default.
+            deliverySettle: 0,
             isWatching: { _ in false }
         )
     }

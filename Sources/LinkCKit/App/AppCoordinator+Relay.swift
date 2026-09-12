@@ -7,6 +7,16 @@ extension AppCoordinator {
     static let queuedTaskExpiry: TimeInterval = 60 * 60
     /// Verification runs in flight across all workspaces; each is a full build and test run.
     static let maxConcurrentVerifications = 2
+    /// Minimum time a session must have been paste-ready (see `TerminalSession.pasteReadySince`)
+    /// before `dispatchTasks` will deliver to it. Measured against the real Claude CLI:
+    /// bracketed-paste negotiation flips true roughly 250-300ms after start, but the CLI cannot
+    /// actually consume input until roughly 1.5-2s after start — a brief delivered right at
+    /// negotiation lands in a composer that isn't listening yet and is lost. 2 seconds covers
+    /// the measured gap with margin. Production always uses this value; tests override the
+    /// per-instance `AppCoordinator.deliverySettle` to 0 instead of sleeping. Public: it is the
+    /// default for the public designated initializer's `deliverySettle` parameter, and the live
+    /// test waits on it directly.
+    public static let deliverySettle: TimeInterval = 2
 
     /// One relay tick for `workspacePath`: expire, start verification, then deliver only if no
     /// run holds this checkout. A verification owns HEAD and the tree while it runs.
@@ -173,8 +183,19 @@ extension AppCoordinator {
             // that filter also decides whether to spawn a new session, and an idle-but-not-yet-
             // negotiated session would look like "no session exists" there, spawning a duplicate
             // every tick instead of waiting for this one to finish negotiating.
-            guard let session = idleCandidates.first(where: { terminals.session(id: $0.id)?.acceptsPaste ?? false }) else {
-                NSLog("[linkC relay] dispatchTasks: task %@ has an idle session but none has negotiated bracketed paste yet — waiting", task.shortId)
+            //
+            // Negotiation alone is not enough: a real CLI's flag flips well before it can
+            // actually consume input (see `Self.deliverySettle`), so also require the session to
+            // have been ready for at least the settle margin. A session that never settles is
+            // simply not a candidate this tick — never dropped, never silently skipped forever —
+            // and the log line below fires every tick it's waited on, so it can't starve in
+            // silence.
+            guard let session = idleCandidates.first(where: { candidate in
+                guard let terminal = terminals.session(id: candidate.id), terminal.acceptsPaste,
+                      let readySince = terminal.pasteReadySince else { return false }
+                return Date().timeIntervalSince(readySince) >= deliverySettle
+            }) else {
+                NSLog("[linkC relay] dispatchTasks: task %@ has an idle session but none has settled after negotiating bracketed paste yet — waiting", task.shortId)
                 continue
             }
 

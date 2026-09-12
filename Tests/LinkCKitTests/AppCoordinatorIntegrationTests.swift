@@ -65,6 +65,9 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             manifestDir: manifestDir ?? settingsDir,
             agentPathResolver: { _ in scriptURL.path },
             modelSettings: { models },
+            // The mock negotiates paste almost immediately, but a 2s settle margin would still
+            // make dispatch tests wait for real. Zero here; production keeps the default.
+            deliverySettle: 0,
             isWatching: { _ in false }
         )
     }

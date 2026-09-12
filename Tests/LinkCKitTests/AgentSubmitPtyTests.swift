@@ -56,10 +56,14 @@ final class AgentSubmitPtyTests: XCTestCase {
         XCTAssertTrue(answered, "A multi-line frame must submit itself to Codex; it stayed in the composer unsent.")
     }
 
-    /// Delivery used to be allowed as soon as the process existed. This is the boundary case:
-    /// inject the moment the process is up, with no warm-up sleep, and the frame must still
-    /// arrive as one message rather than as a run of submitted lines.
-    func testAMultiLineFrameSurvivesInjectionRightAfterStart() async throws {
+    /// Negotiation alone used to be treated as "ready." It isn't: the real CLI's bracketed-paste
+    /// flag flips true roughly 250-300ms after start, but the CLI cannot actually consume input
+    /// until roughly 1.5-2s after start — a frame delivered right at negotiation lands in a
+    /// composer that isn't listening yet and is lost. `dispatchTasks` now also requires
+    /// `AppCoordinator.deliverySettle` (2s) to have passed since paste was first observed ready.
+    /// This is that boundary: poll for negotiation, wait exactly the settle margin, inject with
+    /// no extra slack, and require the frame to arrive whole and be answered.
+    func testAMultiLineFrameSurvivesInjectionAfterTheSettleMargin() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["LINKC_LIVE_AGENT_TESTS"] == "1", "Drives the real Claude CLI; set LINKC_LIVE_AGENT_TESTS=1 to run it.")
         guard let path = AgentDescriptor.resolveExecutable(for: .claude),
               FileManager.default.isExecutableFile(atPath: path) else { return }
@@ -75,6 +79,10 @@ final class AgentSubmitPtyTests: XCTestCase {
         }
         XCTAssertTrue(ready, "the CLI must negotiate bracketed paste; delivery keys off this")
 
+        // Negotiation alone is not enough — wait the same settle margin dispatchTasks requires
+        // before treating a session as a delivery candidate.
+        try await Task.sleep(for: .seconds(AppCoordinator.deliverySettle))
+
         session.sendInput("[linkC test frame]\nAdd one hundred thirty seven to forty two. Reply with the digits only, nothing else.\n\nA second paragraph, so the input takes the bracketed-paste path.")
 
         var answered = false
@@ -83,6 +91,6 @@ final class AgentSubmitPtyTests: XCTestCase {
             if session.recentOutput(lines: 40).contains(Self.marker) { answered = true; break }
         }
         session.terminate()
-        XCTAssertTrue(answered, "the frame must arrive whole and be answered")
+        XCTAssertTrue(answered, "the frame must arrive whole and be answered once the settle margin has passed")
     }
 }
