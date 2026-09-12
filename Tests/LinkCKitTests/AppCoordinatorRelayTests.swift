@@ -1560,8 +1560,10 @@ final class AppCoordinatorRelayTests: XCTestCase {
     /// guard against it: the branch above now marks the session so a second tick's top-of-function
     /// guard skips re-detection outright, and — belt and suspenders, since a second *session* of
     /// the same agent kind would not be caught by that guard — `recordLimit` itself refuses to
-    /// push a still-live cooldown's expiry out. This proves both, seeding a fixed earlier expiry
-    /// rather than sleeping to watch the clock move.
+    /// push a still-live cooldown's expiry out. This proves both, seeding a fixed near expiry
+    /// (~60s out, far from where an unconditional overwrite would land — roughly now + 900s, the
+    /// default cooldown) rather than sleeping to watch the clock move; no whole-second rounding
+    /// of the stored ISO8601 timestamp can hide an 840s jump.
     @MainActor
     func testACooldownIsNotReArmedOnEveryTick() async throws {
         let ws = tempDir.path
@@ -1581,8 +1583,15 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         // A cooldown for claude is already live — recordLimit must keep its expiry, not push it
         // out, when the relay re-records the same unhandled limit.
-        try inbox.recordLimit(agent: .claude, reason: "usage cap hit or reached", cooldown: 900)
-        let seededExpiry = try XCTUnwrap(try inbox.isAgentLimited(agent: .claude)?.cooldownExpiresAt)
+        var seededInbox = try inbox.load()
+        let seededExpiry = Date().addingTimeInterval(60)
+        seededInbox.agentLimits.append(AgentLimitStatus(
+            agent: .claude,
+            reason: "usage cap hit or reached",
+            limitedAt: Date(),
+            cooldownExpiresAt: seededExpiry
+        ))
+        try inbox.saveRaw(seededInbox)
 
         coordinator.terminals.sendInput(sessionId: session.id, text: "Usage cap hit.\n")
         _ = try await waitUntil {
@@ -1591,14 +1600,20 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id))
         let afterFirstTick = try XCTUnwrap(try inbox.isAgentLimited(agent: .claude)?.cooldownExpiresAt)
-        XCTAssertEqual(seededExpiry, afterFirstTick, "a live cooldown must keep its expiry, not be pushed out by the same unhandled limit")
+        XCTAssertEqual(
+            afterFirstTick.timeIntervalSince1970, seededExpiry.timeIntervalSince1970, accuracy: 1.0,
+            "a live cooldown must keep its expiry, not be pushed out by the same unhandled limit"
+        )
         XCTAssertEqual(coordinator.store.session(id: session.id)?.state, .error, "marked so the next tick cannot re-detect this")
 
         // A second tick — the same session, still holding the same banner in its scrollback —
         // must not even re-process it, let alone re-arm the cooldown.
         XCTAssertFalse(coordinator.checkLimitsAndReroute(for: session.id), "an already-marked session must not be reprocessed")
         let afterSecondTick = try XCTUnwrap(try inbox.isAgentLimited(agent: .claude)?.cooldownExpiresAt)
-        XCTAssertEqual(seededExpiry, afterSecondTick, "still unchanged after a second tick")
+        XCTAssertEqual(
+            afterSecondTick.timeIntervalSince1970, seededExpiry.timeIntervalSince1970, accuracy: 1.0,
+            "still unchanged after a second tick"
+        )
     }
 
     /// codex has no `light` model configured here and cursor never can be pinned — only agy is

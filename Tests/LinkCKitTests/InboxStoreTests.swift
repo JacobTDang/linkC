@@ -126,15 +126,30 @@ final class InboxStoreTests: XCTestCase {
     /// disk write in between), so an overwrite is caught by exact equality without waiting.
     func testRecordLimitKeepsALiveCooldownsEarlierExpiryInsteadOfPushingItOut() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
-        try store.recordLimit(agent: .claude, reason: "Rate limit reached", cooldown: 900)
-        let first = try XCTUnwrap(try store.isAgentLimited(agent: .claude)?.cooldownExpiresAt)
 
-        // Re-recording the same still-live limit, as a relay tick that keeps re-detecting the
-        // same banner would, must not push the expiry out.
-        try store.recordLimit(agent: .claude, reason: "Rate limit reached", cooldown: 900)
-        let second = try XCTUnwrap(try store.isAgentLimited(agent: .claude)?.cooldownExpiresAt)
+        // Seed a live cooldown whose expiry sits ~60s out — far from where an unconditional
+        // overwrite would move it, so no whole-second rounding of the stored ISO8601 timestamp
+        // can hide the difference.
+        var inbox = try store.load()
+        let seededExpiry = Date().addingTimeInterval(60)
+        inbox.agentLimits.append(AgentLimitStatus(
+            agent: .claude,
+            reason: "Rate limit reached",
+            limitedAt: Date(),
+            cooldownExpiresAt: seededExpiry
+        ))
+        try store.saveRaw(inbox)
 
-        XCTAssertEqual(first, second, "a live cooldown must keep its expiry, not be pushed out by a re-record")
+        // Re-recording the same still-live limit with the full cooldown, as a relay tick that
+        // keeps re-detecting the same banner would, must not push the expiry out. Unconditional
+        // overwrite would jump this to roughly now + 900s — about 840s later than seeded.
+        try store.recordLimit(agent: .claude, reason: "Rate limit reached", cooldown: 900)
+        let after = try XCTUnwrap(try store.isAgentLimited(agent: .claude)?.cooldownExpiresAt)
+
+        XCTAssertEqual(
+            after.timeIntervalSince1970, seededExpiry.timeIntervalSince1970, accuracy: 1.0,
+            "a live cooldown must keep its expiry, not be pushed out by a re-record"
+        )
     }
 
     /// An expired cooldown, unlike a live one, may still be replaced — recordLimit must not get
