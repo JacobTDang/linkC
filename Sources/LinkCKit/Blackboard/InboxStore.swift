@@ -274,6 +274,7 @@ public final class InboxStore: Sendable {
         from: AgentKind,
         to: AgentKind,
         fromSessionId: String? = nil,
+        tier: ModelTier? = nil,
         prompt: String,
         files: [String],
         hop: Int = 0,
@@ -310,7 +311,8 @@ public final class InboxStore: Sendable {
             }
 
             let task = TaskRecord(
-                fromAgent: from, fromSessionId: fromSessionId, toAgent: to, prompt: prompt, files: normalized,
+                fromAgent: from, fromSessionId: fromSessionId, tier: tier, toAgent: to,
+                prompt: prompt, files: normalized,
                 state: verification == nil || gate != nil ? .queued : .gating, hop: hop,
                 verification: verification, gate: gate
             )

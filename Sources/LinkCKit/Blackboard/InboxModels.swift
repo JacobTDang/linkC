@@ -124,6 +124,11 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     /// The relay never assigns a task back to it: that terminal is mid-turn, so the frame would
     /// land in its composer unsent.
     public let fromSessionId: String?
+    /// Which model tier this task runs on. Optional for one reason: `loadUnlocked` throws on a
+    /// decode error, so a required field would make every task row written before tiers existed
+    /// unreadable and take the inbox with it. `nil` means "written before tiers" and keeps the
+    /// pre-tier routing; every task created from here on carries one.
+    public let tier: ModelTier?
     public let toAgent: AgentKind
     public var assigneeSessionId: String?
     public let prompt: String
@@ -148,6 +153,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         id: String = UUID().uuidString,
         fromAgent: AgentKind,
         fromSessionId: String? = nil,
+        tier: ModelTier? = nil,
         toAgent: AgentKind,
         assigneeSessionId: String? = nil,
         prompt: String,
@@ -169,6 +175,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.id = id
         self.fromAgent = fromAgent
         self.fromSessionId = fromSessionId
+        self.tier = tier
         self.toAgent = toAgent
         self.assigneeSessionId = assigneeSessionId
         self.prompt = prompt

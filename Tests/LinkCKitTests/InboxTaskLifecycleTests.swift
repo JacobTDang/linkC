@@ -181,4 +181,27 @@ final class InboxTaskLifecycleTests: XCTestCase {
         }
         XCTAssertEqual(try store.task(matching: two)?.prompt, "Two", "the full id is never ambiguous")
     }
+
+    func testCreateTaskRecordsTheTier() throws {
+        let task = try store.createTask(from: .claude, to: .codex, tier: .light, prompt: "Rename a file", files: [])
+        XCTAssertEqual(try store.task(id: task.id)?.tier, .light)
+    }
+
+    func testATaskRowWrittenBeforeTiersStillDecodes() throws {
+        // A pre-tier row: every field the old binary wrote, and no `tier`. The inbox must load it,
+        // because `loadUnlocked` throws on a decode error and would take the whole file down.
+        // The store keeps its file at `<workspace>/.linkc/inbox.json`.
+        let linkcDir = tempDir.appendingPathComponent(".linkc", isDirectory: true)
+        try FileManager.default.createDirectory(at: linkcDir, withIntermediateDirectories: true)
+        let json = """
+        {"version":2,"workspacePath":"\(tempDir.path)","updatedAt":"2000-01-01T00:00:00Z","messages":[],"agentLimits":[],
+         "tasks":[{"id":"11111111-2222-3333-4444-555555555555","fromAgent":"claude","toAgent":"codex",
+         "prompt":"Legacy","files":[],"state":"queued","hop":0,"createdAt":"2000-01-01T00:00:00Z","leaseExpiresAt":"2100-01-01T00:00:00Z",
+         "unreportedTurnEndNotified":false}]}
+        """
+        try json.write(to: linkcDir.appendingPathComponent("inbox.json"), atomically: true, encoding: .utf8)
+        let loaded = try XCTUnwrap(try store.task(id: "11111111-2222-3333-4444-555555555555"))
+        XCTAssertNil(loaded.tier, "A pre-tier row has no tier, and that is not an error")
+        XCTAssertEqual(loaded.state, .queued)
+    }
 }
