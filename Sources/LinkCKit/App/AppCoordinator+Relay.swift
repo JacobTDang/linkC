@@ -193,7 +193,7 @@ extension AppCoordinator {
             guard let session = idleCandidates.first(where: { candidate in
                 guard let terminal = terminals.session(id: candidate.id), terminal.acceptsPaste,
                       let readySince = terminal.pasteReadySince else { return false }
-                return Date().timeIntervalSince(readySince) >= deliverySettle
+                return now().timeIntervalSince(readySince) >= deliverySettle
             }) else {
                 NSLog("[linkC relay] dispatchTasks: task %@ has an idle session but none has settled after negotiating bracketed paste yet — waiting", task.shortId)
                 continue

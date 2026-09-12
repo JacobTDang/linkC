@@ -1,5 +1,25 @@
 import XCTest
+import os
 @testable import LinkCKit
+
+/// A wall clock a test can move forward instantly instead of sleeping through it. `Sendable`
+/// via the lock, not `@unchecked` — the value itself is protected, so a `@Sendable` closure can
+/// capture this class without capturing a bare `var`.
+private final class ControllableClock: Sendable {
+    private let box: OSAllocatedUnfairLock<Date>
+
+    init(_ initial: Date = Date()) {
+        box = OSAllocatedUnfairLock(initialState: initial)
+    }
+
+    func set(_ date: Date) {
+        box.withLock { $0 = date }
+    }
+
+    func now() -> Date {
+        box.withLock { $0 }
+    }
+}
 
 final class AppCoordinatorRelayTests: XCTestCase {
     private var tempDir: URL!
@@ -31,7 +51,9 @@ final class AppCoordinatorRelayTests: XCTestCase {
     private func makeCoordinator(
         sink: NotificationSink = RecordingSink(),
         verifier: any TaskVerifier = VerificationRunner(),
-        models: AgentModelSettings = .seeded
+        models: AgentModelSettings = .seeded,
+        deliverySettle: TimeInterval = 0,
+        now: @escaping @MainActor @Sendable () -> Date = Date.init
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -62,8 +84,10 @@ final class AppCoordinatorRelayTests: XCTestCase {
             verifier: verifier,
             modelSettings: { models },
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
-            // make every dispatch test wait for real. Zero here; production keeps the default.
-            deliverySettle: 0,
+            // make every dispatch test wait for real. Zero by default; a settle test overrides
+            // both this and `now` to prove the threshold without sleeping through it.
+            deliverySettle: deliverySettle,
+            now: now,
             isWatching: { _ in false }
         )
     }
@@ -311,6 +335,46 @@ final class AppCoordinatorRelayTests: XCTestCase {
                 .contains("[linkC task \(task.shortId)") ?? false
         }
         XCTAssertTrue(injected, "Expected the framed task after it was marked delivered")
+    }
+
+    /// The settle margin must be provable, not just trivially satisfied by the zero used
+    /// everywhere else in this file: with a real 2s threshold and a clock the test controls,
+    /// delivery is withheld the instant paste negotiates and only happens once the clock reads
+    /// past the threshold — no sleep, and no way for the guard to rot into an always-true check.
+    @MainActor
+    func testDispatchWithholdsDeliveryUntilTheSettleMarginElapsesThenDelivers() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(deliverySettle: AppCoordinator.deliverySettle, now: clock.now)
+        defer { coordinator.shutdown() }
+
+        let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: assignee.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: assignee.id)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "settle guard", files: [])
+
+        // The instant negotiation completed, the clock has barely moved: the settle margin has
+        // not elapsed, so nothing may be delivered yet.
+        clock.set(Date())
+        coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued, "must not deliver before the settle margin elapses")
+        XCTAssertFalse(
+            coordinator.terminals.session(id: assignee.id)?.recentOutput(lines: 20).contains("[linkC task \(task.shortId)") ?? false,
+            "no frame may reach a session that has not settled"
+        )
+
+        // Move the clock well past the threshold — no real sleep required — and the same idle,
+        // negotiated session becomes a valid candidate.
+        clock.set(Date().addingTimeInterval(AppCoordinator.deliverySettle + 1))
+        coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "must deliver once the settle margin has elapsed")
+        let injected = try await waitUntil {
+            coordinator.terminals.session(id: assignee.id)?
+                .recentOutput(lines: 20)
+                .contains("[linkC task \(task.shortId)") ?? false
+        }
+        XCTAssertTrue(injected, "Expected the framed task once the settle margin elapsed")
     }
 
     /// Test 2d: Legacy v1 `.task` rows are still dispatched once.

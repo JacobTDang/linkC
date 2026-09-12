@@ -68,6 +68,11 @@ public final class AppCoordinator {
     /// negotiation is immediately a candidate without a real sleep. Production never overrides
     /// this — see `AppCoordinator.deliverySettle` for the measurement behind the default.
     let deliverySettle: TimeInterval
+    /// Clock `dispatchTasks` reads when comparing `deliverySettle` against a session's
+    /// `pasteReadySince`. Defaults to the real wall clock; tests inject a controllable one so
+    /// the settle threshold can be proven — withheld before it elapses, delivered after — without
+    /// an actual sleep.
+    let now: @MainActor @Sendable () -> Date
 
     /// Hook events are funneled through this single stream and drained by one consumer task
     /// so `store.apply` runs strictly in arrival order — unstructured per-event tasks would
@@ -91,6 +96,7 @@ public final class AppCoordinator {
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
         deliverySettle: TimeInterval = AppCoordinator.deliverySettle,
+        now: @escaping @MainActor @Sendable () -> Date = Date.init,
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -105,6 +111,7 @@ public final class AppCoordinator {
         self.verifier = verifier
         self.modelSettings = modelSettings
         self.deliverySettle = deliverySettle
+        self.now = now
         self.isWatching = isWatching
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.
