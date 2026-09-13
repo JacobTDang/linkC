@@ -68,4 +68,42 @@ final class CodexUsageReaderTests: XCTestCase {
         try write("rollout-big.jsonl", [filler, record], modified: Date())
         XCTAssertEqual(CodexUsageReader(sessionsDirectory: dir).read().windows.first?.usedPercent, 23.0)
     }
+
+    /// The 64 KB tail read seeks to a raw byte offset that has no idea where character
+    /// boundaries fall. Padding the file with two-byte "é" characters up to a byte offset
+    /// that is provably odd forces the cut to land on a UTF-8 continuation byte — the tail
+    /// buffer can only decode once that byte is skipped, not before.
+    func testATailCutInsideAMultiByteCharacterStillFindsTheRecord() throws {
+        let tailCap = 64 * 1024
+        var filler = String(repeating: "é", count: tailCap)
+        let recordLine = record + "\n"
+
+        func cutOffset(for filler: String) -> Int {
+            let totalSize = (filler + "\n").utf8.count + recordLine.utf8.count
+            return totalSize - tailCap
+        }
+
+        // Each "é" is exactly two UTF-8 bytes (0xC3 0xA9); the run starts at byte 0, so an
+        // odd cut offset always lands on the second byte of some "é" — a continuation byte,
+        // never a valid decode start. Nudge the filler by one ASCII byte if parity is wrong.
+        if cutOffset(for: filler) % 2 == 0 {
+            filler += "x"
+        }
+        let start = cutOffset(for: filler)
+        XCTAssertEqual(start % 2, 1, "the cut offset must split a two-byte character")
+        XCTAssertLessThan(start, filler.utf8.count, "the cut must land inside the filler run, not the record")
+
+        let fullText = filler + "\n" + recordLine
+        let fullBytes = Array(fullText.utf8)
+        XCTAssertEqual((0x80...0xBF).contains(fullBytes[start]), true,
+                       "the byte at the cut offset is a UTF-8 continuation byte, not a character start")
+
+        let url = dir.appendingPathComponent("rollout-split.jsonl")
+        try Data(fullBytes).write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+
+        let usage = CodexUsageReader(sessionsDirectory: dir).read()
+        XCTAssertNil(usage.unavailableReason, "a mid-character cut must not be mistaken for a missing record")
+        XCTAssertEqual(usage.windows.first?.usedPercent, 23.0)
+    }
 }

@@ -30,19 +30,26 @@ public final class TranscriptTailReader {
         guard start < size else { return [] }
 
         guard (try? handle.seek(toOffset: start)) != nil,
-              let data = try? handle.readToEnd(),
-              var text = String(data: data, encoding: .utf8) else { return [] }
+              var data = try? handle.readToEnd() else { return [] }
 
-        // A capped first read almost certainly landed mid-line: skip through the first
-        // newline. Unless the cap landed exactly *on* one — then the next line is whole.
-        if dropFirstLine, text.first != "\n" {
-            guard let firstNewline = text.firstIndex(of: "\n") else {
+        // A capped first read almost certainly landed mid-line — and possibly mid multi-byte
+        // UTF-8 character. Skip through the first newline BYTE, in the raw Data, before ever
+        // decoding: a newline byte (0x0A) can never occur inside a multi-byte UTF-8 sequence,
+        // so everything after it is guaranteed to start on a character boundary. Decoding
+        // first and searching for "\n" in the resulting String would fail the whole buffer
+        // the moment the cut splits a character, discarding a real record along with the
+        // partial line. Unless the cap landed exactly *on* a newline — then nothing to skip.
+        if dropFirstLine, data.first != 0x0A {
+            guard let firstNewline = data.firstIndex(of: 0x0A) else {
                 offsets[path] = start
                 return []
             }
-            start += UInt64(text[...firstNewline].utf8.count)
-            text = String(text[text.index(after: firstNewline)...])
+            let consumed = data.distance(from: data.startIndex, to: firstNewline) + 1
+            start += UInt64(consumed)
+            data = data[data.index(after: firstNewline)...]
         }
+
+        guard var text = String(data: data, encoding: .utf8) else { return [] }
 
         // Consume only through the last newline; a partial trailing line stays for next time.
         guard let lastNewline = text.lastIndex(of: "\n") else {

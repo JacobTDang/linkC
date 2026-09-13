@@ -103,14 +103,21 @@ public struct CodexUsageReader {
 
         let start = size > UInt64(tailCapBytes) ? size - UInt64(tailCapBytes) : 0
         guard (try? handle.seek(toOffset: start)) != nil,
-              let data = try? handle.readToEnd(),
-              var text = String(data: data, encoding: .utf8)
+              var data = try? handle.readToEnd()
         else { return nil }
 
-        if start > 0, text.first != "\n" {
-            guard let firstNewline = text.firstIndex(of: "\n") else { return [] }
-            text = String(text[text.index(after: firstNewline)...])
+        // Skip through the first newline BYTE, in the raw Data, before ever decoding: the
+        // seek may have landed mid multi-byte UTF-8 character, and a newline byte (0x0A) can
+        // never occur inside one, so everything after it is guaranteed to start on a
+        // character boundary. Decoding the raw cut buffer first would fail the whole buffer
+        // on a single split character — reading as "no record" and falling through to an
+        // older, stale file instead of the one that actually has the newest record.
+        if start > 0, data.first != 0x0A {
+            guard let firstNewline = data.firstIndex(of: 0x0A) else { return [] }
+            data = data[data.index(after: firstNewline)...]
         }
+
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
         return text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
     }
 

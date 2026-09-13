@@ -204,6 +204,38 @@ final class TranscriptTailReaderTests: XCTestCase {
     func testMissingFileIsEmpty() {
         XCTAssertEqual(TranscriptTailReader().readNewLines(at: dir.appendingPathComponent("no.jsonl").path), [])
     }
+
+    /// A capped first read seeks to a raw byte offset with no notion of character boundaries.
+    /// Padding with two-byte "é" characters up to a provably-odd byte offset forces the cut
+    /// to land on a UTF-8 continuation byte, so the buffer can only decode once that byte is
+    /// skipped rather than included.
+    func testFirstReadTailCapSplittingAMultiByteCharacterStillYieldsTheLine() throws {
+        let cap = 200
+        var filler = String(repeating: "é", count: 150)  // 300 bytes, more than the cap
+        let tail = "\nreal\n"
+
+        func cutOffset(for filler: String) -> Int {
+            let totalSize = filler.utf8.count + tail.utf8.count
+            return totalSize - cap
+        }
+
+        if cutOffset(for: filler) % 2 == 0 {
+            filler += "x"
+        }
+        let start = cutOffset(for: filler)
+        XCTAssertEqual(start % 2, 1, "the cut offset must split a two-byte character")
+        XCTAssertLessThan(start, filler.utf8.count, "the cut must land inside the filler run, not the tail")
+
+        let fullText = filler + tail
+        let fullBytes = Array(fullText.utf8)
+        XCTAssertEqual((0x80...0xBF).contains(fullBytes[start]), true,
+                       "the byte at the cut offset is a UTF-8 continuation byte, not a character start")
+
+        let path = try write(fullText, to: "split.jsonl")
+        let reader = TranscriptTailReader()
+        XCTAssertEqual(reader.readNewLines(at: path, firstReadTailCap: cap), ["real"],
+                       "a mid-character cut must not discard the whole buffer")
+    }
 }
 
 /// Display formatting for the three usage surfaces — compact, deterministic.
