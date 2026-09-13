@@ -1601,6 +1601,55 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertFalse(try inbox.load().messages.contains { $0.kind == .notice }, "no reroute is announced to the delegator")
     }
 
+    /// The `.error` mark from a no-capable-peer limit must not require a person to click the
+    /// tab: once the recorded cooldown for this agent has actually ended, `sampleAgentStates`
+    /// clears it on its own, and a task queued in the meantime reaches the session without
+    /// anyone ever calling `focusSession`.
+    @MainActor
+    func testASessionClearsErrorOnceItsCooldownEndsWithoutAFocusClick() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var models = AgentModelSettings.seeded
+        models.setModel("", for: .codex, tier: .light)
+        models.setModel("", for: .agy, tier: .light)
+        let coordinator = makeCoordinator(models: models)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light)
+        try await waitForPasteReady(coordinator, sessionId: session.id)
+        coordinator.store.updateState(id: session.id, to: .working)
+        let stuck = try inbox.createTask(from: .cursor, to: .claude, tier: .light, prompt: "Build a streaming proxy", files: [])
+        try inbox.markTaskDelivered(taskId: stuck.id, sessionId: session.id)
+        try inbox.markTaskStarted(taskId: stuck.id)
+
+        coordinator.terminals.sendInput(sessionId: session.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id))
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.state, .error, "no capable peer — marked so this tick does not re-detect it")
+
+        // The recorded cooldown has already ended.
+        var seeded = try inbox.load()
+        let idx = try XCTUnwrap(seeded.agentLimits.firstIndex { $0.agent == .claude })
+        let live = seeded.agentLimits[idx]
+        seeded.agentLimits[idx] = AgentLimitStatus(agent: live.agent, reason: live.reason, limitedAt: live.limitedAt,
+                                                    cooldownExpiresAt: Date().addingTimeInterval(-1))
+        try inbox.saveRaw(seeded)
+
+        // A second task was queued for the same agent+tier while the session sat `.error`.
+        let queued = try inbox.createTask(from: .cursor, to: .claude, tier: .light, prompt: "Second task", files: [])
+
+        coordinator.sampleAgentStates()
+
+        XCTAssertNotEqual(coordinator.store.session(id: session.id)?.state, .error,
+                           "the session must recover on its own once its cooldown has ended")
+        let delivered = try await waitUntil { (try? inbox.task(id: queued.id))?.state == .delivered }
+        XCTAssertTrue(delivered, "a queued task must reach the recovered session without anyone calling focusSession")
+    }
+
     /// A limit with no capable peer must not re-arm its own cooldown every tick. Two mechanisms
     /// guard against it: the branch above now marks the session so a second tick's top-of-function
     /// guard skips re-detection outright, and — belt and suspenders, since a second *session* of

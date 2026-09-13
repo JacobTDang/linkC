@@ -249,7 +249,11 @@ extension AppCoordinator {
                 continue
             }
             let idleCandidates = candidates.filter { isIdle($0.state) }
-            guard !idleCandidates.isEmpty else { continue } // all busy: wait for a later tick
+            guard !idleCandidates.isEmpty else {
+                NSLog("[linkC relay] dispatchTasks: task %@ has %@ session(s) for %@ but none is idle — waiting",
+                      task.shortId, String(candidates.count), task.toAgent.displayName)
+                continue // all busy: wait for a later tick
+            }
             // The brief is always multi-line, so it must arrive as one bracketed paste — never as
             // raw text a line-oriented TUI would submit line by line. Require negotiation here,
             // among the idle candidates, rather than folding it into the `candidates` filter above:

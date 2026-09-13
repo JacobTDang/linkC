@@ -634,6 +634,24 @@ public final class AppCoordinator {
             // Inspect terminal output for provider rate limits & auto-reroute
             checkLimitsAndReroute(for: session.id)
 
+            // `.error` here means checkLimitsAndReroute found no capable peer (or none at all)
+            // for this agent's last limit — not that the session itself is broken. Its own
+            // recorded cooldown is the authority on whether that is still true; once the
+            // cooldown has ended, recover on its own rather than waiting for a person to click
+            // the tab (`focusSession` is the only other place that clears `.error`). This runs
+            // for every agent kind, including Claude, whose own state otherwise comes from hook
+            // events that never touch this mark.
+            if let current = store.session(id: session.id), current.state == .error {
+                let norm = (session.cwd as NSString).standardizingPath
+                do {
+                    if try InboxStore(workspaceRoot: norm).isAgentLimited(agent: session.agentKind) == nil {
+                        store.updateState(id: session.id, to: .ready)
+                    }
+                } catch {
+                    NSLog("[linkC relay] sampleAgentStates: %@ cooldown check — %@", session.agentKind.displayName, String(describing: error))
+                }
+            }
+
             // Detect dynamic agent kind changes in child process tree
             let liveAgent = term.sampleForegroundAgent()
             if liveAgent != session.agentKind && liveAgent != .shell {
