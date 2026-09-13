@@ -1006,7 +1006,10 @@ public final class MCPServer: Sendable {
             figure = "no data"
         }
         if let resetsAt = window.resetsAt {
-            figure += ", resets \(formatReset(resetsAt, now: now))"
+            // A reset time already behind `now` is stale information, not a future promise —
+            // showing it as if it were still ahead would read as a countdown to a moment that
+            // already happened.
+            figure += resetsAt > now ? ", resets \(formatReset(resetsAt, now: now))" : ", reset since this reading"
         }
         return "- **\(window.label)**: \(figure)\n"
     }

@@ -64,11 +64,16 @@ public struct AgentUsage: Sendable, Equatable {
 
     /// The first window at or past `warnThreshold` — nil when the reading is stale or
     /// unavailable, so a delegation warning is never driven by a number that might be wrong.
+    /// A window whose `resetsAt` has already passed is skipped too: the window it describes has
+    /// moved on, so a reading against it is no longer current even when `observedAt` itself is
+    /// still fresh.
     public var windowNeedingWarning: UsageWindow? {
         guard !isStale else { return nil }
+        let now = Date()
         return windows.first { window in
-            guard let usedPercent = window.usedPercent else { return false }
-            return usedPercent >= Self.warnThreshold
+            guard let usedPercent = window.usedPercent, usedPercent >= Self.warnThreshold else { return false }
+            if let resetsAt = window.resetsAt, resetsAt <= now { return false }
+            return true
         }
     }
 }

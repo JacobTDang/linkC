@@ -619,6 +619,20 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertEqual(try inbox.openTasks().count, 1, "the delegation still happens")
     }
 
+    /// A window whose `resetsAt` is well in the past describes a window that has already moved
+    /// on — the reading itself may be fresh, but the number it reports is no longer current, so
+    /// delegating to that agent must not carry a warning for it.
+    func testADelegationDoesNotWarnWhenTheWindowsResetHasAlreadyPassed() throws {
+        let staleWindow = AgentUsage(agent: .codex,
+                                     windows: [UsageWindow(label: "5h", usedPercent: 95, tokens: nil,
+                                                            resetsAt: Date().addingTimeInterval(-600))],
+                                     planType: nil, observedAt: Date(), unavailableReason: nil)
+        let res = try call(server(as: .claude, models: .seeded, readers: [.codex: { staleWindow }]),
+                           "linkc_delegate_task", ["to": "codex", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertFalse(res.text.contains("%"), "a window whose reset already passed must never warn: \(res.text)")
+    }
+
     func testADelegationUnderTheThresholdIsNotAnnotated() throws {
         let calm = AgentUsage(agent: .codex,
                               windows: [UsageWindow(label: "5h", usedPercent: 12, tokens: nil, resetsAt: nil)],

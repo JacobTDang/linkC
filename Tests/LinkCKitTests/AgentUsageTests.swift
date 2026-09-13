@@ -30,6 +30,19 @@ final class AgentUsageTests: XCTestCase {
         XCTAssertNil(unknown.windowNeedingWarning)
     }
 
+    /// A reading at 95% whose window's `resetsAt` has already passed describes a window that
+    /// has already moved on — the observation is fresh, but the number it reports no longer
+    /// describes anything current, so it must never drive a warning.
+    func testAWindowWhoseResetHasAlreadyPassedNeverWarns() {
+        let staleWindow = AgentUsage(
+            agent: .codex,
+            windows: [UsageWindow(label: "5h", usedPercent: 95, tokens: nil,
+                                   resetsAt: Date().addingTimeInterval(-600))],
+            planType: nil, observedAt: Date(), unavailableReason: nil
+        )
+        XCTAssertNil(staleWindow.windowNeedingWarning, "a window whose reset has already passed must never warn")
+    }
+
     func testANeverObservedReadingIsStale() {
         let unknown = AgentUsage(agent: .agy, windows: [], planType: nil, observedAt: nil,
                                  unavailableReason: "agy writes no local session records")

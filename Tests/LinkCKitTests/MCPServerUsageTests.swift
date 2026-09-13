@@ -88,4 +88,19 @@ final class MCPServerUsageTests: XCTestCase {
         XCTAssertFalse(res.isError, res.text)
         XCTAssertFalse(res.text.contains("at least"), res.text)
     }
+
+    /// A `resetsAt` in the past is stale information, not a future promise. Rendering it as if
+    /// it were still ahead ("resets 14:04") would show a moment that has already happened; the
+    /// report must say the window has moved on instead, with no clock control needed since the
+    /// reset is well behind whenever this test actually runs.
+    func testAPastResetRendersAsResetSinceThisReadingRatherThanAPastTime() throws {
+        let codex = AgentUsage(agent: .codex,
+                               windows: [UsageWindow(label: "5h", usedPercent: 95, tokens: nil,
+                                                      resetsAt: Date().addingTimeInterval(-600))],
+                               planType: nil, observedAt: Date(), unavailableReason: nil)
+        let res = try call(server(readers: [.codex: { codex }]), "linkc_get_usage_status")
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("reset since this reading"), res.text)
+        XCTAssertFalse(res.text.contains("resets "), "a past reset must never be shown as a future one: \(res.text)")
+    }
 }
