@@ -494,4 +494,57 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertNotEqual(second.id, first.id, "a delivered row must not satisfy a fresh send")
         XCTAssertEqual(second.status, .queued)
     }
+
+    // MARK: - transitionAndNotify atomicity
+
+    /// `transitionAndNotify` (backing `acceptUnverifiedAndNotify` and its siblings) folds a
+    /// task's state change and its delegator-facing completion line into one locked write, so a
+    /// failure partway through can never land one without the other. Prove that at the store
+    /// level, without any lock-contention timing: cap how large a file this process may write
+    /// (`RLIMIT_FSIZE`, with `SIGXFSZ` ignored so the write fails with an error instead of
+    /// killing the process) to a size that fits the state change alone — `finishedAt` flipping
+    /// from null to a timestamp, a few dozen bytes — but not the state change plus a whole new
+    /// completion message appended to it, which costs a full `PendingMessage` row (id, agents,
+    /// prompt, content hash, timestamps: several hundred bytes). `transitionAndNotify` applies
+    /// both changes to its in-memory copy of the inbox before ever touching disk, so this cap
+    /// can only ever reject the save as a whole, not the line by itself — proving the write
+    /// really is one indivisible unit rather than two writes that merely run back to back.
+    func testAcceptUnverifiedAndNotifyPersistsNeitherHalfWhenTheSharedWriteFails() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let task = try store.createTask(from: .claude, to: .codex, prompt: "reported without a gate", files: [])
+        try store.markTaskDelivered(taskId: task.id, sessionId: "sess-1")
+        try store.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "Shipped"))
+
+        let inboxPath = tempDir.appendingPathComponent(".linkc/inbox.json").path
+        let sizeBefore = (try FileManager.default.attributesOfItem(atPath: inboxPath)[.size] as? NSNumber)?.uint64Value ?? 0
+
+        var original = rlimit()
+        XCTAssertEqual(getrlimit(RLIMIT_FSIZE, &original), 0)
+        defer {
+            var restore = original
+            _ = setrlimit(RLIMIT_FSIZE, &restore)
+            signal(SIGXFSZ, SIG_DFL)
+        }
+        // 200 bytes of headroom clears the lone `finishedAt` flip with room to spare, but a new
+        // completion message's row is easily several times that, so only a save carrying it
+        // crosses the cap.
+        var capped = rlimit(rlim_cur: sizeBefore + 200, rlim_max: original.rlim_max)
+        XCTAssertEqual(setrlimit(RLIMIT_FSIZE, &capped), 0)
+        signal(SIGXFSZ, SIG_IGN)
+
+        XCTAssertThrowsError(
+            try store.acceptUnverifiedAndNotify(taskId: task.id, notifyBody: "done (unverified)"),
+            "the write must fail rather than silently succeed"
+        )
+
+        var restore = original
+        XCTAssertEqual(setrlimit(RLIMIT_FSIZE, &restore), 0)
+        signal(SIGXFSZ, SIG_DFL)
+
+        let reloaded = try XCTUnwrap(store.task(id: task.id))
+        XCTAssertEqual(reloaded.state, .reported,
+                       "the state change must not persist when the write it shares a lock with fails")
+        let completions = try store.load().messages.filter { $0.taskId == task.id }
+        XCTAssertTrue(completions.isEmpty, "and the outcome line must not persist either")
+    }
 }
