@@ -286,6 +286,34 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(echo.prompt.contains("failed"))
     }
 
+    /// dispatchTasks never even looks at a workspace's queue while a verification owns that
+    /// checkout for a different task — so "undelivered for 60m" would be untrue for a task that
+    /// sat behind a held checkout the whole time, as opposed to one nobody could ever deliver.
+    @MainActor
+    func testAQueuedTaskThatExpiredWhileHeldForAVerificationSaysSo() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "stuck behind a run", files: [])
+        var seeded = try inbox.load()
+        seeded.tasks[0] = TaskRecord(
+            id: task.id, fromAgent: .claude, toAgent: .codex, prompt: "stuck behind a run", state: .queued,
+            createdAt: Date().addingTimeInterval(-61 * 60)
+        )
+        try inbox.saveRaw(seeded)
+
+        // A different task's verification has owned this workspace's checkout the whole time.
+        coordinator.verificationsInFlight[ws] = "some-other-task-id"
+        coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
+
+        let expired = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(expired.state, .expired)
+        XCTAssertEqual(expired.cancelReason, "undelivered for 60m — held back by a verification in this workspace",
+                        "the true reason is that dispatchTasks never even looked, not that no session was available")
+    }
+
     @MainActor
     func testExpireTasksDoesNotEchoWhenTransitionAlreadyTerminal() throws {
         let ws = tempDir.path
@@ -1196,19 +1224,27 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
     /// A verification owns the checkout while it runs: it executes the delegator's command and
     /// then requires HEAD and a clean tree to still match the reported sha. Delivering another
-    /// brief into that same working copy mid-run corrupts the verdict.
+    /// brief into that same working copy mid-run corrupts the verdict — but only while the run
+    /// is actually in flight. Both halves matter: withheld during the run, and not stuck once it
+    /// ends. Without `waitForPasteReady` here, the task would be withheld because the session
+    /// had not yet negotiated bracketed paste, whatever the verification hold did — a hold this
+    /// test deleted still passed 9 of 9.
     @MainActor
     func testNoTaskIsDeliveredWhileAVerificationIsInFlight() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
-        let gateStarted = expectation(description: "gate started")
-        let release = expectation(description: "released")
-        let verifier = BlockingVerifier(started: gateStarted, release: release)
+        let verifier = ScriptedVerifier(hold: true)
         let coordinator = makeCoordinator(verifier: verifier)
-        defer { coordinator.shutdown(); release.fulfill() }
+        defer { coordinator.shutdown(); verifier.release() }
 
+        // Two idle sessions: once the run ends, the gated task and the plain brief can each be
+        // delivered without competing for the same one.
         let idle = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new, tier: .standard)
         coordinator.store.updateState(id: idle.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: idle.id)
+        let idle2 = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new, tier: .standard)
+        coordinator.store.updateState(id: idle2.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: idle2.id)
 
         // One task needing a gate, and one already queued and deliverable.
         _ = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "needs a gate", files: [],
@@ -1217,11 +1253,63 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let deliverable = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "plain brief", files: [])
 
         coordinator.processPendingMessages(workspacePath: ws)
-        await fulfillment(of: [gateStarted], timeout: 5)
+        let gateStarted = try await waitUntil { verifier.calls.count == 1 }
+        XCTAssertTrue(gateStarted)
 
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertEqual(try inbox.task(id: deliverable.id)?.state, .queued,
                        "nothing may be injected into a checkout under verification")
+
+        verifier.release()
+        let drained = try await waitUntil { coordinator.verificationsInFlight.isEmpty }
+        XCTAssertTrue(drained, "the run must finish once released")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        let delivered = try await waitUntil { (try? inbox.task(id: deliverable.id))?.state == .delivered }
+        XCTAssertTrue(delivered, "once the run ends, the withheld brief must be delivered")
+    }
+
+    /// The verification hold in `dispatchMessages` must only withhold a brief — a completion
+    /// line and a cancel notice ("cancelled: ... Stop work on it.", itself a `.completion`-kind
+    /// row) never touch the tree a run is measuring, and must still reach a worker that is
+    /// already editing it. Only the legacy `.task` message row — a brief delivered outside the
+    /// TaskRecord path — needs to wait.
+    @MainActor
+    func testCompletionAndCancelNoticeAreDeliveredDuringAVerificationWhileABriefIsHeld() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: worker.id)
+
+        let completion = try inbox.enqueue(from: .claude, to: .codex, kind: .completion, taskId: "abcdef12-0000",
+                                            body: "done — verified at abc1234")
+        let cancelNotice = try inbox.enqueue(from: .claude, to: .codex, kind: .completion, taskId: "abcdef12-0001",
+                                              body: "cancelled: scope changed. Stop work on it.")
+        var seeded = try inbox.load()
+        seeded.messages.append(PendingMessage(id: "legacy-brief", fromAgent: .claude, toAgent: .codex,
+                                               prompt: "Old style brief", status: .queued, kind: .task))
+        try inbox.saveRaw(seeded)
+
+        // A verification is in flight for this workspace (for some other task entirely).
+        coordinator.verificationsInFlight[ws] = "some-other-task-id"
+        coordinator.dispatchMessages(workspacePath: ws, inboxStore: inbox)
+
+        let afterTick = try inbox.load()
+        XCTAssertEqual(afterTick.messages.first { $0.id == completion.id }?.status, .delivered,
+                       "a completion line must reach its session even while a verification runs")
+        XCTAssertEqual(afterTick.messages.first { $0.id == cancelNotice.id }?.status, .delivered,
+                       "a cancel notice must reach its session even while a verification runs")
+        XCTAssertEqual(afterTick.messages.first { $0.id == "legacy-brief" }?.status, .queued,
+                       "a legacy brief must still wait for the run to end")
+
+        let injected = try await waitUntil {
+            coordinator.terminals.session(id: worker.id)?.recentOutput(lines: 20).contains("Stop work on it") ?? false
+        }
+        XCTAssertTrue(injected, "the cancel notice text must actually reach the terminal")
     }
 
     @MainActor

@@ -133,8 +133,15 @@ extension AppCoordinator {
                 }
             case .queued:
                 if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
+                    // dispatchTasks never even looks at a workspace's queue while a verification
+                    // owns that checkout — for a different task, since this one's own run would
+                    // have hit the `continue` above. "undelivered for 60m" would be untrue for a
+                    // task that sat behind a held checkout rather than one nobody could deliver.
+                    let reason = verificationsInFlight[workspacePath] != nil
+                        ? "undelivered for 60m — held back by a verification in this workspace"
+                        : "undelivered for 60m"
                     do {
-                        try inboxStore.expireTask(taskId: task.id, reason: "undelivered for 60m", timeout: Self.relayLockTimeout)
+                        try inboxStore.expireTask(taskId: task.id, reason: reason, timeout: Self.relayLockTimeout)
                     } catch {
                         if isRelayLockTimeout(error) { return true }
                         NSLog("[linkC relay] expireTasks: task %@ stale queued — %@", task.shortId, String(describing: error))
@@ -296,9 +303,6 @@ extension AppCoordinator {
     @discardableResult
     func dispatchMessages(workspacePath: String, inboxStore: InboxStore) -> Bool {
         guard workspaceExists(workspacePath) else { return false }
-        // A verification owns this checkout until it finishes: injecting a brief now would let a
-        // worker edit the tree the verdict is about to be measured against.
-        guard verificationsInFlight[workspacePath] == nil else { return false }
         let pending: [PendingMessage]
         do {
             pending = try inboxStore.fetchPending(timeout: Self.relayLockTimeout)
@@ -309,7 +313,16 @@ extension AppCoordinator {
         }
         guard !pending.isEmpty else { return false }
 
+        // A verification owns this checkout until it finishes: injecting a brief now would let a
+        // worker edit the tree the verdict is about to be measured against. Only a brief — the
+        // legacy `.task` message row — needs to wait for that; a completion line, a cancel
+        // notice, a peer note, or a model switch never touches the tree and must still reach
+        // whoever is waiting on it while a run is in flight.
+        let verificationInFlight = verificationsInFlight[workspacePath] != nil
+
         for message in pending where message.status == .queued {
+            if message.kind == .task, verificationInFlight { continue }
+
             if message.kind == .notice {
                 do {
                     try inboxStore.markMessageDelivered(id: message.id, timeout: Self.relayLockTimeout)
