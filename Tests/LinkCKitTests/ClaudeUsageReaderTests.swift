@@ -112,9 +112,13 @@ final class ClaudeUsageReaderTests: XCTestCase {
     }
 
     /// (c) The 5-hour exemption: a tiny shared budget, with a 5-hour file whose own
-    /// (comfortably large) safety cap lets it prove the 5-hour boundary, but whose remaining,
-    /// older-than-5h content can't be reached at all once the shared budget is exhausted.
-    func testC_FiveHourExemptionKeepsTheBlockExactWhileTheWeekIsFlagged() throws {
+    /// (comfortably large) safety cap lets it read every message inside the 5-hour boundary,
+    /// but whose remaining, older-than-5h content can't be reached at all once the shared
+    /// budget is exhausted. The block figure itself is still flagged a lower bound: its
+    /// boundary walk starts from the earliest message it is given, and missing older history
+    /// could have moved that earlier than a full read would show, even though every message
+    /// actually inside the 5-hour window is present and the token count is exact today.
+    func testC_FiveHourExemptionReadsExactTokensButStillFlagsTheBlockWhenTheWeekIsIncomplete() throws {
         // File order (oldest to newest): padding the 5-hour phase must stop short of, a
         // usage line just past the 5-hour boundary, then a usage line inside it.
         let padding = String(repeating: "{\"type\":\"tool_result\"}\n", count: 200)
@@ -129,7 +133,8 @@ final class ClaudeUsageReaderTests: XCTestCase {
         ).read()
 
         XCTAssertEqual(usage.windows[0].tokens, 500, "the 5-hour safety cap is generous enough to finish")
-        XCTAssertFalse(usage.windows[0].tokensAreLowerBound, "the 5-hour read is exempt from the shared budget")
+        XCTAssertTrue(usage.windows[0].tokensAreLowerBound,
+                      "the week read never completed, so the block's own boundary is not provably exact either")
 
         XCTAssertEqual(usage.windows[1].tokens, 1200, "reflects exactly the two lines actually read")
         XCTAssertTrue(usage.windows[1].tokensAreLowerBound, "no shared budget left to read the remaining padding")

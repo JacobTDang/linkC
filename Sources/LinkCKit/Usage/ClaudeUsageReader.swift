@@ -15,6 +15,9 @@ import Foundation
 /// shared budget continuing those same reads (and any older files) further back; when the
 /// budget runs out before a file's read reaches its 7-day boundary or its start,
 /// `UsageWindow.tokensAreLowerBound` says so rather than presenting a truncated sum as exact.
+/// An incomplete week read flags the 5-hour block too, not only the week total: the block's
+/// start is found by walking every message forward from the earliest one available, so missing
+/// older history can move that start later than a full read would — see `blockIsLowerBound`.
 public struct ClaudeUsageReader: Sendable {
     private let projectsDirectory: URL
     private let byteBudget: Int
@@ -99,14 +102,16 @@ public struct ClaudeUsageReader: Sendable {
         let ordered = candidates.sorted { $0.modified > $1.modified }
 
         // Fed to `UsageWindows.compute` as one set, exactly like the old reader did: its own
-        // block-boundary detection (`floorToHour` plus the gap logic) needs every message in
-        // range to identify the true current block, not just what happens to be newer than a
-        // naive cutoff. A still-active 5-hour block's start can never be more than 5 hours
-        // before `now` (otherwise the block would already have expired), so every message
-        // that can belong to it necessarily has a timestamp after `fiveHourCutoff` — reading
-        // every 5-hour-classified file back to that cutoff is therefore always enough for the
-        // block figure to be exact whenever `fiveHourFullyRead` holds, independent of whether
-        // the week figure also finished.
+        // block-boundary detection (`floorToHour` plus the 5-hour-span walk) needs every
+        // message in range to identify the true current block, not just what happens to be
+        // newer than a naive cutoff. A still-active block's start can never be more than 5
+        // hours before `now`, so every message that can belong to it has a timestamp after
+        // `fiveHourCutoff` — but the walk that finds that start is seeded by whichever message
+        // is *earliest* in what it is given, and an incomplete week read can leave that earliest
+        // message later than a full read's, shifting the detected start later too. Reading every
+        // 5-hour-classified file back to `fiveHourCutoff` guarantees every message the block
+        // could contain is present; it does not by itself guarantee the walk finds the true
+        // start when older history is missing. See `blockIsLowerBound` below.
         var usages: [MessageUsage] = []
         var fiveHourFullyRead = true
         var weekFullyRead = true
@@ -149,11 +154,22 @@ public struct ClaudeUsageReader: Sendable {
         }
 
         let window = UsageWindows.compute(usages, now: now)
+        // `UsageWindows.compute` finds the active block by walking every message forward from
+        // the earliest one it is given, resetting the block's start at the first message that
+        // falls outside the previous block's 5-hour span. When the week read is incomplete, the
+        // oldest messages in that span are missing, so the walk can start from a later message
+        // than a full read would — which can move the detected block's start later too, even
+        // though every message inside the true 5-hour window itself is present. The simple,
+        // honest fix: an incomplete week read makes the block figure a lower bound as well,
+        // not just the week figure — proving the missing history could never have shifted the
+        // block would mean tracking whether a real >= 5h gap, not just a budget cutoff, anchors
+        // it, which this reader does not do.
+        let blockIsLowerBound = !fiveHourFullyRead || !weekFullyRead
         return AgentUsage(
             agent: .claude,
             windows: [
                 UsageWindow(label: "5h", usedPercent: nil, tokens: window.blockTokens,
-                            resetsAt: window.blockResetAt, tokensAreLowerBound: !fiveHourFullyRead),
+                            resetsAt: window.blockResetAt, tokensAreLowerBound: blockIsLowerBound),
                 UsageWindow(label: "7d", usedPercent: nil, tokens: window.weekTokens,
                             resetsAt: nil, tokensAreLowerBound: !weekFullyRead)
             ],
