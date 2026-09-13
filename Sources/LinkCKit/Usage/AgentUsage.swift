@@ -6,12 +6,18 @@ public struct UsageWindow: Sendable, Equatable {
     public let usedPercent: Double?   // nil when the provider publishes no limit
     public let tokens: Int?           // nil when the provider reports only a percentage
     public let resetsAt: Date?
+    /// True when a read budget ran out before every record inside this window's scan
+    /// range was read — `tokens` is then a floor, not the true total. Never inferred from
+    /// silence: a reader that stayed within budget must set this false explicitly.
+    public let tokensAreLowerBound: Bool
 
-    public init(label: String, usedPercent: Double?, tokens: Int?, resetsAt: Date?) {
+    public init(label: String, usedPercent: Double?, tokens: Int?, resetsAt: Date?,
+                tokensAreLowerBound: Bool = false) {
         self.label = label
         self.usedPercent = usedPercent
         self.tokens = tokens
         self.resetsAt = resetsAt
+        self.tokensAreLowerBound = tokensAreLowerBound
     }
 }
 
