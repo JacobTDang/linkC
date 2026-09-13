@@ -318,6 +318,51 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNil(falseEcho)
     }
 
+    /// The state change and the delegator's line about it must land as one write: taking the
+    /// lock back immediately after releasing it briefly must never catch the task already closed
+    /// with its line still missing. A two-lock implementation loses the line here — the first
+    /// call closes the task in that brief window, then the second starves against the lock this
+    /// test retakes, and nothing ever retries a task that is already closed.
+    @MainActor
+    func testALockTakenRightAfterReleaseNeverCatchesAClosedTaskWithoutItsLine() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "started then died", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "no-such-session")
+        try inbox.markTaskStarted(taskId: task.id)
+
+        let lockPath = tempDir.appendingPathComponent(".linkc/.inbox.lock").path
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        XCTAssertGreaterThan(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+
+        // Release just long enough for one locked write to land, then take the lock straight
+        // back and hold it well past `relayLockTimeout` — simulating another writer (a live
+        // `linkc-mcp` process also touching this inbox) winning the lock in that same gap.
+        let holder = Thread {
+            Thread.sleep(forTimeInterval: 0.05)
+            flock(fd, LOCK_UN)
+            Thread.sleep(forTimeInterval: 0.05)
+            let fd2 = open(lockPath, O_CREAT | O_RDWR, 0o644)
+            _ = flock(fd2, LOCK_EX)
+            Thread.sleep(forTimeInterval: 0.7)
+            flock(fd2, LOCK_UN)
+            close(fd2)
+        }
+        holder.start()
+
+        _ = coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
+        close(fd)
+
+        let closed = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(closed.state, .failed, "the task must close once the lock is available again")
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] failed — assignee session ended before reporting"],
+                       "and the delegator's line must land in that same write, not a separate one that can be starved")
+    }
+
     @MainActor
     func testDispatchTasksMarksDeliveredAndInjectsFrame() async throws {
         let ws = tempDir.path

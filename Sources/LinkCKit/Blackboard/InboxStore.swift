@@ -498,6 +498,125 @@ public final class InboxStore: Sendable {
         }
     }
 
+    // MARK: - Combined transition + notify
+
+    /// Expires a task and enqueues the delegator's one-line outcome as a single locked write.
+    /// See `transitionAndNotify` — a lock timeout here can no longer land the state change while
+    /// losing the line, the way two separate calls could.
+    public func expireTaskAndNotify(taskId: String, reason: String, notifyBody: String, timeout: TimeInterval = 5.0) throws {
+        try transitionAndNotify(taskId: taskId, timeout: timeout, target: { _ in .expired }, mutate: { task in
+            task.cancelReason = reason
+            task.finishedAt = Date()
+        }, notifyBody: notifyBody)
+    }
+
+    /// Fails a task and enqueues the delegator's one-line outcome as a single locked write.
+    public func failTaskAndNotify(taskId: String, reason: String, notifyBody: String, timeout: TimeInterval = 5.0) throws {
+        try transitionAndNotify(taskId: taskId, timeout: timeout, target: { task in
+            guard task.state == .delivered || task.state == .started else {
+                throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: .failed)
+            }
+            return .failed
+        }, mutate: { task in
+            task.cancelReason = reason
+            task.finishedAt = Date()
+        }, notifyBody: notifyBody)
+    }
+
+    /// Records a gate verdict and enqueues the delegator's one-line outcome as a single locked
+    /// write.
+    public func resolveGateAndNotify(taskId: String, verdict: Verdict, notifyBody: String, timeout: TimeInterval = 5.0) throws {
+        let next: TaskState = verdict.passed ? .queued : .cancelled
+        try transitionAndNotify(taskId: taskId, timeout: timeout, target: { task in
+            guard task.state == .gating else { throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: next) }
+            return next
+        }, mutate: { task in
+            task.gate = verdict
+            if !verdict.passed {
+                task.cancelReason = verdict.reason
+                task.finishedAt = Date()
+            }
+        }, notifyBody: notifyBody)
+    }
+
+    /// Records linkC's verdict on a verified task and enqueues the delegator's one-line outcome
+    /// as a single locked write.
+    public func adjudicateAndNotify(taskId: String, verdict: Verdict, notifyBody: String, timeout: TimeInterval = 5.0) throws {
+        let next: TaskState = verdict.passed ? .done : .failed
+        try transitionAndNotify(taskId: taskId, timeout: timeout, target: { task in
+            guard task.state == .reported else { throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: next) }
+            guard task.verification != nil else { throw InboxError.notVerified(taskId) }
+            return next
+        }, mutate: { task in
+            task.verdict = verdict
+            task.finishedAt = Date()
+        }, notifyBody: notifyBody)
+    }
+
+    /// Settles an unverified task on the worker's word and enqueues the delegator's one-line
+    /// outcome as a single locked write.
+    public func acceptUnverifiedAndNotify(taskId: String, notifyBody: String, timeout: TimeInterval = 5.0) throws {
+        try transitionAndNotify(taskId: taskId, timeout: timeout, target: { task in
+            let next: TaskState = task.report?.status == "done" ? .done : .failed
+            guard task.state == .reported else { throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: next) }
+            guard task.verification == nil else { throw InboxError.verificationPresent(taskId) }
+            return next
+        }, mutate: { task in
+            task.finishedAt = Date()
+        }, notifyBody: notifyBody)
+    }
+
+    /// Transitions a task and appends the delegator's one-line completion message under the
+    /// *same* locked write. The relay used to make this transition, then separately call
+    /// `enqueue` to send the delegator's line — two lock acquisitions, so a timeout on the
+    /// second one could drop the line even though the state change it describes had already
+    /// committed, with nothing left to retry it (the task was already closed). Folding both into
+    /// one `withFileLock` call removes that window: either the whole write lands, or neither
+    /// half does and the task stays in its prior (open) state, so the next tick retries the
+    /// transition and its notification together.
+    private func transitionAndNotify(
+        taskId: String,
+        timeout: TimeInterval,
+        target: (TaskRecord) throws -> TaskState,
+        mutate: (inout TaskRecord) -> Void,
+        notifyBody: String
+    ) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            guard let idx = inbox.tasks.firstIndex(where: { $0.id == taskId }) else {
+                throw InboxError.taskNotFound(taskId)
+            }
+            let current = inbox.tasks[idx].state
+            let next = try target(inbox.tasks[idx])
+            guard current.canTransition(to: next) else {
+                throw InboxError.illegalTransition(taskId: taskId, from: current, to: next)
+            }
+            inbox.tasks[idx].state = next
+            mutate(&inbox.tasks[idx])
+            inbox.updatedAt = Date()
+            appendCompletion(to: &inbox, task: inbox.tasks[idx], body: notifyBody)
+            try saveUnlocked(inbox)
+        }
+    }
+
+    /// Appends a `.completion` message for `task`, applying the same framing and 24h dedupe rule
+    /// as `enqueue(kind: .completion)`. Used only from inside a region already holding the file
+    /// lock — `enqueue` itself cannot be called there without deadlocking on the same lock.
+    private func appendCompletion(to inbox: inout Inbox, task: TaskRecord, body: String) {
+        let prompt = "\(LinkCFrame.taskPrefix) \(task.id.prefix(8))] \(body)"
+        let hash = LinkCFrame.contentHash(from: task.toAgent, to: task.fromAgent, kind: .completion, prompt: prompt)
+        let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
+        let alreadyQueued = inbox.messages.contains {
+            $0.contentHash == hash && $0.fromAgent == task.toAgent && $0.toAgent == task.fromAgent
+                && $0.createdAt >= dedupeCutoff && $0.status != .delivered
+        }
+        guard !alreadyQueued else { return }
+        inbox.messages.append(PendingMessage(
+            fromAgent: task.toAgent, toAgent: task.fromAgent, prompt: prompt,
+            kind: .completion, taskId: task.id, contentHash: hash
+        ))
+    }
+
     public func markUnreportedTurnEndNotified(taskId: String, timeout: TimeInterval = 5.0) throws {
         try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()

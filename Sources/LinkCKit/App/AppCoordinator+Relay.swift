@@ -122,8 +122,10 @@ extension AppCoordinator {
             case .gating:
                 if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
                     do {
-                        try inboxStore.expireTask(taskId: task.id, reason: "gate did not run within 60m", timeout: Self.relayLockTimeout)
-                        try echo("expired — gate did not run within 60m", for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
+                        try inboxStore.expireTaskAndNotify(
+                            taskId: task.id, reason: "gate did not run within 60m",
+                            notifyBody: "expired — gate did not run within 60m", timeout: Self.relayLockTimeout
+                        )
                     } catch {
                         if isRelayLockTimeout(error) { return true }
                         NSLog("[linkC relay] expireTasks: task %@ stale gate — %@", task.shortId, String(describing: error))
@@ -143,16 +145,19 @@ extension AppCoordinator {
                 if !assigneeAlive {
                     let reason = "assignee session ended before reporting"
                     do {
-                        try inboxStore.failTask(taskId: task.id, reason: reason, timeout: Self.relayLockTimeout)
-                        try echo("failed — \(reason)", for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
+                        try inboxStore.failTaskAndNotify(
+                            taskId: task.id, reason: reason, notifyBody: "failed — \(reason)", timeout: Self.relayLockTimeout
+                        )
                     } catch {
                         if isRelayLockTimeout(error) { return true }
                         NSLog("[linkC relay] expireTasks: task %@ dead assignee — %@", task.shortId, String(describing: error))
                     }
                 } else if task.leaseExpiresAt < now {
                     do {
-                        try inboxStore.expireTask(taskId: task.id, reason: "lease expired", timeout: Self.relayLockTimeout)
-                        try echo("expired — lease lapsed without a report", for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
+                        try inboxStore.expireTaskAndNotify(
+                            taskId: task.id, reason: "lease expired",
+                            notifyBody: "expired — lease lapsed without a report", timeout: Self.relayLockTimeout
+                        )
                     } catch {
                         if isRelayLockTimeout(error) { return true }
                         NSLog("[linkC relay] expireTasks: task %@ expired lease — %@", task.shortId, String(describing: error))
@@ -162,8 +167,10 @@ extension AppCoordinator {
                 // A worker may exit after reporting, so only the lease applies here.
                 if task.leaseExpiresAt < now {
                     do {
-                        try inboxStore.expireTask(taskId: task.id, reason: "lease expired before verification", timeout: Self.relayLockTimeout)
-                        try echo("expired — lease lapsed before verification", for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
+                        try inboxStore.expireTaskAndNotify(
+                            taskId: task.id, reason: "lease expired before verification",
+                            notifyBody: "expired — lease lapsed before verification", timeout: Self.relayLockTimeout
+                        )
                     } catch {
                         if isRelayLockTimeout(error) { return true }
                         NSLog("[linkC relay] expireTasks: task %@ reported lease — %@", task.shortId, String(describing: error))
@@ -391,8 +398,10 @@ extension AppCoordinator {
                     } else {
                         // Only a hand-edited inbox holds this. Cancel it so it cannot block the workspace.
                         let reason = "gate failed: task has no verification"
-                        try inboxStore.resolveGate(taskId: task.id, verdict: .notRun(reason: reason), timeout: Self.relayLockTimeout)
-                        try echo("cancelled — \(reason)", for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
+                        try inboxStore.resolveGateAndNotify(
+                            taskId: task.id, verdict: .notRun(reason: reason),
+                            notifyBody: "cancelled — \(reason)", timeout: Self.relayLockTimeout
+                        )
                     }
                 } else if let verification = task.verification {
                     if task.report?.status != "done" {
@@ -403,9 +412,8 @@ extension AppCoordinator {
                         try settle(task, reason: "report is missing its sha", inboxStore: inboxStore, timeout: Self.relayLockTimeout)
                     }
                 } else {
-                    try inboxStore.acceptUnverified(taskId: task.id, timeout: Self.relayLockTimeout)
                     let line = task.report?.status == "done" ? "done (unverified)" : "failed — worker reported failure"
-                    try echo(line, for: task, inboxStore: inboxStore, timeout: Self.relayLockTimeout)
+                    try inboxStore.acceptUnverifiedAndNotify(taskId: task.id, notifyBody: line, timeout: Self.relayLockTimeout)
                 }
             } catch {
                 if isRelayLockTimeout(error) { return true }
@@ -434,8 +442,7 @@ extension AppCoordinator {
     }
 
     private func settle(_ task: TaskRecord, reason: String, inboxStore: InboxStore, timeout: TimeInterval = 5.0) throws {
-        try inboxStore.adjudicate(taskId: task.id, verdict: .notRun(reason: reason), timeout: timeout)
-        try echo("failed — \(reason)", for: task, inboxStore: inboxStore, timeout: timeout)
+        try inboxStore.adjudicateAndNotify(taskId: task.id, verdict: .notRun(reason: reason), notifyBody: "failed — \(reason)", timeout: timeout)
     }
 
     /// Records the verdict and sends the delegator its one line. A task that ended while its run
