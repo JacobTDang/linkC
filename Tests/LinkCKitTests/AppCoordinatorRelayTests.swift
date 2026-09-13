@@ -1529,7 +1529,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try runGit(["commit", "-q", "-m", "worker"], in: repo)
         let sha = try runGit(["rev-parse", "HEAD"], in: repo)
         let worker = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "codex"],
-                                ancestorResolver: { _ in nil }, sessionResolver: { nil })
+                                ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
         let reported = try mcp(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "worker change", "sha": sha])
         XCTAssertFalse(reported.isError, reported.text)
         return sha

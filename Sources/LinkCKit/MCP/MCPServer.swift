@@ -18,10 +18,11 @@ public enum AncestorSessionCache {
     /// needed for that part. `walk` itself is `nonisolated(unsafe)` only because a mutable global
     /// needs an escape from strict concurrency checking; production code never reassigns it, and
     /// a test may reassign it solely to stand in for the real walk *before* first touching
-    /// `value`, letting it count invocations without reading real processes. `public` only
-    /// because `MCPServer.init` is public and its default `sessionResolver` argument reads
-    /// `value` directly, which Swift requires to be at least as visible as the initializer.
-    nonisolated(unsafe) public static var walk: @Sendable () -> String? = {
+    /// `value`, letting it count invocations without reading real processes — `@testable import`
+    /// reaches it despite `internal`, so it need not be `public` itself. `value` is `public`
+    /// because `MCPServer.init` is public and its default `sessionResolver` argument reads it
+    /// directly, which Swift requires to be at least as visible as the initializer.
+    nonisolated(unsafe) static var walk: @Sendable () -> String? = {
         ProcessSnooper.sessionId(inAncestorsOf: getpid())
     }
     public static let value: String? = walk()

@@ -80,7 +80,7 @@ final class MCPServerModelTests: XCTestCase {
         let settings = edited   // a @Sendable closure cannot capture a var
         let bare = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore,
                              environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
-                             modelSettings: { settings }, sessionResolver: { nil })
+                             modelSettings: { settings }, sessionResolver: { nil }, usageReaders: [:])
 
         let req = """
         {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "linkc_get_models", "arguments": {"agent": "codex"}}}
@@ -191,7 +191,8 @@ final class MCPServerModelTests: XCTestCase {
             environment: ["LINKC_AGENT": "claude"],
             ancestorResolver: { _ in nil },
             modelSettings: { box.value },
-            sessionResolver: { nil }
+            sessionResolver: { nil },
+            usageReaders: [:]
         )
 
         let before = try getModelsText(liveServer)
@@ -218,7 +219,8 @@ final class MCPServerModelTests: XCTestCase {
             environment: ["LINKC_AGENT": "claude"],
             ancestorResolver: { _ in nil },
             modelSettings: { .seeded },
-            sessionResolver: { nil }
+            sessionResolver: { nil },
+            usageReaders: [:]
         )
         let req = """
         {
@@ -311,7 +313,8 @@ final class MCPServerModelTests: XCTestCase {
             },
             environment: ["LINKC_AGENT": "claude"],
             ancestorResolver: { _ in nil },
-            sessionResolver: { nil }
+            sessionResolver: { nil },
+            usageReaders: [:]
         )
 
         let req = """

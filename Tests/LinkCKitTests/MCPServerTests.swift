@@ -479,7 +479,8 @@ final class MCPServerTests: XCTestCase {
             },
             environment: ["LINKC_AGENT": "claude"],
             ancestorResolver: { _ in nil },
-            sessionResolver: { nil }
+            sessionResolver: { nil },
+            usageReaders: [:]
         )
         let req = """
         {"jsonrpc": "2.0", "id": 90, "method": "tools/call", "params": {"name": "linkc_switch_model", "arguments": {"agent": "  claude  ", "model": "haiku"}}}

@@ -150,14 +150,16 @@ final class MCPServerTaskTests: XCTestCase {
 
         let sibling = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                                 environment: ["LINKC_AGENT": "codex", "LINKC_SESSION": "session-B"],
-                                ancestorResolver: { _ in nil }, modelSettings: { .seeded }, sessionResolver: { nil })
+                                ancestorResolver: { _ in nil }, modelSettings: { .seeded }, sessionResolver: { nil },
+                                usageReaders: [:])
         let refused = try call(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "I did it"])
         XCTAssertTrue(refused.isError, refused.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "a sibling may not settle another session's task")
 
         let assignee = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                                  environment: ["LINKC_AGENT": "codex", "LINKC_SESSION": "session-A"],
-                                 ancestorResolver: { _ in nil }, modelSettings: { .seeded }, sessionResolver: { nil })
+                                 ancestorResolver: { _ in nil }, modelSettings: { .seeded }, sessionResolver: { nil },
+                                 usageReaders: [:])
         let ok = try call(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
         XCTAssertFalse(ok.isError, ok.text)
     }
@@ -182,14 +184,16 @@ final class MCPServerTaskTests: XCTestCase {
 
         let sibling = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                                 environment: ["LINKC_AGENT": "codex"],
-                                ancestorResolver: { _ in nil }, sessionResolver: { "session-B" })
+                                ancestorResolver: { _ in nil }, sessionResolver: { "session-B" },
+                                usageReaders: [:])
         let refused = try call(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "nope"])
         XCTAssertTrue(refused.isError, refused.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "a sibling recovered via the resolver still may not settle another session's task")
 
         let assignee = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                                  environment: ["LINKC_AGENT": "codex"],
-                                 ancestorResolver: { _ in nil }, sessionResolver: { "session-A" })
+                                 ancestorResolver: { _ in nil }, sessionResolver: { "session-A" },
+                                 usageReaders: [:])
         let ok = try call(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
         XCTAssertFalse(ok.isError, ok.text)
     }
@@ -200,7 +204,7 @@ final class MCPServerTaskTests: XCTestCase {
         let srv = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                             environment: ["LINKC_AGENT": "claude"],
                             ancestorResolver: { _ in nil }, modelSettings: { .seeded },
-                            sessionResolver: { "session-Z" })
+                            sessionResolver: { "session-Z" }, usageReaders: [:])
         let res = try call(srv, "linkc_delegate_task", ["to": "agy", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
         let task = try XCTUnwrap(inbox.openTasks().first)
@@ -228,7 +232,7 @@ final class MCPServerTaskTests: XCTestCase {
 
         // No `sessionResolver` argument: this is the real default, which now goes through the
         // cache instead of walking the ancestry fresh on every call.
-        let server = MCPServer(workspaceRoot: tempDir.path, ancestorResolver: { _ in nil })
+        let server = MCPServer(workspaceRoot: tempDir.path, ancestorResolver: { _ in nil }, usageReaders: [:])
 
         XCTAssertEqual(server.sessionResolver(), "stub-session")
         XCTAssertEqual(server.sessionResolver(), "stub-session")
