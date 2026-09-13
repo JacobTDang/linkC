@@ -15,9 +15,12 @@ import Foundation
 /// shared budget continuing those same reads (and any older files) further back; when the
 /// budget runs out before a file's read reaches its 7-day boundary or its start,
 /// `UsageWindow.tokensAreLowerBound` says so rather than presenting a truncated sum as exact.
-/// An incomplete week read flags the 5-hour block too, not only the week total: the block's
+/// An incomplete week read can flag the 5-hour block too, not only the week total: the block's
 /// start is found by walking every message forward from the earliest one available, so missing
-/// older history can move that start later than a full read would — see `blockIsLowerBound`.
+/// older history can move that start later than a full read would. But a gap of at least 5
+/// hours between two messages both proven read anchors everything from the later one onward
+/// independent of anything older, so the block stays exact whenever such a gap exists at or
+/// before it — see `blockIsLowerBound`.
 public struct ClaudeUsageReader: Sendable {
     private let projectsDirectory: URL
     private let byteBudget: Int
@@ -116,10 +119,23 @@ public struct ClaudeUsageReader: Sendable {
         var fiveHourFullyRead = true
         var weekFullyRead = true
         var sharedBudgetRemaining = byteBudget
+        // The newest point below which the read can no longer prove every message was found:
+        // nil while every file processed so far cleared its own bar (the 5-hour cap reaching
+        // its boundary, or the week scan reaching `cutoff` or the file's own start). Frozen at
+        // the first file that doesn't clear it — a file's mtime bounds only its *newest*
+        // possible message, never how far back its content reaches, so a file the shared budget
+        // never got to (or only partly read) can still hold a message anywhere up to its own
+        // mtime, even one that lands inside a span some other file already proved empty. Used
+        // below to tell a genuine multi-hour quiet stretch in what was actually read from a
+        // budget-induced hole that only looks quiet.
+        var provenFloor: Date?
 
-        for file in ordered {
+        for (index, file) in ordered.enumerated() {
             var resumeOffset: UInt64?
             var resumeLeftover = Data()
+            // How far back this file's own contiguous read actually got, when it didn't reach
+            // a boundary that closes the file out entirely (the `continue` below).
+            var fileFloor: Date?
 
             if file.modified >= fiveHourCutoff {
                 let block = TranscriptBackwardReader.scan(
@@ -131,15 +147,20 @@ public struct ClaudeUsageReader: Sendable {
 
                 if block.reachedBoundary && block.stoppedAtOffset == 0 {
                     // The 5-hour safety cap already read this file to its start; nothing more
-                    // to extend for the week window.
+                    // to extend for the week window, and nothing left unproven either.
                     continue
                 }
+                fileFloor = block.usages.map(\.timestamp).min()
                 resumeOffset = block.stoppedAtOffset
                 resumeLeftover = block.pendingLeftover
             }
 
             guard sharedBudgetRemaining > 0 else {
                 weekFullyRead = false
+                if provenFloor == nil {
+                    let nextFileModified = index + 1 < ordered.count ? ordered[index + 1].modified : nil
+                    provenFloor = [fileFloor ?? file.modified, nextFileModified].compactMap { $0 }.max()
+                }
                 continue
             }
 
@@ -149,22 +170,50 @@ public struct ClaudeUsageReader: Sendable {
                 startOffset: resumeOffset, initialLeftover: resumeLeftover)
 
             usages.append(contentsOf: week.usages.filter { $0.timestamp >= cutoff })
-            if !week.reachedBoundary { weekFullyRead = false }
+            if !week.reachedBoundary {
+                weekFullyRead = false
+                if provenFloor == nil {
+                    let thisFloor = week.usages.map(\.timestamp).min() ?? fileFloor ?? file.modified
+                    let nextFileModified = index + 1 < ordered.count ? ordered[index + 1].modified : nil
+                    provenFloor = [thisFloor, nextFileModified].compactMap { $0 }.max()
+                }
+            }
             sharedBudgetRemaining -= week.bytesRead
         }
 
         let window = UsageWindows.compute(usages, now: now)
         // `UsageWindows.compute` finds the active block by walking every message forward from
-        // the earliest one it is given, resetting the block's start at the first message that
-        // falls outside the previous block's 5-hour span. When the week read is incomplete, the
-        // oldest messages in that span are missing, so the walk can start from a later message
-        // than a full read would — which can move the detected block's start later too, even
-        // though every message inside the true 5-hour window itself is present. The simple,
-        // honest fix: an incomplete week read makes the block figure a lower bound as well,
-        // not just the week figure — proving the missing history could never have shifted the
-        // block would mean tracking whether a real >= 5h gap, not just a budget cutoff, anchors
-        // it, which this reader does not do.
-        let blockIsLowerBound = !fiveHourFullyRead || !weekFullyRead
+        // the earliest one it is given, starting a fresh block at the hour-floor of the first
+        // message that lands outside the *previous* block's 5-hour span. A block's start is
+        // always <= its own first message's timestamp (flooring only rounds down), so for any
+        // two messages M then N with N.timestamp - M.timestamp >= 5 hours, N necessarily starts
+        // a fresh block regardless of M's own block — which means: given a gap that size between
+        // two messages *both proven read*, the entire block chain from N onward is exactly what
+        // a full read would produce, independent of anything older than M, because nothing
+        // between M and N was missed (both ends are proven) and nothing before M can reach past
+        // a boundary that already restarts at N. So the block figure stays exact when the week
+        // read is incomplete, as long as such a gap exists somewhere in what was actually proven
+        // read — not only when the week read finished outright. `provenFloor` marks the oldest
+        // point that proof still holds for; a gap is only trustworthy with both ends at or after
+        // it, since a file the budget never reached could otherwise hide a message in between.
+        // The 5-hour read's own safety cap stopping early is kept as an unconditional flag: it
+        // means even the block's membership isn't proven, and no gap elsewhere fixes that.
+        let blockIsLowerBound: Bool
+        if !fiveHourFullyRead {
+            blockIsLowerBound = true
+        } else if weekFullyRead {
+            blockIsLowerBound = false
+        } else if let floor = provenFloor {
+            let provenTimestamps = usages.map(\.timestamp).filter { $0 >= floor }.sorted()
+            let hasAnchoringGap = zip(provenTimestamps, provenTimestamps.dropFirst())
+                .contains { $1.timeIntervalSince($0) >= Self.fiveHourWindow }
+            blockIsLowerBound = !hasAnchoringGap
+        } else {
+            // weekFullyRead false with no recorded floor shouldn't happen — the loop above
+            // always sets `provenFloor` the first time it clears `weekFullyRead` — but fail
+            // toward flagging rather than silently presenting an unproven figure as exact.
+            blockIsLowerBound = true
+        }
         return AgentUsage(
             agent: .claude,
             windows: [

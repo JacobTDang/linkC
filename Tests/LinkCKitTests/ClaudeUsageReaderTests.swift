@@ -113,14 +113,14 @@ final class ClaudeUsageReaderTests: XCTestCase {
 
     /// (c) The 5-hour exemption: a tiny shared budget, with a 5-hour file whose own
     /// (comfortably large) safety cap lets it read every message inside the 5-hour boundary,
-    /// but whose remaining, older-than-5h content can't be reached at all once the shared
-    /// budget is exhausted. The block figure itself is still flagged a lower bound: its
-    /// boundary walk starts from the earliest message it is given, and missing older history
-    /// could have moved that earlier than a full read would show, even though every message
-    /// actually inside the 5-hour window is present and the token count is exact today.
-    func testC_FiveHourExemptionReadsExactTokensButStillFlagsTheBlockWhenTheWeekIsIncomplete() throws {
+    /// plus — incidentally, while proving that boundary — one message far older than 5 hours.
+    /// The ~2-day gap between that older message and the block's own message is itself proof:
+    /// nothing was missed in between (both ends were actually read), and nothing further back
+    /// than the older message can reach past a block boundary that already restarts at the
+    /// newer one. So the block figure stays exact even though the week read never completed.
+    func testC_AGapBeforeTheBlocksOnlyMessageKeepsItExactEvenWhenTheWeekIsIncomplete() throws {
         // File order (oldest to newest): padding the 5-hour phase must stop short of, a
-        // usage line just past the 5-hour boundary, then a usage line inside it.
+        // usage line ~2 days before the 5-hour boundary, then a usage line inside it.
         let padding = String(repeating: "{\"type\":\"tool_result\"}\n", count: 200)
         let content = padding
             + assistantLine(tokens: 700, secondsAgo: 2 * 24 * 3600) + "\n"
@@ -133,11 +133,35 @@ final class ClaudeUsageReaderTests: XCTestCase {
         ).read()
 
         XCTAssertEqual(usage.windows[0].tokens, 500, "the 5-hour safety cap is generous enough to finish")
-        XCTAssertTrue(usage.windows[0].tokensAreLowerBound,
-                      "the week read never completed, so the block's own boundary is not provably exact either")
+        XCTAssertFalse(usage.windows[0].tokensAreLowerBound,
+                       "a ~2-day quiet gap right before the block's only message proves it, independent of the padding the budget never reached")
 
         XCTAssertEqual(usage.windows[1].tokens, 1200, "reflects exactly the two lines actually read")
         XCTAssertTrue(usage.windows[1].tokensAreLowerBound, "no shared budget left to read the remaining padding")
+    }
+
+    /// (e) The same exhausted shared budget as (c), but with no quiet stretch anywhere in what
+    /// was actually read: a second, older file sits entirely unread (the budget is gone before
+    /// it's even opened), and the one file that was read is packed with activity right up to
+    /// its own start. Nothing proves the unread file couldn't extend that same activity
+    /// further back with no gap at all, so the block figure must stay a lower bound.
+    func testE_ContinuousActivityWithNoProvenGapLeavesTheBlockFlaggedWhenTheWeekIsIncomplete() throws {
+        try write("proj/recent.jsonl", [
+            assistantLine(tokens: 100, secondsAgo: 40 * 60),
+            assistantLine(tokens: 100, secondsAgo: 20 * 60),
+            assistantLine(tokens: 300, secondsAgo: 60)
+        ], modified: Date())
+        // Old enough to skip the 5-hour exemption entirely, and never even opened once the
+        // shared budget below is spent on nothing (0 bytes) — it exists purely to make the
+        // week read incomplete without offering any proof about what it might contain.
+        try write("proj/older.jsonl", [assistantLine(tokens: 50, secondsAgo: 7 * 3600)],
+                  modified: Date().addingTimeInterval(-6 * 3600))
+
+        let usage = ClaudeUsageReader(projectsDirectory: dir, byteBudget: 0).read()
+
+        XCTAssertEqual(usage.windows[0].tokens, 500, "all three recent-file messages chain into one active block")
+        XCTAssertTrue(usage.windows[0].tokensAreLowerBound,
+                      "nothing proves the unread older file doesn't extend the same unbroken activity further back")
     }
 
     /// (d) The 5-hour safety cap itself: a tiny cap stops a 5-hour file's read before it can
