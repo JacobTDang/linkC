@@ -2,43 +2,62 @@ import Foundation
 
 /// Reads what Claude has left from its own transcripts under `~/.claude/projects`. Delegates
 /// the arithmetic to the same pure pieces the panel footer uses (`TranscriptUsage`,
-/// `UsageWindows`) — both are plain `Sendable` statics with no `@MainActor`, so this runs
-/// unchanged in the MCP server's separate process. `TranscriptTailReader` is stateful (it
-/// tracks a read offset per path), so this uses one fresh instance per file for a clean
-/// one-shot read rather than reusing an instance across calls.
+/// `UsageWindows`), and the byte-level reading to `TranscriptBackwardReader` — both are plain
+/// `Sendable` and hold no state, so this runs unchanged in the MCP server's separate process.
 ///
-/// A real `~/.claude/projects` can hold hundreds of transcripts and hundreds of megabytes —
-/// reading it all on every call made this take over a minute. A total byte budget bounds the
-/// work: transcripts are read newest-first, so the 5-hour window (which only needs files from
-/// the last 5 hours) is complete whenever those files fit the budget, before anything older is
-/// touched. If the budget runs out before every file inside the 7-day scan window is read, the
-/// affected window's `tokens` is a floor, not the true total — `UsageWindow.tokensAreLowerBound`
-/// says so explicitly rather than presenting a truncated sum as exact.
+/// A real `~/.claude/projects` can hold thousands of transcripts and a gigabyte or more.
+/// Transcripts are append-only JSONL, and each usage line carries a timestamp, so reading a
+/// file backward from its end lets a scan *prove* it covered a window — by reaching the
+/// file's start or a whole chunk of provably older lines — rather than guessing from a fixed
+/// byte cut. The 5-hour window is exempt from the shared budget: every file modified in the
+/// last 5 hours is read back to the 5-hour boundary under its own large, injectable safety
+/// cap, which only protects against a pathological single file. The 7-day window spends a
+/// shared budget continuing those same reads (and any older files) further back; when the
+/// budget runs out before a file's read reaches its 7-day boundary or its start,
+/// `UsageWindow.tokensAreLowerBound` says so rather than presenting a truncated sum as exact.
 public struct ClaudeUsageReader {
     private let projectsDirectory: URL
     private let byteBudget: Int
+    private let fiveHourSafetyCapBytes: Int
+    private let chunkSizeBytes: Int
 
     /// Only transcripts touched in the last week can contribute to either window; mirrors
     /// `UsageTracker`'s scan window for the same reason.
     private static let scanWindow: TimeInterval = 7 * 24 * 3600
-    /// Only transcripts touched in the last 5 hours can contribute to the 5h block; reading
-    /// this group first (still newest-first within it) is what guarantees the block is
-    /// complete whenever its files fit the budget.
+    /// Only transcripts touched in the last 5 hours are read under the 5-hour exemption; a
+    /// file modified before this always sorts, and is treated, as week-only.
     private static let fiveHourWindow: TimeInterval = 5 * 3600
-    /// Bounds the cost of a single large historical transcript to its trailing slice.
-    private static let tailCapBytes = 4 * 1024 * 1024
-    /// Default total budget spent across every file in one `read()`. Measured against a
-    /// fixture shaped like a real machine's last 7 days (231 files, ~285 MB): the unbounded
-    /// scan took ~40s there (76.8s reported against real transcripts), and 32 MB — the
-    /// starting point suggested by the design — still took 4.3s, too slow for a tool call.
-    /// 8 MB measured at ~1.0s: well under the two-second budget with headroom for a slower
-    /// machine, while still covering several of the newest transcripts (see
-    /// task-10-report.md for the full sweep).
-    public static let defaultByteBudget = 8 * 1024 * 1024
 
-    public init(projectsDirectory: URL, byteBudget: Int = defaultByteBudget) {
+    /// Chunk size for `TranscriptBackwardReader`'s backward reads. Measured against this
+    /// machine's real projects directory (1,814 transcripts, 1.1 GB): 64 KB took 3.85s
+    /// unbounded, 256 KB 3.15s, 1 MB 3.05s — most of the win is by 256 KB, with only marginal
+    /// gains beyond it, so a bigger chunk mostly just risks reading further past a window
+    /// boundary than needed. See task-10-report.md for the full sweep.
+    public static let defaultChunkSizeBytes = 256 * 1024
+    /// Per-file safety cap for the 5-hour exemption. Deliberately large — it exists only to
+    /// bound a pathological single file (e.g. one huge tool-result-only transcript with no
+    /// usage lines at all), not to constrain a normal 5-hour read. On this machine's real
+    /// data, every 5-hour file's read finished within about 4 MB regardless of the cap
+    /// (unflagged from 4 MB up to 64 MB, same token total each time); 64 MB leaves roughly
+    /// 16x headroom over that observed need. See task-10-report.md for the sweep.
+    public static let defaultFiveHourSafetyCapBytes = 64 * 1024 * 1024
+    /// Shared budget spent across every file's 7-day read (including extending 5-hour files
+    /// further back). Measured directly against this machine's real projects directory: an
+    /// unbounded read finishes in ~3.1-3.5s; 64 MB reaches about 68% of the unbounded 7-day
+    /// total in ~1.3s, versus 8 MB's ~34% in ~0.56s. The 5-hour figure is unaffected either
+    /// way — it never spends this budget. See task-10-report.md for the full sweep.
+    public static let defaultByteBudget = 64 * 1024 * 1024
+
+    public init(
+        projectsDirectory: URL,
+        byteBudget: Int = defaultByteBudget,
+        fiveHourSafetyCapBytes: Int = defaultFiveHourSafetyCapBytes,
+        chunkSizeBytes: Int = defaultChunkSizeBytes
+    ) {
         self.projectsDirectory = projectsDirectory
         self.byteBudget = byteBudget
+        self.fiveHourSafetyCapBytes = fiveHourSafetyCapBytes
+        self.chunkSizeBytes = chunkSizeBytes
     }
 
     public func read() -> AgentUsage {
@@ -49,7 +68,7 @@ public struct ClaudeUsageReader {
             return unavailable("no ~/.claude/projects directory")
         }
         guard let enumerator = FileManager.default.enumerator(
-            at: projectsDirectory, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
+            at: projectsDirectory, includingPropertiesForKeys: [.contentModificationDateKey]
         ) else {
             return unavailable("no ~/.claude/projects directory")
         }
@@ -59,50 +78,74 @@ public struct ClaudeUsageReader {
         let fiveHourCutoff = now.addingTimeInterval(-Self.fiveHourWindow)
 
         var newestModified: Date?
-        var candidates: [(url: URL, modified: Date, size: Int)] = []
+        var candidates: [(url: URL, modified: Date)] = []
 
         for case let url as URL in enumerator {
             guard url.pathExtension == "jsonl" else { continue }
-            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
                   let modified = values.contentModificationDate
             else { continue }
             if newestModified == nil || modified > newestModified! { newestModified = modified }
             guard modified >= cutoff else { continue }
-            // A size that can't be read is treated as costing the full tail cap — the
-            // conservative assumption, never an undercount that could silently blow the budget.
-            let size = values.fileSize ?? Self.tailCapBytes
-            candidates.append((url, modified, size))
+            candidates.append((url, modified))
         }
 
         guard let observedAt = newestModified else {
             return unavailable("no session records found")
         }
 
-        // Newest-first overall puts every 5-hour-window file ahead of every older-but-within-
-        // week file automatically (a newer mtime always sorts first), so one pass is enough:
-        // the loop below spends the budget in exactly that priority order.
+        // Newest-first puts every 5-hour-window file ahead of every older-but-within-week
+        // file automatically (a newer mtime always sorts first).
         let ordered = candidates.sorted { $0.modified > $1.modified }
 
+        // Fed to `UsageWindows.compute` as one set, exactly like the old reader did: its own
+        // block-boundary detection (`floorToHour` plus the gap logic) needs every message in
+        // range to identify the true current block, not just what happens to be newer than a
+        // naive cutoff. A still-active 5-hour block's start can never be more than 5 hours
+        // before `now` (otherwise the block would already have expired), so every message
+        // that can belong to it necessarily has a timestamp after `fiveHourCutoff` — reading
+        // every 5-hour-classified file back to that cutoff is therefore always enough for the
+        // block figure to be exact whenever `fiveHourFullyRead` holds, independent of whether
+        // the week figure also finished.
         var usages: [MessageUsage] = []
-        var bytesSpent = 0
         var fiveHourFullyRead = true
         var weekFullyRead = true
+        var sharedBudgetRemaining = byteBudget
 
         for file in ordered {
-            let fileCost = min(file.size, Self.tailCapBytes)
-            guard bytesSpent + fileCost <= byteBudget else {
-                weekFullyRead = false
-                if file.modified >= fiveHourCutoff { fiveHourFullyRead = false }
-                break
-            }
-            bytesSpent += fileCost
+            var resumeOffset: UInt64?
+            var resumeLeftover = Data()
 
-            let reader = TranscriptTailReader()
-            for line in reader.readNewLines(at: file.url.path, firstReadTailCap: Self.tailCapBytes) {
-                if let usage = TranscriptUsage.parseLine(line) {
-                    usages.append(usage)
+            if file.modified >= fiveHourCutoff {
+                let block = TranscriptBackwardReader.scan(
+                    path: file.url.path, windowStart: fiveHourCutoff,
+                    chunkSize: chunkSizeBytes, maxBytes: fiveHourSafetyCapBytes)
+
+                usages.append(contentsOf: block.usages.filter { $0.timestamp >= cutoff })
+                if !block.reachedBoundary { fiveHourFullyRead = false }
+
+                if block.reachedBoundary && block.stoppedAtOffset == 0 {
+                    // The 5-hour safety cap already read this file to its start; nothing more
+                    // to extend for the week window.
+                    continue
                 }
+                resumeOffset = block.stoppedAtOffset
+                resumeLeftover = block.pendingLeftover
             }
+
+            guard sharedBudgetRemaining > 0 else {
+                weekFullyRead = false
+                continue
+            }
+
+            let week = TranscriptBackwardReader.scan(
+                path: file.url.path, windowStart: cutoff,
+                chunkSize: chunkSizeBytes, maxBytes: sharedBudgetRemaining,
+                startOffset: resumeOffset, initialLeftover: resumeLeftover)
+
+            usages.append(contentsOf: week.usages.filter { $0.timestamp >= cutoff })
+            if !week.reachedBoundary { weekFullyRead = false }
+            sharedBudgetRemaining -= week.bytesRead
         }
 
         let window = UsageWindows.compute(usages, now: now)

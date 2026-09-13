@@ -10,7 +10,7 @@ final class ClaudeUsageReaderTests: XCTestCase {
     }
     override func tearDownWithError() throws { try? FileManager.default.removeItem(at: dir) }
 
-    /// Returns the byte size actually written, so budget tests can size `byteBudget` against
+    /// Returns the byte size actually written, so tests can size a reader's constants against
     /// real file sizes instead of guessing at JSON encoding overhead.
     @discardableResult
     private func write(_ relativePath: String, _ lines: [String], modified: Date) throws -> Int {
@@ -20,6 +20,17 @@ final class ClaudeUsageReaderTests: XCTestCase {
         // reader only ever hands out newline-terminated lines, so it can't mistake an
         // in-progress write for a complete one.
         let content = lines.joined(separator: "\n") + "\n"
+        try content.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+        return content.utf8.count
+    }
+
+    /// Writes pre-built raw content (rather than a line array) verbatim, for fixtures that
+    /// need exact control over their own trailing bytes.
+    @discardableResult
+    private func writeRaw(_ relativePath: String, _ content: String, modified: Date) throws -> Int {
+        let url = dir.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try content.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
         return content.utf8.count
@@ -76,66 +87,89 @@ final class ClaudeUsageReaderTests: XCTestCase {
         XCTAssertEqual(empty.unavailableReason, "no session records found")
     }
 
-    // MARK: - Byte budget
+    // MARK: - Task 10 review fixes: backward, chunked, provably-bounded reads
 
-    func testFilesWithinBudgetProduceExactUnmarkedFigures() throws {
-        let older = Date().addingTimeInterval(-600)
-        let newer = Date()
-        try write("proj1/session1.jsonl", [assistantLine(tokens: 1000, secondsAgo: 120)], modified: older)
-        try write("proj2/session2.jsonl", [assistantLine(tokens: 2000, secondsAgo: 60)], modified: newer)
+    /// (a) The reviewer's case: a file bigger than both the reader's chunk size and the old
+    /// (now-removed) 4 MB per-file tail cap, carrying its one usage line near the file's
+    /// start — well outside any fixed tail cut — with a generous budget.
+    func testA_ReviewersCase_EarlyUsageLineInAFileLargerThanTheOldTailCapIsCountedExactly() throws {
+        // ~5.9 MB of filler after the usage line — bigger than the old reader's hardcoded
+        // 4 MB tail cap, so a tail-only read would miss the usage line entirely.
+        let filler = String(repeating: "{\"type\":\"tool_result\",\"pad\":\"filler line\"}\n", count: 150_000)
+        let content = assistantLine(tokens: 5000, secondsAgo: 60) + "\n" + filler
+        let bytesWritten = try writeRaw("proj/big.jsonl", content, modified: Date())
+        XCTAssertGreaterThan(bytesWritten, 4 * 1024 * 1024, "fixture must exceed the old per-file tail cap")
 
-        // Both fixtures are a few hundred bytes; this budget comfortably covers both.
-        let usage = ClaudeUsageReader(projectsDirectory: dir, byteBudget: 1_000_000).read()
+        let usage = ClaudeUsageReader(
+            projectsDirectory: dir, byteBudget: 20_000_000,
+            fiveHourSafetyCapBytes: 20_000_000, chunkSizeBytes: 256 * 1024
+        ).read()
 
-        XCTAssertEqual(usage.windows.count, 2)
-        XCTAssertFalse(usage.windows[0].tokensAreLowerBound, "everything fit the budget — 5h is exact")
-        XCTAssertFalse(usage.windows[1].tokensAreLowerBound, "everything fit the budget — 7d is exact")
-        XCTAssertEqual(usage.windows[0].tokens, 3000)
-        XCTAssertEqual(usage.windows[1].tokens, 3000)
+        XCTAssertEqual(usage.windows[0].tokens, 5000, "an early usage line must not be hidden by a tail cut")
+        XCTAssertFalse(usage.windows[0].tokensAreLowerBound)
+        XCTAssertEqual(usage.windows[1].tokens, 5000)
+        XCTAssertFalse(usage.windows[1].tokensAreLowerBound)
     }
 
-    func testBudgetExhaustedBeforeTheWeekIsCoveredMarksOnlyTheWeekWindowALowerBound() throws {
-        // Recent file: inside the 5h window, small.
-        let recentSize = try write(
-            "proj1/recent.jsonl", [assistantLine(tokens: 500, secondsAgo: 60)], modified: Date())
-        // Two older-than-5h-but-within-7d files, newest first.
-        let older1Size = try write(
-            "proj2/older1.jsonl", [assistantLine(tokens: 700, secondsAgo: 2 * 24 * 3600)],
-            modified: Date().addingTimeInterval(-2 * 24 * 3600))
-        try write(
-            "proj3/older2.jsonl", [assistantLine(tokens: 900, secondsAgo: 3 * 24 * 3600)],
-            modified: Date().addingTimeInterval(-3 * 24 * 3600))
+    /// (c) The 5-hour exemption: a tiny shared budget, with a 5-hour file whose own
+    /// (comfortably large) safety cap lets it prove the 5-hour boundary, but whose remaining,
+    /// older-than-5h content can't be reached at all once the shared budget is exhausted.
+    func testC_FiveHourExemptionKeepsTheBlockExactWhileTheWeekIsFlagged() throws {
+        // File order (oldest to newest): padding the 5-hour phase must stop short of, a
+        // usage line just past the 5-hour boundary, then a usage line inside it.
+        let padding = String(repeating: "{\"type\":\"tool_result\"}\n", count: 200)
+        let content = padding
+            + assistantLine(tokens: 700, secondsAgo: 2 * 24 * 3600) + "\n"
+            + assistantLine(tokens: 500, secondsAgo: 60) + "\n"
+        try writeRaw("proj/mixed.jsonl", content, modified: Date())
 
-        // Exactly enough for the recent file plus the newer of the two older files — not
-        // the third.
-        let budget = recentSize + older1Size
-        let usage = ClaudeUsageReader(projectsDirectory: dir, byteBudget: budget).read()
+        let usage = ClaudeUsageReader(
+            projectsDirectory: dir, byteBudget: 0,
+            fiveHourSafetyCapBytes: 1_000_000, chunkSizeBytes: 64
+        ).read()
 
-        XCTAssertFalse(usage.windows[0].tokensAreLowerBound, "the 5h window's only file fit the budget")
-        XCTAssertEqual(usage.windows[0].tokens, 500)
+        XCTAssertEqual(usage.windows[0].tokens, 500, "the 5-hour safety cap is generous enough to finish")
+        XCTAssertFalse(usage.windows[0].tokensAreLowerBound, "the 5-hour read is exempt from the shared budget")
 
-        XCTAssertTrue(usage.windows[1].tokensAreLowerBound, "the budget ran out before every 7d file was read")
-        XCTAssertEqual(usage.windows[1].tokens, 500 + 700, "reflects exactly what was actually read, not a guess")
+        XCTAssertEqual(usage.windows[1].tokens, 1200, "reflects exactly the two lines actually read")
+        XCTAssertTrue(usage.windows[1].tokensAreLowerBound, "no shared budget left to read the remaining padding")
     }
 
-    func testFiveHourFilesAreReadBeforeOlderOnesEvenWhenTheOlderOnesAreLarger() throws {
-        // The older file is deliberately padded far larger than the recent one, so a reader
-        // that let file size (rather than recency) drive read order would starve the
-        // 5-hour file of budget.
-        let padding = String(repeating: "x", count: 5000)
-        try write(
-            "proj1/older-big.jsonl",
-            ["{\"type\":\"filler\",\"pad\":\"\(padding)\"}", assistantLine(tokens: 900, secondsAgo: 3 * 24 * 3600)],
-            modified: Date().addingTimeInterval(-3 * 24 * 3600))
-        let recentSize = try write(
-            "proj2/recent.jsonl", [assistantLine(tokens: 500, secondsAgo: 60)], modified: Date())
+    /// (d) The 5-hour safety cap itself: a tiny cap stops a 5-hour file's read before it can
+    /// prove the 5-hour boundary or reach the file's start.
+    func testD_FiveHourSafetyCapStoppingEarlyFlagsTheBlock() throws {
+        // The usage line sits right at EOF; padding before it has no usage lines at all, so
+        // the scan has no evidence to stop on and just keeps going until the cap runs out.
+        let padding = String(repeating: "{\"type\":\"tool_result\"}\n", count: 300)
+        let content = padding + assistantLine(tokens: 500, secondsAgo: 60) + "\n"
+        try writeRaw("proj/capped.jsonl", content, modified: Date())
 
-        // Enough for the small recent file only — nowhere near enough for the padded older one.
-        let usage = ClaudeUsageReader(projectsDirectory: dir, byteBudget: recentSize).read()
+        let usage = ClaudeUsageReader(
+            projectsDirectory: dir, byteBudget: 1_000_000,
+            fiveHourSafetyCapBytes: 300, chunkSizeBytes: 64
+        ).read()
 
-        XCTAssertFalse(usage.windows[0].tokensAreLowerBound, "the 5-hour file was read despite being enumerated second")
-        XCTAssertEqual(usage.windows[0].tokens, 500, "the recent file's tokens must be present")
-        XCTAssertEqual(usage.windows[1].tokens, 500, "the larger, older file must not have consumed the budget first")
-        XCTAssertTrue(usage.windows[1].tokensAreLowerBound)
+        XCTAssertEqual(usage.windows[0].tokens, 500, "the one line reachable within the tiny cap is still counted")
+        XCTAssertTrue(usage.windows[0].tokensAreLowerBound, "the cap stopped before a boundary was proven")
+    }
+
+    /// (b) A 5-hour file's early (older-than-5h) content, encountered for free while proving
+    /// the 5-hour boundary, must still be folded into the week figure — not discarded because
+    /// it fell outside the 5-hour window that phase's scan was aimed at.
+    func testB_OlderThanFiveHourDataFoundProvingTheBlockStillCountsTowardTheWeek() throws {
+        try write("proj/mixed.jsonl", [
+            assistantLine(tokens: 700, secondsAgo: 6 * 3600),   // outside 5h, inside 7d
+            assistantLine(tokens: 2000, secondsAgo: 60)          // inside both
+        ], modified: Date())
+
+        let usage = ClaudeUsageReader(
+            projectsDirectory: dir, byteBudget: 1_000_000,
+            fiveHourSafetyCapBytes: 1_000_000, chunkSizeBytes: 64
+        ).read()
+
+        XCTAssertEqual(usage.windows[0].tokens, 2000, "only the line inside the 5h window counts there")
+        XCTAssertFalse(usage.windows[0].tokensAreLowerBound)
+        XCTAssertEqual(usage.windows[1].tokens, 2700, "the older-than-5h line still counts toward the week")
+        XCTAssertFalse(usage.windows[1].tokensAreLowerBound)
     }
 }
