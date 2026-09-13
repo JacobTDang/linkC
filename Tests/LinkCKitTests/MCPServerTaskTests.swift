@@ -24,13 +24,15 @@ final class MCPServerTaskTests: XCTestCase {
     }
 
     private func server(as agent: AgentKind, models: AgentModelSettings,
-                        readers: [AgentKind: MCPServer.UsageReader] = [:]) -> MCPServer {
+                        readers: [AgentKind: MCPServer.UsageReader] = [:],
+                        warnCapableAgents: Set<AgentKind> = MCPServer.defaultWarnCapableAgents) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path,
                   environment: ["LINKC_AGENT": agent.rawValue],
                   ancestorResolver: { _ in nil },
                   modelSettings: { models },
                   sessionResolver: { nil },
-                  usageReaders: readers)
+                  usageReaders: readers,
+                  warnCapableAgents: warnCapableAgents)
     }
 
     /// A caller with a fixed session, delivered through `LINKC_SESSION` the way most agents pass
@@ -645,5 +647,44 @@ final class MCPServerTaskTests: XCTestCase {
             "linkc_delegate_task", ["to": "claude", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertFalse(flag.wasCalled, "the transcript usage reader can never warn; the delegate path must not call it")
+    }
+
+    /// Which readers can warn must be data (`warnCapableAgents`), not an identity check on
+    /// `toAgent`. If the handler special-cased `.claude` directly, a percentage-reporting reader
+    /// registered for `.claude` — exactly what is injected here — would still be silently
+    /// skipped. Marking `.claude` warn-capable here must be enough to surface its warning.
+    func testADelegationWarnsForAnyAgentTheServerMarksWarnCapable() throws {
+        let hot = AgentUsage(agent: .claude,
+                             windows: [UsageWindow(label: "5h", usedPercent: 92, tokens: nil, resetsAt: nil)],
+                             planType: nil, observedAt: Date(), unavailableReason: nil)
+        let res = try call(
+            server(as: .codex, models: .seeded, readers: [.claude: { hot }], warnCapableAgents: [.claude]),
+            "linkc_delegate_task", ["to": "claude", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("92%"), res.text)
+        XCTAssertTrue(res.text.contains("5h"), res.text)
+    }
+
+    /// The blackboard-broadcast-failure early return is a second success path, distinct from the
+    /// plain return exercised above — it must append the usage note too. `broadcastIntent` only
+    /// runs when `files` is non-empty, and the store throws when `.linkc/blackboard.json` exists
+    /// but cannot be decoded.
+    func testADelegationWithAnUnreadableBlackboardStillAppendsTheUsageNote() throws {
+        let linkcDir = tempDir.appendingPathComponent(".linkc")
+        try FileManager.default.createDirectory(at: linkcDir, withIntermediateDirectories: true)
+        try Data("{\"version\": 1, \"activeAgents\": [{\"incomplete\": tr".utf8)
+            .write(to: linkcDir.appendingPathComponent("blackboard.json"))
+
+        let hot = AgentUsage(agent: .codex,
+                             windows: [UsageWindow(label: "5h", usedPercent: 91, tokens: nil, resetsAt: nil)],
+                             planType: nil, observedAt: Date(), unavailableReason: nil)
+        let res = try call(
+            server(as: .claude, models: .seeded, readers: [.codex: { hot }]),
+            "linkc_delegate_task", ["to": "codex", "prompt": "Rename a file", "files": ["A.swift"]])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("blackboard broadcast failed"), res.text)
+        XCTAssertTrue(res.text.contains("91%"), res.text)
+        XCTAssertEqual(try inbox.openTasks().count, 1, "the task is still created even though the broadcast failed")
     }
 }

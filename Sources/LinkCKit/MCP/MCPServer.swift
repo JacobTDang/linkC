@@ -56,6 +56,12 @@ public final class MCPServer: Sendable {
     /// can inject exactly the agents it cares about and leave the rest absent — an absent key
     /// renders as "no usage reader configured" rather than falling back to a real reader.
     public let usageReaders: [AgentKind: UsageReader]
+    /// Agents whose registered reader can actually trigger a delegation warning. Declared as
+    /// data, next to `usageReaders`, rather than as a hard-coded agent check in the delegate
+    /// handler: the handler must consult this set, never an identity check, so that whether a
+    /// reader can warn is decided once, where readers are registered, and stays correct even if
+    /// a different reader is swapped in for an agent later.
+    public let warnCapableAgents: Set<AgentKind>
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -78,7 +84,8 @@ public final class MCPServer: Sendable {
         ancestorResolver: @escaping AncestorResolver = { ProcessSnooper.detectAgent(inAncestorsOf: $0) },
         modelSettings: @escaping ModelSettingsProvider = { AgentModelStore.applicationSupport.load() },
         sessionResolver: @escaping SessionResolver = { AncestorSessionCache.value },
-        usageReaders: [AgentKind: UsageReader] = MCPServer.defaultUsageReaders()
+        usageReaders: [AgentKind: UsageReader] = MCPServer.defaultUsageReaders(),
+        warnCapableAgents: Set<AgentKind> = MCPServer.defaultWarnCapableAgents
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -89,6 +96,7 @@ public final class MCPServer: Sendable {
         self.modelSettings = modelSettings
         self.sessionResolver = sessionResolver
         self.usageReaders = usageReaders
+        self.warnCapableAgents = warnCapableAgents
     }
 
     /// The real readers, wired to each agent's own on-disk records. `agy` and `cursor` write
@@ -106,6 +114,14 @@ public final class MCPServer: Sendable {
             .cursor: { .unavailable(.cursor, reason: "cursor writes no local session records") }
         ]
     }
+
+    /// Agents whose reader in `defaultUsageReaders()` can warn a delegation: only the Codex
+    /// reader's windows ever carry a `usedPercent`. The transcript usage reader's windows never
+    /// do (Anthropic publishes no per-plan limit), so it is left out here rather than excluded by
+    /// checking `toAgent == .claude` in the handler — that identity check would stay wrong
+    /// forever if a percentage-reporting source were later registered for `.claude`. `agy` and
+    /// `cursor` are absent from `defaultUsageReaders()` entirely and so cannot warn regardless.
+    public static let defaultWarnCapableAgents: Set<AgentKind> = [.codex]
 
     /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified).
     func resolveCaller(_ args: [String: Any]) -> MCPCaller {
@@ -556,12 +572,13 @@ public final class MCPServer: Sendable {
                 } ?? "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
 
                 // Warn when the target is nearly out, without ever blocking or failing the
-                // delegation. `windowNeedingWarning` only ever fires from a window carrying a
-                // usedPercent, and the transcript usage reader (Claude's) never sets one — so
-                // calling it here could never produce a warning while still paying its read
-                // cost. Skip it outright; every other agent's reader stays in play.
+                // delegation. Whether a reader can ever produce a warning is decided once, in
+                // `warnCapableAgents`, next to where readers are registered — not here by
+                // checking the target's identity. A reader left out of that set (the transcript
+                // usage reader today) is never called at all, so its read cost is never paid for
+                // a warning it could never carry.
                 var usageNote = ""
-                if toAgent != .claude,
+                if warnCapableAgents.contains(toAgent),
                    let window = usageReaders[toAgent]?().windowNeedingWarning,
                    let percent = window.usedPercent {
                     let resetSuffix = window.resetsAt.map { ", resets \(Self.formatReset($0, now: Date()))" } ?? ""
