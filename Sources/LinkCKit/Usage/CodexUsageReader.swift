@@ -4,7 +4,7 @@ import Foundation
 /// its exact rate-limit snapshot to on every turn, rather than the terminal text linkC used to
 /// scrape (and once misread as exhaustion). `rate_limits` sits nested under a line's `payload`
 /// (never at the top level) in every real rollout this was checked against.
-public struct CodexUsageReader {
+public struct CodexUsageReader: Sendable {
     private let sessionsDirectory: URL
 
     /// Codex's limits are account-wide, so only the newest few sessions need checking —

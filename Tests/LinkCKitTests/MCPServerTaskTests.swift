@@ -20,15 +20,17 @@ final class MCPServerTaskTests: XCTestCase {
 
     private func server(as agent: AgentKind) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": agent.rawValue],
-                  ancestorResolver: { _ in nil }, sessionResolver: { nil })
+                  ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
     }
 
-    private func server(as agent: AgentKind, models: AgentModelSettings) -> MCPServer {
+    private func server(as agent: AgentKind, models: AgentModelSettings,
+                        readers: [AgentKind: MCPServer.UsageReader] = [:]) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path,
                   environment: ["LINKC_AGENT": agent.rawValue],
                   ancestorResolver: { _ in nil },
                   modelSettings: { models },
-                  sessionResolver: { nil })
+                  sessionResolver: { nil },
+                  usageReaders: readers)
     }
 
     /// A caller with a fixed session, delivered through `LINKC_SESSION` the way most agents pass
@@ -36,7 +38,7 @@ final class MCPServerTaskTests: XCTestCase {
     private func server(as agent: AgentKind, session: String) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path,
                   environment: ["LINKC_AGENT": agent.rawValue, "LINKC_SESSION": session],
-                  ancestorResolver: { _ in nil }, sessionResolver: { nil })
+                  ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
     }
 
     private func call(_ server: MCPServer, _ name: String, _ args: [String: Any] = [:]) throws -> (text: String, isError: Bool) {
@@ -599,5 +601,49 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertFalse(res.isError, res.text)
         XCTAssertTrue(res.text.contains("gpt-7-nova"), res.text)
         XCTAssertTrue(res.text.contains("deep"), res.text)
+    }
+
+    // MARK: - Usage warning on delegation
+
+    func testADelegationWarnsWhenTheTargetIsNearlyOut() throws {
+        let hot = AgentUsage(agent: .codex,
+                             windows: [UsageWindow(label: "5h", usedPercent: 86, tokens: nil, resetsAt: Date().addingTimeInterval(3600))],
+                             planType: nil, observedAt: Date(), unavailableReason: nil)
+        let res = try call(server(as: .claude, models: .seeded, readers: [.codex: { hot }]),
+                           "linkc_delegate_task", ["to": "codex", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("86%"), res.text)
+        XCTAssertTrue(res.text.contains("5h"), res.text)
+        XCTAssertEqual(try inbox.openTasks().count, 1, "the delegation still happens")
+    }
+
+    func testADelegationUnderTheThresholdIsNotAnnotated() throws {
+        let calm = AgentUsage(agent: .codex,
+                              windows: [UsageWindow(label: "5h", usedPercent: 12, tokens: nil, resetsAt: nil)],
+                              planType: nil, observedAt: Date(), unavailableReason: nil)
+        let res = try call(server(as: .claude, models: .seeded, readers: [.codex: { calm }]),
+                           "linkc_delegate_task", ["to": "codex", "prompt": "Rename a file"])
+        XCTAssertFalse(res.text.contains("%"), "no usage line under the threshold: \(res.text)")
+    }
+
+    func testADelegationToClaudeNeverConsultsTheTranscriptReader() throws {
+        final class CallFlag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var flagged = false
+            var wasCalled: Bool { lock.withLock { flagged } }
+            func markCalled() { lock.withLock { flagged = true } }
+        }
+        let flag = CallFlag()
+        let neverWarns = AgentUsage(agent: .claude,
+                                    windows: [UsageWindow(label: "5h", usedPercent: nil, tokens: 999, resetsAt: nil)],
+                                    planType: nil, observedAt: Date(), unavailableReason: nil)
+        let res = try call(
+            server(as: .codex, models: .seeded, readers: [.claude: {
+                flag.markCalled()
+                return neverWarns
+            }]),
+            "linkc_delegate_task", ["to": "claude", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertFalse(flag.wasCalled, "the transcript usage reader can never warn; the delegate path must not call it")
     }
 }

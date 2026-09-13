@@ -1372,7 +1372,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
     private func delegateAndGate(_ repo: URL, _ coordinator: AppCoordinator) async throws -> TaskRecord {
         let inbox = InboxStore(workspaceRoot: repo.path)
         let delegator = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "claude"],
-                                   ancestorResolver: { _ in nil }, sessionResolver: { nil })
+                                   ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
         let base = try runGit(["rev-parse", "HEAD"], in: repo)
         let delegated = try mcp(delegator, "linkc_delegate_task", [
             "to": "codex", "prompt": "Make check.sh pass", "tier": "deep",

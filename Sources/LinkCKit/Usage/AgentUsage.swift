@@ -51,6 +51,11 @@ public struct AgentUsage: Sendable, Equatable {
         self.unavailableReason = unavailableReason
     }
 
+    /// A reader that found nothing to report — no windows, no reading, just the reason why.
+    public static func unavailable(_ agent: AgentKind, reason: String) -> AgentUsage {
+        AgentUsage(agent: agent, windows: [], planType: nil, observedAt: nil, unavailableReason: reason)
+    }
+
     /// True when there is no reading at all, or the reading is older than `staleAfter`.
     public var isStale: Bool {
         guard let observedAt else { return true }

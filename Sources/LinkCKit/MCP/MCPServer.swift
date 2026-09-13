@@ -33,6 +33,7 @@ public final class MCPServer: Sendable {
     public typealias AncestorResolver = @Sendable (_ pid: pid_t) -> (agent: AgentKind, pid: pid_t)?
     public typealias ModelSettingsProvider = @Sendable () -> AgentModelSettings
     public typealias SessionResolver = @Sendable () -> String?
+    public typealias UsageReader = @Sendable () -> AgentUsage
 
     public let workspaceRoot: String
     public let store: BlackboardStore
@@ -51,6 +52,10 @@ public final class MCPServer: Sendable {
     /// "set it in linkC settings" refusal a lie — an edit would never take effect. Mirrors how
     /// `AppCoordinator` reads its own copy of the same settings.
     public let modelSettings: ModelSettingsProvider
+    /// What each agent has left, read from that agent's own records. Keyed by agent so a test
+    /// can inject exactly the agents it cares about and leave the rest absent — an absent key
+    /// renders as "no usage reader configured" rather than falling back to a real reader.
+    public let usageReaders: [AgentKind: UsageReader]
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -72,7 +77,8 @@ public final class MCPServer: Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         ancestorResolver: @escaping AncestorResolver = { ProcessSnooper.detectAgent(inAncestorsOf: $0) },
         modelSettings: @escaping ModelSettingsProvider = { AgentModelStore.applicationSupport.load() },
-        sessionResolver: @escaping SessionResolver = { AncestorSessionCache.value }
+        sessionResolver: @escaping SessionResolver = { AncestorSessionCache.value },
+        usageReaders: [AgentKind: UsageReader] = MCPServer.defaultUsageReaders()
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -82,6 +88,23 @@ public final class MCPServer: Sendable {
         self.ancestorResolver = ancestorResolver
         self.modelSettings = modelSettings
         self.sessionResolver = sessionResolver
+        self.usageReaders = usageReaders
+    }
+
+    /// The real readers, wired to each agent's own on-disk records. `agy` and `cursor` write
+    /// none, so they report why rather than guessing. Building this only constructs the reader
+    /// values (cheap URL arithmetic); the home directory itself is touched solely when a
+    /// reader's `read()` actually runs.
+    public static func defaultUsageReaders() -> [AgentKind: UsageReader] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let codex = CodexUsageReader(sessionsDirectory: home.appendingPathComponent(".codex/sessions"))
+        let claude = ClaudeUsageReader(projectsDirectory: home.appendingPathComponent(".claude/projects"))
+        return [
+            .codex: { codex.read() },
+            .claude: { claude.read() },
+            .agy: { .unavailable(.agy, reason: "agy writes no local session records") },
+            .cursor: { .unavailable(.cursor, reason: "cursor writes no local session records") }
+        ]
     }
 
     /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified).
@@ -279,7 +302,7 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_get_usage_status",
-                "description": "Get current token usage, 5-hour rolling window stats, reset timestamps, and active rate limits across all agents in the workspace.",
+                "description": "Report what each agent has left, read from that agent's own records: usage windows with percent-used or token counts, reset times, plan type, how old the reading is, and why nothing is known when it isn't — plus active rate limits recorded across the workspace.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [:]
@@ -531,6 +554,20 @@ public final class MCPServer: Sendable {
                 let successText = verification.map {
                     "Task \(task.shortId) created. linkC will confirm the tests fail at \(VerificationRunner.short($0.baseSha)) before delivery."
                 } ?? "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
+
+                // Warn when the target is nearly out, without ever blocking or failing the
+                // delegation. `windowNeedingWarning` only ever fires from a window carrying a
+                // usedPercent, and the transcript usage reader (Claude's) never sets one — so
+                // calling it here could never produce a warning while still paying its read
+                // cost. Skip it outright; every other agent's reader stays in play.
+                var usageNote = ""
+                if toAgent != .claude,
+                   let window = usageReaders[toAgent]?().windowNeedingWarning,
+                   let percent = window.usedPercent {
+                    let resetSuffix = window.resetsAt.map { ", resets \(Self.formatReset($0, now: Date()))" } ?? ""
+                    usageNote = " \(toAgent.displayName) is at \(Self.formatPercent(percent)) of its \(window.label) window\(resetSuffix)."
+                }
+
                 if !files.isEmpty {
                     do {
                         _ = try store.broadcastIntent(
@@ -542,11 +579,11 @@ public final class MCPServer: Sendable {
                         )
                     } catch {
                         let warning = "Warning: task was created but the blackboard broadcast failed: \(error.localizedDescription)."
-                        return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
+                        return toolResultResponse(id: id, text: "\(successText)\n\(warning)\(usageNote)")
                     }
                 }
 
-                return toolResultResponse(id: id, text: successText)
+                return toolResultResponse(id: id, text: "\(successText)\(usageNote)")
 
             case "linkc_send_message":
                 guard let toStr = args["to"] as? String, !toStr.isEmpty else {
@@ -722,7 +759,12 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
                 }
                 let now = Date()
-                var text = "# Workspace Agent Usage & Rate Limits\n\n"
+                var text = "# Agent Usage\n\n"
+
+                for agent in [AgentKind.codex, .claude, .agy, .cursor] {
+                    let usage = usageReaders[agent]?() ?? .unavailable(agent, reason: "no usage reader configured for this agent")
+                    text += Self.renderUsageSection(usage, now: now)
+                }
 
                 let activeLimits = inbox.agentLimits.filter { $0.cooldownExpiresAt > now }
                 if activeLimits.isEmpty {
@@ -732,23 +774,12 @@ public final class MCPServer: Sendable {
                     for limit in activeLimits {
                         let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
                         let remainingMin = remainingSec / 60
-                        let fallbacks = AgentModelCatalog.fallbackModels(for: limit.agent)
-                        let fallbackList = fallbacks.isEmpty ? "None" : fallbacks.map { "\($0.displayName) (`\($0.id)`)" }.joined(separator: ", ")
 
                         text += "### \(limit.agent.displayName) (\(limit.agent.rawValue))\n"
                         text += "- **Reason:** \(limit.reason)\n"
                         text += "- **Cooldown Remaining:** \(remainingMin)m (\(remainingSec)s)\n"
-                        text += "- **Expires At:** \(limit.cooldownExpiresAt)\n"
-                        text += "- **Available Free Fallback Models:** \(fallbackList)\n\n"
+                        text += "- **Expires At:** \(limit.cooldownExpiresAt)\n\n"
                     }
-                }
-
-                text += "## Agent Availability & Default Models\n"
-                for agent in [AgentKind.claude, .codex, .agy, .cursor] {
-                    let isLimited = activeLimits.contains { $0.agent == agent }
-                    let def = AgentModelCatalog.defaultModel(for: agent)
-                    let status = isLimited ? "Rate Limited" : "Available"
-                    text += "- **\(agent.displayName)**: \(status) (Default Model: `\(def.id)` - \(def.displayName))\n"
                 }
 
                 return toolResultResponse(id: id, text: text)
@@ -912,6 +943,86 @@ public final class MCPServer: Sendable {
         if !v.stdoutTail.isEmpty { text += "\n**stdout (tail)**\n```\n\(v.stdoutTail)\n```\n" }
         if !v.stderrTail.isEmpty { text += "\n**stderr (tail)**\n```\n\(v.stderrTail)\n```\n" }
         return text
+    }
+
+    /// One agent's section of `linkc_get_usage_status`'s report: a heading (with plan type when
+    /// known), one line per window, and either the observation age or why nothing is known.
+    private static func renderUsageSection(_ usage: AgentUsage, now: Date) -> String {
+        let planSuffix = usage.planType.map { " — plan \($0)" } ?? ""
+        var text = "## \(usage.agent.displayName)\(planSuffix)\n"
+
+        guard !usage.windows.isEmpty else {
+            let reason = usage.unavailableReason ?? "no reading available"
+            text += "- no usage data available: \(reason)\n\n"
+            return text
+        }
+
+        for window in usage.windows {
+            text += renderUsageWindow(window, now: now)
+        }
+        if usage.windows.allSatisfy({ $0.usedPercent == nil }) {
+            // Today only Claude's reader takes this shape — Anthropic publishes no per-plan
+            // limit, so its windows carry token counts and never a percentage.
+            let publisher = usage.agent == .claude ? "Anthropic" : usage.agent.displayName
+            text += "- no percentage available — \(publisher) publishes no per-plan limit\n"
+        }
+        if let observedAt = usage.observedAt {
+            let age = relativeAge(observedAt, now: now)
+            text += usage.isStale
+                ? "- observed \(age) ago — stale, older than \(Int(AgentUsage.staleAfter / 60))m\n"
+                : "- observed \(age) ago\n"
+        }
+        text += "\n"
+        return text
+    }
+
+    /// One window's line: percent or token count first (a lower-bound token count says so, never
+    /// presenting a truncated read as an exact total), then the reset time when known.
+    private static func renderUsageWindow(_ window: UsageWindow, now: Date) -> String {
+        var figure: String
+        if let percent = window.usedPercent {
+            figure = "\(formatPercent(percent)) used"
+        } else if let tokens = window.tokens {
+            let formatted = UsageFormat.tokens(tokens)
+            figure = window.tokensAreLowerBound ? "at least \(formatted) tokens" : "\(formatted) tokens"
+        } else {
+            figure = "no data"
+        }
+        if let resetsAt = window.resetsAt {
+            figure += ", resets \(formatReset(resetsAt, now: now))"
+        }
+        return "- **\(window.label)**: \(figure)\n"
+    }
+
+    /// "23%", never "23.0%" — one decimal only when the figure isn't a whole number.
+    private static func formatPercent(_ value: Double) -> String {
+        if value == value.rounded() { return "\(Int(value))%" }
+        return String(format: "%.1f%%", value)
+    }
+
+    /// "14:04 (in 2h 11m)" for a reset within the next day, "Sep 18 09:21" further out.
+    private static func formatReset(_ date: Date, now: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        let sameDay = Calendar.current.isDate(date, inSameDayAs: now)
+        formatter.dateFormat = sameDay ? "HH:mm" : "MMM d HH:mm"
+        let absolute = formatter.string(from: date)
+
+        let interval = date.timeIntervalSince(now)
+        guard interval > 0, interval < 24 * 3600 else { return absolute }
+        let hours = Int(interval) / 3600
+        let minutes = (Int(interval) % 3600) / 60
+        let relative = hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
+        return "\(absolute) (in \(relative))"
+    }
+
+    /// "4m", "3h" — coarse enough for a usage report, not a stopwatch.
+    private static func relativeAge(_ date: Date, now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        if seconds < 60 { return "\(seconds)s" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m" }
+        return "\(minutes / 60)h"
     }
 
     /// Checks `verify` against the workspace's git and returns it with base_sha fully resolved.

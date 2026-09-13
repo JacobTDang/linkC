@@ -12,7 +12,7 @@ final class MCPServerModelTests: XCTestCase {
             .appendingPathComponent("linkc-mcp-model-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         inboxStore = InboxStore(workspaceRoot: tempDir.path)
-        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil })
+        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
     }
 
     override func tearDownWithError() throws {
@@ -377,7 +377,7 @@ final class MCPServerModelTests: XCTestCase {
 
     // MARK: - linkc_get_usage_status
 
-    func testGetUsageStatusReportsCooldownAndFallbacksWhenRateLimited() throws {
+    func testGetUsageStatusReportsCooldownWhenRateLimited() throws {
         // Record rate limit for Claude
         try inboxStore.recordLimit(agent: .claude, reason: "Claude 3.5 Sonnet quota exhausted", cooldown: 1800)
 
@@ -400,11 +400,10 @@ final class MCPServerModelTests: XCTestCase {
         let content = result?["content"] as? [[String: Any]]
         let text = content?.first?["text"] as? String ?? ""
 
-        XCTAssertTrue(text.contains("Workspace Agent Usage & Rate Limits"), "Missing title: \(text)")
+        XCTAssertTrue(text.contains("# Agent Usage"), "Missing title: \(text)")
         XCTAssertTrue(text.contains("Claude"), "Expected Claude in report: \(text)")
         XCTAssertTrue(text.contains("Claude 3.5 Sonnet quota exhausted"), "Expected reason in: \(text)")
-        XCTAssertTrue(text.contains("Available Free Fallback Models:"), "Expected fallback section: \(text)")
-        XCTAssertTrue(text.contains("haiku"), "Expected haiku in fallbacks: \(text)")
+        XCTAssertTrue(text.contains("## Active Rate Limits"), "Expected the active-limits section: \(text)")
     }
 
     // MARK: - AppCoordinator.switchModel

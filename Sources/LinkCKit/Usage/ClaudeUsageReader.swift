@@ -15,7 +15,7 @@ import Foundation
 /// shared budget continuing those same reads (and any older files) further back; when the
 /// budget runs out before a file's read reaches its 7-day boundary or its start,
 /// `UsageWindow.tokensAreLowerBound` says so rather than presenting a truncated sum as exact.
-public struct ClaudeUsageReader {
+public struct ClaudeUsageReader: Sendable {
     private let projectsDirectory: URL
     private let byteBudget: Int
     private let fiveHourSafetyCapBytes: Int

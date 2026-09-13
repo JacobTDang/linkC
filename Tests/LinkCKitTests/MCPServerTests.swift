@@ -10,7 +10,7 @@ final class MCPServerTests: XCTestCase {
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("linkc-mcp-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil })
+        server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
     }
 
     override func tearDownWithError() throws {
