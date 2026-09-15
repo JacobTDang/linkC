@@ -184,6 +184,58 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(coordinator.terminals.selectedId, "VIEWED", "an auto-spawned assignee must not take over the screen")
     }
 
+    /// Test 1c: Codex and agy open an untrusted folder on a trust dialog. It has no spinner, so it
+    /// read as an idle session and the relay typed the brief into the dialog. While the dialog is
+    /// up the session needs the user and holds deliveries; answering it makes the session ready.
+    @MainActor
+    func testATrustDialogHoldsTheSessionAsNeedingYouUntilItIsAnswered() async throws {
+        let ws = tempDir.path
+        // Codex's dialog as captured with the app's launch flags; Enter clears it to the input box.
+        let script = tempDir.appendingPathComponent("trust_dialog_agent.sh")
+        try """
+        #!/bin/sh
+        stty -echo 2>/dev/null
+        printf '\\033[?2004h'
+        printf '  Do you trust the contents of this directory? Working with untrusted contents comes with higher\\r\\n'
+        printf '› 1. Yes, continue\\r\\n  2. No, quit\\r\\n\\r\\n  Press enter to continue\\r\\n'
+        read answer
+        printf '\\033[2J\\033[H› Ask Codex to do anything\\r\\n'
+        exec /bin/cat
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, agentPathResolver: { _ in script.path })
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: ws, agent: .codex)
+        let term = try XCTUnwrap(coordinator.terminals.session(id: session.id))
+        let dialogShown = try await waitUntil { term.recentOutput(lines: 10).contains("Do you trust the contents") }
+        XCTAssertTrue(dialogShown, "the mock never drew its trust dialog")
+        try await waitForPasteReady(coordinator, sessionId: session.id)
+        // A real Codex process is found in the process tree and promoted to ready; the mock is not.
+        coordinator.store.updateState(id: session.id, to: .ready)
+        let task = try InboxStore(workspaceRoot: ws).createTask(from: .claude, to: .codex, prompt: "Refactor database migrations", files: [])
+
+        coordinator.sampleAgentStates()
+
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.state, .waitingPermission)
+        XCTAssertEqual(try InboxStore(workspaceRoot: ws).task(id: task.id)?.state, .queued, "a brief must never be typed into a trust dialog")
+        XCTAssertTrue(sink.deliveries.contains { $0.body.contains("needs permission") }, "the user must be told the session is waiting on them")
+
+        term.sendInput("\r")
+        let answered = try await waitUntil {
+            let screen = term.recentOutput(lines: 10)
+            return screen.contains("Ask Codex") && !screen.contains("Do you trust the contents")
+        }
+        XCTAssertTrue(answered, "the mock never cleared its trust dialog")
+
+        coordinator.sampleAgentStates()
+
+        // Answered, the session is idle again, so the same tick hands it the queued brief.
+        XCTAssertEqual(try InboxStore(workspaceRoot: ws).task(id: task.id)?.state, .delivered, "an answered dialog must hand the session back to the relay")
+        XCTAssertNotEqual(coordinator.store.session(id: session.id)?.state, .waitingPermission)
+    }
+
     /// Test 1b: A task is never handed back to the session that delegated it. That session is the
     /// delegator's own terminal — it is mid-turn, and the frame lands in its composer unsent.
     @MainActor

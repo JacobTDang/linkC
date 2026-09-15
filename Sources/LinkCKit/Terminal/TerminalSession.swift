@@ -285,18 +285,28 @@ public final class TerminalSession {
     /// Returns nil when the PTY was never started or no activity indicator is found. Reads the
     /// private backing store (not `terminalView`) so a never-shown session is never forced to spawn.
     public func liveActivityLine() -> String? {
-        guard let view = _terminalView else { return nil }
+        guard _terminalView != nil else { return nil }
+        return TerminalPreview.liveActivity(from: visibleContentRows())
+    }
+
+    /// Whether the visible screen is an agent's folder-trust dialog. false when the PTY was never
+    /// started.
+    public func showsTrustPrompt() -> Bool {
+        TerminalPreview.isTrustPrompt(visibleContentRows())
+    }
+
+    /// The visible screen's non-blank rows, top to bottom. Empty when the PTY was never started.
+    private func visibleContentRows() -> [String] {
+        guard let view = _terminalView else { return [] }
         let terminal = view.getTerminal()
         var rows: [String] = []
         for row in 0..<terminal.rows {
-            if let line = terminal.getLine(row: row)?.translateToString(trimRight: true) {
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if !trimmed.isEmpty {
-                    rows.append(line)
-                }
+            if let line = terminal.getLine(row: row)?.translateToString(trimRight: true),
+               !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                rows.append(line)
             }
         }
-        return TerminalPreview.liveActivity(from: rows)
+        return rows
     }
 
     private func handleTerminated(_ code: Int32?) {

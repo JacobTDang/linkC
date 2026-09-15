@@ -671,6 +671,28 @@ public final class AppCoordinator {
 
             guard let currentSession = store.session(id: session.id), currentSession.state != .error else { continue }
 
+            // A folder-trust dialog has no spinner, so it read as an idle session and the relay
+            // typed briefs into it. Hold the session as needing the user until it is answered.
+            if term.showsTrustPrompt() {
+                if currentSession.state != .waitingPermission {
+                    store.updateState(id: session.id, to: .waitingPermission)
+                    let updated = store.session(id: session.id) ?? currentSession
+                    if FocusPolicy.shouldNotify(
+                        session: updated,
+                        enteredNotifiable: true,
+                        isWatchingThisSession: isWatching(session.id)
+                    ) {
+                        notifications.post(session: updated)
+                    }
+                }
+                continue
+            }
+            // Only the trust dialog puts a screen-read session in `.waitingPermission`, so once it
+            // is gone the session is ready for input again.
+            if currentSession.state == .waitingPermission {
+                store.updateState(id: session.id, to: .ready)
+            }
+
             let liveActivity = term.liveActivityLine()
             let isWorking = liveActivity != nil && !liveActivity!.isEmpty
 

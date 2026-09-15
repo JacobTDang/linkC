@@ -535,4 +535,55 @@ final class TerminalPreviewTests: XCTestCase {
         ]
         XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
     }
+
+    // MARK: Trust dialogs (captured with the app's launch flags; paths shortened)
+
+    func testRecognizesCodexAndAgyTrustDialogs() {
+        let codex = [
+            "> You are in ~/projects/new-app",
+            "  Do you trust the contents of this directory? Working with untrusted contents comes with higher",
+            "  risk of prompt injection. Trusting the directory allows project-local config, hooks, and exec",
+            "  policies to load.",
+            "› 1. Yes, continue",
+            "  2. No, quit",
+            "  Press enter to continue",
+        ]
+        XCTAssertTrue(TerminalPreview.isTrustPrompt(codex))
+
+        let agy = [
+            "Accessing workspace:",
+            "~/projects/new-app",
+            "Do you trust the contents of this project?",
+            "Antigravity CLI requires permission to read, edit, and execute files here.",
+            "> Yes, I trust this folder",
+            "  No, exit",
+            "  ↑/↓ Navigate · enter Confirm",
+            "                                                                             Gemini 3.8 Flash · high",
+        ]
+        XCTAssertTrue(TerminalPreview.isTrustPrompt(agy))
+    }
+
+    /// Constructed, not captured: the two screens the check must not mistake for a dialog.
+    func testATrustQuestionInOutputOrAnAnsweredDialogIsNotATrustPrompt() {
+        let quoted = [
+            "• Codex asks whether you trust a folder on first launch:",
+            "Do you trust the contents of this directory? is shown once per folder.",
+            "• finished",
+            "› Ask Codex to do anything",
+            "  gpt-5.6-sol low · ~/projects/new-app",
+        ]
+        XCTAssertFalse(TerminalPreview.isTrustPrompt(quoted))
+
+        let answered = [
+            "  Do you trust the contents of this directory? Working with untrusted contents comes with higher",
+            "› 1. Yes, continue",
+            "  2. No, quit",
+            "│ >_ OpenAI Codex (v0.154.0)                           │",
+            "│ model:       gpt-5.6-sol low   /model to change      │",
+            "╰──────────────────────────────────────────────────────╯",
+            "› Ask Codex to do anything",
+            "  gpt-5.6-sol low · ~/projects/new-app",
+        ]
+        XCTAssertFalse(TerminalPreview.isTrustPrompt(answered))
+    }
 }

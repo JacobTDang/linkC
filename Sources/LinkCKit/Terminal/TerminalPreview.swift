@@ -155,6 +155,20 @@ public enum TerminalPreview {
         return footerSaysWorking ? "Working" : nil
     }
 
+    /// Whether the screen is Codex's or Antigravity's folder-trust dialog: its question row, then
+    /// its "yes" choice near the bottom. A question quoted in ordinary output has no choice under
+    /// it, and a dialog left above a redrawn session has been answered.
+    public static func isTrustPrompt(_ rows: [String]) -> Bool {
+        let texts = rows.map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let question = texts.lastIndex(where: { $0.hasPrefix("Do you trust the contents of this") }),
+              let choice = texts[(question + 1)...].firstIndex(where: {
+                  $0.contains("Yes, continue") || $0.contains("Yes, I trust this folder")
+              })
+        else { return false }
+        // Codex draws two rows under its choice and Antigravity three.
+        return texts.count - 1 - choice <= 3
+    }
+
     /// The phrase on a live spinner row: one carrying "(12s · esc to interrupt)" or a token
     /// counter, or one led by a spinner glyph (Braille included). nil for any other row.
     private static func spinnerPhrase(_ text: String) -> String? {
