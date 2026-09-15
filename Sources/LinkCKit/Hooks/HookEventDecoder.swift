@@ -28,7 +28,8 @@ public enum HookEventDecoder {
             linkcSessionId: linkcSessionId,
             claudeSessionId: parsedBody?.sessionId,
             cwd: parsedBody?.cwd,
-            transcriptPath: parsedBody?.transcriptPath
+            transcriptPath: parsedBody?.transcriptPath,
+            agentId: parsedBody?.agentId
         )
     }
 
@@ -45,10 +46,12 @@ private struct HookBody: Decodable {
     let sessionId: String?
     let cwd: String?
     let transcriptPath: String?
+    let agentId: String?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
         case cwd
         case transcriptPath = "transcript_path"
+        case agentId = "agent_id"
     }
 }

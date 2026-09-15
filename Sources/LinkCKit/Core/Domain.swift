@@ -66,19 +66,23 @@ public struct HookEvent: Sendable, Equatable {
     public let cwd: String?
     /// The session's transcript JSONL on disk — feeds the usage tracker.
     public let transcriptPath: String?
+    /// Set when the event fired inside a subagent (`agent_id`); nil for the main conversation.
+    public let agentId: String?
 
     public init(
         kind: HookEventKind,
         linkcSessionId: String?,
         claudeSessionId: String?,
         cwd: String?,
-        transcriptPath: String? = nil
+        transcriptPath: String? = nil,
+        agentId: String? = nil
     ) {
         self.kind = kind
         self.linkcSessionId = (linkcSessionId?.isEmpty ?? true) ? nil : linkcSessionId
         self.claudeSessionId = claudeSessionId
         self.cwd = cwd
         self.transcriptPath = transcriptPath
+        self.agentId = agentId
     }
 }
 

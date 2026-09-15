@@ -27,7 +27,11 @@ public enum SessionReducer {
     ) -> (session: Session, enteredNotifiable: Bool) {
         var s = session
         let old = s.state
-        s.state = nextState(current: old, event: event.kind)
+        // A subagent cannot ask the user anything, so its finished tool says nothing about a
+        // prompt the main turn is waiting on. (A parallel main-turn tool finishing after the
+        // prompt appeared is indistinguishable here: the payload does not name the prompted tool.)
+        let subagentTool = event.kind == .toolFinished && event.agentId != nil
+        s.state = subagentTool ? old : nextState(current: old, event: event.kind)
         if s.state != old { s.stateChangedAt = now }
         if let cid = event.claudeSessionId { s.claudeSessionId = cid }
         let entered = s.state.isNotifiable && s.state != old

@@ -102,6 +102,17 @@ final class HookEventDecoderTests: XCTestCase {
         XCTAssertNil(event.claudeSessionId)
         XCTAssertNil(event.cwd)
     }
+
+    /// A subagent's tool events carry `agent_id`; the main conversation's do not. The subagent
+    /// body is built from the documented common input fields, not captured.
+    func testDecodesTheSubagentIdOnlyWhenPresent() throws {
+        let subagentBody = Data(#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"agent-7","agent_type":"general-purpose"}"#.utf8)
+        let subagent = HookEventDecoder.decode(headers: ["X-LinkC-Event": "tool_finished", "X-LinkC-Session": "L1"], body: subagentBody)
+        XCTAssertEqual(subagent?.agentId, "agent-7")
+
+        let mainTurn = try XCTUnwrap(HookEventDecoder.decode(headers: ["X-LinkC-Event": "stop", "X-LinkC-Session": "L1"], body: loadHookFixtureData("hook-Stop")))
+        XCTAssertNil(mainTurn.agentId)
+    }
 }
 
 // MARK: - SettingsComposer

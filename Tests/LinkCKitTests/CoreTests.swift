@@ -34,6 +34,18 @@ final class SessionReducerTests: XCTestCase {
         }
     }
 
+    /// A subagent's tool calls fire the same PostToolUse hook, and a subagent cannot ask the user
+    /// anything, so its finished tool says nothing about a prompt the main turn is waiting on.
+    func testASubagentsFinishedToolDoesNotClearAPermissionPrompt() {
+        let waiting = Session(id: "L1", cwd: "/tmp", title: "api", state: .waitingPermission)
+
+        let fromSubagent = HookEvent(kind: .toolFinished, linkcSessionId: "L1", claudeSessionId: "c1", cwd: "/tmp", agentId: "agent-7")
+        XCTAssertEqual(SessionReducer.apply(fromSubagent, to: waiting).session.state, .waitingPermission)
+
+        let fromMainTurn = HookEvent(kind: .toolFinished, linkcSessionId: "L1", claudeSessionId: "c1", cwd: "/tmp")
+        XCTAssertEqual(SessionReducer.apply(fromMainTurn, to: waiting).session.state, .working)
+    }
+
     func testBuckets() {
         XCTAssertEqual(SessionState.working.bucket, .active)
         XCTAssertEqual(SessionState.finished.bucket, .needsYou)
