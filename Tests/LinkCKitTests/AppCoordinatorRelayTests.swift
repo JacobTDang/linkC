@@ -166,6 +166,24 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .codex }.count, 1)
     }
 
+    /// Test 1a: Auto-spawning an assignee happens in the background — the terminal the user is
+    /// looking at stays selected, so the panel is not raised over their work.
+    @MainActor
+    func testQueuedTaskSpawnsAssigneeWithoutSwitchingTheSelectedTerminal() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        _ = try inbox.createTask(from: .claude, to: .codex, prompt: "Refactor database migrations", files: [])
+
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        coordinator.terminals.makeSession(id: "VIEWED", cwd: ws, title: "viewed", agentKind: .claude)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertNotNil(coordinator.store.sessions.first(where: { $0.agentKind == .codex }), "Expected codex session to be auto-spawned")
+        XCTAssertEqual(coordinator.terminals.selectedId, "VIEWED", "an auto-spawned assignee must not take over the screen")
+    }
+
     /// Test 1b: A task is never handed back to the session that delegated it. That session is the
     /// delegator's own terminal — it is mid-turn, and the frame lands in its composer unsent.
     @MainActor

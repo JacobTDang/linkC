@@ -23,6 +23,17 @@ final class TerminalSessionManagerTests: XCTestCase {
         XCTAssertEqual(manager.selectedId, "L2")
     }
 
+    func testMakeSessionCanLeaveTheSelectionAlone() {
+        let manager = TerminalSessionManager()
+        manager.makeSession(id: "L1", cwd: "/a", title: "a", select: false)
+        XCTAssertNil(manager.selectedId, "an unselected make must not leave the overview")
+
+        manager.select("L1")
+        manager.makeSession(id: "L2", cwd: "/b", title: "b", select: false)
+        XCTAssertEqual(manager.sessions.count, 2)
+        XCTAssertEqual(manager.selectedId, "L1", "an unselected make must not switch away from the current terminal")
+    }
+
     func testSelectChangesSelectionAndIgnoresUnknownIds() {
         let manager = TerminalSessionManager()
         manager.makeSession(id: "L1", cwd: "/a", title: "a")

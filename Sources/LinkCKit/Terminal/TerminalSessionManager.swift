@@ -12,14 +12,17 @@ public final class TerminalSessionManager {
 
     public init() {}
 
-    /// Create a terminal for `id`, append it, and select it. Deliberately does NOT start a
+    /// Create a terminal for `id`, append it, and select it unless `select` is false (a
+    /// background launch leaves whatever is on screen alone). Deliberately does NOT start a
     /// process — the caller drives `TerminalSession.start(...)` — so construction is
     /// side-effect free and unit-testable without spawning a real PTY.
     @discardableResult
-    public func makeSession(id: String, cwd: String, title: String, agentKind: AgentKind = .shell) -> TerminalSession {
+    public func makeSession(
+        id: String, cwd: String, title: String, agentKind: AgentKind = .shell, select: Bool = true
+    ) -> TerminalSession {
         let session = TerminalSession(id: id, cwd: cwd, title: title, agentKind: agentKind)
         sessions.append(session)
-        selectedId = id
+        if select { selectedId = id }
         return session
     }
 

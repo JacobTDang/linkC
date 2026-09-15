@@ -972,6 +972,33 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.store.session(id: "C1")?.state.bucket, .idle)
     }
 
+    /// A teammate launches in the background: the terminal the user is looking at stays on screen,
+    /// and with nothing selected the overview stays up. Selecting the teammate raised the panel
+    /// over the user's work on every relay spawn.
+    func testSpawnTeammateDoesNotSwitchTheSelectedTerminal() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-teammate-select-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: cwd)
+        }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+        let viewed = try coordinator.newSession(cwd: cwd.path, agent: .claude, mode: .new)
+        XCTAssertEqual(coordinator.terminals.selectedId, viewed.id)
+
+        let teammate = try coordinator.spawnTeammate(in: cwd.path, agent: .claude)
+        XCTAssertNotNil(coordinator.terminals.session(id: teammate.id), "the teammate must still get a terminal")
+        XCTAssertEqual(coordinator.terminals.selectedId, viewed.id, "spawning a teammate must not switch the screen to it")
+
+        coordinator.terminals.deselect()
+        _ = try coordinator.spawnTeammate(in: cwd.path, agent: .claude)
+        XCTAssertNil(coordinator.terminals.selectedId, "spawning a teammate must not leave the overview")
+    }
+
     /// spawnTeammate finds the active session in the workspace, captures source agent and output,
     /// writes a handoff memo into .linkc/HANDOFF.md, and launches a new session.
     func testSpawnTeammateWritesHandoffAndSpawnsSession() throws {

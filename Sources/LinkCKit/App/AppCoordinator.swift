@@ -400,15 +400,18 @@ public final class AppCoordinator {
             recentTerminalOutput: recentOutput
         )
 
-        return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier)
+        // A teammate starts in the background — the relay spawns these while the user is
+        // working elsewhere, and selecting one raises the panel over whatever they were doing.
+        return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier, select: false)
     }
 
     @discardableResult
     public func newSession(
-        cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil
+        cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil,
+        select: Bool = true
     ) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
-        return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier)
+        return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier, select: select)
     }
 
     /// The model configured for `agent` at `tier`, or nil when the mapping has no entry — a
@@ -425,9 +428,11 @@ public final class AppCoordinator {
         modelSettings().tier(forModel: model, agent: agent)
     }
 
-    /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it,
-    /// and record it (live, no `endedAt`) in the manifest. The single launch path for both new
-    /// sessions and restores. Fails loud: a launch error prunes any partial state and rethrows.
+    /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it when
+    /// `select` is true, and record it (live, no `endedAt`) in the manifest. The single launch path
+    /// for both new sessions and restores. Selection waits for a successful start, so a failed
+    /// launch never moves what is on screen. Fails loud: a launch error prunes any partial state
+    /// and rethrows.
     @discardableResult
     private func launch(
         cwd: String,
@@ -436,7 +441,8 @@ public final class AppCoordinator {
         mode: LaunchMode,
         resumeId: String? = nil,
         id: String? = nil,
-        tier: ModelTier? = nil
+        tier: ModelTier? = nil,
+        select: Bool
     ) throws -> Session {
         // A tier only ever pins a brand-new process. For Codex, `.continueLast`/`.resume` argv
         // starts with the `resume` subcommand (see AgentDescriptor), so appending `--model <id>`
@@ -450,7 +456,7 @@ public final class AppCoordinator {
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
                                    model: model, modelTier: model == nil ? nil : tier)
         do {
-            let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent)
+            let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent, select: false)
             // A terminated child = an ended session: prune everything when the child exits.
             terminal.onTerminated = { [weak self] _ in
                 self?.cleanup(sessionId: session.id)
@@ -493,7 +499,7 @@ public final class AppCoordinator {
                 args: args,
                 env: env
             )
-            terminals.select(session.id)
+            if select { terminals.select(session.id) }
             // Record the now-live session so it survives a quit/crash and can be restored.
             manifest.upsert(RestorableSession(
                 linkcId: session.id,
@@ -526,7 +532,8 @@ public final class AppCoordinator {
                     agent: r.agentKind,
                     mode: .continueLast,
                     resumeId: r.claudeSessionId,
-                    id: r.linkcId
+                    id: r.linkcId,
+                    select: true
                 )) == nil {
                     manifest.upsert(r)
                 }
@@ -561,7 +568,8 @@ public final class AppCoordinator {
             title: r.title,
             agent: targetAgent,
             mode: .continueLast,
-            resumeId: targetAgent == .claude ? r.claudeSessionId : nil
+            resumeId: targetAgent == .claude ? r.claudeSessionId : nil,
+            select: true
         )
         manifest.remove(linkcId: r.linkcId)
         syncRestorables()
