@@ -402,4 +402,95 @@ final class TerminalPreviewTests: XCTestCase {
         ]
         XCTAssertNil(TerminalPreview.liveActivity(from: cursorFinishedRows), "Cursor prompt without 'ctrl+c to stop' must be idle")
     }
+
+    // MARK: Real screens
+    //
+    // Captured 2026-09-15 at 100 columns with linkC's launch flags (account rows removed). Every
+    // agent keeps its input box on screen while it works: the working marker is in the footer
+    // below the box, and the phrase is on a spinner row above it. A finished turn keeps its
+    // output — including lines truncated with "..." — above the same box.
+
+    func testLiveActivityReadsAgyAsWorkingPastItsAlwaysVisibleInputBox() {
+        let rule = String(repeating: "─", count: 100)
+        let working = [
+            "> Run the shell command `sleep 15 && echo finished` and then reply with just its output. Do not",
+            "  create or edit any files.",
+            "▸ Thought for 2s, 613 tokens",
+            "  The task involves executing a shell command that includes a sleep operation, followed by an ec...",
+            "● Read(~/.gemini/config/skills/using-superpowers/SKILL.md)",
+            "● Bash(sleep 15 && echo finished) (ctrl+o to expand)",
+            "⣾  Running command...",
+            "└ Tip: You can switch conversations with /resume.",
+            rule,
+            ">",
+            rule,
+            "esc to cancel                                                                Gemini 3.8 Flash · high",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: working), "Running command...")
+    }
+
+    func testLiveActivityReadsAFinishedAgyTurnAsIdleDespiteTruncatedLinesAboveTheBox() {
+        let rule = String(repeating: "─", count: 100)
+        let finished = [
+            "  The task involves executing a shell command that includes a sleep operation, followed by an ec...",
+            "● Read(~/.gemini/config/skills/using-superpowers/SKILL.md)",
+            "● Bash(sleep 15 && echo finished) (ctrl+o to expand)",
+            "▸ Thought for 4s, 1.3k tokens",
+            "  The task has completed and its output is available. The system resumed execution after task co...",
+            "  I have launched the command and will wait for it to finish.",
+            "● ManageTask(status task-4) (ctrl+o to expand)",
+            "  finished",
+            rule,
+            ">",
+            rule,
+            "? for shortcuts                                                              Gemini 3.8 Flash · high",
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: finished))
+    }
+
+    func testLiveActivityReadsClaudesSpinnerAboveTheInputBoxNotItsFooter() {
+        let rule = String(repeating: "─", count: 100)
+        let working = [
+            "❯ Run the shell command sleep 15 && echo finished and then reply with just its output. Do not",
+            "  create or edit any files.",
+            "⏺ Sleeping 15 seconds then printing finished · 9s",
+            "  ⎿  $ sleep 15 && echo finished (9s)",
+            "     (ctrl+b ctrl+b (twice) to run in background)",
+            "✻ Percolating… (12s · ↓ 115 tokens)",
+            "  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tra…",
+            rule,
+            "❯ ",
+            rule,
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: working), "Percolating…")
+    }
+
+    func testLiveActivityReadsAFinishedClaudeTurnAsIdle() {
+        let rule = String(repeating: "─", count: 100)
+        let finished = [
+            "❯ Run the shell command sleep 15 && echo finished and then reply with just its output. Do not",
+            "  create or edit any files.",
+            "  Ran 1 shell command",
+            "⏺ finished",
+            "✻ Brewed for 18s · done 4:40 PM",
+            rule,
+            "❯ ",
+            rule,
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: finished))
+    }
+
+    func testLiveActivitySaysWorkingWhenTheFooterDoesButNoSpinnerRowIsOnScreen() {
+        let rule = String(repeating: "─", count: 100)
+        let rows = [
+            "⏺ Reading 3 files",
+            rule,
+            "❯ ",
+            rule,
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+    }
 }

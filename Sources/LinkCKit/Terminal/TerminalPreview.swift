@@ -82,19 +82,26 @@ public enum TerminalPreview {
         return false
     }
 
-    /// Scans recent rows from bottom up to find any active spinner or working status phrase.
+    /// Scans recent rows from the bottom up for a turn in progress and its phrase. An agent keeps
+    /// its input box on screen while it works, so the box alone says nothing: a working marker in
+    /// the footer below it is what says the turn is running, and the phrase is the spinner row
+    /// above the box. Without that marker the box ends the scan, because everything above it may
+    /// be a finished turn's output.
     public static func liveActivity(from rows: [String]) -> String? {
-        let recent = rows.suffix(12).reversed()
-        for row in recent {
-            let stripped = row.unicodeScalars.filter { !isBoxDrawing($0) }
-            let text = String(String.UnicodeScalarView(stripped)).trimmingCharacters(in: .whitespaces)
+        let recent = Array(rows.suffix(12).reversed())
+        var footerSaysWorking = false
+        for (index, row) in recent.enumerated() {
+            let text = visibleText(row)
             guard !text.isEmpty else { continue }
+            if isWorkingFooter(text) {
+                footerSaysWorking = true
+                continue
+            }
             guard !text.hasSuffix("(shift+tab to cycle)") && text != "? for shortcuts" else { continue }
 
-            // If an idle prompt is visible near the bottom, the agent is waiting for user input.
-            // Earlier action lines above the prompt belong to previous turns.
             if isPromptRow(text) {
-                return nil
+                guard footerSaysWorking else { return nil }
+                return recent[(index + 1)...].lazy.compactMap { spinnerPhrase(visibleText($0)) }.first ?? "Working"
             }
 
             var bannerCandidate = text
@@ -112,29 +119,8 @@ public enum TerminalPreview {
                 continue
             }
 
-            // Spinner row with (esc to interrupt) or token count indicator
-            if text.contains("esc to interrupt") || text.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil {
-                let cleaned = cleanLeadingSpinner(text)
-                if let parenIndex = cleaned.firstIndex(of: "(") {
-                    let extracted = String(cleaned[..<parenIndex]).trimmingCharacters(in: .whitespaces)
-                    if !extracted.isEmpty { return extracted }
-                }
-                if !cleaned.isEmpty { return cleaned }
-            }
-
-            // Spinner row with CLI spinner symbol (including Braille patterns)
+            if let phrase = spinnerPhrase(text) { return phrase }
             let cleaned = cleanLeadingSpinner(text)
-            if cleaned != text && !cleaned.isEmpty {
-                if let parenIndex = cleaned.firstIndex(of: "(") {
-                    let extracted = String(cleaned[..<parenIndex]).trimmingCharacters(in: .whitespaces)
-                    if !extracted.isEmpty { return extracted }
-                }
-                if let doubleSpace = cleaned.range(of: "  ") {
-                    let extracted = String(cleaned[..<doubleSpace.lowerBound]).trimmingCharacters(in: .whitespaces)
-                    if !extracted.isEmpty { return extracted }
-                }
-                return cleaned
-            }
 
             // Standalone action line ending in ellipsis or starting with an action verb
             let actionPrefixes = [
@@ -157,7 +143,43 @@ public enum TerminalPreview {
                 return cleaned
             }
         }
-        return nil
+        return footerSaysWorking ? "Working" : nil
+    }
+
+    /// The phrase on a live spinner row: one carrying "(12s · esc to interrupt)" or a token
+    /// counter, or one led by a spinner glyph (Braille included). nil for any other row.
+    private static func spinnerPhrase(_ text: String) -> String? {
+        let cleaned = cleanLeadingSpinner(text)
+        if text.contains("esc to interrupt") || text.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil {
+            if let parenIndex = cleaned.firstIndex(of: "(") {
+                let extracted = String(cleaned[..<parenIndex]).trimmingCharacters(in: .whitespaces)
+                if !extracted.isEmpty { return extracted }
+            }
+            if !cleaned.isEmpty { return cleaned }
+        }
+        guard cleaned != text, !cleaned.isEmpty else { return nil }
+        if let parenIndex = cleaned.firstIndex(of: "(") {
+            let extracted = String(cleaned[..<parenIndex]).trimmingCharacters(in: .whitespaces)
+            if !extracted.isEmpty { return extracted }
+        }
+        if let doubleSpace = cleaned.range(of: "  ") {
+            let extracted = String(cleaned[..<doubleSpace.lowerBound]).trimmingCharacters(in: .whitespaces)
+            if !extracted.isEmpty { return extracted }
+        }
+        return cleaned
+    }
+
+    /// A footer that only shows while a turn runs: Claude Code's "· esc to interrupt ·" (its
+    /// spinner row instead ends "esc to interrupt)") or Antigravity's "esc to cancel".
+    private static func isWorkingFooter(_ text: String) -> Bool {
+        if text.hasPrefix("esc to cancel") { return true }
+        return text.contains("esc to interrupt") && !text.contains("esc to interrupt)")
+    }
+
+    /// A row with box-drawing and block glyphs removed and surrounding whitespace trimmed.
+    private static func visibleText(_ row: String) -> String {
+        let stripped = row.unicodeScalars.filter { !isBoxDrawing($0) }
+        return String(String.UnicodeScalarView(stripped)).trimmingCharacters(in: .whitespaces)
     }
 
     private static func cleanLeadingSpinner(_ text: String) -> String {
