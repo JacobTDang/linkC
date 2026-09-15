@@ -4,13 +4,17 @@ import Foundation
 /// Deep-merges the user's global + project settings with linkC's hooks so a linkC
 /// session behaves identically to a normal one, plus reports its lifecycle.
 public enum SettingsComposer {
-    /// The four Claude Code events that get exactly one linkC hook entry, with no matcher.
+    /// The Claude Code events that get exactly one linkC hook entry, with no matcher.
     private static let singleEntryEvents: [(claudeEvent: String, kind: HookEventKind)] = [
         ("SessionStart", .sessionStart),
         ("UserPromptSubmit", .userPromptSubmit),
         ("Stop", .stop),
         ("StopFailure", .stopFailure),   // API-error turn end — without it, sessions stick at "working"
         ("SessionEnd", .sessionEnd),
+        // An answered permission prompt resumes the turn silently — without these, sessions
+        // stick at "needs permission" until the turn ends.
+        ("PostToolUse", .toolFinished),
+        ("PostToolUseFailure", .toolFinished),
     ]
 
     /// The hooks block linkC injects, pointing every relevant event at the local server.

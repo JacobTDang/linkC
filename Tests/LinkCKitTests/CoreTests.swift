@@ -15,9 +15,22 @@ final class SessionReducerTests: XCTestCase {
             (.stop, .finished),
             (.stopFailure, .error),
             (.sessionEnd, .ended),
+            (.toolFinished, .working),
         ]
         for (kind, expected) in cases {
             XCTAssertEqual(SessionReducer.nextState(current: .working, event: kind), expected)
+        }
+    }
+
+    /// A question or plan approval shows a permission prompt even under
+    /// `--dangerously-skip-permissions`. Once it is answered the tool finishes and the turn goes
+    /// on with no prompt submit to say so, so a finished tool is the only signal it is working
+    /// again. Any other state stays put: a late tool event must not revive a finished turn.
+    func testToolFinishedReturnsAPermissionPromptToWorkingAndLeavesOtherStatesAlone() {
+        XCTAssertEqual(SessionReducer.nextState(current: .waitingPermission, event: .toolFinished), .working)
+        for state in SessionState.allCases where state != .waitingPermission {
+            XCTAssertEqual(SessionReducer.nextState(current: state, event: .toolFinished), state,
+                           "a finished tool must not move a session out of \(state)")
         }
     }
 
@@ -94,6 +107,7 @@ final class HookEventKindTests: XCTestCase {
         XCTAssertEqual(HookEventKind.stop.rawValue, "stop")
         XCTAssertEqual(HookEventKind.notificationPermission.rawValue, "notification_permission")
         XCTAssertEqual(HookEventKind(rawValue: "session_end"), .sessionEnd)
+        XCTAssertEqual(HookEventKind(rawValue: "tool_finished"), .toolFinished)
     }
 
     func testExternalSessionIdNormalizedToNil() {

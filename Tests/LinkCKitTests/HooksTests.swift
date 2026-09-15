@@ -142,6 +142,8 @@ final class SettingsComposerTests: XCTestCase {
             ("UserPromptSubmit", .userPromptSubmit),
             ("Stop", .stop),
             ("SessionEnd", .sessionEnd),
+            ("PostToolUse", .toolFinished),
+            ("PostToolUseFailure", .toolFinished),
         ]
 
         for (key, kind) in singleEntryEvents {

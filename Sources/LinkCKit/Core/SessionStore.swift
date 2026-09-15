@@ -12,6 +12,10 @@ public enum SessionReducer {
         case .stop: return .finished
         case .stopFailure: return .error
         case .sessionEnd: return .ended
+        // Questions and plan approvals prompt even under --dangerously-skip-permissions; the
+        // tool finishing is what says the prompt was answered. Nothing else is moved, so a late
+        // tool event cannot revive a finished turn.
+        case .toolFinished: return current == .waitingPermission ? .working : current
         }
     }
 

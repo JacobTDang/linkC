@@ -53,6 +53,9 @@ public enum HookEventKind: String, Sendable, Equatable, CaseIterable {
     case stop = "stop"
     case stopFailure = "stop_failure"
     case sessionEnd = "session_end"
+    /// A tool call ended (`PostToolUse` or `PostToolUseFailure`). The only sign a turn resumed
+    /// after an answered permission prompt, since answering one submits no prompt.
+    case toolFinished = "tool_finished"
 }
 
 public struct HookEvent: Sendable, Equatable {
