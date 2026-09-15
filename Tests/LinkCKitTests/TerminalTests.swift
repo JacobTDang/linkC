@@ -585,5 +585,29 @@ final class TerminalPreviewTests: XCTestCase {
             "  gpt-5.6-sol low · ~/projects/new-app",
         ]
         XCTAssertFalse(TerminalPreview.isTrustPrompt(answered))
+
+        // A live Codex session printing the dialog's text: its input box sits under the choice.
+        let printedAboveTheInputBox = [
+            "Do you trust the contents of this directory? Working with untrusted contents comes with higher",
+            "› 1. Yes, continue",
+            "› Ask Codex to do anything",
+            "  gpt-5.6-sol low · ~/projects/new-app",
+        ]
+        XCTAssertFalse(TerminalPreview.isTrustPrompt(printedAboveTheInputBox))
+    }
+
+    /// Constructed from the Codex capture: a narrow panel wraps the question before "of this".
+    func testRecognizesATrustDialogWhoseQuestionWraps() {
+        let narrow = [
+            "  Do you trust the contents",
+            "  of this directory? Working",
+            "  with untrusted contents comes",
+            "  with higher risk of prompt",
+            "  injection.",
+            "› 1. Yes, continue",
+            "  2. No, quit",
+            "  Press enter to continue",
+        ]
+        XCTAssertTrue(TerminalPreview.isTrustPrompt(narrow))
     }
 }
