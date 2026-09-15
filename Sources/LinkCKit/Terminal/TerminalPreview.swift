@@ -100,8 +100,17 @@ public enum TerminalPreview {
             guard !text.hasSuffix("(shift+tab to cycle)") && text != "? for shortcuts" else { continue }
 
             if isPromptRow(text) {
-                guard footerSaysWorking else { return nil }
-                return recent[(index + 1)...].lazy.compactMap { spinnerPhrase(visibleText($0)) }.first ?? "Working"
+                let above = recent[(index + 1)...].lazy.map { visibleText($0) }.filter { !$0.isEmpty }
+                if footerSaysWorking {
+                    return above.compactMap { spinnerPhrase($0) }.first ?? "Working"
+                }
+                // Codex has no working footer: its status row ("• Working (9s • esc to interrupt)")
+                // sits right above the input box, and is gone once the turn ends.
+                if let status = above.first, status.contains("esc to interrupt)") {
+                    let unbulleted = status.hasPrefix("•") ? String(status.dropFirst()).trimmingCharacters(in: .whitespaces) : status
+                    return spinnerPhrase(unbulleted) ?? "Working"
+                }
+                return nil
             }
 
             var bannerCandidate = text

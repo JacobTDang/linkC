@@ -482,6 +482,48 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertNil(TerminalPreview.liveActivity(from: finished))
     }
 
+    /// Codex has no working footer: its status row sits right above the input box.
+    func testLiveActivityReadsCodexsStatusRowRightAboveItsInputBox() {
+        let justStarted = [
+            "  Tip: New Use /fast to enable our fastest inference with increased plan usage.",
+            "• You have 2 usage limit resets available. Run /usage to use one.",
+            "› Run the shell command `sleep 15 && echo finished` and then reply with just its output. Do not",
+            "  create or edit any files.",
+            "• I’m running the command now.",
+            "• Working (3s • esc to interrupt)",
+            "› Ask Codex to do anything",
+            "  gpt-5.6-sol low · ~/projects/linkC/.worktrees/state-repro · renaming... ⠋",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: justStarted), "Working")
+
+        let withBackgroundTerminal = [
+            "  Tip: New Use /fast to enable our fastest inference with increased plan usage.",
+            "• You have 2 usage limit resets available. Run /usage to use one.",
+            "› Run the shell command `sleep 15 && echo finished` and then reply with just its output. Do not",
+            "  create or edit any files.",
+            "• I’m running the command now.",
+            "• Working (9s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close",
+            "› Ask Codex to do anything",
+            "  gpt-5.6-sol low · ~/projects/linkC/.worktrees/state-repro · Run sleep command",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: withBackgroundTerminal), "Working")
+    }
+
+    func testLiveActivityReadsAFinishedCodexTurnAsIdle() {
+        let rule = String(repeating: "─", count: 100)
+        let finished = [
+            "• I’m running the command now.",
+            "• Ran sleep 15 && echo finished",
+            "  └ finished",
+            rule,
+            "• finished",
+            rule,
+            "› Ask Codex to do anything",
+            "  gpt-5.6-sol low · ~/projects/linkC/.worktrees/state-repro · Run sleep command",
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: finished))
+    }
+
     func testLiveActivitySaysWorkingWhenTheFooterDoesButNoSpinnerRowIsOnScreen() {
         let rule = String(repeating: "─", count: 100)
         let rows = [
