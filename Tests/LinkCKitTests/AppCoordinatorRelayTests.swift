@@ -539,10 +539,12 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(coordinator.lastSpawnFailure?.agent, .codex, "the failure is recorded, not swallowed")
     }
 
-    /// The `dispatchMessages` spawn site has the identical bug: a peer note with no live target
-    /// session tries to spawn one, and a failure there must be just as visible.
+    /// Spawning stays for task briefs only. A peer note with no live target session must wait for
+    /// one to exist rather than spawn one — no spawn is even attempted, so there is nothing to
+    /// fail. Spawn-failure recording for task briefs is still covered by
+    /// `testASpawnFailureIsLoggedAndLeavesTheTaskQueued` above.
     @MainActor
-    func testAMessageDispatchSpawnFailureIsLoggedAndLeavesTheMessageQueued() throws {
+    func testAMessageForAMissingSessionWaitsInsteadOfSpawningOne() throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let coordinator = makeCoordinator(agentPathResolver: { _ in nil })
@@ -553,7 +555,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertEqual(try inbox.load().messages.first { $0.id == msg.id }?.status, .queued)
         XCTAssertTrue(coordinator.store.sessions.isEmpty, "nothing was spawned")
-        XCTAssertEqual(coordinator.lastSpawnFailure?.agent, .codex, "the failure is recorded, not swallowed")
+        XCTAssertNil(coordinator.lastSpawnFailure, "no spawn was even attempted")
     }
 
     /// A limit on a session with nothing in flight records the limit and stops. It must never

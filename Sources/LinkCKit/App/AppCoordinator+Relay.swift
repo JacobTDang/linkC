@@ -351,11 +351,10 @@ extension AppCoordinator {
                 }
             }
             if target == nil {
-                // Only a task brief or a standalone message (no task lineage) is worth spawning an
-                // agent for. A message about a task — a completion line, a stuck notice — waits for
-                // a session to exist instead, and the user is told when it has waited too long: the
-                // new session would have no context on the task it's supposedly about.
-                guard message.kind == .task || message.taskId == nil else {
+                // Only a task brief is worth spawning an agent for. Every other message — a
+                // completion line, a stuck notice, a peer note, a command — waits for a session to
+                // exist instead, and the user is told when it has waited too long.
+                guard message.kind == .task else {
                     noteUndeliveredNotice(message)
                     continue
                 }
