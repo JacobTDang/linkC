@@ -701,4 +701,45 @@ final class TerminalPreviewTests: XCTestCase {
             TerminalPreview.progressSignature(rows: [])
         )
     }
+
+    /// A percentage climbing is real progress, not a ticking clock — it must not hash the same.
+    func testProgressSignatureChangesWhenAPercentageProgresses() {
+        let before = ["Downloading dependencies: 42%"]
+        let after = ["Downloading dependencies: 43%"]
+        XCTAssertNotEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    /// A byte count climbing is real progress too.
+    func testProgressSignatureChangesWhenAByteCountProgresses() {
+        let before = ["12.4 MB / 45.2 MB downloaded"]
+        let after = ["18.9 MB / 45.2 MB downloaded"]
+        XCTAssertNotEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    /// A passed/failed tally climbing is real progress too.
+    func testProgressSignatureChangesWhenATallyProgresses() {
+        let before = ["Running tests: 12 passed, 0 failed"]
+        let after = ["Running tests: 13 passed, 0 failed"]
+        XCTAssertNotEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    /// A time value need not trail the row to be normalized — only its own number and unit are
+    /// replaced, so the rest of the row still has to match for the signature to be unchanged.
+    func testProgressSignatureIgnoresATimeValueNotAtRowEnd() {
+        let before = ["Build running for 2m now"]
+        let after = ["Build running for 3m now"]
+        XCTAssertEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
 }

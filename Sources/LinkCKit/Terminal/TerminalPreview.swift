@@ -190,12 +190,13 @@ public enum TerminalPreview {
     }
 
     /// A signature of `rows` for detecting a turn that has stopped producing anything new. Rows
-    /// that redraw on their own are dropped, and digit runs are normalized so a ticking counter
-    /// ("· 9s" a second after "· 8s") reads as unchanged while any new or edited text does not.
+    /// that redraw on their own are dropped, and time values are normalized so a ticking clock
+    /// ("· 9s" a second after "· 8s") reads as unchanged — but any other change, including a
+    /// percentage, byte count, or tally, does not.
     public static func progressSignature(rows: [String]) -> String {
         let kept = rows
             .filter { !isLiveMarkerRow($0) }
-            .map { $0.replacingOccurrences(of: #"\d+"#, with: "#", options: .regularExpression) }
+            .map { $0.replacingOccurrences(of: #"\d+(\.\d+)?\s?(ms|s|m|h)\b"#, with: "#", options: .regularExpression) }
         return String(kept.joined(separator: "\n").hashValue)
     }
 
