@@ -627,11 +627,6 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertTrue(TerminalPreview.isLiveMarkerRow("• Working (9s • esc to interrupt) · 1 background terminal running"))
         XCTAssertTrue(TerminalPreview.isLiveMarkerRow("✻ Percolating… (12s · ↓ 115 tokens)"))
         XCTAssertTrue(TerminalPreview.isLiveMarkerRow("⣾  Running command..."))
-        // An elapsed-time counter ticks once per second, wherever it sits on the row.
-        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("⏺ Sleeping 15 seconds then printing finished · 9s"))
-        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("  ⎿  $ sleep 15 && echo finished (9s)"))
-        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("Compiling module · 32.60s"))
-        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("Waiting (1m)"))
         // A Braille spinner glyph anywhere in the row, not just as its first scalar.
         XCTAssertTrue(TerminalPreview.isLiveMarkerRow("  gpt-5.6-sol low · ~/projects/linkC/.worktrees/state-repro · renaming... ⠋"))
 
@@ -639,7 +634,71 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("  Ran 1 shell command"))
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("⏺ finished"))
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("   "))
-        // A bare number is not an elapsed-time counter — it must trail "· " or sit in "(...)".
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("Fixed 3 tests in PanelView.swift"))
+    }
+
+    /// `progressSignature` is what `screenSignature` hashes: live-marker rows drop out (as
+    /// above) and digit runs are normalized, so a ticking counter reads as unchanged while any
+    /// genuinely new or edited row — even one that carries its own duration — does not.
+    func testProgressSignatureIgnoresATickingCounterAlone() {
+        let before = [
+            "⏺ Sleeping 15 seconds then printing finished",
+            "  ⎿  Running…",
+            "⏺ Sleeping 15 seconds then printing finished · 9s",
+        ]
+        var after = before
+        after[2] = "⏺ Sleeping 15 seconds then printing finished · 10s"
+        XCTAssertEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    func testProgressSignatureIgnoresASpinnerRowsOwnTimerAndTokenCount() {
+        let before = [
+            "Editing Sources/LinkCKit/Terminal/TerminalSession.swift",
+            "✻ Percolating… (12s · ↓ 115 tokens)",
+        ]
+        let after = [
+            "Editing Sources/LinkCKit/Terminal/TerminalSession.swift",
+            "✻ Percolating… (13s · ↓ 240 tokens)",
+        ]
+        XCTAssertEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    func testProgressSignatureChangesWhenANewOutputLineAppears() {
+        let before = [
+            "⏺ Sleeping 15 seconds then printing finished",
+            "  ⎿  Running…",
+        ]
+        let after = before + ["  Ran 1 shell command"]
+        XCTAssertNotEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    func testProgressSignatureChangesWhenAOneShotDurationLineAppears() {
+        // The removed elapsed-time rule used to treat a line like this as a live marker and drop
+        // it, so a session that had just produced real output could still be reported stuck.
+        let before = [
+            "⏺ Sleeping 15 seconds then printing finished",
+            "  ⎿  Running…",
+        ]
+        let after = before + ["Ran 24 tests (12.4s)"]
+        XCTAssertNotEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    func testProgressSignatureOfEmptyRowsIsStableAndDoesNotCrash() {
+        XCTAssertEqual(
+            TerminalPreview.progressSignature(rows: []),
+            TerminalPreview.progressSignature(rows: [])
+        )
     }
 }

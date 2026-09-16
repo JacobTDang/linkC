@@ -300,8 +300,7 @@ public final class TerminalSession {
     /// not. "" when the PTY was never started. In-process only: `hashValue` is seeded per launch.
     public func screenSignature() -> String {
         guard _terminalView != nil else { return "" }
-        let rows = visibleContentRows().filter { !TerminalPreview.isLiveMarkerRow($0) }
-        return String(rows.joined(separator: "\n").hashValue)
+        return TerminalPreview.progressSignature(rows: visibleContentRows())
     }
 
     /// The visible screen's non-blank rows, top to bottom. Empty when the PTY was never started.

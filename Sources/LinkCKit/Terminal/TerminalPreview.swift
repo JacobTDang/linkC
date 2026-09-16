@@ -174,23 +174,29 @@ public enum TerminalPreview {
     }
 
     /// Whether a row redraws on its own while a turn runs — a working footer, a spinner row with a
-    /// timer or token counter, an elapsed-time counter, or an animated Braille spinner. A screen
-    /// signature leaves these out, so a ticking timer never looks like progress. A row led by a
-    /// static glyph (Codex's "•", Claude Code's "⏺", Antigravity's "●") is ordinary output and
-    /// counts.
+    /// timer or token counter, or an animated Braille spinner. A screen signature leaves these
+    /// out, so a ticking timer never looks like progress. A row led by a static glyph (Codex's
+    /// "•", Claude Code's "⏺", Antigravity's "●") is ordinary output and counts. An elapsed-time
+    /// counter trailing an otherwise-new row ("· 9s", "(12.4s)") is NOT filtered here — that
+    /// swallowed one-shot output like "Ran 24 tests (12.4s)" too. `progressSignature` handles
+    /// ticking counters instead, by normalizing digits.
     public static func isLiveMarkerRow(_ row: String) -> Bool {
         let text = visibleText(row)
         guard !text.isEmpty else { return false }
         if isWorkingFooter(text) { return true }
         if text.contains("esc to interrupt") { return true }
         if text.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil { return true }
-        // An elapsed-time counter that ticks once per second, trailing the row: "· 9s" or
-        // "(9s)" — also "32.60s" or "1m" — with a unit of ms, s, m or h.
-        if text.range(
-            of: #"(?:· |\()\d+(?:\.\d+)?(?:ms|s|m|h)\)?$"#,
-            options: .regularExpression
-        ) != nil { return true }
         return text.unicodeScalars.contains { (0x2800...0x28FF).contains($0.value) }
+    }
+
+    /// A signature of `rows` for detecting a turn that has stopped producing anything new. Rows
+    /// that redraw on their own are dropped, and digit runs are normalized so a ticking counter
+    /// ("· 9s" a second after "· 8s") reads as unchanged while any new or edited text does not.
+    public static func progressSignature(rows: [String]) -> String {
+        let kept = rows
+            .filter { !isLiveMarkerRow($0) }
+            .map { $0.replacingOccurrences(of: #"\d+"#, with: "#", options: .regularExpression) }
+        return String(kept.joined(separator: "\n").hashValue)
     }
 
     /// The phrase on a live spinner row: one carrying "(12s · esc to interrupt)" or a token
