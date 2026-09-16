@@ -129,6 +129,14 @@ final class TerminalSessionTests: XCTestCase {
         session.terminate()
     }
 
+    func testScreenSignatureBeforeStartIsEmptyString() {
+        // A session whose PTY was never started has no screen to hash. The doc comment promises
+        // "" for this case — not the hash of an empty joined string.
+        let session = TerminalSession(id: "L1", cwd: "/tmp", title: "api")
+        XCTAssertEqual(session.screenSignature(), "")
+        session.terminate()
+    }
+
     func testScrubbedEnvironmentDropsClaudeCodeMarkers() {
         // linkC may itself be running inside a claude session (opened from a terminal there).
         // Its inherited CLAUDECODE/CLAUDE_CODE_* markers must not leak into spawned sessions,
@@ -619,10 +627,19 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertTrue(TerminalPreview.isLiveMarkerRow("• Working (9s • esc to interrupt) · 1 background terminal running"))
         XCTAssertTrue(TerminalPreview.isLiveMarkerRow("✻ Percolating… (12s · ↓ 115 tokens)"))
         XCTAssertTrue(TerminalPreview.isLiveMarkerRow("⣾  Running command..."))
+        // An elapsed-time counter ticks once per second, wherever it sits on the row.
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("⏺ Sleeping 15 seconds then printing finished · 9s"))
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("  ⎿  $ sleep 15 && echo finished (9s)"))
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("Compiling module · 32.60s"))
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("Waiting (1m)"))
+        // A Braille spinner glyph anywhere in the row, not just as its first scalar.
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("  gpt-5.6-sol low · ~/projects/linkC/.worktrees/state-repro · renaming... ⠋"))
 
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("● Bash(sleep 15 && echo finished) (ctrl+o to expand)"))
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("  Ran 1 shell command"))
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("⏺ finished"))
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("   "))
+        // A bare number is not an elapsed-time counter — it must trail "· " or sit in "(...)".
+        XCTAssertFalse(TerminalPreview.isLiveMarkerRow("Fixed 3 tests in PanelView.swift"))
     }
 }

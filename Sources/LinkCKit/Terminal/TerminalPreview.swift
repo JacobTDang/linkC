@@ -174,16 +174,23 @@ public enum TerminalPreview {
     }
 
     /// Whether a row redraws on its own while a turn runs — a working footer, a spinner row with a
-    /// timer or token counter, or an animated Braille spinner. A screen signature leaves these out,
-    /// so a ticking timer never looks like progress. A row led by a static glyph (Codex's "•",
-    /// Claude Code's "⏺", Antigravity's "●") is ordinary output and counts.
+    /// timer or token counter, an elapsed-time counter, or an animated Braille spinner. A screen
+    /// signature leaves these out, so a ticking timer never looks like progress. A row led by a
+    /// static glyph (Codex's "•", Claude Code's "⏺", Antigravity's "●") is ordinary output and
+    /// counts.
     public static func isLiveMarkerRow(_ row: String) -> Bool {
         let text = visibleText(row)
         guard !text.isEmpty else { return false }
         if isWorkingFooter(text) { return true }
         if text.contains("esc to interrupt") { return true }
         if text.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil { return true }
-        return text.unicodeScalars.first.map { (0x2800...0x28FF).contains($0.value) } ?? false
+        // An elapsed-time counter that ticks once per second, trailing the row: "· 9s" or
+        // "(9s)" — also "32.60s" or "1m" — with a unit of ms, s, m or h.
+        if text.range(
+            of: #"(?:· |\()\d+(?:\.\d+)?(?:ms|s|m|h)\)?$"#,
+            options: .regularExpression
+        ) != nil { return true }
+        return text.unicodeScalars.contains { (0x2800...0x28FF).contains($0.value) }
     }
 
     /// The phrase on a live spinner row: one carrying "(12s · esc to interrupt)" or a token
