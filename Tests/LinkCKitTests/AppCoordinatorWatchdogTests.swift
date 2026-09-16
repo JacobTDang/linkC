@@ -234,4 +234,54 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         XCTAssertTrue(body.contains("never started"), "must name the never-started task's reason: \(body)")
         XCTAssertTrue(body.contains("waiting on a prompt"), "must name the waiting worker's reason too: \(body)")
     }
+
+    /// A task's notice belongs to the session that delegated it, not to any session of that agent
+    /// kind. With no session free to take it, nothing is spawned and the user is told once.
+    @MainActor
+    func testANoticeGoesToTheDelegatingSessionAndOtherwiseWaits() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        let other = try coordinator.newSession(cwd: ws, agent: .claude)
+        let delegator = try coordinator.newSession(cwd: ws, agent: .claude)
+        for id in [other.id, delegator.id] {
+            coordinator.store.updateState(id: id, to: .ready)
+            _ = try await waitUntil { coordinator.terminals.session(id: id)?.acceptsPaste ?? false }
+        }
+        let task = try inbox.createTask(from: .claude, to: .codex, fromSessionId: delegator.id, prompt: "Refactor", files: [])
+        _ = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: task.id, body: "Task \(task.shortId) looks stuck")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        let delegatorTerm = try XCTUnwrap(coordinator.terminals.session(id: delegator.id))
+        let otherTerm = try XCTUnwrap(coordinator.terminals.session(id: other.id))
+        let landed = try await waitUntil { delegatorTerm.recentOutput(lines: 20).contains(task.shortId) }
+        XCTAssertTrue(landed, "the delegating session must receive its task's notice")
+        XCTAssertFalse(otherTerm.recentOutput(lines: 20).contains(task.shortId), "another session of the same kind must not")
+    }
+
+    @MainActor
+    func testAnUndeliverableNoticeSpawnsNothingAndWarnsTheUserOnce() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+        let message = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: "ABCD1234", body: "Task ABCD1234 looks stuck")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "a notice must never spawn a session")
+        XCTAssertEqual(try inbox.fetchPending().filter { $0.id == message.id }.count, 1, "it waits instead")
+        XCTAssertTrue(sink.deliveries.isEmpty, "not yet — it has only just been queued")
+
+        clock.advance(6 * 60)
+        coordinator.processPendingMessages(workspacePath: ws)
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(sink.deliveries.filter { $0.body.contains("waiting") }.count, 1, "told once, not every tick")
+    }
 }

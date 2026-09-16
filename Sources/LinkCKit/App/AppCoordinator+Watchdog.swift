@@ -10,6 +10,8 @@ extension AppCoordinator {
     static let waitingOnUserThreshold: TimeInterval = 5 * 60
     /// The worker says it is working but its screen has not changed for this long.
     static let goneQuietThreshold: TimeInterval = 15 * 60
+    /// A notice queued this long with nobody able to take it is worth telling the user about.
+    static let noticeCannotLandThreshold: TimeInterval = 5 * 60
 
     /// Why a task looks stuck, in the words the delegator and the user are told.
     enum StuckReason: String, Equatable {
@@ -86,5 +88,18 @@ extension AppCoordinator {
             )
         }
         return false
+    }
+
+    /// Tells the user once that a message cannot reach its agent — blocked on a prompt, busy past
+    /// the threshold, or no session of that kind alive. Task briefs are excluded: they spawn.
+    func noteUndeliveredNotice(_ message: PendingMessage) {
+        guard message.kind != .task,
+              now().timeIntervalSince(message.createdAt) > Self.noticeCannotLandThreshold,
+              !undeliveredNoticesReported.contains(message.id) else { return }
+        undeliveredNoticesReported.insert(message.id)
+        notifications.post(
+            title: "linkC: \(message.toAgent.displayName) has not seen a notice",
+            body: "A message has been waiting 5m — no \(message.toAgent.displayName) session is free to take it."
+        )
     }
 }

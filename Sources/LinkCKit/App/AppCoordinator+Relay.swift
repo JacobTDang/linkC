@@ -337,11 +337,28 @@ extension AppCoordinator {
                 continue
             }
 
-            var target = store.sessions.first {
-                ($0.cwd as NSString).standardizingPath == workspacePath && $0.agentKind == message.toAgent && $0.state != .ended
+            // A notice about a task belongs to the session that delegated it: any other session of
+            // that kind is a different conversation. Fall back to one only when it is gone.
+            var target: Session?
+            if let taskId = message.taskId,
+               let record = ((try? inboxStore.task(id: taskId, timeout: Self.relayLockTimeout)) ?? nil),
+               let delegatorId = record.fromSessionId {
+                target = store.sessions.first { $0.id == delegatorId && $0.state != .ended }
             }
             if target == nil {
-                // Same rule as tasks: a just-spawned CLI cannot read its terminal yet.
+                target = store.sessions.first {
+                    ($0.cwd as NSString).standardizingPath == workspacePath && $0.agentKind == message.toAgent && $0.state != .ended
+                }
+            }
+            if target == nil {
+                // Only a task brief or a standalone message (no task lineage) is worth spawning an
+                // agent for. A message about a task — a completion line, a stuck notice — waits for
+                // a session to exist instead, and the user is told when it has waited too long: the
+                // new session would have no context on the task it's supposedly about.
+                guard message.kind == .task || message.taskId == nil else {
+                    noteUndeliveredNotice(message)
+                    continue
+                }
                 let goal: String? = message.kind == .task ? message.prompt : nil
                 do {
                     _ = try spawnTeammate(in: workspacePath, agent: message.toAgent, goal: goal)
@@ -352,7 +369,10 @@ extension AppCoordinator {
                 }
                 continue
             }
-            guard let session = target, isIdle(session.state) else { continue }
+            guard let session = target, isIdle(session.state) else {
+                noteUndeliveredNotice(message)
+                continue
+            }
 
             // The mark durably records delivery before the terminal ever shows the text, and its
             // own disk I/O and lock wait sit inside the window between reading `target` above and
