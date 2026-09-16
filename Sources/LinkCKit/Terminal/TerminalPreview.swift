@@ -179,7 +179,7 @@ public enum TerminalPreview {
     /// "•", Claude Code's "⏺", Antigravity's "●") is ordinary output and counts. An elapsed-time
     /// counter trailing an otherwise-new row ("· 9s", "(12.4s)") is NOT filtered here — that
     /// swallowed one-shot output like "Ran 24 tests (12.4s)" too. `progressSignature` handles
-    /// ticking counters instead, by normalizing digits.
+    /// ticking counters instead, by normalizing time values.
     public static func isLiveMarkerRow(_ row: String) -> Bool {
         let text = visibleText(row)
         guard !text.isEmpty else { return false }
@@ -192,7 +192,9 @@ public enum TerminalPreview {
     /// A signature of `rows` for detecting a turn that has stopped producing anything new. Rows
     /// that redraw on their own are dropped, and time values are normalized so a ticking clock
     /// ("· 9s" a second after "· 8s") reads as unchanged — but any other change, including a
-    /// percentage, byte count, or tally, does not.
+    /// percentage, byte count, or tally, does not. Known limit: a number that carries a time unit
+    /// is treated as a clock, so a row whose only change is an ETA counting down or a size written
+    /// with an "m" suffix reads as unchanged.
     public static func progressSignature(rows: [String]) -> String {
         let kept = rows
             .filter { !isLiveMarkerRow($0) }

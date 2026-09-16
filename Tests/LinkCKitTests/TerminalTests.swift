@@ -638,7 +638,7 @@ final class TerminalPreviewTests: XCTestCase {
     }
 
     /// `progressSignature` is what `screenSignature` hashes: live-marker rows drop out (as
-    /// above) and digit runs are normalized, so a ticking counter reads as unchanged while any
+    /// above) and time values are normalized, so a ticking counter reads as unchanged while any
     /// genuinely new or edited row — even one that carries its own duration — does not.
     func testProgressSignatureIgnoresATickingCounterAlone() {
         let before = [
