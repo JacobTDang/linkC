@@ -562,11 +562,22 @@ final class InboxStoreTests: XCTestCase {
 
         XCTAssertThrowsError(try store.setStuckNotified(taskId: "no-such-task", at: at))
 
-        // A row written before this field existed must still decode: the store throws on a decode
-        // error, which would take the whole inbox down.
-        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(task)) as? [String: Any])
-        json.removeValue(forKey: "stuckNotifiedAt")
-        let legacy = try JSONDecoder().decode(TaskRecord.self, from: JSONSerialization.data(withJSONObject: json))
-        XCTAssertNil(legacy.stuckNotifiedAt)
+        // A row written before this field existed must still decode through the store's own
+        // decoder: a store-level load failure would take the whole inbox down. Simulate the
+        // real-world scenario by removing the field from disk and loading through the store.
+        let inboxPath = tempDir.appendingPathComponent(".linkc/inbox.json")
+        let inboxData = try Data(contentsOf: inboxPath)
+        var inboxJson = try XCTUnwrap(JSONSerialization.jsonObject(with: inboxData) as? [String: Any])
+        var tasks = try XCTUnwrap(inboxJson["tasks"] as? [[String: Any]])
+        for i in 0..<tasks.count {
+            tasks[i].removeValue(forKey: "stuckNotifiedAt")
+        }
+        inboxJson["tasks"] = tasks
+        let modifiedData = try JSONSerialization.data(withJSONObject: inboxJson)
+        try modifiedData.write(to: inboxPath)
+
+        let reloaded = try store.load()
+        let reloadedTask = try XCTUnwrap(reloaded.tasks.first(where: { $0.id == task.id }))
+        XCTAssertNil(reloadedTask.stuckNotifiedAt)
     }
 }
