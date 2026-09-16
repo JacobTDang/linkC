@@ -63,14 +63,13 @@ extension AppCoordinator {
                     continue
                 }
                 guard task.stuckNotifiedAt == nil else { continue }
-                try echo(
-                    "Task \(task.shortId) looks stuck: \(reason.rawValue). "
+                try inboxStore.notifyStuck(
+                    taskId: task.id,
+                    body: "Task \(task.shortId) looks stuck: \(reason.rawValue). "
                         + "linkc_get_task(\"\(task.id)\") or linkc_cancel_task(\"\(task.id)\").",
-                    for: task,
-                    inboxStore: inboxStore,
+                    at: date,
                     timeout: Self.relayLockTimeout
                 )
-                try inboxStore.setStuckNotified(taskId: task.id, at: date, timeout: Self.relayLockTimeout)
                 reported.append(reason)
             } catch {
                 if isRelayLockTimeout(error) { return true }
@@ -78,10 +77,12 @@ extension AppCoordinator {
             }
         }
 
-        if let first = reported.first {
+        if !reported.isEmpty {
+            var seen: Set<String> = []
+            let reasons = reported.map(\.rawValue).filter { seen.insert($0).inserted }
             notifications.post(
                 title: "linkC: \(reported.count) task(s) look stuck",
-                body: "\(first.rawValue). The delegating agent was told."
+                body: "\(reasons.joined(separator: "; ")). The delegating agent was told."
             )
         }
         return false

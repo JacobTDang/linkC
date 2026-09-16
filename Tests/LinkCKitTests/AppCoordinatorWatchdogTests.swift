@@ -195,4 +195,43 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         XCTAssertNotNil(try inbox.task(id: quietTask.id)?.stuckNotifiedAt, "a later stall reports again")
         XCTAssertEqual(try inbox.load().messages.filter { $0.prompt.contains(quietTask.shortId) }.count, 2)
     }
+
+    /// Two tasks reported stuck in the same tick for two different reasons must both be named in
+    /// the notification body, not just `reported.first`'s reason.
+    @MainActor
+    func testTwoTasksStuckForDifferentReasonsInOneTickNameBothInTheNotificationBody() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        let neverStartedTask = try inbox.createTask(from: .claude, to: .codex, prompt: "Refactor migrations", files: [])
+        coordinator.processPendingMessages(workspacePath: ws)
+        let codex = try XCTUnwrap(coordinator.store.sessions.first(where: { $0.agentKind == .codex }))
+        coordinator.store.updateState(id: codex.id, to: .ready)
+        let ready = try await waitUntil { coordinator.terminals.session(id: codex.id)?.acceptsPaste ?? false }
+        XCTAssertTrue(ready, "the mock agent never negotiated bracketed paste")
+        // See the comment in testANeverStartedTaskIsReportedOnceToTheDelegatorAndTheUser: the
+        // controllable clock must catch up to the real negotiation time or dispatch never delivers.
+        clock.set(Date())
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.task(id: neverStartedTask.id)?.state, .delivered)
+
+        let waiting = try coordinator.newSession(cwd: ws, agent: .cursor)
+        let waitingTask = try inbox.createTask(from: .claude, to: .cursor, prompt: "Two", files: [])
+        try inbox.markTaskDelivered(taskId: waitingTask.id, sessionId: waiting.id)
+        try inbox.markTaskStarted(taskId: waitingTask.id)
+        coordinator.store.updateState(id: waiting.id, to: .waitingPermission)
+
+        clock.advance(11 * 60)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        let stuckDeliveries = sink.deliveries.filter { $0.title.contains("look stuck") }
+        XCTAssertEqual(stuckDeliveries.count, 1)
+        let body = try XCTUnwrap(stuckDeliveries.first?.body)
+        XCTAssertTrue(body.contains("never started"), "must name the never-started task's reason: \(body)")
+        XCTAssertTrue(body.contains("waiting on a prompt"), "must name the waiting worker's reason too: \(body)")
+    }
 }

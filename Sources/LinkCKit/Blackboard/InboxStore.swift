@@ -643,6 +643,26 @@ public final class InboxStore: Sendable {
         }
     }
 
+    /// Enqueues the delegator's stuck notice and stamps `stuckNotifiedAt` as a single locked
+    /// write. `watchStuckTasks` used to call `enqueue` (via `echo`) and then `setStuckNotified` as
+    /// two separate lock acquisitions; if the lock was contended between the two, the phase could
+    /// return early with the notice already queued but the mark still nil, and the next tick would
+    /// send the same line again. Reuses `appendCompletion` — the same private helper
+    /// `transitionAndNotify` uses — so the message's shape (kind, taskId, framing, content hash,
+    /// ordering) is identical to what `echo`/`enqueue(kind: .completion)` produce.
+    public func notifyStuck(taskId: String, body: String, at date: Date, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            guard let idx = inbox.tasks.firstIndex(where: { $0.id == taskId }) else {
+                throw InboxError.taskNotFound(taskId)
+            }
+            inbox.tasks[idx].stuckNotifiedAt = date
+            inbox.updatedAt = Date()
+            appendCompletion(to: &inbox, task: inbox.tasks[idx], body: body)
+            try saveUnlocked(inbox)
+        }
+    }
+
     private func transition(
         taskId: String,
         to next: TaskState,

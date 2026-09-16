@@ -580,4 +580,41 @@ final class InboxStoreTests: XCTestCase {
         let reloadedTask = try XCTUnwrap(reloaded.tasks.first(where: { $0.id == task.id }))
         XCTAssertNil(reloadedTask.stuckNotifiedAt)
     }
+
+    /// `notifyStuck` must fold the delegator's stuck notice and the `stuckNotifiedAt` mark into
+    /// one locked write, the way `transitionAndNotify` already does for the other terminal
+    /// outcomes (see `testAcceptUnverifiedAndNotifyPersistsNeitherHalfWhenTheSharedWriteFails`).
+    /// `AppCoordinator.watchStuckTasks` used to call `enqueue` then `setStuckNotified` as two
+    /// separate lock acquisitions, so a lock timeout between them could land the notice with the
+    /// mark still nil, and the next tick would send the same line again.
+    func testNotifyStuckAppendsTheNoticeAndSetsTheMarkInOneWrite() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let task = try store.createTask(from: .claude, to: .codex, prompt: "Refactor migrations", files: [])
+        let at = Date(timeIntervalSince1970: 1_800_000_000)
+
+        try store.notifyStuck(
+            taskId: task.id,
+            body: "Task \(task.shortId) looks stuck: delivered 10m ago and never started.",
+            at: at
+        )
+
+        let reloaded = try XCTUnwrap(store.task(id: task.id))
+        XCTAssertEqual(reloaded.stuckNotifiedAt, at)
+
+        let messages = try store.load().messages
+        XCTAssertEqual(messages.count, 1)
+        let notice = try XCTUnwrap(messages.first)
+        XCTAssertEqual(notice.kind, .completion)
+        XCTAssertEqual(notice.taskId, task.id)
+        XCTAssertEqual(notice.fromAgent, .codex)
+        XCTAssertEqual(notice.toAgent, .claude)
+        XCTAssertTrue(notice.prompt.contains(task.shortId))
+        XCTAssertTrue(notice.prompt.contains("never started"))
+
+        // An unknown task id throws and appends nothing.
+        XCTAssertThrowsError(try store.notifyStuck(taskId: "no-such-task", body: "x", at: at)) {
+            XCTAssertEqual($0 as? InboxError, .taskNotFound("no-such-task"))
+        }
+        XCTAssertEqual(try store.load().messages.count, 1, "a failed notifyStuck must not append a message")
+    }
 }
