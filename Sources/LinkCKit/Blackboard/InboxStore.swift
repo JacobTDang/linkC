@@ -629,6 +629,20 @@ public final class InboxStore: Sendable {
         }
     }
 
+    /// Records that the delegator was told this task looks stuck, or clears it (`at: nil`) when
+    /// the task moves again. One locked read-modify-write, like the turn-end mark above.
+    public func setStuckNotified(taskId: String, at date: Date?, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            guard let idx = inbox.tasks.firstIndex(where: { $0.id == taskId }) else {
+                throw InboxError.taskNotFound(taskId)
+            }
+            inbox.tasks[idx].stuckNotifiedAt = date
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+        }
+    }
+
     private func transition(
         taskId: String,
         to next: TaskState,

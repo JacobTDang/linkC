@@ -547,4 +547,26 @@ final class InboxStoreTests: XCTestCase {
         let completions = try store.load().messages.filter { $0.taskId == task.id }
         XCTAssertTrue(completions.isEmpty, "and the outcome line must not persist either")
     }
+
+    func testTheStuckMarkIsSetClearedAndOptionalOnOldRows() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let task = try store.createTask(from: .claude, to: .codex, prompt: "Refactor migrations", files: [])
+        XCTAssertNil(try store.task(id: task.id)?.stuckNotifiedAt)
+
+        let at = Date(timeIntervalSince1970: 1_800_000_000)
+        try store.setStuckNotified(taskId: task.id, at: at)
+        XCTAssertEqual(try store.task(id: task.id)?.stuckNotifiedAt, at)
+
+        try store.setStuckNotified(taskId: task.id, at: nil)
+        XCTAssertNil(try store.task(id: task.id)?.stuckNotifiedAt, "a task that moves again must be reportable later")
+
+        XCTAssertThrowsError(try store.setStuckNotified(taskId: "no-such-task", at: at))
+
+        // A row written before this field existed must still decode: the store throws on a decode
+        // error, which would take the whole inbox down.
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(task)) as? [String: Any])
+        json.removeValue(forKey: "stuckNotifiedAt")
+        let legacy = try JSONDecoder().decode(TaskRecord.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(legacy.stuckNotifiedAt)
+    }
 }

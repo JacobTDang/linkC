@@ -143,6 +143,11 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     public var report: TaskReport?
     public var cancelReason: String?
     public var unreportedTurnEndNotified: Bool
+    /// When the watchdog last reported this task stuck; cleared when it moves again so a later
+    /// stall reports again. Optional for the same reason as `tier`: `loadUnlocked` throws on a
+    /// decode error, so a required field would make every task row written before the watchdog
+    /// unreadable and take the inbox with it.
+    public var stuckNotifiedAt: Date?
     public var verification: Verification?
     public var gate: Verdict?
     public var verdict: Verdict?
@@ -168,6 +173,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         report: TaskReport? = nil,
         cancelReason: String? = nil,
         unreportedTurnEndNotified: Bool = false,
+        stuckNotifiedAt: Date? = nil,
         verification: Verification? = nil,
         gate: Verdict? = nil,
         verdict: Verdict? = nil
@@ -190,6 +196,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.report = report
         self.cancelReason = cancelReason
         self.unreportedTurnEndNotified = unreportedTurnEndNotified
+        self.stuckNotifiedAt = stuckNotifiedAt
         self.verification = verification
         self.gate = gate
         self.verdict = verdict
