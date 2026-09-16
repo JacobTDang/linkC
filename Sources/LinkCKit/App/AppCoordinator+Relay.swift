@@ -340,10 +340,28 @@ extension AppCoordinator {
             // A notice about a task belongs to the session that delegated it: any other session of
             // that kind is a different conversation. Fall back to one only when it is gone.
             var target: Session?
-            if let taskId = message.taskId,
-               let record = ((try? inboxStore.task(id: taskId, timeout: Self.relayLockTimeout)) ?? nil),
-               let delegatorId = record.fromSessionId {
-                target = store.sessions.first { $0.id == delegatorId && $0.state != .ended }
+            if let taskId = message.taskId {
+                let record: TaskRecord?
+                do {
+                    record = try inboxStore.task(id: taskId, timeout: Self.relayLockTimeout)
+                } catch {
+                    // A contended lock is not "this task has no delegator": falling through would
+                    // hand the notice to a different session of the same kind. End the tick — the
+                    // next one, a second later, routes it properly.
+                    if isRelayLockTimeout(error) { return true }
+                    NSLog("[linkC relay] dispatchMessages: message %@ delegator lookup — %@",
+                          message.id, String(describing: error))
+                    record = nil
+                }
+                if let delegatorId = record?.fromSessionId {
+                    // Same workspace as the fallback below demands: `fromSessionId` comes from the
+                    // caller's own `LINKC_SESSION`, so one from another project must not pull this
+                    // workspace's notice into that project's terminal.
+                    target = store.sessions.first {
+                        $0.id == delegatorId && $0.state != .ended
+                            && ($0.cwd as NSString).standardizingPath == workspacePath
+                    }
+                }
             }
             if target == nil {
                 target = store.sessions.first {

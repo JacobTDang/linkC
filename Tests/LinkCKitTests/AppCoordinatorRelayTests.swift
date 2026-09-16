@@ -505,6 +505,60 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(echoed)
     }
 
+    /// Test 2d2: A task's notice goes to the session that delegated it only when that session is in
+    /// this workspace. The MCP server trusts the caller's `LINKC_SESSION`, so a `fromSessionId` from
+    /// another project must not pull this workspace's notice into that project's terminal.
+    @MainActor
+    func testANoticeIsNotRoutedToADelegatorInAnotherWorkspace() async throws {
+        let ws = tempDir.path
+        let otherWs = tempDir.appendingPathComponent("other-project").path
+        try FileManager.default.createDirectory(atPath: otherWs, withIntermediateDirectories: true)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let foreign = try coordinator.newSession(cwd: otherWs, agent: .claude)
+        let local = try coordinator.newSession(cwd: ws, agent: .claude)
+        for id in [foreign.id, local.id] {
+            coordinator.store.updateState(id: id, to: .ready)
+            try await waitForPasteReady(coordinator, sessionId: id)
+        }
+
+        let inbox = InboxStore(workspaceRoot: ws)
+        let task = try inbox.createTask(from: .claude, to: .codex, fromSessionId: foreign.id, prompt: "Refactor migrations", files: [])
+        _ = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: task.id, body: "Task \(task.shortId) looks stuck")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        let landed = try await waitUntil {
+            coordinator.terminals.session(id: local.id)?.recentOutput(lines: 20).contains(task.shortId) ?? false
+        }
+        XCTAssertTrue(landed, "the in-workspace session must receive it")
+        XCTAssertFalse(
+            coordinator.terminals.session(id: foreign.id)?.recentOutput(lines: 20).contains(task.shortId) ?? false,
+            "a delegating session in another workspace must not"
+        )
+    }
+
+    /// Test 2e2: A legacy `.task` row is the only message kind that still spawns, and a spawn
+    /// failure there must be recorded rather than swallowed. This is the path the old
+    /// message-dispatch spawn-failure test covered before every other kind stopped spawning.
+    @MainActor
+    func testALegacyBriefSpawnFailureIsRecorded() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var seeded = Inbox(workspacePath: ws)
+        seeded.messages = [PendingMessage(id: "legacy-fail", fromAgent: .claude, toAgent: .codex, prompt: "Old style brief", status: .queued, kind: .task)]
+        try inbox.saveRaw(seeded)
+
+        let coordinator = makeCoordinator(agentPathResolver: { _ in nil })
+        defer { coordinator.shutdown() }
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.load().messages.first?.status, .queued)
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "the spawn failed, so no session exists")
+        XCTAssertEqual(coordinator.lastSpawnFailure?.agent, .codex, "the failure is recorded, not swallowed")
+    }
+
     /// Test 2e: A tick for a workspace that no longer exists spawns nothing and does not recreate the directory.
     @MainActor
     func testMissingWorkspaceTickSpawnsNothingAndDoesNotRecreateDirectory() throws {
