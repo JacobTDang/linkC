@@ -173,6 +173,19 @@ public enum TerminalPreview {
         return below.count <= 3 && !below.contains(where: isPromptRow)
     }
 
+    /// Whether a row redraws on its own while a turn runs — a working footer, a spinner row with a
+    /// timer or token counter, or an animated Braille spinner. A screen signature leaves these out,
+    /// so a ticking timer never looks like progress. A row led by a static glyph (Codex's "•",
+    /// Claude Code's "⏺", Antigravity's "●") is ordinary output and counts.
+    public static func isLiveMarkerRow(_ row: String) -> Bool {
+        let text = visibleText(row)
+        guard !text.isEmpty else { return false }
+        if isWorkingFooter(text) { return true }
+        if text.contains("esc to interrupt") { return true }
+        if text.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil { return true }
+        return text.unicodeScalars.first.map { (0x2800...0x28FF).contains($0.value) } ?? false
+    }
+
     /// The phrase on a live spinner row: one carrying "(12s · esc to interrupt)" or a token
     /// counter, or one led by a spinner glyph (Braille included). nil for any other row.
     private static func spinnerPhrase(_ text: String) -> String? {

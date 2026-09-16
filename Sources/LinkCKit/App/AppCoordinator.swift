@@ -74,6 +74,16 @@ public final class AppCoordinator {
     /// access modifier (matches `verificationsInFlight` above) since that setter lives in a
     /// different file in the same module.
     var lastSpawnFailure: SpawnFailure?
+    /// Per session: the last screen signature seen and when it last changed — the watchdog's
+    /// "gone quiet" clock. In memory only, so the clock restarts after a relaunch. Stored here
+    /// rather than in the watchdog extension because extensions cannot hold stored properties.
+    private var screenSignatures: [String: (signature: String, since: Date)] = [:]
+    /// Notices already reported to the user as undeliverable, by message id. Also in memory: a
+    /// notice still stuck after a relaunch is worth one more mention.
+    var undeliveredNoticesReported: Set<String> = []
+
+    /// When `sessionId`'s screen last changed; nil if it has never been sampled.
+    func screenUnchangedSince(_ sessionId: String) -> Date? { screenSignatures[sessionId]?.since }
     /// The current tier → model mapping. A closure, not a value, so a settings edit is seen on
     /// the next spawn without anyone re-injecting anything.
     private let modelSettings: @MainActor @Sendable () -> AgentModelSettings
@@ -355,6 +365,7 @@ public final class AppCoordinator {
         let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
         try? FileManager.default.removeItem(at: settingsFile)
         notifications.forget(sessionId)
+        screenSignatures.removeValue(forKey: sessionId)
         usageTracker?.unbind(sessionId: sessionId)
         // The session ended or was stopped — keep its manifest entry but stamp it, so it becomes
         // a restorable card. (No-op when there is no entry, e.g. a launch that failed before start.)
@@ -637,6 +648,12 @@ public final class AppCoordinator {
             if session.agentKind != .shell, term.processId > 0 {
                 try? BlackboardStore(workspaceRoot: (session.cwd as NSString).standardizingPath)
                     .heartbeat(agentKind: session.agentKind, pid: term.processId, timeout: 0.5)
+            }
+
+            // The watchdog's progress signal, taken from the same once-a-second row read.
+            let signature = term.screenSignature()
+            if screenSignatures[session.id]?.signature != signature {
+                screenSignatures[session.id] = (signature, now())
             }
 
             // Inspect terminal output for provider rate limits & auto-reroute

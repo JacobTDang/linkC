@@ -295,6 +295,14 @@ public final class TerminalSession {
         TerminalPreview.isTrustPrompt(visibleContentRows())
     }
 
+    /// A signature of the visible screen with live markers removed — the watchdog's progress
+    /// signal. Tool output, new lines and status changes change it; a spinner's own timer does
+    /// not. "" when the PTY was never started. In-process only: `hashValue` is seeded per launch.
+    public func screenSignature() -> String {
+        let rows = visibleContentRows().filter { !TerminalPreview.isLiveMarkerRow($0) }
+        return String(rows.joined(separator: "\n").hashValue)
+    }
+
     /// The visible screen's non-blank rows, top to bottom. Empty when the PTY was never started.
     private func visibleContentRows() -> [String] {
         guard let view = _terminalView else { return [] }

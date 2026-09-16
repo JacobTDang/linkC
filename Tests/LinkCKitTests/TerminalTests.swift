@@ -610,4 +610,19 @@ final class TerminalPreviewTests: XCTestCase {
         ]
         XCTAssertTrue(TerminalPreview.isTrustPrompt(narrow))
     }
+
+    /// Rows that redraw on their own each second — a working footer, a timer, an animated
+    /// spinner — say nothing about progress. Everything else does.
+    func testLiveMarkerRowsAreOnlyTheOnesThatTickOnTheirOwn() {
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents"))
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("esc to cancel                                    Gemini 3.8 Flash · high"))
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("• Working (9s • esc to interrupt) · 1 background terminal running"))
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("✻ Percolating… (12s · ↓ 115 tokens)"))
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("⣾  Running command..."))
+
+        XCTAssertFalse(TerminalPreview.isLiveMarkerRow("● Bash(sleep 15 && echo finished) (ctrl+o to expand)"))
+        XCTAssertFalse(TerminalPreview.isLiveMarkerRow("  Ran 1 shell command"))
+        XCTAssertFalse(TerminalPreview.isLiveMarkerRow("⏺ finished"))
+        XCTAssertFalse(TerminalPreview.isLiveMarkerRow("   "))
+    }
 }
