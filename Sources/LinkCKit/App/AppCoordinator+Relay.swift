@@ -42,6 +42,10 @@ extension AppCoordinator {
         guard !expireTasks(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
         }
+        // After expiry, so a task that is already dead is failed rather than reported stuck.
+        guard !watchStuckTasks(workspacePath: norm, inboxStore: inboxStore) else {
+            return logRelayLockContention(workspacePath: norm)
+        }
         guard !launchVerifications(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
         }
@@ -58,7 +62,7 @@ extension AppCoordinator {
     /// `LinkCError.server` for all of these and carries no dedicated case for this one, so the
     /// message text is what distinguishes it — matching the same pattern already used to identify
     /// a `BlackboardStore` lock timeout.
-    private func isRelayLockTimeout(_ error: Error) -> Bool {
+    func isRelayLockTimeout(_ error: Error) -> Bool {
         guard let linkCError = error as? LinkCError, case .server(let message) = linkCError else { return false }
         return message.contains("Timed out acquiring inbox lock")
     }
@@ -190,7 +194,7 @@ extension AppCoordinator {
         return false
     }
 
-    private func echo(_ body: String, for task: TaskRecord, inboxStore: InboxStore, timeout: TimeInterval = 5.0) throws {
+    func echo(_ body: String, for task: TaskRecord, inboxStore: InboxStore, timeout: TimeInterval = 5.0) throws {
         _ = try inboxStore.enqueue(
             from: task.toAgent,
             to: task.fromAgent,
