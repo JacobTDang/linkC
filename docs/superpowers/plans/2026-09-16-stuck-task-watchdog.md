@@ -270,8 +270,10 @@ Add directly after that line:
 
 ```swift
         screenSignatures.removeValue(forKey: sessionId)
-        undeliveredNoticesReported = []
 ```
+
+`undeliveredNoticesReported` is deliberately not cleared here: it is keyed by message id, and an
+ending session says nothing about other messages. It only grows as fast as notices are enqueued.
 
 - [ ] **Step 9: Run both tests and watch them pass**
 
@@ -443,7 +445,7 @@ Add to `AppCoordinatorWatchdogTests`:
         clock.advance(11 * 60)
         coordinator.processPendingMessages(workspacePath: ws)
 
-        let notices = try inbox.fetchPending().filter { $0.prompt.contains("looks stuck") }
+        let notices = try inbox.load().messages.filter { $0.prompt.contains("looks stuck") }
         XCTAssertEqual(notices.count, 1, "the delegator is told once")
         XCTAssertTrue(notices[0].prompt.contains(task.shortId))
         XCTAssertTrue(notices[0].prompt.contains("never started"))
@@ -452,7 +454,7 @@ Add to `AppCoordinatorWatchdogTests`:
 
         clock.advance(5 * 60)
         coordinator.processPendingMessages(workspacePath: ws)
-        XCTAssertEqual(try inbox.fetchPending().filter { $0.prompt.contains("looks stuck") }.count, 1, "a second tick must not repeat it")
+        XCTAssertEqual(try inbox.load().messages.filter { $0.prompt.contains("looks stuck") }.count, 1, "a second tick must not repeat it")
     }
 ```
 
@@ -596,7 +598,7 @@ Add to `AppCoordinatorWatchdogTests`:
 
         clock.advance(6 * 60)
         coordinator.processPendingMessages(workspacePath: ws)
-        let waitingNotice = try inbox.fetchPending().first { $0.prompt.contains(waitingTask.shortId) }
+        let waitingNotice = try inbox.load().messages.first { $0.prompt.contains(waitingTask.shortId) }
         XCTAssertTrue(waitingNotice?.prompt.contains("waiting on a prompt") ?? false)
 
         let quiet = try coordinator.newSession(cwd: ws, agent: .cursor)
@@ -611,7 +613,7 @@ Add to `AppCoordinatorWatchdogTests`:
         clock.advance(16 * 60)
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertTrue(try inbox.task(id: quietTask.id)?.stuckNotifiedAt != nil)
-        XCTAssertTrue(try inbox.fetchPending().first { $0.prompt.contains(quietTask.shortId) }?.prompt.contains("screen has not changed") ?? false)
+        XCTAssertTrue(try inbox.load().messages.first { $0.prompt.contains(quietTask.shortId) }?.prompt.contains("screen has not changed") ?? false)
 
         // The screen moves: the mark clears and a later stall is reported again.
         term.sendInput("Ran 1 shell command\r")
@@ -624,7 +626,7 @@ Add to `AppCoordinatorWatchdogTests`:
         clock.advance(16 * 60)
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertNotNil(try inbox.task(id: quietTask.id)?.stuckNotifiedAt, "a later stall reports again")
-        XCTAssertEqual(try inbox.fetchPending().filter { $0.prompt.contains(quietTask.shortId) }.count, 2)
+        XCTAssertEqual(try inbox.load().messages.filter { $0.prompt.contains(quietTask.shortId) }.count, 2)
     }
 ```
 
@@ -811,3 +813,6 @@ git commit -m "feat(watchdog): send a task's notice to the session that delegate
 - `AppCoordinator` is `@MainActor`; every test above is `@MainActor` for the same reason.
 - Mock agent sessions never reach `.ready` on their own (`ProcessSnooper` finds no real agent in the process tree), which is why the tests set the state directly.
 - If a test needs a threshold to pass, advance the injected clock. Never `sleep` a real threshold.
+- `InboxStore.fetchPending()` returns only `.queued` messages. Count notices with
+  `try inbox.load().messages.filter { ... }` so a notice that has since been delivered still counts;
+  use `fetchPending()` only where the test means "this is still waiting".
