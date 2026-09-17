@@ -97,6 +97,21 @@ final class LimitDetectorTests: XCTestCase {
         )
     }
 
+    /// Every real injection carries a marker (a task frame, a peer note, a `/model` command), so an
+    /// injected entry is never a bare limit phrase. That is what keeps once-by-content removal from
+    /// latching onto genuine output — an invariant of the callers, not of this function. Lock the
+    /// safe behaviour in as a contract: even a bare phrase must consume only its own occurrence.
+    func testABareInjectedPhraseConsumesOnlyItsOwnOccurrence() {
+        let bare = "You've reached your usage limit"
+        let screen = "\(bare)\n⏺ Error: You've reached your usage limit · resets 3pm\n"
+
+        let match = LimitDetector.detectLimit(inOutput: screen, agent: .claude, ignoringInjected: [bare])
+        XCTAssertEqual(
+            match?.matchedPattern, "You've reached your usage limit",
+            "removing the echo must leave the agent's own banner detectable"
+        )
+    }
+
     // MARK: - Claude Tests
 
     func testClaudeUsageLimitDetected() {
