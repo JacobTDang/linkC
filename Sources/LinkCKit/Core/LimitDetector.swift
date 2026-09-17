@@ -101,18 +101,37 @@ public struct LimitDetector: Sendable {
         return ansiRegex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
     }
 
+    /// Drops the rows that linkC itself typed into a terminal. A brief or notice can quote a limit
+    /// phrase, the terminal echoes it straight back, and reading that as the agent's own exhaustion
+    /// banner records a limit nobody hit. Matched by containment, so a row the terminal wrapped is
+    /// dropped along with the whole line it came from.
+    private static func withoutInjected(_ text: String, injected: [String]) -> String {
+        let typed = injected.map(stripAnsi).filter { !$0.isEmpty }
+        guard !typed.isEmpty else { return text }
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { row in
+                let trimmed = row.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty else { return true }
+                return !typed.contains { $0.contains(trimmed) }
+            }
+            .joined(separator: "\n")
+    }
+
     /// Inspects terminal output text for known rate limit or quota ceiling signatures of `agent`.
-    /// Returns a `LimitMatch` if detected, or `nil` otherwise.
+    /// Returns a `LimitMatch` if detected, or `nil` otherwise. Pass everything linkC has typed into
+    /// that terminal as `ignoringInjected`: only the agent's own output can report its limit.
     public static func detectLimit(
         inOutput text: String,
         agent: AgentKind,
+        ignoringInjected injected: [String] = [],
         defaultCooldown: TimeInterval = defaultCooldown
     ) -> LimitMatch? {
         guard !text.isEmpty else { return nil }
         let agentRules = rules(for: agent)
         guard !agentRules.isEmpty else { return nil }
 
-        let cleanText = stripAnsi(text)
+        let cleanText = withoutInjected(stripAnsi(text), injected: injected)
         guard !cleanText.isEmpty else { return nil }
 
         let range = NSRange(cleanText.startIndex..<cleanText.endIndex, in: cleanText)

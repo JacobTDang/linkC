@@ -505,6 +505,47 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(echoed)
     }
 
+    /// Test 3d: A brief linkC typed into a terminal is echoed straight back by the CLI. When that
+    /// brief quotes a limit phrase — the reroute briefs did — the echo must not be read as this
+    /// agent hitting its limit, which recorded a cooldown and errored the session for 15 minutes.
+    @MainActor
+    func testAnInjectedBriefQuotingALimitPhraseIsNotALimit() async throws {
+        let ws = tempDir.path
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: ws, agent: .claude)
+        try await waitForPasteReady(coordinator, sessionId: session.id)
+
+        let term = try XCTUnwrap(coordinator.terminals.session(id: session.id))
+        term.sendInput("[linkC task 47608277] You've reached your usage limit")
+        let echoed = try await waitUntil { term.recentOutput(lines: 20).contains("reached your usage limit") }
+        XCTAssertTrue(echoed, "the mock agent never echoed the brief back")
+
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: session.id), "linkC's own text is not a limit")
+        XCTAssertNil(try InboxStore(workspaceRoot: ws).isAgentLimited(agent: .claude), "no cooldown may be recorded")
+        XCTAssertNotEqual(coordinator.store.session(id: session.id)?.state, .error, "the session must not be sidelined")
+    }
+
+    /// Test 3e: The agent's own banner still counts — the guard above must not deafen detection.
+    @MainActor
+    func testAnAgentsOwnLimitBannerIsStillDetected() async throws {
+        let ws = tempDir.path
+        let script = tempDir.appendingPathComponent("limited_agent.sh")
+        try "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nprintf 'Error: Rate limit reached. Please wait before retrying.\\r\\n'\nexec /bin/cat\n"
+            .write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let coordinator = makeCoordinator(agentPathResolver: { _ in script.path })
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: ws, agent: .cursor)
+        let term = try XCTUnwrap(coordinator.terminals.session(id: session.id))
+        let shown = try await waitUntil { term.recentOutput(lines: 20).contains("Rate limit reached") }
+        XCTAssertTrue(shown, "the mock agent never printed its banner")
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id), "the agent's own banner is a limit")
+        XCTAssertNotNil(try InboxStore(workspaceRoot: ws).isAgentLimited(agent: .cursor))
+    }
+
     /// Test 2e: A tick for a workspace that no longer exists spawns nothing and does not recreate the directory.
     @MainActor
     func testMissingWorkspaceTickSpawnsNothingAndDoesNotRecreateDirectory() throws {

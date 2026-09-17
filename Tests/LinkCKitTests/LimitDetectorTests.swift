@@ -3,6 +3,43 @@ import XCTest
 
 final class LimitDetectorTests: XCTestCase {
 
+    // MARK: - linkC's own text
+
+    /// A brief linkC typed into a terminal can quote a limit phrase — the reroute briefs it used to
+    /// invent did exactly that — and the terminal echoes it straight back. Reading that as the
+    /// agent's own exhaustion banner recorded a limit nobody hit.
+    func testAPhraseLinkCTypedIsNotTheAgentsOwnBanner() {
+        let brief = "[linkC task 47608277 from Claude Code]\nTask rerouted due to rate limit (You've reached your usage limit). Inspect .linkc/HANDOFF.md and continue."
+        let screen = "❯ \n\(brief)\n"
+
+        XCTAssertNil(
+            LimitDetector.detectLimit(inOutput: screen, agent: .claude, ignoringInjected: [brief]),
+            "linkC's own injected text is not the agent reporting a limit"
+        )
+        XCTAssertNotNil(
+            LimitDetector.detectLimit(inOutput: screen, agent: .claude),
+            "the same screen without the guard still matches — the guard is what suppresses it"
+        )
+    }
+
+    /// The agent's own banner still counts while an injected brief sits on the same screen.
+    func testABannerOutsideInjectedTextIsStillDetected() {
+        let brief = "[linkC task ABCD1234 from Codex]\nRefactor the migrations and report back."
+        let screen = "\(brief)\n⏺ Error: You've reached your usage limit · resets 3pm\n"
+
+        let match = LimitDetector.detectLimit(inOutput: screen, agent: .claude, ignoringInjected: [brief])
+        XCTAssertEqual(match?.matchedPattern, "You've reached your usage limit")
+    }
+
+    /// A long injected line is wrapped by the terminal, so each screen row is only a fragment of
+    /// what linkC typed — the fragments must be ignored too.
+    func testAWrappedInjectedLineIsIgnored() {
+        let brief = "[linkC task 47608277 from Claude Code] Task rerouted due to rate limit (You've reached your usage limit). Continue from the handoff."
+        let wrapped = "[linkC task 47608277 from Claude Code] Task rerouted due to rate limit (You've\nreached your usage limit). Continue from the handoff."
+
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: wrapped, agent: .claude, ignoringInjected: [brief]))
+    }
+
     // MARK: - Claude Tests
 
     func testClaudeUsageLimitDetected() {

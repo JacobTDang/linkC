@@ -181,6 +181,12 @@ public final class TerminalSession {
     /// defaultDeliverySettle` for the measurement).
     public private(set) var pasteReadySince: Date?
 
+    /// What linkC has typed into this terminal, newest last. The limit detector ignores these rows:
+    /// an injected brief that quotes a limit phrase is linkC's own text coming back, not the agent
+    /// reporting exhaustion. Bounded to the last `injectedHistoryLimit` sends.
+    public private(set) var recentlyInjected: [String] = []
+    private static let injectedHistoryLimit = 20
+
     /// True once the child has turned on bracketed paste — the first moment a multi-line frame
     /// can be delivered as one unit rather than as a run of submitted lines.
     public var acceptsPaste: Bool {
@@ -213,6 +219,12 @@ public final class TerminalSession {
         var trimmed = text
         while trimmed.hasSuffix("\n") || trimmed.hasSuffix("\r") {
             trimmed.removeLast()
+        }
+        // Remember what linkC typed here: the terminal echoes it straight back, and a brief or
+        // notice can quote a rate-limit phrase, which must not read as this agent's own banner.
+        recentlyInjected.append(trimmed)
+        if recentlyInjected.count > Self.injectedHistoryLimit {
+            recentlyInjected.removeFirst(recentlyInjected.count - Self.injectedHistoryLimit)
         }
         let multiLine = !trimmed.isEmpty && trimmed.contains("\n")
         let negotiatedPaste = terminalView.getTerminal().bracketedPasteMode

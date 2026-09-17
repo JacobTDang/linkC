@@ -573,7 +573,16 @@ extension AppCoordinator {
 
         let norm = (session.cwd as NSString).standardizingPath
         let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
-        guard let match = LimitDetector.detectLimit(inOutput: recentOutput, agent: session.agentKind) else { return false }
+        // linkC's own frames are excluded: a brief or notice can quote a limit phrase, and the CLI
+        // echoing that back is not the agent hitting a limit. Only framed injections are dropped —
+        // anything else linkC types (a `/model` command) carries no such text, and narrowing it
+        // this way keeps a banner the agent itself printed detectable even on a row linkC also sent.
+        let framed = (terminals.session(id: sessionId)?.recentlyInjected ?? []).filter(LinkCFrame.beginsWithMarker)
+        guard let match = LimitDetector.detectLimit(
+            inOutput: recentOutput,
+            agent: session.agentKind,
+            ignoringInjected: framed
+        ) else { return false }
 
         let inboxStore = InboxStore(workspaceRoot: norm)
         do {
