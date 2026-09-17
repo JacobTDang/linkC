@@ -290,7 +290,9 @@ extension AppCoordinator {
                 NSLog("[linkC relay] dispatchTasks: task %@ mark delivered — %@", task.shortId, String(describing: error))
                 continue
             }
-            terminals.sendInput(sessionId: session.id, text: Self.deliveryFrame(for: task))
+            let frame = Self.deliveryFrame(for: task)
+            terminals.sendInput(sessionId: session.id, text: frame)
+            recordInjection(sessionId: session.id, text: frame)
             store.updateState(id: session.id, to: .working)
         }
         return false
@@ -370,6 +372,7 @@ extension AppCoordinator {
                 continue
             }
             terminals.sendInput(sessionId: session.id, text: message.prompt)
+            recordInjection(sessionId: session.id, text: message.prompt)
             // A hand switch makes the pin a lie. Re-derive it here, where the switch actually
             // happens: an id that maps to a tier takes it, an unmapped one clears the pin, and a
             // session with no pin receives no tiered work.
@@ -573,15 +576,15 @@ extension AppCoordinator {
 
         let norm = (session.cwd as NSString).standardizingPath
         let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
-        // linkC's own frames are excluded: a brief or notice can quote a limit phrase, and the CLI
-        // echoing that back is not the agent hitting a limit. Only framed injections are dropped —
-        // anything else linkC types (a `/model` command) carries no such text, and narrowing it
-        // this way keeps a banner the agent itself printed detectable even on a row linkC also sent.
-        let framed = (terminals.session(id: sessionId)?.recentlyInjected ?? []).filter(LinkCFrame.beginsWithMarker)
+        // linkC's own recent injections are excluded: a brief or notice can quote a limit phrase,
+        // and the CLI echoing that back is not the agent hitting a limit. Bounded by
+        // `injectedEchoWindow`, not by framing — an unframed injection (a legacy v1 message with no
+        // `kind`) is guarded exactly like a framed one, and the window means a real banner from
+        // this agent is never suppressed forever (see `injectedEchoWindow`'s doc for the trade-off).
         guard let match = LimitDetector.detectLimit(
             inOutput: recentOutput,
             agent: session.agentKind,
-            ignoringInjected: framed
+            ignoringInjected: recentlyInjectedTexts(sessionId: sessionId)
         ) else { return false }
 
         let inboxStore = InboxStore(workspaceRoot: norm)

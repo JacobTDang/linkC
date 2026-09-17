@@ -60,6 +60,27 @@ public final class AppCoordinator {
     /// Workspaces with a verification run in flight, mapped to the task id running there — at
     /// most one run per workspace. The task id lets expiry skip exactly the task being verified.
     var verificationsInFlight: [String: String] = [:]
+    /// What linkC has typed into each session's terminal, newest last, keyed by session id.
+    /// `checkLimitsAndReroute` uses this to recognize its own text echoed back by the CLI so it is
+    /// never read as that agent's own limit banner. Lives here rather than on `TerminalSession`:
+    /// extensions cannot hold stored properties, and the injectable `now()` this needs to bound by
+    /// time already lives on the coordinator. Bounded to the last `injectedHistoryLimit` entries
+    /// per session; recorded by every coordinator call that injects text into a session
+    /// (`switchModel`, `dispatchTasks`, `dispatchMessages` — see `recordInjection`).
+    private var injectedText: [String: [(text: String, at: Date)]] = [:]
+    private static let injectedHistoryLimit = 20
+    /// How long an injection is still recognized as linkC's own echo, measured against `now()`.
+    /// Time-bound, not identity- or framing-bound: an unframed injection (a legacy v1 message row
+    /// with no `kind`, dispatched as `.task`) is guarded exactly like a framed one, and any
+    /// injection — framed or not — stops being ignored once it ages out.
+    ///
+    /// Trade-off, accepted deliberately: an echo still sitting on screen after this window can
+    /// again read as a banner (a false positive limit). That is preferred over the alternative —
+    /// guarding by identity/framing with no time bound — which let a brief quoting a limit phrase
+    /// suppress the agent's OWN later banner forever: a real limit missed, the agent left stuck
+    /// holding a task with nobody told.
+    static let injectedEchoWindow: TimeInterval = 180
+
     /// A teammate spawn the relay could not complete.
     struct SpawnFailure: Equatable, Sendable {
         let agent: AgentKind
@@ -356,6 +377,7 @@ public final class AppCoordinator {
         try? FileManager.default.removeItem(at: settingsFile)
         notifications.forget(sessionId)
         usageTracker?.unbind(sessionId: sessionId)
+        injectedText.removeValue(forKey: sessionId)
         // The session ended or was stopped — keep its manifest entry but stamp it, so it becomes
         // a restorable card. (No-op when there is no entry, e.g. a launch that failed before start.)
         manifest.markEnded(linkcId: sessionId, at: Date())
@@ -426,6 +448,30 @@ public final class AppCoordinator {
     /// this is the relay's access point onto it.
     func tier(forModel model: String, agent: AgentKind) -> ModelTier? {
         modelSettings().tier(forModel: model, agent: agent)
+    }
+
+    /// Records that linkC just typed `text` into `sessionId`'s terminal, timestamped with the
+    /// coordinator's injectable `now()` — never `Date()` directly, so a test can move the clock
+    /// forward past `injectedEchoWindow` instead of sleeping through it. Every call the coordinator
+    /// makes to inject text into a session must call this right alongside `terminals.sendInput`.
+    func recordInjection(sessionId: String, text: String) {
+        var entries = injectedText[sessionId] ?? []
+        entries.append((text: text, at: now()))
+        if entries.count > Self.injectedHistoryLimit {
+            entries.removeFirst(entries.count - Self.injectedHistoryLimit)
+        }
+        injectedText[sessionId] = entries
+    }
+
+    /// Everything linkC has typed into `sessionId`'s terminal within `injectedEchoWindow` of
+    /// `now()` — passed to the limit detector so a still-fresh echo of linkC's own text is not
+    /// read as the agent's own banner. No marker filtering: an unframed injection is bounded by
+    /// this same window.
+    func recentlyInjectedTexts(sessionId: String) -> [String] {
+        let cutoff = now()
+        return (injectedText[sessionId] ?? [])
+            .filter { cutoff.timeIntervalSince($0.at) <= Self.injectedEchoWindow }
+            .map(\.text)
     }
 
     /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it when
@@ -860,6 +906,7 @@ public final class AppCoordinator {
         }
         let cmd = AgentModelCatalog.interactiveSwitchCommand(model: modelName, for: agent)
         terminals.sendInput(sessionId: session.id, text: cmd)
+        recordInjection(sessionId: session.id, text: cmd)
         return "Switched \(agent.displayName) model to '\(modelName)' in session \(session.id)."
     }
 

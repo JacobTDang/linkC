@@ -117,6 +117,45 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(ready, "mock agent session \(sessionId) never negotiated bracketed paste")
     }
 
+    /// A coordinator whose `.claude` agent is a mock script that negotiates bracketed paste and
+    /// immediately prints `banner` before handing off to `cat` — for tests that must prove a limit
+    /// is read from the agent's own output, not from text linkC typed into the terminal. `claudePath`
+    /// (not `agentPathResolver`) is what a `.claude` session launches through, so this builds the
+    /// coordinator directly rather than through `makeCoordinator`. Non-claude agent kinds still
+    /// resolve to the same plain mock agent script `makeCoordinator` uses.
+    @MainActor
+    private func makeLimitedClaudeCoordinator(
+        banner: String,
+        verifier: any TaskVerifier = VerificationRunner()
+    ) throws -> AppCoordinator {
+        let bannerScript = tempDir.appendingPathComponent("limited_claude_agent_\(UUID().uuidString).sh")
+        try "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nprintf '\(banner)\\r\\n'\nexec /bin/cat\n"
+            .write(to: bannerScript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bannerScript.path)
+
+        let plainScript = tempDir.appendingPathComponent("mock_agent.sh")
+        if !FileManager.default.fileExists(atPath: plainScript.path) {
+            try "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
+                .write(to: plainScript, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: plainScript.path)
+        }
+
+        let settingsDir = tempDir.appendingPathComponent("settings_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+        return AppCoordinator(
+            terminals: TerminalSessionManager(),
+            hookServer: HookServer(port: 0),
+            notifications: NotificationManager(sink: RecordingSink(), now: { Date() }),
+            claudePath: bannerScript.path,
+            settingsDir: settingsDir,
+            userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
+            manifestDir: tempDir.appendingPathComponent("manifest_\(UUID().uuidString)"),
+            agentPathResolver: { _ in plainScript.path },
+            verifier: verifier,
+            isWatching: { _ in false }
+        )
+    }
+
     // MARK: - Test Cases
 
     /// Test 1: A queued task auto-spawns the assignee but waits for it to come up before injecting.
@@ -505,25 +544,72 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(echoed)
     }
 
-    /// Test 3d: A brief linkC typed into a terminal is echoed straight back by the CLI. When that
-    /// brief quotes a limit phrase — the reroute briefs did — the echo must not be read as this
-    /// agent hitting its limit, which recorded a cooldown and errored the session for 15 minutes.
+    /// Test 3d: A message linkC relays into a terminal is echoed straight back by the CLI. When
+    /// that message quotes a limit phrase — a completion line from a peer legitimately can — the
+    /// echo must not be read as this agent hitting its limit, which recorded a cooldown and
+    /// errored the session for 15 minutes. Goes through the real relay path (an enqueued message,
+    /// ticked and delivered) rather than calling `sendInput` directly: recording now happens
+    /// inside the coordinator's own dispatch, so a direct `sendInput` would never be recorded.
     @MainActor
     func testAnInjectedBriefQuotingALimitPhraseIsNotALimit() async throws {
         let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
         let coordinator = makeCoordinator()
         defer { coordinator.shutdown() }
         let session = try coordinator.newSession(cwd: ws, agent: .claude)
-        try await waitForPasteReady(coordinator, sessionId: session.id)
+        coordinator.store.updateState(id: session.id, to: .ready)
 
-        let term = try XCTUnwrap(coordinator.terminals.session(id: session.id))
-        term.sendInput("[linkC task 47608277] You've reached your usage limit")
-        let echoed = try await waitUntil { term.recentOutput(lines: 20).contains("reached your usage limit") }
-        XCTAssertTrue(echoed, "the mock agent never echoed the brief back")
+        _ = try inbox.enqueue(
+            from: .codex, to: .claude, kind: .completion, taskId: "abcdef12-0000",
+            body: "You've reached your usage limit"
+        )
+        coordinator.processPendingMessages(workspacePath: ws)
+        let echoed = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 20).contains("reached your usage limit") ?? false
+        }
+        XCTAssertTrue(echoed, "the mock agent never echoed the relayed message back")
 
         XCTAssertFalse(coordinator.checkLimitsAndReroute(for: session.id), "linkC's own text is not a limit")
-        XCTAssertNil(try InboxStore(workspaceRoot: ws).isAgentLimited(agent: .claude), "no cooldown may be recorded")
+        XCTAssertNil(try inbox.isAgentLimited(agent: .claude), "no cooldown may be recorded")
         XCTAssertNotEqual(coordinator.store.session(id: session.id)?.state, .error, "the session must not be sidelined")
+    }
+
+    /// Critical: the guard above is bound by time, not by identity — an echo of linkC's own text
+    /// that ages past `injectedEchoWindow` must again be read as a real banner. Without a time
+    /// bound, a brief quoting a limit phrase would suppress the agent's OWN later banner forever:
+    /// a real limit missed, the agent left stuck holding a task with nobody told.
+    @MainActor
+    func testAnInjectionOlderThanTheEchoWindowNoLongerSuppressesABanner() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+
+        _ = try inbox.enqueue(
+            from: .codex, to: .claude, kind: .completion, taskId: "abcdef12-0000",
+            body: "You've reached your usage limit"
+        )
+        coordinator.processPendingMessages(workspacePath: ws)
+        let echoed = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 20).contains("reached your usage limit") ?? false
+        }
+        XCTAssertTrue(echoed, "the mock agent never echoed the relayed message back")
+
+        // Still fresh: the guard is in effect, exactly like the test above.
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: session.id), "a fresh echo of linkC's own text is not a limit")
+        XCTAssertNil(try inbox.isAgentLimited(agent: .claude))
+
+        // The same screen, untouched — but the clock has moved past the echo window. The row is no
+        // longer recognizable as linkC's own recent text, so it is read as a real banner.
+        clock.set(clock.now().addingTimeInterval(AppCoordinator.injectedEchoWindow + 1))
+        XCTAssertTrue(
+            coordinator.checkLimitsAndReroute(for: session.id),
+            "an echo older than the window can no longer suppress a real banner"
+        )
+        XCTAssertNotNil(try inbox.isAgentLimited(agent: .claude), "the (now-stale) banner must be recorded as a real limit")
     }
 
     /// Test 3e: The agent's own banner still counts — the guard above must not deafen detection.
@@ -732,19 +818,22 @@ final class AppCoordinatorRelayTests: XCTestCase {
     @MainActor
     func testSampleAgentStatesPreservesErrorStateOnRateLimit() async throws {
         let ws = tempDir.path
-        let coordinator = makeCoordinator()
+        let script = tempDir.appendingPathComponent("limited_codex_agent.sh")
+        try "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nprintf '429 Too Many Requests\\r\\n'\nexec /bin/cat\n"
+            .write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let coordinator = makeCoordinator(agentPathResolver: { _ in script.path })
         defer { coordinator.shutdown() }
 
-        // Create a non-Claude session in .working state
+        // Create a non-Claude session in .working state, whose own mock agent prints the banner.
         let session = try coordinator.newSession(cwd: ws, agent: .codex)
         coordinator.store.updateState(id: session.id, to: .working)
 
-        // Inject rate limit pattern into terminal buffer
-        coordinator.terminals.sendInput(sessionId: session.id, text: "429 Too Many Requests\n")
         let outputReady = try await waitUntil {
             coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("429 Too Many Requests") ?? false
         }
-        XCTAssertTrue(outputReady)
+        XCTAssertTrue(outputReady, "the mock agent never printed its banner")
 
         // Run sampleAgentStates (which runs rate limit check then activity check in same tick)
         coordinator.sampleAgentStates()
@@ -954,7 +1043,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
     func testRerouteSkipsCopyWhenOriginalAlreadyDone() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
-        let coordinator = makeCoordinator()
+        let coordinator = try makeLimitedClaudeCoordinator(banner: "Rate limit reached. Please try again later.")
         defer { coordinator.shutdown() }
 
         let sourceSession = try coordinator.newSession(cwd: ws, agent: .claude)
@@ -972,11 +1061,10 @@ final class AppCoordinatorRelayTests: XCTestCase {
         seeded.tasks.append(staleOpenRecord)
         try inbox.saveRaw(seeded)
 
-        coordinator.terminals.sendInput(sessionId: sourceSession.id, text: "Rate limit reached. Please try again later.\n")
         let outputReady = try await waitUntil {
             coordinator.terminals.session(id: sourceSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
         }
-        XCTAssertTrue(outputReady)
+        XCTAssertTrue(outputReady, "the mock agent never printed its banner")
 
         XCTAssertTrue(coordinator.checkLimitsAndReroute(for: sourceSession.id))
 
@@ -1488,7 +1576,9 @@ final class AppCoordinatorRelayTests: XCTestCase {
     func testRerouteOfAVerifiedTaskKeepsItsVerificationAndGate() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
-        let coordinator = makeCoordinator(verifier: ScriptedVerifier())
+        let coordinator = try makeLimitedClaudeCoordinator(
+            banner: "Rate limit reached. Please try again later.", verifier: ScriptedVerifier()
+        )
         defer { coordinator.shutdown() }
 
         let source = try coordinator.newSession(cwd: ws, agent: .claude)
@@ -1499,11 +1589,10 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try inbox.resolveGate(taskId: original.id, verdict: .fixture(passed: true, sha: base40, exit: 1))
         try inbox.markTaskDelivered(taskId: original.id, sessionId: source.id)
 
-        coordinator.terminals.sendInput(sessionId: source.id, text: "Rate limit reached. Please try again later.\n")
         let outputReady = try await waitUntil {
             coordinator.terminals.session(id: source.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
         }
-        XCTAssertTrue(outputReady)
+        XCTAssertTrue(outputReady, "the mock agent never printed its banner")
         XCTAssertTrue(coordinator.checkLimitsAndReroute(for: source.id))
 
         let gated = try XCTUnwrap(inbox.task(id: original.id))
