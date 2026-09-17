@@ -101,21 +101,78 @@ public struct LimitDetector: Sendable {
         return ansiRegex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
     }
 
-    /// Drops the rows that linkC itself typed into a terminal. A brief or notice can quote a limit
-    /// phrase, the terminal echoes it straight back, and reading that as the agent's own exhaustion
-    /// banner records a limit nobody hit. Matched by containment, so a row the terminal wrapped is
-    /// dropped along with the whole line it came from.
+    /// Finds the first occurrence of `needle` in `haystack`, or nil if it is not present in full.
+    /// A hand-rolled scan rather than a stdlib/regex search: it only needs to work over plain
+    /// `[Character]` and returns index ranges that line up directly with `firstIndex`/`removeSubrange`.
+    private static func firstRange(of needle: [Character], in haystack: [Character]) -> Range<Int>? {
+        guard !needle.isEmpty, needle.count <= haystack.count else { return nil }
+        let limit = haystack.count - needle.count
+        var start = 0
+        while start <= limit {
+            var matched = true
+            for offset in 0..<needle.count where haystack[start + offset] != needle[offset] {
+                matched = false
+                break
+            }
+            if matched { return start..<(start + needle.count) }
+            start += 1
+        }
+        return nil
+    }
+
+    /// Removes each entry of `injected` from `text`, once, by content — not by row, and not by
+    /// age. A brief or notice can quote a limit phrase; the terminal echoes it straight back, and
+    /// reading that echo as the agent's own exhaustion banner records a limit nobody hit. But a
+    /// row-containment guard (an earlier attempt) over-suppressed: a standalone banner row that is
+    /// just the phrase is also, trivially, a substring of a brief that quotes it, so dropping any
+    /// row found inside any injection dropped the real banner too.
+    ///
+    /// So matching here is content-based and single-use: build a whitespace-free form of `text`
+    /// alongside a map from each whitespace-free character back to its index in `text` (whitespace
+    /// insensitivity matters because the terminal wraps a long injected line across rows, sometimes
+    /// splitting mid-word with no space left at the break at all). For each injected entry, find its
+    /// FIRST occurrence in the *remaining* whitespace-free text; if the whole entry is present,
+    /// delete the original characters it maps to and also drop that span from the whitespace-free
+    /// form/map, so a second copy of the same text — a real banner repeating a phrase an older brief
+    /// quoted — is not also removed. An entry not fully present (say, its first half has scrolled
+    /// off) suppresses nothing.
     private static func withoutInjected(_ text: String, injected: [String]) -> String {
         let typed = injected.map(stripAnsi).filter { !$0.isEmpty }
         guard !typed.isEmpty else { return text }
-        return text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { row in
-                let trimmed = row.trimmingCharacters(in: .whitespaces)
-                guard !trimmed.isEmpty else { return true }
-                return !typed.contains { $0.contains(trimmed) }
+
+        let chars = Array(text)
+        var condensed: [Character] = []
+        var indexMap: [Int] = []
+        condensed.reserveCapacity(chars.count)
+        indexMap.reserveCapacity(chars.count)
+        for (i, c) in chars.enumerated() where !c.isWhitespace {
+            condensed.append(c)
+            indexMap.append(i)
+        }
+
+        var removed = [Bool](repeating: false, count: chars.count)
+
+        for entry in typed {
+            let needle = entry.filter { !$0.isWhitespace }
+            guard !needle.isEmpty else { continue }
+            guard let range = firstRange(of: Array(needle), in: condensed) else { continue }
+            for pos in range {
+                removed[indexMap[pos]] = true
             }
-            .joined(separator: "\n")
+            // Drop the matched span from the working copies so a later entry (or a repeat of this
+            // same entry) cannot match the span just removed — only the banner's own occurrence,
+            // elsewhere in the text, remains findable.
+            condensed.removeSubrange(range)
+            indexMap.removeSubrange(range)
+        }
+
+        guard removed.contains(true) else { return text }
+        var result = ""
+        result.reserveCapacity(chars.count)
+        for (i, c) in chars.enumerated() where !removed[i] {
+            result.append(c)
+        }
+        return result
     }
 
     /// Inspects terminal output text for known rate limit or quota ceiling signatures of `agent`.

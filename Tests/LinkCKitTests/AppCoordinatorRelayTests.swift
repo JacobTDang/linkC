@@ -574,12 +574,15 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotEqual(coordinator.store.session(id: session.id)?.state, .error, "the session must not be sidelined")
     }
 
-    /// Critical: the guard above is bound by time, not by identity — an echo of linkC's own text
-    /// that ages past `injectedEchoWindow` must again be read as a real banner. Without a time
-    /// bound, a brief quoting a limit phrase would suppress the agent's OWN later banner forever:
-    /// a real limit missed, the agent left stuck holding a task with nobody told.
+    /// The reviewer's exact scenario that sank the time-bounded version: a `.completion` is only
+    /// ever delivered to an IDLE session, and delivering it does not make the agent do anything —
+    /// nothing forces new output. `recentOutput` reads the live viewport, so the same echo row sits
+    /// there completely unchanged no matter how long linkC waits. A fixed time window turned that
+    /// into a near-deterministic false positive: once the window elapsed, the very same unchanged
+    /// echo started reading as a fresh banner. Suppression here has no window to outlive — advancing
+    /// the clock by a day must change nothing.
     @MainActor
-    func testAnInjectionOlderThanTheEchoWindowNoLongerSuppressesABanner() async throws {
+    func testAnInjectedBriefQuotingALimitPhraseIsStillNotALimitAfterManySimulatedMinutes() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         let clock = ControllableClock()
@@ -598,18 +601,18 @@ final class AppCoordinatorRelayTests: XCTestCase {
         }
         XCTAssertTrue(echoed, "the mock agent never echoed the relayed message back")
 
-        // Still fresh: the guard is in effect, exactly like the test above.
         XCTAssertFalse(coordinator.checkLimitsAndReroute(for: session.id), "a fresh echo of linkC's own text is not a limit")
         XCTAssertNil(try inbox.isAgentLimited(agent: .claude))
 
-        // The same screen, untouched — but the clock has moved past the echo window. The row is no
-        // longer recognizable as linkC's own recent text, so it is read as a real banner.
-        clock.set(clock.now().addingTimeInterval(AppCoordinator.injectedEchoWindow + 1))
-        XCTAssertTrue(
+        // No further output arrives — the session stays idle, and the same unchanged echo is all
+        // that is on screen. Advance the clock a full simulated day, well past the old 180s window.
+        clock.set(clock.now().addingTimeInterval(60 * 60 * 24))
+        XCTAssertFalse(
             coordinator.checkLimitsAndReroute(for: session.id),
-            "an echo older than the window can no longer suppress a real banner"
+            "an unchanged echo of linkC's own text must never age into a false-positive limit"
         )
-        XCTAssertNotNil(try inbox.isAgentLimited(agent: .claude), "the (now-stale) banner must be recorded as a real limit")
+        XCTAssertNil(try inbox.isAgentLimited(agent: .claude), "still no cooldown recorded, however much time passed")
+        XCTAssertNotEqual(coordinator.store.session(id: session.id)?.state, .error, "the session must not be sidelined")
     }
 
     /// Test 3e: The agent's own banner still counts — the guard above must not deafen detection.

@@ -40,6 +40,63 @@ final class LimitDetectorTests: XCTestCase {
         XCTAssertNil(LimitDetector.detectLimit(inOutput: wrapped, agent: .claude, ignoringInjected: [brief]))
     }
 
+    /// `detectLimit` never takes a clock at all — this guard is not bounded by time, unlike the
+    /// rejected `injectedEchoWindow` attempt. An echo of a brief quoting a limit phrase is not a
+    /// limit no matter how long it has sat on screen, because suppression here is entirely by
+    /// content.
+    func testAnEchoOfABriefIsNotALimitNoMatterHowOldNoClockInvolved() {
+        let brief = "[linkC task 9910 from Claude Code] Task rerouted due to rate limit (You've reached your usage limit). Continue from the handoff."
+        let screen = "❯ \n\(brief)\n"
+
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: screen, agent: .claude, ignoringInjected: [brief]))
+    }
+
+    /// This is the exact defect in the rejected "drop any row contained in any recent injection"
+    /// approach: a standalone banner row that is JUST the phrase is also, trivially, a literal
+    /// substring of a brief that quotes the same phrase, so dropping any row found inside any
+    /// injection dropped the real banner too. Only the brief's own occurrence may be removed —
+    /// found once, deleted once — leaving the separate banner intact for the regex to catch.
+    func testAStandaloneBannerSurvivesAlongsideABriefQuotingTheSamePhrase() {
+        let brief = "[linkC task 47608277 from Claude Code]\nTask rerouted due to rate limit (You've reached your usage limit). Inspect .linkc/HANDOFF.md and continue."
+        let banner = "You've reached your usage limit"
+        let screen = "❯ \n\(brief)\n\n\(banner)\n"
+
+        let match = LimitDetector.detectLimit(inOutput: screen, agent: .claude, ignoringInjected: [brief])
+        XCTAssertEqual(
+            match?.matchedPattern, "You've reached your usage limit",
+            "the brief's one occurrence of the phrase is removed but the separate banner row still matches"
+        )
+    }
+
+    /// A terminal wrap can land mid-word, with no space at the break at all — not just at a
+    /// convenient word boundary. Matching must be whitespace-insensitive enough to see through
+    /// that. The word split here ("Continue" into "Cont" + "inue") is deliberately NOT the trigger
+    /// phrase itself: if whitespace-insensitive matching ever regressed to only treating a literal
+    /// space as whitespace (missing the inserted newline), the whole injected entry would fail to
+    /// match as one contiguous span, nothing would be removed, and the untouched, fully intact
+    /// "You've reached your usage limit" earlier in the same line would then be read as a real
+    /// banner — which is exactly the failure this test is built to catch.
+    func testAMidWordWrappedInjectedLineIsIgnored() {
+        let brief = "[linkC task 9182 from Claude Code] Task rerouted due to rate limit (You've reached your usage limit). Continue from the handoff."
+        let wrapped = "[linkC task 9182 from Claude Code] Task rerouted due to rate limit (You've reached your usage limit). Cont\ninue from the handoff."
+
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: wrapped, agent: .claude, ignoringInjected: [brief]))
+    }
+
+    /// An injected entry only partially on screen — its first half already scrolled off — must
+    /// suppress nothing at all. A banner sitting in the still-visible half is still detected.
+    func testAPartiallyScrolledInjectedEntrySuppressesNothing() {
+        let brief = "[linkC task 55 from Claude Code] Task rerouted due to rate limit (You've reached your usage limit). Continue from the handoff."
+        // Only the tail of the brief remains on screen; the banner below it is fully visible.
+        let visibleHalf = "your usage limit). Continue from the handoff.\n⏺ Error: You've reached your usage limit\n"
+
+        let match = LimitDetector.detectLimit(inOutput: visibleHalf, agent: .claude, ignoringInjected: [brief])
+        XCTAssertEqual(
+            match?.matchedPattern, "You've reached your usage limit",
+            "an injected entry not fully present on screen must suppress nothing"
+        )
+    }
+
     // MARK: - Claude Tests
 
     func testClaudeUsageLimitDetected() {

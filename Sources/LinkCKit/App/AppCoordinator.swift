@@ -63,23 +63,20 @@ public final class AppCoordinator {
     /// What linkC has typed into each session's terminal, newest last, keyed by session id.
     /// `checkLimitsAndReroute` uses this to recognize its own text echoed back by the CLI so it is
     /// never read as that agent's own limit banner. Lives here rather than on `TerminalSession`:
-    /// extensions cannot hold stored properties, and the injectable `now()` this needs to bound by
-    /// time already lives on the coordinator. Bounded to the last `injectedHistoryLimit` entries
+    /// extensions cannot hold stored properties. Bounded to the last `injectedHistoryLimit` entries
     /// per session; recorded by every coordinator call that injects text into a session
     /// (`switchModel`, `dispatchTasks`, `dispatchMessages` — see `recordInjection`).
-    private var injectedText: [String: [(text: String, at: Date)]] = [:]
-    private static let injectedHistoryLimit = 20
-    /// How long an injection is still recognized as linkC's own echo, measured against `now()`.
-    /// Time-bound, not identity- or framing-bound: an unframed injection (a legacy v1 message row
-    /// with no `kind`, dispatched as `.task`) is guarded exactly like a framed one, and any
-    /// injection — framed or not — stops being ignored once it ages out.
     ///
-    /// Trade-off, accepted deliberately: an echo still sitting on screen after this window can
-    /// again read as a banner (a false positive limit). That is preferred over the alternative —
-    /// guarding by identity/framing with no time bound — which let a brief quoting a limit phrase
-    /// suppress the agent's OWN later banner forever: a real limit missed, the agent left stuck
-    /// holding a task with nobody told.
-    static let injectedEchoWindow: TimeInterval = 180
+    /// No time bound: suppression in `LimitDetector` is by content, once per injected entry, not by
+    /// age (see `LimitDetector.withoutInjected`). A previous time-bounded version guarded a fixed
+    /// window and then let the same unchanged echo start reading as a fresh banner once the window
+    /// elapsed — a `.completion` only ever lands on an IDLE session, and delivering it does not make
+    /// the agent do anything, so nothing forces new output; the stale echo just sat there and
+    /// "aged into" a false positive. Content-based, single-use suppression has no such window to
+    /// outlive, and still lets a real banner through when it repeats a phrase an older brief quoted
+    /// — that occurrence is not the one already removed.
+    private var injectedText: [String: [String]] = [:]
+    private static let injectedHistoryLimit = 20
 
     /// A teammate spawn the relay could not complete.
     struct SpawnFailure: Equatable, Sendable {
@@ -450,28 +447,23 @@ public final class AppCoordinator {
         modelSettings().tier(forModel: model, agent: agent)
     }
 
-    /// Records that linkC just typed `text` into `sessionId`'s terminal, timestamped with the
-    /// coordinator's injectable `now()` — never `Date()` directly, so a test can move the clock
-    /// forward past `injectedEchoWindow` instead of sleeping through it. Every call the coordinator
+    /// Records that linkC just typed `text` into `sessionId`'s terminal. Every call the coordinator
     /// makes to inject text into a session must call this right alongside `terminals.sendInput`.
     func recordInjection(sessionId: String, text: String) {
         var entries = injectedText[sessionId] ?? []
-        entries.append((text: text, at: now()))
+        entries.append(text)
         if entries.count > Self.injectedHistoryLimit {
             entries.removeFirst(entries.count - Self.injectedHistoryLimit)
         }
         injectedText[sessionId] = entries
     }
 
-    /// Everything linkC has typed into `sessionId`'s terminal within `injectedEchoWindow` of
-    /// `now()` — passed to the limit detector so a still-fresh echo of linkC's own text is not
-    /// read as the agent's own banner. No marker filtering: an unframed injection is bounded by
-    /// this same window.
+    /// Everything linkC has typed into `sessionId`'s terminal, passed to the limit detector so an
+    /// echo of linkC's own text is never read as the agent's own banner. No age filtering: the
+    /// detector suppresses each entry once, by content (see `LimitDetector.withoutInjected`), so
+    /// there is nothing here for a clock to bound.
     func recentlyInjectedTexts(sessionId: String) -> [String] {
-        let cutoff = now()
-        return (injectedText[sessionId] ?? [])
-            .filter { cutoff.timeIntervalSince($0.at) <= Self.injectedEchoWindow }
-            .map(\.text)
+        injectedText[sessionId] ?? []
     }
 
     /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it when

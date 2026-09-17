@@ -576,11 +576,12 @@ extension AppCoordinator {
 
         let norm = (session.cwd as NSString).standardizingPath
         let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
-        // linkC's own recent injections are excluded: a brief or notice can quote a limit phrase,
-        // and the CLI echoing that back is not the agent hitting a limit. Bounded by
-        // `injectedEchoWindow`, not by framing — an unframed injection (a legacy v1 message with no
-        // `kind`) is guarded exactly like a framed one, and the window means a real banner from
-        // this agent is never suppressed forever (see `injectedEchoWindow`'s doc for the trade-off).
+        // Everything linkC has typed into this session is excluded: a brief or notice can quote a
+        // limit phrase, and the CLI echoing that back is not the agent hitting a limit. Suppressed
+        // by content, once per injected entry, with no time bound and no framing requirement — an
+        // unframed injection (a legacy v1 message with no `kind`) is guarded exactly like a framed
+        // one — so a real banner that repeats a phrase an older brief quoted still matches (see
+        // `LimitDetector.withoutInjected`).
         guard let match = LimitDetector.detectLimit(
             inOutput: recentOutput,
             agent: session.agentKind,
