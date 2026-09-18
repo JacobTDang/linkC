@@ -49,7 +49,9 @@ measured with `AppCoordinator`'s injectable `now`.
    (below) has not changed for more than 15 minutes.
 4. **Notice cannot land — 5 minutes.** A `.completion` message about a task has been `queued` for
    more than 5 minutes (`PendingMessage.createdAt`). This one is about the orchestrator, not the
-   worker, and is reported only to the user.
+   worker, and is reported only to the user. As built it covers every message except a task brief
+   (peer notes and commands too): since only a brief ever spawns a session, any other message can
+   wait indefinitely, and the user should hear about each one the same way.
 
 A long quiet build or test run is indistinguishable from a hang from outside. Because the only action
 is a notice, a false alarm costs one line and one notification.
