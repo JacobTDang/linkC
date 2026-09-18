@@ -152,6 +152,53 @@ final class BlackboardStoreTests: XCTestCase {
         XCTAssertEqual(board.activeAgents.filter { $0.pid == 4242 }.count, 1)
     }
 
+    /// Presence only has to outlive the 15-minute prune. Rewriting the board on every heartbeat —
+    /// once a second per agent, plus once per MCP call — showed every agent that had read the file a
+    /// diff on each edit. The record is seeded 10 s old so a rewrite could never produce identical
+    /// bytes by landing in the same second.
+    func testAFreshHeartbeatDoesNotRewriteTheBoard() throws {
+        let store = BlackboardStore(workspaceRoot: tempDir.path)
+        try store.heartbeat(agentKind: .cursor, pid: 4242)
+        var board = try store.load()
+        board.activeAgents[0].lastHeartbeat = Date().addingTimeInterval(-10)
+        try store.saveRaw(board)
+        let file = tempDir.appendingPathComponent(".linkc/blackboard.json")
+        let before = try Data(contentsOf: file)
+
+        try store.heartbeat(agentKind: .cursor, pid: 4242)
+
+        XCTAssertEqual(try Data(contentsOf: file), before, "a heartbeat within the refresh interval must not rewrite the file")
+    }
+
+    func testAHeartbeatOlderThanTheRefreshIntervalIsRefreshed() throws {
+        let store = BlackboardStore(workspaceRoot: tempDir.path)
+        try store.heartbeat(agentKind: .cursor, pid: 4242)
+        var board = try store.load()
+        let aged = Date().addingTimeInterval(-6 * 60)
+        board.activeAgents[0].lastHeartbeat = aged
+        try store.saveRaw(board)
+
+        try store.heartbeat(agentKind: .cursor, pid: 4242)
+
+        let refreshed = try XCTUnwrap(try store.load().activeAgents.first { $0.pid == 4242 })
+        XCTAssertGreaterThan(refreshed.lastHeartbeat, aged.addingTimeInterval(60))
+    }
+
+    func testAStaleAgentIsStillPrunedWhenTheCallerIsFresh() throws {
+        let store = BlackboardStore(workspaceRoot: tempDir.path)
+        try store.heartbeat(agentKind: .cursor, pid: 4242)
+        var board = try store.load()
+        board.activeAgents.append(AgentRecord(
+            agentId: "agent-codex-99", agentKind: .codex, pid: 99, goal: "(idle)",
+            claimedFiles: [], lastHeartbeat: Date().addingTimeInterval(-3600), status: "active"
+        ))
+        try store.saveRaw(board)
+
+        try store.heartbeat(agentKind: .cursor, pid: 4242)
+
+        XCTAssertEqual(try store.load().activeAgents.map(\.pid), [4242], "pruning still happens when nothing else changed")
+    }
+
     /// A crash between the temp write and its rename leaves `.linkc/blackboard.tmp.<uuid>`
     /// behind forever unless something sweeps it. Every successful save does, but only for a
     /// sibling old enough to actually be orphaned — a temp file mid-write by a concurrent
