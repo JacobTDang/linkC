@@ -35,9 +35,17 @@ public struct LimitDetector: Sendable {
     private struct LimitRule: @unchecked Sendable {
         let canonicalPattern: String
         let regex: NSRegularExpression
+        /// How long a match keeps the agent limited; nil uses `defaultCooldown`.
+        let cooldown: TimeInterval?
 
-        init(canonicalPattern: String, regexPattern: String? = nil, options: NSRegularExpression.Options = [.caseInsensitive]) {
+        init(
+            canonicalPattern: String,
+            regexPattern: String? = nil,
+            options: NSRegularExpression.Options = [.caseInsensitive],
+            cooldown: TimeInterval? = nil
+        ) {
             self.canonicalPattern = canonicalPattern
+            self.cooldown = cooldown
             let patternStr = regexPattern ?? NSRegularExpression.escapedPattern(for: canonicalPattern)
             self.regex = (try? NSRegularExpression(pattern: patternStr, options: options)) ?? NSRegularExpression()
         }
@@ -84,7 +92,13 @@ public struct LimitDetector: Sendable {
         LimitRule(canonicalPattern: "quota exceeded", regexPattern: "\\bquota exceeded\\b"),
         // Cursor's own usage-cap error, shown once the account's quota for the selected model is
         // spent. Every turn then fails at once, so without this linkC kept routing work to Cursor.
-        LimitRule(canonicalPattern: "Cursor usage cap", regexPattern: "you(?:'|’)?ve (?:reached|hit) your (?:(?:usage|session|rate) )?limit")
+        // A spent quota does not come back in minutes: wait hours before trying Cursor again, but
+        // not days, since switching Cursor to another model lifts the cap immediately.
+        LimitRule(
+            canonicalPattern: "Cursor usage cap",
+            regexPattern: "you(?:'|’)?ve (?:reached|hit) your (?:(?:usage|session|rate) )?limit",
+            cooldown: 6 * 3600
+        )
     ]
 
     private static func rules(for agent: AgentKind) -> [LimitRule] {
@@ -200,7 +214,7 @@ public struct LimitDetector: Sendable {
                 return LimitMatch(
                     agent: agent,
                     matchedPattern: rule.canonicalPattern,
-                    cooldown: defaultCooldown
+                    cooldown: rule.cooldown ?? defaultCooldown
                 )
             }
         }

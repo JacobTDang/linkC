@@ -58,7 +58,10 @@ public enum DirectoryTrustManager: Sendable {
         if FileManager.default.fileExists(atPath: fileURL.path) {
             content = try String(contentsOf: fileURL, encoding: .utf8)
         }
-        guard !content.contains(header) else { return }
+        // A real table header on its own line — not the same text inside a comment or a value.
+        let listed = content.split(separator: "\n", omittingEmptySubsequences: false)
+            .contains { $0.trimmingCharacters(in: .whitespacesAndNewlines) == header }
+        guard !listed else { return }
 
         if !content.isEmpty {
             if !content.hasSuffix("\n") { content += "\n" }
@@ -89,7 +92,15 @@ public enum DirectoryTrustManager: Sendable {
             }
         }
 
-        var trusted = root["trustedWorkspaces"] as? [String] ?? []
+        var trusted: [String] = []
+        if let existing = root["trustedWorkspaces"] {
+            // Anything but a list of paths is not ours to reshape: replacing it would drop every
+            // folder the user already trusted.
+            guard let paths = existing as? [String] else {
+                throw LinkCError.parse("\(fileURL.path): trustedWorkspaces is not a list of paths")
+            }
+            trusted = paths
+        }
         guard !trusted.contains(norm) else { return }
         trusted.append(norm)
         root["trustedWorkspaces"] = trusted

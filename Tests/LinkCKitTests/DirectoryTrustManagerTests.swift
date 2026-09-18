@@ -61,6 +61,18 @@ final class DirectoryTrustManagerTests: XCTestCase {
         )
     }
 
+    func testCodexTrustIsNotFooledByTheHeaderInsideAComment() throws {
+        let url = tempDir.appendingPathComponent("config.toml")
+        try "# see [projects.\"/Users/developer/projects/demo\"] for notes\n".write(to: url, atomically: true, encoding: .utf8)
+
+        try DirectoryTrustManager.preApproveCodexTrust(workspacePath: "/Users/developer/projects/demo", configURL: url)
+
+        XCTAssertTrue(
+            try String(contentsOf: url, encoding: .utf8).contains("\n[projects.\"/Users/developer/projects/demo\"]\ntrust_level = \"trusted\"\n"),
+            "only a real table header counts as already listed"
+        )
+    }
+
     func testCodexTrustEscapesAQuoteInThePath() throws {
         let url = tempDir.appendingPathComponent("config.toml")
 
@@ -99,6 +111,15 @@ final class DirectoryTrustManagerTests: XCTestCase {
 
         XCTAssertThrowsError(try DirectoryTrustManager.preApproveAgyTrust(workspacePath: "/Users/developer/projects/demo", settingsURL: url))
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "not json", "a file linkC cannot parse is never clobbered")
+    }
+
+    func testAgyTrustRefusesATrustListThatIsNotPaths() throws {
+        let url = tempDir.appendingPathComponent("settings.json")
+        let existing = #"{"trustedWorkspaces":[1,"/Users/developer/projects/other"]}"#
+        try existing.write(to: url, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try DirectoryTrustManager.preApproveAgyTrust(workspacePath: "/Users/developer/projects/demo", settingsURL: url))
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), existing, "an unexpected trust list is never replaced")
     }
 
     func testAgyTrustCreatesTheSettingsWhenMissing() throws {

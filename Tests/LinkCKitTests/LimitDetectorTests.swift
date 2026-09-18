@@ -243,6 +243,15 @@ final class LimitDetectorTests: XCTestCase {
         XCTAssertEqual(match?.agent, .cursor)
     }
 
+    /// A spent quota does not come back in fifteen minutes, so Cursor's cap waits hours before linkC
+    /// tries it again instead of failing a routed task every quarter hour until the quota resets.
+    func testCursorUsageCapWaitsHoursNotMinutes() {
+        let cap = LimitDetector.detectLimit(inOutput: "Error: You've hit your " + "usage limit", agent: .cursor)
+        XCTAssertEqual(cap?.cooldown, 6 * 3600)
+        let rate = LimitDetector.detectLimit(inOutput: "Rate limit " + "reached.", agent: .cursor)
+        XCTAssertEqual(rate?.cooldown, 15 * 60, "an ordinary rate limit keeps the short cooldown")
+    }
+
     func testCursorRateLimitStillDetected() {
         XCTAssertNotNil(LimitDetector.detectLimit(inOutput: "Rate limit " + "reached. Try again later.", agent: .cursor))
     }
