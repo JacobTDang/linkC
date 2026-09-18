@@ -56,7 +56,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         deliverySettle: TimeInterval = 0,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
-        trustHome: URL? = nil
+        userHome: URL? = nil
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -86,7 +86,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             // nil means "use the mock agent script for every kind", matching today's default;
             // a test overrides it (e.g. to simulate a missing executable) by passing its own.
             agentPathResolver: agentPathResolver ?? { _ in scriptURL.path },
-            trustHome: trustHome,
+            userHome: userHome,
             verifier: verifier,
             modelSettings: { models },
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
@@ -284,7 +284,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
     func testLaunchingCodexAndAgyPreApprovesTheFolder() throws {
         let ws = tempDir.path
         let home = tempDir.appendingPathComponent("home")
-        let coordinator = makeCoordinator(trustHome: home)
+        let coordinator = makeCoordinator(userHome: home)
         defer { coordinator.shutdown() }
 
         _ = try coordinator.newSession(cwd: ws, agent: .codex)
@@ -296,6 +296,56 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let settings = home.appendingPathComponent(".gemini/antigravity-cli/settings.json")
         let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: settings)) as? [String: Any])
         XCTAssertEqual(json["trustedWorkspaces"] as? [String], [norm])
+    }
+
+    /// Test 1a3: The default agent's folder trust goes to the given home too — and with no home given,
+    /// linkC writes nothing to real config. The suite used to add every test folder to the
+    /// developer's own ~/.claude.json, over ten thousand of them.
+    @MainActor
+    func testDefaultAgentTrustGoesToTheGivenHomeAndNeverToTheRealOne() throws {
+        let ws = tempDir.path
+        let home = tempDir.appendingPathComponent("home")
+        let withHome = makeCoordinator(userHome: home)
+        defer { withHome.shutdown() }
+        _ = try withHome.newSession(cwd: ws, agent: .claude)
+        let written = try Data(contentsOf: home.appendingPathComponent(".claude.json"))
+        let projects = try XCTUnwrap((try JSONSerialization.jsonObject(with: written) as? [String: Any])?["projects"] as? [String: Any])
+        XCTAssertNotNil(projects[(ws as NSString).standardizingPath], "given a home, the folder is trusted there")
+
+        let unhomed = tempDir.appendingPathComponent("unhomed-workspace").path
+        try FileManager.default.createDirectory(atPath: unhomed, withIntermediateDirectories: true)
+        let bare = makeCoordinator()
+        defer { bare.shutdown() }
+        _ = try bare.newSession(cwd: unhomed, agent: .claude)
+        let real = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+        if let data = try? Data(contentsOf: real) {
+            XCTAssertFalse(
+                String(decoding: data, as: UTF8.self).contains((unhomed as NSString).standardizingPath),
+                "a coordinator with no home must never write the real ~/.claude.json"
+            )
+        }
+    }
+
+    /// Test 1a4: Registering linkC's MCP server rewrites every agent's real config, so it only happens
+    /// when the coordinator is given a home. `start()` in a test used to rewrite them on every run.
+    @MainActor
+    func testStartRegistersTheServerOnlyInTheGivenHome() throws {
+        let home = tempDir.appendingPathComponent("home")
+        let withHome = makeCoordinator(userHome: home)
+        try withHome.start()
+        withHome.shutdown()
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: home.appendingPathComponent(".cursor/mcp.json").path),
+            "given a home, start registers the server there"
+        )
+
+        let real = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor/mcp.json")
+        let before = (try? FileManager.default.attributesOfItem(atPath: real.path))?[.modificationDate] as? Date
+        let bare = makeCoordinator()
+        try bare.start()
+        bare.shutdown()
+        let after = (try? FileManager.default.attributesOfItem(atPath: real.path))?[.modificationDate] as? Date
+        XCTAssertEqual(before, after, "a coordinator with no home must never rewrite the real MCP configs")
     }
 
     /// Test 1b: A task is never handed back to the session that delegated it. That session is the

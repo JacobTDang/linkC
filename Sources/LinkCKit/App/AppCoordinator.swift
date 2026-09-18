@@ -45,10 +45,11 @@ public final class AppCoordinator {
     private let settingsDir: URL
     private let userSettingsURL: URL
     private let claudeJsonURL: URL?
-    /// Home directory whose Codex and Antigravity configs get the launch folder pre-trusted. nil
-    /// skips it: only the production initializer passes the real home, so no test launching a
-    /// mock Codex or agy session ever writes the developer's own config files.
-    private let trustHome: URL?
+    /// The home whose real config files linkC may write: every agent's folder trust, and linkC's MCP
+    /// server registration. nil writes none of them. Only the production initializer passes the real
+    /// home — the test suite used to add each of its temp folders to the developer's own config, over
+    /// ten thousand entries, and rewrite every agent's MCP config on each run.
+    private let userHome: URL?
     /// Persists the session manifest so sessions survive quitting/crashing and can be restored.
     let manifest: WorkspaceManifest
     /// Per-run shared secret baked into every composed settings file and required by the hook
@@ -130,7 +131,7 @@ public final class AppCoordinator {
         manifestDir: URL,
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         claudeJsonURL: URL? = nil,
-        trustHome: URL? = nil,
+        userHome: URL? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
         deliverySettle: TimeInterval = AppCoordinator.defaultDeliverySettle,
@@ -146,7 +147,7 @@ public final class AppCoordinator {
         self.manifest = WorkspaceManifest(directory: manifestDir)
         self.agentPathResolver = agentPathResolver
         self.claudeJsonURL = claudeJsonURL
-        self.trustHome = trustHome
+        self.userHome = userHome
         self.verifier = verifier
         self.modelSettings = modelSettings
         self.deliverySettle = deliverySettle
@@ -176,7 +177,7 @@ public final class AppCoordinator {
             settingsDir: linkCDir,
             userSettingsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/settings.json"),
             manifestDir: linkCDir,
-            trustHome: FileManager.default.homeDirectoryForCurrentUser,
+            userHome: FileManager.default.homeDirectoryForCurrentUser,
             modelSettings: modelSettings,
             isWatching: isWatching
         )
@@ -204,7 +205,14 @@ public final class AppCoordinator {
 
     public func start() throws {
         sweepOrphanedSettingsFiles()
-        try? MCPRegistrar.registerAll()
+        // Registration rewrites every agent's real config, so it needs a home to write to.
+        if let userHome {
+            do {
+                try MCPRegistrar.registerAll(home: userHome)
+            } catch {
+                NSLog("[linkC mcp] start: registering the MCP server failed — %@", String(describing: error))
+            }
+        }
         hookServer.requiredToken = hookToken
         notifications.onActivate = { [weak self] id in
             Task { @MainActor in
@@ -512,7 +520,14 @@ public final class AppCoordinator {
             let env: [String: String] = ["LINKC_SESSION": session.id]
 
             if agent == .claude {
-                try? DirectoryTrustManager.preApproveTrust(workspacePath: cwd, claudeJsonURL: claudeJsonURL)
+                // An explicit trust file wins; otherwise the user's home. With neither, nothing is written.
+                if let trustFile = claudeJsonURL ?? userHome?.appendingPathComponent(".claude.json") {
+                    do {
+                        try DirectoryTrustManager.preApproveTrust(workspacePath: cwd, claudeJsonURL: trustFile)
+                    } catch {
+                        NSLog("[linkC] launch: could not pre-approve trust for %@ — %@", cwd, String(describing: error))
+                    }
+                }
                 executable = claudePath
                 let settingsPath = try writeSettings(for: session)
                 args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
@@ -521,15 +536,15 @@ public final class AppCoordinator {
                 // Codex and agy open a folder they have not seen on a trust dialog; trust it first, as
                 // `preApproveTrust` does for Claude. Detecting that dialog stays the fallback, so a
                 // failure here is logged rather than stopping the launch.
-                if let trustHome {
+                if let userHome {
                     do {
                         switch agent {
                         case .codex:
                             try DirectoryTrustManager.preApproveCodexTrust(
-                                workspacePath: cwd, configURL: trustHome.appendingPathComponent(".codex/config.toml"))
+                                workspacePath: cwd, configURL: userHome.appendingPathComponent(".codex/config.toml"))
                         case .agy:
                             try DirectoryTrustManager.preApproveAgyTrust(
-                                workspacePath: cwd, settingsURL: trustHome.appendingPathComponent(".gemini/antigravity-cli/settings.json"))
+                                workspacePath: cwd, settingsURL: userHome.appendingPathComponent(".gemini/antigravity-cli/settings.json"))
                         default:
                             break
                         }
