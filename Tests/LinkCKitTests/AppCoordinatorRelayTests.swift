@@ -55,7 +55,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
         models: AgentModelSettings = .seeded,
         deliverySettle: TimeInterval = 0,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
-        agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil
+        agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
+        trustHome: URL? = nil
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -85,6 +86,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             // nil means "use the mock agent script for every kind", matching today's default;
             // a test overrides it (e.g. to simulate a missing executable) by passing its own.
             agentPathResolver: agentPathResolver ?? { _ in scriptURL.path },
+            trustHome: trustHome,
             verifier: verifier,
             modelSettings: { models },
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
@@ -273,6 +275,27 @@ final class AppCoordinatorRelayTests: XCTestCase {
         // Answered, the session is idle again, so the same tick hands it the queued brief.
         XCTAssertEqual(try InboxStore(workspaceRoot: ws).task(id: task.id)?.state, .delivered, "an answered dialog must hand the session back to the relay")
         XCTAssertNotEqual(coordinator.store.session(id: session.id)?.state, .waitingPermission)
+    }
+
+    /// Test 1a2: Codex and agy open a folder they have not seen on a trust dialog, so linkC trusts the
+    /// launch folder first, as it already does for Claude. Only when given a home to write to: the
+    /// default is none, so no test ever touches the developer's real config files.
+    @MainActor
+    func testLaunchingCodexAndAgyPreApprovesTheFolder() throws {
+        let ws = tempDir.path
+        let home = tempDir.appendingPathComponent("home")
+        let coordinator = makeCoordinator(trustHome: home)
+        defer { coordinator.shutdown() }
+
+        _ = try coordinator.newSession(cwd: ws, agent: .codex)
+        _ = try coordinator.newSession(cwd: ws, agent: .agy)
+
+        let norm = (ws as NSString).standardizingPath
+        let toml = try String(contentsOf: home.appendingPathComponent(".codex/config.toml"), encoding: .utf8)
+        XCTAssertTrue(toml.contains("[projects.\"\(norm)\"]\ntrust_level = \"trusted\""))
+        let settings = home.appendingPathComponent(".gemini/antigravity-cli/settings.json")
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: settings)) as? [String: Any])
+        XCTAssertEqual(json["trustedWorkspaces"] as? [String], [norm])
     }
 
     /// Test 1b: A task is never handed back to the session that delegated it. That session is the

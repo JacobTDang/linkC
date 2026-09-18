@@ -45,6 +45,10 @@ public final class AppCoordinator {
     private let settingsDir: URL
     private let userSettingsURL: URL
     private let claudeJsonURL: URL?
+    /// Home directory whose Codex and Antigravity configs get the launch folder pre-trusted. nil
+    /// skips it: only the production initializer passes the real home, so no test launching a
+    /// mock Codex or agy session ever writes the developer's own config files.
+    private let trustHome: URL?
     /// Persists the session manifest so sessions survive quitting/crashing and can be restored.
     let manifest: WorkspaceManifest
     /// Per-run shared secret baked into every composed settings file and required by the hook
@@ -126,6 +130,7 @@ public final class AppCoordinator {
         manifestDir: URL,
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         claudeJsonURL: URL? = nil,
+        trustHome: URL? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
         deliverySettle: TimeInterval = AppCoordinator.defaultDeliverySettle,
@@ -141,6 +146,7 @@ public final class AppCoordinator {
         self.manifest = WorkspaceManifest(directory: manifestDir)
         self.agentPathResolver = agentPathResolver
         self.claudeJsonURL = claudeJsonURL
+        self.trustHome = trustHome
         self.verifier = verifier
         self.modelSettings = modelSettings
         self.deliverySettle = deliverySettle
@@ -170,6 +176,7 @@ public final class AppCoordinator {
             settingsDir: linkCDir,
             userSettingsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/settings.json"),
             manifestDir: linkCDir,
+            trustHome: FileManager.default.homeDirectoryForCurrentUser,
             modelSettings: modelSettings,
             isWatching: isWatching
         )
@@ -511,6 +518,26 @@ public final class AppCoordinator {
                 args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
             } else {
+                // Codex and agy open a folder they have not seen on a trust dialog; trust it first, as
+                // `preApproveTrust` does for Claude. Detecting that dialog stays the fallback, so a
+                // failure here is logged rather than stopping the launch.
+                if let trustHome {
+                    do {
+                        switch agent {
+                        case .codex:
+                            try DirectoryTrustManager.preApproveCodexTrust(
+                                workspacePath: cwd, configURL: trustHome.appendingPathComponent(".codex/config.toml"))
+                        case .agy:
+                            try DirectoryTrustManager.preApproveAgyTrust(
+                                workspacePath: cwd, settingsURL: trustHome.appendingPathComponent(".gemini/antigravity-cli/settings.json"))
+                        default:
+                            break
+                        }
+                    } catch {
+                        NSLog("[linkC] launch: could not pre-approve %@ trust for %@ — %@",
+                              agent.displayName, cwd, String(describing: error))
+                    }
+                }
                 // An injected resolver's own "not found" answer (nil) must not be papered over
                 // by a fallback to the real disk: `agentPathResolver?(agent) ?? ...` cannot
                 // distinguish "no resolver was given" from "the resolver was asked and said no",
