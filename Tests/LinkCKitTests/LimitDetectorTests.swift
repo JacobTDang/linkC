@@ -227,6 +227,26 @@ final class LimitDetectorTests: XCTestCase {
         XCTAssertEqual(match?.matchedPattern, "quota limit reached")
     }
 
+    // MARK: - Cursor Tests
+    //
+    // Limit phrases are split across `+` in these sources only so that a diff of this file, shown in
+    // an agent's terminal, never reads as a live banner to linkC's own detector.
+
+    /// Cursor's real usage-cap error, as its agent transcript and terminal show it once the account's
+    /// model quota is spent. linkC missed it, so it kept routing work to Cursor that failed at once.
+    func testCursorUsageCapErrorDetected() {
+        let text = "Error: You've hit your " + "usage limit\n"
+            + "You've saved $71 on API model usage this month with Pro. Switch to a different\n"
+            + "model or set a Spend Limit to continue with this model."
+        let match = LimitDetector.detectLimit(inOutput: text, agent: .cursor)
+        XCTAssertNotNil(match, "Cursor's own cap error must record it as limited")
+        XCTAssertEqual(match?.agent, .cursor)
+    }
+
+    func testCursorRateLimitStillDetected() {
+        XCTAssertNotNil(LimitDetector.detectLimit(inOutput: "Rate limit " + "reached. Try again later.", agent: .cursor))
+    }
+
     // MARK: - Normal Output & Isolation Tests
 
     func testNormalOutputReturnsNil() {

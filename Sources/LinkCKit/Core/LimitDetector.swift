@@ -81,7 +81,10 @@ public struct LimitDetector: Sendable {
         LimitRule(canonicalPattern: "Rate limit reached", regexPattern: "\\brate limit reached\\b"),
         LimitRule(canonicalPattern: "Rate limit exceeded", regexPattern: "\\brate limit exceeded\\b"),
         LimitRule(canonicalPattern: "429 Too Many Requests", regexPattern: "429\\s+Too\\s+Many\\s+Requests"),
-        LimitRule(canonicalPattern: "quota exceeded", regexPattern: "\\bquota exceeded\\b")
+        LimitRule(canonicalPattern: "quota exceeded", regexPattern: "\\bquota exceeded\\b"),
+        // Cursor's own usage-cap error, shown once the account's quota for the selected model is
+        // spent. Every turn then fails at once, so without this linkC kept routing work to Cursor.
+        LimitRule(canonicalPattern: "Cursor usage cap", regexPattern: "you(?:'|’)?ve (?:reached|hit) your (?:(?:usage|session|rate) )?limit")
     ]
 
     private static func rules(for agent: AgentKind) -> [LimitRule] {
