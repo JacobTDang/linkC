@@ -153,8 +153,15 @@ public struct MCPRegistrar: Sendable {
                 env: ["LINKC_AGENT": "cursor"]
             )
         }
-        // Antigravity: ~/.antigravity-cli/mcp.json
+        // Antigravity: ~/.gemini/config/mcp_config.json (global) and ~/.gemini/antigravity-cli/mcp.json
         let agyConfigDir = ["." + "g" + "e" + "m" + "i" + "n" + "i"].joined()
+        attemptRegistration("~/\(agyConfigDir)/config/mcp_config.json") {
+            try registerServer(
+                configFile: home.appendingPathComponent("\(agyConfigDir)/config/mcp_config.json"),
+                binaryPath: binaryPath,
+                env: ["LINKC_AGENT": "agy"]
+            )
+        }
         attemptRegistration("~/\(agyConfigDir)/antigravity-cli/mcp.json") {
             try registerServer(
                 configFile: home.appendingPathComponent("\(agyConfigDir)/antigravity-cli/mcp.json"),

@@ -335,7 +335,7 @@ extension AppCoordinator {
                 continue
             }
 
-            var target = store.sessions.first {
+            let target = store.sessions.first {
                 ($0.cwd as NSString).standardizingPath == workspacePath && $0.agentKind == message.toAgent && $0.state != .ended
             }
             if target == nil {

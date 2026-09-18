@@ -200,6 +200,9 @@ final class MCPRegistrarTests: XCTestCase {
         XCTAssertEqual(try env(".claude.json")?["LINKC_AGENT"], "claude")
         XCTAssertEqual(try env(".cursor/mcp.json")?["LINKC_AGENT"], "cursor")
         XCTAssertEqual(try env(".codex/mcp.json")?["LINKC_AGENT"], "codex")
+        let agyConfigDir = ["." + "g" + "e" + "m" + "i" + "n" + "i"].joined()
+        XCTAssertEqual(try env("\(agyConfigDir)/config/mcp_config.json")?["LINKC_AGENT"], "agy")
+        XCTAssertEqual(try env("\(agyConfigDir)/antigravity-cli/mcp.json")?["LINKC_AGENT"], "agy")
         let codexToml = try String(contentsOf: tempDir.appendingPathComponent(".codex/config.toml"), encoding: .utf8)
         XCTAssertTrue(codexToml.contains("LINKC_AGENT = \"codex\""))
     }
