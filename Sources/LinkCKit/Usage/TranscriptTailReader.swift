@@ -49,7 +49,7 @@ public final class TranscriptTailReader {
             data = data[data.index(after: firstNewline)...]
         }
 
-        guard var text = String(data: data, encoding: .utf8) else { return [] }
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
 
         // Consume only through the last newline; a partial trailing line stays for next time.
         guard let lastNewline = text.lastIndex(of: "\n") else {

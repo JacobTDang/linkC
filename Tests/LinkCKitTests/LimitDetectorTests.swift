@@ -3,6 +3,115 @@ import XCTest
 
 final class LimitDetectorTests: XCTestCase {
 
+    // MARK: - linkC's own text
+
+    /// A brief linkC typed into a terminal can quote a limit phrase — the reroute briefs it used to
+    /// invent did exactly that — and the terminal echoes it straight back. Reading that as the
+    /// agent's own exhaustion banner recorded a limit nobody hit.
+    func testAPhraseLinkCTypedIsNotTheAgentsOwnBanner() {
+        let brief = "[linkC task 47608277 from Claude Code]\nTask rerouted due to rate limit (You've reached your usage limit). Inspect .linkc/HANDOFF.md and continue."
+        let screen = "❯ \n\(brief)\n"
+
+        XCTAssertNil(
+            LimitDetector.detectLimit(inOutput: screen, agent: .claude, ignoringInjected: [brief]),
+            "linkC's own injected text is not the agent reporting a limit"
+        )
+        XCTAssertNotNil(
+            LimitDetector.detectLimit(inOutput: screen, agent: .claude),
+            "the same screen without the guard still matches — the guard is what suppresses it"
+        )
+    }
+
+    /// The agent's own banner still counts while an injected brief sits on the same screen.
+    func testABannerOutsideInjectedTextIsStillDetected() {
+        let brief = "[linkC task ABCD1234 from Codex]\nRefactor the migrations and report back."
+        let screen = "\(brief)\n⏺ Error: You've reached your usage limit · resets 3pm\n"
+
+        let match = LimitDetector.detectLimit(inOutput: screen, agent: .claude, ignoringInjected: [brief])
+        XCTAssertEqual(match?.matchedPattern, "You've reached your usage limit")
+    }
+
+    /// A long injected line is wrapped by the terminal, so each screen row is only a fragment of
+    /// what linkC typed — the fragments must be ignored too.
+    func testAWrappedInjectedLineIsIgnored() {
+        let brief = "[linkC task 47608277 from Claude Code] Task rerouted due to rate limit (You've reached your usage limit). Continue from the handoff."
+        let wrapped = "[linkC task 47608277 from Claude Code] Task rerouted due to rate limit (You've\nreached your usage limit). Continue from the handoff."
+
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: wrapped, agent: .claude, ignoringInjected: [brief]))
+    }
+
+    /// `detectLimit` never takes a clock at all — this guard is not bounded by time, unlike the
+    /// rejected `injectedEchoWindow` attempt. An echo of a brief quoting a limit phrase is not a
+    /// limit no matter how long it has sat on screen, because suppression here is entirely by
+    /// content.
+    func testAnEchoOfABriefIsNotALimitNoMatterHowOldNoClockInvolved() {
+        let brief = "[linkC task 9910 from Claude Code] Task rerouted due to rate limit (You've reached your usage limit). Continue from the handoff."
+        let screen = "❯ \n\(brief)\n"
+
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: screen, agent: .claude, ignoringInjected: [brief]))
+    }
+
+    /// This is the exact defect in the rejected "drop any row contained in any recent injection"
+    /// approach: a standalone banner row that is JUST the phrase is also, trivially, a literal
+    /// substring of a brief that quotes the same phrase, so dropping any row found inside any
+    /// injection dropped the real banner too. Only the brief's own occurrence may be removed —
+    /// found once, deleted once — leaving the separate banner intact for the regex to catch.
+    func testAStandaloneBannerSurvivesAlongsideABriefQuotingTheSamePhrase() {
+        let brief = "[linkC task 47608277 from Claude Code]\nTask rerouted due to rate limit (You've reached your usage limit). Inspect .linkc/HANDOFF.md and continue."
+        let banner = "You've reached your usage limit"
+        let screen = "❯ \n\(brief)\n\n\(banner)\n"
+
+        let match = LimitDetector.detectLimit(inOutput: screen, agent: .claude, ignoringInjected: [brief])
+        XCTAssertEqual(
+            match?.matchedPattern, "You've reached your usage limit",
+            "the brief's one occurrence of the phrase is removed but the separate banner row still matches"
+        )
+    }
+
+    /// A terminal wrap can land mid-word, with no space at the break at all — not just at a
+    /// convenient word boundary. Matching must be whitespace-insensitive enough to see through
+    /// that. The word split here ("Continue" into "Cont" + "inue") is deliberately NOT the trigger
+    /// phrase itself: if whitespace-insensitive matching ever regressed to only treating a literal
+    /// space as whitespace (missing the inserted newline), the whole injected entry would fail to
+    /// match as one contiguous span, nothing would be removed, and the untouched, fully intact
+    /// "You've reached your usage limit" earlier in the same line would then be read as a real
+    /// banner — which is exactly the failure this test is built to catch.
+    func testAMidWordWrappedInjectedLineIsIgnored() {
+        let brief = "[linkC task 9182 from Claude Code] Task rerouted due to rate limit (You've reached your usage limit). Continue from the handoff."
+        let wrapped = "[linkC task 9182 from Claude Code] Task rerouted due to rate limit (You've reached your usage limit). Cont\ninue from the handoff."
+
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: wrapped, agent: .claude, ignoringInjected: [brief]))
+    }
+
+    /// An injected entry only partially on screen — its first half already scrolled off — must
+    /// suppress nothing at all. A banner sitting in the still-visible half is still detected.
+    func testAPartiallyScrolledInjectedEntrySuppressesNothing() {
+        let brief = "[linkC task 55 from Claude Code] Task rerouted due to rate limit (You've reached your usage limit). Continue from the handoff."
+        // Only the tail of the brief remains on screen; the banner below it is fully visible.
+        let visibleHalf = "your usage limit). Continue from the handoff.\n⏺ Error: You've reached your usage limit\n"
+
+        let match = LimitDetector.detectLimit(inOutput: visibleHalf, agent: .claude, ignoringInjected: [brief])
+        XCTAssertEqual(
+            match?.matchedPattern, "You've reached your usage limit",
+            "an injected entry not fully present on screen must suppress nothing"
+        )
+    }
+
+    /// Every real injection carries a marker (a task frame, a peer note, a `/model` command), so an
+    /// injected entry is never a bare limit phrase. That is what keeps once-by-content removal from
+    /// latching onto genuine output — an invariant of the callers, not of this function. Lock the
+    /// safe behaviour in as a contract: even a bare phrase must consume only its own occurrence.
+    func testABareInjectedPhraseConsumesOnlyItsOwnOccurrence() {
+        let bare = "You've reached your usage limit"
+        let screen = "\(bare)\n⏺ Error: You've reached your usage limit · resets 3pm\n"
+
+        let match = LimitDetector.detectLimit(inOutput: screen, agent: .claude, ignoringInjected: [bare])
+        XCTAssertEqual(
+            match?.matchedPattern, "You've reached your usage limit",
+            "removing the echo must leave the agent's own banner detectable"
+        )
+    }
+
     // MARK: - Claude Tests
 
     func testClaudeUsageLimitDetected() {
@@ -116,6 +225,35 @@ final class LimitDetectorTests: XCTestCase {
         XCTAssertNotNil(match)
         XCTAssertEqual(match?.agent, .agy)
         XCTAssertEqual(match?.matchedPattern, "quota limit reached")
+    }
+
+    // MARK: - Cursor Tests
+    //
+    // Limit phrases are split across `+` in these sources only so that a diff of this file, shown in
+    // an agent's terminal, never reads as a live banner to linkC's own detector.
+
+    /// Cursor's real usage-cap error, as its agent transcript and terminal show it once the account's
+    /// model quota is spent. linkC missed it, so it kept routing work to Cursor that failed at once.
+    func testCursorUsageCapErrorDetected() {
+        let text = "Error: You've hit your " + "usage limit\n"
+            + "You've saved $71 on API model usage this month with Pro. Switch to a different\n"
+            + "model or set a Spend Limit to continue with this model."
+        let match = LimitDetector.detectLimit(inOutput: text, agent: .cursor)
+        XCTAssertNotNil(match, "Cursor's own cap error must record it as limited")
+        XCTAssertEqual(match?.agent, .cursor)
+    }
+
+    /// A spent quota does not come back in fifteen minutes, so Cursor's cap waits hours before linkC
+    /// tries it again instead of failing a routed task every quarter hour until the quota resets.
+    func testCursorUsageCapWaitsHoursNotMinutes() {
+        let cap = LimitDetector.detectLimit(inOutput: "Error: You've hit your " + "usage limit", agent: .cursor)
+        XCTAssertEqual(cap?.cooldown, 6 * 3600)
+        let rate = LimitDetector.detectLimit(inOutput: "Rate limit " + "reached.", agent: .cursor)
+        XCTAssertEqual(rate?.cooldown, 15 * 60, "an ordinary rate limit keeps the short cooldown")
+    }
+
+    func testCursorRateLimitStillDetected() {
+        XCTAssertNotNil(LimitDetector.detectLimit(inOutput: "Rate limit " + "reached. Try again later.", agent: .cursor))
     }
 
     // MARK: - Normal Output & Isolation Tests

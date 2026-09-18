@@ -293,12 +293,23 @@ public final class BlackboardStore: Sendable {
 
     /// Refreshes presence for `pid`. Inserts an idle record when none exists; never overwrites
     /// an existing goal or claimed files.
+    /// How stale a record must be before a heartbeat rewrites it. Presence only has to outlive the
+    /// 15-minute prune, and rewriting the board on every heartbeat — once a second per agent plus
+    /// once per MCP call — showed every agent that had read the file a diff on each edit.
+    public static let heartbeatRefreshInterval: TimeInterval = 5 * 60
+
     public func heartbeat(agentKind: AgentKind, pid: pid_t, timeout: TimeInterval = 5.0) throws {
         try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
+            let countBeforePrune = board.activeAgents.count
             pruneStaleUnlocked(&board, olderThan: 900)
+            var changed = board.activeAgents.count != countBeforePrune
+            let now = Date()
             if let idx = board.activeAgents.firstIndex(where: { $0.pid == pid }) {
-                board.activeAgents[idx].lastHeartbeat = Date()
+                if now.timeIntervalSince(board.activeAgents[idx].lastHeartbeat) >= Self.heartbeatRefreshInterval {
+                    board.activeAgents[idx].lastHeartbeat = now
+                    changed = true
+                }
             } else {
                 board.activeAgents.append(
                     AgentRecord(
@@ -307,12 +318,14 @@ public final class BlackboardStore: Sendable {
                         pid: pid,
                         goal: "(idle)",
                         claimedFiles: [],
-                        lastHeartbeat: Date(),
+                        lastHeartbeat: now,
                         status: "active"
                     )
                 )
+                changed = true
             }
-            board.updatedAt = Date()
+            guard changed else { return }
+            board.updatedAt = now
             try saveUnlocked(board)
         }
     }

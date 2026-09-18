@@ -294,7 +294,9 @@ extension AppCoordinator {
                 NSLog("[linkC relay] dispatchTasks: task %@ mark delivered — %@", task.shortId, String(describing: error))
                 continue
             }
-            terminals.sendInput(sessionId: session.id, text: Self.deliveryFrame(for: task))
+            let frame = Self.deliveryFrame(for: task)
+            terminals.sendInput(sessionId: session.id, text: frame)
+            recordInjection(sessionId: session.id, text: frame)
             store.updateState(id: session.id, to: .working)
         }
         return false
@@ -411,6 +413,7 @@ extension AppCoordinator {
                 continue
             }
             terminals.sendInput(sessionId: session.id, text: message.prompt)
+            recordInjection(sessionId: session.id, text: message.prompt)
             // A hand switch makes the pin a lie. Re-derive it here, where the switch actually
             // happens: an id that maps to a tier takes it, an unmapped one clears the pin, and a
             // session with no pin receives no tiered work.
@@ -614,7 +617,17 @@ extension AppCoordinator {
 
         let norm = (session.cwd as NSString).standardizingPath
         let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
-        guard let match = LimitDetector.detectLimit(inOutput: recentOutput, agent: session.agentKind) else { return false }
+        // Everything linkC has typed into this session is excluded: a brief or notice can quote a
+        // limit phrase, and the CLI echoing that back is not the agent hitting a limit. Suppressed
+        // by content, once per injected entry, with no time bound and no framing requirement — an
+        // unframed injection (a legacy v1 message with no `kind`) is guarded exactly like a framed
+        // one — so a real banner that repeats a phrase an older brief quoted still matches (see
+        // `LimitDetector.withoutInjected`).
+        guard let match = LimitDetector.detectLimit(
+            inOutput: recentOutput,
+            agent: session.agentKind,
+            ignoringInjected: recentlyInjectedTexts(sessionId: sessionId)
+        ) else { return false }
 
         let inboxStore = InboxStore(workspaceRoot: norm)
         do {

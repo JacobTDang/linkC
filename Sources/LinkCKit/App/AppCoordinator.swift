@@ -45,6 +45,11 @@ public final class AppCoordinator {
     private let settingsDir: URL
     private let userSettingsURL: URL
     private let claudeJsonURL: URL?
+    /// The home whose real config files linkC may write: every agent's folder trust, and linkC's MCP
+    /// server registration. nil writes none of them. Only the production initializer passes the real
+    /// home — the test suite used to add each of its temp folders to the developer's own config, over
+    /// ten thousand entries, and rewrite every agent's MCP config on each run.
+    private let userHome: URL?
     /// Persists the session manifest so sessions survive quitting/crashing and can be restored.
     let manifest: WorkspaceManifest
     /// Per-run shared secret baked into every composed settings file and required by the hook
@@ -60,6 +65,24 @@ public final class AppCoordinator {
     /// Workspaces with a verification run in flight, mapped to the task id running there — at
     /// most one run per workspace. The task id lets expiry skip exactly the task being verified.
     var verificationsInFlight: [String: String] = [:]
+    /// What linkC has typed into each session's terminal, newest last, keyed by session id.
+    /// `checkLimitsAndReroute` uses this to recognize its own text echoed back by the CLI so it is
+    /// never read as that agent's own limit banner. Lives here rather than on `TerminalSession`:
+    /// extensions cannot hold stored properties. Bounded to the last `injectedHistoryLimit` entries
+    /// per session; recorded by every coordinator call that injects text into a session
+    /// (`switchModel`, `dispatchTasks`, `dispatchMessages` — see `recordInjection`).
+    ///
+    /// No time bound: suppression in `LimitDetector` is by content, once per injected entry, not by
+    /// age (see `LimitDetector.withoutInjected`). A previous time-bounded version guarded a fixed
+    /// window and then let the same unchanged echo start reading as a fresh banner once the window
+    /// elapsed — a `.completion` only ever lands on an IDLE session, and delivering it does not make
+    /// the agent do anything, so nothing forces new output; the stale echo just sat there and
+    /// "aged into" a false positive. Content-based, single-use suppression has no such window to
+    /// outlive, and still lets a real banner through when it repeats a phrase an older brief quoted
+    /// — that occurrence is not the one already removed.
+    private var injectedText: [String: [String]] = [:]
+    private static let injectedHistoryLimit = 20
+
     /// A teammate spawn the relay could not complete.
     struct SpawnFailure: Equatable, Sendable {
         let agent: AgentKind
@@ -118,6 +141,7 @@ public final class AppCoordinator {
         manifestDir: URL,
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         claudeJsonURL: URL? = nil,
+        userHome: URL? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
         deliverySettle: TimeInterval = AppCoordinator.defaultDeliverySettle,
@@ -133,6 +157,7 @@ public final class AppCoordinator {
         self.manifest = WorkspaceManifest(directory: manifestDir)
         self.agentPathResolver = agentPathResolver
         self.claudeJsonURL = claudeJsonURL
+        self.userHome = userHome
         self.verifier = verifier
         self.modelSettings = modelSettings
         self.deliverySettle = deliverySettle
@@ -162,6 +187,7 @@ public final class AppCoordinator {
             settingsDir: linkCDir,
             userSettingsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/settings.json"),
             manifestDir: linkCDir,
+            userHome: FileManager.default.homeDirectoryForCurrentUser,
             modelSettings: modelSettings,
             isWatching: isWatching
         )
@@ -189,7 +215,14 @@ public final class AppCoordinator {
 
     public func start() throws {
         sweepOrphanedSettingsFiles()
-        try? MCPRegistrar.registerAll()
+        // Registration rewrites every agent's real config, so it needs a home to write to.
+        if let userHome {
+            do {
+                try MCPRegistrar.registerAll(home: userHome)
+            } catch {
+                NSLog("[linkC mcp] start: registering the MCP server failed — %@", String(describing: error))
+            }
+        }
         hookServer.requiredToken = hookToken
         notifications.onActivate = { [weak self] id in
             Task { @MainActor in
@@ -367,6 +400,7 @@ public final class AppCoordinator {
         notifications.forget(sessionId)
         screenSignatures.removeValue(forKey: sessionId)
         usageTracker?.unbind(sessionId: sessionId)
+        injectedText.removeValue(forKey: sessionId)
         // The session ended or was stopped — keep its manifest entry but stamp it, so it becomes
         // a restorable card. (No-op when there is no entry, e.g. a launch that failed before start.)
         manifest.markEnded(linkcId: sessionId, at: Date())
@@ -439,6 +473,25 @@ public final class AppCoordinator {
         modelSettings().tier(forModel: model, agent: agent)
     }
 
+    /// Records that linkC just typed `text` into `sessionId`'s terminal. Every call the coordinator
+    /// makes to inject text into a session must call this right alongside `terminals.sendInput`.
+    func recordInjection(sessionId: String, text: String) {
+        var entries = injectedText[sessionId] ?? []
+        entries.append(text)
+        if entries.count > Self.injectedHistoryLimit {
+            entries.removeFirst(entries.count - Self.injectedHistoryLimit)
+        }
+        injectedText[sessionId] = entries
+    }
+
+    /// Everything linkC has typed into `sessionId`'s terminal, passed to the limit detector so an
+    /// echo of linkC's own text is never read as the agent's own banner. No age filtering: the
+    /// detector suppresses each entry once, by content (see `LimitDetector.withoutInjected`), so
+    /// there is nothing here for a clock to bound.
+    func recentlyInjectedTexts(sessionId: String) -> [String] {
+        injectedText[sessionId] ?? []
+    }
+
     /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it when
     /// `select` is true, and record it (live, no `endedAt`) in the manifest. The single launch path
     /// for both new sessions and restores. Selection waits for a successful start, so a failed
@@ -478,12 +531,39 @@ public final class AppCoordinator {
             let env: [String: String] = ["LINKC_SESSION": session.id]
 
             if agent == .claude {
-                try? DirectoryTrustManager.preApproveTrust(workspacePath: cwd, claudeJsonURL: claudeJsonURL)
+                // An explicit trust file wins; otherwise the user's home. With neither, nothing is written.
+                if let trustFile = claudeJsonURL ?? userHome?.appendingPathComponent(".claude.json") {
+                    do {
+                        try DirectoryTrustManager.preApproveTrust(workspacePath: cwd, claudeJsonURL: trustFile)
+                    } catch {
+                        NSLog("[linkC] launch: could not pre-approve trust for %@ — %@", cwd, String(describing: error))
+                    }
+                }
                 executable = claudePath
                 let settingsPath = try writeSettings(for: session)
                 args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
             } else {
+                // Codex and agy open a folder they have not seen on a trust dialog; trust it first, as
+                // `preApproveTrust` does for Claude. Detecting that dialog stays the fallback, so a
+                // failure here is logged rather than stopping the launch.
+                if let userHome {
+                    do {
+                        switch agent {
+                        case .codex:
+                            try DirectoryTrustManager.preApproveCodexTrust(
+                                workspacePath: cwd, configURL: userHome.appendingPathComponent(".codex/config.toml"))
+                        case .agy:
+                            try DirectoryTrustManager.preApproveAgyTrust(
+                                workspacePath: cwd, settingsURL: userHome.appendingPathComponent(".gemini/antigravity-cli/settings.json"))
+                        default:
+                            break
+                        }
+                    } catch {
+                        NSLog("[linkC] launch: could not pre-approve %@ trust for %@ — %@",
+                              agent.displayName, cwd, String(describing: error))
+                    }
+                }
                 // An injected resolver's own "not found" answer (nil) must not be papered over
                 // by a fallback to the real disk: `agentPathResolver?(agent) ?? ...` cannot
                 // distinguish "no resolver was given" from "the resolver was asked and said no",
@@ -877,6 +957,7 @@ public final class AppCoordinator {
         }
         let cmd = AgentModelCatalog.interactiveSwitchCommand(model: modelName, for: agent)
         terminals.sendInput(sessionId: session.id, text: cmd)
+        recordInjection(sessionId: session.id, text: cmd)
         return "Switched \(agent.displayName) model to '\(modelName)' in session \(session.id)."
     }
 
