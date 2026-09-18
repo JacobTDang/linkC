@@ -58,9 +58,11 @@ public enum DirectoryTrustManager: Sendable {
         if FileManager.default.fileExists(atPath: fileURL.path) {
             content = try String(contentsOf: fileURL, encoding: .utf8)
         }
-        // A real table header on its own line — not the same text inside a comment or a value.
+        // A real table header for this folder, in any spelling TOML treats as the same table: either
+        // quote style, spaces inside the brackets, a trailing comment. Appending a second one would
+        // not just fail to help — TOML rejects a table defined twice, breaking the whole file.
         let listed = content.split(separator: "\n", omittingEmptySubsequences: false)
-            .contains { $0.trimmingCharacters(in: .whitespacesAndNewlines) == header }
+            .contains { codexProjectsHeaderPath(in: String($0)) == norm }
         guard !listed else { return }
 
         if !content.isEmpty {
@@ -105,6 +107,24 @@ public enum DirectoryTrustManager: Sendable {
         trusted.append(norm)
         root["trustedWorkspaces"] = trusted
         try write(try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]), to: fileURL)
+    }
+
+    /// `[projects."<path>"]` or `[projects.'<path>']`, with optional spaces and a trailing comment.
+    private static let codexProjectsHeader = try! NSRegularExpression(
+        pattern: #"^\s*\[\s*projects\s*\.\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*\]\s*(?:#.*)?$"#
+    )
+
+    /// The folder a Codex `[projects.<key>]` table header names, or nil if the line is not one.
+    static func codexProjectsHeaderPath(in line: String) -> String? {
+        let range = NSRange(line.startIndex..., in: line)
+        guard let match = codexProjectsHeader.firstMatch(in: line, range: range) else { return nil }
+        if let quoted = Range(match.range(at: 1), in: line) {
+            return String(line[quoted])
+                .replacingOccurrences(of: "\\\"", with: "\"")
+                .replacingOccurrences(of: "\\\\", with: "\\")
+        }
+        if let literal = Range(match.range(at: 2), in: line) { return String(line[literal]) }
+        return nil
     }
 
     private static func write(_ data: Data, to url: URL) throws {

@@ -73,6 +73,23 @@ final class DirectoryTrustManagerTests: XCTestCase {
         )
     }
 
+    /// TOML rejects a table defined twice, so a folder already listed in any spelling of the same
+    /// table must be recognised: appending a duplicate would break Codex's whole config.
+    func testCodexTrustRecognisesEquivalentSpellingsOfTheHeader() throws {
+        for existing in [
+            "[projects.\"/Users/developer/projects/demo\"] # trusted via CLI\ntrust_level = \"trusted\"\n",
+            "[projects.'/Users/developer/projects/demo']\ntrust_level = \"trusted\"\n",
+            "[ projects . \"/Users/developer/projects/demo\" ]\ntrust_level = \"trusted\"\n",
+        ] {
+            let url = tempDir.appendingPathComponent("config-\(UUID().uuidString).toml")
+            try existing.write(to: url, atomically: true, encoding: .utf8)
+
+            try DirectoryTrustManager.preApproveCodexTrust(workspacePath: "/Users/developer/projects/demo", configURL: url)
+
+            XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), existing, "already listed as: \(existing.prefix(55))")
+        }
+    }
+
     func testCodexTrustEscapesAQuoteInThePath() throws {
         let url = tempDir.appendingPathComponent("config.toml")
 
