@@ -3,7 +3,7 @@ import AppKit
 import LinkCKit
 
 /// The Terminals screen — every dev terminal, running or exited, with the New Terminal
-/// entry point. Same live-preview cadence as home.
+/// entry point.
 struct TerminalsScreen: View {
     let model: AppModel
 
@@ -36,7 +36,7 @@ struct TerminalsScreen: View {
                                 )
                             }
                             // Shells remembered from a previous run — the screen must not
-                            // claim "no terminals" while home offers these.
+                            // claim "no terminals" while the sidebar's Earlier section offers these.
                             ForEach(model.restorableShells) { shell in
                                 RememberedTerminalCard(
                                     shell: shell,
@@ -55,12 +55,11 @@ struct TerminalsScreen: View {
     }
 }
 
-/// One dev terminal card, shared by the home section and the Terminals screen. Quieter than
-/// a session card: a small steady dot (no pulse, no glow — urgency is claude's vocabulary),
-/// the folder title and path, a live preview. Running shows a hover-revealed stop ✕; exited
-/// dims the card, keeps it tappable (scrollback stays inspectable), and offers Relaunch +
-/// dismiss. `isSelected` (the sidebar's open item) brightens the plane and hangs an accent
-/// hairline off the leading edge.
+/// One dev terminal card on the Terminals screen. Quieter than a claude session row: a small
+/// steady dot (no pulse, no glow — urgency is claude's vocabulary), the folder title and path,
+/// a live preview. Running shows a hover-revealed stop ✕; exited dims the card, keeps it
+/// tappable (scrollback stays inspectable), and offers Relaunch + dismiss. `isSelected` (the
+/// sidebar's open item) brightens the plane and hangs an accent hairline off the leading edge.
 struct TerminalCard: View {
     let row: ShellRow
     let preview: String

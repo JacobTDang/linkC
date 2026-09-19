@@ -47,7 +47,7 @@ public final class TerminalSessionManager {
         setSelection(id)
     }
 
-    /// Return to the home overview by clearing the selection. Keeps every terminal alive; the
+    /// Clears the selection; the right pane shows the launcher. Keeps every terminal alive; the
     /// panel controller treats a nil selection as a no-op, so this never closes the panel.
     public func deselect() {
         setSelection(nil)

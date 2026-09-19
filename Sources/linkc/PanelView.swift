@@ -4,10 +4,10 @@ import LinkCKit
 
 // MARK: - Panel
 
-/// The panel content: a slim chrome strip, then the home overview or the selected session's
-/// terminal as the hero. Draws no opaque background of its own — the frosted `NSVisualEffectView`
-/// behind it (set up in `StatusPanelController`) shows through as glass, and nothing inside is
-/// outlined: content floats as soft fills of the same material.
+/// The panel content: a sidebar of projects and sessions beside a right pane showing the
+/// selected terminal, an open screen, or the launcher. Draws no opaque background of its own —
+/// the frosted `NSVisualEffectView` behind it (set up in `StatusPanelController`) shows through
+/// as glass, and nothing inside is outlined: content floats as soft fills of the same material.
 struct PanelView: View {
     let model: AppModel
 
@@ -26,7 +26,7 @@ struct PanelView: View {
                         ZStack {
                             if geo.size.width >= Theme.splitBreakpoint {
                                 HStack(spacing: 0) {
-                                    Sidebar(model: model)
+                                    Sidebar(model: model, isSplit: true)
                                         .frame(width: Theme.sidebarWidth)
                                     Rectangle()
                                         .fill(Color.white.opacity(0.05))
@@ -37,7 +37,7 @@ struct PanelView: View {
                                 RightPane(model: model, showsBack: true)
                                     .transition(.opacity)
                             } else {
-                                Sidebar(model: model)
+                                Sidebar(model: model, isSplit: false)
                                     .transition(.opacity)
                             }
                         }
@@ -204,8 +204,8 @@ private struct TerminalPane: View {
 
 // MARK: - Screens
 
-/// Hosts a dock screen — the dock itself rides above as PanelView's trailing overlay, so the
-/// user can hop between screens without going home first.
+/// Hosts a screen opened from the sidebar, filling the right pane. The selection underneath
+/// stays put, so closing the screen lands the user exactly where they were.
 private struct ScreenHost: View {
     let model: AppModel
     let screen: PanelScreen
@@ -227,7 +227,7 @@ private struct ScreenHost: View {
     }
 }
 
-// MARK: - Top Nav Bar
+// MARK: - Chrome buttons and launcher
 
 /// A bare chrome glyph button — no box, no border. Hover raises it with a soft circular wash.
 struct ChromeButton: View {
@@ -264,7 +264,8 @@ struct ChromeGlyph: View {
     }
 }
 
-/// The `+` launcher — 1-click launch for all supported autonomous agents and terminals.
+/// The ✎ menu in the sidebar's brand row — 1-click launch for all supported autonomous agents
+/// and terminals.
 struct LauncherMenu: View {
     let model: AppModel
 
@@ -307,7 +308,7 @@ struct LauncherMenu: View {
     }
 }
 
-// MARK: - Home overview
+// MARK: - Screen content helpers
 
 /// A quiet section label — the priority-queue headers share the EARLIER header's styling.
 struct SectionHeader: View {
@@ -356,10 +357,9 @@ struct PreviewText: View {
 
 // MARK: - Empty state
 
-/// The launcher: while nothing exists the panel's one entry point is here, not the chrome —
-/// the header + is hidden. A halo hero with the primary New session action, quiet
-/// Continue/Resume beneath, recent folders as one-tap starters, and (since the + menu is
-/// gone) a faint quit link in the corner.
+/// The right pane's fallback: nothing selected, no screen open. A halo hero with the primary
+/// New session action, quiet Continue/Resume beneath, recent folders as one-tap starters, and
+/// a faint quit link in the corner.
 private struct EmptyStateView: View {
     let model: AppModel
 

@@ -27,7 +27,7 @@ extension AppModel {
         attention.status(
             for: session,
             onScreen: session.id == onScreenSessionId,
-            rateLimited: agentLimit(for: session) != nil,
+            rateLimited: session.state == .error && agentLimit(for: session) != nil,
             now: now
         )
     }

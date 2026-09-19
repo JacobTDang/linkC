@@ -15,8 +15,6 @@ enum Theme {
 
     // Status colors.
     static let statusRunning = Color(red: 0.369, green: 0.710, blue: 0.612) // ~#5EB59C
-    static let statusNeedsYou = accent
-    static let statusIdle = textTertiary
     static let statusError = Color(red: 0.85, green: 0.35, blue: 0.33)
     /// Soft gold for a context hairline nearing auto-compact (~#E3C169).
     static let contextWarn = Color(red: 0.89, green: 0.757, blue: 0.412)
@@ -62,8 +60,9 @@ enum Theme {
     /// output changes.
     static let previewHeight: CGFloat = 42
 
-    // The sidebar split: with a terminal open and at least `splitBreakpoint` of pane width,
-    // the home list rides beside the terminal as a fixed column instead of the mini-tab strip.
+    // The sidebar split: at least `splitBreakpoint` of panel width keeps the sidebar visible as
+    // a fixed column beside the right pane; below it, the sidebar and the right pane trade
+    // places, with a back button.
     static let splitBreakpoint: CGFloat = 600
     static let sidebarWidth: CGFloat = 260
 
@@ -72,17 +71,6 @@ enum Theme {
     static let sectionSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
     static let hoverEase = Animation.easeOut(duration: 0.15)
     static let viewSwap = Animation.easeInOut(duration: 0.2)
-
-    /// Dot / label color for a concrete session state. `.error` is called out in red even
-    /// though it shares the `needsYou` bucket; every other state maps by its bucket.
-    static func statusColor(_ state: SessionState) -> Color {
-        if state == .error { return statusError }
-        switch state.bucket {
-        case .idle: return statusIdle
-        case .active: return statusRunning
-        case .needsYou: return statusNeedsYou
-        }
-    }
 }
 
 /// The shared card treatment: one flat translucent fill, nothing else.
@@ -106,56 +94,3 @@ extension View {
     }
 }
 
-/// The signature: a living status indicator. An 8pt dot in the state's color over a soft outer
-/// glow — `needsYou` gently pulses the glow (0.4↔1 over ~1.2s), `active` glows steadily, `idle`
-/// has no glow. Honors Reduce Motion (steady glow instead of a pulse).
-struct StatusDot: View {
-    let state: SessionState
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulseUp = false
-
-    private let dotSize: CGFloat = 8
-    private let boxSize: CGFloat = 18   // leaves room for the blurred glow
-
-    var body: some View {
-        let color = Theme.statusColor(state)
-        return ZStack {
-            Circle()
-                .fill(color)
-                .frame(width: dotSize, height: dotSize)
-                .blur(radius: 4)
-                .opacity(glowOpacity)
-            Circle()
-                .fill(color)
-                .frame(width: dotSize, height: dotSize)
-        }
-        .frame(width: boxSize, height: boxSize)
-        .onAppear { restartPulse() }
-        .onChange(of: state) { _, _ in restartPulse() }
-        .onChange(of: reduceMotion) { _, _ in restartPulse() }
-    }
-
-    private var shouldPulse: Bool { state.bucket == .needsYou && !reduceMotion }
-
-    private var glowOpacity: Double {
-        switch state.bucket {
-        case .idle: return 0
-        case .active: return 0.85
-        case .needsYou: return reduceMotion ? 0.9 : (pulseUp ? 1.0 : 0.4)
-        }
-    }
-
-    /// Reset the glow, then — only when this state pulses — kick off an autoreversing repeat.
-    /// Setting `pulseUp` inside a fresh animation cancels any prior `repeatForever`.
-    private func restartPulse() {
-        if shouldPulse {
-            pulseUp = false
-            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
-                pulseUp = true
-            }
-        } else {
-            withAnimation(.easeInOut(duration: 0.2)) { pulseUp = false }
-        }
-    }
-}

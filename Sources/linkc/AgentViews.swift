@@ -1,7 +1,8 @@
 import SwiftUI
 import LinkCKit
 
-/// One agent in a card's lane: type badge, its own description, age, spinner or done-tick.
+/// One agent in the header strip's subagents popover: type badge, its own description, age,
+/// spinner or done-tick.
 struct AgentLine: View {
     let agent: AgentRun
 
@@ -35,7 +36,7 @@ struct AgentLine: View {
                     .foregroundStyle(Theme.statusRunning)
             }
         }
-        .padding(.leading, 15)  // aligns under the card title, past the status dot
+        .padding(.leading, 15)  // room for the type badge, so a row without one still aligns
     }
 }
 

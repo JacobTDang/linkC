@@ -18,8 +18,8 @@ public struct SessionRowStatus: Equatable, Sendable {
 }
 
 /// Remembers when each session was last on screen, so a finished turn reads coral only until the
-/// user has looked at it (Codex's unread dot). In memory only: after a relaunch every finished
-/// session starts seen.
+/// user has looked at it (Codex's unread dot). In memory only: after a relaunch every restored
+/// session restarts at `.starting`, so nothing from before the relaunch reads as unseen.
 @MainActor
 @Observable
 public final class SessionAttention {

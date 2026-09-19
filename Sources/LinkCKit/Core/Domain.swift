@@ -145,7 +145,8 @@ public struct ProjectSwarm: Sendable, Identifiable, Equatable {
     }
 }
 
-/// The rail's destinations — full screens the panel can show in place of home.
+/// Screens opened from the sidebar, shown in the right pane — layered over any selected
+/// terminal until closed.
 public enum PanelScreen: String, CaseIterable, Identifiable, Sendable {
     case newSession
     case mcpServers

@@ -1,7 +1,8 @@
 import SwiftUI
 import LinkCKit
 
-/// Amber alert banner displayed on cards when concurrent agents claim overlapping files.
+/// Amber alert banner shown under a session's header when concurrent agents claim overlapping
+/// files.
 struct CollisionBanner: View {
     let collisions: [CollisionWarning]
 

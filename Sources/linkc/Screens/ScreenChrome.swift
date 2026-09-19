@@ -1,8 +1,8 @@
 import SwiftUI
 import LinkCKit
 
-/// One header for every rail screen — same title treatment, same busy indicator, same
-/// action placement, so the five screens read as one surface.
+/// One header for every screen opened from the sidebar — same title treatment, same busy
+/// indicator, same action placement, so the screens read as one surface.
 struct ScreenHeader<Actions: View>: View {
     let title: String
     var isBusy: Bool = false

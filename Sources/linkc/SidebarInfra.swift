@@ -4,6 +4,10 @@ import LinkCKit
 
 // MARK: - Compact (sidebar) rows
 
+/// The sidebar's infra sections — Terminals, Servers, and Cloud — built from one shared compact
+/// row style, marked by a steady `InfraDot` rather than a claude session row's agent-colored
+/// square.
+
 /// The compact rows' shared shell: leading accessory · badge · title · middle · spacer · trailing,
 /// and optional subrow underneath, on the plane/hover/tap treatment every sidebar row repeats.
 private struct CompactRowShell<Leading: View, Badge: View, Middle: View, Subrow: View, Trailing: View>: View {
@@ -121,8 +125,9 @@ extension CompactRowShell where Badge == EmptyView, Subrow == EmptyView {
     }
 }
 
-/// The quiet 8pt infra dot in StatusDot's 18pt box (minus its glow) — terminals, servers,
-/// and cloud rows share it; only claude sessions get the living StatusDot.
+/// The quiet 8pt infra dot in an 18pt box, no glow — terminals, servers, and cloud rows use it
+/// as their leading mark. A claude session row uses `AgentMark`'s agent-colored square instead,
+/// with its state carried by the trailing status text's color.
 private struct InfraDot: View {
     let color: Color
 
@@ -236,8 +241,8 @@ struct CloudSection: View {
         let needsLogin = model.supabaseNeedsLogin
         let errors = model.cloudErrors
         // Where a row came from is worth saying once per group rather than once per row —
-        // the rail can't spare the width. Headers appear only when more than one provider
-        // is present, the same rule the session buckets use: a lone group needs no label.
+        // the sidebar can't spare the width. Headers appear only when more than one provider
+        // is present: a lone group needs no label.
         let groupCount = [!instances.isEmpty, !projects.isEmpty, !watched.isEmpty]
             .count { $0 }
         let showsProviders = groupCount > 1

@@ -163,8 +163,8 @@ final class AppModel {
     }
 
     var sessions: [Session] { coordinator?.store.sessions ?? [] }
-    var projectGroups: [ProjectGroup] { ProjectGroup.group(sessions: sessions) }
-    /// Previous sessions no longer live — shown as dimmed restorable cards on the home overview.
+    /// Previous sessions no longer live — shown as dimmed restorable rows in the sidebar's
+    /// Earlier section.
     var restorables: [RestorableSession] { coordinator?.restorableStore.restorables ?? [] }
     var selectedId: String? { coordinator?.terminals.selectedId }
 
@@ -404,7 +404,7 @@ final class AppModel {
     }
 
     /// "View logs" rides on dev terminals: a shell running `docker logs -f`, which becomes
-    /// a normal exited card when the follow ends.
+    /// a normal exited row when the follow ends.
     func openContainerLogs(_ container: ContainerInfo) {
         openContainerCommand(
             "logs --tail 200 -f", container: container,
@@ -609,11 +609,6 @@ final class AppModel {
         }
     }
 
-    /// The empty-state gate, centralized: dev terminals count as content too.
-    var isEmptyOverview: Bool {
-        sessions.isEmpty && restorables.isEmpty && shellRows.isEmpty && restorableShells.isEmpty
-    }
-
     /// Open a new dev terminal: pick a folder, get your login shell there.
     func newShellTerminal() {
         guard let shells else { return }
@@ -676,7 +671,7 @@ final class AppModel {
         return "\(tokens) · \(UsageFormat.dollars(s.cost))"
     }
 
-    /// The home footer: `5h · 3.1M tok · resets ~2am · 7d · 41M`. Nil until the first scan.
+    /// The sidebar's footer: `5h · 3.1M tok · resets ~2am · 7d · 41M`. Nil until the first scan.
     var windowUsageLabel: String? {
         guard let w = usage.window else { return nil }
         var parts: [String] = []
@@ -772,14 +767,14 @@ final class AppModel {
         }
     }
 
-    /// Open a rail screen. The selection stays put — screens layer over an open terminal,
-    /// so closing the screen lands the user exactly where they were.
+    /// Open a screen from the sidebar. The selection stays put — screens layer over an open
+    /// terminal, so closing the screen lands the user exactly where they were.
     func open(_ screen: PanelScreen) {
         activeScreen = screen
     }
 
-    /// Back peels one layer: a screen closes onto whatever was under it (the open
-    /// terminal, or home); the terminal closes onto home.
+    /// Back peels one layer: closes onto whatever was under it (the open terminal, or the
+    /// launcher); the terminal closes onto the launcher, or onto the sidebar in a narrow panel.
     func goBack() {
         if activeScreen != nil {
             activeScreen = nil
@@ -821,10 +816,10 @@ final class AppModel {
         }
     }
 
-    /// Forget a previous session (the user dismissed its card).
+    /// Forget a previous session (the user dismissed its row).
     func dismiss(_ r: RestorableSession) { coordinator?.dismiss(r) }
 
-    /// The last `lines` rows of `id`'s live terminal output, for the home overview's preview.
+    /// The last `lines` rows of `id`'s live terminal output, for the Terminals screen's preview.
     /// "" when the session has no terminal yet (never started).
     func recentOutput(_ id: String, lines: Int) -> String {
         coordinator?.terminals.session(id: id)?.recentOutput(lines: lines) ?? ""

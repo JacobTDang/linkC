@@ -1,9 +1,9 @@
 import SwiftUI
 import LinkCKit
 
-/// The one line above an open terminal: what used to sit on each card. Agent mark, title,
-/// "<Agent> · <project>", a subagents chip (a popover of the runs; picking one opens the reader),
-/// the session's spend, a 2pt context bar, and the project's collision warning.
+/// The one line above an open terminal: agent mark, title, "<Agent> · <project>", a subagents
+/// chip (a popover of the runs; picking one opens the reader), the session's spend, a 2pt
+/// context bar, and the project's collision warning.
 struct SessionHeaderStrip: View {
     let model: AppModel
     let session: Session

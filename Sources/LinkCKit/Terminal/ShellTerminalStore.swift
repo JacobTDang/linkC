@@ -6,7 +6,7 @@ public enum ShellState: Sendable, Equatable {
     case exited(Int32?)
 }
 
-/// One dev terminal on the home overview / Terminals screen.
+/// One dev terminal, shown in the sidebar's Terminals section and on the Terminals screen.
 public struct ShellRow: Sendable, Identifiable, Equatable {
     public let id: String
     public let cwd: String

@@ -6,6 +6,11 @@ import LinkCKit
 /// Terminals, Servers, Cloud, Earlier, and a pinned footer. Plain rows, no cards.
 struct Sidebar: View {
     let model: AppModel
+    /// Whether the sidebar sits beside a right pane (wide panel) rather than filling it alone
+    /// (narrow panel, session/screen replaces it). Only the split layout can show the launcher
+    /// beside an empty selection — in the narrow layout an empty selection means the sidebar
+    /// itself is on screen, not the launcher.
+    var isSplit: Bool
 
     @State private var inspectingWorkspace: String?
 
@@ -14,7 +19,7 @@ struct Sidebar: View {
             BrandRow(model: model)
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 1) {
-                    NavSection(model: model)
+                    NavSection(model: model, isSplit: isSplit)
                     // Ages and states tick once a second while the sidebar is on screen.
                     TimelineView(.periodic(from: .now, by: 1.0)) { context in
                         ProjectsSection(model: model, now: context.date) { inspectingWorkspace = $0 }
@@ -221,10 +226,11 @@ private struct NavRow: View {
 
 private struct NavSection: View {
     let model: AppModel
+    let isSplit: Bool
 
     var body: some View {
         let screen = model.activeScreen
-        let showsLauncher = screen == .newSession || (screen == nil && model.selectedId == nil)
+        let showsLauncher = screen == .newSession || (isSplit && screen == nil && model.selectedId == nil)
         VStack(alignment: .leading, spacing: 1) {
             NavRow(icon: "plus", title: "New session", isSelected: showsLauncher) { model.open(.newSession) }
             NavRow(icon: "bubble.left.and.text.bubble.right", title: "Activity", isSelected: screen == .activity) {
@@ -284,7 +290,10 @@ private struct ProjectRow: View {
         SidebarRow(
             title: project.name,
             help: (project.path as NSString).abbreviatingWithTildeInPath,
-            action: { model.sidebarState.setExpanded(project.path, !project.isExpanded) }
+            action: {
+                guard !project.sessions.contains(where: { $0.id == model.selectedId }) else { return }
+                model.sidebarState.setExpanded(project.path, !project.isExpanded)
+            }
         ) {
             Image(systemName: project.isExpanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 9, weight: .semibold))

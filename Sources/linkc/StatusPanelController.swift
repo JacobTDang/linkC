@@ -266,7 +266,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     /// A session was selected. If the panel is open, raise it + focus its terminal; if hidden (a
     /// programmatic focus, e.g. a notification click), open it to reveal the session. Only the
     /// nil→selected transition widens for the split — switching between sessions must not resize
-    /// (in narrow mode the mini-tab strip is the switcher and a resize would swap it away).
+    /// (in narrow mode the sidebar itself is the switcher and a resize would swap it away).
     private func selectionDidChange(from previous: String?, to id: String?) {
         guard id != nil else { return }
         if panel.isVisible {

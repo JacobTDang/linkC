@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import LinkCKit
 
-/// The services your tools depend on — one card per compose project (the firecrawl stack as
+/// The services your tools depend on — one row per compose project (the firecrawl stack as
 /// a unit, not seven anonymous containers), standalone containers below. Light management
 /// through the docker CLI; logs open as dev terminals.
 struct ToolServersScreen: View {

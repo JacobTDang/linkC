@@ -1,8 +1,8 @@
 import Foundation
 
-/// Turns raw terminal rows into home-card preview content. A Claude session's last rows are
-/// usually its input-box furniture — box-drawing frames, horizontal rules, a bare prompt
-/// marker — which read as noise in a 3-line preview. Rows are kept or dropped whole (kept
+/// Turns raw terminal rows into the Terminals screen's card preview content. A Claude session's
+/// last rows are usually its input-box furniture — box-drawing frames, horizontal rules, a bare
+/// prompt marker — which read as noise in a 3-line preview. Rows are kept or dropped whole (kept
 /// rows keep their original text); only chrome-only rows and blanks are removed.
 public enum TerminalPreview {
     /// The last `lines` content rows, joined with newlines. "" when nothing qualifies.
