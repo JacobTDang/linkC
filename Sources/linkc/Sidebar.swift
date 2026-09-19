@@ -290,10 +290,7 @@ private struct ProjectRow: View {
         SidebarRow(
             title: project.name,
             help: (project.path as NSString).abbreviatingWithTildeInPath,
-            action: {
-                guard !project.sessions.contains(where: { $0.id == model.selectedId }) else { return }
-                model.sidebarState.setExpanded(project.path, !project.isExpanded)
-            }
+            action: { model.sidebarState.setExpanded(project.path, !project.isExpanded) }
         ) {
             Image(systemName: project.isExpanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 9, weight: .semibold))

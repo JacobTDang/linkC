@@ -73,6 +73,17 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(state.expandOverrides["/a"], true, "coral again: expands again")
     }
 
+    func testMovingIntoAProjectOpensItAgain() {
+        let state = SidebarState(defaults: defaults)
+        state.noteSelectedProject("/a")
+        state.setExpanded("/a", false)
+        state.noteSelectedProject("/a")
+        XCTAssertEqual(state.expandOverrides["/a"], false, "still the selected project: the collapse sticks")
+        state.noteSelectedProject("/b")
+        state.noteSelectedProject("/a")
+        XCTAssertNil(state.expandOverrides["/a"], "moved away and back: it opens again")
+    }
+
     func testUnreadableStoredStateStartsFresh() {
         defaults.set(Data("not json".utf8), forKey: SidebarState.key)
         let state = SidebarState(defaults: defaults)

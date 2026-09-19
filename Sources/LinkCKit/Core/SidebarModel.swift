@@ -48,8 +48,9 @@ public enum SidebarModel {
     }
 
     /// Projects in `order` (the order they were first opened); a project not in `order` goes after
-    /// them in encounter order. Sessions stay in `inputs` order (opened order). The selected
-    /// session's project is always expanded; otherwise `expandOverrides` decides, default collapsed.
+    /// them in encounter order. Sessions stay in `inputs` order (opened order). A project is open
+    /// when `expandOverrides` says so; with no override it is open only while it holds the selected
+    /// session, so moving into a project opens it and collapsing it afterwards sticks.
     public static func projects(
         inputs: [Input], order: [String], expandOverrides: [String: Bool], selectedId: String?
     ) -> [SidebarProject] {
@@ -68,7 +69,7 @@ public enum SidebarModel {
                 path: group.workspacePath,
                 name: group.title,
                 dot: dot(for: rows),
-                isExpanded: holdsSelection || (expandOverrides[group.workspacePath] ?? false),
+                isExpanded: expandOverrides[group.workspacePath] ?? holdsSelection,
                 sessions: rows.map {
                     SidebarSessionRow(id: $0.session.id, agentKind: $0.session.agentKind, title: $0.title, status: $0.status)
                 }

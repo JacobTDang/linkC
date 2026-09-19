@@ -74,6 +74,9 @@ extension AppModel {
         attention.retain(only: Set(sessions.map(\.id)))
         markOnScreenSeen(at: now)
         sidebarState.noteProjects(ProjectGroup.group(sessions: sessions).map(\.workspacePath))
+        let selectedProject = sessions.first { $0.id == selectedId }
+            .map { ($0.cwd as NSString).standardizingPath }
+        sidebarState.noteSelectedProject(selectedProject)
         let coral = sidebarProjects(now: now).filter { $0.dot == .attention }.map(\.path)
         sidebarState.noteCoral(Set(coral))
     }

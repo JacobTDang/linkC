@@ -44,9 +44,12 @@ final class SidebarModelTests: XCTestCase {
         XCTAssertEqual(dot([input("1", cwd: "/p")]), .none)
     }
 
-    func testTheSelectedSessionsProjectIsAlwaysExpanded() {
-        let projects = build([input("1", cwd: "/p/a")], overrides: ["/p/a": false], selected: "1")
-        XCTAssertTrue(projects[0].isExpanded)
+    func testTheSelectedSessionsProjectIsOpenUnlessTheUserCollapsedIt() {
+        let held = build([input("1", cwd: "/p/a")], selected: "1")
+        XCTAssertTrue(held[0].isExpanded, "no override: the project holding the open terminal is open")
+
+        let collapsed = build([input("1", cwd: "/p/a")], overrides: ["/p/a": false], selected: "1")
+        XCTAssertFalse(collapsed[0].isExpanded, "a manual collapse sticks even while it holds the terminal")
     }
 
     func testOtherwiseTheOverrideDecidesAndTheDefaultIsCollapsed() {
