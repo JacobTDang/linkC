@@ -169,27 +169,7 @@ public struct AgentDashboardAggregator: Sendable {
             }
         }
 
-        // 6. Synthesize live session activity items
-        for session in liveSessions where !session.recentOutput.isEmpty || session.activity != nil {
-            let desc = session.activity ?? "Active in terminal"
-            let body = session.recentOutput.isEmpty ? desc : session.recentOutput
-            activityItems.append(
-                AgentActivityItem(
-                    id: "live-session-\(session.id)",
-                    timestamp: Date(),
-                    workspacePath: norm,
-                    projectTitle: title,
-                    fromAgent: session.agent,
-                    toAgent: nil,
-                    kind: .intentBroadcast,
-                    title: "\(session.agent.displayName) active in terminal",
-                    body: body,
-                    claimedFiles: []
-                )
-            )
-        }
-
-        // 7. Modified files in git. A folder that is not a git repository has none; a git
+        // 6. Modified files in git. A folder that is not a git repository has none; a git
         // failure inside one is logged, not hidden.
         let modifiedFiles: [String]
         let workspaceURL = URL(fileURLWithPath: norm)
@@ -204,7 +184,7 @@ public struct AgentDashboardAggregator: Sendable {
             modifiedFiles = []
         }
 
-        // 8. Compile Dossiers
+        // 7. Compile Dossiers
         var dossiers: [AgentContributionDossier] = []
         let allAgentsInProject = Set(liveSessions.map { $0.agent })
             .union(inbox.messages.map { $0.fromAgent })
@@ -239,7 +219,7 @@ public struct AgentDashboardAggregator: Sendable {
         activityItems.sort { $0.timestamp > $1.timestamp }
         dossiers.sort { $0.agent.displayName < $1.agent.displayName }
 
-        // 9. Check collisions across active agents directly in memory
+        // 8. Check collisions across active agents directly in memory
         var collisions: [CollisionWarning] = []
         for (i, agentA) in blackboard.activeAgents.enumerated() {
             for agentB in blackboard.activeAgents[(i + 1)...] {

@@ -61,7 +61,9 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         let liveSessions = [(id: "s1", agent: AgentKind.cursor, status: "working", activity: Optional("Compiling Auth.swift"), recentOutput: "")]
         let data = aggregator.aggregateProject(workspacePath: ws, liveSessions: liveSessions)
 
-        XCTAssertEqual(data.activityItems.count, 4)
+        // A delegated task + a completion + a shared note. The live Cursor session above is
+        // presence, not a timeline event, so it contributes no activity item.
+        XCTAssertEqual(data.activityItems.count, 3)
         // Check completed task parsed
         let completed = data.activityItems.first(where: { $0.kind == .completedTask })
         XCTAssertNotNil(completed)
@@ -109,7 +111,9 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         let globalData = aggregator.aggregateGlobal(workspaces: [ws1, ws2], liveSessions: liveSessions)
 
         XCTAssertEqual(globalData.activeProjectCount, 2)
-        XCTAssertEqual(globalData.activityItems.count, 3)
+        // A delegated task in ws1 + a shared note in ws2. The live sessions above are presence,
+        // not timeline events.
+        XCTAssertEqual(globalData.activityItems.count, 2)
         XCTAssertEqual(globalData.dossiers.count, 4) // (claude, codex) in ws1 + (claude, codex) in ws2
     }
 
@@ -303,7 +307,7 @@ final class AgentDashboardAggregatorTests: XCTestCase {
         XCTAssertTrue(cursorDossier?.modifiedFiles.contains("Auth.swift") ?? false)
     }
 
-    func testAggregateExtractsLiveSessionScrollbackAndGeneratesLiveActivity() {
+    func testALiveSessionIsPresenceNotATimelineEvent() {
         let ws = (tempDir.path as NSString).standardizingPath
         let aggregator = AgentDashboardAggregator()
 
@@ -317,16 +321,17 @@ final class AgentDashboardAggregatorTests: XCTestCase {
 
         let data = aggregator.aggregateProject(workspacePath: ws, liveSessions: liveSessions)
 
-        // Dossier should fall back lastDeliverable to recentOutput when no inbox message exists
+        // A live session with recent output and an activity produces no activity item...
+        XCTAssertTrue(data.activityItems.isEmpty)
+        XCTAssertNil(data.activityItems.first(where: { $0.fromAgent == .cursor }))
+
+        // ...its presence still reaches the caller through the dossier.
         let cursorDossier = data.dossiers.first(where: { $0.agent == .cursor })
         XCTAssertNotNil(cursorDossier)
-        XCTAssertEqual(cursorDossier?.lastDeliverable, "Running build step...\nGenerated 12 symbols.\nAll clear.")
+        XCTAssertEqual(cursorDossier?.activeSessionId, "s-live-1")
+        XCTAssertEqual(cursorDossier?.status, "working")
         XCTAssertEqual(cursorDossier?.liveActivity, "Compiling Auth.swift")
-
-        // Timeline should include an activity item for the live active session
-        let liveItem = data.activityItems.first(where: { $0.fromAgent == .cursor && $0.title.contains("active in terminal") })
-        XCTAssertNotNil(liveItem)
-        XCTAssertTrue(liveItem?.body.contains("Generated 12 symbols") ?? false)
+        XCTAssertEqual(cursorDossier?.lastDeliverable, "Running build step...\nGenerated 12 symbols.\nAll clear.")
     }
 
     func testTaskItemBodyShowsTheVerdict() throws {

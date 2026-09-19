@@ -168,9 +168,9 @@ final class AppCoordinatorDashboardTests: XCTestCase {
         XCTAssertNotNil(claudeDossier)
         XCTAssertTrue(claudeDossier?.lastDeliverable?.contains("modules built successfully") ?? false)
 
-        let liveItem = projectData.activityItems.first { $0.fromAgent == .claude && $0.title.contains("active in terminal") }
-        XCTAssertNotNil(liveItem)
-        XCTAssertTrue(liveItem?.body.contains("modules built successfully") ?? false)
+        // Presence is not a timeline event: no activity item is synthesized for the live session.
+        XCTAssertNil(projectData.activityItems.first { $0.fromAgent == .claude })
+        XCTAssertEqual(claudeDossier?.activeSessionId, session.id)
 
         let globalData = await coordinator.fetchGlobalDashboardAsync()
         let globalClaudeDossier = globalData.dossiers.first { $0.agent == .claude }
