@@ -40,6 +40,17 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .shell: return "Terminal (zsh)"
         }
     }
+
+    /// The short name a sidebar row uses when nothing better names the session.
+    public var shortName: String {
+        switch self {
+        case .claude: return "Claude"
+        case .agy: return "agy"
+        case .cursor: return "Cursor"
+        case .codex: return "Codex"
+        case .shell: return "Terminal"
+        }
+    }
 }
 
 /// Metadata and argument specifications for AI CLI agents.
