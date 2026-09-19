@@ -51,7 +51,8 @@ with a ‹ back button in a slim top strip.
 1. **Brand row.** "linkC" on the left. On the right, a ✎ glyph opening the current `LauncherMenu`
    contents unchanged: new session per agent, new terminal (zsh), Continue last, Resume, Quit linkC.
 2. **Navigation rows** (icon + label, Codex style):
-   - New session — shows the launcher in the right pane.
+   - New session — opens the launcher in the right pane, as a screen (`PanelScreen.newSession`), so
+     it layers and goes back like the others and also works in a narrow panel.
    - Activity, Skills, MCP servers — open those screens in the right pane.
    - More — expands in place to Tool servers, Terminals, Settings. Its open/closed state is
      remembered.
@@ -95,11 +96,10 @@ The header strip (`PanelHeader`, `TopNavBar`, `CountBadge`, `LauncherMenu`'s hea
 
 ### Session title — first match wins
 
-1. **Claude's own title.** Claude Code appends `{"type":"ai-title","aiTitle":"…"}` lines to the
-   conversation file; the latest one is the current title. linkC already binds each Claude session's
-   transcript path (`UsageTracker.bind`). The file is read backward from its end until the last
-   `ai-title` line is found, and the result is cached per session until the file's size or
-   modification time changes.
+1. **Claude's own title.** Claude Code appends `{"type":"ai-title","aiTitle":"…","sessionId":"…"}`
+   lines to the conversation file; the latest one is the current title. `UsageTracker` already reads
+   each bound Claude session's transcript in full on first bind and every appended line after that
+   (`refreshSession`), so it records the latest title as those lines pass through. No second read.
 2. **The task the session holds:** the `TaskRecord` whose `assigneeSessionId` is this session and
    whose state is `delivered` or `started`, shown as "Task <shortId>: <first line of the prompt>".
 3. **The agent's display name.** When a project has more than one untitled session of the same agent,
@@ -149,9 +149,9 @@ unchanged.
 Logic lives in `LinkCKit`, as plain types tested there; the `linkc` target has no SwiftUI test
 harness, so views stay thin.
 
-- **`ClaudeTitleReader`** — given a transcript path, returns the latest `aiTitle` or nil. Backward
-  chunked scan splitting on newline bytes (the approach `TranscriptBackwardReader` uses), with a
-  per-path cache keyed by size and modification time.
+- **`ClaudeTitle`** — parses one transcript line and returns its `aiTitle`, or nil for any other
+  line. `UsageTracker.refreshSession` feeds it every new line and keeps the latest per session
+  (`sessionTitle(_:)`), dropped on `unbind`.
 - **`SessionTitles`** — resolves the title list for a project's sessions: Claude title, held task,
   numbered agent name.
 - **`SessionAttention`** — the table above: state text, coral or not, and the seen bookkeeping
@@ -166,15 +166,15 @@ that lays out sidebar + right pane with the existing 600pt breakpoint.
 
 ## Error handling
 
-- A transcript that cannot be read or has no `ai-title` line falls through to the next title
-  source. An unreadable file is logged once per path and modification time, not every refresh.
+- A session with no `ai-title` line yet falls through to the next title source. That is the normal
+  state of a new session (its transcript may not exist until the first prompt), so nothing is logged.
 - `SidebarState` that fails to decode is logged and replaced with an empty state; the sidebar then
   shows projects in session order with default expansion.
 
 ## Testing
 
-- Test-first in `LinkCKitTests` for every rule above: the latest of several `ai-title` lines wins; a
-  title past the first chunk is found; the cache re-reads only after the file changes; the held-task
+- Test-first in `LinkCKitTests` for every rule above: the latest of several `ai-title` lines wins,
+  including one appended after the first read, and `unbind` drops it; the held-task
   fallback and " 2" numbering; every row of the state table, including seen/unseen transitions and a
   state that begins while on screen; the project dot; auto-expand, the selected project's forced
   expansion, and a manual override surviving until the next auto-expand; stable order across a
