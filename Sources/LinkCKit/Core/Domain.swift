@@ -147,6 +147,7 @@ public struct ProjectSwarm: Sendable, Identifiable, Equatable {
 
 /// The rail's destinations — full screens the panel can show in place of home.
 public enum PanelScreen: String, CaseIterable, Identifiable, Sendable {
+    case newSession
     case mcpServers
     case skills
     case terminals

@@ -1116,7 +1116,7 @@ private struct CompactTerminalRow: View {
 /// standalone running containers, each ranked hottest-first by live CPU — the power proxy
 /// (per-container energy doesn't exist on macOS; every container shares one VM). Read-only
 /// pointers into the Tool Servers screen; hidden entirely when nothing runs.
-private struct ServersSection: View {
+struct ServersSection: View {
     let model: AppModel
 
     var body: some View {
@@ -1124,8 +1124,6 @@ private struct ServersSection: View {
         let standalone = model.runningStandaloneByPower
         if !projects.isEmpty || !standalone.isEmpty || model.dockerVmCpu != nil {
             VStack(spacing: 6) {
-                SectionHeader(title: "SERVERS")
-                    .padding(.top, 6)
                 // The VM tax leads the section: it's what Docker costs even when every
                 // container below reads 0% — the answer to "why does the battery menu
                 // still blame Docker?".
@@ -1202,7 +1200,7 @@ private struct ServerRow: View {
 /// The sidebar's cloud section — Oracle compute instances through the user's own `oci`
 /// CLI (linkC never holds credentials). Hidden entirely when the CLI, config, or
 /// instances are absent. The Oracle console is the drill-in: tapping opens it.
-private struct CloudSection: View {
+struct CloudSection: View {
     let model: AppModel
     /// Only one row expands at a time — the sidebar stays a glance, not a dashboard.
     @State private var expandedId: String?
@@ -1221,8 +1219,6 @@ private struct CloudSection: View {
         let showsProviders = groupCount > 1
         if groupCount > 0 || needsLogin || !errors.isEmpty {
             VStack(spacing: 6) {
-                SectionHeader(title: "CLOUD")
-                    .padding(.top, 6)
                 if !instances.isEmpty {
                     if showsProviders { ProviderHeader(title: "ORACLE") }
                     ForEach(instances) { instance in

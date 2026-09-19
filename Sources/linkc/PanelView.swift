@@ -19,52 +19,29 @@ struct PanelView: View {
                 SetupErrorView(message: error)
             } else {
                 VStack(spacing: 0) {
-                    // The + hides while the empty state shows — the empty state is the launcher
-                    // then, and two launch affordances never share the screen.
-                    PanelHeader(
-                        model: model,
-                        showsLauncher: model.selectedId != nil
-                            || model.activeScreen != nil
-                            || !model.sessions.isEmpty
-                            || !model.restorables.isEmpty
-                            || !model.shellRows.isEmpty
-                            || !model.restorableShells.isEmpty
-                    )
-                    // Pane swap: dock screen > terminal > empty > home. Screens LAYER over an
-                    // open terminal instead of evicting it — closing the screen (back) lands
-                    // exactly where the user was; focusing a session still clears the screen,
-                    // so a session needing attention keeps outranking a static screen. Pure
-                    // opacity transitions across all panes ensure navigation feels snappy,
-                    // calm, and seamless without jarring reflows or motion. The dock rides
-                    // every pane but the terminal as a trailing overlay — content reserves
-                    // its inset so nothing hides under the glass.
+                    // At or above the split breakpoint the sidebar is always there, beside the
+                    // right pane. Below it, the sidebar fills the panel and a session or screen
+                    // replaces it, with a back button.
                     GeometryReader { geo in
-                        let showsDock = (model.selectedId == nil || model.activeScreen != nil)
-                            && geo.size.width >= Theme.dockBreakpoint
                         ZStack {
-                            if let screen = model.activeScreen {
-                                ScreenHost(model: model, screen: screen)
-                                    .transition(.opacity)
-                            } else if model.selectedId != nil {
-                                TerminalHero(model: model)
-                                    .transition(.opacity)
-                            } else if model.isEmptyOverview {
-                                EmptyStateView(model: model)
+                            if geo.size.width >= Theme.splitBreakpoint {
+                                HStack(spacing: 0) {
+                                    Sidebar(model: model)
+                                        .frame(width: Theme.sidebarWidth)
+                                    Rectangle()
+                                        .fill(Color.white.opacity(0.05))
+                                        .frame(width: 1)
+                                    RightPane(model: model, showsBack: false)
+                                }
+                            } else if model.selectedId != nil || model.activeScreen != nil {
+                                RightPane(model: model, showsBack: true)
                                     .transition(.opacity)
                             } else {
-                                HomeView(model: model)
+                                Sidebar(model: model)
                                     .transition(.opacity)
                             }
                         }
-                        .padding(.trailing, showsDock ? Theme.dockInset : 0)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .overlay(alignment: .trailing) {
-                            if showsDock {
-                                Dock(model: model, selected: model.activeScreen)
-                                    .padding(.trailing, 10)
-                                    .transition(.opacity)
-                            }
-                        }
+                        .frame(width: geo.size.width, height: geo.size.height)
                         .animation(Theme.viewSwap, value: Pane(model))
                     }
                     if let error = model.lastError {
@@ -87,16 +64,139 @@ struct PanelView: View {
     }
 }
 
-/// One Equatable discriminator for the pane-swap animation — the ZStack has four branches now,
-/// so a single boolean can't drive `.animation(_:value:)` anymore.
+/// One Equatable discriminator for the pane-swap animation.
 private enum Pane: Equatable {
-    case terminal, screen(PanelScreen), empty, home
+    case terminal, screen(PanelScreen), launcher
 
     @MainActor init(_ model: AppModel) {
         if let screen = model.activeScreen { self = .screen(screen) }
         else if model.selectedId != nil { self = .terminal }
-        else if model.isEmptyOverview { self = .empty }
-        else { self = .home }
+        else { self = .launcher }
+    }
+}
+
+/// Whatever is open beside the sidebar: a screen (layered over any open terminal), the selected
+/// session's terminal, or the launcher when nothing is open.
+private struct RightPane: View {
+    let model: AppModel
+    let showsBack: Bool
+
+    var body: some View {
+        ZStack {
+            if let screen = model.activeScreen {
+                VStack(spacing: 0) {
+                    if showsBack {
+                        HStack {
+                            ChromeButton(systemName: "chevron.left", help: "Back") { model.goBack() }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.top, 8)
+                    }
+                    ScreenHost(model: model, screen: screen)
+                }
+                .transition(.opacity)
+            } else if model.selectedId != nil {
+                TerminalPane(model: model, onBack: showsBack ? { model.goBack() } : nil)
+                    .transition(.opacity)
+            } else {
+                EmptyStateView(model: model)
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(Theme.viewSwap, value: Pane(model))
+    }
+}
+
+/// The open terminal under its header strip. The agent reader swaps in for the terminal until
+/// dismissed.
+private struct TerminalPane: View {
+    let model: AppModel
+    let onBack: (() -> Void)?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.setWindowDraggable) private var setWindowDraggable
+    /// An agent opened for reading — replaces the terminal until dismissed.
+    @State private var readerAgent: AgentRun?
+    /// Whether the pointer is over the terminal (dragging the window is off there).
+    @State private var isHoveringTerminal = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let session = model.selectedSession {
+                SessionHeaderStrip(model: model, session: session, onBack: onBack) { readerAgent = $0 }
+            }
+            ZStack {
+                if let readerAgent {
+                    AgentReaderView(agent: currentAgent(readerAgent)) { self.readerAgent = nil }
+                        .transition(reduceMotion
+                            ? .opacity
+                            : .move(edge: .trailing).combined(with: .opacity))
+                } else {
+                    terminal
+                        .transition(.opacity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(Theme.viewSwap, value: readerAgent?.id)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .onChange(of: model.selectedId, initial: true) { _, _ in
+            readerAgent = nil
+            styleTerminal(model.selectedTerminal)
+        }
+    }
+
+    private var terminal: some View {
+        ZStack {
+            TerminalContainer(session: model.selectedTerminal)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
+                .onHover { hovering in
+                    let active = hovering && model.selectedTerminal != nil
+                    if active != isHoveringTerminal {
+                        isHoveringTerminal = active
+                        setWindowDraggable(!active)
+                    }
+                }
+                .onDisappear {
+                    if isHoveringTerminal {
+                        isHoveringTerminal = false
+                        setWindowDraggable(true)
+                    }
+                }
+                .onChange(of: model.selectedTerminal?.id) { _, newId in
+                    if newId == nil && isHoveringTerminal {
+                        isHoveringTerminal = false
+                        setWindowDraggable(true)
+                    }
+                }
+            if model.selectedTerminal == nil {
+                Text("Select a session")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+        }
+    }
+
+    /// Re-resolve the opened agent so a completion arriving mid-read fills the body in.
+    /// Resolved against the full run list, not `visibleAgents` — a swept run leaves the
+    /// visible set, and the reader must not freeze on its "still working" snapshot.
+    private func currentAgent(_ agent: AgentRun) -> AgentRun {
+        guard let id = model.selectedId else { return agent }
+        return model.usage.sessionAgents(id).first { $0.id == agent.id } ?? agent
+    }
+
+    /// Restyle the live terminal to the panel's tokens: SF Mono at 12.5 and a translucent
+    /// background, so the glass reads through the terminal. The font must be set first and the
+    /// layer cleared last: `setupOptions()` re-stamps an opaque layer background on font changes.
+    private func styleTerminal(_ session: TerminalSession?) {
+        guard let view = session?.terminalView else { return }
+        view.font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
+        view.nativeBackgroundColor = NSColor.black.withAlphaComponent(0.30)
+        view.layer?.backgroundColor = NSColor.clear.cgColor
     }
 }
 
@@ -114,6 +214,7 @@ private struct ScreenHost: View {
 
     @ViewBuilder private var content: some View {
         switch screen {
+        case .newSession: EmptyStateView(model: model)
         case .mcpServers: MCPServersScreen(model: model)
         case .skills: SkillsScreen(model: model)
         case .terminals: TerminalsScreen(model: model)
@@ -288,7 +389,7 @@ struct ChromeGlyph: View {
 }
 
 /// The `+` launcher — 1-click launch for all supported autonomous agents and terminals.
-private struct LauncherMenu: View {
+struct LauncherMenu: View {
     let model: AppModel
 
     @State private var hovering = false
@@ -320,13 +421,13 @@ private struct LauncherMenu: View {
             Divider()
             Button("Quit linkC") { NSApplication.shared.terminate(nil) }
         } label: {
-            ChromeGlyph(systemName: "plus", hovering: hovering)
+            ChromeGlyph(systemName: "square.and.pencil", hovering: hovering)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .onHover { hovering = $0 }
-        .help("New session or terminal")
+        .help("New session, terminal, or quit")
     }
 }
 
