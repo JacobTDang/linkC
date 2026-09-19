@@ -28,6 +28,7 @@ public final class UsageTracker {
     private var accumulators: [String: Accumulator] = [:]
     private var agentAssemblers: [String: AgentAssembler] = [:]
     private var activities: [String: CurrentActivity] = [:]
+    private var titles: [String: String] = [:]
     private var scanRecords: [MessageUsage] = []
 
     /// First-scan cost bound: only the trailing 4MB of a historical transcript is read, and
@@ -54,9 +55,13 @@ public final class UsageTracker {
         var acc = accumulators[sessionId] ?? Accumulator()
         var agents = agentAssemblers[sessionId] ?? AgentAssembler()
         var activity = activities[sessionId]
+        var title = titles[sessionId]
         for line in sessionReader.readNewLines(at: path) {
             if let usage = TranscriptUsage.parseLine(line) {
                 acc.add(usage)
+            }
+            if let named = ClaudeTitle.parse(line) {
+                title = named
             }
             // One decode feeds both event consumers (TranscriptUsage keeps its own
             // pricing-critical parser — see TranscriptLine's doc comment).
@@ -69,6 +74,7 @@ public final class UsageTracker {
         accumulators[sessionId] = acc
         agentAssemblers[sessionId] = agents
         activities[sessionId] = activity
+        if titles[sessionId] != title { titles[sessionId] = title }
     }
 
     /// The session's subagent runs, oldest first — spawns and completions from the same
@@ -93,6 +99,12 @@ public final class UsageTracker {
         activities[sessionId]?.label
     }
 
+    /// The conversation's own name — the latest `ai-title` line in its transcript — or nil
+    /// before it has been named.
+    public func sessionTitle(_ sessionId: String) -> String? {
+        titles[sessionId]
+    }
+
     /// Drop every per-session dictionary for an ended session — without this, session ids
     /// (fresh UUIDs, never reused) accumulate for the process lifetime and every refresh
     /// sweep keeps re-reading dead transcripts.
@@ -101,6 +113,7 @@ public final class UsageTracker {
         accumulators[sessionId] = nil
         agentAssemblers[sessionId] = nil
         activities[sessionId] = nil
+        titles[sessionId] = nil
     }
 
     public func sessionUsage(_ sessionId: String) -> SessionUsage? {
