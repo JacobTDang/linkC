@@ -19,38 +19,39 @@ struct ProjectDashboardSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             // Header
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("PROJECT DASHBOARD")
-                        .font(.system(size: 10, weight: .bold))
-                        .tracking(0.8)
-                        .foregroundStyle(Theme.textTertiary)
-
-                    Text((workspacePath as NSString).lastPathComponent)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(Theme.textPrimary)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("PROJECT DASHBOARD")
+                            .font(.system(size: 10, weight: .bold))
+                            .tracking(0.8)
+                            .foregroundStyle(Theme.textTertiary)
+                        Text((workspacePath as NSString).lastPathComponent)
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(Theme.textPrimary)
+                    }
+                    Spacer(minLength: 12)
+                    Button("Done", action: onDismiss)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
                 }
-                Spacer()
                 Picker("Tab", selection: $selectedTab) {
                     ForEach(Tab.allCases, id: \.self) { tab in
                         Text(tab.rawValue).tag(tab)
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 250)
-
-                Button("Done") {
-                    onDismiss()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .padding(.leading, 8)
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)
             .padding(.bottom, 12)
 
             Divider()
+
+            presenceStrip(dashboardData?.dossiers ?? [])
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -87,7 +88,7 @@ struct ProjectDashboardSheet: View {
                 .padding(16)
             }
         }
-        .frame(width: 520, height: 460)
+        .frame(width: 600, height: 520)
         .background(Color(white: 0.12))
         .task {
             await refresh()
@@ -95,6 +96,53 @@ struct ProjectDashboardSheet: View {
                 try? await Task.sleep(for: .seconds(1.5))
                 if Task.isCancelled { break }
                 await refresh()
+            }
+        }
+    }
+
+    /// Who is in this project right now: one line per live agent — colour mark, agent, what it is
+    /// doing, and a way into its terminal. Presence belongs here, not in the event timeline.
+    private func presenceStrip(_ dossiers: [AgentContributionDossier]) -> some View {
+        let live = dossiers.filter { $0.activeSessionId != nil }
+        return Group {
+            if !live.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(live) { dossier in
+                        HStack(spacing: 8) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Theme.agentColor(dossier.agent))
+                                .frame(width: 7, height: 7)
+                            Text(dossier.agent.shortName)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Theme.textPrimary)
+                            if let activity = dossier.liveActivity, !activity.isEmpty {
+                                Text(activity)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(dossier.status == "working" ? Theme.textSecondary : Theme.textTertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .smoothShimmer(isWorking: dossier.status == "working")
+                            }
+                            Spacer(minLength: 8)
+                            Text(dossier.status)
+                                .font(.system(size: 10))
+                                .foregroundStyle(dossier.status == "working" ? Theme.statusRunning : Theme.textTertiary)
+                            if let sessionId = dossier.activeSessionId {
+                                Button("Open") {
+                                    model.focus(sessionId)
+                                    onDismiss()
+                                }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                                .help("Open \(dossier.agent.shortName)'s terminal")
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                Divider()
             }
         }
     }
@@ -149,11 +197,11 @@ struct ProjectDashboardSheet: View {
                         Text(note.content)
                             .font(.system(size: 11))
                             .foregroundStyle(Theme.textSecondary)
+                            .lineLimit(3)
                     }
                     .padding(10)
-                    .background(Color.white.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+                    .background(Color.white.opacity(0.04))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.rowRadius))
                 }
             }
         }

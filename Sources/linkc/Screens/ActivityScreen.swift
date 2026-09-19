@@ -325,14 +325,11 @@ struct AgentActivityTimelineCard: View {
 
             if !item.body.isEmpty {
                 Text(item.body)
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(6)
-                    .padding(8)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(3)
+                    .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.black.opacity(0.35))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.06), lineWidth: 0.5))
             }
 
             if !item.claimedFiles.isEmpty {
@@ -353,10 +350,9 @@ struct AgentActivityTimelineCard: View {
                 }
             }
         }
-        .padding(12)
-        .background(Color.white.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+        .padding(10)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.rowRadius))
     }
 }
 
