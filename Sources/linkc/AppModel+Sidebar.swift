@@ -1,8 +1,9 @@
 import Foundation
 import LinkCKit
 
-/// The sidebar's live inputs. Reads only — the one writer, `sampleSidebar`, runs from the
-/// once-a-second shell sweep, never from a view body.
+/// The sidebar's live inputs. Reads only — the writers are `sampleSidebar()` (once a second,
+/// from the shell sweep) and `markOnScreenSeen()` (just before the selection, the open screen,
+/// or the panel's visibility changes) — never a view body.
 extension AppModel {
     /// The session whose terminal is actually on screen: selected, no screen layered over it,
     /// panel visible.
@@ -77,8 +78,9 @@ extension AppModel {
         sidebarState.noteCoral(Set(coral))
     }
 
-    /// Mark the on-screen session seen. Also called just before navigation moves it off screen,
-    /// so a turn that finished while the user watched never reads as unseen afterwards.
+    /// Mark the on-screen session seen. Runs once a second from the sweep, and just before the
+    /// selection, the open screen, or the panel's visibility changes, so a turn that finished
+    /// while the user watched never reads as unseen afterwards.
     func markOnScreenSeen(at now: Date = Date()) {
         guard let id = onScreenSessionId, let session = sessions.first(where: { $0.id == id }) else { return }
         attention.markSeen(session, at: now)

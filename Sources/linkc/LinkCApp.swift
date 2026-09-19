@@ -197,6 +197,9 @@ final class AppModel {
         do {
             let preflight = try Preflight.resolve()
             let terminals = TerminalSessionManager()
+            // Whatever moves the selection — a click, a restore, a notification, a terminal
+            // exiting — the session leaving the screen is marked seen first.
+            terminals.onSelectionWillChange = { [weak self] in self?.markOnScreenSeen() }
             let prefs = preferences
             let coordinator = AppCoordinator(
                 claudePath: preflight.claudePath,
@@ -779,19 +782,22 @@ final class AppModel {
 
     /// Which rail screen is open, if any. Orthogonal to `selectedId`; the terminal wins when
     /// both are set (a session needing attention outranks a static screen).
-    var activeScreen: PanelScreen?
+    var activeScreen: PanelScreen? {
+        willSet {
+            // A screen opening over the terminal (or closing) moves what is on screen.
+            if newValue != activeScreen { markOnScreenSeen() }
+        }
+    }
 
     /// Open a rail screen. The selection stays put — screens layer over an open terminal,
     /// so closing the screen lands the user exactly where they were.
     func open(_ screen: PanelScreen) {
-        markOnScreenSeen()
         activeScreen = screen
     }
 
     /// Back peels one layer: a screen closes onto whatever was under it (the open
     /// terminal, or home); the terminal closes onto home.
     func goBack() {
-        markOnScreenSeen()
         if activeScreen != nil {
             activeScreen = nil
         } else {
@@ -801,7 +807,6 @@ final class AppModel {
 
     /// Focusing a session always wins over an open screen (notification clicks included).
     func focus(_ id: String) {
-        markOnScreenSeen()
         activeScreen = nil
         coordinator?.focusSession(id)
     }

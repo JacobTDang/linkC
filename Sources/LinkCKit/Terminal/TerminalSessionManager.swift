@@ -10,7 +10,18 @@ public final class TerminalSessionManager {
     public private(set) var sessions: [TerminalSession] = []
     public private(set) var selectedId: String?
 
+    /// Called just before `selectedId` changes, whatever changes it, while the old value is still
+    /// readable — so the app can record what was on screen before it leaves.
+    @ObservationIgnored public var onSelectionWillChange: (@MainActor () -> Void)?
+
     public init() {}
+
+    /// The single writer of `selectedId`: announces a real change first, ignores a no-op.
+    private func setSelection(_ id: String?) {
+        guard id != selectedId else { return }
+        onSelectionWillChange?()
+        selectedId = id
+    }
 
     /// Create a terminal for `id`, append it, and select it unless `select` is false (a
     /// background launch leaves whatever is on screen alone). Deliberately does NOT start a
@@ -22,7 +33,7 @@ public final class TerminalSessionManager {
     ) -> TerminalSession {
         let session = TerminalSession(id: id, cwd: cwd, title: title, agentKind: agentKind)
         sessions.append(session)
-        if select { selectedId = id }
+        if select { setSelection(id) }
         return session
     }
 
@@ -33,13 +44,13 @@ public final class TerminalSessionManager {
     /// Bring `id`'s terminal on screen. Ignores unknown ids.
     public func select(_ id: String) {
         guard sessions.contains(where: { $0.id == id }) else { return }
-        selectedId = id
+        setSelection(id)
     }
 
     /// Return to the home overview by clearing the selection. Keeps every terminal alive; the
     /// panel controller treats a nil selection as a no-op, so this never closes the panel.
     public func deselect() {
-        selectedId = nil
+        setSelection(nil)
     }
 
     /// Kill `id`'s child process and drop the session. Selection falls back to the last
@@ -55,7 +66,7 @@ public final class TerminalSessionManager {
     public func remove(_ id: String) {
         sessions.removeAll { $0.id == id }
         if selectedId == id {
-            selectedId = sessions.last?.id
+            setSelection(sessions.last?.id)
         }
     }
 
