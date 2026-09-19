@@ -73,14 +73,22 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            leading()
-                .frame(width: 16)
-            Text(title)
-                .font(.system(size: 13))
-                .foregroundStyle(titleColor)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 6)
+            // Only the glyph and title are the row's button. Hover controls in `trailing` sit
+            // beside it, never inside it, so clicking one can never also run the row's action.
+            Button(action: action) {
+                HStack(spacing: 8) {
+                    leading()
+                        .frame(width: 16)
+                    Text(title)
+                        .font(.system(size: 13))
+                        .foregroundStyle(titleColor)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 6)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             trailing(hovering)
                 .fixedSize()
         }
@@ -92,7 +100,6 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
                 .fill(isSelected ? Color.white.opacity(0.09) : (hovering ? Theme.hover : Color.clear))
         )
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .onTapGesture(perform: action)
         .onHover { hovering = $0 }
         .animation(Theme.hoverEase, value: hovering)
         .help(help ?? title)
