@@ -402,6 +402,7 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.newSession(cwd: cwd, agent: agent, mode: .new)
+            activeScreen = nil  // the new session is selected — show it
             recents?.record(cwd)
         } catch {
             lastError = error.localizedDescription
@@ -774,14 +775,16 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.newSession(cwd: url.path, agent: agent, mode: mode)
+            activeScreen = nil  // the new session is selected — show it
             recents?.record(url.path)
         } catch {
             lastError = error.localizedDescription
         }
     }
 
-    /// Which rail screen is open, if any. Orthogonal to `selectedId`; the terminal wins when
-    /// both are set (a session needing attention outranks a static screen).
+    /// Which screen is open over the right pane, if any. While set, it is what the right pane
+    /// shows, layered over any selected terminal. Anything that selects a session selects first
+    /// and clears this second, so the session being left is judged by what was really on screen.
     var activeScreen: PanelScreen? {
         willSet {
             // A screen opening over the terminal (or closing) moves what is on screen.
@@ -805,10 +808,11 @@ final class AppModel {
         }
     }
 
-    /// Focusing a session always wins over an open screen (notification clicks included).
+    /// Focusing a session always wins over an open screen. Select first, then close the screen:
+    /// the session being left is judged by what was really on screen (a screen covered it).
     func focus(_ id: String) {
-        activeScreen = nil
         coordinator?.focusSession(id)
+        activeScreen = nil
     }
     func stop(_ id: String) { coordinator?.stopSession(id) }
 
@@ -818,6 +822,7 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.restore(r, as: agent)
+            activeScreen = nil  // the new session is selected — show it
             recents?.record(r.cwd)
         } catch {
             lastError = error.localizedDescription
@@ -830,6 +835,7 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.restoreAll()
+            activeScreen = nil  // the new session is selected — show it
         } catch {
             lastError = error.localizedDescription
         }
