@@ -101,6 +101,10 @@ final class AppModel {
     /// Whether the menu-bar panel is currently on screen. Feeds the coordinator's watch probe
     /// and gates the usage-refresh timer — no panel, no polling.
     var panelVisible = false {
+        willSet {
+            // Hiding the panel takes the open terminal off screen: record it as seen first.
+            if !newValue { markOnScreenSeen() }
+        }
         didSet {
             updateUsageTimer()
             if !panelVisible {
@@ -122,6 +126,10 @@ final class AppModel {
     let usage = UsageTracker()
     /// linkC's own settings (hotkey preset, panel toggles) — UserDefaults-backed.
     let preferences = AppPreferences()
+    /// When each session was last on screen — decides whether a finished turn still reads coral.
+    let attention = SessionAttention()
+    /// The sidebar's remembered project order, expansion, and open sections.
+    let sidebarState = SidebarState()
 
     /// Surface a one-off failure in the panel's error bar (fail loud, stay standing).
     func surface(error message: String) { lastError = message }
@@ -211,6 +219,11 @@ final class AppModel {
             self.shells = ShellCoordinator(terminals: terminals, manifestDir: linkCSupport)
             self.shells?.restoreActiveShells()
             startShellSweep()
+            // Forget remembered folders with no live session and no Earlier entry.
+            let standardized: (String) -> String = { ($0 as NSString).standardizingPath }
+            var inUse = Set(sessions.map { standardized($0.cwd) })
+            inUse.formUnion(restorables.map { standardized($0.cwd) })
+            sidebarState.prune(keeping: inUse)
             if let lastId = UserDefaults.standard.string(forKey: "LinkCLastSelectedSessionId"),
                terminals.sessions.contains(where: { $0.id == lastId }) {
                 terminals.select(lastId)
@@ -310,6 +323,7 @@ final class AppModel {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled else { break }
                 self?.sampleShellAgents()
+                self?.sampleSidebar()
             }
         }
     }
@@ -802,12 +816,14 @@ final class AppModel {
     /// Open a rail screen. The selection stays put — screens layer over an open terminal,
     /// so closing the screen lands the user exactly where they were.
     func open(_ screen: PanelScreen) {
+        markOnScreenSeen()
         activeScreen = screen
     }
 
     /// Back peels one layer: a screen closes onto whatever was under it (the open
     /// terminal, or home); the terminal closes onto home.
     func goBack() {
+        markOnScreenSeen()
         if activeScreen != nil {
             activeScreen = nil
         } else {
@@ -824,6 +840,7 @@ final class AppModel {
 
     /// Focusing a session always wins over an open screen (notification clicks included).
     func focus(_ id: String) {
+        markOnScreenSeen()
         activeScreen = nil
         coordinator?.focusSession(id)
     }
@@ -857,6 +874,7 @@ final class AppModel {
 
     /// Return to the home overview (no session selected). Keeps every terminal alive.
     func goHome() {
+        markOnScreenSeen()
         coordinator?.terminals.deselect()
         activeScreen = nil
     }

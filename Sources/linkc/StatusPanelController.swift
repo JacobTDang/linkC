@@ -243,8 +243,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     private func observeModel() {
         withObservationTracking {
             _ = model.selectedId
-            _ = model.activeCount
-            _ = model.needsYouCount
+            _ = model.attentionCount
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -295,13 +294,14 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// The menu-bar icon: tinted the accent (orange) when any session needs your attention,
-    /// otherwise the default template colour that follows the menu bar. No count text.
+    /// The menu-bar icon: tinted the accent (orange) while any session wants you — blocked,
+    /// errored, or finished and not yet seen — otherwise the default template colour that
+    /// follows the menu bar. No count text.
     private func updateStatusIcon() {
         guard let button = statusItem.button else { return }
         button.title = ""
         button.imagePosition = .imageOnly
-        button.contentTintColor = model.needsYouCount > 0
+        button.contentTintColor = model.attentionCount > 0
             ? NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1)   // accent coral
             : nil
     }
