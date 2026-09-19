@@ -91,7 +91,7 @@ struct TerminalCard: View {
                 Circle()
                     .fill(dotColor)
                     .frame(width: 8, height: 8)
-                    .frame(width: 18, height: 18)  // StatusDot's box, minus its glow
+                    .frame(width: 18, height: 18)  // an 18pt status-dot box, so rows line up
                 if let agent = row.detectedAgent {
                     AgentPill(agent: agent)
                         .fixedSize()

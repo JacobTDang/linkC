@@ -3,7 +3,8 @@ import Observation
 
 /// A session recorded in the workspace manifest so it can be restored after the app quits.
 /// While a session is live its entry has no `endedAt`; once the session ends (or is stopped)
-/// `endedAt` is stamped and the entry becomes a restorable card on the home overview.
+/// `endedAt` is stamped and the entry becomes restorable, listed under the sidebar's Earlier
+/// section.
 public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
     /// linkC's own session id (the `LINKC_SESSION` value). Stable across the session's life.
     public let linkcId: String
@@ -220,9 +221,9 @@ public final class WorkspaceManifest {
     }()
 }
 
-/// Observable holder for the restorable cards shown on the home overview. The coordinator
-/// recomputes and assigns this whenever the manifest or the live session set changes, so the
-/// panel reacts the same way it does to the live session store.
+/// Observable holder for the restorable sessions listed under the sidebar's Earlier section. The
+/// coordinator recomputes and assigns this whenever the manifest or the live session set changes,
+/// so the panel reacts the same way it does to the live session store.
 @MainActor
 @Observable
 public final class RestorableStore {

@@ -26,7 +26,7 @@ public enum LaunchMode: String, Sendable, CaseIterable {
 public final class AppCoordinator {
     public let store = SessionStore()
     public let terminals: TerminalSessionManager
-    /// Restorable cards for the home overview — previous sessions that are no longer live.
+    /// Previous sessions that are no longer live — the sidebar's Earlier section.
     /// Observable; the panel reacts to it the same way it reacts to the live session store.
     public let restorableStore = RestorableStore()
     /// Fed transcript paths from hook events; owned by the UI layer, optional so the
