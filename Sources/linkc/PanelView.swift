@@ -124,8 +124,10 @@ private struct TerminalPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let session = model.selectedSession {
+            if let id = model.selectedId, let session = model.sessions.first(where: { $0.id == id }) {
                 SessionHeaderStrip(model: model, session: session, onBack: onBack) { readerAgent = $0 }
+            } else if let id = model.selectedId, let shell = model.shellRows.first(where: { $0.id == id }) {
+                ShellHeaderStrip(row: shell, onBack: onBack)
             }
             ZStack {
                 if let readerAgent {

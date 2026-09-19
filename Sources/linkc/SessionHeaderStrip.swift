@@ -83,3 +83,31 @@ struct SessionHeaderStrip: View {
         }
     }
 }
+
+/// The line above an open dev shell: its title and folder, and the back button in a narrow panel.
+/// Built from the shell's row, which the app's sweep already samples — never a process scan.
+struct ShellHeaderStrip: View {
+    let row: ShellRow
+    let onBack: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let onBack {
+                ChromeButton(systemName: "chevron.left", help: "Back", action: onBack)
+            }
+            Image(systemName: "terminal")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textSecondary)
+            Text(row.title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Text(URL(fileURLWithPath: row.cwd).lastPathComponent)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+        }
+    }
+}

@@ -173,26 +173,6 @@ final class AppModel {
         return coordinator?.terminals.session(id: id)
     }
 
-    var selectedSession: Session? {
-        guard let id = selectedId else { return nil }
-        if let session = sessions.first(where: { $0.id == id }) {
-            return session
-        }
-        if let term = selectedTerminal {
-            let agent = term.sampleForegroundAgent()
-            let liveActivity = term.liveActivityLine()
-            let isWorking = agent != .shell && liveActivity != nil && !liveActivity!.isEmpty
-            return Session(
-                id: term.id,
-                cwd: term.cwd,
-                title: term.title,
-                state: isWorking ? .working : .ready,
-                agentKind: agent
-            )
-        }
-        return nil
-    }
-
     func start() async {
         do {
             let preflight = try Preflight.resolve()
