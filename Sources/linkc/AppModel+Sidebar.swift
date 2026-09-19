@@ -83,4 +83,16 @@ extension AppModel {
         guard let id = onScreenSessionId, let session = sessions.first(where: { $0.id == id }) else { return }
         attention.markSeen(session, at: now)
     }
+
+    /// Checks if a session's agent has an active rate limit recorded in the inbox.
+    func agentLimit(for session: Session) -> AgentLimitStatus? {
+        let norm = (session.cwd as NSString).standardizingPath
+        guard let inbox = inbox(for: norm) else { return nil }
+        let now = Date()
+        if let limit = inbox.agentLimits.first(where: { $0.agent == session.agentKind }),
+           limit.cooldownExpiresAt > now {
+            return limit
+        }
+        return nil
+    }
 }

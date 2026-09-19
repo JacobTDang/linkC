@@ -1,38 +1,6 @@
 import SwiftUI
 import LinkCKit
 
-/// The ambient signal: a session with subagents in flight grows this tiny live chip —
-/// two breathing dots and a count. Reduce Motion holds the dots steady.
-struct AgentChip: View {
-    let count: Int
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var up = false
-
-    var body: some View {
-        HStack(spacing: 4) {
-            HStack(spacing: 2) {
-                Circle().fill(Theme.statusRunning).frame(width: 4, height: 4)
-                    .opacity(reduceMotion ? 1 : (up ? 1 : 0.35))
-                Circle().fill(Theme.statusRunning).frame(width: 4, height: 4)
-                    .opacity(reduceMotion ? 1 : (up ? 0.35 : 1))
-            }
-            Text(count == 1 ? "1 agent" : "\(count) agents")
-                .font(.system(size: 9, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(Theme.statusRunning)
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2.5)
-        .background(Capsule().fill(Theme.statusRunning.opacity(0.12)))
-        .fixedSize()
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { up = true }
-        }
-    }
-}
-
 /// One agent in a card's lane: type badge, its own description, age, spinner or done-tick.
 struct AgentLine: View {
     let agent: AgentRun

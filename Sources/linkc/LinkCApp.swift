@@ -166,8 +166,6 @@ final class AppModel {
     var projectGroups: [ProjectGroup] { ProjectGroup.group(sessions: sessions) }
     /// Previous sessions no longer live — shown as dimmed restorable cards on the home overview.
     var restorables: [RestorableSession] { coordinator?.restorableStore.restorables ?? [] }
-    var activeCount: Int { coordinator?.store.activeCount ?? 0 }
-    var needsYouCount: Int { coordinator?.store.needsYouCount ?? 0 }
     var selectedId: String? { coordinator?.terminals.selectedId }
 
     var selectedTerminal: TerminalSession? {
@@ -597,36 +595,6 @@ final class AppModel {
         }
     }
 
-    /// The session's current action ("$ swift test", "Thinking…", etc.) while it's working,
-    /// and while it's blocked on a permission prompt. Idle rows never state an absence.
-    func currentActivity(_ session: Session) -> String? {
-        if let hookActivity = usage.sessionActivity(session.id), !hookActivity.isEmpty {
-            return hookActivity
-        }
-        if let term = coordinator?.terminals.session(id: session.id),
-           let liveActivity = term.liveActivityLine(), !liveActivity.isEmpty {
-            return liveActivity
-        }
-        if session.agentKind == .claude, session.state.bucket == .active {
-            return "Thinking…"
-        }
-        if session.state == .waitingPermission {
-            return "Permission required"
-        }
-        return nil
-    }
-
-    /// The shell/dev-terminal's current activity (command or active agent activity) while running.
-    func shellActivity(_ id: String) -> String? {
-        guard let term = coordinator?.terminals.session(id: id) else { return nil }
-        let agent = term.sampleForegroundAgent()
-        guard agent != .shell else { return nil }
-        if let liveActivity = term.liveActivityLine(), !liveActivity.isEmpty {
-            return liveActivity
-        }
-        return nil
-    }
-
     /// The Docker VM's host CPU — the tax no per-container stat can show.
     var dockerVmCpu: Double? { toolServers?.vmCpu }
 
@@ -831,13 +799,6 @@ final class AppModel {
         }
     }
 
-    /// The terminal hero shows the session strip only when it offers a real switch —
-    /// another live session to go to (which includes one session while a dev shell is open).
-    var showsSessionStrip: Bool {
-        guard let selectedId else { return false }
-        return sessions.contains { $0.id != selectedId }
-    }
-
     /// Focusing a session always wins over an open screen (notification clicks included).
     func focus(_ id: String) {
         markOnScreenSeen()
@@ -871,13 +832,6 @@ final class AppModel {
 
     /// Forget a previous session (the user dismissed its card).
     func dismiss(_ r: RestorableSession) { coordinator?.dismiss(r) }
-
-    /// Return to the home overview (no session selected). Keeps every terminal alive.
-    func goHome() {
-        markOnScreenSeen()
-        coordinator?.terminals.deselect()
-        activeScreen = nil
-    }
 
     /// The last `lines` rows of `id`'s live terminal output, for the home overview's preview.
     /// "" when the session has no terminal yet (never started).

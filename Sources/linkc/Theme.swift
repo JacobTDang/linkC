@@ -62,14 +62,6 @@ enum Theme {
     /// output changes.
     static let previewHeight: CGFloat = 42
 
-    // The dock: one floating glass capsule of icon buttons at the panel's trailing edge —
-    // the single element that truly floats over the sheet. It hides below `dockBreakpoint`
-    // so it never crowds the panel at its 300pt minimum width.
-    static let dockBreakpoint: CGFloat = 360
-    /// Trailing space content reserves while the dock is visible: the capsule (44) plus its
-    /// margin and a breathing gap to the content column.
-    static let dockInset: CGFloat = 62
-
     // The sidebar split: with a terminal open and at least `splitBreakpoint` of pane width,
     // the home list rides beside the terminal as a fixed column instead of the mini-tab strip.
     static let splitBreakpoint: CGFloat = 600
