@@ -66,4 +66,17 @@ final class SessionAttentionTests: XCTestCase {
         attention.retain(only: ["a"])
         XCTAssertEqual(Set(attention.lastSeen.keys), ["a"])
     }
+
+    func testATurnSeenBeforeTheIdleNudgeStaysSeenAfterIt() {
+        let attention = SessionAttention()
+        let working = Session(id: "s1", cwd: "/p", title: "p", state: .working, stateChangedAt: t0)
+        let finished = SessionReducer.apply(
+            HookEvent(kind: .stop, linkcSessionId: "s1", claudeSessionId: "c1", cwd: "/p"), to: working, now: t0).session
+        attention.markSeen(finished, at: t0.addingTimeInterval(5))
+        let nudged = SessionReducer.apply(
+            HookEvent(kind: .notificationIdle, linkcSessionId: "s1", claudeSessionId: "c1", cwd: "/p"),
+            to: finished, now: t0.addingTimeInterval(60)).session
+        XCTAssertFalse(attention.status(for: nudged, onScreen: false, rateLimited: false,
+                                        now: t0.addingTimeInterval(90)).isCoral)
+    }
 }

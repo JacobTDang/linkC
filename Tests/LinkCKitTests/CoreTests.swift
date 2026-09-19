@@ -69,6 +69,23 @@ final class SessionReducerTests: XCTestCase {
         let out = SessionReducer.apply(event(.userPromptSubmit, claude: "abc"), to: s)
         XCTAssertEqual(out.session.claudeSessionId, "abc")
     }
+
+    /// The idle-prompt nudge arrives about 60 s into any idle prompt. On a session that has not
+    /// run a turn it is not news: the session stays ready.
+    func testTheIdleNudgeLeavesAFreshSessionReady() {
+        XCTAssertEqual(SessionReducer.nextState(current: .ready, event: .notificationIdle), .ready)
+    }
+
+    /// After a turn, the nudge is a reminder about the turn that already ended: the state moves
+    /// to waiting-for-input but keeps the turn's clock, so a turn the user already saw stays seen.
+    func testTheIdleNudgeAfterATurnKeepsTheTurnsClock() {
+        let t1 = Date(timeIntervalSince1970: 1_000_000)
+        let working = Session(id: "L1", cwd: "/tmp", title: "api", state: .working)
+        let finished = SessionReducer.apply(event(.stop), to: working, now: t1).session
+        let nudged = SessionReducer.apply(event(.notificationIdle), to: finished, now: t1.addingTimeInterval(60)).session
+        XCTAssertEqual(nudged.state, .waitingIdle)
+        XCTAssertEqual(nudged.stateChangedAt, t1)
+    }
 }
 
 @MainActor

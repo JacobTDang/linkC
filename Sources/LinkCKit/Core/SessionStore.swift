@@ -8,7 +8,9 @@ public enum SessionReducer {
         case .sessionStart: return .ready
         case .userPromptSubmit: return .working
         case .notificationPermission: return .waitingPermission
-        case .notificationIdle: return .waitingIdle
+        // The idle-prompt nudge fires about 60 s into any idle prompt. With no turn run yet it is
+        // not news, so a ready session stays ready.
+        case .notificationIdle: return current == .ready ? .ready : .waitingIdle
         case .stop: return .finished
         case .stopFailure: return .error
         case .sessionEnd: return .ended
@@ -21,7 +23,8 @@ public enum SessionReducer {
 
     /// Apply an event to a session. Returns the updated session and whether it just
     /// *entered* a notifiable state (a transition, not a repeat). Real transitions stamp
-    /// `stateChangedAt`; a re-asserted identical state keeps the original clock.
+    /// `stateChangedAt`; a re-asserted identical state keeps the original clock. One exception:
+    /// the idle nudge after a finished turn is a reminder about that turn, not a new event.
     public static func apply(
         _ event: HookEvent, to session: Session, now: Date = Date()
     ) -> (session: Session, enteredNotifiable: Bool) {
@@ -32,7 +35,10 @@ public enum SessionReducer {
         // prompt appeared is indistinguishable here: the payload does not name the prompted tool.)
         let subagentTool = event.kind == .toolFinished && event.agentId != nil
         s.state = subagentTool ? old : nextState(current: old, event: event.kind)
-        if s.state != old { s.stateChangedAt = now }
+        // The idle nudge after a finished turn is a reminder about that turn, not a new event:
+        // the state moves on, but the turn keeps its clock, so a turn already seen stays seen.
+        let nudgeAfterTurn = old == .finished && s.state == .waitingIdle
+        if s.state != old && !nudgeAfterTurn { s.stateChangedAt = now }
         if let cid = event.claudeSessionId { s.claudeSessionId = cid }
         let entered = s.state.isNotifiable && s.state != old
         return (s, entered)
