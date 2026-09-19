@@ -32,6 +32,25 @@ extension AppModel {
         )
     }
 
+    /// The session's current action ("$ swift test", "Thinking…", etc.) while it's working,
+    /// and while it's blocked on a permission prompt. Idle sessions never state an absence.
+    func currentActivity(_ session: Session) -> String? {
+        if let hookActivity = usage.sessionActivity(session.id), !hookActivity.isEmpty {
+            return hookActivity
+        }
+        if let term = coordinator?.terminals.session(id: session.id),
+           let liveActivity = term.liveActivityLine(), !liveActivity.isEmpty {
+            return liveActivity
+        }
+        if session.agentKind == .claude, session.state.bucket == .active {
+            return "Thinking…"
+        }
+        if session.state == .waitingPermission {
+            return "Permission required"
+        }
+        return nil
+    }
+
     func sidebarProjects(now: Date = Date()) -> [SidebarProject] {
         let titles = sessionTitles
         let inputs = sessions.map { session in
