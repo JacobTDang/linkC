@@ -55,4 +55,14 @@ final class SidebarModelTests: XCTestCase {
             overrides: ["/p/a": true, "/p/b": false])
         XCTAssertEqual(projects.map(\.isExpanded), [true, false, false])
     }
+
+    func testADuplicateSessionIdShowsTwiceInsteadOfTrapping() {
+        let projects = build([input("1", cwd: "/p/a"), input("1", cwd: "/p/a")])
+        XCTAssertEqual(projects[0].sessions.map(\.id), ["1", "1"])
+    }
+
+    func testAnOrderEntryWithNoLiveSessionMakesNoRow() {
+        let projects = build([input("1", cwd: "/p/a")], order: ["/p/gone", "/p/a"])
+        XCTAssertEqual(projects.map(\.path), ["/p/a"])
+    }
 }

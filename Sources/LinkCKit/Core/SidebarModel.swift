@@ -53,7 +53,6 @@ public enum SidebarModel {
     public static func projects(
         inputs: [Input], order: [String], expandOverrides: [String: Bool], selectedId: String?
     ) -> [SidebarProject] {
-        let byId = Dictionary(uniqueKeysWithValues: inputs.map { ($0.session.id, $0) })
         let rank = Dictionary(order.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
         let groups = ProjectGroup.group(sessions: inputs.map(\.session))
         let sorted = groups.enumerated().sorted { a, b in
@@ -61,7 +60,9 @@ public enum SidebarModel {
                 < (rank[b.element.workspacePath] ?? order.count + b.offset)
         }.map(\.element)
         return sorted.map { group in
-            let rows = group.sessions.compactMap { byId[$0.id] }
+            // Built from `inputs` rather than an id lookup: a duplicate session id (never expected)
+            // shows as a visible second row instead of trapping the app.
+            let rows = inputs.filter { ($0.session.cwd as NSString).standardizingPath == group.workspacePath }
             let holdsSelection = rows.contains { $0.session.id == selectedId }
             return SidebarProject(
                 path: group.workspacePath,
