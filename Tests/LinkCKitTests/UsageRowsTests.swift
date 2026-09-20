@@ -86,6 +86,7 @@ final class UsageRowsTests: XCTestCase {
         XCTAssertEqual(result.rows.first?.isStale, true)
         XCTAssertEqual(result.rows.first?.isCoral, false)
         XCTAssertEqual(result.headline, "31%", "the weekly window is still live even though the 5-hour window rolled over")
+        XCTAssertEqual(result.rows.first?.help.contains("window has since reset; this was the reading before it"), true)
     }
 
     func testAnOldReadingIsStaleAndNeverCoral() {
@@ -97,9 +98,10 @@ final class UsageRowsTests: XCTestCase {
 
     func testACapWinsOverEveryOtherSource() {
         let result = build(codex: codex(percent: 12), limits: [.codex: cap(.codex, clearsIn: 10_800)])
-        XCTAssertEqual(row(result, .codex)?.text, "capped · clears 3h")
+        XCTAssertEqual(row(result, .codex)?.text, "capped · retry 3h")
         XCTAssertEqual(row(result, .codex)?.isCoral, true)
         XCTAssertEqual(row(result, .codex)?.help.contains("usage cap"), true)
+        XCTAssertEqual(row(result, .codex)?.help.contains("retry is linkC's own wait, not the provider's reset"), true)
         XCTAssertNil(result.headline, "a capped agent reports no percentage")
     }
 

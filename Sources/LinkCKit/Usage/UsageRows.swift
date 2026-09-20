@@ -4,7 +4,7 @@ import Foundation
 public struct UsageRow: Equatable, Sendable, Identifiable {
     public var id: AgentKind { agent }
     public let agent: AgentKind
-    /// What the row says on the right: "68% · resets 1h", "1.2M · resets 2h", "capped · clears 3h".
+    /// What the row says on the right: "68% · resets 1h", "1.2M · resets 2h", "capped · retry 3h".
     public let text: String
     public let isCoral: Bool
     /// The reading may no longer be true: the row dims and can never be coral.
@@ -80,10 +80,10 @@ public enum UsageRows {
             if let limit = limits[agent], limit.cooldownExpiresAt > now {
                 rows.append(UsageRow(
                     agent: agent,
-                    text: "capped · clears \(AgeFormat.compact(from: now, to: limit.cooldownExpiresAt))",
+                    text: "capped · retry \(AgeFormat.compact(from: now, to: limit.cooldownExpiresAt))",
                     isCoral: true,
                     isStale: false,
-                    help: "\(limit.reason) · seen \(AgeFormat.compact(from: limit.limitedAt, to: now)) ago"))
+                    help: "\(limit.reason) · seen \(AgeFormat.compact(from: limit.limitedAt, to: now)) ago · retry is linkC's own wait, not the provider's reset"))
                 continue
             }
 
@@ -137,17 +137,22 @@ public enum UsageRows {
                 let isCoral = liveWindows.contains { roundedPercent($0.usedPercent!) >= Int(AgentUsage.warnThreshold) }
 
                 let text: String
-                let droppedReset: String?
                 if let worseWindow {
                     text = "\(percentText(percent)) · \(worseWindow.label) \(percentText(worseWindow.usedPercent!))"
-                    if let resetsAt = figureWindow.resetsAt, resetsAt > now {
-                        droppedReset = "\(figureWindow.label) resets \(AgeFormat.compact(from: now, to: resetsAt))"
-                    } else {
-                        droppedReset = nil
-                    }
                 } else {
                     text = figure(percentText(percent), resetsAt: windowRolled ? nil : figureWindow.resetsAt, now: now)
-                    droppedReset = nil
+                }
+
+                // Two mutually exclusive facts a dimmed figure can hide: the reset it gave up in
+                // favour of a worse window, or that its own window has since moved on and this
+                // reading is what came before that.
+                let notice: String?
+                if windowRolled {
+                    notice = "window has since reset; this was the reading before it"
+                } else if worseWindow != nil, let resetsAt = figureWindow.resetsAt, resetsAt > now {
+                    notice = "\(figureWindow.label) resets \(AgeFormat.compact(from: now, to: resetsAt))"
+                } else {
+                    notice = nil
                 }
 
                 rows.append(UsageRow(
@@ -155,7 +160,7 @@ public enum UsageRows {
                     text: text,
                     isCoral: isCoral,
                     isStale: isStale,
-                    help: codexHelp(codex, readingAge: readingAge, droppedReset: droppedReset)))
+                    help: codexHelp(codex, readingAge: readingAge, notice: notice)))
             case .cursor, .agy, .shell:
                 unknown.append(UnknownUsage(agent: agent, reason: silentSourceReason(agent)))
             }
@@ -183,9 +188,9 @@ public enum UsageRows {
         "\(roundedPercent(percent))%"
     }
 
-    private static func codexHelp(_ usage: AgentUsage, readingAge: TimeInterval?, droppedReset: String?) -> String {
+    private static func codexHelp(_ usage: AgentUsage, readingAge: TimeInterval?, notice: String?) -> String {
         var parts: [String] = []
-        if let droppedReset { parts.append(droppedReset) }
+        if let notice { parts.append(notice) }
         if let week = usage.windows.first(where: { $0.label == "7d" }), let percent = week.usedPercent {
             parts.append("7d \(percentText(percent))")
         }
