@@ -35,27 +35,35 @@ A row is built for every agent, in a fixed order: Claude, Codex, Cursor, agy.
 | Case | Row text | Tone |
 |---|---|---|
 | A percentage window (Codex) | `68% · resets 1h` | coral at ≥ 80, else quiet |
+| A worse window than the figure's (Codex 5h 22%, 7d 100%) | `22% · 7d 100%` | coral |
 | A token window (Claude) | `1.2M · resets 2h` | quiet |
 | A window with no reset time | `68%` / `1.2M` | as above |
-| Capped — a limit record whose `cooldownExpiresAt` is in the future | `capped · clears 3h` | coral |
+| Capped — a limit record whose `cooldownExpiresAt` is in the future | `capped · retry 3h` | coral |
 | A reading older than `AgentUsage.staleAfter` (1 h) | the same text, dimmed, help says "read <age> ago" | quiet, never coral |
 | Nothing known | the agent joins the "no usage data" line | quiet |
 
-- The figure is the **5-hour window** — the one that bites. Tokens are formatted with
-  `UsageFormat.tokens`; a reset is `resets <age>` using `AgeFormat.compact` of the time remaining.
+- The figure is the **5-hour window**, because it is the one that usually bites. But any window
+  at or past the threshold turns the row coral, and when another window is worse the row names it
+  (`22% · 7d 100%`), because a weekly cap blocks work just as hard — and because the MCP server's
+  delegation warning already warns on any window, so the two surfaces must not disagree. Tokens are
+  formatted with `UsageFormat.tokens`; a reset is `resets <age>` using `AgeFormat.compact` of the
+  time remaining.
+- A cap's clock is **linkC's own retry wait** (`LimitDetector`'s cooldown), not a reset the provider
+  published, so the row says `retry` and the help says whose clock it is.
 - A stale reading is never coral: a number that might no longer be true must not raise an alarm.
   This mirrors `AgentUsage.windowNeedingWarning`, which already refuses to warn on a stale reading.
 - **Help (hover)** on a row: the weekly window when the source has one, the plan when known, and how
   long ago the reading was taken. On the "no usage data" line: why each listed agent has none
-  ("Cursor publishes no quota locally", "agy keeps its quota on the server").
+  ("Cursor publishes no quota locally", "agy keeps its quota on the server"). A window that has
+  since reset says so, so a dimmed figure is never read as current.
 
 ## The section
 
 - A collapsible **Usage** section in the sidebar, between Cloud and Earlier, using the existing
   `CollapsibleSection` and a new `SidebarState.Section.usage`. Collapsed by default; the state is
   remembered like the others.
-- Its label's trailing text is the highest 5-hour percentage any agent reports (`68%`), so a squeeze
-  shows while collapsed; nothing when no agent reports a percentage.
+- Its label's trailing text is the highest live percentage any agent's windows report (`100%`), so a
+  squeeze shows while collapsed; nothing when no agent reports a percentage.
 - The section is always present — this is the answer to "what have I got left?", and an empty
   answer is still an answer.
 - Rows are not clickable; nothing here launches or focuses anything.
@@ -77,7 +85,7 @@ A row is built for every agent, in a fixed order: Claude, Codex, Cursor, agy.
   ```swift
   public struct UsageRow: Equatable, Sendable {
       public let agent: AgentKind
-      public let text: String          // "68% · resets 1h", "capped · clears 3h"
+      public let text: String          // "68% · resets 1h", "22% · 7d 100%", "capped · retry 3h"
       public let isCoral: Bool
       public let isStale: Bool
       public let help: String
