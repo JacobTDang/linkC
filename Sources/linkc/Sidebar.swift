@@ -601,8 +601,11 @@ private struct UsageRowView: View {
     }
 
     private var figureColor: Color {
-        if row.isStale { return Theme.textTertiary.opacity(0.7) }
-        return row.isCoral ? Theme.accent : Theme.textTertiary
+        // Coral outranks dimming: a row can be coral and stale at once — the 5-hour window it
+        // leads with has rolled over while another window is live and over the threshold. The
+        // figure that is actually urgent must not be greyed out for the stale one's sake.
+        if row.isCoral { return Theme.accent }
+        return row.isStale ? Theme.textTertiary.opacity(0.7) : Theme.textTertiary
     }
 }
 
