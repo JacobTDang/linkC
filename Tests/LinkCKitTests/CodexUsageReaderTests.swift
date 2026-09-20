@@ -106,4 +106,32 @@ final class CodexUsageReaderTests: XCTestCase {
         XCTAssertNil(usage.unavailableReason, "a mid-character cut must not be mistaken for a missing record")
         XCTAssertEqual(usage.windows.first?.usedPercent, 23.0)
     }
+
+    private let nullWindowRecord = """
+    {"timestamp":"2026-09-12T21:09:05.000Z","type":"event_msg","ordinal":48,"payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":210940}},"rate_limits":{"limit_id":"codex","primary":null,"secondary":null,"plan_type":"plus"}}}
+    """
+
+    func testANullWindowRecordDoesNotHideTheLastRealReading() throws {
+        let populated = record
+            .replacingOccurrences(of: "\"used_percent\":23.0", with: "\"used_percent\":22.0")
+            .replacingOccurrences(of: "\"used_percent\":39.0", with: "\"used_percent\":100.0")
+        try write("rollout-a.jsonl", [populated, nullWindowRecord, nullWindowRecord], modified: Date())
+
+        let usage = CodexUsageReader(sessionsDirectory: dir).read()
+        XCTAssertNil(usage.unavailableReason)
+        XCTAssertEqual(usage.windows.count, 2)
+        XCTAssertEqual(usage.windows[0].label, "5h")
+        XCTAssertEqual(usage.windows[0].usedPercent, 22.0)
+        XCTAssertEqual(usage.windows[1].label, "7d")
+        XCTAssertEqual(usage.windows[1].usedPercent, 100.0)
+    }
+
+    func testAFileWithOnlyNullWindowRecordsFallsThroughToTheNextFile() throws {
+        try write("rollout-new.jsonl", [nullWindowRecord, nullWindowRecord], modified: Date())
+        try write("rollout-old.jsonl", [record], modified: Date().addingTimeInterval(-7200))
+
+        let usage = CodexUsageReader(sessionsDirectory: dir).read()
+        XCTAssertNil(usage.unavailableReason)
+        XCTAssertEqual(usage.windows.first?.usedPercent, 23.0)
+    }
 }

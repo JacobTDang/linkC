@@ -74,9 +74,12 @@ public struct CodexUsageReader: Sendable {
         case notFound
     }
 
-    /// Scans a file's tail from the end for the first line whose JSON carries `rate_limits`.
-    /// A line that names `rate_limits` but fails to decode into the expected shape is reported
-    /// as malformed rather than silently skipped to an older, possibly-stale record.
+    /// Scans a file's tail from the end for the newest line whose JSON carries a `rate_limits`
+    /// record with a window in it. Codex writes records whose windows are both null — a finished
+    /// session usually ends with some — and stopping at one of those would report "no usage data"
+    /// while a real reading sits a few lines above it. A line that names `rate_limits` but fails
+    /// to decode is still reported as malformed rather than skipped: that is a shape we do not
+    /// understand, not a record we know to be empty.
     private func scan(_ url: URL) -> ScanResult {
         guard let lines = Self.tailLines(of: url) else { return .notFound }
         for line in lines.reversed() {
@@ -88,6 +91,7 @@ public struct CodexUsageReader: Sendable {
                 NSLog("linkC: codex rate-limit record at %@ could not be read", url.path)
                 return .malformed
             }
+            guard rateLimits.primary != nil || rateLimits.secondary != nil else { continue }
             return .found(rateLimits)
         }
         return .notFound
