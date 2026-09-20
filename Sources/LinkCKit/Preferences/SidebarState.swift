@@ -8,7 +8,7 @@ import Observation
 @Observable
 public final class SidebarState {
     public enum Section: String, Codable, CaseIterable, Sendable {
-        case more, servers, cloud, earlier
+        case more, servers, cloud, usage, earlier
     }
 
     private struct Stored: Codable {

@@ -130,6 +130,8 @@ final class AppModel {
     let attention = SessionAttention()
     /// The sidebar's remembered project order, expansion, and open sections.
     let sidebarState = SidebarState()
+    /// Codex's own rate-limit snapshot, re-read off the main thread. nil until the first read lands.
+    private(set) var codexUsage: AgentUsage?
 
     /// Surface a one-off failure in the panel's error bar (fail loud, stay standing).
     func surface(error message: String) { lastError = message }
@@ -370,6 +372,18 @@ final class AppModel {
         }
         if let supabase, supabase.cliPath != nil {
             Task { await supabase.refresh() }
+        }
+    }
+
+    /// Re-read Codex's own rate-limit snapshot. File IO only, and off the main actor: the reader
+    /// reads the tail of the few newest rollouts, and the result lands back here.
+    private func refreshCodexUsage() {
+        let reader = CodexUsageReader(
+            sessionsDirectory: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".codex/sessions"))
+        Task.detached(priority: .utility) { [weak self] in
+            let usage = reader.read()
+            await MainActor.run { self?.codexUsage = usage }
         }
     }
 
@@ -690,6 +704,7 @@ final class AppModel {
             usage.refreshAllSessions()
             usage.refreshWindow()
             refreshServers()
+            refreshCodexUsage()
             checkForUpdate()
             refreshCloud()
             checkHealth()
@@ -709,6 +724,8 @@ final class AppModel {
                     if self.usageTicks % 24 == 0 { self.refreshCloud() }
                     // Docker state drifts slowly; every 15s keeps SERVERS honest cheaply.
                     if self.usageTicks % 3 == 0 { self.refreshServers() }
+                    // Codex writes its snapshot every turn; five minutes is live enough to read it.
+                    if self.usageTicks % 60 == 0 { self.refreshCodexUsage() }
                 }
             }
         } else if !panelVisible {

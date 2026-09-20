@@ -119,4 +119,25 @@ extension AppModel {
         }
         return nil
     }
+
+    /// Every agent's most recent live cap across the workspaces that have a session. When an agent
+    /// is capped in more than one, the furthest-out cooldown wins: that is when it can work again.
+    var agentLimits: [AgentKind: AgentLimitStatus] {
+        var latest: [AgentKind: AgentLimitStatus] = [:]
+        for path in Set(sessions.map { ($0.cwd as NSString).standardizingPath }) {
+            for limit in inbox(for: path)?.agentLimits ?? [] {
+                if let existing = latest[limit.agent], existing.cooldownExpiresAt >= limit.cooldownExpiresAt {
+                    continue
+                }
+                latest[limit.agent] = limit
+            }
+        }
+        return latest
+    }
+
+    /// The sidebar's Usage section: a row per agent that reports something, the rest listed with
+    /// the reason they do not.
+    func usageRows(now: Date = Date()) -> UsageRows.Result {
+        UsageRows.build(claude: usage.window, codex: codexUsage, limits: agentLimits, now: now)
+    }
 }

@@ -39,6 +39,7 @@ struct Sidebar: View {
                             CloudSection(model: model)
                         }
                     }
+                    UsageSection(model: model)
                     if !model.restorables.isEmpty || !model.restorableShells.isEmpty {
                         EarlierSidebarSection(model: model)
                     }
@@ -537,6 +538,71 @@ private struct EarlierShellRow: View {
                     .help("Forget this terminal")
             }
         }
+    }
+}
+
+// MARK: - Usage
+
+/// What every agent has left. Re-reads its inputs every 30 s so the reset times count down;
+/// the figures themselves are refreshed by the app's own timers.
+private struct UsageSection: View {
+    let model: AppModel
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            let result = model.usageRows(now: context.date)
+            CollapsibleSection(
+                title: "Usage", trailing: result.headline, section: .usage, state: model.sidebarState
+            ) {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(result.rows) { row in
+                        UsageRowView(row: row)
+                    }
+                    if !result.unknown.isEmpty {
+                        Text(result.unknown.map { $0.agent.shortName }.joined(separator: ", ") + " — no usage data")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .help(result.unknown.map { "\($0.agent.shortName): \($0.reason)" }
+                                .joined(separator: "\n"))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One agent's usage line: its mark, its name, and the figure. A stale reading dims rather than
+/// disappears — knowing the last reading, and that it is old, beats knowing nothing.
+private struct UsageRowView: View {
+    let row: UsageRow
+
+    var body: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Theme.agentColor(row.agent).opacity(row.isStale ? 0.5 : 1))
+                .frame(width: 7, height: 7)
+            Text(row.agent.shortName)
+                .font(.system(size: 12))
+                .foregroundStyle(row.isStale ? Theme.textTertiary : Theme.textSecondary)
+            Spacer(minLength: 6)
+            Text(row.text)
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(figureColor)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 24)
+        .help(row.help.isEmpty ? row.agent.displayName : row.help)
+    }
+
+    private var figureColor: Color {
+        if row.isStale { return Theme.textTertiary.opacity(0.7) }
+        return row.isCoral ? Theme.accent : Theme.textTertiary
     }
 }
 
