@@ -85,7 +85,7 @@ final class UsageRowsTests: XCTestCase {
         XCTAssertEqual(result.rows.first?.text, "92%", "the window moved on: no reset is claimed")
         XCTAssertEqual(result.rows.first?.isStale, true)
         XCTAssertEqual(result.rows.first?.isCoral, false)
-        XCTAssertNil(result.headline)
+        XCTAssertEqual(result.headline, "31%", "the weekly window is still live even though the 5-hour window rolled over")
     }
 
     func testAnOldReadingIsStaleAndNeverCoral() {
@@ -125,5 +125,32 @@ final class UsageRowsTests: XCTestCase {
         XCTAssertNil(build(claude: WindowUsage(blockTokens: 5, blockResetAt: nil, weekTokens: 5)).headline,
                      "a token count is not a percentage")
         XCTAssertNil(build().headline)
+    }
+
+    func testTheWorstWindowDrivesTheRowAndTheHeadline() {
+        let result = build(codex: codex(percent: 22, weekPercent: 100))
+        XCTAssertEqual(row(result, .codex)?.text, "22% · 7d 100%")
+        XCTAssertEqual(row(result, .codex)?.isCoral, true)
+        XCTAssertEqual(result.headline, "100%")
+        XCTAssertEqual(row(result, .codex)?.help.contains("5h resets 1h"), true)
+    }
+
+    func testAQuietWeeklyWindowLeavesTheRowAsItIs() {
+        let result = build(codex: codex(percent: 68, weekPercent: 31))
+        XCTAssertEqual(row(result, .codex)?.text, "68% · resets 1h")
+        XCTAssertEqual(row(result, .codex)?.isCoral, false)
+        XCTAssertEqual(result.headline, "68%")
+    }
+
+    func testAStaleWeeklyWindowCannotColourTheRow() {
+        let result = build(codex: codex(percent: 22, weekPercent: 100, observedAgo: AgentUsage.staleAfter + 60))
+        XCTAssertEqual(row(result, .codex)?.isStale, true)
+        XCTAssertEqual(row(result, .codex)?.isCoral, false)
+        XCTAssertNil(result.headline)
+    }
+
+    func testAReadingWithNoFiveHourWindowUsesTheWindowItHas() {
+        let result = build(codex: codex(percent: nil, weekPercent: 55))
+        XCTAssertEqual(row(result, .codex)?.text, "55% · resets 24h", "whatever AgeFormat gives for a day out")
     }
 }

@@ -72,7 +72,7 @@ public enum UsageRows {
     ) -> Result {
         var rows: [UsageRow] = []
         var unknown: [UnknownUsage] = []
-        var livePercentages: [Double] = []
+        var livePercentages: [Int] = []
 
         for agent in order {
             // A cap linkC watched happen outranks every other source: it is the hardest fact
@@ -105,25 +105,57 @@ public enum UsageRows {
                     unknown.append(UnknownUsage(agent: agent, reason: "not read yet"))
                     continue
                 }
-                guard let window = codex.windows.first(where: { $0.label == "5h" }),
-                      let percent = window.usedPercent
+                // The figure is the 5-hour window when there is one — the window that usually
+                // bites first — else whatever window the reading has.
+                guard let figureWindow = codex.windows.first(where: { $0.label == "5h" }) ?? codex.windows.first,
+                      let percent = figureWindow.usedPercent
                 else {
                     unknown.append(UnknownUsage(
-                        agent: agent, reason: codex.unavailableReason ?? "no 5-hour window reported"))
+                        agent: agent, reason: codex.unavailableReason ?? "no window percentage reported"))
                     continue
                 }
                 // Stale two ways: the reading itself is old, or the window it describes has
                 // already rolled over. Either way the number might no longer be true.
                 let readingAge = codex.observedAt.map { now.timeIntervalSince($0) }
-                let windowRolled = window.resetsAt.map { $0 <= now } ?? false
-                let isStale = (readingAge.map { $0 > AgentUsage.staleAfter } ?? true) || windowRolled
-                if !isStale { livePercentages.append(percent) }
+                let readingIsFresh = readingAge.map { $0 <= AgentUsage.staleAfter } ?? false
+                let windowRolled = figureWindow.resetsAt.map { $0 <= now } ?? false
+                let isStale = !readingIsFresh || windowRolled
+
+                // Any window the reading still speaks for can raise the alarm, not just the
+                // figure's — a weekly cap blocks work just as hard as an hourly one.
+                let liveWindows = codex.windows.filter { candidate in
+                    guard readingIsFresh, candidate.usedPercent != nil else { return false }
+                    return !(candidate.resetsAt.map { $0 <= now } ?? false)
+                }
+                let roundedFigure = roundedPercent(percent)
+                if let worstLive = liveWindows.compactMap({ $0.usedPercent.map(roundedPercent) }).max() {
+                    livePercentages.append(worstLive)
+                }
+                let worseWindow = liveWindows
+                    .filter { roundedPercent($0.usedPercent!) > roundedFigure }
+                    .max { roundedPercent($0.usedPercent!) < roundedPercent($1.usedPercent!) }
+                let isCoral = liveWindows.contains { roundedPercent($0.usedPercent!) >= Int(AgentUsage.warnThreshold) }
+
+                let text: String
+                let droppedReset: String?
+                if let worseWindow {
+                    text = "\(percentText(percent)) · \(worseWindow.label) \(percentText(worseWindow.usedPercent!))"
+                    if let resetsAt = figureWindow.resetsAt, resetsAt > now {
+                        droppedReset = "\(figureWindow.label) resets \(AgeFormat.compact(from: now, to: resetsAt))"
+                    } else {
+                        droppedReset = nil
+                    }
+                } else {
+                    text = figure(percentText(percent), resetsAt: windowRolled ? nil : figureWindow.resetsAt, now: now)
+                    droppedReset = nil
+                }
+
                 rows.append(UsageRow(
                     agent: agent,
-                    text: figure(percentText(percent), resetsAt: windowRolled ? nil : window.resetsAt, now: now),
-                    isCoral: !isStale && percent >= AgentUsage.warnThreshold,
+                    text: text,
+                    isCoral: isCoral,
                     isStale: isStale,
-                    help: codexHelp(codex, readingAge: readingAge)))
+                    help: codexHelp(codex, readingAge: readingAge, droppedReset: droppedReset)))
             case .cursor, .agy, .shell:
                 unknown.append(UnknownUsage(agent: agent, reason: silentSourceReason(agent)))
             }
@@ -132,7 +164,7 @@ public enum UsageRows {
         return Result(
             rows: rows,
             unknown: unknown,
-            headline: livePercentages.max().map(percentText))
+            headline: livePercentages.max().map { "\($0)%" })
     }
 
     /// "68% · resets 1h", or the figure alone when no reset time is known.
@@ -141,12 +173,19 @@ public enum UsageRows {
         return "\(value) · resets \(AgeFormat.compact(from: now, to: resetsAt))"
     }
 
-    private static func percentText(_ percent: Double) -> String {
-        "\(Int(percent.rounded()))%"
+    /// Rounded once, so the figure printed and the figure compared against a threshold always
+    /// agree — a value that displays as "80%" must also be treated as 80, never as 79.6.
+    private static func roundedPercent(_ percent: Double) -> Int {
+        Int(percent.rounded())
     }
 
-    private static func codexHelp(_ usage: AgentUsage, readingAge: TimeInterval?) -> String {
+    private static func percentText(_ percent: Double) -> String {
+        "\(roundedPercent(percent))%"
+    }
+
+    private static func codexHelp(_ usage: AgentUsage, readingAge: TimeInterval?, droppedReset: String?) -> String {
         var parts: [String] = []
+        if let droppedReset { parts.append(droppedReset) }
         if let week = usage.windows.first(where: { $0.label == "7d" }), let percent = week.usedPercent {
             parts.append("7d \(percentText(percent))")
         }
