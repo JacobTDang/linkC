@@ -93,13 +93,16 @@ public enum UsageRows {
                     unknown.append(UnknownUsage(agent: agent, reason: "no transcript activity read yet"))
                     continue
                 }
+                let isIdleBlock = claude.blockTokens == 0 && claude.blockResetAt == nil
+                let blockPart = isIdleBlock ? "no active 5-hour block" : "5h \(UsageFormat.tokens(claude.blockTokens))"
                 rows.append(UsageRow(
                     agent: agent,
                     text: figure(UsageFormat.tokens(claude.blockTokens), resetsAt: claude.blockResetAt, now: now),
                     // No published limit, so a token count can never be an alarm.
                     isCoral: false,
                     isStale: false,
-                    help: "5h \(UsageFormat.tokens(claude.blockTokens)) · 7d \(UsageFormat.tokens(claude.weekTokens))"))
+                    help: "\(blockPart) · 7d \(UsageFormat.tokens(claude.weekTokens))"
+                        + " · no percentage: no per-plan limit is published"))
             case .codex:
                 guard let codex else {
                     unknown.append(UnknownUsage(agent: agent, reason: "not read yet"))
@@ -140,7 +143,7 @@ public enum UsageRows {
                 if let worseWindow {
                     text = "\(percentText(percent)) · \(worseWindow.label) \(percentText(worseWindow.usedPercent!))"
                 } else {
-                    text = figure(percentText(percent), resetsAt: windowRolled ? nil : figureWindow.resetsAt, now: now)
+                    text = figure(percentText(percent), resetsAt: figureWindow.resetsAt, now: now)
                 }
 
                 // Two mutually exclusive facts a dimmed figure can hide: the reset it gave up in

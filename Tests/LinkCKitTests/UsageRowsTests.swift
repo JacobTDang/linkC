@@ -63,6 +63,9 @@ final class UsageRowsTests: XCTestCase {
     func testTheCoralThresholdStartsAtEighty() {
         XCTAssertEqual(build(codex: codex(percent: 79.4)).rows.first?.isCoral, false)
         XCTAssertEqual(build(codex: codex(percent: 80)).rows.first?.isCoral, true)
+        let roundsUp = build(codex: codex(percent: 79.6)).rows.first
+        XCTAssertEqual(roundsUp?.isCoral, true, "79.6 rounds to 80, the same figure the text prints")
+        XCTAssertEqual(roundsUp?.text, "80% · resets 1h")
     }
 
     func testAClaudeRowCountsTheBlocksTokensAndNamesTheWeek() {
@@ -72,6 +75,14 @@ final class UsageRowsTests: XCTestCase {
         XCTAssertEqual(claude?.text, "1.2M · resets 2h")
         XCTAssertEqual(claude?.isCoral, false, "no published limit: a token count can never be an alarm")
         XCTAssertEqual(claude?.help.contains("9.8M"), true)
+        XCTAssertEqual(claude?.help.contains("no percentage: no per-plan limit is published"), true)
+    }
+
+    func testAnIdleClaudeBlockSaysSoInHelp() {
+        let window = WindowUsage(blockTokens: 0, blockResetAt: nil, weekTokens: 500)
+        let claude = row(build(claude: window), .claude)
+        XCTAssertEqual(claude?.text, "0", "an idle block still reads a bare count")
+        XCTAssertEqual(claude?.help.hasPrefix("no active 5-hour block"), true)
     }
 
     func testAFigureWithNoResetTimeStandsAlone() {
