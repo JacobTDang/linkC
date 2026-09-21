@@ -74,8 +74,7 @@ a folder the check silently brought back.
   optional on decode (an old manifest's entries read as the user's).
 - **Opening one makes it the user's.** `focusSession` clears `isWorker`: once the user opens a
   worker's terminal, they are using it, and it is never closed automatically. A relaunch only ever
-  puts the user's own entries on screen (a worker relaunches unselected), so a worker never
-  appears there without `focusSession` having run.
+  selects the user's own entries (a worker relaunches unselected).
 - **The worker on screen is never closed.** `isWorker` can end up true for the terminal on screen
   through a path other than `focusSession` — the selection falling back to the newest terminal
   when the one in view closes, for instance. Whatever the path, the idle close skips whichever
