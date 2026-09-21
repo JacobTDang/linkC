@@ -50,12 +50,21 @@ A pure relaunch plan decides, for the manifest entries marked active at quit:
   same id, one comes back — the last in manifest order — and the others go to Earlier.
 - **No id** (Cursor, agy and Codex always; Claude when never bound): at most one entry per
   folder and agent continues the folder's latest conversation — the last of them in manifest order,
-  the most recently launched. The others go to Earlier, where restoring by hand already refuses a
-  second `--continue` while one is live.
+  the most recently launched. The others go to Earlier, where restoring by hand refuses to reopen a
+  conversation that is already live — a second continue in an occupied folder for any agent, or a
+  Claude id a live session already carries.
+- **The user's session beats a worker.** When entries competing for one conversation include the
+  user's own, the last *user* entry wins, whatever a worker's position in manifest order; a worker
+  only wins a contest with no user entry in it. A worker that loses is dropped, never sent to
+  Earlier (see §3).
 - **Workers:** see §3 — a worker comes back only while it holds an open task.
 
 "Go to Earlier" means the entry is kept, stamped as ended, and shown under Earlier like any
 session that ended.
+
+A workspace deleted since quit is left alone: checking a worker's open tasks must not itself
+recreate the folder, so any entry pointed at it — worker or the user's own — never launches into
+a folder the check silently brought back.
 
 ### 3. Workers
 
@@ -64,12 +73,21 @@ session that ended.
   project row's ＋. `Session` and `RestorableSession` carry `isWorker: Bool`; the manifest field is
   optional on decode (an old manifest's entries read as the user's).
 - **Opening one makes it the user's.** `focusSession` clears `isWorker`: once the user opens a
-  worker's terminal, they are using it, and it is never closed automatically.
+  worker's terminal, they are using it, and it is never closed automatically. A relaunch only ever
+  puts the user's own entries on screen (a worker relaunches unselected), so a worker never
+  appears there without `focusSession` having run.
+- **The worker on screen is never closed.** `isWorker` can end up true for the terminal on screen
+  through a path other than `focusSession` — the selection falling back to the newest terminal
+  when the one in view closes, for instance. Whatever the path, the idle close skips whichever
+  session is currently selected, so it never closes out from under the user.
 - **Idle close.** A worker is closed when all hold:
   - it holds no open task (`TaskRecord.assigneeSessionId` is this session and `state.isOpen`);
   - its state is `ready`, `finished`, or `waitingIdle` — never `starting`, `working`,
     `waitingPermission`, or `error`;
   - it has been in that idle state for at least **10 minutes** (`stateChangedAt`).
+
+  On top of `WorkerReaper`'s own criteria above, the coordinator's closing loop skips whichever
+  session is currently on screen — see "The worker on screen is never closed" above.
 
   Closing is the same as ✕: the process is terminated and the session cleaned up. A worker's
   manifest entry is removed rather than stamped ended, so it does not appear under Earlier; its
