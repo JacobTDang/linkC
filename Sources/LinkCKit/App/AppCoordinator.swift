@@ -660,7 +660,7 @@ public final class AppCoordinator {
     private func workersHoldingOpenTasks(_ entries: [RestorableSession]) -> Set<String> {
         var holding: Set<String> = []
         let folders = Set(entries.filter(\.isWorker).map { ($0.cwd as NSString).standardizingPath })
-        for folder in folders {
+        for folder in folders where workspaceExists(folder) {
             do {
                 holding.formUnion(try InboxStore(workspaceRoot: folder).openTasks().compactMap(\.assigneeSessionId))
             } catch {

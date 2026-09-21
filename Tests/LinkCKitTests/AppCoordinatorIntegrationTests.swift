@@ -1204,5 +1204,30 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(entry?.isWorker, true)
         XCTAssertEqual(entry?.wasActiveOnQuit, true)
     }
+
+    /// `InboxStore.openTasks()` creates its workspace's `.linkc` folder if missing (its own
+    /// bookkeeping needs somewhere to write). `workersHoldingOpenTasks` used to call it for every
+    /// worker's folder before the relaunch loop checked `fileExists` on each entry's `cwd` — so a
+    /// workspace deleted between quit and relaunch got silently recreated as an empty husk, and
+    /// the user's own session there launched straight into it.
+    func testARelaunchLeavesADeletedWorkspaceAlone() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-relaunch-gone-\(UUID().uuidString)")
+        let ws = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: ws, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(linkcId: "U", claudeSessionId: "c1", cwd: ws.path, title: "u", wasActiveOnQuit: true))
+        seed.upsert(RestorableSession(
+            linkcId: "W", cwd: ws.path, title: "w", agentKind: .codex, wasActiveOnQuit: true, isWorker: true))
+        try FileManager.default.removeItem(at: ws)
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        coordinator.restoreActiveSessions()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ws.path), "relaunch must not recreate a deleted workspace")
+        XCTAssertNil(coordinator.store.session(id: "U"), "the user's session must not launch into a recreated folder")
+    }
 }
 
