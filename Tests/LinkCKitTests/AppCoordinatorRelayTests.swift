@@ -778,6 +778,25 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: ws), "relay must not recreate a deleted workspace")
     }
 
+    /// The idle-worker phase must not recreate a workspace that was deleted while a worker still
+    /// pointed at it — like every other relay phase, it leaves a missing folder alone.
+    @MainActor
+    func testClosingIdleWorkersNeverRecreatesADeletedWorkspace() throws {
+        let coordinator = makeCoordinator()
+        let ws = (tempDir.appendingPathComponent("vanishing-\(UUID().uuidString)").path as NSString).standardizingPath
+        try FileManager.default.createDirectory(atPath: ws, withIntermediateDirectories: true)
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        defer {
+            coordinator.stopSession(worker.id)
+            coordinator.shutdown()
+        }
+        try FileManager.default.removeItem(atPath: ws)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: InboxStore(workspaceRoot: ws))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ws), "the phase must not recreate a deleted workspace")
+    }
+
     /// A spawn that cannot happen must say so. Otherwise the task is retried every second for
     /// four hours and the only symptom is silence.
     @MainActor
