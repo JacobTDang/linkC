@@ -20,7 +20,10 @@ public enum HookEventDecoder {
             return nil
         }
 
+        // An empty value, or `$LINKC_SESSION` left unexpanded, names no session: such an event
+        // still reaches its session through the conversation id.
         let linkcSessionId = header(named: "X-LinkC-Session", in: headers)
+            .flatMap { $0.isEmpty || $0.hasPrefix("$") ? nil : $0 }
         let parsedBody = try? JSONDecoder().decode(HookBody.self, from: body)
 
         return HookEvent(

@@ -112,8 +112,15 @@ public final class SessionStore {
     @discardableResult
     public func apply(_ event: HookEvent) -> ApplyOutcome {
         var idx: Int?
-        if let lid = event.linkcSessionId { idx = sessions.firstIndex { $0.id == lid } }
-        if idx == nil, let cid = event.claudeSessionId { idx = sessions.firstIndex { $0.claudeSessionId == cid } }
+        if let lid = event.linkcSessionId {
+            // An event addressed to a linkC session belongs to that session alone. When it is
+            // already gone — closing removes a session before its own SessionEnd arrives — the
+            // event is dropped: falling back to the conversation id would land it on a sibling
+            // sharing that conversation and end the wrong session.
+            idx = sessions.firstIndex { $0.id == lid }
+        } else if let cid = event.claudeSessionId {
+            idx = sessions.firstIndex { $0.claudeSessionId == cid }
+        }
         guard let i = idx else { return ApplyOutcome(session: nil, shouldConsiderNotifying: false) }
         let (updated, entered) = SessionReducer.apply(event, to: sessions[i])
         sessions[i] = updated

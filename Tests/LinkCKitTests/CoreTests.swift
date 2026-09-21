@@ -112,6 +112,21 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertTrue(out.shouldConsiderNotifying)
     }
 
+    /// Closing a session removes it before its own SessionEnd hook arrives. That late event is
+    /// addressed to the gone session and must not fall back to its conversation id, or it lands
+    /// on a sibling sharing the conversation and ends the wrong session.
+    func testAnEventForAGoneSessionIsNotAppliedToASiblingOnTheSameConversation() {
+        let store = SessionStore()
+        store.create(cwd: "/p", title: "p", id: "A", claudeSessionId: "conv")
+        store.create(cwd: "/p", title: "p", id: "B", claudeSessionId: "conv")
+        store.remove(id: "A")
+
+        let out = store.apply(HookEvent(kind: .sessionEnd, linkcSessionId: "A", claudeSessionId: "conv", cwd: "/p"))
+
+        XCTAssertNil(out.session)
+        XCTAssertEqual(store.session(id: "B")?.state, .starting, "the sibling must be untouched")
+    }
+
     func testExternalEventIsIgnored() {
         let store = SessionStore()
         store.create(cwd: "/tmp", title: "api", id: "L1")

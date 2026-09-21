@@ -20,6 +20,17 @@ private func loadHookFixtureData(_ name: String) throws -> Data {
 // MARK: - HookEventDecoder
 
 final class HookEventDecoderTests: XCTestCase {
+    /// An empty or unexpanded `$LINKC_SESSION` names no session: the event must still reach its
+    /// session through the conversation id, not be treated as addressed to a session that is gone.
+    func testAnEmptyOrUnexpandedSessionHeaderNamesNoSession() throws {
+        let body = try loadHookFixtureData("hook-Stop")
+        for value in ["", "$LINKC_SESSION"] {
+            let event = try XCTUnwrap(HookEventDecoder.decode(
+                headers: ["X-LinkC-Event": "stop", "X-LinkC-Session": value], body: body))
+            XCTAssertNil(event.linkcSessionId, "header value \(value.debugDescription)")
+        }
+    }
+
     func testDecodesRealStopFixtureWithMatchingHeaders() throws {
         let body = try loadHookFixtureData("hook-Stop")
         let headers = ["X-LinkC-Event": "stop", "X-LinkC-Session": "L1"]
