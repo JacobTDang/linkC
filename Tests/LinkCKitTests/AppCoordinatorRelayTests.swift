@@ -2352,6 +2352,31 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(coordinator.store.session(id: worker.id), "the worker on screen must not be closed")
     }
 
+    /// Wiring check: the idle-worker phase is reached through the relay tick, not just directly
+    /// callable — a previous review deleted that phase from `processPendingMessages` and every
+    /// test that called `reapIdleWorkers` directly stayed green. This one goes through the real
+    /// entry point.
+    @MainActor
+    func testProcessPendingMessagesClosesAnIdleWorkerPastTheGrace() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        let mine = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .finished)
+        coordinator.store.updateState(id: mine.id, to: .finished)
+
+        clock.set(Date().addingTimeInterval(11 * 60))
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertNil(coordinator.store.session(id: worker.id), "past the grace with no task: closed through the tick")
+        XCTAssertNotNil(coordinator.store.session(id: mine.id), "the user's session is never closed")
+    }
+
     /// A worker still holding an open task is never closed, however long it has been idle.
     @MainActor
     func testAWorkerHoldingATaskIsNotClosed() throws {

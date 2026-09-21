@@ -1267,6 +1267,31 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertNotEqual(coordinator.terminals.selectedId, "W", "a relaunch must not put an unadopted worker on screen")
     }
 
+    /// Wiring check: a previous review deleted three wiring points at once — `workersHoldingOpenTasks`
+    /// always answering "nothing held", `restoreActiveSessions` always relaunching `asWorker: false`,
+    /// and the idle-worker phase missing from the relay tick — and every test in the affected
+    /// classes stayed green. This one fails if either of the first two regress: a worker whose
+    /// workspace inbox holds an open, delivered task must come back live and still marked a worker.
+    func testARelaunchedWorkerHoldingATaskComesBackAsAWorker() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-relaunch-worker-wiring-\(UUID().uuidString)")
+        let ws = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: ws, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: ws) }
+
+        let inbox = InboxStore(workspaceRoot: ws.path)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "held", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+
+        WorkspaceManifest(directory: dir).upsert(RestorableSession(
+            linkcId: "W", cwd: ws.path, title: "w", agentKind: .codex, wasActiveOnQuit: true, isWorker: true))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        coordinator.restoreActiveSessions()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertEqual(coordinator.store.session(id: "W")?.isWorker, true, "a worker holding a task must relaunch marked as one")
+    }
+
     /// The save made before quitting keeps a worker marked as one — the relaunch reads it.
     func testTheSaveBeforeQuittingKeepsAWorkerMarked() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-worker-save-\(UUID().uuidString)")
