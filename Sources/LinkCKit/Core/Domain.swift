@@ -103,6 +103,9 @@ public struct Session: Sendable, Identifiable, Equatable {
     /// relay can trust this when it picks an assignee.
     public var model: String?
     public var modelTier: ModelTier?
+    /// A session linkC started to carry a delegated task, not one the user opened. Closed once it
+    /// has sat idle with no task for `WorkerReaper.idleGrace`; opening it makes it the user's.
+    public var isWorker: Bool
 
     public init(
         id: String,
@@ -113,7 +116,8 @@ public struct Session: Sendable, Identifiable, Equatable {
         stateChangedAt: Date = Date(),
         agentKind: AgentKind = .claude,
         model: String? = nil,
-        modelTier: ModelTier? = nil
+        modelTier: ModelTier? = nil,
+        isWorker: Bool = false
     ) {
         self.id = id
         self.cwd = cwd
@@ -124,6 +128,7 @@ public struct Session: Sendable, Identifiable, Equatable {
         self.agentKind = agentKind
         self.model = model
         self.modelTier = modelTier
+        self.isWorker = isWorker
     }
 }
 
