@@ -13,7 +13,7 @@ public struct RelaunchPlan: Equatable, Sendable {
     public let relaunch: [String]
     /// Entries kept, stamped ended, and shown under Earlier for the user to restore by hand.
     public let toEarlier: [String]
-    /// Worker entries that hold no task: removed from the manifest.
+    /// Worker entries that hold no task or lost a contest: removed from the manifest.
     public let drop: [String]
 
     public init(relaunch: [String], toEarlier: [String], drop: [String]) {
@@ -48,6 +48,10 @@ public struct RelaunchPlan: Equatable, Sendable {
                 && foldersResumingClaude.contains(folder(entry))
             if wonItsContest && !yieldsToResume {
                 relaunch.append(entry.linkcId)
+            } else if entry.isWorker {
+                // A worker never goes under Earlier: it was linkC's, not the user's. Dropping it
+                // ends its session record, so the relay fails its task and tells the delegator.
+                drop.append(entry.linkcId)
             } else {
                 toEarlier.append(entry.linkcId)
             }

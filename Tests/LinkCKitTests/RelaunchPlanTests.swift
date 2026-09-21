@@ -53,6 +53,13 @@ final class RelaunchPlanTests: XCTestCase {
         XCTAssertEqual(result, RelaunchPlan(relaunch: ["W1"], toEarlier: [], drop: ["W2"]))
     }
 
+    func testAWorkerThatLosesAContestIsDroppedNotFiledUnderEarlier() {
+        // The worker holds a task, but the user's own id-less session of the same agent in the
+        // same folder was launched after it and wins the one continue.
+        let result = plan([makeEntry("W", .codex, worker: true), makeEntry("U", .codex)], holding: ["W"])
+        XCTAssertEqual(result, RelaunchPlan(relaunch: ["U"], toEarlier: [], drop: ["W"]))
+    }
+
     func testFoldersCompareStandardized() {
         let result = plan([makeEntry("A", .agy, cwd: "/p/linkC/"), makeEntry("B", .agy, cwd: "/p/./linkC")])
         XCTAssertEqual(result, RelaunchPlan(relaunch: ["B"], toEarlier: ["A"], drop: []))
