@@ -60,6 +60,14 @@ final class RelaunchPlanTests: XCTestCase {
         XCTAssertEqual(result, RelaunchPlan(relaunch: ["U"], toEarlier: [], drop: ["W"]))
     }
 
+    func testTheUsersEntryBeatsAWorkerEvenWhenTheWorkerIsLast() {
+        // The worker comes after the user's own session of the same agent in the same folder —
+        // later in manifest order, which wins any other contest — but a worker only ever wins a
+        // contest with no user entry in it.
+        let result = plan([makeEntry("U", .codex), makeEntry("W", .codex, worker: true)], holding: ["W"])
+        XCTAssertEqual(result, RelaunchPlan(relaunch: ["U"], toEarlier: [], drop: ["W"]))
+    }
+
     func testFoldersCompareStandardized() {
         let result = plan([makeEntry("A", .agy, cwd: "/p/linkC/"), makeEntry("B", .agy, cwd: "/p/./linkC")])
         XCTAssertEqual(result, RelaunchPlan(relaunch: ["B"], toEarlier: ["A"], drop: []))

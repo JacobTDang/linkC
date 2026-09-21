@@ -635,17 +635,23 @@ public final class AppCoordinator {
         for var r in active where plan.relaunch.contains(r.linkcId) {
             r.wasActiveOnQuit = false
             if FileManager.default.fileExists(atPath: r.cwd) {
-                if (try? launch(
-                    cwd: r.cwd,
-                    title: r.title,
-                    agent: r.agentKind,
-                    mode: .continueLast,
-                    resumeId: r.claudeSessionId,
-                    id: r.linkcId,
-                    asWorker: r.isWorker,
-                    select: !r.isWorker
-                )) == nil {
-                    manifest.upsert(r)
+                do {
+                    try launch(
+                        cwd: r.cwd,
+                        title: r.title,
+                        agent: r.agentKind,
+                        mode: .continueLast,
+                        resumeId: r.agentKind == .claude ? r.claudeSessionId : nil,
+                        id: r.linkcId,
+                        asWorker: r.isWorker,
+                        select: !r.isWorker
+                    )
+                } catch {
+                    NSLog("[linkC] relaunch: %@ could not restart — %@", r.title, String(describing: error))
+                    // A worker that never came back holds nothing for the user to restore by
+                    // hand — its report is already in the task record (see `dismiss`/idle close).
+                    // Only the user's own entry stays under Earlier.
+                    if r.isWorker { manifest.remove(linkcId: r.linkcId) } else { manifest.upsert(r) }
                 }
             } else {
                 manifest.upsert(r)

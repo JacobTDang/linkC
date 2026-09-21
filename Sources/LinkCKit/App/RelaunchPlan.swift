@@ -33,8 +33,17 @@ public struct RelaunchPlan: Equatable, Sendable {
             }
         }
 
-        var winner: [String: String] = [:]   // contest key → the last entry's linkC id
-        for entry in candidates { winner[contestKey(entry)] = entry.linkcId }
+        // Contest key → the last user entry sharing it, and the last worker entry sharing it.
+        // The user's own session always wins a contest it is in — a worker only ever wins a
+        // contest with no user entry in it — so within each side "the last wins" still picks the
+        // most recently launched.
+        var lastUser: [String: String] = [:]
+        var lastWorker: [String: String] = [:]
+        for entry in candidates {
+            if entry.isWorker { lastWorker[contestKey(entry)] = entry.linkcId }
+            else { lastUser[contestKey(entry)] = entry.linkcId }
+        }
+        let winner = lastUser.merging(lastWorker) { user, _ in user }
 
         // An id-less Claude entry would continue its folder's newest conversation — the one a
         // Claude entry resuming by id in the same folder is about to reopen. Never both.

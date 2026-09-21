@@ -1334,5 +1334,54 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: ws.path), "relaunch must not recreate a deleted workspace")
         XCTAssertNil(coordinator.store.session(id: "U"), "the user's session must not launch into a recreated folder")
     }
+
+    /// A worker's relaunch can fail (bad executable, whatever `launch` throws). The old
+    /// `if (try? launch(...)) == nil { manifest.upsert(r) }` put the entry straight back into the
+    /// manifest regardless of `isWorker`, so a worker whose relaunch failed still showed up under
+    /// Earlier — a task-carrier the user never opened, offered to them as if it were theirs. A
+    /// failed worker relaunch must drop the entry instead; the user's own entries still upsert.
+    func testAWorkerWhoseRelaunchFailsLeavesNothingUnderEarlier() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-worker-fail-\(UUID().uuidString)")
+        let ws = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: ws, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: ws) }
+
+        let inbox = InboxStore(workspaceRoot: ws.path)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "held", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+
+        WorkspaceManifest(directory: dir).upsert(RestorableSession(
+            linkcId: "W", cwd: ws.path, title: "w", wasActiveOnQuit: true, isWorker: true))
+
+        let coordinator = makeCoordinator(
+            sink: RecordingSink(), claudePath: "/nonexistent/claude-\(UUID().uuidString)", settingsDir: dir, manifestDir: dir)
+        coordinator.restoreActiveSessions()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertNil(coordinator.store.session(id: "W"))
+        XCTAssertFalse(coordinator.restorables.contains { $0.linkcId == "W" },
+                        "a worker whose relaunch failed must not show under Earlier")
+    }
+
+    /// `restore(_:as:)` already only ever passes a captured claude id when the target agent is
+    /// claude. `restoreActiveSessions` used to pass `r.claudeSessionId` through unconditionally —
+    /// a leftover id on a non-claude entry (bad data, or an entry restored as a different agent)
+    /// must not land on the relaunched session.
+    func testARelaunchedNonClaudeSessionNeverCarriesAClaudeId() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-relaunch-nonclaude-id-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        WorkspaceManifest(directory: dir).upsert(RestorableSession(
+            linkcId: "S", claudeSessionId: "leftover-claude-id", cwd: cwd.path, title: "s",
+            agentKind: .shell, wasActiveOnQuit: true))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        coordinator.restoreActiveSessions()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertNil(coordinator.store.session(id: "S")?.claudeSessionId, "a non-claude session must never carry a claude id")
+    }
 }
 
