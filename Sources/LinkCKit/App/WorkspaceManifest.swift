@@ -19,6 +19,9 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
     public var wasActiveOnQuit: Bool
     /// When the session ended/stopped. `nil` means it was still live when last persisted.
     public var endedAt: Date?
+    /// A session linkC started to carry a delegated task, not one the user opened. Workers leave
+    /// nothing under Earlier and come back on relaunch only while they still hold a task.
+    public var isWorker: Bool
 
     public var id: String { linkcId }
 
@@ -29,7 +32,8 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
         title: String,
         agentKind: AgentKind = .claude,
         wasActiveOnQuit: Bool = false,
-        endedAt: Date? = nil
+        endedAt: Date? = nil,
+        isWorker: Bool = false
     ) {
         self.linkcId = linkcId
         self.claudeSessionId = claudeSessionId
@@ -38,6 +42,7 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
         self.agentKind = agentKind
         self.wasActiveOnQuit = wasActiveOnQuit
         self.endedAt = endedAt
+        self.isWorker = isWorker
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -48,6 +53,7 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
         case agentKind
         case wasActiveOnQuit
         case endedAt
+        case isWorker
     }
 
     public init(from decoder: Decoder) throws {
@@ -59,6 +65,7 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
         agentKind = try container.decodeIfPresent(AgentKind.self, forKey: .agentKind) ?? .claude
         wasActiveOnQuit = try container.decodeIfPresent(Bool.self, forKey: .wasActiveOnQuit) ?? false
         endedAt = try container.decodeIfPresent(Date.self, forKey: .endedAt)
+        isWorker = try container.decodeIfPresent(Bool.self, forKey: .isWorker) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -70,6 +77,7 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
         try container.encode(agentKind, forKey: .agentKind)
         try container.encode(wasActiveOnQuit, forKey: .wasActiveOnQuit)
         try container.encodeIfPresent(endedAt, forKey: .endedAt)
+        try container.encode(isWorker, forKey: .isWorker)
     }
 }
 
