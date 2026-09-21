@@ -275,12 +275,9 @@ public final class AppCoordinator {
     public func prepareForShutdown(selectedId: String? = nil) {
         for s in store.sessions where s.state != .ended {
             let liveAgent = terminals.session(id: s.id)?.sampleForegroundAgent() ?? s.agentKind
-            // A restored session learns its id from its first hook. A save before then must keep
-            // the id it was resumed with, not overwrite it with nothing.
-            let savedId = manifest.entries.first { $0.linkcId == s.id }?.claudeSessionId
             manifest.upsert(RestorableSession(
                 linkcId: s.id,
-                claudeSessionId: s.claudeSessionId ?? savedId,
+                claudeSessionId: s.claudeSessionId,
                 cwd: s.cwd,
                 title: s.title,
                 agentKind: liveAgent,
