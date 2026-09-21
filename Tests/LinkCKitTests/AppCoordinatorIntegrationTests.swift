@@ -385,6 +385,55 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.restorables.count, 1, "the refused card must remain restorable")
     }
 
+    /// A relaunch sends the loser of a claude-id contest to Earlier (see
+    /// `testARelaunchBringsBackOneSessionPerConversation`). Restore all must not then bring that
+    /// loser back onto the SAME conversation its winning twin already holds live.
+    func testRestoreAllAfterARelaunchNeverReopensALiveClaudeConversation() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-collide-id-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(linkcId: "A", claudeSessionId: "c1", cwd: cwd.path, title: "p", wasActiveOnQuit: true))
+        seed.upsert(RestorableSession(linkcId: "B", claudeSessionId: "c1", cwd: cwd.path, title: "p", wasActiveOnQuit: true))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        coordinator.restoreActiveSessions()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+        XCTAssertEqual(coordinator.restorables.map(\.linkcId), ["A"], "B won the relaunch contest; A is the Earlier card")
+
+        XCTAssertThrowsError(try coordinator.restoreAll(), "restore all must not reopen a claude conversation already live")
+
+        XCTAssertEqual(coordinator.store.sessions.filter { $0.claudeSessionId == "c1" }.count, 1,
+                        "only one live session may hold this claude id")
+    }
+
+    /// Same rule for an agent that can only continue a folder's newest conversation (no captured
+    /// id): a relaunch's agy loser sent to Earlier must not come back onto the folder its
+    /// winning twin already occupies.
+    func testRestoreAllAfterARelaunchNeverContinuesALiveAgyTwice() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-collide-agy-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(linkcId: "G1", cwd: cwd.path, title: "p", agentKind: .agy, wasActiveOnQuit: true))
+        seed.upsert(RestorableSession(linkcId: "G2", cwd: cwd.path, title: "p", agentKind: .agy, wasActiveOnQuit: true))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        coordinator.restoreActiveSessions()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+        XCTAssertEqual(coordinator.restorables.map(\.linkcId), ["G1"], "G2 won the relaunch contest; G1 is the Earlier card")
+
+        XCTAssertThrowsError(
+            try coordinator.restoreAll(), "restore all must not run a second agy --continue in a folder with a live agy")
+
+        XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .agy }.count, 1,
+                        "only one live agy session may occupy this folder")
+    }
+
     /// I3: a spawn that never happens (bad executable) must fail loud — an error, no phantom
     /// session, no phantom restorable, no orphaned settings file.
     func testLaunchWithBadClaudePathFailsLoud() throws {

@@ -678,16 +678,22 @@ public final class AppCoordinator {
     @discardableResult
     public func restore(_ r: RestorableSession, as agent: AgentKind? = nil) throws -> Session {
         let targetAgent = agent ?? r.agentKind
-        // A restorable with no captured claude id falls back to `--continue`, which attaches to
-        // the folder's MOST RECENT conversation. If a live session already occupies that folder
-        // (including one restored moments ago in the same Restore-all pass), a second
-        // `--continue` would attach to the SAME conversation — two processes writing one
-        // transcript. Refuse; the card stays and the user can restore it individually later.
-        if targetAgent == .claude,
-           (r.claudeSessionId ?? "").isEmpty,
-           store.sessions.contains(where: { $0.cwd == r.cwd }) {
+        // Two live sessions must never land on one conversation. A Claude entry with a captured
+        // id resumes exactly that id; anything else — a Claude entry with no id, or any other
+        // agent — falls back to `--continue`/`resume --last`, which attaches to the folder's MOST
+        // RECENT conversation for that agent. Refuse whichever way this entry would collide with
+        // a session already live (including one restored moments ago in the same Restore-all
+        // pass, or one a relaunch already brought back onto this entry's id/folder); the card
+        // stays and the user can restore it individually later.
+        let resumesById = targetAgent == .claude && !(r.claudeSessionId ?? "").isEmpty
+        let folder = (r.cwd as NSString).standardizingPath
+        if store.sessions.contains(where: { live in
+            resumesById
+                ? live.claudeSessionId == r.claudeSessionId
+                : live.agentKind == targetAgent && (live.cwd as NSString).standardizingPath == folder
+        }) {
             throw LinkCError.process(
-                "a session is already running in \(r.title) — restore this one after it ends, or dismiss it"
+                "a \(targetAgent.displayName) conversation is already open in \(r.title) — restore this one after it ends, or dismiss it"
             )
         }
         let session = try launch(
