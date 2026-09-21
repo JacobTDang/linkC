@@ -171,6 +171,13 @@ public final class WorkspaceManifest {
         save()
     }
 
+    /// The user opened this worker: record it as theirs. No-op for an unknown id or no change.
+    public func markAdopted(linkcId: String) {
+        guard let i = entries.firstIndex(where: { $0.linkcId == linkcId }), entries[i].isWorker else { return }
+        entries[i].isWorker = false
+        save()
+    }
+
     /// Stamp `endedAt` on an existing entry — it is now restorable. No-op for an unknown id
     /// or when already ended with wasActiveOnQuit == false (a stop's synchronous cleanup
     /// and the child's async exit both call this; the first timestamp wins, no redundant disk write).

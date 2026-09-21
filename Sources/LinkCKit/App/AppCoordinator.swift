@@ -275,14 +275,18 @@ public final class AppCoordinator {
     public func prepareForShutdown(selectedId: String? = nil) {
         for s in store.sessions where s.state != .ended {
             let liveAgent = terminals.session(id: s.id)?.sampleForegroundAgent() ?? s.agentKind
+            // A restored session learns its id from its first hook. A save before then must keep
+            // the id it was resumed with, not overwrite it with nothing.
+            let savedId = manifest.entries.first { $0.linkcId == s.id }?.claudeSessionId
             manifest.upsert(RestorableSession(
                 linkcId: s.id,
-                claudeSessionId: s.claudeSessionId,
+                claudeSessionId: s.claudeSessionId ?? savedId,
                 cwd: s.cwd,
                 title: s.title,
                 agentKind: liveAgent,
                 wasActiveOnQuit: true,
-                endedAt: nil
+                endedAt: nil,
+                isWorker: s.isWorker
             ))
         }
         let sel = selectedId ?? terminals.selectedId
@@ -393,6 +397,7 @@ public final class AppCoordinator {
     /// not killed — the process is already dead here), its per-session settings file, its
     /// notification dedupe entry, and its usage-tracker dictionaries. Idempotent.
     private func cleanup(sessionId: String) {
+        let wasWorker = store.session(id: sessionId)?.isWorker ?? false
         store.remove(id: sessionId)
         terminals.remove(sessionId)
         let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
@@ -401,9 +406,16 @@ public final class AppCoordinator {
         screenSignatures.removeValue(forKey: sessionId)
         usageTracker?.unbind(sessionId: sessionId)
         injectedText.removeValue(forKey: sessionId)
-        // The session ended or was stopped — keep its manifest entry but stamp it, so it becomes
-        // a restorable card. (No-op when there is no entry, e.g. a launch that failed before start.)
-        manifest.markEnded(linkcId: sessionId, at: Date())
+        if wasWorker {
+            // A worker was linkC's, not the user's: its report is in the task record, so it
+            // leaves nothing under Earlier.
+            manifest.remove(linkcId: sessionId)
+        } else {
+            // The session ended or was stopped — keep its manifest entry but stamp it, so it
+            // becomes a restorable card. (No-op when there is no entry, e.g. a launch that failed
+            // before start.)
+            manifest.markEnded(linkcId: sessionId, at: Date())
+        }
         syncRestorables()
     }
 
@@ -413,7 +425,8 @@ public final class AppCoordinator {
     /// and writing a handoff memo to `<workspacePath>/.linkc/HANDOFF.md`.
     @discardableResult
     public func spawnTeammate(
-        in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil, tier: ModelTier? = nil
+        in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil, tier: ModelTier? = nil,
+        asWorker: Bool = false
     ) throws -> Session {
         let norm = (workspacePath as NSString).standardizingPath
         let existingSession = store.sessions.last { session in
@@ -447,16 +460,16 @@ public final class AppCoordinator {
 
         // A teammate starts in the background — the relay spawns these while the user is
         // working elsewhere, and selecting one raises the panel over whatever they were doing.
-        return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier, select: false)
+        return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier, select: false, asWorker: asWorker)
     }
 
     @discardableResult
     public func newSession(
         cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil,
-        select: Bool = true
+        select: Bool = true, asWorker: Bool = false
     ) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
-        return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier, select: select)
+        return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier, asWorker: asWorker, select: select)
     }
 
     /// The model configured for `agent` at `tier`, or nil when the mapping has no entry — a
@@ -506,6 +519,7 @@ public final class AppCoordinator {
         resumeId: String? = nil,
         id: String? = nil,
         tier: ModelTier? = nil,
+        asWorker: Bool = false,
         select: Bool
     ) throws -> Session {
         // A tier only ever pins a brand-new process. For Codex, `.continueLast`/`.resume` argv
@@ -518,7 +532,8 @@ public final class AppCoordinator {
         }
         let model = tier.flatMap { resolvedModel(for: agent, tier: $0) }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
-                                   model: model, modelTier: model == nil ? nil : tier)
+                                   model: model, modelTier: model == nil ? nil : tier,
+                                   claudeSessionId: resumeId, isWorker: asWorker)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent, select: false)
             // A terminated child = an ended session: prune everything when the child exits.
@@ -599,7 +614,8 @@ public final class AppCoordinator {
                 title: title,
                 agentKind: agent,
                 wasActiveOnQuit: true,
-                endedAt: nil
+                endedAt: nil,
+                isWorker: asWorker
             ))
             syncRestorables()
             return session
@@ -711,6 +727,9 @@ public final class AppCoordinator {
 
     public func focusSession(_ id: String) {
         terminals.select(id)
+        // Opening a worker's terminal makes it the user's: they are using it now.
+        store.adopt(id: id)
+        manifest.markAdopted(linkcId: id)
         NSApp?.activate(ignoringOtherApps: true)
         if let s = store.session(id: id), s.agentKind != .claude, s.state.bucket == .needsYou {
             store.updateState(id: id, to: .ready)

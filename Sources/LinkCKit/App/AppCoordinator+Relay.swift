@@ -248,7 +248,7 @@ extension AppCoordinator {
                 // stays `.starting` until its agent is really running: Claude's SessionStart hook, or
                 // `sampleAgentStates` for every other kind.
                 do {
-                    _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier)
+                    _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier, asWorker: true)
                 } catch {
                     // Swallowing this used to leave the task `.queued` forever, retried every
                     // second, with nothing anywhere saying why — the same silence the sibling
@@ -380,7 +380,7 @@ extension AppCoordinator {
                 }
                 let goal: String? = message.kind == .task ? message.prompt : nil
                 do {
-                    _ = try spawnTeammate(in: workspacePath, agent: message.toAgent, goal: goal)
+                    _ = try spawnTeammate(in: workspacePath, agent: message.toAgent, goal: goal, asWorker: true)
                 } catch {
                     lastSpawnFailure = SpawnFailure(agent: message.toAgent, workspacePath: workspacePath, error: String(describing: error))
                     NSLog("[linkC relay] dispatchMessages: message %@ could not spawn %@ — %@",

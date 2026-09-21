@@ -65,8 +65,10 @@ public final class SessionStore {
     /// Register a linkC session before its tab is launched.
     @discardableResult
     public func create(cwd: String, title: String, id: String = UUID().uuidString, agentKind: AgentKind = .claude,
-                       model: String? = nil, modelTier: ModelTier? = nil) -> Session {
-        let s = Session(id: id, cwd: cwd, title: title, agentKind: agentKind, model: model, modelTier: modelTier)
+                       model: String? = nil, modelTier: ModelTier? = nil,
+                       claudeSessionId: String? = nil, isWorker: Bool = false) -> Session {
+        let s = Session(id: id, cwd: cwd, title: title, claudeSessionId: claudeSessionId, agentKind: agentKind,
+                        model: model, modelTier: modelTier, isWorker: isWorker)
         sessions.append(s)
         return s
     }
@@ -74,6 +76,12 @@ public final class SessionStore {
     public func session(id: String) -> Session? { sessions.first { $0.id == id } }
 
     public func remove(id: String) { sessions.removeAll { $0.id == id } }
+
+    /// The user opened this worker's terminal: from now on it is theirs, and never closed for them.
+    public func adopt(id: String) {
+        guard let idx = sessions.firstIndex(where: { $0.id == id }), sessions[idx].isWorker else { return }
+        sessions[idx].isWorker = false
+    }
 
     /// Directly update a session's state and record stateChangedAt on real transitions.
     public func updateState(id: String, to newState: SessionState) {

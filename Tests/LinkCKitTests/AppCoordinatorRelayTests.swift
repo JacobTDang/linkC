@@ -2264,6 +2264,24 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertLessThan(elapsed, 1.5, "a contended tick must yield quickly, not wait out a 5s timeout per call")
     }
+
+    /// A session the relay spawns to carry a task is a worker.
+    @MainActor
+    func testTheRelaysSpawnIsAWorker() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        _ = try inbox.createTask(from: .claude, to: .codex, prompt: "spawn a worker", files: [])
+
+        coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
+
+        let spawned = try XCTUnwrap(coordinator.store.sessions.first { $0.agentKind == .codex })
+        XCTAssertTrue(spawned.isWorker)
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.

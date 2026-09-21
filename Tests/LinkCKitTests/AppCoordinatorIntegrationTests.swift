@@ -1097,5 +1097,65 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
 
         XCTAssertTrue(coordinator.store.sessions.isEmpty, "a refused launch must leave no ghost session")
     }
+
+    /// A session restarted with a saved conversation id keeps it through a save made before any
+    /// hook has reported — that save used to write nil over the id it was resumed with.
+    func testARestartedSessionKeepsItsIdThroughASaveBeforeAnyHook() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-keepid-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+        WorkspaceManifest(directory: dir).upsert(RestorableSession(
+            linkcId: "L1", claudeSessionId: "conv-1", cwd: cwd.path, title: "p", wasActiveOnQuit: true))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        coordinator.restoreActiveSessions()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+        coordinator.prepareForShutdown()
+
+        XCTAssertEqual(coordinator.store.session(id: "L1")?.claudeSessionId, "conv-1")
+        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == "L1" }?.claudeSessionId, "conv-1")
+    }
+
+    /// Opening a worker's terminal makes it the user's, in memory and on disk.
+    func testOpeningAWorkerMakesItTheUsers() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-adopt-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        let worker = try coordinator.newSession(cwd: cwd.path, agent: .codex, asWorker: true)
+        defer { coordinator.stopSession(worker.id) }
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, true)
+        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, true)
+
+        coordinator.focusSession(worker.id)
+
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, false)
+        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, false)
+    }
+
+    /// A worker that ends leaves nothing under Earlier; the user's session does.
+    func testAStoppedWorkerLeavesNothingUnderEarlier() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-worker-end-\(UUID().uuidString)")
+        let cwdA = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        let cwdB = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwdA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwdB, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: cwdA)
+            try? FileManager.default.removeItem(at: cwdB)
+        }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        let worker = try coordinator.newSession(cwd: cwdA.path, agent: .codex, asWorker: true)
+        let mine = try coordinator.newSession(cwd: cwdB.path, agent: .codex)
+        coordinator.stopSession(worker.id)
+        coordinator.stopSession(mine.id)
+
+        XCTAssertEqual(coordinator.restorables.map(\.linkcId), [mine.id])
+        XCTAssertNil(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id })
+    }
 }
 
