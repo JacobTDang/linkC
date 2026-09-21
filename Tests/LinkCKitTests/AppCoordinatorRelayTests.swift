@@ -2328,6 +2328,30 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(coordinator.store.session(id: mine.id), "the user's session is never closed")
     }
 
+    /// A worker can land on screen without ever being adopted — a relaunch, or the fallback that
+    /// hands the selection to the newest terminal when the one on screen closes. If the user is
+    /// looking at it (typing into it, even), the idle reaper must never close it out from under
+    /// them, however long it has sat idle.
+    @MainActor
+    func testReapIdleWorkersNeverClosesTheWorkerOnScreen() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        XCTAssertEqual(coordinator.terminals.selectedId, worker.id, "the new worker starts on screen")
+        coordinator.store.updateState(id: worker.id, to: .finished)
+
+        clock.set(Date().addingTimeInterval(11 * 60))
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "the worker on screen must not be closed")
+    }
+
     /// A worker still holding an open task is never closed, however long it has been idle.
     @MainActor
     func testAWorkerHoldingATaskIsNotClosed() throws {

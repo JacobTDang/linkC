@@ -643,7 +643,7 @@ public final class AppCoordinator {
                     resumeId: r.claudeSessionId,
                     id: r.linkcId,
                     asWorker: r.isWorker,
-                    select: true
+                    select: !r.isWorker
                 )) == nil {
                     manifest.upsert(r)
                 }

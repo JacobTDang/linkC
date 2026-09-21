@@ -1236,6 +1236,37 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertNil(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == "W" })
     }
 
+    /// A relaunch used to pass `select: true` for every entry, workers included, so a worker
+    /// could land on screen without `focusSession` ever adopting it. Only the user's own entries
+    /// go on screen at relaunch; a worker stays off it until the user actually opens it.
+    func testARelaunchedWorkerHoldingATaskIsNotSelected() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-relaunch-worker-select-\(UUID().uuidString)")
+        let mine = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        let ws = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: mine, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: ws, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: mine)
+            try? FileManager.default.removeItem(at: ws)
+        }
+
+        let inbox = InboxStore(workspaceRoot: ws.path)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "held", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(linkcId: "U", claudeSessionId: "c1", cwd: mine.path, title: "u", wasActiveOnQuit: true))
+        seed.upsert(RestorableSession(
+            linkcId: "W", cwd: ws.path, title: "w", agentKind: .codex, wasActiveOnQuit: true, isWorker: true))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        coordinator.restoreActiveSessions()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertNotNil(coordinator.store.session(id: "W"), "the held worker must come back live")
+        XCTAssertNotEqual(coordinator.terminals.selectedId, "W", "a relaunch must not put an unadopted worker on screen")
+    }
+
     /// The save made before quitting keeps a worker marked as one — the relaunch reads it.
     func testTheSaveBeforeQuittingKeepsAWorkerMarked() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-worker-save-\(UUID().uuidString)")
