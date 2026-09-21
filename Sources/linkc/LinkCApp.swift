@@ -95,9 +95,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class AppModel {
     private(set) var coordinator: AppCoordinator?
     private(set) var setupError: String?
+    /// The error strip's message: shown for a few seconds, then cleared, so a one-off failure is
+    /// loud without lingering. Empty messages never show.
+    let errorFlash = FlashMessage()
     /// Surfaced when a one-off action (e.g. launching a session) fails — shown inline without
-    /// tearing down the whole panel. Failing loud, not silent.
-    private(set) var lastError: String?
+    /// tearing down the whole panel. Failing loud, not silent. Setting it shows a new flash;
+    /// setting nil clears the strip at once.
+    private(set) var lastError: String? {
+        get { errorFlash.text }
+        set { errorFlash.show(newValue) }
+    }
     /// Whether the menu-bar panel is currently on screen. Feeds the coordinator's watch probe
     /// and gates the usage-refresh timer — no panel, no polling.
     var panelVisible = false {
