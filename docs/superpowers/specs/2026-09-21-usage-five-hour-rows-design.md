@@ -47,7 +47,7 @@ The same shape for Claude and Codex (Codex from its rollout snapshot, as today):
 - No token counts anywhere; the `22% · 7d 100%` form is gone.
 - "At 100%" compares the rounded percentage, like the coral threshold.
 - A "limit hit" row only uses a window that is live (reading fresh and its reset not yet passed).
-- Remaining times use `AgeFormat.compact` ("2h", "3d").
+- Reset times read in minutes or hours under a day (`AgeFormat.compact`: "15m", "2h") and in days from a day on (`AgeFormat.longSpan`: "3d"), so a weekly reset never reads "72h". The retry after a detector cap keeps `AgeFormat.compact`.
 - **Headline** (the collapsed section's trailing text): `limit hit` when any row shows a hit; otherwise the highest live 5-hour percentage; nothing when none is known.
 - **Help** on a row: the other window's figure and reset, the reading's age, and the plan when known.
 - **Unknown reasons** for Claude: "no reading yet — a Claude session reports after its first reply"; "your own status line is configured — linkC can't read Claude's usage".
