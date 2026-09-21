@@ -6,8 +6,9 @@ import Foundation
 ///
 /// Two sessions must never land on one conversation. A Claude entry with an id resumes exactly
 /// that conversation; every other entry can only continue its folder's newest conversation for
-/// its agent, so at most one per folder and agent may. Whenever entries compete, the last in
-/// manifest order wins: it was launched most recently.
+/// its agent, so at most one per folder and agent may. Whenever entries compete, the user's own
+/// session wins over a worker; among the user's (or, with none, among workers) the last in
+/// manifest order wins, since it was launched most recently.
 public struct RelaunchPlan: Equatable, Sendable {
     /// Entries to launch again, in manifest order.
     public let relaunch: [String]
