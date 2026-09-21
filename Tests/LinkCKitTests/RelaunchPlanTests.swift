@@ -65,6 +65,15 @@ final class RelaunchPlanTests: XCTestCase {
         XCTAssertEqual(result, RelaunchPlan(relaunch: ["B"], toEarlier: ["A"], drop: []))
     }
 
+    func testDroppedWorkersKeepManifestOrderWhateverTheReason() {
+        let result = plan(
+            [makeEntry("C", .codex, worker: true),
+             makeEntry("N", .codex, cwd: "/p/other", worker: true),
+             makeEntry("U", .codex)],
+            holding: ["C"])
+        XCTAssertEqual(result.drop, ["C", "N"])
+    }
+
     func testAnOldManifestEntryReadsAsTheUsers() throws {
         let json = #"{"linkcId":"A","cwd":"/p","title":"t","agentKind":"claude","wasActiveOnQuit":true}"#
         let decoded = try JSONDecoder().decode(RestorableSession.self, from: Data(json.utf8))

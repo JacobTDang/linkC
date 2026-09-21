@@ -56,6 +56,11 @@ public struct RelaunchPlan: Equatable, Sendable {
                 toEarlier.append(entry.linkcId)
             }
         }
+        // Two passes add to `drop` (workers holding no task, then workers that lost a contest);
+        // put them back in manifest order, as the property promises.
+        let position = Dictionary(
+            entries.enumerated().map { ($0.element.linkcId, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        drop.sort { (position[$0] ?? .max) < (position[$1] ?? .max) }
         return RelaunchPlan(relaunch: relaunch, toEarlier: toEarlier, drop: drop)
     }
 
