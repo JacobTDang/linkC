@@ -81,7 +81,23 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(state.expandOverrides["/a"], false, "still the selected project: the collapse sticks")
         state.noteSelectedProject("/b")
         state.noteSelectedProject("/a")
-        XCTAssertNil(state.expandOverrides["/a"], "moved away and back: it opens again")
+        XCTAssertEqual(state.expandOverrides["/a"], true, "moved away and back: it opens again")
+    }
+
+    /// Closing the agent on screen moves the selection out of its project. The project must stay
+    /// open: arriving in it marked it open, rather than leaving it open only while it held the
+    /// selection.
+    func testAProjectStaysOpenAfterTheSelectionLeavesIt() {
+        let state = SidebarState(defaults: defaults)
+        state.noteSelectedProject("/a")
+        state.noteSelectedProject(nil)
+        XCTAssertEqual(state.expandOverrides["/a"], true)
+        XCTAssertEqual(SidebarModel.projects(
+            inputs: [SidebarModel.Input(
+                session: Session(id: "s2", cwd: "/a", title: "a"),
+                title: "t", status: SessionRowStatus(text: "", tone: .quiet), hasRunningSubagents: false)],
+            order: ["/a"], expandOverrides: state.expandOverrides, selectedId: nil
+        ).first?.isExpanded, true)
     }
 
     func testUnreadableStoredStateStartsFresh() {

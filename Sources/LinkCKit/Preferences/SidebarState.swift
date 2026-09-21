@@ -85,13 +85,16 @@ public final class SidebarState {
         if changed { save() }
     }
 
-    /// The project holding the open terminal. Moving into one drops its override, so it opens —
-    /// and a collapse the user makes afterwards sticks until they leave and come back.
+    /// The project holding the open terminal. Moving into one marks it open, so it opens and stays
+    /// open after the agent on screen closes — and a collapse the user makes afterwards sticks
+    /// until they leave and come back.
     public func noteSelectedProject(_ path: String?) {
         guard path != selectedProject else { return }
         selectedProject = path
-        guard let path, expandOverrides[path] != nil else { return }
-        expandOverrides[path] = nil
+        // Mark it open rather than clearing its override: cleared, the project would stay open
+        // only while it held the selection, and closing the agent on screen would snap it shut.
+        guard let path, expandOverrides[path] != true else { return }
+        expandOverrides[path] = true
         save()
     }
 
