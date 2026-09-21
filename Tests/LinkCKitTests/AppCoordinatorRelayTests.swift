@@ -2282,6 +2282,54 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let spawned = try XCTUnwrap(coordinator.store.sessions.first { $0.agentKind == .codex })
         XCTAssertTrue(spawned.isWorker)
     }
+
+    /// An idle worker is closed once past the grace; the user's session never is.
+    @MainActor
+    func testAnIdleWorkerIsClosedAfterTheGraceAndTheUsersSessionIsNot() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        let mine = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .finished)
+        coordinator.store.updateState(id: mine.id, to: .finished)
+
+        clock.set(Date().addingTimeInterval(9 * 60))
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "9 minutes idle: still inside the grace")
+
+        clock.set(Date().addingTimeInterval(11 * 60))
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+        XCTAssertNil(coordinator.store.session(id: worker.id), "past the grace with no task: closed")
+        XCTAssertNotNil(coordinator.store.session(id: mine.id), "the user's session is never closed")
+    }
+
+    /// A worker still holding an open task is never closed, however long it has been idle.
+    @MainActor
+    func testAWorkerHoldingATaskIsNotClosed() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "held", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        coordinator.store.updateState(id: worker.id, to: .finished)
+
+        clock.set(Date().addingTimeInterval(60 * 60))
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id))
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.

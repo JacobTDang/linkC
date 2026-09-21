@@ -624,10 +624,15 @@ public final class AppCoordinator {
 
     // MARK: - Restore
 
-    /// Revives all sessions that were marked active when the app last shut down or were unended.
+    /// Brings back the sessions that were live when linkC last quit — each on its own
+    /// conversation, never two on one (see `RelaunchPlan`). Entries that lose a contest for a
+    /// conversation go under Earlier; workers that no longer hold a task are dropped.
     public func restoreActiveSessions() {
-        let activeEntries = manifest.entries.filter { $0.wasActiveOnQuit || $0.endedAt == nil }
-        for var r in activeEntries {
+        let active = manifest.entries.filter { $0.wasActiveOnQuit || $0.endedAt == nil }
+        let plan = RelaunchPlan.make(entries: active, workersHoldingTasks: workersHoldingOpenTasks(active))
+        for id in plan.drop { manifest.remove(linkcId: id) }
+        for id in plan.toEarlier { manifest.markEnded(linkcId: id, at: now()) }
+        for var r in active where plan.relaunch.contains(r.linkcId) {
             r.wasActiveOnQuit = false
             if FileManager.default.fileExists(atPath: r.cwd) {
                 if (try? launch(
@@ -637,6 +642,7 @@ public final class AppCoordinator {
                     mode: .continueLast,
                     resumeId: r.claudeSessionId,
                     id: r.linkcId,
+                    asWorker: r.isWorker,
                     select: true
                 )) == nil {
                     manifest.upsert(r)
@@ -646,6 +652,23 @@ public final class AppCoordinator {
             }
         }
         syncRestorables()
+    }
+
+    /// The worker entries that still hold an open task in their workspace. An inbox that cannot
+    /// be read is logged, and its workers are treated as holding nothing — the user's own
+    /// sessions do not depend on it.
+    private func workersHoldingOpenTasks(_ entries: [RestorableSession]) -> Set<String> {
+        var holding: Set<String> = []
+        let folders = Set(entries.filter(\.isWorker).map { ($0.cwd as NSString).standardizingPath })
+        for folder in folders {
+            do {
+                holding.formUnion(try InboxStore(workspaceRoot: folder).openTasks().compactMap(\.assigneeSessionId))
+            } catch {
+                NSLog("[linkC] relaunch: open tasks for %@ could not be read — its workers stay closed: %@",
+                      folder, String(describing: error))
+            }
+        }
+        return holding
     }
 
     /// Resume a previous session as a fresh live one. Uses `claude --resume <id>` when the claude

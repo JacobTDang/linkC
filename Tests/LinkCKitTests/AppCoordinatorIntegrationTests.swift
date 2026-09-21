@@ -1157,5 +1157,52 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.restorables.map(\.linkcId), [mine.id])
         XCTAssertNil(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id })
     }
+
+    /// A relaunch brings back one session per conversation: of two entries on one Claude id the
+    /// last comes back and the other goes to Earlier; an id-less Claude entry in the same folder
+    /// goes to Earlier too; a worker with no task is dropped.
+    func testARelaunchBringsBackOneSessionPerConversation() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-relaunch-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        let cwdW = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwdW, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: cwd)
+            try? FileManager.default.removeItem(at: cwdW)
+        }
+        let seed = WorkspaceManifest(directory: dir)
+        seed.upsert(RestorableSession(linkcId: "A", claudeSessionId: "c1", cwd: cwd.path, title: "p", wasActiveOnQuit: true))
+        seed.upsert(RestorableSession(linkcId: "B", claudeSessionId: "c1", cwd: cwd.path, title: "p", wasActiveOnQuit: true))
+        seed.upsert(RestorableSession(linkcId: "C", claudeSessionId: nil, cwd: cwd.path, title: "p", wasActiveOnQuit: true))
+        seed.upsert(RestorableSession(linkcId: "W", cwd: cwdW.path, title: "w", agentKind: .codex,
+                                      wasActiveOnQuit: true, isWorker: true))
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        coordinator.restoreActiveSessions()
+        defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
+
+        XCTAssertEqual(coordinator.store.sessions.map(\.id), ["B"])
+        XCTAssertEqual(Set(coordinator.restorables.map(\.linkcId)), ["A", "C"])
+        XCTAssertNil(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == "W" })
+    }
+
+    /// The save made before quitting keeps a worker marked as one — the relaunch reads it.
+    func testTheSaveBeforeQuittingKeepsAWorkerMarked() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-worker-save-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        let worker = try coordinator.newSession(cwd: cwd.path, agent: .codex, asWorker: true)
+        defer { coordinator.stopSession(worker.id) }
+
+        coordinator.prepareForShutdown()
+
+        let entry = WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }
+        XCTAssertEqual(entry?.isWorker, true)
+        XCTAssertEqual(entry?.wasActiveOnQuit, true)
+    }
 }
 
