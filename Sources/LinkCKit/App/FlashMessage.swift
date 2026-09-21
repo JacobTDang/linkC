@@ -38,7 +38,7 @@ public final class FlashMessage {
         let shown = generation
         let sleep = self.sleep
         let duration = self.duration
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             await sleep(duration)
             guard let self, self.generation == shown else { return }
             self.text = nil

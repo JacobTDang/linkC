@@ -107,7 +107,8 @@ public final class SessionStore {
         }
     }
 
-    /// Apply an incoming hook event. Binds by linkC id, else by Claude session id.
+    /// Apply an incoming hook event. An event carrying a linkC id binds to that session or to
+    /// nothing; only an event with no linkC id binds by its Claude session id.
     /// Unknown / external events (no matching session) are ignored.
     @discardableResult
     public func apply(_ event: HookEvent) -> ApplyOutcome {
