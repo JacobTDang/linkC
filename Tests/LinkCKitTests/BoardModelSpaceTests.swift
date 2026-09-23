@@ -250,6 +250,27 @@ final class BoardModelSpaceTests: XCTestCase {
         XCTAssertEqual(BoardModel.laidOut(laid), laid, "laying out an already-separated map changes nothing")
     }
 
+    /// R6: only A and B overlap in the file; C was always clear. B's escape route from A must not
+    /// run it into C — an innocent frame it never overlapped must keep its position, not get
+    /// dragged into moving just because B's naive nearest-free-spot search landed on it.
+    func testALaidOutFrameEscapingAnOverlapNeverLandsOnAnUninvolvedFrame() throws {
+        var map = BoardMap.empty
+        map.frames = [
+            BoardFrame(label: "A", rect: BoardRect(x: 0, y: 0, w: 200, h: 200)),
+            BoardFrame(label: "B", rect: BoardRect(x: 100, y: 100, w: 200, h: 200)),
+            BoardFrame(label: "C", rect: BoardRect(x: 300, y: 100, w: 200, h: 200)),
+        ]
+        let laid = BoardModel.laidOut(map)
+
+        let a = try XCTUnwrap(laid.frames.first { $0.label == "A" }?.rect)
+        let b = try XCTUnwrap(laid.frames.first { $0.label == "B" }?.rect)
+        let c = try XCTUnwrap(laid.frames.first { $0.label == "C" }?.rect)
+        XCTAssertFalse(a.intersects(b), "A and B must no longer overlap")
+        XCTAssertFalse(b.intersects(c), "B's escape route must not create a new overlap with C")
+        XCTAssertEqual(a, BoardRect(x: 0, y: 0, w: 200, h: 200), "A never overlapped anything and must keep its position")
+        XCTAssertEqual(c, BoardRect(x: 300, y: 100, w: 200, h: 200), "C never overlapped anything and must keep its position")
+    }
+
     /// A box the file lists under one place but positions in another frame moves to its place —
     /// the file's places are what agents read, so they win.
     func testTheFilesPlaceWinsOverAStrayPosition() throws {

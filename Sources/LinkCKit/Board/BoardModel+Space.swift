@@ -180,7 +180,11 @@ extension BoardModel {
 
         // Frames that already had a rect in the file can still overlap one another — after a git
         // merge, say. Each is nudged to the nearest free spot, in label order, carrying its own
-        // components, notes and texts along with it, exactly as a frame move does.
+        // components, notes and texts along with it, exactly as a frame move does. Whether a
+        // frame needs to move at all is judged against the frames already settled — an earlier
+        // one in label order never moves for a later one's sake — but once it does move, every
+        // other frame, settled or not yet reached, is an obstacle, so escaping one overlap can
+        // never land it on a frame that was never involved.
         var settledFrames: [BoardRect] = []
         for index in map.frames.indices.sorted(by: { map.frames[$0].label < map.frames[$1].label }) {
             guard let rect = map.frames[index].rect else { continue }
@@ -188,7 +192,8 @@ extension BoardModel {
                 settledFrames.append(rect)
                 continue
             }
-            let landed = BoardGeometry.frameDrop(rect, otherFrames: settledFrames, foreignElements: elementRects(map, excluding: []))
+            let otherFrames = map.frames.indices.compactMap { $0 == index ? nil : map.frames[$0].rect }
+            let landed = BoardGeometry.frameDrop(rect, otherFrames: otherFrames, foreignElements: elementRects(map, excluding: []))
             settledFrames.append(landed)
             let dx = landed.x - rect.x
             let dy = landed.y - rect.y
