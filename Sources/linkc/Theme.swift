@@ -71,6 +71,17 @@ enum Theme {
     static let sectionSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
     static let hoverEase = Animation.easeOut(duration: 0.15)
     static let viewSwap = Animation.easeInOut(duration: 0.2)
+
+    // The board: a quiet dark canvas, a faint dot grid, and warm sticky notes.
+    static let boardBackground = Color(red: 0.071, green: 0.071, blue: 0.078)
+    static let boardDot = Color.white.opacity(0.075)
+    static let boardFrameFill = Color.white.opacity(0.02)
+    static let boardFrameStroke = Color.white.opacity(0.13)
+    static let boardArrow = Color.white.opacity(0.45)
+    static let boardBox = Color(red: 0.149, green: 0.149, blue: 0.169)
+    static let boardBoxStroke = Color.white.opacity(0.09)
+    static let noteFill = Color(red: 0.231, green: 0.204, blue: 0.137)
+    static let noteText = Color(red: 0.937, green: 0.886, blue: 0.749)
 }
 
 /// The shared card treatment: one flat translucent fill, nothing else.

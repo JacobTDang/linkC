@@ -122,6 +122,7 @@ final class AppModel {
 
     /// Flush all session, shell, and selection state to disk in real-time.
     public func flushStateToDisk() {
+        for board in boards.values { board.saveNow() }
         shells?.prepareForShutdown()
         coordinator?.prepareForShutdown(selectedId: selectedId)
         if let selectedId {
@@ -581,6 +582,18 @@ final class AppModel {
             }
         }
         return things
+    }
+
+    /// One board model per project for the life of the app, so undo and unwritten edits survive
+    /// switching tabs and projects.
+    @ObservationIgnored private var boards: [String: BoardModel] = [:]
+
+    func board(for path: String) -> BoardModel {
+        let key = (path as NSString).standardizingPath
+        if let board = boards[key] { return board }
+        let board = BoardModel(store: BoardMapStore(workspacePath: key))
+        boards[key] = board
+        return board
     }
 
     /// Keep the SERVERS section honest while the panel shows: docker state changes
