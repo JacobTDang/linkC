@@ -651,8 +651,10 @@ final class AppModel {
         }
     }
 
-    /// Stops the tab's session. When that leaves nothing showing, the project's Board shows, so
-    /// the strip does not vanish from under the pointer.
+    /// Stops the tab's session. When that leaves this project showing nothing — including when
+    /// the session manager's fallback jumped to a different project's terminal — this project's
+    /// Board shows instead, so the strip does not vanish, or jump elsewhere, from under the
+    /// pointer.
     func close(_ tab: ProjectTab) {
         let project = currentProject
         switch tab.kind {
@@ -660,7 +662,7 @@ final class AppModel {
         case .agent: stop(tab.id)
         case .terminal: stopShell(tab.id)
         }
-        if selectedId == nil, boardProject == nil, let project { showBoard(project) }
+        if let project, currentProject != project { showBoard(project) }
     }
 
     /// Keep the SERVERS section honest while the panel shows: docker state changes
