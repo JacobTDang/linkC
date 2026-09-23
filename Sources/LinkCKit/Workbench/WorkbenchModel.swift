@@ -108,9 +108,12 @@ public final class WorkbenchModel {
         edited()
     }
 
+    /// A dropped tile lands within the grid's columns, on a cell nothing else is already drawn
+    /// on — the model decides, rather than accepting whatever cell the drag computed, so the
+    /// file it writes and the board it draws can never disagree about where a tile sits.
     public func move(_ name: String, to point: GridPoint) {
         guard canEdit, let index = indexOf(name) else { return }
-        map.components[index].at = point
+        map.components[index].at = freeCell(near: point, excluding: map.components[index].name)
         edited()
     }
 
@@ -129,6 +132,24 @@ public final class WorkbenchModel {
 
     private func indexOf(_ name: String) -> Int? {
         map.components.firstIndex { $0.name.lowercased() == name.lowercased() }
+    }
+
+    /// The cell a drag actually lands on: `point` clamped into the grid's columns (rows have no
+    /// ceiling — the board scrolls), then walked forward in reading order until it lands
+    /// somewhere nothing else currently draws. `positions` — not the raw `at` values — is what
+    /// is checked, since that is what is actually on screen for a tile the layout auto-placed.
+    private func freeCell(near point: GridPoint, excluding name: String) -> GridPoint {
+        let columns = WorkbenchLayout.columns
+        var candidate = GridPoint(x: min(max(0, point.x), columns - 1), y: max(0, point.y))
+        let taken = Set(positions.filter { $0.key != name }.values)
+        guard taken.contains(candidate) else { return candidate }
+
+        var cell = candidate.y * columns + candidate.x
+        repeat {
+            cell += 1
+            candidate = GridPoint(x: cell % columns, y: cell / columns)
+        } while taken.contains(candidate)
+        return candidate
     }
 
     /// Every edit that actually lands — append, replace, remove, or reposition — comes through

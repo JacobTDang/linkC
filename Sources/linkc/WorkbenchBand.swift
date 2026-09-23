@@ -124,31 +124,45 @@ struct WorkbenchBand: View {
         }
     }
 
+    /// Scrolls rather than clips: the model can place a tile in any row (only columns are
+    /// bounded), so every row the map produces must stay reachable, not cut off past the third.
     private var board: some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(workbench.map.components) { component in
-                let point = workbench.positions[component.name] ?? GridPoint(x: 0, y: 0)
-                ComponentTile(
-                    component: component,
-                    status: workbench.statuses[component.name],
-                    onEdit: { editing = component },
-                    onRemove: { workbench.remove(component.name) },
-                    onDrop: { translation in
-                        workbench.move(component.name, to: GridPoint(
-                            x: max(0, point.x + Int((translation.width / (Self.cell.width + Self.gap)).rounded())),
-                            y: max(0, point.y + Int((translation.height / (Self.cell.height + Self.gap)).rounded()))))
-                    })
-                .frame(width: Self.cell.width, height: Self.cell.height)
-                .offset(
-                    x: CGFloat(point.x) * (Self.cell.width + Self.gap),
-                    y: CGFloat(point.y) * (Self.cell.height + Self.gap))
+        ScrollView(.vertical, showsIndicators: false) {
+            ZStack(alignment: .topLeading) {
+                ForEach(workbench.map.components) { component in
+                    let point = workbench.positions[component.name] ?? GridPoint(x: 0, y: 0)
+                    ComponentTile(
+                        component: component,
+                        status: workbench.statuses[component.name],
+                        onEdit: { editing = component },
+                        onRemove: { workbench.remove(component.name) },
+                        onDrop: { translation in
+                            // The model decides the landing cell — clamping it into the grid's
+                            // columns and away from whatever tile is already there — so the file
+                            // it writes and the board it draws can never disagree.
+                            workbench.move(component.name, to: GridPoint(
+                                x: point.x + Int((translation.width / (Self.cell.width + Self.gap)).rounded()),
+                                y: point.y + Int((translation.height / (Self.cell.height + Self.gap)).rounded())))
+                        })
+                    .frame(width: Self.cell.width, height: Self.cell.height)
+                    .offset(
+                        x: CGFloat(point.x) * (Self.cell.width + Self.gap),
+                        y: CGFloat(point.y) * (Self.cell.height + Self.gap))
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(height: fullBoardHeight, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(height: boardHeight, alignment: .topLeading)
+        .frame(height: visibleBoardHeight, alignment: .topLeading)
     }
 
-    private var boardHeight: CGFloat {
+    private var fullBoardHeight: CGFloat {
+        let rows = (workbench.positions.values.map(\.y).max() ?? 0) + 1
+        return CGFloat(rows) * (Self.cell.height + Self.gap)
+    }
+
+    private var visibleBoardHeight: CGFloat {
         let rows = (workbench.positions.values.map(\.y).max() ?? 0) + 1
         return CGFloat(min(rows, 3)) * (Self.cell.height + Self.gap)
     }

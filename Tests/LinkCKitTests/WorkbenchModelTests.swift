@@ -209,6 +209,40 @@ final class WorkbenchModelTests: XCTestCase {
         XCTAssertNil(model.refusal, "a successful drag must not leave a stale refusal on screen")
     }
 
+    /// A drag with no upper bound could push a tile past the grid's columns and off the board
+    /// for good, since nothing scrolls it back into view.
+    func testAMoveNeverLandsPastTheGridsColumns() {
+        let model = makeModel(gate: Gate())
+        model.load()
+        model.startMap()
+        model.add(SystemComponent(name: "api", kind: .service))
+
+        model.move("api", to: GridPoint(x: 999, y: 0))
+
+        let landed = try? XCTUnwrap(model.positions["api"])
+        XCTAssertEqual(landed?.x, WorkbenchLayout.columns - 1, "a tile can never be dragged past the last column")
+    }
+
+    /// `WorkbenchModel.move` used to accept any cell, and `WorkbenchLayout` would then bump
+    /// whichever component lost the collision by name order — so the file recorded a position
+    /// the board never drew, and dragging one tile could visibly move another. The model must
+    /// decide the landing cell itself, so the file and the screen always agree.
+    func testAMoveOntoAnOccupiedCellLandsOnAFreeOneInstead() {
+        let model = makeModel(gate: Gate())
+        model.load()
+        model.startMap()
+        model.add(SystemComponent(name: "alpha", kind: .service, at: GridPoint(x: 1, y: 0)))
+        model.add(SystemComponent(name: "beta", kind: .service, at: GridPoint(x: 2, y: 0)))
+
+        model.move("beta", to: GridPoint(x: 1, y: 0))
+
+        XCTAssertEqual(model.positions["alpha"], GridPoint(x: 1, y: 0), "the tile nobody dragged must not move")
+        XCTAssertNotEqual(model.positions["beta"], model.positions["alpha"], "a drop on an occupied cell must not overwrite the tile already there")
+        XCTAssertEqual(
+            model.map.components.first { $0.name == "beta" }?.at, model.positions["beta"],
+            "the file must record exactly the cell the board draws")
+    }
+
     func testARefusalClearsOnASuccessfulRemove() {
         let model = makeModel(gate: Gate())
         model.load()
