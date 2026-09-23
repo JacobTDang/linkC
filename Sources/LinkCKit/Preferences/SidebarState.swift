@@ -15,6 +15,7 @@ public final class SidebarState {
         var projectOrder: [String] = []
         var expandOverrides: [String: Bool] = [:]
         var openSections: Set<Section> = []
+        var boardViewports: [String: BoardViewport]?
     }
 
     static let key = "sidebarState"
@@ -28,6 +29,7 @@ public final class SidebarState {
     /// The projects that were coral at the last `noteCoral`. In memory: a project coral at launch
     /// counts as newly coral once.
     @ObservationIgnored private var coralProjects: Set<String> = []
+    private var boardViewports: [String: BoardViewport] = [:]
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults = .standard) {
@@ -43,6 +45,7 @@ public final class SidebarState {
         projectOrder = stored.projectOrder
         expandOverrides = stored.expandOverrides
         openSections = stored.openSections
+        boardViewports = stored.boardViewports ?? [:]
     }
 
     /// Append any project not seen before; everyone else keeps their place.
@@ -60,9 +63,11 @@ public final class SidebarState {
     public func prune(keeping paths: Set<String>) {
         let order = projectOrder.filter { paths.contains($0) }
         let overrides = expandOverrides.filter { paths.contains($0.key) }
-        guard order != projectOrder || overrides != expandOverrides else { return }
+        let viewports = boardViewports.filter { paths.contains($0.key) }
+        guard order != projectOrder || overrides != expandOverrides || viewports != boardViewports else { return }
         projectOrder = order
         expandOverrides = overrides
+        boardViewports = viewports
         save()
     }
 
@@ -112,11 +117,22 @@ public final class SidebarState {
     }
 
     private func save() {
-        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections)
+        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections, boardViewports: boardViewports.isEmpty ? nil : boardViewports)
         do {
             defaults.set(try JSONEncoder().encode(stored), forKey: Self.key)
         } catch {
             NSLog("[linkC] sidebar state could not be saved — %@", String(describing: error))
         }
+    }
+
+    /// Where this project's Board was last looked at. Personal, kept on this Mac only.
+    public func boardViewport(for path: String) -> BoardViewport? {
+        boardViewports[path]
+    }
+
+    public func setBoardViewport(_ viewport: BoardViewport, for path: String) {
+        guard boardViewports[path] != viewport else { return }
+        boardViewports[path] = viewport
+        save()
     }
 }

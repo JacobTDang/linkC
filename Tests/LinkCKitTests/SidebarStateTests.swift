@@ -106,4 +106,16 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(state.projectOrder, [])
         XCTAssertEqual(state.expandOverrides, [:])
     }
+
+    func testABoardViewportIsRememberedPerProjectAndPruned() {
+        let state = SidebarState(defaults: defaults)
+        XCTAssertNil(state.boardViewport(for: "/p"))
+        let viewport = BoardViewport(originX: 12, originY: -40, zoom: 1.5)
+        state.setBoardViewport(viewport, for: "/p")
+        XCTAssertEqual(state.boardViewport(for: "/p"), viewport)
+        XCTAssertNil(state.boardViewport(for: "/other"))
+        XCTAssertEqual(SidebarState(defaults: defaults).boardViewport(for: "/p"), viewport, "it survives a relaunch")
+        state.prune(keeping: ["/other"])
+        XCTAssertNil(state.boardViewport(for: "/p"))
+    }
 }
