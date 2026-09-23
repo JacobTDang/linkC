@@ -231,7 +231,7 @@ public final class HookServer: @unchecked Sendable {
                 onStatusLine?(reading)
             }
         } catch {
-            NSLog("linkC: a status line report could not be read — %@", String(describing: error))
+            NSLog("[linkC] a status line report could not be read — %@", String(describing: error))
         }
     }
 

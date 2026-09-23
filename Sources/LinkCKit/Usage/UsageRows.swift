@@ -10,7 +10,11 @@ public struct UsageRow: Equatable, Sendable, Identifiable {
     public let isCoral: Bool
     /// The reading may no longer be true: the row dims and can never be coral.
     public let isStale: Bool
-    /// The hover text: the other window, the plan, and how old the reading is.
+    /// The hover text. For most rows: an optional notice (e.g. "window has since reset…"), the
+    /// other window's figure, the plan, and how old the reading is — whichever apply. A
+    /// detector-cap row (a limit linkC caught in the terminal, not a published reading) instead
+    /// gives the cap's reason, when it was seen, and notes that the retry is linkC's own wait,
+    /// not the provider's reset.
     public let help: String
 
     public init(agent: AgentKind, text: String, isCoral: Bool, isStale: Bool, help: String) {

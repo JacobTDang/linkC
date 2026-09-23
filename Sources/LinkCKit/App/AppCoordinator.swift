@@ -56,7 +56,9 @@ public final class AppCoordinator {
     /// server — no other local process can spoof session state at the loopback port.
     let hookToken = UUID().uuidString  // internal: tests need to send it
     /// Claude's newest rate-limit reading, from any linkC-launched session's status line. In
-    /// memory only: after a relaunch the Usage row waits for the next report.
+    /// memory only: relaunching a session leaves it alone, since this instance lives on
+    /// regardless — only restarting linkC itself clears it, and the Usage row then waits for
+    /// the next report.
     private var claudeRateLimits: AgentUsage?
     /// Whether the latest Claude launch found a status line of the user's own, so linkC added none.
     private var claudeStatusLineIsUsers = false
