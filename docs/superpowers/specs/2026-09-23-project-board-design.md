@@ -228,7 +228,7 @@ Local preferences — the viewport per project — live beside the sidebar's, ne
 
 ## Decisions made while writing this
 
-1. **Notes and components have fixed sizes** (176 × 120 and 152 × 56), so collisions never depend on measuring text; a long note clamps on the canvas and shows in full when selected. Texts store their measured width.
+1. **Notes and components have fixed sizes** (176 × 120 and 152 × 56), so collisions never depend on measuring text; a long note clamps on the canvas and shows in full on hover and when opened for editing — it never grows in place, since that would break the collision rules. Texts store their measured width.
 2. **Deleting a frame keeps its contents.** Losing boxes because their container went would be a surprise.
 3. **The viewport is personal**, kept on this Mac, so opening a board never produces a diff.
 4. **Version 1 is upgraded on the first edit**, not on open, which keeps the "no write without an edit" rule intact.
