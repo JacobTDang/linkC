@@ -138,8 +138,11 @@ public enum UsageRows {
     /// nil when no window carries a percentage.
     private static func windowRow(agent: AgentKind, usage: AgentUsage, now: Date) -> WindowRow? {
         // The figure is the 5-hour window when there is one — the window that usually bites
-        // first — else whatever window the reading has.
-        guard let figureWindow = usage.windows.first(where: { $0.label == "5h" }) ?? usage.windows.first,
+        // first — else whatever window the reading has. Only windows that actually carry a
+        // percentage are candidates: a 5-hour window with none must not bump a weekly window
+        // that has one.
+        let windowsWithPercent = usage.windows.filter { $0.usedPercent != nil }
+        guard let figureWindow = windowsWithPercent.first(where: { $0.label == "5h" }) ?? windowsWithPercent.first,
               let percent = figureWindow.usedPercent
         else { return nil }
 
@@ -150,7 +153,8 @@ public enum UsageRows {
             readingIsFresh && window.usedPercent != nil && !(window.resetsAt.map { $0 <= now } ?? false)
         }
         func isFull(_ window: UsageWindow) -> Bool {
-            isLive(window) && roundedPercent(window.usedPercent!) >= 100
+            guard isLive(window), let usedPercent = window.usedPercent else { return false }
+            return roundedPercent(usedPercent) >= 100
         }
         let liveFigurePercent = isLive(figureWindow) ? roundedPercent(percent) : nil
 

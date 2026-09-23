@@ -83,6 +83,20 @@ final class UsageRowsTests: XCTestCase {
         XCTAssertEqual(result.headline, "22%")
     }
 
+    func testAFiveHourOnlyReadingWithNoWeeklyWindowSaysTheSessionLimitIsHit() {
+        let result = build(codex: reading(percent: 100, resetsIn: 7200, weekPercent: nil))
+        XCTAssertEqual(row(result, .codex)?.text, "session limit hit · resets 2h")
+        XCTAssertEqual(row(result, .codex)?.isCoral, true)
+        XCTAssertEqual(result.headline, "limit hit")
+    }
+
+    func testAWeeklyOnlyReadingWithNoFiveHourWindowSaysTheWeeklyLimitIsHit() {
+        let result = build(codex: reading(percent: nil, weekPercent: 100, weekResetsIn: 3 * 86_400))
+        XCTAssertEqual(row(result, .codex)?.text, "weekly limit hit · resets 3d")
+        XCTAssertEqual(row(result, .codex)?.isCoral, true)
+        XCTAssertEqual(result.headline, "limit hit")
+    }
+
     func testAFullFiveHourWindowSaysTheSessionLimitIsHit() {
         let result = build(claude: reading(.claude, percent: 100, resetsIn: 7200, plan: nil))
         XCTAssertEqual(row(result, .claude)?.text, "session limit hit · resets 2h")
@@ -179,6 +193,21 @@ final class UsageRowsTests: XCTestCase {
 
     func testAReadingWithNoFiveHourWindowUsesTheWindowItHas() {
         let result = build(codex: reading(percent: nil, weekPercent: 55))
+        XCTAssertEqual(row(result, .codex)?.text, "55% · resets 1d")
+        XCTAssertEqual(row(result, .codex)?.help, "pro · read 2m ago")
+    }
+
+    func testAFiveHourWindowWithNoPercentageFallsBackToTheWindowThatHasOne() {
+        let usage = AgentUsage(
+            agent: .codex,
+            windows: [
+                UsageWindow(label: "5h", usedPercent: nil, tokens: nil, resetsAt: now.addingTimeInterval(3600)),
+                UsageWindow(label: "7d", usedPercent: 55, tokens: nil, resetsAt: now.addingTimeInterval(86_400)),
+            ],
+            planType: "pro",
+            observedAt: now.addingTimeInterval(-120),
+            unavailableReason: nil)
+        let result = build(codex: usage)
         XCTAssertEqual(row(result, .codex)?.text, "55% · resets 1d")
         XCTAssertEqual(row(result, .codex)?.help, "pro · read 2m ago")
     }
