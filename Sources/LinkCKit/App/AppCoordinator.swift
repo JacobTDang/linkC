@@ -777,8 +777,16 @@ public final class AppCoordinator {
         restorableStore.set(manifest.entries.filter { !liveIds.contains($0.linkcId) })
     }
 
+    /// Invoked with a session id right after `focusSession` moves the selection onto it —
+    /// whether that came from a click (`AppModel.focus`) or from clicking a macOS notification
+    /// (`notifications.onActivate` calls `focusSession` directly, bypassing `AppModel.focus`).
+    /// Lets the UI layer react to any focus of a session the same way, e.g. dropping an open
+    /// Board or screen that would otherwise stay on top of the newly-selected session.
+    public var onSessionFocused: ((String) -> Void)?
+
     public func focusSession(_ id: String) {
         terminals.select(id)
+        onSessionFocused?(id)
         // Opening a worker's terminal makes it the user's: they are using it now.
         store.adopt(id: id)
         manifest.markAdopted(linkcId: id)

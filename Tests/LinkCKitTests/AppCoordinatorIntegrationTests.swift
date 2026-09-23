@@ -997,6 +997,26 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.store.session(id: "A1")?.state.bucket, .idle)
     }
 
+    /// A notification click calls `focusSession` directly, never `AppModel.focus` — the only
+    /// place that clears an open Board/screen. `onSessionFocused` is the seam that lets the UI
+    /// layer react to a focus however it happened, so a notification click can't leave a stale
+    /// screen on top of the session it just switched to.
+    func testFocusSessionInvokesOnSessionFocusedCallback() throws {
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+
+        _ = coordinator.store.create(cwd: "/tmp", title: "s", id: "S1")
+        _ = coordinator.terminals.makeSession(id: "S1", cwd: "/tmp", title: "s", agentKind: .claude)
+
+        var focused: [String] = []
+        coordinator.onSessionFocused = { focused.append($0) }
+
+        coordinator.focusSession("S1")
+
+        XCTAssertEqual(focused, ["S1"], "focusSession must call onSessionFocused with the focused id")
+    }
+
     func testPersistentChildProcessesDoNotKeepSessionStuckInWorking() throws {
         let sink = RecordingSink()
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-idle-\(UUID().uuidString)")

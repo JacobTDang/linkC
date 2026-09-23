@@ -158,7 +158,7 @@ final class TabKeys {
     func start() {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window?.isKeyWindow == true,
+            guard let self, event.window?.isKeyWindow == true, !BoardInput.isEditingText,
                   let press = BoardInput.press(from: event),
                   let command = TabKeyMap.command(for: press) else { return event }
             self.onCommand(command)

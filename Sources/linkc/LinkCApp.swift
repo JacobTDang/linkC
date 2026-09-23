@@ -201,6 +201,13 @@ final class AppModel {
                     return self.panelVisible && NSApp.isActive && terminals.selectedId == id
                 }
             )
+            // A notification click reaches `focusSession` directly — never through `focus(_:)`
+            // below — so this is the one place both paths funnel through: whichever one focused
+            // a session, drop whatever was covering it.
+            coordinator.onSessionFocused = { [weak self] _ in
+                self?.boardProject = nil
+                self?.activeScreen = nil
+            }
             try coordinator.start()
             coordinator.usageTracker = usage
             self.coordinator = coordinator
@@ -911,10 +918,10 @@ final class AppModel {
 
     /// Focusing a session always wins over an open screen. Select first, then close the screen:
     /// the session being left is judged by what was really on screen (a screen covered it).
+    /// `focusSession`'s `onSessionFocused` callback (wired in `start()`) does the clearing, so
+    /// a notification click gets the same treatment without going through this method at all.
     func focus(_ id: String) {
         coordinator?.focusSession(id)
-        boardProject = nil
-        activeScreen = nil
     }
     func stop(_ id: String) { coordinator?.stopSession(id) }
 
