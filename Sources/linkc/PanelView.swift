@@ -33,7 +33,7 @@ struct PanelView: View {
                                         .frame(width: 1)
                                     RightPane(model: model, showsBack: false)
                                 }
-                            } else if model.selectedId != nil || model.activeScreen != nil {
+                            } else if model.selectedId != nil || model.activeScreen != nil || model.boardProject != nil {
                                 RightPane(model: model, showsBack: true)
                                     .transition(.opacity)
                             } else {
@@ -66,10 +66,11 @@ struct PanelView: View {
 
 /// One Equatable discriminator for the pane-swap animation.
 private enum Pane: Equatable {
-    case terminal, screen(PanelScreen), launcher
+    case terminal, board(String), screen(PanelScreen), launcher
 
     @MainActor init(_ model: AppModel) {
         if let screen = model.activeScreen { self = .screen(screen) }
+        else if let board = model.boardProject { self = .board(board) }
         else if model.selectedId != nil { self = .terminal }
         else { self = .launcher }
     }
@@ -96,9 +97,17 @@ private struct RightPane: View {
                     ScreenHost(model: model, screen: screen)
                 }
                 .transition(.opacity)
-            } else if model.selectedId != nil {
-                TerminalPane(model: model, onBack: showsBack ? { model.goBack() } : nil)
-                    .transition(.opacity)
+            } else if model.currentProject != nil {
+                VStack(spacing: 0) {
+                    ProjectTabStrip(model: model, onBack: showsBack ? { model.goBack() } : nil)
+                    if let board = model.boardProject {
+                        BoardPane(model: model, path: board)
+                            .id(board)
+                    } else {
+                        TerminalPane(model: model, onBack: nil)
+                    }
+                }
+                .transition(.opacity)
             } else {
                 EmptyStateView(model: model)
                     .transition(.opacity)

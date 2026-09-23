@@ -128,6 +128,7 @@ final class AppModel {
         if let selectedId {
             UserDefaults.standard.set(selectedId, forKey: "LinkCLastSelectedSessionId")
         }
+        UserDefaults.standard.set(boardProject, forKey: "LinkCLastBoardProject")
     }
 
     /// Live usage state: per-session context/tokens/cost, plus the global plan window.
@@ -218,6 +219,10 @@ final class AppModel {
             if let lastId = UserDefaults.standard.string(forKey: "LinkCLastSelectedSessionId"),
                terminals.sessions.contains(where: { $0.id == lastId }) {
                 terminals.select(lastId)
+            }
+            if let path = UserDefaults.standard.string(forKey: "LinkCLastBoardProject"),
+               FileManager.default.fileExists(atPath: path) {
+                showBoard(path)
             }
             if coordinator.terminals.selectedId != nil {
                 self.activeScreen = nil
@@ -596,6 +601,55 @@ final class AppModel {
         return board
     }
 
+    /// The project whose Board is showing, or nil when a terminal — or nothing — is.
+    private(set) var boardProject: String?
+
+    /// The project the tab strip belongs to: the Board's, or the open session's or terminal's folder.
+    var currentProject: String? {
+        if let boardProject { return boardProject }
+        guard let id = selectedId else { return nil }
+        if let session = sessions.first(where: { $0.id == id }) { return ProjectTabs.standardized(session.cwd) }
+        if let shell = shellRows.first(where: { $0.id == id }) { return ProjectTabs.standardized(shell.cwd) }
+        return nil
+    }
+
+    var projectTabs: [ProjectTab] {
+        guard let project = currentProject else { return [] }
+        return ProjectTabs.tabs(project: project, sessions: sessions, shells: shellRows, titles: sessionTitles)
+    }
+
+    /// The tab showing: the project's Board, or the selected session or terminal.
+    var selectedTabID: String? {
+        if let boardProject { return ProjectTabs.boardID(boardProject) }
+        return selectedId
+    }
+
+    func showBoard(_ path: String) {
+        boardProject = ProjectTabs.standardized(path)
+        activeScreen = nil
+    }
+
+    func select(_ tab: ProjectTab) {
+        switch tab.kind {
+        case .board:
+            if let project = currentProject { showBoard(project) }
+        case .agent, .terminal:
+            focus(tab.id)
+        }
+    }
+
+    /// Stops the tab's session. When that leaves nothing showing, the project's Board shows, so
+    /// the strip does not vanish from under the pointer.
+    func close(_ tab: ProjectTab) {
+        let project = currentProject
+        switch tab.kind {
+        case .board: return
+        case .agent: stop(tab.id)
+        case .terminal: stopShell(tab.id)
+        }
+        if selectedId == nil, boardProject == nil, let project { showBoard(project) }
+    }
+
     /// Keep the SERVERS section honest while the panel shows: docker state changes
     /// out-of-band, so poll gently — and only when docker exists at all.
     private func refreshServers() {
@@ -847,6 +901,9 @@ final class AppModel {
     func goBack() {
         if activeScreen != nil {
             activeScreen = nil
+        } else if boardProject != nil {
+            boardProject = nil
+            coordinator?.terminals.deselect()
         } else {
             coordinator?.terminals.deselect()
         }
@@ -856,6 +913,7 @@ final class AppModel {
     /// the session being left is judged by what was really on screen (a screen covered it).
     func focus(_ id: String) {
         coordinator?.focusSession(id)
+        boardProject = nil
         activeScreen = nil
     }
     func stop(_ id: String) { coordinator?.stopSession(id) }
