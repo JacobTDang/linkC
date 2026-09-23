@@ -20,7 +20,7 @@ A Chrome-style strip across the top of the right pane, above the terminal, for t
 
 Behaviour:
 
-- The sidebar's project row still expands and collapses. Under an expanded project, a **Board** row comes first, above its sessions. Picking it, or any session, shows that project's strip with that tab selected.
+- The sidebar's project row still expands and collapses. Picking any of its sessions shows that project's strip with that tab selected; the Board is its first tab. (A sidebar Board row shipped first and was removed — see `2026-09-23-panel-polish-design.md`.)
 - Whatever was showing last — a session or a project's Board — is what linkC reopens after a relaunch, extending how it already restores the last selected session.
 - **✕ stops that session**, through the same path as the sidebar's stop. If the session is mid-turn (working), a confirmation asks first; an idle one closes at once. The Board tab has no ✕.
 - **Overflow:** tabs shrink toward a minimum width, then the strip scrolls sideways. The Board tab keeps its width.
