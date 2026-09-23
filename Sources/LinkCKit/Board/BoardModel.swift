@@ -92,13 +92,25 @@ public final class BoardModel {
     /// disk are exactly what they were last time — reappearing after a tab switch, say — the
     /// map, undo, redo and selection are left exactly as they are; a real change on disk still
     /// reloads and clears them, as always. That shortcut only ever applies from a healthy,
-    /// unlocked board: `.failed` or `changedOnDisk` always does the full read below, so "Try
+    /// unlocked board: `.failed` or `changedOnDisk` always reads in full, so "Try
     /// again" and "Reload" can never find the bytes unchanged and leave the board stuck.
     public func load() {
         guard !hasUnwrittenEdits else { return }
+        read(keepingAnUnchangedMap: true)
+    }
+
+    /// Drops any unwritten edits and reads the file again — the way out of `changedOnDisk` and
+    /// of a failed read. Always a full read, never the unchanged-bytes shortcut.
+    public func reload() {
+        generation += 1
+        hasUnwrittenEdits = false
+        read(keepingAnUnchangedMap: false)
+    }
+
+    private func read(keepingAnUnchangedMap: Bool) {
         let canKeepEverything: Bool
         switch state {
-        case .loaded, .empty: canKeepEverything = !changedOnDisk
+        case .loaded, .empty: canKeepEverything = keepingAnUnchangedMap && !changedOnDisk
         case .failed: canKeepEverything = false
         }
         do {
@@ -122,13 +134,6 @@ public final class BoardModel {
         redoStack.removeAll()
         selection = []
         mapLoaded()
-    }
-
-    /// Drops any unwritten edits and reads the file again — the way out of `changedOnDisk`.
-    public func reload() {
-        generation += 1
-        hasUnwrittenEdits = false
-        load()
     }
 
     /// Starts a map on a project with none. Writes nothing: the first edit creates the file.

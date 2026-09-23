@@ -235,6 +235,17 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.map.system, "mine", "the unwritten edit reload should drop must be gone")
     }
 
+    func testReloadOnAHealthyBoardDropsTheUnwrittenEdit() throws {
+        let board = fresh()
+        board.setSystem("mine")
+        board.saveNow()
+        board.setSystem("not yet written")
+
+        board.reload()
+        XCTAssertEqual(board.map.system, "mine", "reload drops what was never written, even with the file unchanged")
+        XCTAssertFalse(board.canUndo, "reload is a fresh read, so nothing is left to undo")
+    }
+
     // MARK: Undo
 
     func testUndoAndRedoWalkTheEdits() {
