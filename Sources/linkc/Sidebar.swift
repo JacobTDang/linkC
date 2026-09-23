@@ -88,6 +88,7 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
                         .frame(width: 16)
                     if let activity {
                         ActivityLabel(text: activity.text, isWorking: activity.isWorking, size: 12)
+                            .foregroundStyle(Theme.textSecondary)
                     } else {
                         Text(title)
                             .font(.system(size: 13))
@@ -360,6 +361,7 @@ private struct SessionRow: View {
             action: { model.focus(row.id) }
         ) {
             AgentLogoView(agent: row.agentKind)
+                .foregroundStyle(Theme.textPrimary)
         } trailing: { hovering in
             HStack(spacing: 6) {
                 Text(row.status.text)
@@ -490,7 +492,9 @@ private struct EarlierSessionRow: View {
             help: "Restore \(session.agentKind.displayName) in \((session.cwd as NSString).abbreviatingWithTildeInPath)",
             action: { model.restore(session) }
         ) {
-            AgentLogoView(agent: session.agentKind).opacity(0.6)
+            AgentLogoView(agent: session.agentKind)
+                .foregroundStyle(Theme.textPrimary)
+                .opacity(0.6)
         } trailing: { hovering in
             HStack(spacing: 6) {
                 if let ended = session.endedLabel(now: Date()) {
@@ -578,7 +582,9 @@ private struct UsageRowView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            AgentLogoView(agent: row.agent).opacity(row.isStale ? 0.5 : 1)
+            AgentLogoView(agent: row.agent)
+                .foregroundStyle(Theme.textPrimary)
+                .opacity(row.isStale ? 0.5 : 1)
             Text(row.agent.shortName)
                 .font(.system(size: 12))
                 .foregroundStyle(row.isStale ? Theme.textTertiary : Theme.textSecondary)

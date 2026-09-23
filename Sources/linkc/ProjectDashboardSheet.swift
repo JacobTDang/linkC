@@ -108,6 +108,7 @@ struct ProjectDashboardSheet: View {
                     ForEach(live) { dossier in
                         HStack(spacing: 8) {
                             AgentLogoView(agent: dossier.agent)
+                                .foregroundStyle(Theme.textPrimary)
                             Text(dossier.agent.shortName)
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(Theme.textPrimary)

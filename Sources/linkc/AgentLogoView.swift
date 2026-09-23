@@ -17,7 +17,6 @@ struct AgentLogoView: View {
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fit)
-                    .foregroundStyle(Theme.textPrimary)
             } else {
                 Image(systemName: "terminal")
                     .font(.system(size: size * 0.75))

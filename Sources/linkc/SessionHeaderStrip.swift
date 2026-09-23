@@ -21,6 +21,7 @@ struct SessionHeaderStrip: View {
                     ChromeButton(systemName: "chevron.left", help: "Back", action: onBack)
                 }
                 AgentLogoView(agent: session.agentKind)
+                    .foregroundStyle(Theme.textPrimary)
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.textPrimary)
@@ -70,6 +71,7 @@ struct SessionHeaderStrip: View {
                 if let activity = model.currentActivity(session), !activity.isEmpty {
                     HStack(spacing: 6) {
                         ActivityLabel(text: activity, isWorking: session.state == .working)
+                            .foregroundStyle(Theme.textSecondary)
                         Spacer(minLength: 0)
                     }
                 }
