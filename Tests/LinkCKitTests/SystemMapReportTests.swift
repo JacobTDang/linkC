@@ -53,6 +53,23 @@ final class SystemMapReportTests: XCTestCase {
         XCTAssertTrue(SystemMapReport.markdown(for: .empty, statuses: [:]).isEmpty)
     }
 
+    /// This tool has no discovery of its own — a context-read runs no processes — so a reader
+    /// must never mistake silence for "not running": the section must say, once, that it is not
+    /// checking, and where checked status actually lives.
+    func testTheSectionSaysStatusIsNotCheckedHere() throws {
+        let text = SystemMapReport.markdown(for: map, statuses: [:])
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        XCTAssertEqual(lines.first, "## System", text)
+
+        let notice = try XCTUnwrap(lines.dropFirst().first { !$0.isEmpty })
+        XCTAssertTrue(notice.lowercased().contains("not checked"), String(notice))
+        XCTAssertTrue(notice.lowercased().contains("board"), String(notice))
+
+        // Exactly one notice — not one per component.
+        let mentions = lines.filter { $0.lowercased().contains("not checked") }
+        XCTAssertEqual(mentions.count, 1, text)
+    }
+
     // MARK: - Text from the map cannot introduce structure
 
     /// `system-map.json` is a file in a repository, which may be a cloned one: a name is not

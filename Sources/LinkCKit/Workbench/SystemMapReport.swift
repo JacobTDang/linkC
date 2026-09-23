@@ -6,6 +6,10 @@ public enum SystemMapReport {
     public static func markdown(for map: SystemMap, statuses: [String: ComponentStatus]) -> String {
         guard !map.components.isEmpty else { return "" }
         var text = "## System\n"
+        // This tool has no discovery of its own — reading a project's context runs no
+        // processes — so silence here must never be mistaken for "not running". Say once, up
+        // front, that status is not checked on this path, and where it actually is.
+        text += "_Status here is not checked — this is only what the file says. linkC's board is what shows what is actually running._\n"
         for component in map.components {
             var parts: [String] = [sanitized(component.kind.raw)]
             if let reachedBy = component.reachedBy, !reachedBy.isEmpty { parts.append("reached by \(sanitized(reachedBy))") }

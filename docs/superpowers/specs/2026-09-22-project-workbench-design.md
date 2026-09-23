@@ -91,7 +91,7 @@ Discovery runs when the dashboard sheet opens and when the band is expanded, reu
 ## What agents get
 
 - **Any agent, anywhere:** `cat system-map.json`. It is committed, so it is there on a server, in CI, and in a fresh clone, with no linkC running.
-- **linkC-hosted agents:** the existing `linkc_get_project_context` MCP tool gains a `system` section carrying the components as the file holds them, plus each one's live status when linkC knows it.
+- **linkC-hosted agents:** the existing `linkc_get_project_context` MCP tool gains a `System` section carrying the components as the file holds them. A context read runs no processes, so it checks no live status — the section says so once, under its heading, and points to linkC's board for what is actually running.
 
 Agents read the map; they do not write it. Architecture changes by your hand, not as a side effect of a task.
 
