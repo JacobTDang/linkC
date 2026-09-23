@@ -171,8 +171,6 @@ public struct BoardMap: Equatable, Sendable {
     public var frames: [BoardFrame] = []
     public var notes: [BoardNote] = []
     public var texts: [BoardText] = []
-    /// 1 when this map was upgraded from a version-1 file, else 2. Written as 2 either way.
-    public internal(set) var sourceVersion: Int = 2
     /// Top-level keys linkC does not know.
     var extras: Data?
     /// Keys inside `layout` linkC does not know.
@@ -353,7 +351,6 @@ public struct BoardMap: Equatable, Sendable {
         var map = BoardMap(system: try string(root, "system", context: "system-map.json"))
         map.components = components
         map.notes = (try stringArray(root, "notes", context: "system-map.json") ?? []).map { BoardNote(text: $0) }
-        map.sourceVersion = 1
         map.extras = try extras(of: root, excluding: versionOneRootKeys, context: "system-map.json")
         return map
     }

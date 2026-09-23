@@ -32,7 +32,6 @@ final class BoardMapTests: XCTestCase {
 
     func testAVersionTwoFileDecodes() throws {
         let map = try BoardMap.decode(june)
-        XCTAssertEqual(map.sourceVersion, 2)
         XCTAssertEqual(map.system, "June — audio journaling")
         XCTAssertEqual(map.frames.map(\.label), ["Local docker", "Oracle box"])
         XCTAssertEqual(map.frames.first?.rect, BoardRect(x: 40, y: 96, w: 344, h: 200))
@@ -237,7 +236,6 @@ final class BoardMapTests: XCTestCase {
           ] }
         """.utf8)
         let map = try BoardMap.decode(v1)
-        XCTAssertEqual(map.sourceVersion, 1)
         XCTAssertTrue(map.components.allSatisfy { $0.place == BoardMap.notPlaced })
         let postgres = try XCTUnwrap(map.components.first { $0.name == "postgres" })
         XCTAssertEqual(postgres.at, BoardPoint(x: 160, y: 128), "cells become points: x × 160, y × 64")

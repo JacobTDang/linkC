@@ -75,7 +75,8 @@ struct ComponentBox: View {
     }
 }
 
-/// A sticky note: a long note is cut short here and shown in full when selected.
+/// A sticky note: clamped to 7 lines on the card, since it never grows in place; a long note
+/// shows in full only as a tooltip, on hover.
 struct NoteCard: View {
     let note: BoardNote
     let isSelected: Bool
