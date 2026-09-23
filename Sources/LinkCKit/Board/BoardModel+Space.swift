@@ -26,6 +26,15 @@ extension BoardModel {
             let frames = elements.compactMap { element -> String? in
                 if case .frame(let label) = element { return label } else { return nil }
             }.sorted()
+            // Every component, note and text in this same move — whether a frame ends up
+            // carrying it or it stays loose — must not act as an obstacle at its old spot while
+            // a frame in the same move settles; the same rule I3 applies among loose elements.
+            let movingContent: Set<Element> = Set(elements.filter { element in
+                switch element {
+                case .component, .note, .text: return true
+                case .frame, .arrow: return false
+                }
+            })
             var carried: Set<Element> = []
             var changed = false
             // Every frame in this same move is left out of the obstacles up front — checking it
@@ -46,7 +55,7 @@ extension BoardModel {
                 let landed = BoardGeometry.frameDrop(
                     rect.offsetBy(dx: delta.x, dy: delta.y).snapped,
                     otherFrames: untouchedFrames + settledFrames,
-                    foreignElements: Self.elementRects(map, excluding: riders))
+                    foreignElements: Self.elementRects(map, excluding: riders.union(movingContent)))
                 settledFrames.append(landed)
                 let dx = landed.x - rect.x
                 let dy = landed.y - rect.y

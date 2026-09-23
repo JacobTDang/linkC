@@ -96,6 +96,18 @@ final class BoardModelSpaceTests: XCTestCase {
         XCTAssertEqual(after.x - before.x, 96, "the frame carries its own component once, not twice")
     }
 
+    /// R5: a frame moved together with a loose box beside it (not carried — outside the frame)
+    /// must not dodge that box's *old* spot, the same rule I3 applies among loose elements —
+    /// the box is moving too, in this same move.
+    func testMovingAFrameWithALooseBoxBesideItDoesNotDodgeTheBoxsOldSpot() throws {
+        let board = fresh()
+        let label = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 200, h: 200)))
+        let box = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 200, y: 0)))
+        board.move([.frame(label), .component(box)], by: BoardPoint(x: 200, y: 0))
+        let frameRect = try XCTUnwrap(board.map.frames.first { $0.label == label }?.rect)
+        XCTAssertEqual(frameRect.origin, BoardPoint(x: 200, y: 0), "the frame must not dodge the box's old spot since the box is moving too")
+    }
+
     /// Two boxes moved together must keep their arrangement — each is checked against the
     /// other's *landing* spot, never against where it used to be before this same move.
     func testMovingTwoBoxesTogetherKeepsTheirArrangement() throws {
