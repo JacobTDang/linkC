@@ -12,5 +12,8 @@ struct WindowDragHandle: NSViewRepresentable {
         override func mouseDown(with event: NSEvent) {
             window?.performDrag(with: event)
         }
+
+        // A real title bar drags on the very first click, even while another app is frontmost.
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     }
 }

@@ -197,7 +197,7 @@ private struct BrandRow: View {
         .padding(.trailing, 10)
         .padding(.top, 10)
         .padding(.bottom, 6)
-        .background(WindowDragHandle())
+        .background(WindowDragHandle().ignoresSafeArea(edges: .top))
     }
 }
 

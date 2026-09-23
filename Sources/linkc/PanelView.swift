@@ -96,7 +96,9 @@ private struct RightPane: View {
                     }
                     ScreenHost(model: model, screen: screen)
                 }
-                .background(alignment: .top) { WindowDragHandle().frame(height: 36) }
+                .background(alignment: .top) {
+                    WindowDragHandle().ignoresSafeArea(edges: .top).frame(height: 36)
+                }
                 .transition(.opacity)
             } else if model.currentProject != nil {
                 VStack(spacing: 0) {
@@ -111,7 +113,6 @@ private struct RightPane: View {
                 .transition(.opacity)
             } else {
                 EmptyStateView(model: model)
-                    .background(alignment: .top) { WindowDragHandle().frame(height: 36) }
                     .transition(.opacity)
             }
         }
@@ -353,12 +354,18 @@ private struct EmptyStateView: View {
     let model: AppModel
 
     var body: some View {
-        // Centered while it fits; a short panel scrolls rather than clipping the chips.
+        // Centered while it fits; a short panel scrolls rather than clipping the chips. The
+        // drag handle sits on the scrolled content itself, not the ScrollView's background: a
+        // click in the top band would otherwise land on the scroll view's clip view and never
+        // reach it.
         GeometryReader { geo in
             ScrollView(.vertical, showsIndicators: false) {
                 hero
                     .padding(24)
                     .frame(maxWidth: .infinity, minHeight: geo.size.height)
+                    .background(alignment: .top) {
+                        WindowDragHandle().ignoresSafeArea(edges: .top).frame(height: 36)
+                    }
             }
         }
         .overlay(alignment: .bottomTrailing) {

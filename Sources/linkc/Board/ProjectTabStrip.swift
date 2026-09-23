@@ -69,7 +69,7 @@ struct ProjectTabStrip: View {
         }
         .padding(.horizontal, 10)
         .padding(.top, 8)
-        .background(WindowDragHandle())
+        .background(WindowDragHandle().ignoresSafeArea(edges: .top))
         .background(alignment: .bottom) {
             Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
         }
