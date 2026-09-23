@@ -19,7 +19,8 @@ After this change, the window moves only when dragged by its top:
 - in the right pane, when no strip shows (the launcher and the other screens), its top row.
 
 Edges and corners still resize. A drag anywhere else never moves the window: the canvas, the
-terminal, lists, cards, and text. Text becomes selectable with a plain drag everywhere.
+terminal, lists, cards, and text. Text becomes selectable with a plain drag wherever it was
+selectable before.
 
 The workaround that switched body-dragging off while the pointer was over selectable text
 (`WindowDragGate`, `setWindowDraggable`, `.selectableText()`) no longer has a job and is removed.

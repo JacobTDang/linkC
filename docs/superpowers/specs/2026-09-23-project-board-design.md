@@ -232,7 +232,7 @@ Local preferences — the viewport per project — live beside the sidebar's, ne
 2. **Deleting a frame keeps its contents.** Losing boxes because their container went would be a surprise.
 3. **The viewport is personal**, kept on this Mac, so opening a board never produces a diff.
 4. **Version 1 is upgraded on the first edit**, not on open, which keeps the "no write without an edit" rule intact.
-5. **A Board row in the sidebar** is how a project's Board is reached, because the project row itself only expands and collapses.
+5. **The Board is the strip's first tab.** The project row itself only expands and collapses; the Board is reached by opening one of the project's sessions and selecting its Board tab.
 
 ## Known gaps
 
