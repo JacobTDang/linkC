@@ -378,12 +378,10 @@ final class MCPServerTests: XCTestCase {
     }
 
     func testProjectContextIncludesTheSystemMapWhenTheProjectHasOne() throws {
-        let linkcDir = tempDir.appendingPathComponent(".linkc", isDirectory: true)
-        try FileManager.default.createDirectory(at: linkcDir, withIntermediateDirectories: true)
         let systemJSON = """
         {"version": 1, "components": [{"name": "redis", "kind": "cache"}]}
         """.data(using: .utf8)!
-        try systemJSON.write(to: linkcDir.appendingPathComponent("system.json"))
+        try systemJSON.write(to: tempDir.appendingPathComponent("system-map.json"))
 
         let text = try getProjectContext()
 
@@ -392,9 +390,7 @@ final class MCPServerTests: XCTestCase {
     }
 
     func testProjectContextSaysSoWhenTheSystemMapCannotBeRead() throws {
-        let linkcDir = tempDir.appendingPathComponent(".linkc", isDirectory: true)
-        try FileManager.default.createDirectory(at: linkcDir, withIntermediateDirectories: true)
-        try Data("{ not json".utf8).write(to: linkcDir.appendingPathComponent("system.json"))
+        try Data("{ not json".utf8).write(to: tempDir.appendingPathComponent("system-map.json"))
 
         let text = try getProjectContext()
 

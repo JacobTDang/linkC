@@ -239,8 +239,10 @@ final class WorkbenchModelTests: XCTestCase {
     /// stay open, not lock the way a failed read does.
     func testAFailedWriteStaysEditableAndSurfacesSeparatelyFromState() throws {
         let store = SystemMapStore(workspacePath: workspace.path)
-        // A file where the .linkc directory must go: creating the directory cannot succeed.
-        try Data().write(to: store.fileURL.deletingLastPathComponent())
+        // No file exists yet, so `load()` reads cleanly — only the write, into a directory with
+        // its write bit removed, is what must fail.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: workspace.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: workspace.path) }
 
         let model = makeModel(gate: Gate())
         model.load()
@@ -258,17 +260,17 @@ final class WorkbenchModelTests: XCTestCase {
 
     func testAWriteThatSucceedsClearsAPriorFailure() throws {
         let store = SystemMapStore(workspacePath: workspace.path)
-        try Data().write(to: store.fileURL.deletingLastPathComponent())
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: workspace.path)
 
         let model = makeModel(gate: Gate())
         model.load()
         model.startMap()
         model.add(SystemComponent(name: "redis", kind: .cache))
         model.saveNow()
-        XCTAssertNotNil(model.writeFailure, "the first write must fail while the directory is blocked")
+        XCTAssertNotNil(model.writeFailure, "the first write must fail while the directory is read-only")
 
         // Clear the obstruction and retry — the same edit, still only in memory, tries again.
-        try FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent())
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: workspace.path)
         model.saveNow()
 
         XCTAssertNil(model.writeFailure, "a write that lands clears the failure")

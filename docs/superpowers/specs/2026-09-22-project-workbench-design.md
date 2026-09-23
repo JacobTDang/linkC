@@ -13,7 +13,7 @@ The board is the face. The map is the point.
 
 ## The map file
 
-`.linkc/system.json` at the project root, committed. JSON, so Foundation parses it and linkC adds no dependency.
+`system-map.json` at the project root, committed. JSON, so Foundation parses it and linkC adds no dependency. It lives at the root rather than inside `.linkc/`, which every repo's `.gitignore` already excludes — a map kept there would never be committed, defeating the point of a file any agent, on any machine, can read.
 
 ```json
 {
@@ -76,7 +76,7 @@ Editing:
 - Edit: click a tile to change name, kind, `reached_by`, `runs`, `used_by`, intended.
 - Remove: a tile's context menu. Git is the undo.
 
-A project with no `.linkc/system.json` shows an empty band with one action: start a map. That first write is the only time linkC creates the file.
+A project with no `system-map.json` shows an empty band with one action: start a map. That first write is the only time linkC creates the file.
 
 ## Discovery and reconciliation
 
@@ -90,7 +90,7 @@ Discovery runs when the dashboard sheet opens and when the band is expanded, reu
 
 ## What agents get
 
-- **Any agent, anywhere:** `cat .linkc/system.json`. It is committed, so it is there on a server, in CI, and in a fresh clone, with no linkC running.
+- **Any agent, anywhere:** `cat system-map.json`. It is committed, so it is there on a server, in CI, and in a fresh clone, with no linkC running.
 - **linkC-hosted agents:** the existing `linkc_get_project_context` MCP tool gains a `system` section carrying the components as the file holds them, plus each one's live status when linkC knows it.
 
 Agents read the map; they do not write it. Architecture changes by your hand, not as a side effect of a task.

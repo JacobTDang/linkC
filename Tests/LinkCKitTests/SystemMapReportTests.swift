@@ -55,7 +55,7 @@ final class SystemMapReportTests: XCTestCase {
 
     // MARK: - Text from the map cannot introduce structure
 
-    /// `system.json` is a file in a repository, which may be a cloned one: a name is not
+    /// `system-map.json` is a file in a repository, which may be a cloned one: a name is not
     /// trusted input. An embedded newline must never split a component onto extra lines — that
     /// is how a name could forge a heading or start of a new bullet another model reads as real.
     func testANewlineInAFieldIsCollapsedToASpace() throws {

@@ -35,7 +35,7 @@ public struct ComponentKind: Equatable, Hashable, Sendable {
     public var isKnown: Bool { Self.known.contains(self) }
 }
 
-/// One part of a project's system, as `.linkc/system.json` describes it.
+/// One part of a project's system, as `system-map.json` describes it.
 public struct SystemComponent: Equatable, Sendable, Identifiable {
     public var id: String { name }
     /// Identity. Unique within a file, and what discovery is matched against.
@@ -71,7 +71,7 @@ public struct SystemComponent: Equatable, Sendable, Identifiable {
     }
 }
 
-/// A project's system map: the whole of `.linkc/system.json`.
+/// A project's system map: the whole of `system-map.json`.
 public struct SystemMap: Equatable, Sendable {
     public var version: Int
     public var components: [SystemComponent]
@@ -94,28 +94,28 @@ public struct SystemMap: Equatable, Sendable {
         do {
             object = try JSONSerialization.jsonObject(with: data)
         } catch {
-            throw LinkCError.parse("system.json is not JSON: \(error.localizedDescription)")
+            throw LinkCError.parse("system-map.json is not JSON: \(error.localizedDescription)")
         }
         guard let root = object as? [String: Any] else {
-            throw LinkCError.parse("system.json is not a JSON object")
+            throw LinkCError.parse("system-map.json is not a JSON object")
         }
         guard let rawComponents = root["components"] as? [[String: Any]] else {
-            throw LinkCError.parse("system.json has no components list")
+            throw LinkCError.parse("system-map.json has no components list")
         }
 
         var components: [SystemComponent] = []
         var seen: Set<String> = []
         for raw in rawComponents {
             guard let name = raw["name"] as? String, !name.isEmpty else {
-                throw LinkCError.parse("a component in system.json has no name")
+                throw LinkCError.parse("a component in system-map.json has no name")
             }
             let key = name.lowercased()
             guard !seen.contains(key) else {
-                throw LinkCError.parse("system.json names \"\(name)\" twice")
+                throw LinkCError.parse("system-map.json names \"\(name)\" twice")
             }
             seen.insert(key)
 
-            let context = "component \"\(name)\" in system.json"
+            let context = "component \"\(name)\" in system-map.json"
             var component = SystemComponent(
                 name: name,
                 kind: ComponentKind(try string(raw, "kind", context: context) ?? ComponentKind.service.raw),
@@ -132,7 +132,7 @@ public struct SystemMap: Equatable, Sendable {
         rootExtras.removeValue(forKey: "components")
         rootExtras.removeValue(forKey: "version")
         var map = SystemMap(
-            version: try int(root, "version", context: "system.json") ?? 1,
+            version: try int(root, "version", context: "system-map.json") ?? 1,
             components: components)
         map.extras = try? JSONSerialization.data(withJSONObject: rootExtras, options: [.sortedKeys])
         return map

@@ -27,7 +27,7 @@ public enum SystemMapReport {
         return text + "\n"
     }
 
-    /// A single field's worth of text taken straight from `system.json` — a file that may come
+    /// A single field's worth of text taken straight from `system-map.json` — a file that may come
     /// from a cloned repository, so it is not trusted input. It must never be able to introduce
     /// markdown structure into a report an agent reads as instructions: a newline could open a
     /// forged heading or bullet, and `**`/backticks could forge emphasis or a code span that

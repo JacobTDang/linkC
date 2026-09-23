@@ -1,15 +1,15 @@
 import Foundation
 
-/// Reads and writes a project's `.linkc/system.json`, beside the blackboard and handoff files
-/// linkC already keeps there. Values in, values out: no caching, no state.
+/// Reads and writes a project's `system-map.json`, at the project root rather than inside
+/// `.linkc/` — which every repo's `.gitignore` excludes, so a map kept there would never be
+/// committed, defeating a feature whose whole point is that any agent, on any machine, can read
+/// it. Values in, values out: no caching, no state.
 public struct SystemMapStore: Sendable {
     public let fileURL: URL
 
     public init(workspacePath: String) {
         let workspace = URL(fileURLWithPath: (workspacePath as NSString).standardizingPath, isDirectory: true)
-        fileURL = workspace
-            .appendingPathComponent(".linkc", isDirectory: true)
-            .appendingPathComponent("system.json")
+        fileURL = workspace.appendingPathComponent("system-map.json")
     }
 
     /// The project's map, or nil when it has none. Throws when a file exists but cannot be
@@ -27,9 +27,7 @@ public struct SystemMapStore: Sendable {
 
     public func save(_ map: SystemMap) throws {
         let data = try map.encoded()
-        let directory = fileURL.deletingLastPathComponent()
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try data.write(to: fileURL, options: .atomic)
         } catch {
             throw LinkCError.server("could not write \(fileURL.path): \(error.localizedDescription)")

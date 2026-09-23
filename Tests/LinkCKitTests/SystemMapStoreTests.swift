@@ -14,17 +14,22 @@ final class SystemMapStoreTests: XCTestCase {
         try? FileManager.default.removeItem(at: workspace)
     }
 
-    func testTheFileSitsBesideTheOtherProjectFiles() {
+    /// The file sits where git can actually track it. `.linkc/` is in every repo's
+    /// `.gitignore`, so a map kept there would never be committed — defeating a feature whose
+    /// whole point is that any agent, on any machine, can read it.
+    func testTheFileSitsAtTheProjectRootWhereGitCanTrackIt() {
         let store = SystemMapStore(workspacePath: workspace.path)
-        XCTAssertEqual(store.fileURL.lastPathComponent, "system.json")
-        XCTAssertEqual(store.fileURL.deletingLastPathComponent().lastPathComponent, ".linkc")
+        XCTAssertEqual(store.fileURL.lastPathComponent, "system-map.json")
+        XCTAssertEqual(
+            store.fileURL.deletingLastPathComponent().standardizedFileURL,
+            workspace.standardizedFileURL)
     }
 
     func testAProjectWithNoMapLoadsNothing() throws {
         XCTAssertNil(try SystemMapStore(workspacePath: workspace.path).load())
     }
 
-    func testSavingCreatesTheDirectoryAndLoadingReadsItBack() throws {
+    func testSavingWritesToTheProjectRootAndLoadingReadsItBack() throws {
         let store = SystemMapStore(workspacePath: workspace.path)
         let map = SystemMap(components: [
             SystemComponent(name: "postgres", kind: .database, reachedBy: "DATABASE_URL",
@@ -42,8 +47,6 @@ final class SystemMapStoreTests: XCTestCase {
     /// edit that overwrites whatever the file really held.
     func testAnUnreadableFileThrowsRatherThanReadingAsEmpty() throws {
         let store = SystemMapStore(workspacePath: workspace.path)
-        try FileManager.default.createDirectory(
-            at: store.fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("{ nope".utf8).write(to: store.fileURL)
 
         XCTAssertThrowsError(try store.load())
@@ -54,8 +57,6 @@ final class SystemMapStoreTests: XCTestCase {
     /// cannot be decoded.
     func testAReadIOFailureThrowsServerNotParse() throws {
         let store = SystemMapStore(workspacePath: workspace.path)
-        try FileManager.default.createDirectory(
-            at: store.fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         // A directory where the store expects a file: Data(contentsOf:) fails to read it,
         // which is an I/O failure, not a decoding one.
         try FileManager.default.createDirectory(at: store.fileURL, withIntermediateDirectories: true)
