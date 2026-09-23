@@ -28,6 +28,11 @@ extension BoardModel {
             }.sorted()
             var carried: Set<Element> = []
             var changed = false
+            // Every frame in this same move is left out of the obstacles up front — checking it
+            // against a sibling's *old* spot, before that sibling has landed, is what scrambles a
+            // group move. Each frame's landing spot joins the obstacles right after, for the rest.
+            let untouchedFrames = Self.frameRects(map, excluding: Set(frames))
+            var settledFrames: [BoardRect] = []
 
             for label in frames {
                 guard let index = map.frames.firstIndex(where: { $0.label == label }), let rect = map.frames[index].rect else { continue }
@@ -40,8 +45,9 @@ extension BoardModel {
                     .union(texts.map { Element.text($0) })
                 let landed = BoardGeometry.frameDrop(
                     rect.offsetBy(dx: delta.x, dy: delta.y).snapped,
-                    otherFrames: Self.frameRects(map, excluding: [label]),
+                    otherFrames: untouchedFrames + settledFrames,
                     foreignElements: Self.elementRects(map, excluding: riders))
+                settledFrames.append(landed)
                 let dx = landed.x - rect.x
                 let dy = landed.y - rect.y
                 guard dx != 0 || dy != 0 else { continue }
@@ -65,9 +71,14 @@ extension BoardModel {
                 case .frame, .arrow: return false
                 }
             }
+            // Same principle as the frames above: every loose element in this move is left out of
+            // the obstacles up front, so one is never checked against a sibling's old spot — only
+            // against things not part of this move, and siblings that have already landed.
+            let untouchedElements = Self.elementRects(map, excluding: Set(loose))
+            let frameRects = Self.frameRects(map, excluding: [])
+            var settledElements: [BoardRect] = []
             for element in loose.sorted(by: { Self.sortKey($0) < Self.sortKey($1) }) {
-                let others = Self.elementRects(map, excluding: [element])
-                let frameRects = Self.frameRects(map, excluding: [])
+                let others = untouchedElements + settledElements
                 switch element {
                 case .component(let name):
                     guard let index = Self.index(of: name, in: map), let at = map.components[index].at else { continue }
@@ -77,6 +88,7 @@ extension BoardModel {
                     map.components[index].at = landed.origin
                     map.components[index].place = BoardGeometry.frame(containing: landed, frames: map.frames)?.label ?? BoardMap.notPlaced
                     changed = changed || landed.origin != at
+                    settledElements.append(landed)
                 case .note(let id):
                     guard let index = map.notes.firstIndex(where: { $0.id == id }), let at = map.notes[index].at else { continue }
                     let landed = BoardGeometry.elementDrop(
@@ -84,6 +96,7 @@ extension BoardModel {
                         otherElements: others, frames: frameRects)
                     map.notes[index].at = landed.origin
                     changed = changed || landed.origin != at
+                    settledElements.append(landed)
                 case .text(let id):
                     guard let index = map.texts.firstIndex(where: { $0.id == id }) else { continue }
                     let text = map.texts[index]
@@ -92,6 +105,7 @@ extension BoardModel {
                         otherElements: others, frames: frameRects)
                     map.texts[index].at = landed.origin
                     changed = changed || landed.origin != text.at
+                    settledElements.append(landed)
                 case .frame, .arrow:
                     continue
                 }
