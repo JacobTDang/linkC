@@ -490,6 +490,62 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertNil(TerminalPreview.liveActivity(from: finished))
     }
 
+    /// With a status line configured, Claude drops "esc to interrupt" from its footer, so the
+    /// spinner row above the input box is what says a turn runs. The first three frames were
+    /// captured from Claude Code 2.1.278 launched with linkC's flags and an empty status line.
+    func testLiveActivityReadsClaudesSpinnerRowWhenTheFooterHasNoHint() {
+        let rule = String(repeating: "─", count: 110)
+        let footer = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+
+        let thinking = [
+            "✳ Bunning… (2s · thinking with xhigh effort)",
+            "                                                                                           ◉ xhigh · /effort",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: thinking), "Bunning…")
+
+        let underABanner = [
+            "✶ Bunning… (3s · thinking with xhigh effort)",
+            "                                         You've used 92% of your weekly limit · resets 2pm (America/Chicago)",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: underABanner), "Bunning…")
+
+        let countingTokens = [
+            "  Waiting 12 seconds · 7s",
+            "  ⎿  $ sleep 12 (8s)",
+            "     (ctrl+b ctrl+b (twice) to run in background)",
+            "✽ Bunning… (12s · ↓ 417 tokens)",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: countingTokens), "Bunning…")
+
+        // Constructed: Claude's todo list renders under the spinner row.
+        let withTodos = [
+            "✻ Bunning… (1m 4s · ↓ 2.1k tokens)",
+            "  ⎿  ☒ Read the config",
+            "     ☐ Write the test",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: withTodos), "Bunning…")
+    }
+
+    /// The nearest glyph-led row above the box decides: a finished turn's summary has no timer.
+    func testLiveActivityReadsAFinishedClaudeTurnWithNoFooterHintAsIdle() {
+        let rule = String(repeating: "─", count: 110)
+        let footer = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+        let finished = [
+            "✳ Bunning… (12s · ↓ 417 tokens)",
+            "⏺ done",
+            "✻ Brewed for 18s · done 4:40 PM",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: finished))
+
+        let noSpinnerAtAll = ["⏺ done", rule, "❯ ", rule, footer]
+        XCTAssertNil(TerminalPreview.liveActivity(from: noSpinnerAtAll))
+    }
+
     /// Codex has no working footer: its status row sits right above the input box.
     func testLiveActivityReadsCodexsStatusRowRightAboveItsInputBox() {
         let justStarted = [
