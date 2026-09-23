@@ -31,6 +31,19 @@ public final class HookServer: @unchecked Sendable {
         set { stateLock.lock(); _onEvent = newValue; stateLock.unlock() }
     }
 
+    private var _onStatusLine: (@Sendable (AgentUsage) -> Void)?
+
+    /// The `X-LinkC-Event` value of the status line linkC gives each Claude session
+    /// (`SettingsComposer.statusLine`). Its body is Claude's status JSON, not a hook payload.
+    public static let statusLineEvent = "status_line"
+
+    /// Called with Claude's rate limits each time a session's status line reports them. Same
+    /// queue, locking, and speed rules as `onEvent`.
+    public var onStatusLine: (@Sendable (AgentUsage) -> Void)? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _onStatusLine }
+        set { stateLock.lock(); _onStatusLine = newValue; stateLock.unlock() }
+    }
+
     private var _requiredToken: String?
 
     /// Per-run shared secret. When set, a request must carry it in `X-LinkC-Token` or its
@@ -194,10 +207,12 @@ public final class HookServer: @unchecked Sendable {
     /// this path. Never withholds or delays the response for an unrecognized event, and
     /// never returns anything but success: this must never be able to deny a Claude tool.
     private func respond(on connection: NWConnection, request: ParsedRequest) {
-        let handler = onEvent // synchronized read (see `onEvent`)
-        if tokenMatches(request.headers),
-           let event = HookEventDecoder.decode(headers: request.headers, body: request.body) {
-            handler?(event)
+        if tokenMatches(request.headers) {
+            if Self.header("X-LinkC-Event", in: request.headers) == Self.statusLineEvent {
+                deliverStatusLine(request.body)
+            } else if let event = HookEventDecoder.decode(headers: request.headers, body: request.body) {
+                onEvent?(event) // synchronized read (see `onEvent`)
+            }
         }
 
         let response = Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".utf8)
@@ -207,12 +222,28 @@ public final class HookServer: @unchecked Sendable {
         })
     }
 
-    /// True when no token is required, or the request's `X-LinkC-Token` (case-insensitive
-    /// header lookup, matching the decoder's convention) equals the required one.
+    /// A body with no windows is normal (an API-key plan, or before a session's first reply) and
+    /// delivers nothing. One that is not Claude's status JSON is logged: a renamed field must not
+    /// read as "no reading yet" forever without a trace.
+    private func deliverStatusLine(_ body: Data) {
+        do {
+            if let reading = try ClaudeRateLimits.decode(body, receivedAt: Date()) {
+                onStatusLine?(reading)
+            }
+        } catch {
+            NSLog("[linkC] a status line report could not be read — %@", String(describing: error))
+        }
+    }
+
+    /// True when no token is required, or the request's `X-LinkC-Token` equals the required one.
     private func tokenMatches(_ headers: [String: String]) -> Bool {
         guard let required = requiredToken else { return true }
-        let sent = headers.first { $0.key.caseInsensitiveCompare("X-LinkC-Token") == .orderedSame }?.value
-        return sent == required
+        return Self.header("X-LinkC-Token", in: headers) == required
+    }
+
+    /// Case-insensitive header lookup, matching the decoder's convention.
+    private static func header(_ name: String, in headers: [String: String]) -> String? {
+        headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
     }
 
     // MARK: - Minimal HTTP/1.1 request parsing

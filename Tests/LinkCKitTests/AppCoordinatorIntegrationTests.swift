@@ -1383,5 +1383,86 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
 
         XCTAssertNil(coordinator.store.session(id: "S")?.claudeSessionId, "a non-claude session must never carry a claude id")
     }
+
+    /// A tokened status-line report from any Claude session becomes Claude's usage reading.
+    func testAStatusLineReportBecomesClaudesUsage() async throws {
+        let coordinator = makeCoordinator()
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+        XCTAssertNil(coordinator.claudeUsage, "no reading before any report")
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(coordinator.hookPort)/hook")!)
+        request.httpMethod = "POST"
+        request.setValue(HookServer.statusLineEvent, forHTTPHeaderField: "X-LinkC-Event")
+        request.setValue(coordinator.hookToken, forHTTPHeaderField: "X-LinkC-Token")
+        request.httpBody = Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#.utf8)
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+
+        let arrived = try await waitUntil { coordinator.claudeUsage?.windows.count == 2 }
+        XCTAssertTrue(arrived, "the reading must reach the coordinator")
+        XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "5h" }?.usedPercent, 66)
+    }
+
+    /// A launch with no status line of its own gets linkC's, carrying this run's token.
+    func testALaunchGetsLinkCsStatusLine() throws {
+        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sl-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+        let coordinator = makeCoordinator(claudePath: "/bin/cat", settingsDir: settingsDir)
+
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        defer { coordinator.stopSession(session.id) }
+
+        let file = settingsDir.appendingPathComponent("session-\(session.id).json")
+        let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        let statusLine = try XCTUnwrap(composed["statusLine"] as? [String: Any])
+        XCTAssertEqual((statusLine["command"] as? String)?.contains(coordinator.hookToken), true)
+        XCTAssertNil(coordinator.claudeUsage)
+    }
+
+    /// A project that runs its own status line keeps it: linkC adds none, and Claude's usage
+    /// says why it has no figure.
+    func testAProjectsOwnStatusLineIsKeptAndClaudesUsageSaysWhy() throws {
+        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sl-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        let dotClaude = cwd.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: dotClaude, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+        try Data(#"{"statusLine": {"type": "command", "command": "echo mine"}}"#.utf8)
+            .write(to: dotClaude.appendingPathComponent("settings.local.json"))
+        let coordinator = makeCoordinator(claudePath: "/bin/cat", settingsDir: settingsDir)
+
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        defer { coordinator.stopSession(session.id) }
+
+        let file = settingsDir.appendingPathComponent("session-\(session.id).json")
+        let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        XCTAssertNil(composed["statusLine"], "Claude applies the local status line itself; linkC must not override it")
+        XCTAssertEqual(coordinator.claudeUsage?.unavailableReason, ClaudeRateLimits.ownStatusLineReason)
+    }
+
+    /// linkC never needed `.claude/settings.local.json` before and only consults it to decide
+    /// whether to add its own status line, so a stray syntax error in that file must not block
+    /// launching a session — it must be treated as if it defined no status line of its own.
+    func testAMalformedLocalSettingsFileDoesNotBlockALaunch() throws {
+        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sl-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        let dotClaude = cwd.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: dotClaude, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+        try Data(#"{ this is not valid JSON"#.utf8)
+            .write(to: dotClaude.appendingPathComponent("settings.local.json"))
+        let coordinator = makeCoordinator(claudePath: "/bin/cat", settingsDir: settingsDir)
+
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        defer { coordinator.stopSession(session.id) }
+
+        let file = settingsDir.appendingPathComponent("session-\(session.id).json")
+        let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        let statusLine = try XCTUnwrap(composed["statusLine"] as? [String: Any])
+        XCTAssertEqual((statusLine["command"] as? String)?.contains(coordinator.hookToken), true)
+    }
 }
 

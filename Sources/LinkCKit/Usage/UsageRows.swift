@@ -4,12 +4,17 @@ import Foundation
 public struct UsageRow: Equatable, Sendable, Identifiable {
     public var id: AgentKind { agent }
     public let agent: AgentKind
-    /// What the row says on the right: "68% · resets 1h", "1.2M · resets 2h", "capped · retry 3h".
+    /// What the row says on the right: "37% · resets 2h", "weekly limit hit · resets 3d",
+    /// "limit hit · retry 15m".
     public let text: String
     public let isCoral: Bool
     /// The reading may no longer be true: the row dims and can never be coral.
     public let isStale: Bool
-    /// The hover text: the other window, the plan, and how old the reading is.
+    /// The hover text. For most rows: an optional notice (e.g. "window has since reset…"), the
+    /// other window's figure, the plan, and how old the reading is — whichever apply. A
+    /// detector-cap row (a limit linkC caught in the terminal, not a published reading) instead
+    /// gives the cap's reason, when it was seen, and notes that the retry is linkC's own wait,
+    /// not the provider's reset.
     public let help: String
 
     public init(agent: AgentKind, text: String, isCoral: Bool, isStale: Bool, help: String) {
@@ -39,7 +44,8 @@ public enum UsageRows {
     public struct Result: Equatable, Sendable {
         public let rows: [UsageRow]
         public let unknown: [UnknownUsage]
-        /// The section label's trailing text: the highest live percentage anyone reports.
+        /// The section label's trailing text: "limit hit" when any row shows one, else the
+        /// highest live 5-hour percentage.
         public let headline: String?
 
         public init(rows: [UsageRow], unknown: [UnknownUsage], headline: String?) {
@@ -51,6 +57,9 @@ public enum UsageRows {
 
     /// Fixed, so the section never reshuffles as numbers change.
     public static let order: [AgentKind] = [.claude, .codex, .cursor, .agy]
+
+    /// Claude's reason before any of its sessions has reported through the status line.
+    public static let claudeNoReadingReason = "no reading yet — a Claude session reports after its first reply"
 
     /// Why an agent that publishes nothing locally has no row of its own.
     static func silentSourceReason(_ agent: AgentKind) -> String {
@@ -65,7 +74,7 @@ public enum UsageRows {
     }
 
     public static func build(
-        claude: WindowUsage?,
+        claude: AgentUsage?,
         codex: AgentUsage?,
         limits: [AgentKind: AgentLimitStatus],
         now: Date = Date()
@@ -73,112 +82,133 @@ public enum UsageRows {
         var rows: [UsageRow] = []
         var unknown: [UnknownUsage] = []
         var livePercentages: [Int] = []
+        var anyLimitHit = false
 
         for agent in order {
             // A cap linkC watched happen outranks every other source: it is the hardest fact
             // available, and while it holds the published figures cannot be acted on anyway.
             if let limit = limits[agent], limit.cooldownExpiresAt > now {
+                anyLimitHit = true
                 rows.append(UsageRow(
                     agent: agent,
-                    text: "capped · retry \(AgeFormat.compact(from: now, to: limit.cooldownExpiresAt))",
+                    text: "limit hit · retry \(AgeFormat.compact(from: now, to: limit.cooldownExpiresAt))",
                     isCoral: true,
                     isStale: false,
                     help: "\(limit.reason) · seen \(AgeFormat.compact(from: limit.limitedAt, to: now)) ago · retry is linkC's own wait, not the provider's reset"))
                 continue
             }
 
+            let usage: AgentUsage?
+            let notReadReason: String
             switch agent {
             case .claude:
-                guard let claude else {
-                    unknown.append(UnknownUsage(agent: agent, reason: "no transcript activity read yet"))
-                    continue
-                }
-                let isIdleBlock = claude.blockTokens == 0 && claude.blockResetAt == nil
-                let blockPart = isIdleBlock ? "no active 5-hour block" : "5h \(UsageFormat.tokens(claude.blockTokens))"
-                rows.append(UsageRow(
-                    agent: agent,
-                    text: figure(UsageFormat.tokens(claude.blockTokens), resetsAt: claude.blockResetAt, now: now),
-                    // No published limit, so a token count can never be an alarm.
-                    isCoral: false,
-                    isStale: false,
-                    help: "\(blockPart) · 7d \(UsageFormat.tokens(claude.weekTokens))"
-                        + " · no percentage: no per-plan limit is published"))
+                usage = claude
+                notReadReason = claudeNoReadingReason
             case .codex:
-                guard let codex else {
-                    unknown.append(UnknownUsage(agent: agent, reason: "not read yet"))
-                    continue
-                }
-                // The figure is the 5-hour window when there is one — the window that usually
-                // bites first — else whatever window the reading has.
-                guard let figureWindow = codex.windows.first(where: { $0.label == "5h" }) ?? codex.windows.first,
-                      let percent = figureWindow.usedPercent
-                else {
-                    unknown.append(UnknownUsage(
-                        agent: agent, reason: codex.unavailableReason ?? "no window percentage reported"))
-                    continue
-                }
-                // Stale two ways: the reading itself is old, or the window it describes has
-                // already rolled over. Either way the number might no longer be true.
-                let readingAge = codex.observedAt.map { now.timeIntervalSince($0) }
-                let readingIsFresh = readingAge.map { $0 <= AgentUsage.staleAfter } ?? false
-                let windowRolled = figureWindow.resetsAt.map { $0 <= now } ?? false
-                let isStale = !readingIsFresh || windowRolled
-
-                // Any window the reading still speaks for can raise the alarm, not just the
-                // figure's — a weekly cap blocks work just as hard as an hourly one.
-                let liveWindows = codex.windows.filter { candidate in
-                    guard readingIsFresh, candidate.usedPercent != nil else { return false }
-                    return !(candidate.resetsAt.map { $0 <= now } ?? false)
-                }
-                let roundedFigure = roundedPercent(percent)
-                if let worstLive = liveWindows.compactMap({ $0.usedPercent.map(roundedPercent) }).max() {
-                    livePercentages.append(worstLive)
-                }
-                let worseWindow = liveWindows
-                    .filter { roundedPercent($0.usedPercent!) > roundedFigure }
-                    .max { roundedPercent($0.usedPercent!) < roundedPercent($1.usedPercent!) }
-                let isCoral = liveWindows.contains { roundedPercent($0.usedPercent!) >= Int(AgentUsage.warnThreshold) }
-
-                let text: String
-                if let worseWindow {
-                    text = "\(percentText(percent)) · \(worseWindow.label) \(percentText(worseWindow.usedPercent!))"
-                } else {
-                    text = figure(percentText(percent), resetsAt: figureWindow.resetsAt, now: now)
-                }
-
-                // Two mutually exclusive facts a dimmed figure can hide: the reset it gave up in
-                // favour of a worse window, or that its own window has since moved on and this
-                // reading is what came before that.
-                let notice: String?
-                if windowRolled {
-                    notice = "window has since reset; this was the reading before it"
-                } else if worseWindow != nil, let resetsAt = figureWindow.resetsAt, resetsAt > now {
-                    notice = "\(figureWindow.label) resets \(AgeFormat.compact(from: now, to: resetsAt))"
-                } else {
-                    notice = nil
-                }
-
-                rows.append(UsageRow(
-                    agent: agent,
-                    text: text,
-                    isCoral: isCoral,
-                    isStale: isStale,
-                    help: codexHelp(codex, readingAge: readingAge, notice: notice)))
+                usage = codex
+                notReadReason = "not read yet"
             case .cursor, .agy, .shell:
                 unknown.append(UnknownUsage(agent: agent, reason: silentSourceReason(agent)))
+                continue
             }
+            guard let usage else {
+                unknown.append(UnknownUsage(agent: agent, reason: notReadReason))
+                continue
+            }
+            guard let windowRow = windowRow(agent: agent, usage: usage, now: now) else {
+                unknown.append(UnknownUsage(
+                    agent: agent, reason: usage.unavailableReason ?? "no window percentage reported"))
+                continue
+            }
+            rows.append(windowRow.row)
+            if windowRow.isLimitHit { anyLimitHit = true }
+            if let percent = windowRow.liveFigurePercent { livePercentages.append(percent) }
         }
 
         return Result(
             rows: rows,
             unknown: unknown,
-            headline: livePercentages.max().map { "\($0)%" })
+            headline: anyLimitHit ? "limit hit" : livePercentages.max().map { "\($0)%" })
     }
 
-    /// "68% · resets 1h", or the figure alone when no reset time is known.
-    private static func figure(_ value: String, resetsAt: Date?, now: Date) -> String {
-        guard let resetsAt, resetsAt > now else { return value }
-        return "\(value) · resets \(AgeFormat.compact(from: now, to: resetsAt))"
+    private struct WindowRow {
+        let row: UsageRow
+        let isLimitHit: Bool
+        /// The figure's rounded percentage while its window is live — what the headline compares.
+        let liveFigurePercent: Int?
+    }
+
+    /// One agent's row from the windows its provider reports — the same rules for every agent.
+    /// nil when no window carries a percentage.
+    private static func windowRow(agent: AgentKind, usage: AgentUsage, now: Date) -> WindowRow? {
+        // The figure is the 5-hour window when there is one — the window that usually bites
+        // first — else whatever window the reading has. Only windows that actually carry a
+        // percentage are candidates: a 5-hour window with none must not bump a weekly window
+        // that has one.
+        let windowsWithPercent = usage.windows.filter { $0.usedPercent != nil }
+        guard let figureWindow = windowsWithPercent.first(where: { $0.label == "5h" }) ?? windowsWithPercent.first,
+              let percent = figureWindow.usedPercent
+        else { return nil }
+
+        let readingAge = usage.observedAt.map { now.timeIntervalSince($0) }
+        let readingIsFresh = readingAge.map { $0 <= AgentUsage.staleAfter } ?? false
+        // A window speaks for now only while the reading is fresh and the window has not rolled over.
+        func isLive(_ window: UsageWindow) -> Bool {
+            readingIsFresh && window.usedPercent != nil && !(window.resetsAt.map { $0 <= now } ?? false)
+        }
+        func isFull(_ window: UsageWindow) -> Bool {
+            guard isLive(window), let usedPercent = window.usedPercent else { return false }
+            return roundedPercent(usedPercent) >= 100
+        }
+        let liveFigurePercent = isLive(figureWindow) ? roundedPercent(percent) : nil
+
+        // A full weekly window outranks a full 5-hour one: it is the longer wait.
+        let hit: (window: UsageWindow, name: String)?
+        if let week = usage.windows.first(where: { $0.label == "7d" }), isFull(week) {
+            hit = (week, "weekly")
+        } else if let session = usage.windows.first(where: { $0.label == "5h" }), isFull(session) {
+            hit = (session, "session")
+        } else {
+            hit = nil
+        }
+
+        if let hit {
+            return WindowRow(
+                row: UsageRow(
+                    agent: agent,
+                    text: "\(hit.name) limit hit" + resetsSuffix(hit.window.resetsAt, now: now),
+                    isCoral: true,
+                    isStale: false,
+                    help: help(usage, other: usage.windows.first { $0.label != hit.window.label },
+                               readingAge: readingAge, notice: nil, now: now)),
+                isLimitHit: true,
+                liveFigurePercent: liveFigurePercent)
+        }
+
+        // Stale two ways: the reading itself is old, or the window it describes has already
+        // rolled over. Either way the number might no longer be true.
+        let windowRolled = figureWindow.resetsAt.map { $0 <= now } ?? false
+        return WindowRow(
+            row: UsageRow(
+                agent: agent,
+                text: percentText(percent) + resetsSuffix(figureWindow.resetsAt, now: now),
+                isCoral: liveFigurePercent.map { $0 >= Int(AgentUsage.warnThreshold) } ?? false,
+                isStale: !readingIsFresh || windowRolled,
+                help: help(usage, other: usage.windows.first { $0.label != figureWindow.label },
+                           readingAge: readingAge,
+                           notice: windowRolled ? "window has since reset; this was the reading before it" : nil,
+                           now: now)),
+            isLimitHit: false,
+            liveFigurePercent: liveFigurePercent)
+    }
+
+    /// " · resets 2h", or nothing when no future reset is known. Under a day the wait reads in
+    /// minutes or hours; from a day on, in days, so a weekly reset never reads "72h".
+    private static func resetsSuffix(_ resetsAt: Date?, now: Date) -> String {
+        guard let resetsAt, resetsAt > now else { return "" }
+        let remaining = resetsAt.timeIntervalSince(now)
+        let wait = remaining < 86_400 ? AgeFormat.compact(remaining) : AgeFormat.longSpan(remaining)
+        return " · resets \(wait)"
     }
 
     /// Rounded once, so the figure printed and the figure compared against a threshold always
@@ -191,11 +221,15 @@ public enum UsageRows {
         "\(roundedPercent(percent))%"
     }
 
-    private static func codexHelp(_ usage: AgentUsage, readingAge: TimeInterval?, notice: String?) -> String {
+    /// The hover text: a notice when there is one, the window the row is not showing, the plan,
+    /// and how old the reading is.
+    private static func help(
+        _ usage: AgentUsage, other: UsageWindow?, readingAge: TimeInterval?, notice: String?, now: Date
+    ) -> String {
         var parts: [String] = []
         if let notice { parts.append(notice) }
-        if let week = usage.windows.first(where: { $0.label == "7d" }), let percent = week.usedPercent {
-            parts.append("7d \(percentText(percent))")
+        if let other, let percent = other.usedPercent {
+            parts.append("\(other.label) \(percentText(percent))" + resetsSuffix(other.resetsAt, now: now))
         }
         if let plan = usage.planType, !plan.isEmpty { parts.append(plan) }
         if let readingAge { parts.append("read \(AgeFormat.compact(readingAge)) ago") }

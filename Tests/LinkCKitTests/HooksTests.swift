@@ -269,6 +269,63 @@ final class SettingsComposerTests: XCTestCase {
         XCTAssertEqual(other["a"] as? Int, 1, "keys only present in user settings must survive the merge")
         XCTAssertEqual(other["b"] as? Int, 3, "project wins on conflicting keys")
     }
+
+    private func composedStatusLine(user: String? = nil, project: String? = nil, local: String? = nil) throws -> [String: Any]? {
+        let composed = try SettingsComposer.compose(
+            userSettings: user.map { Data($0.utf8) }, projectSettings: project.map { Data($0.utf8) },
+            projectLocalSettings: local.map { Data($0.utf8) }, port: 4242, token: "tok-test")
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
+        return decoded["statusLine"] as? [String: Any]
+    }
+
+    func testComposeAddsASilentStatusLinePostingToTheHookServer() throws {
+        let statusLine = try XCTUnwrap(try composedStatusLine())
+        XCTAssertEqual(statusLine["type"] as? String, "command")
+        XCTAssertEqual(
+            statusLine["command"] as? String,
+            "curl -s -m 2 -X POST -H 'X-LinkC-Token: tok-test' -H 'X-LinkC-Event: status_line' --data-binary @- http://127.0.0.1:4242/hook >/dev/null")
+    }
+
+    func testComposeKeepsTheUsersOwnStatusLine() throws {
+        let statusLine = try composedStatusLine(user: #"{"statusLine": {"type": "command", "command": "~/.claude/sl.sh"}}"#)
+        XCTAssertEqual(statusLine?["command"] as? String, "~/.claude/sl.sh")
+    }
+
+    func testComposeKeepsTheProjectsOwnStatusLine() throws {
+        let statusLine = try composedStatusLine(project: #"{"statusLine": {"type": "command", "command": "./sl.sh"}}"#)
+        XCTAssertEqual(statusLine?["command"] as? String, "./sl.sh")
+    }
+
+    /// Claude applies the project's local settings itself, under `--settings`: a status line
+    /// linkC added would override the user's, so it adds none.
+    func testComposeAddsNoStatusLineWhenTheProjectsLocalSettingsHaveOne() throws {
+        XCTAssertNil(try composedStatusLine(local: #"{"statusLine": {"type": "command", "command": "./mine.sh"}}"#))
+    }
+
+    func testDefinesStatusLineLooksAtEveryLayerAndFailsLoudOnBadJSON() throws {
+        let own = Data(#"{"statusLine": {"type": "command", "command": "x"}}"#.utf8)
+        XCTAssertFalse(try SettingsComposer.definesStatusLine(user: nil, project: nil, projectLocal: nil))
+        XCTAssertTrue(try SettingsComposer.definesStatusLine(user: own, project: nil, projectLocal: nil))
+        XCTAssertTrue(try SettingsComposer.definesStatusLine(user: nil, project: own, projectLocal: nil))
+        XCTAssertTrue(try SettingsComposer.definesStatusLine(user: nil, project: nil, projectLocal: own))
+        XCTAssertThrowsError(try SettingsComposer.definesStatusLine(user: nil, project: nil, projectLocal: Data("{".utf8)))
+    }
+
+    func testAnExplicitNullStatusLineIsNotTheUsersOwn() throws {
+        let nullStatusLine = #"{"statusLine": null}"#
+
+        // With null in user layer, definesStatusLine should return false
+        XCTAssertFalse(try SettingsComposer.definesStatusLine(user: Data(nullStatusLine.utf8), project: nil, projectLocal: nil))
+        // And compose should add linkC's own status line
+        let composedWithNullUser = try composedStatusLine(user: nullStatusLine)
+        XCTAssertNotNil(composedWithNullUser, "with null statusLine in user layer, compose must add linkC's own")
+
+        // With null in project-local layer, definesStatusLine should return false
+        XCTAssertFalse(try SettingsComposer.definesStatusLine(user: nil, project: nil, projectLocal: Data(nullStatusLine.utf8)))
+        // And compose should add linkC's own status line
+        let composedWithNullLocal = try composedStatusLine(local: nullStatusLine)
+        XCTAssertNotNil(composedWithNullLocal, "with null statusLine in project-local layer, compose must add linkC's own")
+    }
 }
 
 // MARK: - HookServer (real loopback end-to-end)
@@ -294,6 +351,35 @@ final class HookServerTests: XCTestCase {
             return stored
         }
     }
+
+    private final class ReadingBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [AgentUsage] = []
+
+        func record(_ reading: AgentUsage) {
+            lock.lock()
+            stored.append(reading)
+            lock.unlock()
+        }
+
+        var all: [AgentUsage] {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+    }
+
+    private func postStatusLine(port: UInt16, token: String?, body: String) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/hook")!)
+        request.httpMethod = "POST"
+        request.setValue("status_line", forHTTPHeaderField: "X-LinkC-Event")
+        if let token { request.setValue(token, forHTTPHeaderField: "X-LinkC-Token") }
+        request.httpBody = Data(body.utf8)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        return (data, try XCTUnwrap(response as? HTTPURLResponse))
+    }
+
+    private let rateLimitsBody = #"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#
 
     func testEndToEndLoopbackDeliversDecodedEventAndRespondsOKWithEmptyJSONBody() async throws {
         let server = HookServer(port: 0)
@@ -371,5 +457,56 @@ final class HookServerTests: XCTestCase {
         }
 
         XCTAssertTrue(box.all.isEmpty, "an oversized request must never decode into an event")
+    }
+
+    func testATokenedStatusLineDeliversClaudesLimitsAndNoSessionEvent() async throws {
+        let server = HookServer(port: 0)
+        server.requiredToken = "tok"
+        let events = EventBox()
+        let readings = ReadingBox()
+        server.onEvent = { events.record($0) }
+        server.onStatusLine = { readings.record($0) }
+        try server.start()
+        defer { server.stop() }
+
+        let (data, response) = try await postStatusLine(port: server.port, token: "tok", body: rateLimitsBody)
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(String(data: data, encoding: .utf8), "{}")
+        XCTAssertEqual(readings.all.count, 1)
+        XCTAssertEqual(readings.all.first?.windows.map(\.usedPercent), [66, 92])
+        XCTAssertTrue(events.all.isEmpty, "a status line report is not a session event")
+    }
+
+    func testAStatusLineWithTheWrongTokenDeliversNothing() async throws {
+        let server = HookServer(port: 0)
+        server.requiredToken = "tok"
+        let readings = ReadingBox()
+        server.onStatusLine = { readings.record($0) }
+        try server.start()
+        defer { server.stop() }
+
+        let (_, wrong) = try await postStatusLine(port: server.port, token: "wrong", body: rateLimitsBody)
+        let (_, missing) = try await postStatusLine(port: server.port, token: nil, body: rateLimitsBody)
+
+        XCTAssertEqual(wrong.statusCode, 200)
+        XCTAssertEqual(missing.statusCode, 200)
+        XCTAssertTrue(readings.all.isEmpty)
+    }
+
+    func testAStatusLineWithoutRateLimitsDeliversNothingButStillAnswers() async throws {
+        let server = HookServer(port: 0)
+        server.requiredToken = "tok"
+        let readings = ReadingBox()
+        server.onStatusLine = { readings.record($0) }
+        try server.start()
+        defer { server.stop() }
+
+        let (_, noLimits) = try await postStatusLine(port: server.port, token: "tok", body: #"{"session_id":"c1"}"#)
+        let (_, notJSON) = try await postStatusLine(port: server.port, token: "tok", body: "not json")
+
+        XCTAssertEqual(noLimits.statusCode, 200)
+        XCTAssertEqual(notJSON.statusCode, 200, "an unreadable report is logged, and the status line never waits on it")
+        XCTAssertTrue(readings.all.isEmpty)
     }
 }

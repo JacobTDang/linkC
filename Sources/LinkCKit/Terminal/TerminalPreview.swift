@@ -50,6 +50,11 @@ public enum TerminalPreview {
         if t.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil {
             return true
         }
+        // The same running-spinner shape without a token counter — the thinking-phase row
+        // ("✳ Bunning… (2s · thinking with xhigh effort)") has none.
+        if claudeSpinnerRowPhrase(text) != nil {
+            return true
+        }
         return t.range(
             of: #"^(\d+ MCP servers? needs? authentication|Approaching [\w ]{0,24}usage limit|You've used \d+% of your session limit)\b"#,
             options: .regularExpression
@@ -110,7 +115,9 @@ public enum TerminalPreview {
                     let unbulleted = status.hasPrefix("•") ? String(status.dropFirst()).trimmingCharacters(in: .whitespaces) : status
                     return spinnerPhrase(unbulleted) ?? "Working"
                 }
-                return nil
+                // Claude with a status line has no working footer either: its spinner row above
+                // the box is what says the turn runs.
+                return claudeSpinnerPhrase(nearestGlyphRowIn: above)
             }
 
             var bannerCandidate = text
@@ -186,6 +193,9 @@ public enum TerminalPreview {
         if isWorkingFooter(text) { return true }
         if text.contains("esc to interrupt") { return true }
         if text.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil { return true }
+        // The same running-spinner shape without a token counter — the thinking-phase row
+        // ("✳ Bunning… (2s · thinking with xhigh effort)") has none.
+        if claudeSpinnerRowPhrase(text) != nil { return true }
         return text.unicodeScalars.contains { (0x2800...0x28FF).contains($0.value) }
     }
 
@@ -230,6 +240,66 @@ public enum TerminalPreview {
     private static func isWorkingFooter(_ text: String) -> Bool {
         if text.hasPrefix("esc to cancel") { return true }
         return text.contains("esc to interrupt") && !text.contains("esc to interrupt)")
+    }
+
+    /// The glyphs that lead Claude Code's spinner row while a turn runs.
+    private static let claudeSpinnerGlyphs: Set<Character> = ["·", "✢", "✳", "✶", "✻", "✽", "*"]
+
+    /// The glyphs among those that lead ONLY Claude's spinner row — never ordinary prose or a
+    /// markdown bullet the way "·" and "*" do. Only these are trusted to prove a running turn
+    /// when the row's timer has no closing ")" at all (see `claudeSpinnerRowPhrase`).
+    private static let unambiguousSpinnerGlyphs: Set<Character> = ["✢", "✳", "✶", "✻", "✽"]
+
+    /// The phrase on a row shaped like Claude Code's live spinner: a spinner glyph, a phrase
+    /// ending in "…", then a running timer — "✳ Bunning… (2s · thinking with xhigh effort)"
+    /// gives "Bunning…". nil for a finished turn's "✻ Brewed for 18s" (no timer), or for a row
+    /// led by anything else. Two of the glyphs, "·" and "*", also lead ordinary prose and
+    /// markdown bullets, so a timer-shaped match alone isn't proof: what follows the timer's
+    /// closing ")" decides. A real spinner row either ends right there, or — in linkC's narrow
+    /// pane, same as `isStatusFurniture` already accounts for — gets cut off before the ")" ever
+    /// appears; prose that merely contains "… (3s" keeps going past the ")" with more text, and
+    /// that's the one case rejected: "* Loading… (3s) — finished" is rejected. A row with no ")"
+    /// at all is pane-truncated same as a real spinner row would be, but only an unambiguous
+    /// glyph is trusted there: "✳ Bunning… (12s · ↓ 417 toke" is accepted, but a truncated
+    /// "· parsed 12 files… (12s" — ordinary output whose tail the pane cut off — is rejected,
+    /// because that screen never changes again and would otherwise read as running forever.
+    private static func claudeSpinnerRowPhrase(_ row: String) -> String? {
+        guard let glyph = row.first, claudeSpinnerGlyphs.contains(glyph) else { return nil }
+        let phrase = row.dropFirst().trimmingCharacters(in: .whitespaces)
+        // Old-style spinner rows from before status lines end with "esc to interrupt)". When
+        // we're reading the spinner row because of an idle prompt (no working footer), a row
+        // still carrying that hint is one a redraw left behind from a finished turn: the input
+        // box is idle now, so a stale spinner row above it must not read as running.
+        if phrase.hasSuffix("esc to interrupt)") {
+            return nil
+        }
+        guard let timer = phrase.range(of: #"… \(\d+[hms]"#, options: .regularExpression) else { return nil }
+        if let closeParen = phrase[timer.lowerBound...].firstIndex(of: ")") {
+            // A ")" that isn't the row's last character means text continues past the timer —
+            // that's prose, not a spinner.
+            if closeParen != phrase.index(before: phrase.endIndex) {
+                return nil
+            }
+        } else if !unambiguousSpinnerGlyphs.contains(glyph) {
+            // No ")" at all: the pane cut the row off before it printed one, same as a real
+            // spinner row would be — but "·" and "*" lead ordinary prose too, so that alone
+            // isn't proof for them.
+            return nil
+        }
+        let words = phrase[..<timer.lowerBound].trimmingCharacters(in: .whitespaces)
+        return words.isEmpty ? nil : words + "…"
+    }
+
+    /// `claudeSpinnerRowPhrase` applied to the nearest glyph-led row above the input box — a
+    /// finished turn's most recent non-spinner row (banner, effort badge, todo row, tool output)
+    /// is passed over, so only the row closest to the box decides. `rows` holds visible text,
+    /// nearest the input box first.
+    private static func claudeSpinnerPhrase<Rows: Sequence>(nearestGlyphRowIn rows: Rows) -> String?
+    where Rows.Element == String {
+        guard let row = rows.first(where: { $0.first.map { claudeSpinnerGlyphs.contains($0) } ?? false }) else {
+            return nil
+        }
+        return claudeSpinnerRowPhrase(row)
     }
 
     /// A row with box-drawing and block glyphs removed and surrounding whitespace trimmed.
