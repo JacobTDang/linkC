@@ -344,6 +344,11 @@ private struct ComponentEditor: View {
                 get: { component.runs ?? "" }, set: { component.runs = $0 }))
             TextField("used by (comma separated)", text: $usedByText)
             Toggle("intended — does not exist yet", isOn: $component.intended)
+            if let refusal = workbench.refusal {
+                Text(refusal)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.accent)
+            }
             HStack {
                 Spacer()
                 Button("Done") {
@@ -352,7 +357,12 @@ private struct ComponentEditor: View {
                         .map { $0.trimmingCharacters(in: .whitespaces) }
                         .filter { !$0.isEmpty }
                     workbench.update(original, to: component)
-                    onClose()
+                    // A refusal (a name already in use) leaves the edit unapplied: close only
+                    // when it actually landed, so a refused rename never throws away what was
+                    // typed — the fields stay exactly as the user left them, reason visible above.
+                    if workbench.refusal == nil {
+                        onClose()
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
             }
