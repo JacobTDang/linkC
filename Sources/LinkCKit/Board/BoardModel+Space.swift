@@ -169,6 +169,37 @@ extension BoardModel {
                 seed, otherFrames: frameRects(map, excluding: [map.frames[index].label]), foreignElements: elementRects(map, excluding: []))
         }
 
+        // Frames that already had a rect in the file can still overlap one another — after a git
+        // merge, say. Each is nudged to the nearest free spot, in label order, carrying its own
+        // components, notes and texts along with it, exactly as a frame move does.
+        var settledFrames: [BoardRect] = []
+        for index in map.frames.indices.sorted(by: { map.frames[$0].label < map.frames[$1].label }) {
+            guard let rect = map.frames[index].rect else { continue }
+            guard settledFrames.contains(where: { $0.intersects(rect) }) else {
+                settledFrames.append(rect)
+                continue
+            }
+            let landed = BoardGeometry.frameDrop(rect, otherFrames: settledFrames, foreignElements: elementRects(map, excluding: []))
+            settledFrames.append(landed)
+            let dx = landed.x - rect.x
+            let dy = landed.y - rect.y
+            guard dx != 0 || dy != 0 else { continue }
+            map.frames[index].rect = landed
+            let label = map.frames[index].label
+            let interior = BoardGeometry.interior(of: rect)
+            for i in map.components.indices where map.components[i].place == label {
+                if let at = map.components[i].at { map.components[i].at = BoardPoint(x: at.x + dx, y: at.y + dy) }
+            }
+            for i in map.notes.indices {
+                if let at = map.notes[i].at, interior.contains(BoardGeometry.rect(ofNoteAt: at)) {
+                    map.notes[i].at = BoardPoint(x: at.x + dx, y: at.y + dy)
+                }
+            }
+            for i in map.texts.indices where interior.contains(BoardGeometry.rect(of: map.texts[i])) {
+                map.texts[i].at = BoardPoint(x: map.texts[i].at.x + dx, y: map.texts[i].at.y + dy)
+            }
+        }
+
         // Components: each settles inside its own place's frame, or outside every frame.
         for index in map.components.indices.sorted(by: { map.components[$0].name < map.components[$1].name }) {
             let component = map.components[index]

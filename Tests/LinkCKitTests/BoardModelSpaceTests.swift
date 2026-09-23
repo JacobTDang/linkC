@@ -212,6 +212,32 @@ final class BoardModelSpaceTests: XCTestCase {
         XCTAssertEqual(BoardModel.laidOut(laid), laid, "laying out a laid-out map changes nothing")
     }
 
+    /// Frames that overlap in the file — after a git merge, say — are pulled apart on load, each
+    /// carrying its own components with it, exactly as a frame move would.
+    func testOverlappingFramesInTheFileAreSeparatedOnLoadCarryingTheirContents() throws {
+        var map = BoardMap.empty
+        map.frames = [
+            BoardFrame(label: "A", rect: BoardRect(x: 0, y: 0, w: 200, h: 200)),
+            BoardFrame(label: "B", rect: BoardRect(x: 100, y: 100, w: 200, h: 200)),
+        ]
+        map.components = [
+            BoardComponent(name: "api", kind: .service, place: "A", at: BoardPoint(x: 16, y: 16)),
+            BoardComponent(name: "db", kind: .database, place: "B", at: BoardPoint(x: 116, y: 116)),
+        ]
+        let laid = BoardModel.laidOut(map)
+
+        let a = try XCTUnwrap(laid.frames.first { $0.label == "A" }?.rect)
+        let b = try XCTUnwrap(laid.frames.first { $0.label == "B" }?.rect)
+        XCTAssertFalse(a.intersects(b), "the two frames must no longer overlap")
+        XCTAssertEqual(a, BoardRect(x: 0, y: 0, w: 200, h: 200), "the earlier frame in label order stays put")
+
+        let apiRect = BoardGeometry.rect(ofComponentAt: try XCTUnwrap(laid.components.first { $0.name == "api" }?.at))
+        let dbRect = BoardGeometry.rect(ofComponentAt: try XCTUnwrap(laid.components.first { $0.name == "db" }?.at))
+        XCTAssertTrue(BoardGeometry.interior(of: a).contains(apiRect), "api stayed with its frame")
+        XCTAssertTrue(BoardGeometry.interior(of: b).contains(dbRect), "db moved along with its frame")
+        XCTAssertEqual(BoardModel.laidOut(laid), laid, "laying out an already-separated map changes nothing")
+    }
+
     /// A box the file lists under one place but positions in another frame moves to its place —
     /// the file's places are what agents read, so they win.
     func testTheFilesPlaceWinsOverAStrayPosition() throws {
