@@ -114,8 +114,11 @@ extension BoardModel {
     public func resizeFrame(_ label: String, to proposed: BoardRect) {
         edit { map in
             guard let index = map.frames.firstIndex(where: { $0.label == label }), let original = map.frames[index].rect else { return false }
+            let interior = BoardGeometry.interior(of: original)
             let members = map.components.filter { $0.place == label }
             let memberRects = members.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
+                + map.notes.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }.filter { interior.contains($0) }
+                + map.texts.map(BoardGeometry.rect(of:)).filter { interior.contains($0) }
             let foreign = Self.elementRects(map, excluding: Set(members.map { .component($0.name) })).filter { !original.contains($0) }
             let resized = BoardGeometry.frameResize(
                 proposed.snapped, original: original, members: memberRects,
@@ -156,6 +159,11 @@ extension BoardModel {
         for index in map.components.indices.sorted(by: { map.components[$0].name < map.components[$1].name }) {
             let component = map.components[index]
             let frame = map.frames.first { $0.label == component.place }?.rect
+            // A place naming no frame is stale — unplaced for positioning, and cleared here so it
+            // never again reads as a heading for a frame that is not there.
+            if frame == nil, component.place != BoardMap.notPlaced {
+                map.components[index].place = BoardMap.notPlaced
+            }
             let others = elementRects(map, excluding: [.component(component.name)])
             let current = component.at.map(BoardGeometry.rect(ofComponentAt:))
             if let frame {

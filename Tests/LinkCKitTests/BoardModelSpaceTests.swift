@@ -70,6 +70,32 @@ final class BoardModelSpaceTests: XCTestCase {
         XCTAssertFalse(a.intersects(b))
     }
 
+    /// A frame dropped onto loose boxes it does not own lands clear of them, and those boxes —
+    /// not part of the move — never move themselves.
+    func testAFrameDroppedOnLooseBoxesLandsClearAndTheyDoNotMove() throws {
+        let board = fresh()
+        let label = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 200, h: 200)))
+        let loose = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 600, y: 0)))
+        let before = try XCTUnwrap(board.map.components.first { $0.name == loose }?.at)
+        board.move([.frame(label)], by: BoardPoint(x: 600, y: 0))
+        let frameRect = try XCTUnwrap(board.map.frames.first { $0.label == label }?.rect)
+        let looseRect = try XCTUnwrap(board.rect(of: .component(loose)))
+        XCTAssertFalse(frameRect.intersects(looseRect))
+        XCTAssertEqual(board.map.components.first { $0.name == loose }?.at, before)
+    }
+
+    /// A selection holding both a frame and one of that frame's own components moves the
+    /// component once, carried by the frame — never a second time as a loose element too.
+    func testMovingAFrameAndItsOwnComponentTogetherMovesTheComponentOnce() throws {
+        let board = fresh()
+        let label = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 400, h: 200)))
+        let api = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 16, y: 16)))
+        let before = try XCTUnwrap(board.map.components.first { $0.name == api }?.at)
+        board.move([.frame(label), .component(api)], by: BoardPoint(x: 96, y: 0))
+        let after = try XCTUnwrap(board.map.components.first { $0.name == api }?.at)
+        XCTAssertEqual(after.x - before.x, 96, "the frame carries its own component once, not twice")
+    }
+
     func testAMoveIsOneUndoStep() throws {
         let board = fresh()
         let api = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
@@ -85,6 +111,21 @@ final class BoardModelSpaceTests: XCTestCase {
         board.move([.component(api)], by: BoardPoint(x: 0, y: 0))
         board.undo()
         XCTAssertTrue(board.map.components.isEmpty, "the zero move added no undo step, so one undo removes the component")
+    }
+
+    /// A non-zero move that collision fully blocks slides the element back to exactly where it
+    /// was — and that is not an edit either: no undo step is added for it.
+    func testAFullyBlockedMoveIsNotAnEdit() throws {
+        let board = fresh()
+        let api = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
+        let wall = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 152, y: 0)))
+        let before = try XCTUnwrap(board.map.components.first { $0.name == api }?.at)
+        board.move([.component(api)], by: BoardPoint(x: 8, y: 0))
+        XCTAssertEqual(board.map.components.first { $0.name == api }?.at, before, "fully blocked, it slides back to where it was")
+        board.undo()
+        XCTAssertNil(board.map.components.first { $0.name == wall },
+                     "one undo removed the wall's own add — the blocked move recorded no step of its own")
+        XCTAssertEqual(board.map.components.first { $0.name == api }?.at, before)
     }
 
     func testContentBoundsCoverEverything() throws {
@@ -116,6 +157,17 @@ final class BoardModelSpaceTests: XCTestCase {
         board.resizeFrame(label, to: BoardRect(x: 0, y: 0, w: 100, h: 100))
         let rect = try XCTUnwrap(board.map.frames.first?.rect)
         XCTAssertTrue(BoardGeometry.interior(of: rect).contains(try XCTUnwrap(board.rect(of: .component(board.map.components[0].name)))))
+    }
+
+    /// A note wholly inside a frame is protected by the shrink floor exactly like a component —
+    /// a shrink can never leave it straddling the new edge.
+    func testResizingNeverShrinksPastANoteInside() throws {
+        let board = fresh()
+        let label = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 400, h: 200)))
+        let note = try XCTUnwrap(board.addNote(at: BoardPoint(x: 16, y: 16)))
+        board.resizeFrame(label, to: BoardRect(x: 0, y: 0, w: 100, h: 100))
+        let rect = try XCTUnwrap(board.map.frames.first?.rect)
+        XCTAssertTrue(BoardGeometry.interior(of: rect).contains(try XCTUnwrap(board.rect(of: .note(note)))))
     }
 
     /// A hand-written map with no layout: every place gets a frame on the board, every
@@ -159,6 +211,36 @@ final class BoardModelSpaceTests: XCTestCase {
         let laid = BoardModel.laidOut(map)
         let rect = BoardGeometry.rect(ofComponentAt: try XCTUnwrap(laid.components[0].at))
         XCTAssertTrue(BoardGeometry.interior(of: BoardRect(x: 600, y: 0, w: 400, h: 200)).contains(rect))
+    }
+
+    /// A note already wholly inside a frame is left exactly where it is by the layout pass.
+    func testLayoutLeavesANoteAlreadyInsideAFrameWhereItIs() throws {
+        var map = BoardMap.empty
+        map.frames = [BoardFrame(label: "A", rect: BoardRect(x: 0, y: 0, w: 400, h: 200))]
+        map.notes = [BoardNote(text: "hi", at: BoardPoint(x: 16, y: 16))]
+        let laid = BoardModel.laidOut(map)
+        XCTAssertEqual(laid.notes.first?.at, BoardPoint(x: 16, y: 16))
+    }
+
+    /// A text that overlaps a component is moved clear of it by the layout pass — nothing is
+    /// left sitting on top of anything.
+    func testLayoutMovesATextThatOverlapsAComponent() throws {
+        var map = BoardMap.empty
+        map.components = [BoardComponent(name: "api", kind: .service, at: BoardPoint(x: 0, y: 0))]
+        map.texts = [BoardText(text: "heading", style: .label, at: BoardPoint(x: 40, y: 10), width: 100)]
+        let laid = BoardModel.laidOut(map)
+        let componentRect = BoardGeometry.rect(ofComponentAt: try XCTUnwrap(laid.components.first?.at))
+        let textRect = BoardGeometry.rect(of: try XCTUnwrap(laid.texts.first))
+        XCTAssertFalse(componentRect.intersects(textRect))
+    }
+
+    /// A component whose place names a frame that does not exist is unplaced for positioning,
+    /// and the layout pass clears the stale label rather than leaving it a heading for nothing.
+    func testALayoutClearsAPlaceNamingNoFrame() throws {
+        var map = BoardMap.empty
+        map.components = [BoardComponent(name: "api", kind: .service, place: "Gone")]
+        let laid = BoardModel.laidOut(map)
+        XCTAssertEqual(laid.components.first?.place, BoardMap.notPlaced)
     }
 
     func testLoadingLaysOutWithoutWriting() throws {
