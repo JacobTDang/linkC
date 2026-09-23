@@ -142,4 +142,24 @@ final class BoardGeometryTests: XCTestCase {
         }
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
     }
+
+    /// When the board is crowded and the nearest free spot is far away, the search must
+    /// stay fast even when examining many rings — only the ring's edge matters.
+    func testASearchThatFindsNothingNearbyStaysFast() {
+        var obstacles: [BoardRect] = []
+        for row in 0..<40 {
+            for col in 0..<40 {
+                obstacles.append(box(col * 16, row * 16))
+            }
+        }
+
+        let needle = box(0, 0)
+        let start = Date()
+        let result = BoardGeometry.nearestFreeSpot(for: needle, avoiding: obstacles)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertNotNil(result, "should find a spot")
+        XCTAssertTrue(obstacles.allSatisfy { !$0.intersects(result!) }, "spot should overlap no obstacles")
+        XCTAssertLessThan(elapsed, 0.5, "search should complete in under 500ms, took \(elapsed)s")
+    }
 }

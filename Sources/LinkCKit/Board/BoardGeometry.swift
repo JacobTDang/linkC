@@ -62,8 +62,23 @@ public enum BoardGeometry {
         for ring in 1...max(1, limit) {
             // Nothing on this ring can be nearer than `ring` steps.
             if let best, ring * ring * step * step > best.distance { break }
+            // Walk only the ring's perimeter: top and bottom rows, then left and right columns.
+            // Top and bottom rows: j ∈ {-ring, ring}, i ∈ -ring...ring.
             for i in -ring...ring {
-                for j in -ring...ring where max(abs(i), abs(j)) == ring {
+                for j in [-ring, ring] {
+                    let candidate = rect.offsetBy(dx: i * step, dy: j * step)
+                    guard fits(candidate) else { continue }
+                    let key = (distance: (i * i + j * j) * step * step, rank: directionRank(i, j), j: j, i: i)
+                    if let current = best {
+                        if (key.distance, key.rank, key.j, key.i) < (current.distance, current.rank, current.j, current.i) { best = key }
+                    } else {
+                        best = key
+                    }
+                }
+            }
+            // Left and right columns (excluding corners): i ∈ {-ring, ring}, j ∈ (-ring+1)..<ring.
+            for j in (-ring + 1)..<ring {
+                for i in [-ring, ring] {
                     let candidate = rect.offsetBy(dx: i * step, dy: j * step)
                     guard fits(candidate) else { continue }
                     let key = (distance: (i * i + j * j) * step * step, rank: directionRank(i, j), j: j, i: i)
