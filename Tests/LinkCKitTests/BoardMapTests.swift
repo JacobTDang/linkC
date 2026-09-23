@@ -197,6 +197,23 @@ final class BoardMapTests: XCTestCase {
         XCTAssertEqual((root["layout"] as? [String: Any])?["zoom_hint"] as? Double, 1.5)
     }
 
+    /// Spec §3: unknown keys survive "in `layout`" — including one carried by a single entry of
+    /// `layout.texts`, the same as a component's own unknown keys.
+    func testAnUnknownKeyInATextEntrySurvivesARoundTrip() throws {
+        let data = Data("""
+        { "version": 2, "places": { "Not placed": {} }, "notes": [],
+          "layout": { "texts": [ { "text": "June", "style": "title", "at": [32, 32], "w": 64, "color": "blue" } ] } }
+        """.utf8)
+        let map = try BoardMap.decode(data)
+        XCTAssertEqual(map.texts.first?.text, "June")
+
+        let root = try object(try map.encoded())
+        let texts = try XCTUnwrap((root["layout"] as? [String: Any])?["texts"] as? [[String: Any]])
+        let first = try XCTUnwrap(texts.first)
+        XCTAssertEqual(first["color"] as? String, "blue", "an unknown key inside a text entry survives, the same as a component's")
+        XCTAssertEqual(first["text"] as? String, "June")
+    }
+
     /// Encoding is stable: a decode of what was written writes the same bytes again.
     func testARoundTripIsByteStable() throws {
         let once = try BoardMap.decode(june).encoded()

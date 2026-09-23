@@ -148,6 +148,8 @@ public struct BoardText: Equatable, Sendable, Identifiable {
     public var at: BoardPoint
     /// The width the board measured for it, so collisions never depend on laying out text.
     public var width: Int
+    /// Keys linkC does not know, kept so an edit never drops them.
+    var extras: Data?
 
     public init(id: UUID = UUID(), text: String, style: BoardTextStyle, at: BoardPoint, width: Int) {
         self.id = id
@@ -155,6 +157,7 @@ public struct BoardText: Equatable, Sendable, Identifiable {
         self.style = style
         self.at = at
         self.width = width
+        self.extras = nil
     }
 }
 
@@ -184,6 +187,7 @@ public struct BoardMap: Equatable, Sendable {
     private static let rootKeys: Set<String> = ["version", "system", "places", "notes", "layout"]
     private static let componentKeys: Set<String> = ["kind", "does", "reached_by", "runs", "status", "uses", "used_by"]
     private static let layoutKeys: Set<String> = ["components", "frames", "notes", "texts"]
+    private static let textKeys: Set<String> = ["text", "style", "at", "w"]
     /// Every version-1 component key linkC now knows, version-2 fields included: a version-1
     /// component that also carries `does`, `status` or `uses` must read them typed, not verbatim.
     private static let versionOneComponentKeys: Set<String> = [
@@ -393,9 +397,14 @@ public struct BoardMap: Equatable, Sendable {
             guard let at = note.at?.snapped else { return NSNull() }
             return [at.x, at.y]
         }
-        layout["texts"] = texts.map { text -> [String: Any] in
+        layout["texts"] = try texts.map { text -> [String: Any] in
+            var object = try Self.object(from: text.extras, context: "text \"\(text.text)\"'s extras")
             let at = text.at.snapped
-            return ["text": text.text, "style": text.style.rawValue, "at": [at.x, at.y], "w": text.width]
+            object["text"] = text.text
+            object["style"] = text.style.rawValue
+            object["at"] = [at.x, at.y]
+            object["w"] = text.width
+            return object
         }
         root["layout"] = layout
 
@@ -509,7 +518,9 @@ public struct BoardMap: Equatable, Sendable {
                 throw LinkCError.parse("\(itemContext) has style \"\(styleName)\"; styles are title and label")
             }
             let width = try int(entry, "w", context: itemContext) ?? 0
-            return BoardText(text: text, style: style, at: at, width: width)
+            var boardText = BoardText(text: text, style: style, at: at, width: width)
+            boardText.extras = try extras(of: entry, excluding: textKeys, context: itemContext)
+            return boardText
         }
     }
 
