@@ -279,6 +279,32 @@ final class BoardModelTests: XCTestCase {
         XCTAssertTrue(board.map.texts.isEmpty, "a text emptied of words goes away")
     }
 
+    /// Widening a text through `setText` must slide clear of things beside it, exactly as a move
+    /// would — every new text starts as "Text" and is renamed right after, so a wide name landing
+    /// on the box beside it is the everyday case, not an edge case.
+    func testWideningATextBesideABoxKeepsItClearOfTheBox() throws {
+        let board = fresh()
+        let box = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 100, y: 0)))
+        let textId = try XCTUnwrap(board.addText(at: BoardPoint(x: 0, y: 0), style: .label, text: "hi", width: 30))
+        board.setText(textId, to: "hi there, a much longer line", width: 200)
+        let boxRect = try XCTUnwrap(board.rect(of: .component(box)))
+        let textRect = try XCTUnwrap(board.rect(of: .text(textId)))
+        XCTAssertFalse(boxRect.intersects(textRect))
+    }
+
+    /// Widening a text that started near a frame's right edge follows the same drop rule a moved
+    /// element does: since its centre stays inside the frame, it settles wholly inside it rather
+    /// than sticking out past the edge.
+    func testWideningATextInsideAFrameStaysWhollyInside() throws {
+        let board = fresh()
+        let label = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 400, h: 200)))
+        let textId = try XCTUnwrap(board.addText(at: BoardPoint(x: 300, y: 8), style: .label, text: "hi", width: 30))
+        board.setText(textId, to: "hi there, a longer line", width: 100)
+        let frame = try XCTUnwrap(board.map.frames.first { $0.label == label }?.rect)
+        let textRect = try XCTUnwrap(board.rect(of: .text(textId)))
+        XCTAssertTrue(BoardGeometry.interior(of: frame).contains(textRect))
+    }
+
     func testRenamingAFrameMovesItsComponentsToTheNewPlace() throws {
         let board = fresh()
         let label = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 400, h: 200)))

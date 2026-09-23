@@ -331,7 +331,8 @@ public final class BoardModel {
         }
     }
 
-    /// New words for a text. Emptied of words, the text goes away.
+    /// New words for a text. Emptied of words, the text goes away. A wider text runs the same
+    /// drop step a move does, so a rename never lands it on top of what is beside it.
     public func setText(_ id: UUID, to text: String, width: Int) {
         edit { map in
             guard let index = map.texts.firstIndex(where: { $0.id == id }) else { return false }
@@ -342,6 +343,11 @@ public final class BoardModel {
             guard map.texts[index].text != text || map.texts[index].width != width else { return false }
             map.texts[index].text = text
             map.texts[index].width = width
+            let landed = BoardGeometry.elementDrop(
+                BoardGeometry.rect(of: map.texts[index]).snapped,
+                otherElements: Self.elementRects(map, excluding: [.text(id)]),
+                frames: Self.frameRects(map, excluding: []))
+            map.texts[index].at = landed.origin
             return true
         }
     }
