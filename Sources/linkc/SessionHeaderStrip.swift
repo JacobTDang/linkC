@@ -20,9 +20,7 @@ struct SessionHeaderStrip: View {
                 if let onBack {
                     ChromeButton(systemName: "chevron.left", help: "Back", action: onBack)
                 }
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Theme.agentColor(session.agentKind))
-                    .frame(width: 7, height: 7)
+                AgentLogoView(agent: session.agentKind)
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.textPrimary)

@@ -122,7 +122,7 @@ private struct TabChip: View {
             case .board:
                 Image(systemName: "square.grid.2x2").font(.system(size: 10))
             case .agent(let kind):
-                RoundedRectangle(cornerRadius: 2).fill(Theme.agentColor(kind)).frame(width: 7, height: 7)
+                AgentLogoView(agent: kind)
             case .terminal:
                 Image(systemName: "terminal").font(.system(size: 9))
             }

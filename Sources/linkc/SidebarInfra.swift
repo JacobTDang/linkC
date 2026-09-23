@@ -126,8 +126,8 @@ extension CompactRowShell where Badge == EmptyView, Subrow == EmptyView {
 }
 
 /// The quiet 8pt infra dot in an 18pt box, no glow — terminals, servers, and cloud rows use it
-/// as their leading mark. A claude session row uses `AgentMark`'s agent-colored square instead,
-/// with its state carried by the trailing status text's color.
+/// as their leading mark. A claude session row uses `AgentLogoView`'s logo instead, with its
+/// state carried by the trailing status text's color.
 private struct InfraDot: View {
     let color: Color
 

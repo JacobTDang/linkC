@@ -125,18 +125,6 @@ struct RowGlyph: View {
     }
 }
 
-/// The agent's color as a small rounded square — how a session row says which agent it is.
-private struct AgentMark: View {
-    let agent: AgentKind
-    var dimmed = false
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 2)
-            .fill(Theme.agentColor(agent).opacity(dimmed ? 0.6 : 1))
-            .frame(width: 7, height: 7)
-    }
-}
-
 /// A dim section label; when collapsible, a chevron and a tap to open or close it.
 private struct SectionLabel: View {
     let title: String
@@ -364,7 +352,7 @@ private struct SessionRow: View {
             help: "\(row.agentKind.displayName) — \(row.title)",
             action: { model.focus(row.id) }
         ) {
-            AgentMark(agent: row.agentKind)
+            AgentLogoView(agent: row.agentKind)
         } trailing: { hovering in
             HStack(spacing: 6) {
                 Text(row.status.text)
@@ -495,7 +483,7 @@ private struct EarlierSessionRow: View {
             help: "Restore \(session.agentKind.displayName) in \((session.cwd as NSString).abbreviatingWithTildeInPath)",
             action: { model.restore(session) }
         ) {
-            AgentMark(agent: session.agentKind, dimmed: true)
+            AgentLogoView(agent: session.agentKind).opacity(0.6)
         } trailing: { hovering in
             HStack(spacing: 6) {
                 if let ended = session.endedLabel(now: Date()) {
@@ -583,9 +571,7 @@ private struct UsageRowView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Theme.agentColor(row.agent).opacity(row.isStale ? 0.5 : 1))
-                .frame(width: 7, height: 7)
+            AgentLogoView(agent: row.agent).opacity(row.isStale ? 0.5 : 1)
             Text(row.agent.shortName)
                 .font(.system(size: 12))
                 .foregroundStyle(row.isStale ? Theme.textTertiary : Theme.textSecondary)
