@@ -4,15 +4,14 @@ import Observation
 import QuartzCore
 import SwiftUI
 
-/// The panel that hosts `PanelView`. Overriding `canBecomeKey` is REQUIRED: without it a
-/// borderless/utility panel refuses key status and the embedded SwiftTerm terminal never
-/// receives keystrokes.
 /// The panel's content host. The body never moves the window; `WindowDragHandle` does, behind
 /// the top rows.
 final class PanelHostingView<Content: View>: NSHostingView<Content> {
     override var mouseDownCanMoveWindow: Bool { false }
 }
 
+/// Overriding `canBecomeKey` is REQUIRED: without it a borderless/utility panel refuses key
+/// status and the embedded SwiftTerm terminal never receives keystrokes.
 final class StatusPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 

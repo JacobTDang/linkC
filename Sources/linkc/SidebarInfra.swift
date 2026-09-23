@@ -5,8 +5,7 @@ import LinkCKit
 // MARK: - Compact (sidebar) rows
 
 /// The sidebar's infra sections — Terminals, Servers, and Cloud — built from one shared compact
-/// row style, marked by a steady `InfraDot` rather than a claude session row's agent-colored
-/// square.
+/// row style, marked by a steady `InfraDot` rather than a claude session row's agent logo.
 
 /// The compact rows' shared shell: leading accessory · badge · title · middle · spacer · trailing,
 /// and optional subrow underneath, on the plane/hover/tap treatment every sidebar row repeats.
