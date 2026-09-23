@@ -190,6 +190,7 @@ private struct BrandRow: View {
             Text("linkC")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
+                .allowsHitTesting(false)
             Spacer()
             LauncherMenu(model: model)
         }
