@@ -269,6 +269,47 @@ final class SettingsComposerTests: XCTestCase {
         XCTAssertEqual(other["a"] as? Int, 1, "keys only present in user settings must survive the merge")
         XCTAssertEqual(other["b"] as? Int, 3, "project wins on conflicting keys")
     }
+
+    private func composedStatusLine(user: String? = nil, project: String? = nil, local: String? = nil) throws -> [String: Any]? {
+        let composed = try SettingsComposer.compose(
+            userSettings: user.map { Data($0.utf8) }, projectSettings: project.map { Data($0.utf8) },
+            projectLocalSettings: local.map { Data($0.utf8) }, port: 4242, token: "tok-test")
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
+        return decoded["statusLine"] as? [String: Any]
+    }
+
+    func testComposeAddsASilentStatusLinePostingToTheHookServer() throws {
+        let statusLine = try XCTUnwrap(try composedStatusLine())
+        XCTAssertEqual(statusLine["type"] as? String, "command")
+        XCTAssertEqual(
+            statusLine["command"] as? String,
+            "curl -s -m 2 -X POST -H 'X-LinkC-Token: tok-test' -H 'X-LinkC-Event: status_line' --data-binary @- http://127.0.0.1:4242/hook >/dev/null")
+    }
+
+    func testComposeKeepsTheUsersOwnStatusLine() throws {
+        let statusLine = try composedStatusLine(user: #"{"statusLine": {"type": "command", "command": "~/.claude/sl.sh"}}"#)
+        XCTAssertEqual(statusLine?["command"] as? String, "~/.claude/sl.sh")
+    }
+
+    func testComposeKeepsTheProjectsOwnStatusLine() throws {
+        let statusLine = try composedStatusLine(project: #"{"statusLine": {"type": "command", "command": "./sl.sh"}}"#)
+        XCTAssertEqual(statusLine?["command"] as? String, "./sl.sh")
+    }
+
+    /// Claude applies the project's local settings itself, under `--settings`: a status line
+    /// linkC added would override the user's, so it adds none.
+    func testComposeAddsNoStatusLineWhenTheProjectsLocalSettingsHaveOne() throws {
+        XCTAssertNil(try composedStatusLine(local: #"{"statusLine": {"type": "command", "command": "./mine.sh"}}"#))
+    }
+
+    func testDefinesStatusLineLooksAtEveryLayerAndFailsLoudOnBadJSON() throws {
+        let own = Data(#"{"statusLine": {"type": "command", "command": "x"}}"#.utf8)
+        XCTAssertFalse(try SettingsComposer.definesStatusLine(user: nil, project: nil, projectLocal: nil))
+        XCTAssertTrue(try SettingsComposer.definesStatusLine(user: own, project: nil, projectLocal: nil))
+        XCTAssertTrue(try SettingsComposer.definesStatusLine(user: nil, project: own, projectLocal: nil))
+        XCTAssertTrue(try SettingsComposer.definesStatusLine(user: nil, project: nil, projectLocal: own))
+        XCTAssertThrowsError(try SettingsComposer.definesStatusLine(user: nil, project: nil, projectLocal: Data("{".utf8)))
+    }
 }
 
 // MARK: - HookServer (real loopback end-to-end)

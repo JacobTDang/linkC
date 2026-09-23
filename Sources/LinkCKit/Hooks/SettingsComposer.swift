@@ -32,8 +32,12 @@ public enum SettingsComposer {
     }
 
     /// Deep-merge user + project settings with linkC hooks. Appends to existing hook
-    /// arrays rather than clobbering them.
-    public static func compose(userSettings: Data?, projectSettings: Data?, port: UInt16, token: String) throws -> Data {
+    /// arrays rather than clobbering them. Adds linkC's status line unless any settings layer —
+    /// including the project's local settings, which Claude applies itself — sets its own.
+    public static func compose(
+        userSettings: Data?, projectSettings: Data?, projectLocalSettings: Data? = nil,
+        port: UInt16, token: String
+    ) throws -> Data {
         let user = try decodeSettingsObject(userSettings, label: "user")
         let project = try decodeSettingsObject(projectSettings, label: "project")
 
@@ -49,6 +53,10 @@ public enum SettingsComposer {
         let userAndProjectHooks = concatHookArrays(base: userHooks, appending: projectHooks)
         merged["hooks"] = concatHookArrays(base: userAndProjectHooks, appending: linkcHooks(port: port, token: token))
 
+        if try !definesStatusLine(user: userSettings, project: projectSettings, projectLocal: projectLocalSettings) {
+            merged["statusLine"] = statusLine(port: port, token: token)
+        }
+
         guard JSONSerialization.isValidJSONObject(merged) else {
             throw LinkCError.parse("composed settings could not be represented as JSON")
         }
@@ -57,6 +65,27 @@ public enum SettingsComposer {
         } catch {
             throw LinkCError.parse("failed to serialize composed settings: \(error)")
         }
+    }
+
+    /// The status line linkC adds: it posts Claude's status JSON to the hook server and prints
+    /// nothing, so no status row appears. Any status line makes Claude drop the "esc to
+    /// interrupt" hint from its footer; Esc itself still works.
+    public static func statusLine(port: UInt16, token: String) -> [String: Any] {
+        [
+            "type": "command",
+            "command": "curl -s -m 2 -X POST -H 'X-LinkC-Token: \(token)' -H 'X-LinkC-Event: \(HookServer.statusLineEvent)' --data-binary @- http://127.0.0.1:\(port)/hook >/dev/null",
+        ]
+    }
+
+    /// True when any settings layer sets its own `statusLine` — linkC never replaces one.
+    public static func definesStatusLine(user: Data?, project: Data?, projectLocal: Data?) throws -> Bool {
+        let layers: [(label: String, data: Data?)] = [("user", user), ("project", project), ("project local", projectLocal)]
+        for layer in layers {
+            if try decodeSettingsObject(layer.data, label: layer.label)["statusLine"] != nil {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - linkcHooks construction
