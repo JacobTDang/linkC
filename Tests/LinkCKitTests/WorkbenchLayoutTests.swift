@@ -43,4 +43,33 @@ final class WorkbenchLayoutTests: XCTestCase {
     func testAnEmptyMapLaysOutToNothing() {
         XCTAssertTrue(WorkbenchLayout.positions(for: []).isEmpty)
     }
+
+    /// A negative cell never collides with an auto-filled one — those are always >= 0 — so it
+    /// must be honoured exactly like any other position.
+    func testANegativePositionIsKept() {
+        let positions = WorkbenchLayout.positions(for: [component("offboard", at: GridPoint(x: -1, y: -2))])
+        XCTAssertEqual(positions["offboard"], GridPoint(x: -1, y: -2))
+    }
+
+    /// When two components claim the same cell, the first in name order keeps it and the other
+    /// falls back to the same free-cell rule the unpositioned components use.
+    func testTwoComponentsClaimingTheSameCellGiveItToTheFirstByName() {
+        let positions = WorkbenchLayout.positions(for: [
+            component("apple", at: GridPoint(x: 0, y: 0)),
+            component("banana", at: GridPoint(x: 0, y: 0)),
+        ])
+        XCTAssertEqual(positions["apple"], GridPoint(x: 0, y: 0))
+        XCTAssertEqual(positions["banana"], GridPoint(x: 1, y: 0))
+    }
+
+    /// The same file, listed in the opposite order, must lay out identically — the outcome is
+    /// decided by name order, never by position in the file.
+    func testTwoComponentsClaimingTheSameCellInReverseFileOrderIsIdentical() {
+        let positions = WorkbenchLayout.positions(for: [
+            component("banana", at: GridPoint(x: 0, y: 0)),
+            component("apple", at: GridPoint(x: 0, y: 0)),
+        ])
+        XCTAssertEqual(positions["apple"], GridPoint(x: 0, y: 0))
+        XCTAssertEqual(positions["banana"], GridPoint(x: 1, y: 0))
+    }
 }

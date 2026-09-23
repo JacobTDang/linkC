@@ -1,7 +1,7 @@
 import Foundation
 
 /// A tile's place on the board, in whole grid cells — so a drag produces a one-line diff.
-public struct GridPoint: Equatable, Sendable {
+public struct GridPoint: Equatable, Hashable, Sendable {
     public var x: Int
     public var y: Int
 
