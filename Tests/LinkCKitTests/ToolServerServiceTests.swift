@@ -24,6 +24,29 @@ final class ToolServerServiceTests: XCTestCase {
         XCTAssertEqual(runner.calls.first?.args, ["ps", "--all", "--format", "json"])
     }
 
+    /// `BoardPane` re-reconciles on `.onChange(of: toolServers.projects)` — an `@Observable`
+    /// property fires its observers on every assignment, whether or not the value actually
+    /// changed, so a refresh that finds nothing new must not reassign it at all.
+    func testARefreshWithAnUnchangedResultDoesNotReassignProjects() async {
+        let runner = FakeRunner(result: .success(psJSON))
+        let service = ToolServerService(dockerPath: "/fake/docker", runner: runner)
+        await service.refresh()
+        await service.statsSweepTask?.value
+        XCTAssertEqual(service.projects.map(\.name), ["firecrawl"])
+
+        nonisolated(unsafe) var fired = 0
+        func track() {
+            withObservationTracking { _ = service.projects } onChange: { fired += 1 }
+        }
+        track()
+
+        await service.refresh()
+        await service.statsSweepTask?.value
+        for _ in 0..<50 { await Task.yield() }
+
+        XCTAssertEqual(fired, 0, "the same grouped projects must not trigger observation")
+    }
+
     func testContainerActionContractAndRefresh() async {
         let runner = FakeRunner(result: .success(psJSON))
         let service = ToolServerService(dockerPath: "/fake/docker", runner: runner)

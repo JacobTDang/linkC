@@ -82,9 +82,12 @@ public final class ToolServerService {
             let output = try await runner.run(
                 dockerPath, args: ["ps", "--all", "--format", "json"], cwd: nil, timeout: Self.listTimeout
             )
+            // Assigned only when it actually differs: BoardPane redraws off `projects`, and an
+            // Observable property's own equality guard aside, a reassignment here should never
+            // be reached at all for a sweep that found nothing new.
             let grouped = ToolServerCatalog.group(DockerPS.parse(output))
-            projects = grouped.projects
-            standalone = grouped.standalone
+            if projects != grouped.projects { projects = grouped.projects }
+            if standalone != grouped.standalone { standalone = grouped.standalone }
             // Every live compose project is worth remembering — that's what lets a downed
             // stack come back as a cold card instead of vanishing.
             for project in grouped.projects {
