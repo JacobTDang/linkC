@@ -106,4 +106,15 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(state.projectOrder, [])
         XCTAssertEqual(state.expandOverrides, [:])
     }
+
+    func testAProjectsBandStartsOpenAndRemembersBeingClosed() {
+        let state = SidebarState(defaults: defaults)
+        XCTAssertTrue(state.isWorkbenchOpen("/p"), "a project's board starts open")
+
+        state.setWorkbenchOpen("/p", false)
+        XCTAssertFalse(state.isWorkbenchOpen("/p"))
+        XCTAssertTrue(state.isWorkbenchOpen("/other"), "closing one project's board leaves the rest alone")
+
+        XCTAssertFalse(SidebarState(defaults: defaults).isWorkbenchOpen("/p"), "the choice survives a relaunch")
+    }
 }
