@@ -52,11 +52,13 @@ public struct SystemComponent: Equatable, Sendable, Identifiable {
     /// Where its tile sits. nil means the board lays it out.
     public var at: GridPoint?
     /// The object this component was decoded from, so keys linkC does not know survive an edit.
+    /// Left out of the public initialiser on purpose — only `SystemMap.decode` carries it, by
+    /// assigning this internal var directly, so code outside the module can never set it.
     var extras: Data?
 
     public init(
         name: String, kind: ComponentKind, reachedBy: String? = nil, runs: String? = nil,
-        usedBy: [String] = [], intended: Bool = false, at: GridPoint? = nil, extras: Data? = nil
+        usedBy: [String] = [], intended: Bool = false, at: GridPoint? = nil
     ) {
         self.name = name
         self.kind = kind
@@ -65,7 +67,7 @@ public struct SystemComponent: Equatable, Sendable, Identifiable {
         self.usedBy = usedBy
         self.intended = intended
         self.at = at
-        self.extras = extras
+        self.extras = nil
     }
 }
 
@@ -74,12 +76,14 @@ public struct SystemMap: Equatable, Sendable {
     public var version: Int
     public var components: [SystemComponent]
     /// The object the file was decoded from, so top-level keys linkC does not know survive.
+    /// Left out of the public initialiser on purpose — only `SystemMap.decode` carries it, by
+    /// assigning this internal var directly, so code outside the module can never set it.
     var extras: Data?
 
-    public init(version: Int = 1, components: [SystemComponent] = [], extras: Data? = nil) {
+    public init(version: Int = 1, components: [SystemComponent] = []) {
         self.version = version
         self.components = components
-        self.extras = extras
+        self.extras = nil
     }
 
     public static let empty = SystemMap()
@@ -111,28 +115,72 @@ public struct SystemMap: Equatable, Sendable {
             }
             seen.insert(key)
 
-            var at: GridPoint?
-            if let point = raw["at"] as? [String: Any],
-               let x = point["x"] as? Int, let y = point["y"] as? Int {
-                at = GridPoint(x: x, y: y)
-            }
-            components.append(SystemComponent(
+            let context = "component \"\(name)\" in system.json"
+            var component = SystemComponent(
                 name: name,
-                kind: ComponentKind((raw["kind"] as? String) ?? ComponentKind.service.raw),
-                reachedBy: raw["reached_by"] as? String,
-                runs: raw["runs"] as? String,
-                usedBy: (raw["used_by"] as? [String]) ?? [],
-                intended: (raw["intended"] as? Bool) ?? false,
-                at: at,
-                extras: try? JSONSerialization.data(withJSONObject: raw)))
+                kind: ComponentKind(try string(raw, "kind", context: context) ?? ComponentKind.service.raw),
+                reachedBy: try string(raw, "reached_by", context: context),
+                runs: try string(raw, "runs", context: context),
+                usedBy: try stringArray(raw, "used_by", context: context) ?? [],
+                intended: try bool(raw, "intended", context: context) ?? false,
+                at: try gridPoint(raw, context: context))
+            component.extras = try? JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys])
+            components.append(component)
         }
 
         var rootExtras = root
         rootExtras.removeValue(forKey: "components")
-        return SystemMap(
-            version: (root["version"] as? Int) ?? 1,
-            components: components,
-            extras: try? JSONSerialization.data(withJSONObject: rootExtras))
+        rootExtras.removeValue(forKey: "version")
+        var map = SystemMap(
+            version: try int(root, "version", context: "system.json") ?? 1,
+            components: components)
+        map.extras = try? JSONSerialization.data(withJSONObject: rootExtras, options: [.sortedKeys])
+        return map
+    }
+
+    /// A known key that is present but not the format's type for it refuses the whole file —
+    /// an absent key is unaffected and keeps its default.
+    private static func string(_ raw: [String: Any], _ key: String, context: String) throws -> String? {
+        guard let value = raw[key] else { return nil }
+        guard let string = value as? String else {
+            throw LinkCError.parse("\(context) has \"\(key)\" but it is not text")
+        }
+        return string
+    }
+
+    private static func bool(_ raw: [String: Any], _ key: String, context: String) throws -> Bool? {
+        guard let value = raw[key] else { return nil }
+        guard let bool = value as? Bool else {
+            throw LinkCError.parse("\(context) has \"\(key)\" but it is not true or false")
+        }
+        return bool
+    }
+
+    private static func int(_ raw: [String: Any], _ key: String, context: String) throws -> Int? {
+        guard let value = raw[key] else { return nil }
+        guard let int = value as? Int else {
+            throw LinkCError.parse("\(context) has \"\(key)\" but it is not a whole number")
+        }
+        return int
+    }
+
+    private static func stringArray(_ raw: [String: Any], _ key: String, context: String) throws -> [String]? {
+        guard let value = raw[key] else { return nil }
+        guard let array = value as? [String] else {
+            throw LinkCError.parse("\(context) has \"\(key)\" but it is not a list of text")
+        }
+        return array
+    }
+
+    /// `at` must carry both `x` and `y` as whole numbers or the file is refused — a half-formed
+    /// position is not a usable one.
+    private static func gridPoint(_ raw: [String: Any], context: String) throws -> GridPoint? {
+        guard let value = raw["at"] else { return nil }
+        guard let point = value as? [String: Any],
+              let x = point["x"] as? Int, let y = point["y"] as? Int else {
+            throw LinkCError.parse("\(context) has \"at\" but it needs whole-number x and y")
+        }
+        return GridPoint(x: x, y: y)
     }
 
     /// The file's bytes, keeping every key linkC does not know and omitting empty fields.
