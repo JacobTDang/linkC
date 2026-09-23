@@ -15,7 +15,7 @@ The shipped version was a strip of grid tiles, hidden behind a hover menu labell
 A Chrome-style strip across the top of the right pane, above the terminal, for the project selected in the sidebar:
 
 - **Board** — pinned first, never shrinks, never closes.
-- **One tab per session in the project** — agent sessions and plain terminals whose folder is the project's, in the order they were opened. Each tab carries the agent's colour mark and the session title.
+- **One tab per session in the project** — agent sessions, then plain terminals, whose folder is the project's, each group in the order it was opened. Each tab carries the agent's colour mark and the session title.
 - **＋** — opens the same "add an agent" menu as the sidebar row.
 
 Behaviour:
@@ -194,7 +194,7 @@ Pure types in LinkCKit carry the rules; the app target draws them.
 - `SystemMap` (version 2) — `system`, `places`, `notes`, `layout`, and the unknown keys kept for round-tripping. `decode` reads versions 1 and 2; `encoded` writes version 2. Replaces the workbench's `SystemMap`.
 - `BoardGeometry` — rectangles for every element; which frame a rectangle belongs to; the nearest free spot for a moved or resized element; arrow anchors and routes; which elements intersect a viewport. Pure maths, no UI.
 - `BoardModel` — `@MainActor @Observable`: the map, the selection, the current tool, undo and redo, the last reconcile, the pending write and the on-disk check. Every edit goes through it, and it derives each component's place and its `uses` from the drawing.
-- `ProjectTabs` — the tabs of a project (Board first, then sessions in opening order) and the ⌘-number mapping.
+- `ProjectTabs` — the tabs of a project (Board first, then agent sessions, then plain terminals, each in opening order) and the key mapping for ⌘1–⌘9 and ⌃Tab. `BoardKeyMap` — the canvas's keys, mapped to commands, pure.
 - `BoardReport` — the markdown the MCP tool returns. Replaces `SystemMapReport`.
 - Carried over, moved into this folder: `SystemMapStore` (plus the on-disk check) and `SystemReconciler` (reading the place label as well as `runs`).
 - Removed: the workbench's `WorkbenchLayout` and `WorkbenchModel`, superseded.
