@@ -33,6 +33,9 @@ struct BoardCanvas: View {
     @State private var editingNote: UUID?
     @State private var editingText: UUID?
     @State private var editingFrame: String?
+    /// Why the frame label editor's own last commit was refused — never a stale reason from
+    /// something else.
+    @State private var frameRenameRefusal: String?
     @State private var editingArrow: BoardModel.ArrowKey?
     /// A component under the pointer, whose side handles are showing.
     @State private var hovered: String?
@@ -40,7 +43,8 @@ struct BoardCanvas: View {
     @State private var arrowDraft: (from: String, to: CGPoint)?
     /// A frame being drawn, in screen points.
     @State private var frameDraft: CGRect?
-    /// Where the quick-add menu opens, in screen points.
+    /// Where the quick-add menu opens and what it places, in canvas points — fixed at the
+    /// double-click, so a pan or zoom while it's open doesn't move where the choice lands.
     @State private var quickAddAt: CGPoint?
     @State private var showingSuggestions = false
     @State private var systemDraft = ""
@@ -141,8 +145,8 @@ struct BoardCanvas: View {
                                 component: component,
                                 livesIn: component.place,
                                 uses: component.uses.keys.sorted().map { ($0, component.uses[$0] ?? "") },
-                                refusal: board.refusal,
                                 commit: { board.updateComponent(component.name, to: $0) },
+                                currentRefusal: { board.refusal },
                                 close: { inspecting = nil })
                         }
                         .offset(x: CGFloat(at.x), y: CGFloat(at.y))
@@ -180,6 +184,7 @@ struct BoardCanvas: View {
                         LineEditor(text: text.text, font: TextLabel.font(text.style), width: CGFloat(max(text.width, 120))) { words in
                             board.setText(text.id, to: words, width: TextLabel.width(of: words, style: text.style))
                             editingText = nil
+                            return true
                         }
                     } else {
                         TextLabel(text: text, isSelected: board.selection.contains(.text(text.id)))
@@ -203,14 +208,20 @@ struct BoardCanvas: View {
             let offset = liveOffset(for: .frame(frame.label), place: nil)
             Group {
                 if editingFrame == frame.label {
-                    LineEditor(text: frame.label, font: .system(size: 10, weight: .semibold), width: 160) { label in
-                        board.renameFrame(frame.label, to: label)
-                        editingFrame = nil
+                    LineEditor(text: frame.label, font: .system(size: 10, weight: .semibold), width: 160,
+                               refusal: frameRenameRefusal) { label in
+                        if board.renameFrame(frame.label, to: label) {
+                            editingFrame = nil
+                            frameRenameRefusal = nil
+                            return true
+                        }
+                        frameRenameRefusal = board.refusal
+                        return false
                     }
                 } else {
                     FrameLabel(label: frame.label, isSelected: board.selection.contains(.frame(frame.label)))
                         .gesture(elementDrag(.frame(frame.label)))
-                        .onTapGesture(count: 2) { editingFrame = frame.label }
+                        .onTapGesture(count: 2) { editingFrame = frame.label; frameRenameRefusal = nil }
                         .onTapGesture { select(.frame(frame.label)) }
                 }
             }
@@ -292,10 +303,10 @@ struct BoardCanvas: View {
                 if let quickAddAt {
                     Color.clear
                         .frame(width: 1, height: 1)
-                        .position(quickAddAt)
+                        .position(viewport.toScreen(quickAddAt))
                         .popover(isPresented: Binding(get: { self.quickAddAt != nil }, set: { if !$0 { self.quickAddAt = nil } })) {
                             QuickAddMenu { choice in
-                                place(choice, at: viewport.toCanvas(quickAddAt))
+                                place(choice, at: quickAddAt)
                                 self.quickAddAt = nil
                             }
                         }
@@ -309,6 +320,7 @@ struct BoardCanvas: View {
                     ) { label in
                         board.setArrowLabel(editingArrow, to: label)
                         self.editingArrow = nil
+                        return true
                     }
                     .position(mid)
                 }
@@ -638,6 +650,7 @@ struct BoardCanvas: View {
             let bottomRight = viewport.toCanvas(CGPoint(x: frameDraft.maxX, y: frameDraft.maxY))
             editingFrame = board.addFrame(BoardRect(x: Int(topLeft.x), y: Int(topLeft.y),
                                                     w: Int(bottomRight.x - topLeft.x), h: Int(bottomRight.y - topLeft.y)))
+            frameRenameRefusal = nil
             board.tool = .select
             return
         }
@@ -681,7 +694,7 @@ struct BoardCanvas: View {
             board.selection = [.arrow(arrow)]
             editingArrow = arrow
         } else {
-            quickAddAt = location
+            quickAddAt = viewport.toCanvas(location)
         }
     }
 
@@ -702,6 +715,7 @@ struct BoardCanvas: View {
             editingText = board.addText(at: BoardPoint(x: x - width / 2, y: y - 10), style: .label, text: "Text", width: width)
         case .frame:
             editingFrame = board.addFrame(BoardRect(x: x - 160, y: y - 100, w: 320, h: 200))
+            frameRenameRefusal = nil
         }
         board.tool = .select
     }

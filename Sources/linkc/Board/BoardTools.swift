@@ -66,30 +66,35 @@ struct BoardToolbar: View {
 
 /// The card beside a selected component.
 struct ComponentInspector: View {
-    let original: String
     let livesIn: String
     let uses: [(target: String, label: String)]
-    let refusal: String?
     /// Commits the draft; returns false when the board refused it, which keeps the card open.
     let commit: (BoardComponent) -> Bool
+    /// The board's refusal reason, read only when this card's own Done is refused — never a
+    /// stale reason left over from something else.
+    let currentRefusal: () -> String?
     let close: () -> Void
 
     @State private var draft: BoardComponent
+    @State private var refusal: String?
+    @FocusState private var nameFocused: Bool
 
-    init(component: BoardComponent, livesIn: String, uses: [(target: String, label: String)], refusal: String?,
-         commit: @escaping (BoardComponent) -> Bool, close: @escaping () -> Void) {
-        self.original = component.name
+    init(component: BoardComponent, livesIn: String, uses: [(target: String, label: String)],
+         commit: @escaping (BoardComponent) -> Bool, currentRefusal: @escaping () -> String?, close: @escaping () -> Void) {
         self.livesIn = livesIn
         self.uses = uses
-        self.refusal = refusal
         self.commit = commit
+        self.currentRefusal = currentRefusal
         self.close = close
         _draft = State(wrappedValue: component)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            field("Name", text: $draft.name)
+            VStack(alignment: .leading, spacing: 3) {
+                caption("Name")
+                TextField("", text: $draft.name).focused($nameFocused)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 caption("Kind")
                 Picker("", selection: $draft.kind) {
@@ -116,7 +121,11 @@ struct ComponentInspector: View {
             HStack {
                 Spacer()
                 Button("Done") {
-                    if commit(draft) { close() }
+                    if commit(draft) {
+                        close()
+                    } else {
+                        refusal = currentRefusal()
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
             }
@@ -125,6 +134,7 @@ struct ComponentInspector: View {
         .font(.system(size: 11))
         .padding(12)
         .frame(width: 280)
+        .onAppear { nameFocused = true }
     }
 
     /// The known kinds, plus this component's own kind when linkC does not know it — so a
@@ -185,43 +195,50 @@ struct NoteEditor: View {
 }
 
 /// A single line being edited in place — a text, a frame's label, an arrow's label. Commits on
-/// Return or when focus leaves.
+/// Return or when focus leaves. `commit` returns false when the board refused the value, which
+/// keeps the editor open with what was typed; `refusal` is shown beneath it when that happens.
 struct LineEditor: View {
     let font: Font
     let width: CGFloat
-    let commit: (String) -> Void
+    let refusal: String?
+    let commit: (String) -> Bool
     @State private var text: String
-    @State private var committed = false
+    @State private var closed = false
     @FocusState private var focused: Bool
 
-    init(text: String, font: Font, width: CGFloat, commit: @escaping (String) -> Void) {
+    init(text: String, font: Font, width: CGFloat, refusal: String? = nil, commit: @escaping (String) -> Bool) {
         self.font = font
         self.width = width
+        self.refusal = refusal
         self.commit = commit
         _text = State(wrappedValue: text)
     }
 
     var body: some View {
-        TextField("", text: $text)
-            .textFieldStyle(.plain)
-            .font(font)
-            .foregroundStyle(Theme.textPrimary)
-            .padding(.horizontal, 4)
-            .frame(width: width)
-            .background(RoundedRectangle(cornerRadius: 4).fill(Theme.boardBox))
-            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.accent, lineWidth: 1))
-            .focused($focused)
-            .onAppear { focused = true }
-            .onSubmit(finish)
-            .onChange(of: focused) { _, isFocused in
-                if !isFocused { finish() }
+        VStack(alignment: .leading, spacing: 3) {
+            TextField("", text: $text)
+                .textFieldStyle(.plain)
+                .font(font)
+                .foregroundStyle(Theme.textPrimary)
+                .padding(.horizontal, 4)
+                .frame(width: width)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Theme.boardBox))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.accent, lineWidth: 1))
+                .focused($focused)
+                .onAppear { focused = true }
+                .onSubmit(finish)
+                .onChange(of: focused) { _, isFocused in
+                    if !isFocused { finish() }
+                }
+            if let refusal {
+                Text(refusal).font(.system(size: 9.5)).foregroundStyle(Theme.accent)
             }
+        }
     }
 
     private func finish() {
-        guard !committed else { return }
-        committed = true
-        commit(text)
+        guard !closed else { return }
+        if commit(text) { closed = true }
     }
 }
 
