@@ -184,4 +184,126 @@ final class BoardMapTests: XCTestCase {
         XCTAssertEqual(a.center, BoardPoint(x: 50, y: 25))
         XCTAssertEqual(BoardRect(x: 5, y: 11, w: 150, h: 57).snapped, BoardRect(x: 8, y: 8, w: 152, h: 56))
     }
+
+    func testRectContainsPoint() {
+        let a = BoardRect(x: 10, y: 20, w: 100, h: 50)
+        XCTAssertTrue(a.contains(BoardPoint(x: 10, y: 20)), "the near corner is inside")
+        XCTAssertTrue(a.contains(BoardPoint(x: 109, y: 69)), "just inside the far edges")
+        XCTAssertFalse(a.contains(BoardPoint(x: 110, y: 40)), "the far x edge itself is outside")
+        XCTAssertFalse(a.contains(BoardPoint(x: 50, y: 70)), "the far y edge itself is outside")
+        XCTAssertFalse(a.contains(BoardPoint(x: 9, y: 20)), "left of the near edge is outside")
+        XCTAssertFalse(a.contains(BoardPoint(x: 10, y: 19)), "above the near edge is outside")
+    }
+
+    func testRectOffsetBy() {
+        let a = BoardRect(x: 10, y: 20, w: 100, h: 50)
+        XCTAssertEqual(a.offsetBy(dx: 5, dy: -3), BoardRect(x: 15, y: 17, w: 100, h: 50))
+    }
+
+    func testAComponentWithNoKindIsAService() throws {
+        let data = Data(#"{"version": 2, "places": {"Not placed": {"api": {}}}}"#.utf8)
+        let map = try BoardMap.decode(data)
+        XCTAssertEqual(map.components.first?.kind, .service)
+    }
+
+    // MARK: - Version-1 upgrade keeps every version-2 field
+
+    func testAVersionOneComponentsDoesSurvives() throws {
+        let v1 = Data("""
+        { "version": 1, "components": [ { "name": "api", "kind": "service", "does": "HTTP api" } ] }
+        """.utf8)
+        let map = try BoardMap.decode(v1)
+        XCTAssertEqual(map.components.first?.does, "HTTP api")
+        let root = try object(try map.encoded())
+        let api = try XCTUnwrap(((root["places"] as? [String: Any])?[BoardMap.notPlaced] as? [String: Any])?["api"] as? [String: Any])
+        XCTAssertEqual(api["does"] as? String, "HTTP api", "does survives the upgrade instead of landing in extras")
+    }
+
+    func testAVersionOneComponentsStatusSurvives() throws {
+        let v1 = Data("""
+        { "version": 1, "components": [ { "name": "redis", "kind": "cache", "status": "planned" } ] }
+        """.utf8)
+        let map = try BoardMap.decode(v1)
+        XCTAssertTrue(try XCTUnwrap(map.components.first).planned)
+        let root = try object(try map.encoded())
+        let redis = try XCTUnwrap(((root["places"] as? [String: Any])?[BoardMap.notPlaced] as? [String: Any])?["redis"] as? [String: Any])
+        XCTAssertEqual(redis["status"] as? String, "planned")
+    }
+
+    func testAVersionOneComponentsInvalidStatusIsRefusedWithTheSameMessageAsVersionTwo() {
+        let v1 = Data(#"{"version": 1, "components": [{"name": "api", "status": "done"}]}"#.utf8)
+        let v2 = Data(#"{"version": 2, "places": {"Not placed": {"api": {"status": "done"}}}}"#.utf8)
+        var v1Message = ""
+        var v2Message = ""
+        XCTAssertThrowsError(try BoardMap.decode(v1)) { v1Message = "\($0)" }
+        XCTAssertThrowsError(try BoardMap.decode(v2)) { v2Message = "\($0)" }
+        XCTAssertEqual(v1Message, v2Message, "version 1 refuses a bad status with the same reason version 2 gives")
+    }
+
+    func testAVersionOneComponentsUsesMergesWithUsedByAndWinsOnAClash() throws {
+        let v1 = Data("""
+        { "version": 1, "components": [
+            { "name": "postgres", "kind": "database", "used_by": ["api"] },
+            { "name": "redis", "kind": "cache", "used_by": ["api"] },
+            { "name": "api", "kind": "service", "uses": { "postgres": "reads and writes entries" } }
+          ] }
+        """.utf8)
+        let map = try BoardMap.decode(v1)
+        let api = try XCTUnwrap(map.components.first { $0.name == "api" })
+        XCTAssertEqual(
+            api.uses, ["postgres": "reads and writes entries", "redis": ""],
+            "used_by fills in redis, but the explicit label for postgres wins over what used_by would give")
+        let root = try object(try map.encoded())
+        let apiOut = try XCTUnwrap(((root["places"] as? [String: Any])?[BoardMap.notPlaced] as? [String: Any])?["api"] as? [String: Any])
+        XCTAssertEqual(apiOut["uses"] as? [String: String], ["postgres": "reads and writes entries", "redis": ""])
+    }
+
+    func testAVersionOneRootsSystemSurvives() throws {
+        let v1 = Data(#"{"version": 1, "system": "June", "components": []}"#.utf8)
+        let map = try BoardMap.decode(v1)
+        XCTAssertEqual(map.system, "June")
+        let root = try object(try map.encoded())
+        XCTAssertEqual(root["system"] as? String, "June")
+    }
+
+    func testAVersionOneRootsNotesSurvive() throws {
+        let v1 = Data(#"{"version": 1, "notes": ["kept"], "components": []}"#.utf8)
+        let map = try BoardMap.decode(v1)
+        XCTAssertEqual(map.notes.map(\.text), ["kept"])
+        let root = try object(try map.encoded())
+        XCTAssertEqual(root["notes"] as? [String], ["kept"])
+    }
+
+    func testAVersionOneFileWithLayoutIsRefused() {
+        let v1 = Data(#"{"version": 1, "components": [], "layout": {"components": {}}}"#.utf8)
+        XCTAssertThrowsError(try BoardMap.decode(v1)) { error in
+            let message = "\(error)"
+            XCTAssertTrue(message.contains("version 1"), "\(message) should name version 1")
+            XCTAssertTrue(message.contains("version 2"), "\(message) should name version 2")
+        }
+    }
+
+    // MARK: - Orphaned layout entries
+
+    func testAnOrphanedLayoutEntryIsDroppedWhileRealOnesAreKept() throws {
+        let data = Data("""
+        { "version": 2,
+          "places": { "Local docker": { "api": { "kind": "service" } }, "Not placed": {} },
+          "notes": [],
+          "layout": {
+            "components": { "api": [64, 128], "ghost": [999, 999] },
+            "frames": { "Local docker": [40, 96, 344, 200], "Ghost frame": [1, 2, 3, 4] },
+            "notes": []
+          } }
+        """.utf8)
+        let map = try BoardMap.decode(data)
+        XCTAssertEqual(map.components.first?.at, BoardPoint(x: 64, y: 128), "the real position is kept")
+        XCTAssertEqual(map.frames.map(\.label), ["Local docker"], "only real places became frames")
+        XCTAssertEqual(map.frames.first?.rect, BoardRect(x: 40, y: 96, w: 344, h: 200), "the real frame's rect is kept")
+
+        let root = try object(try map.encoded())
+        let layout = try XCTUnwrap(root["layout"] as? [String: Any])
+        XCTAssertEqual((layout["components"] as? [String: [Int]])?.keys.sorted(), ["api"], "the orphaned position never resurfaces")
+        XCTAssertNil((layout["frames"] as? [String: [Int]])?["Ghost frame"], "the orphaned frame rect never resurfaces")
+    }
 }

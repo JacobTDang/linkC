@@ -184,7 +184,14 @@ public struct BoardMap: Equatable, Sendable {
     private static let rootKeys: Set<String> = ["version", "system", "places", "notes", "layout"]
     private static let componentKeys: Set<String> = ["kind", "does", "reached_by", "runs", "status", "uses", "used_by"]
     private static let layoutKeys: Set<String> = ["components", "frames", "notes", "texts"]
-    private static let versionOneComponentKeys: Set<String> = ["name", "kind", "reached_by", "runs", "used_by", "intended", "at"]
+    /// Every version-1 component key linkC now knows, version-2 fields included: a version-1
+    /// component that also carries `does`, `status` or `uses` must read them typed, not verbatim.
+    private static let versionOneComponentKeys: Set<String> = [
+        "name", "kind", "does", "reached_by", "runs", "status", "uses", "used_by", "intended", "at",
+    ]
+    /// Every version-1 root key linkC now knows, version-2 fields included: `system` and `notes`
+    /// on a version-1 file read typed, not verbatim.
+    private static let versionOneRootKeys: Set<String> = ["version", "components", "system", "notes"]
 
     // MARK: - Decoding
 
@@ -214,6 +221,9 @@ public struct BoardMap: Equatable, Sendable {
         }
         let layoutContext = "the layout in system-map.json"
         let layout = try dictionary(root, "layout", context: "system-map.json") ?? [:]
+        // An entry here naming something absent from `places` has nothing to attach to below —
+        // it is deliberately dropped: a position for a component or frame that does not exist
+        // is meaningless, and it never resurfaces on the next encode.
         let positions = try pointMap(layout, "components", context: layoutContext) ?? [:]
         let frameRects = try rectMap(layout, "frames", context: layoutContext) ?? [:]
 
@@ -245,17 +255,13 @@ public struct BoardMap: Equatable, Sendable {
                     throw LinkCError.parse("component \"\(name)\" in system-map.json is not an object")
                 }
                 let context = "component \"\(name)\" in system-map.json"
-                let status = try string(raw, "status", context: context)
-                if let status, status != "planned" {
-                    throw LinkCError.parse("\(context) has status \"\(status)\"; the only status is \"planned\"")
-                }
                 var component = BoardComponent(
                     name: name,
                     kind: ComponentKind(try string(raw, "kind", context: context) ?? ComponentKind.service.raw),
                     does: try string(raw, "does", context: context),
                     reachedBy: try string(raw, "reached_by", context: context),
                     runs: try string(raw, "runs", context: context),
-                    planned: status == "planned",
+                    planned: try plannedStatus(raw, context: context),
                     uses: try stringMap(raw, "uses", context: context) ?? [:],
                     legacyUsedBy: try stringArray(raw, "used_by", context: context) ?? [],
                     place: place,
@@ -266,6 +272,8 @@ public struct BoardMap: Equatable, Sendable {
         }
 
         let noteTexts = try stringArray(root, "notes", context: "system-map.json") ?? []
+        // Deliberately dropped, same as above: a `layout.notes` entry past the end of `notes`
+        // has no note left to place, so the zip below never reaches it.
         let notePositions = try optionalPointList(layout, "notes", context: layoutContext) ?? []
         map.notes = noteTexts.enumerated().map { index, text in
             BoardNote(text: text, at: index < notePositions.count ? notePositions[index] : nil)
@@ -277,6 +285,12 @@ public struct BoardMap: Equatable, Sendable {
     }
 
     private static func decodeVersionOne(_ root: [String: Any]) throws -> BoardMap {
+        // A layout cannot be meaningfully merged into a version-1 list: refuse rather than guess.
+        guard root["layout"] == nil else {
+            throw LinkCError.parse(
+                "system-map.json mixes version 1 and version 2: it has \"layout\", which only version 2 supports; "
+                    + "set \"version\": 2 to use it, or remove \"layout\" to stay on version 1")
+        }
         guard let rawComponents = root["components"] as? [[String: Any]] else {
             throw LinkCError.parse("system-map.json has no components list")
         }
@@ -298,34 +312,45 @@ public struct BoardMap: Equatable, Sendable {
                 }
                 at = BoardPoint(x: x * 160, y: y * 64)
             }
+            // "intended" is version 1's own flag; "status" is version 2's. Either check must run
+            // regardless of the other, so a bad status is never skipped just because intended is set.
+            let intended = try bool(raw, "intended", context: context) ?? false
+            let statusPlanned = try plannedStatus(raw, context: context)
             var component = BoardComponent(
                 name: name,
                 kind: ComponentKind(try string(raw, "kind", context: context) ?? ComponentKind.service.raw),
+                does: try string(raw, "does", context: context),
                 reachedBy: try string(raw, "reached_by", context: context),
                 runs: try string(raw, "runs", context: context),
-                planned: try bool(raw, "intended", context: context) ?? false,
+                planned: intended || statusPlanned,
+                uses: try stringMap(raw, "uses", context: context) ?? [:],
                 at: at)
             component.extras = try extras(of: raw, excluding: versionOneComponentKeys, context: context)
             components.append(component)
             usedBy.append(try stringArray(raw, "used_by", context: context) ?? [])
         }
 
-        // Version 1 said who uses a component; version 2 says what a component uses.
+        // Version 1 said who uses a component; version 2 says what a component uses. A
+        // component's own explicit "uses" always wins — used_by only fills in a key not already there.
         let indexByName = Dictionary(uniqueKeysWithValues: components.enumerated().map { ($0.element.name.lowercased(), $0.offset) })
         for (index, users) in usedBy.enumerated() {
             for user in users {
                 if let userIndex = indexByName[user.lowercased()] {
-                    components[userIndex].uses[components[index].name] = ""
+                    let usedName = components[index].name
+                    if components[userIndex].uses[usedName] == nil {
+                        components[userIndex].uses[usedName] = ""
+                    }
                 } else {
                     components[index].legacyUsedBy.append(user)
                 }
             }
         }
 
-        var map = BoardMap()
+        var map = BoardMap(system: try string(root, "system", context: "system-map.json"))
         map.components = components
+        map.notes = (try stringArray(root, "notes", context: "system-map.json") ?? []).map { BoardNote(text: $0) }
         map.sourceVersion = 1
-        map.extras = try extras(of: root, excluding: ["version", "components"], context: "system-map.json")
+        map.extras = try extras(of: root, excluding: versionOneRootKeys, context: "system-map.json")
         return map
     }
 
@@ -390,6 +415,15 @@ public struct BoardMap: Equatable, Sendable {
         guard let value = raw[key] else { return nil }
         guard let string = value as? String else { throw LinkCError.parse("\(context) has \"\(key)\" but it is not text") }
         return string
+    }
+
+    /// Reads "status", whose only allowed value is "planned" — the same check both versions apply.
+    private static func plannedStatus(_ raw: [String: Any], context: String) throws -> Bool {
+        guard let status = try string(raw, "status", context: context) else { return false }
+        guard status == "planned" else {
+            throw LinkCError.parse("\(context) has status \"\(status)\"; the only status is \"planned\"")
+        }
+        return true
     }
 
     private static func bool(_ raw: [String: Any], _ key: String, context: String) throws -> Bool? {
