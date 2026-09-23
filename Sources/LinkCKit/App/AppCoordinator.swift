@@ -1048,7 +1048,16 @@ public final class AppCoordinator {
         let user = try? Data(contentsOf: userSettingsURL)
         let projectDir = URL(fileURLWithPath: session.cwd).appendingPathComponent(".claude")
         let project = try? Data(contentsOf: projectDir.appendingPathComponent("settings.json"))
-        let projectLocal = try? Data(contentsOf: projectDir.appendingPathComponent("settings.local.json"))
+        let projectLocalURL = projectDir.appendingPathComponent("settings.local.json")
+        var projectLocal = try? Data(contentsOf: projectLocalURL)
+        // linkC never needed this file before and only reads it to decide whether to add its
+        // own status line — unlike the user's and the project's settings.json, a syntax error
+        // here must not block launching a session. Empty/missing data already reads as "defines
+        // nothing" further down, so only genuinely malformed, non-empty content is swapped out.
+        if let raw = projectLocal, !raw.isEmpty, !((try? JSONSerialization.jsonObject(with: raw)) is [String: Any]) {
+            NSLog("[linkC] %@ has malformed JSON — launching as if it defined no status line", projectLocalURL.path)
+            projectLocal = nil
+        }
         let data = try SettingsComposer.compose(
             userSettings: user, projectSettings: project, projectLocalSettings: projectLocal,
             port: hookServer.port, token: hookToken)

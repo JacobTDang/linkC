@@ -1442,5 +1442,27 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertNil(composed["statusLine"], "Claude applies the local status line itself; linkC must not override it")
         XCTAssertEqual(coordinator.claudeUsage?.unavailableReason, ClaudeRateLimits.ownStatusLineReason)
     }
+
+    /// linkC never needed `.claude/settings.local.json` before and only consults it to decide
+    /// whether to add its own status line, so a stray syntax error in that file must not block
+    /// launching a session — it must be treated as if it defined no status line of its own.
+    func testAMalformedLocalSettingsFileDoesNotBlockALaunch() throws {
+        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sl-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        let dotClaude = cwd.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: dotClaude, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+        try Data(#"{ this is not valid JSON"#.utf8)
+            .write(to: dotClaude.appendingPathComponent("settings.local.json"))
+        let coordinator = makeCoordinator(claudePath: "/bin/cat", settingsDir: settingsDir)
+
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        defer { coordinator.stopSession(session.id) }
+
+        let file = settingsDir.appendingPathComponent("session-\(session.id).json")
+        let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        let statusLine = try XCTUnwrap(composed["statusLine"] as? [String: Any])
+        XCTAssertEqual((statusLine["command"] as? String)?.contains(coordinator.hookToken), true)
+    }
 }
 
