@@ -218,6 +218,7 @@ public final class BoardModel {
     @discardableResult
     public func addText(at point: BoardPoint, style: BoardTextStyle, text: String, width: Int) -> UUID? {
         var added: UUID?
+        let width = Self.roundedUpToGrid(width)
         edit { map in
             let probe = BoardText(text: text, style: style, at: point, width: width)
             let rect = BoardGeometry.elementDrop(
@@ -348,6 +349,7 @@ public final class BoardModel {
     /// New words for a text. Emptied of words, the text goes away. A wider text runs the same
     /// drop step a move does, so a rename never lands it on top of what is beside it.
     public func setText(_ id: UUID, to text: String, width: Int) {
+        let width = Self.roundedUpToGrid(width)
         edit { map in
             guard let index = map.texts.firstIndex(where: { $0.id == id }) else { return false }
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -545,6 +547,14 @@ public final class BoardModel {
             suffix += 1
         }
         return name
+    }
+
+    /// A text's width, always rounded up to the grid before it is stored — never down, so it
+    /// stays wide enough for its words, and never left as-is, so the collision check (which
+    /// rounds too) checks the exact number that ends up on the map.
+    static func roundedUpToGrid(_ width: Int) -> Int {
+        let step = BoardPoint.grid
+        return ((width + step - 1) / step) * step
     }
 
     // MARK: - Internals

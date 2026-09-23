@@ -404,6 +404,20 @@ final class BoardModelTests: XCTestCase {
         XCTAssertFalse(boxRect.intersects(textRect))
     }
 
+    /// R4: the collision check must work from the same width that ends up stored — a 203-wide
+    /// text stored as 203 but checked as 200 would still overlap a box that starts exactly at
+    /// x=200. Storing the width rounded up to the grid keeps the two in step.
+    func testAWideningTextRoundsItsStoredWidthUpSoItNeverOverlapsWhatItAvoided() throws {
+        let board = fresh()
+        let box = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 200, y: 0)))
+        let textId = try XCTUnwrap(board.addText(at: BoardPoint(x: 0, y: 0), style: .label, text: "hi", width: 30))
+        board.setText(textId, to: "a text exactly two hundred and three points wide", width: 203)
+        XCTAssertEqual(board.map.texts.first { $0.id == textId }?.width, 208, "a stored text width always rounds up to the grid")
+        let boxRect = try XCTUnwrap(board.rect(of: .component(box)))
+        let textRect = try XCTUnwrap(board.rect(of: .text(textId)))
+        XCTAssertFalse(boxRect.intersects(textRect), "the rounded-up width must be what the collision check avoided")
+    }
+
     /// Widening a text that started near a frame's right edge follows the same drop rule a moved
     /// element does: since its centre stays inside the frame, it settles wholly inside it rather
     /// than sticking out past the edge.
