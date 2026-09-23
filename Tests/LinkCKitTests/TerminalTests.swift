@@ -530,6 +530,20 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.liveActivity(from: withTodos), "Bunning…")
     }
 
+    /// A narrow pane cuts off the tail of the spinner row — same as `isStatusFurniture` already
+    /// documents for the "esc to interrupt" hint — so a row whose timer has no closing paren at
+    /// all (not truncated mid-word, just gone) must still read as running.
+    func testATruncatedSpinnerRowStillReadsAsRunning() {
+        let rule = String(repeating: "─", count: 110)
+        let footer = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+
+        let truncated = [
+            "✳ Bunning… (12s · ↓ 417 toke",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: truncated), "Bunning…")
+    }
+
     /// "·" and "*" also lead ordinary prose and markdown bullets, not just Claude's spinner. A
     /// finished turn whose last line happens to start with one of those glyphs and to contain a
     /// "… (Ns" style aside must still read as idle — the row's timer-looking group doesn't close

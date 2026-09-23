@@ -242,10 +242,13 @@ public enum TerminalPreview {
     /// The nearest glyph-led row decides, so a finished turn's "✻ Brewed for 18s" (no timer)
     /// reads as idle. Rows led by anything else — banners, the effort badge, todo rows, tool
     /// output — are passed over. Two of the glyphs, "·" and "*", also lead ordinary prose and
-    /// markdown bullets, so a timer-shaped match alone isn't proof: a real spinner row's timer
-    /// closes its parenthesis group at the very end of the row, while prose that merely contains
-    /// "… (3s" keeps going past it — "* Loading… (3s) — finished" is rejected because the row
-    /// continues after the ")". `rows` holds visible text, nearest the input box first.
+    /// markdown bullets, so a timer-shaped match alone isn't proof: what follows the timer's
+    /// closing ")" decides. A real spinner row either ends right there, or — in linkC's narrow
+    /// pane, same as `isStatusFurniture` already accounts for — gets cut off before the ")" ever
+    /// appears; prose that merely contains "… (3s" keeps going past the ")" with more text, and
+    /// that's the one case rejected: "* Loading… (3s) — finished" is rejected, but
+    /// "✳ Bunning… (12s · ↓ 417 toke" (pane-truncated, no ")" at all) is accepted. `rows` holds
+    /// visible text, nearest the input box first.
     private static func claudeSpinnerPhrase<Rows: Sequence>(nearestGlyphRowIn rows: Rows) -> String?
     where Rows.Element == String {
         guard let row = rows.first(where: { $0.first.map { claudeSpinnerGlyphs.contains($0) } ?? false }) else {
@@ -259,10 +262,14 @@ public enum TerminalPreview {
         if phrase.hasSuffix("esc to interrupt)") {
             return nil
         }
-        guard let timer = phrase.range(of: #"… \(\d+[hms]"#, options: .regularExpression),
-              let closeParen = phrase[timer.lowerBound...].firstIndex(of: ")"),
-              closeParen == phrase.index(before: phrase.endIndex)
-        else { return nil }
+        guard let timer = phrase.range(of: #"… \(\d+[hms]"#, options: .regularExpression) else { return nil }
+        // A ")" that isn't the row's last character means text continues past the timer — that's
+        // prose, not a spinner. No ")" at all means the pane cut the row off before it printed
+        // one, which a real spinner row does too.
+        if let closeParen = phrase[timer.lowerBound...].firstIndex(of: ")"),
+           closeParen != phrase.index(before: phrase.endIndex) {
+            return nil
+        }
         let words = phrase[..<timer.lowerBound].trimmingCharacters(in: .whitespaces)
         return words.isEmpty ? nil : words + "…"
     }
