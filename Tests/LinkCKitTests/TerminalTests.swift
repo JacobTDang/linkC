@@ -244,6 +244,17 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "Shipped the sidebar.")
     }
 
+    /// The thinking-phase spinner row ("· thinking with xhigh effort", no arrow-led token
+    /// counter) is the same running-spinner shape `claudeSpinnerPhrase` reads above the input
+    /// box — `isStatusFurniture` must recognize it too, or it shows up as preview content.
+    func testDropsTheThinkingPhaseSpinnerRow() {
+        let rows = [
+            "Shipped the sidebar.",
+            "✳ Bunning… (2s · thinking with xhigh effort)",
+        ]
+        XCTAssertEqual(TerminalPreview.excerpt(rows: rows, lines: 3), "Shipped the sidebar.")
+    }
+
     func testTokenTalkInRealOutputIsKept() {
         XCTAssertTrue(TerminalPreview.hasContent("The request used 2.5k tokens in total."))
     }
@@ -544,6 +555,34 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.liveActivity(from: truncated), "Bunning…")
     }
 
+    /// The truncated-row allowance only covers glyphs that never lead ordinary prose or a
+    /// markdown bullet. "·" does — a static output row cut off by a narrow pane ("· parsed 12
+    /// files… (12s" with the rest of the sentence lost) must not read as a running turn, because
+    /// the screen never changes again and it would never recover.
+    func testATruncatedRowLedByADotReadsAsIdle() {
+        let rule = String(repeating: "─", count: 110)
+        let footer = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+
+        let truncated = [
+            "· parsed 12 files… (12s · ↓ 417 toke",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: truncated))
+    }
+
+    /// The unambiguous spinner glyphs ("✢ ✳ ✶ ✻ ✽") keep the truncated-row allowance: they never
+    /// lead ordinary prose, so a cut-off timer under one of them still reads as running.
+    func testATruncatedRowLedByAnUnambiguousGlyphStillReadsAsRunning() {
+        let rule = String(repeating: "─", count: 110)
+        let footer = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+
+        let truncated = [
+            "✳ Bunning… (12s · ↓ 417 toke",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: truncated), "Bunning…")
+    }
+
     /// "·" and "*" also lead ordinary prose and markdown bullets, not just Claude's spinner. A
     /// finished turn whose last line happens to start with one of those glyphs and to contain a
     /// "… (Ns" style aside must still read as idle — the row's timer-looking group doesn't close
@@ -733,6 +772,13 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("⏺ finished"))
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("   "))
         XCTAssertFalse(TerminalPreview.isLiveMarkerRow("Fixed 3 tests in PanelView.swift"))
+    }
+
+    /// The thinking-phase spinner row's glyph rotates every frame while its phrase stays put, so
+    /// `progressSignature` must drop it like any other live marker — otherwise the stuck-turn
+    /// watchdog can never see a session go quiet during a thinking phase.
+    func testIsLiveMarkerRowRecognizesTheThinkingPhaseSpinnerRow() {
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow("✳ Bunning… (2s · thinking with xhigh effort)"))
     }
 
     /// `progressSignature` is what `screenSignature` hashes: live-marker rows drop out (as
