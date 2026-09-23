@@ -35,7 +35,9 @@ private enum AgentLogoImages {
     static func image(for agent: AgentKind, logo: AgentLogo) -> NSImage {
         if let cached = cache[agent] { return cached }
         guard let image = NSImage(data: Data(logo.svg.utf8)), image.isValid else {
-            preconditionFailure("the embedded \(agent.displayName) logo does not load as SVG")
+            // `preconditionFailure` drops its message in a release build (`build-app.sh` builds
+            // `-c release`); `fatalError` keeps it, so a broken embed still says which one.
+            fatalError("the embedded \(agent.displayName) logo does not load as SVG")
         }
         image.isTemplate = logo.isTemplate
         cache[agent] = image
