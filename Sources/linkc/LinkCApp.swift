@@ -551,6 +551,38 @@ final class AppModel {
         toolServers?.standalone.filter { $0.state == .running } ?? []
     }
 
+    /// What linkC can see running for a project, reduced to what the system map is compared
+    /// against: the containers of a compose project rooted at this folder, and the services of a
+    /// stack linkC already knows for it. Nothing here runs a process — it reads what the tool
+    /// server service last found.
+    func discoveredThings(in workspacePath: String) -> [DiscoveredThing] {
+        let folder = (workspacePath as NSString).standardizingPath
+        var things: [DiscoveredThing] = []
+        var seen: Set<String> = []
+
+        for project in toolServers?.projects ?? [] {
+            guard let dir = project.workingDir,
+                  (dir as NSString).standardizingPath == folder else { continue }
+            for container in project.containers where container.state == .running {
+                let name = container.composeService ?? container.name
+                guard seen.insert(name.lowercased()).inserted else { continue }
+                things.append(DiscoveredThing(
+                    name: name, image: container.image,
+                    detail: "container \(container.name) · \(container.image)"))
+            }
+        }
+
+        for stack in toolServers?.knownStacks.stacks ?? []
+        where (stack.workingDir as NSString).standardizingPath == folder {
+            for service in stack.services {
+                guard seen.insert(service.lowercased()).inserted else { continue }
+                things.append(DiscoveredThing(
+                    name: service, image: nil, detail: "compose service in \(stack.name)"))
+            }
+        }
+        return things
+    }
+
     /// Keep the SERVERS section honest while the panel shows: docker state changes
     /// out-of-band, so poll gently — and only when docker exists at all.
     private func refreshServers() {

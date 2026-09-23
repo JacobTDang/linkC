@@ -49,6 +49,7 @@ struct ProjectDashboardSheet: View {
             .padding(.top, 14)
             .padding(.bottom, 12)
 
+            WorkbenchBand(workspacePath: workspacePath, model: model)
             Divider()
 
             presenceStrip(dashboardData?.dossiers ?? [])
@@ -88,7 +89,7 @@ struct ProjectDashboardSheet: View {
                 .padding(16)
             }
         }
-        .frame(width: 600, height: 520)
+        .frame(width: 720, height: 620)
         .background(Color(white: 0.12))
         .task {
             await refresh()
