@@ -65,7 +65,11 @@ public enum BoardReport {
     /// swallows text around it. It is also capped, so one field cannot balloon a tool result.
     private static let maxFieldLength = 200
 
-    private static func sanitized(_ text: String) -> String {
+    /// Neutralises one field's worth of text taken from `system-map.json` so it cannot forge
+    /// markdown structure — used for every field this report prints, and for any other text
+    /// pulled from the file that lands in a markdown report an agent reads (a parse error can
+    /// carry a name straight from the file, for instance).
+    static func sanitized(_ text: String) -> String {
         var collapsed = ""
         collapsed.reserveCapacity(text.count)
         for scalar in text.unicodeScalars {

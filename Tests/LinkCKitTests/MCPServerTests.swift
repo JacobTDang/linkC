@@ -399,6 +399,20 @@ final class MCPServerTests: XCTestCase {
             "A broken map must say so, not be silently omitted: \(text)")
     }
 
+    /// A parse error can carry a name straight from the file — sanitized the same way
+    /// `BoardReport` sanitizes every other name, since this text lands in markdown an agent reads.
+    func testProjectContextEscapesAMalformedMapsErrorText() throws {
+        let json = #"{"version": 2, "places": {"Evil**Bold**\ninjected": {}, "evil**bold**\ninjected": {}}}"#
+        try Data(json.utf8).write(to: tempDir.appendingPathComponent("system-map.json"))
+
+        let text = try getProjectContext()
+
+        XCTAssertTrue(text.lowercased().contains("could not be read"), "still says the map could not be read: \(text)")
+        XCTAssertFalse(text.contains("\ninjected"), "a literal newline from the file must not reach the markdown raw: \(text)")
+        XCTAssertFalse(text.contains("**Bold**"), "asterisks from the file must not forge markdown emphasis: \(text)")
+        XCTAssertFalse(text.contains("**bold**"), "asterisks from the file must not forge markdown emphasis: \(text)")
+    }
+
     func testDelegateTaskValidationErrors() throws {
         // Missing 'to'
         let req1 = """

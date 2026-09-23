@@ -474,7 +474,9 @@ public final class MCPServer: Sendable {
                         text += BoardReport.markdown(for: loaded.map)
                     }
                 } catch {
-                    text += "## System\n_The system map could not be read: \(error.localizedDescription)_\n\n"
+                    // The message can carry a name straight from the file — sanitized the same
+                    // way every other field in this report is, since it lands in markdown too.
+                    text += "## System\n_The system map could not be read: \(BoardReport.sanitized(error.localizedDescription))_\n\n"
                 }
 
                 return toolResultResponse(id: id, text: text)
