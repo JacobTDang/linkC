@@ -310,6 +310,22 @@ final class SettingsComposerTests: XCTestCase {
         XCTAssertTrue(try SettingsComposer.definesStatusLine(user: nil, project: nil, projectLocal: own))
         XCTAssertThrowsError(try SettingsComposer.definesStatusLine(user: nil, project: nil, projectLocal: Data("{".utf8)))
     }
+
+    func testAnExplicitNullStatusLineIsNotTheUsersOwn() throws {
+        let nullStatusLine = #"{"statusLine": null}"#
+
+        // With null in user layer, definesStatusLine should return false
+        XCTAssertFalse(try SettingsComposer.definesStatusLine(user: Data(nullStatusLine.utf8), project: nil, projectLocal: nil))
+        // And compose should add linkC's own status line
+        let composedWithNullUser = try composedStatusLine(user: nullStatusLine)
+        XCTAssertNotNil(composedWithNullUser, "with null statusLine in user layer, compose must add linkC's own")
+
+        // With null in project-local layer, definesStatusLine should return false
+        XCTAssertFalse(try SettingsComposer.definesStatusLine(user: nil, project: nil, projectLocal: Data(nullStatusLine.utf8)))
+        // And compose should add linkC's own status line
+        let composedWithNullLocal = try composedStatusLine(local: nullStatusLine)
+        XCTAssertNotNil(composedWithNullLocal, "with null statusLine in project-local layer, compose must add linkC's own")
+    }
 }
 
 // MARK: - HookServer (real loopback end-to-end)

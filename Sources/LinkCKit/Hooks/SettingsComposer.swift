@@ -81,7 +81,8 @@ public enum SettingsComposer {
     public static func definesStatusLine(user: Data?, project: Data?, projectLocal: Data?) throws -> Bool {
         let layers: [(label: String, data: Data?)] = [("user", user), ("project", project), ("project local", projectLocal)]
         for layer in layers {
-            if try decodeSettingsObject(layer.data, label: layer.label)["statusLine"] != nil {
+            let obj = try decodeSettingsObject(layer.data, label: layer.label)
+            if let statusLineValue = obj["statusLine"], !(statusLineValue is NSNull) {
                 return true
             }
         }
