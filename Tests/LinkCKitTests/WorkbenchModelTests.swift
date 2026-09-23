@@ -46,6 +46,12 @@ final class WorkbenchModelTests: XCTestCase {
         for _ in 0..<200 where !condition() { await Task.yield() }
     }
 
+    /// Gives a resumed task room to run without waiting on any condition — for proving a
+    /// *negative*, where there is nothing to poll for.
+    private func yieldMany(_ times: Int = 100) async {
+        for _ in 0..<times { await Task.yield() }
+    }
+
     func testAProjectWithNoMapLoadsEmpty() {
         let model = makeModel(gate: Gate())
         model.load()
@@ -86,11 +92,17 @@ final class WorkbenchModelTests: XCTestCase {
         let store = SystemMapStore(workspacePath: workspace.path)
         XCTAssertNil(try store.load()?.components.first?.at, "nothing is written before the settle")
 
-        // Two edits scheduled two writes; the first is stale by the time its clock runs out and
-        // must write nothing, so only the second one lands.
+        // Two edits scheduled two timers. Release them one at a time and inspect the file
+        // between releases: the first timer is stale by the time its clock runs out (a
+        // generation-less implementation would write here too, since the map already holds its
+        // final state in memory — that write is exactly what must not happen).
         await gate.release()
+        await yieldMany()
+        XCTAssertNil(try store.load(), "a stale timer must not write at all")
+
+        // Only the second, live timer may write.
         await gate.release()
-        await settleUntil { (try? store.load())??.components.first?.at != nil }
+        await settleUntil { (try? store.load()) != nil }
         let saved = try XCTUnwrap(try store.load())
         XCTAssertEqual(saved.components.map(\.name), ["postgres"])
         XCTAssertEqual(saved.components[0].at, GridPoint(x: 2, y: 1))
@@ -132,6 +144,51 @@ final class WorkbenchModelTests: XCTestCase {
         XCTAssertNil(model.refusal, "the refusal clears once something lands")
     }
 
+    func testUpdatingAComponentToAnExistingNameIsRefusedWithoutLockingTheBoard() {
+        let model = makeModel(gate: Gate())
+        model.load()
+        model.startMap()
+        model.add(SystemComponent(name: "redis", kind: .cache))
+        model.add(SystemComponent(name: "postgres", kind: .database))
+
+        var clash = model.map.components[1]
+        clash.name = "REDIS"
+        model.update("postgres", to: clash)
+
+        XCTAssertEqual(model.map.components.map(\.name), ["redis", "postgres"], "the clash is refused")
+        XCTAssertEqual(model.state, .loaded, "a refused name is not a broken file")
+        XCTAssertEqual(model.refusal?.lowercased().contains("redis"), true)
+    }
+
+    /// A refusal from one kind of edit must not survive an unrelated edit that succeeds —
+    /// `remove` and `move` land just as much as `add` and `update` do.
+    func testARefusalClearsOnASuccessfulMove() {
+        let model = makeModel(gate: Gate())
+        model.load()
+        model.startMap()
+        model.add(SystemComponent(name: "redis", kind: .cache))
+        model.add(SystemComponent(name: "REDIS", kind: .database))
+        XCTAssertNotNil(model.refusal, "the duplicate add must be refused first")
+
+        model.move("redis", to: GridPoint(x: 3, y: 3))
+
+        XCTAssertNil(model.refusal, "a successful drag must not leave a stale refusal on screen")
+    }
+
+    func testARefusalClearsOnASuccessfulRemove() {
+        let model = makeModel(gate: Gate())
+        model.load()
+        model.startMap()
+        model.add(SystemComponent(name: "redis", kind: .cache))
+        model.add(SystemComponent(name: "postgres", kind: .database))
+        model.add(SystemComponent(name: "REDIS", kind: .database))
+        XCTAssertNotNil(model.refusal, "the duplicate add must be refused first")
+
+        model.remove("postgres")
+
+        XCTAssertNil(model.refusal, "a successful removal must not leave a stale refusal on screen")
+    }
+
     func testReconcileFillsStatusesAndSuggestions() {
         let model = makeModel(gate: Gate())
         model.load()
@@ -144,7 +201,9 @@ final class WorkbenchModelTests: XCTestCase {
         XCTAssertEqual(model.suggestions.map(\.name), ["minio"])
     }
 
-    func testAFailedSaveIsSurfaced() throws {
+    /// A failed write is not a broken file: the map in memory is still good, so the board must
+    /// stay open, not lock the way a failed read does.
+    func testAFailedWriteStaysEditableAndSurfacesSeparatelyFromState() throws {
         let store = SystemMapStore(workspacePath: workspace.path)
         // A file where the .linkc directory must go: creating the directory cannot succeed.
         try Data().write(to: store.fileURL.deletingLastPathComponent())
@@ -155,8 +214,71 @@ final class WorkbenchModelTests: XCTestCase {
         model.add(SystemComponent(name: "redis", kind: .cache))
         model.saveNow()
 
-        guard case .failed = model.state else {
-            return XCTFail("a save that failed must not look like a save that worked")
-        }
+        XCTAssertEqual(model.state, .loaded, "a failed write must not look like a broken file")
+        XCTAssertNotNil(model.writeFailure, "the failure must be visible somewhere")
+
+        // The board is still editable: the next edit lands in memory right away.
+        model.add(SystemComponent(name: "postgres", kind: .database))
+        XCTAssertEqual(model.map.components.map(\.name), ["redis", "postgres"])
+    }
+
+    func testAWriteThatSucceedsClearsAPriorFailure() throws {
+        let store = SystemMapStore(workspacePath: workspace.path)
+        try Data().write(to: store.fileURL.deletingLastPathComponent())
+
+        let model = makeModel(gate: Gate())
+        model.load()
+        model.startMap()
+        model.add(SystemComponent(name: "redis", kind: .cache))
+        model.saveNow()
+        XCTAssertNotNil(model.writeFailure, "the first write must fail while the directory is blocked")
+
+        // Clear the obstruction and retry — the same edit, still only in memory, tries again.
+        try FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent())
+        model.saveNow()
+
+        XCTAssertNil(model.writeFailure, "a write that lands clears the failure")
+        XCTAssertEqual(try store.load()?.components.map(\.name), ["redis"])
+    }
+
+    /// A reload that replaced `map` here would silently throw away an edit a failed write never
+    /// got to persist — `load()` must refuse instead.
+    func testLoadRefusesToReplaceAMapWithUnwrittenEdits() throws {
+        let model = makeModel(gate: Gate())
+        model.load()
+        model.startMap()
+        model.add(SystemComponent(name: "redis", kind: .cache))
+        // The scheduled write from `add` never fires: this test's gate is never released, so
+        // the edit above is still only in memory.
+
+        let store = SystemMapStore(workspacePath: workspace.path)
+        try store.save(SystemMap(components: [SystemComponent(name: "mongo", kind: .database)]))
+
+        model.load()
+
+        XCTAssertEqual(
+            model.map.components.map(\.name), ["redis"],
+            "a reload must never discard edits that were never written")
+    }
+
+    func testASecondBurstOfEditsWritesAfterAFirstSuccessfulWrite() async throws {
+        let gate = Gate()
+        let model = makeModel(gate: gate)
+        model.load()
+        model.startMap()
+        let store = SystemMapStore(workspacePath: workspace.path)
+
+        model.add(SystemComponent(name: "redis", kind: .cache))
+        await settle(gate, waiting: 1)
+        await gate.release()
+        await settleUntil { (try? store.load())??.components.map(\.name) == ["redis"] }
+
+        model.add(SystemComponent(name: "postgres", kind: .database))
+        await settle(gate, waiting: 1)
+        await gate.release()
+        await settleUntil { (try? store.load())??.components.map(\.name) == ["redis", "postgres"] }
+
+        let saved = try XCTUnwrap(try store.load())
+        XCTAssertEqual(saved.components.map(\.name), ["redis", "postgres"])
     }
 }

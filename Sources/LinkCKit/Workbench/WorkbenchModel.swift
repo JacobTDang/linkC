@@ -9,8 +9,9 @@ public final class WorkbenchModel {
         /// The project has no map yet.
         case empty
         case loaded
-        /// The map could not be read, or an edit could not be written. Nothing is written while
-        /// this holds: a file linkC could not read must never be overwritten.
+        /// The map could not be read. Nothing is written while this holds: a file linkC could
+        /// not read must never be overwritten. A failed *write* is different — see
+        /// `writeFailure` — and never puts the model in this state.
         case failed(String)
     }
 
@@ -22,11 +23,18 @@ public final class WorkbenchModel {
     /// The last edit linkC would not make — a name already in use. Transient, and cleared by the
     /// next edit that lands: a mistyped name must not lock the board the way a broken file does.
     public private(set) var refusal: String?
+    /// The last write that failed, if any. Unlike `.failed`, a failed write never blocks
+    /// editing — the map in memory is still good, so the board stays open and the next edit (or
+    /// `saveNow`) tries again. Cleared the moment a write succeeds; visible until then.
+    public private(set) var writeFailure: String?
 
     @ObservationIgnored private let store: SystemMapStore
     @ObservationIgnored private let settle: Duration
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private var generation = 0
+    /// True from the moment an edit lands until a write for it succeeds. `load()` checks this
+    /// so a reload can never silently throw away an edit a failed write never got to persist.
+    @ObservationIgnored private var hasUnwrittenEdits = false
 
     public init(
         store: SystemMapStore,
@@ -38,8 +46,11 @@ public final class WorkbenchModel {
         self.sleep = sleep
     }
 
-    /// Reads the project's map. A project with none is `empty`, not an error.
+    /// Reads the project's map. A project with none is `empty`, not an error. Refuses to run
+    /// while an edit is waiting to be written: replacing `map` here would silently discard work
+    /// that a failed write never got to persist.
     public func load() {
+        guard !hasUnwrittenEdits else { return }
         do {
             if let loaded = try store.load() {
                 map = loaded
@@ -70,7 +81,6 @@ public final class WorkbenchModel {
 
     public func add(_ component: SystemComponent) {
         guard canEdit else { return }
-        refusal = nil
         guard !map.components.contains(where: { $0.name.lowercased() == component.name.lowercased() }) else {
             refusal = "this project's map already names \"\(component.name)\""
             return
@@ -81,7 +91,6 @@ public final class WorkbenchModel {
 
     public func update(_ name: String, to component: SystemComponent) {
         guard canEdit, let index = indexOf(name) else { return }
-        refusal = nil
         let clash = map.components.enumerated().contains { other in
             other.offset != index && other.element.name.lowercased() == component.name.lowercased()
         }
@@ -122,7 +131,12 @@ public final class WorkbenchModel {
         map.components.firstIndex { $0.name.lowercased() == name.lowercased() }
     }
 
+    /// Every edit that actually lands — append, replace, remove, or reposition — comes through
+    /// here, which is why this is the one place that clears `refusal`: a stale "name already in
+    /// use" message from an earlier, unrelated failed edit must not survive a successful one.
     private func edited() {
+        refusal = nil
+        hasUnwrittenEdits = true
         relayout()
         scheduleWrite()
     }
@@ -148,8 +162,12 @@ public final class WorkbenchModel {
         guard canEdit else { return }
         do {
             try store.save(map)
+            writeFailure = nil
+            hasUnwrittenEdits = false
         } catch {
-            state = .failed(message(for: error))
+            // The map in memory is still good — only the write failed. Surface it and leave the
+            // board open: a failed read is the only thing allowed to lock editing.
+            writeFailure = message(for: error)
         }
     }
 
