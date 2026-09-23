@@ -15,7 +15,6 @@ public final class SidebarState {
         var projectOrder: [String] = []
         var expandOverrides: [String: Bool] = [:]
         var openSections: Set<Section> = []
-        var workbenchClosed: [String: Bool]?
     }
 
     static let key = "sidebarState"
@@ -23,7 +22,6 @@ public final class SidebarState {
     public private(set) var projectOrder: [String]
     public private(set) var expandOverrides: [String: Bool]
     private var openSections: Set<Section>
-    private var workbenchClosed: [String: Bool] = [:]
     /// The project holding the open terminal at the last `noteSelectedProject`. In memory: moving
     /// into a project is what opens it, and that only has meaning within a run.
     @ObservationIgnored private var selectedProject: String?
@@ -45,7 +43,6 @@ public final class SidebarState {
         projectOrder = stored.projectOrder
         expandOverrides = stored.expandOverrides
         openSections = stored.openSections
-        workbenchClosed = stored.workbenchClosed ?? [:]
     }
 
     /// Append any project not seen before; everyone else keeps their place.
@@ -63,11 +60,9 @@ public final class SidebarState {
     public func prune(keeping paths: Set<String>) {
         let order = projectOrder.filter { paths.contains($0) }
         let overrides = expandOverrides.filter { paths.contains($0.key) }
-        let closed = workbenchClosed.filter { paths.contains($0.key) }
-        guard order != projectOrder || overrides != expandOverrides || closed != workbenchClosed else { return }
+        guard order != projectOrder || overrides != expandOverrides else { return }
         projectOrder = order
         expandOverrides = overrides
-        workbenchClosed = closed
         save()
     }
 
@@ -116,19 +111,8 @@ public final class SidebarState {
         save()
     }
 
-    /// Whether a project's system board is open. Open by default: a project you have never
-    /// touched shows its board rather than hiding it.
-    public func isWorkbenchOpen(_ path: String) -> Bool {
-        workbenchClosed[path] != true
-    }
-
-    public func setWorkbenchOpen(_ path: String, _ open: Bool) {
-        if open { workbenchClosed.removeValue(forKey: path) } else { workbenchClosed[path] = true }
-        save()
-    }
-
     private func save() {
-        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections, workbenchClosed: workbenchClosed)
+        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections)
         do {
             defaults.set(try JSONEncoder().encode(stored), forKey: Self.key)
         } catch {
