@@ -84,8 +84,7 @@ the tab chip and the sidebar row. The header's private icon mapping moves with i
 
 **Power:** a terminal-read activity is not observable, so it is re-read once a second, and only
 while it can change:
-- The strip runs one 1-second timeline, and only while at least one of its sessions is working
-  or waiting.
+- The strip runs one 1-second timeline, and only while at least one of its sessions is working.
 - The sidebar re-reads inside the refresh it already has, with no second timer.
 - Idle sessions cost nothing.
 

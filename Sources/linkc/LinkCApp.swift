@@ -622,12 +622,23 @@ final class AppModel {
     var projectTabs: [ProjectTab] {
         guard let project = currentProject else { return [] }
         var activities: [String: String] = [:]
-        for session in sessions where ShownActivity.applies(to: session.state) {
+        for session in sessions
+        where ProjectTabs.standardized(session.cwd) == ProjectTabs.standardized(project)
+            && ShownActivity.applies(to: session.state) {
             activities[session.id] = currentActivity(session)
         }
         return ProjectTabs.tabs(
             project: project, sessions: sessions, shells: shellRows, titles: sessionTitles,
             activities: activities)
+    }
+
+    /// Whether the current project has a session mid-turn — computed directly, without building
+    /// every tab (and reading every tab's activity) just to test one Bool. Working only: a
+    /// permission wait's line doesn't change without an observable state change, so it needs no
+    /// timer either.
+    var projectHasWorkingSession: Bool {
+        guard let project = currentProject else { return false }
+        return sessions.contains { $0.state == .working && ProjectTabs.standardized($0.cwd) == project }
     }
 
     /// The tab showing: the project's Board, or the selected session or terminal.

@@ -20,7 +20,7 @@ struct ProjectTabStrip: View {
         // one of its sessions is working, and hourly (effectively never) otherwise — one
         // `TimelineView`, same schedule type either way, so switching the interval never tears
         // down the key monitor or the confirmation dialog below, which stay on this outer view.
-        let anyWorking = model.projectTabs.contains(where: \.isWorking)
+        let anyWorking = model.projectHasWorkingSession
         TimelineView(.periodic(from: .now, by: anyWorking ? 1 : 3600)) { _ in
             let tabs = model.projectTabs
             let selected = model.selectedTabID
