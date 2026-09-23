@@ -169,6 +169,22 @@ final class BoardMapTests: XCTestCase {
         XCTAssertEqual(try decodedAgain.encoded(), once)
     }
 
+    /// Keys sort the same on every Mac: case-insensitively, numbers by value, never by locale.
+    func testKeysSortCaseInsensitivelyWithNumbersByValue() throws {
+        let source = Data("""
+        { "version": 2, "places": { "Not placed": {
+          "api-10": { "kind": "service" }, "Beta": { "kind": "service" },
+          "api-2": { "kind": "service" }, "alpha": { "kind": "service" } } } }
+        """.utf8)
+        let text = String(decoding: try BoardMap.decode(source).encoded(), as: UTF8.self)
+        let placed = try XCTUnwrap(text.range(of: "\"Not placed\""))
+        let order = ["alpha", "api-2", "api-10", "Beta"].map { name in
+            text.range(of: "\"\(name)\": {", range: placed.upperBound..<text.endIndex)?.lowerBound
+        }
+        XCTAssertFalse(order.contains(nil), "every component is written under Not placed")
+        XCTAssertEqual(order.compactMap { $0 }, order.compactMap { $0 }.sorted(), "alpha, api-2, api-10, Beta")
+    }
+
     /// "Not placed" is reserved and always written, even when empty, so an agent never
     /// wonders where the rest went.
     func testAnEmptyMapStillWritesNotPlaced() throws {

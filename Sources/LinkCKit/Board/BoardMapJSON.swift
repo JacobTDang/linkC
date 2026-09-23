@@ -1,7 +1,7 @@
 import Foundation
 
 /// A small deterministic writer for `system-map.json`: the architecture-first key order at the
-/// top, sorted keys everywhere else (the same order `JSONSerialization`'s `.sortedKeys` gives),
+/// top, sorted keys everywhere else (see `sortedKeys`),
 /// 2-space indentation, number arrays kept to one line, `/` left unescaped, and a single trailing
 /// newline — so moving one box on the board changes exactly one line of the file.
 enum BoardMapJSON {
@@ -25,10 +25,10 @@ enum BoardMapJSON {
         return keys
     }
 
-    /// The same order `JSONSerialization`'s `.sortedKeys` gives: case-insensitive, lowercase
-    /// before uppercase on a tie — `localizedCompare` reproduces it exactly.
+    /// Case-insensitive with numbers by value ("api-2" before "api-10"), and no locale, so every
+    /// Mac writes the same order. `.forcedOrdering` breaks a case-only tie so the sort is total.
     private static func sortedKeys<S: Sequence>(_ keys: S) -> [String] where S.Element == String {
-        keys.sorted { ($0 as NSString).localizedCompare($1) == .orderedAscending }
+        keys.sorted { $0.compare($1, options: [.caseInsensitive, .numeric, .forcedOrdering]) == .orderedAscending }
     }
 
     private static func indent(_ level: Int) -> String { String(repeating: "  ", count: level) }
