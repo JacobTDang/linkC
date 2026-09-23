@@ -145,6 +145,8 @@ final class BoardGeometryTests: XCTestCase {
 
     /// When the board is crowded and the nearest free spot is far away, the search must
     /// stay fast even when examining many rings — only the ring's edge matters.
+    /// The needle is in the middle of a 40×40 obstacle grid, so the search must traverse ~20 rings
+    /// in all directions before finding free space outside the entire block.
     func testASearchThatFindsNothingNearbyStaysFast() {
         var obstacles: [BoardRect] = []
         for row in 0..<40 {
@@ -153,13 +155,16 @@ final class BoardGeometryTests: XCTestCase {
             }
         }
 
-        let needle = box(0, 0)
+        let needle = box(320, 320)  // Middle of the obstacle grid; free spot must be ~20 rings away
         let start = Date()
         let result = BoardGeometry.nearestFreeSpot(for: needle, avoiding: obstacles)
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertNotNil(result, "should find a spot")
         XCTAssertTrue(obstacles.allSatisfy { !$0.intersects(result!) }, "spot should overlap no obstacles")
+        // Grid spans (0,0) to (640,640); result must be outside.
+        let outside = result!.minX < 0 || result!.minY < 0 || result!.minX >= 640 || result!.minY >= 640
+        XCTAssertTrue(outside, "spot at \(result!) must be outside grid bounds [0,640)×[0,640)")
         XCTAssertLessThan(elapsed, 0.5, "search should complete in under 500ms, took \(elapsed)s")
     }
 }
