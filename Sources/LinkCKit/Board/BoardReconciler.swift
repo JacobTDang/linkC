@@ -42,7 +42,7 @@ public struct MapSuggestion: Equatable, Sendable, Identifiable {
 
 /// Compares a map against what discovery found. Pure: discovery results come in as values, and
 /// nothing here reads a file or runs a process.
-public enum SystemReconciler {
+public enum BoardReconciler {
     public struct Reconciliation: Equatable, Sendable {
         public let statuses: [String: ComponentStatus]
         public let suggestions: [MapSuggestion]
@@ -53,7 +53,7 @@ public enum SystemReconciler {
         }
     }
 
-    public static func reconcile(map: SystemMap, discovered: [DiscoveredThing]) -> Reconciliation {
+    public static func reconcile(map: BoardMap, discovered: [DiscoveredThing]) -> Reconciliation {
         var statuses: [String: ComponentStatus] = [:]
         // Discovered names already backing a component, so one running thing cannot back two —
         // the map's own component order decides who claims it first.
@@ -70,7 +70,7 @@ public enum SystemReconciler {
             if let match {
                 statuses[component.name] = .present
                 claimed.insert(match.name.lowercased())
-            } else if component.intended {
+            } else if component.planned {
                 // A plan is not a claim that something exists, so it can never be missing.
                 statuses[component.name] = .unchecked
             } else {
@@ -104,10 +104,11 @@ public enum SystemReconciler {
         }
     }
 
-    /// linkC may only report something missing when the map says it runs where linkC looks.
-    private static func isCheckable(_ component: SystemComponent) -> Bool {
-        let runs = (component.runs ?? "").lowercased()
-        return runs.contains("docker") || runs.contains("compose")
+    /// linkC may only report something missing when the map says it runs where linkC looks —
+    /// in its own `runs` text, or in the label of the frame it lives in.
+    private static func isCheckable(_ component: BoardComponent) -> Bool {
+        let evidence = "\(component.runs ?? "") \(component.place)".lowercased()
+        return evidence.contains("docker") || evidence.contains("compose")
     }
 
     /// The names inside a `runs` text: "docker compose (db)" names "db", and a parenthetical

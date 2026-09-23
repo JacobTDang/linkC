@@ -470,8 +470,8 @@ public final class MCPServer: Sendable {
                 // The project's own map of its components, when it keeps one. A map that cannot be read
                 // says so: an agent must not be told a project has no components when it has a broken file.
                 do {
-                    if let map = try SystemMapStore(workspacePath: board.projectPath).load() {
-                        text += SystemMapReport.markdown(for: map, statuses: [:])
+                    if let loaded = try BoardMapStore(workspacePath: board.projectPath).load() {
+                        text += BoardReport.markdown(for: loaded.map)
                     }
                 } catch {
                     text += "## System\n_The system map could not be read: \(error.localizedDescription)_\n\n"
