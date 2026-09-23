@@ -49,6 +49,25 @@ final class SystemMapStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.load())
     }
 
+    /// A read that fails as I/O (not a decode problem) is this repo's `.server` case, matching
+    /// the other stores that touch files in a workspace — `.parse` is reserved for content that
+    /// cannot be decoded.
+    func testAReadIOFailureThrowsServerNotParse() throws {
+        let store = SystemMapStore(workspacePath: workspace.path)
+        try FileManager.default.createDirectory(
+            at: store.fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // A directory where the store expects a file: Data(contentsOf:) fails to read it,
+        // which is an I/O failure, not a decoding one.
+        try FileManager.default.createDirectory(at: store.fileURL, withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(try store.load()) { error in
+            guard case LinkCError.server(let message) = error else {
+                return XCTFail("expected .server, got \(error)")
+            }
+            XCTAssertTrue(message.contains(store.fileURL.path))
+        }
+    }
+
     func testSavingReplacesAnEarlierMap() throws {
         let store = SystemMapStore(workspacePath: workspace.path)
         try store.save(SystemMap(components: [SystemComponent(name: "a", kind: .service)]))

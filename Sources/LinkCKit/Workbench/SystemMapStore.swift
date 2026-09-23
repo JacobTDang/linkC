@@ -20,7 +20,7 @@ public struct SystemMapStore: Sendable {
         do {
             data = try Data(contentsOf: fileURL)
         } catch {
-            throw LinkCError.parse("could not read \(fileURL.path): \(error.localizedDescription)")
+            throw LinkCError.server("could not read \(fileURL.path): \(error.localizedDescription)")
         }
         return try SystemMap.decode(data)
     }
@@ -32,7 +32,7 @@ public struct SystemMapStore: Sendable {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try data.write(to: fileURL, options: .atomic)
         } catch {
-            throw LinkCError.process("could not write \(fileURL.path): \(error.localizedDescription)")
+            throw LinkCError.server("could not write \(fileURL.path): \(error.localizedDescription)")
         }
     }
 }
