@@ -55,6 +55,16 @@ public final class AppCoordinator {
     /// Per-run shared secret baked into every composed settings file and required by the hook
     /// server — no other local process can spoof session state at the loopback port.
     let hookToken = UUID().uuidString  // internal: tests need to send it
+    /// Claude's newest rate-limit reading, from any linkC-launched session's status line. In
+    /// memory only: after a relaunch the Usage row waits for the next report.
+    private var claudeRateLimits: AgentUsage?
+    /// Whether the latest Claude launch found a status line of the user's own, so linkC added none.
+    private var claudeStatusLineIsUsers = false
+
+    /// What the sidebar's Usage section shows for Claude.
+    public var claudeUsage: AgentUsage? {
+        ClaudeRateLimits.usage(reading: claudeRateLimits, userOwnsStatusLine: claudeStatusLineIsUsers)
+    }
     /// True when the user is currently watching a given session id — panel open, linkC
     /// active, and that tab selected. Injected because it depends on UI-layer state the
     /// coordinator can't see. Invoked on the main actor.
@@ -242,6 +252,14 @@ public final class AppCoordinator {
         // per-event task, so no reordering.
         hookServer.onEvent = { [eventContinuation] event in
             eventContinuation.yield(event)
+        }
+        // Readings hop to the main actor in separate tasks; `newer` keeps the latest taken,
+        // whatever order they land in.
+        hookServer.onStatusLine = { [weak self] reading in
+            Task { @MainActor in
+                guard let self else { return }
+                self.claudeRateLimits = ClaudeRateLimits.newer(self.claudeRateLimits, reading)
+            }
         }
         // This Task inherits the coordinator's main-actor isolation, so `handle` (a
         // synchronous main-actor method) is a direct same-actor call — the `for await` on the
@@ -1028,9 +1046,14 @@ public final class AppCoordinator {
 
     private func writeSettings(for session: Session) throws -> String {
         let user = try? Data(contentsOf: userSettingsURL)
-        let projectURL = URL(fileURLWithPath: session.cwd).appendingPathComponent(".claude/settings.json")
-        let project = try? Data(contentsOf: projectURL)
-        let data = try SettingsComposer.compose(userSettings: user, projectSettings: project, port: hookServer.port, token: hookToken)
+        let projectDir = URL(fileURLWithPath: session.cwd).appendingPathComponent(".claude")
+        let project = try? Data(contentsOf: projectDir.appendingPathComponent("settings.json"))
+        let projectLocal = try? Data(contentsOf: projectDir.appendingPathComponent("settings.local.json"))
+        let data = try SettingsComposer.compose(
+            userSettings: user, projectSettings: project, projectLocalSettings: projectLocal,
+            port: hookServer.port, token: hookToken)
+        claudeStatusLineIsUsers = try SettingsComposer.definesStatusLine(
+            user: user, project: project, projectLocal: projectLocal)
         try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         let path = settingsDir.appendingPathComponent("session-\(session.id).json")
         try data.write(to: path)

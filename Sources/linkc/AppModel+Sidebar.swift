@@ -138,6 +138,6 @@ extension AppModel {
     /// The sidebar's Usage section: a row per agent that reports something, the rest listed with
     /// the reason they do not.
     func usageRows(now: Date = Date()) -> UsageRows.Result {
-        UsageRows.build(claude: usage.window, codex: codexUsage, limits: agentLimits, now: now)
+        UsageRows.build(claude: coordinator?.claudeUsage, codex: codexUsage, limits: agentLimits, now: now)
     }
 }
