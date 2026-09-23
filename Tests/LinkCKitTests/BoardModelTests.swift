@@ -242,6 +242,17 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.map.components.first { $0.name == api }?.uses[db], "reads entries")
     }
 
+    /// A second arrow to the same component spelled in another case is still the same arrow —
+    /// not a second entry under a different key.
+    func testAddArrowDuplicateCheckIsCaseInsensitiveAndKeepsTheRealSpelling() throws {
+        let board = fresh()
+        let api = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
+        let db = try XCTUnwrap(board.addComponent(kind: .database, at: BoardPoint(x: 400, y: 0)))
+        XCTAssertTrue(board.addArrow(from: api, to: db))
+        XCTAssertFalse(board.addArrow(from: api, to: db.uppercased()), "same arrow, different case, is still a duplicate")
+        XCTAssertEqual(board.map.components.first { $0.name == api }?.uses, [db: ""], "one entry, under the real spelling")
+    }
+
     func testDeletingAComponentTakesItsArrowsAndDeletingAFrameKeepsItsContents() throws {
         let board = fresh()
         let label = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 400, h: 200)))
@@ -277,6 +288,14 @@ final class BoardModelTests: XCTestCase {
         XCTAssertFalse(board.renameFrame("Local docker", to: "not PLACED"), "the reserved name is refused")
     }
 
+    func testRenamingAFrameCarriesItsSelection() throws {
+        let board = fresh()
+        let label = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 400, h: 200)))
+        board.selection = [.frame(label)]
+        XCTAssertTrue(board.renameFrame(label, to: "Local docker"))
+        XCTAssertEqual(board.selection, [.frame("Local docker")])
+    }
+
     // MARK: What's running
 
     func testReconcilingNeverWritesAndReportsWhatIsNotOnTheMap() {
@@ -302,5 +321,96 @@ final class BoardModelTests: XCTestCase {
         XCTAssertTrue(board.suggestions.isEmpty)
         board.undo()
         XCTAssertTrue(board.map.components.isEmpty, "it was one step")
+    }
+
+    /// Every suggestion already named on the map adds nothing — so it must not be an edit.
+    func testAddingASuggestionAlreadyOnTheMapIsNotAnEdit() throws {
+        let bytes = Data(#"{"version": 2, "places": {"Not placed": {"redis": {"kind": "cache"}}}}"#.utf8)
+        try bytes.write(to: store.fileURL)
+        let board = model()
+        board.load()
+        XCTAssertFalse(board.canUndo)
+
+        board.addSuggestion(MapSuggestion(name: "redis", kind: .cache, detail: "container redis"))
+        XCTAssertFalse(board.canUndo, "nothing was added, so nothing to undo")
+
+        board.saveNow()
+        XCTAssertEqual(try Data(contentsOf: store.fileURL), bytes, "a no-op addition must not write")
+    }
+
+    /// The same, in one batch: every discovered thing already named on the map.
+    func testAddingAllRunningWhenEverythingIsAlreadyOnTheMapIsNotAnEdit() throws {
+        let bytes = Data(#"{"version": 2, "places": {"Not placed": {"redis": {"kind": "cache"}}}}"#.utf8)
+        try bytes.write(to: store.fileURL)
+        let board = model()
+        board.load()
+        board.reconcile(with: [DiscoveredThing(name: "redis", image: "redis", detail: "container redis")])
+        XCTAssertTrue(board.suggestions.isEmpty, "already on the map, so not a suggestion at all")
+
+        board.addAllRunning()
+        XCTAssertFalse(board.canUndo)
+        board.saveNow()
+        XCTAssertEqual(try Data(contentsOf: store.fileURL), bytes)
+    }
+
+    /// Two suggestions with the same name, differently cased, in one batch: the batch itself
+    /// must de-duplicate, the same way it already does against the map.
+    func testAddingAllRunningDeduplicatesTheBatchCaseInsensitively() throws {
+        let board = fresh()
+        board.reconcile(with: [
+            DiscoveredThing(name: "redis", image: "redis", detail: "container redis"),
+            DiscoveredThing(name: "REDIS", image: "redis", detail: "container REDIS again"),
+        ])
+        XCTAssertEqual(board.suggestions.count, 2, "the reconciler itself does not dedupe casing")
+
+        board.addAllRunning()
+        XCTAssertEqual(board.map.components.count, 1, "one batch must not add the same name twice")
+    }
+
+    /// Adding suggestions one at a time until the "Local docker" frame has no room left grows it
+    /// downward — every component still ends up inside the frame, none overlapping.
+    func testAddingSuggestionsOneAtATimeGrowsTheFrameToFitThemAll() throws {
+        let board = fresh()
+        for index in 0..<4 {
+            board.addSuggestion(MapSuggestion(name: "svc\(index)", kind: .service, detail: "container svc\(index)"))
+        }
+        XCTAssertNil(board.refusal)
+        let frame = try XCTUnwrap(board.map.frames.first { $0.label == BoardModel.localDocker })
+        let interior = BoardGeometry.interior(of: try XCTUnwrap(frame.rect))
+        let rects = board.map.components.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
+        XCTAssertEqual(rects.count, 4)
+        for rect in rects {
+            XCTAssertTrue(interior.contains(rect), "\(rect) is not inside the frame's interior \(interior)")
+        }
+        for i in 0..<rects.count {
+            for j in (i + 1)..<rects.count {
+                XCTAssertFalse(rects[i].intersects(rects[j]), "\(rects[i]) overlaps \(rects[j])")
+            }
+        }
+        XCTAssertTrue(board.map.components.allSatisfy { $0.place == BoardModel.localDocker })
+    }
+
+    /// A "Local docker" frame hemmed in below by another frame cannot grow: the component that
+    /// does not fit lands outside every frame, and the board says why.
+    func testASuggestionThatCannotFitIsPlacedOutsideEveryFrameAndRefused() throws {
+        let board = fresh()
+        let dockerLabel = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 200, h: 96)))
+        XCTAssertTrue(board.renameFrame(dockerLabel, to: BoardModel.localDocker))
+        // Directly under it, touching its bottom edge, so growing downward runs straight into it.
+        _ = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 96, w: 200, h: 96)))
+
+        board.addSuggestion(MapSuggestion(name: "first", kind: .service, detail: "container first"))
+        XCTAssertEqual(board.map.components.first { $0.name == "first" }?.place, BoardModel.localDocker, "the first one still fits")
+        XCTAssertNil(board.refusal)
+
+        board.addSuggestion(MapSuggestion(name: "second", kind: .service, detail: "container second"))
+        let second = try XCTUnwrap(board.map.components.first { $0.name == "second" })
+        XCTAssertEqual(second.place, BoardMap.notPlaced)
+        let secondRect = try XCTUnwrap(second.at.map(BoardGeometry.rect(ofComponentAt:)))
+        let frameRects = board.map.frames.compactMap(\.rect)
+        XCTAssertTrue(frameRects.allSatisfy { !$0.intersects(secondRect) }, "outside every frame")
+        let allRects = board.map.components.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
+        XCTAssertTrue(allRects.filter { $0 != secondRect }.allSatisfy { !$0.intersects(secondRect) }, "overlaps nothing")
+        XCTAssertEqual(board.refusal, "No room left in Local docker — the new component is outside it; drag it in or make room.")
     }
 }

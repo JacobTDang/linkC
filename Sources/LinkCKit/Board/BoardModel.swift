@@ -42,6 +42,7 @@ public final class BoardModel {
 
     public static let undoLimit = 100
     public static let localDocker = "Local docker"
+    static let noRoomInLocalDocker = "No room left in Local docker — the new component is outside it; drag it in or make room."
 
     public private(set) var state: State = .empty
     public internal(set) var map: BoardMap = .empty
@@ -349,12 +350,13 @@ public final class BoardModel {
     public func addArrow(from source: String, to target: String) -> Bool {
         var landed = false
         edit { map in
-            guard let sourceIndex = Self.index(of: source, in: map), Self.index(of: target, in: map) != nil else { return false }
+            guard let sourceIndex = Self.index(of: source, in: map), let targetIndex = Self.index(of: target, in: map) else { return false }
             guard source.lowercased() != target.lowercased() else { return refuse("An arrow needs two different components.") }
-            guard map.components[sourceIndex].uses[target] == nil else {
-                return refuse("\(source) already uses \(target) — double-click that arrow to change its label.")
+            let realTarget = map.components[targetIndex].name
+            guard !map.components[sourceIndex].uses.keys.contains(where: { $0.lowercased() == realTarget.lowercased() }) else {
+                return refuse("\(source) already uses \(realTarget) — double-click that arrow to change its label.")
             }
-            map.components[sourceIndex].uses[target] = ""
+            map.components[sourceIndex].uses[realTarget] = ""
             landed = true
             return true
         }
@@ -407,22 +409,29 @@ public final class BoardModel {
     }
 
     /// One running thing onto the map, inside the "Local docker" frame — created, or grown by a
-    /// row, when there is no room.
+    /// row, when there is no room. Already named on the map, it adds nothing and is not an edit.
     public func addSuggestion(_ suggestion: MapSuggestion) {
+        var unplaced = false
         edit { map in
-            Self.place([suggestion], into: &map)
-            return true
+            let result = Self.place([suggestion], into: &map)
+            unplaced = result.unplaced
+            return result.added
         }
+        if unplaced { refusal = Self.noRoomInLocalDocker }
     }
 
     /// Everything running onto the map at once, in one "Local docker" frame, as one undo step.
+    /// Whatever is already named on the map adds nothing; an empty result is not an edit.
     public func addAllRunning() {
         let all = suggestions
         guard !all.isEmpty else { return }
+        var unplaced = false
         edit { map in
-            Self.place(all, into: &map)
-            return true
+            let result = Self.place(all, into: &map)
+            unplaced = result.unplaced
+            return result.added
         }
+        if unplaced { refusal = Self.noRoomInLocalDocker }
     }
 
     // MARK: - Hooks the spatial edits share
@@ -531,9 +540,19 @@ public final class BoardModel {
     }
 
     /// Puts running things on the map inside the "Local docker" frame, laid out four to a row.
-    private static func place(_ suggestions: [MapSuggestion], into map: inout BoardMap) {
-        let fresh = suggestions.filter { suggestion in !map.components.contains { $0.name.lowercased() == suggestion.name.lowercased() } }
-        guard !fresh.isEmpty else { return }
+    /// Reports whether anything was added — a suggestion already named on the map, or repeated
+    /// within this same batch, adds nothing — and whether any addition had no room and was left
+    /// outside every frame.
+    private static func place(_ suggestions: [MapSuggestion], into map: inout BoardMap) -> (added: Bool, unplaced: Bool) {
+        var named = Set(map.components.map { $0.name.lowercased() })
+        var fresh: [MapSuggestion] = []
+        for suggestion in suggestions {
+            let key = suggestion.name.lowercased()
+            guard !named.contains(key) else { continue }
+            named.insert(key)
+            fresh.append(suggestion)
+        }
+        guard !fresh.isEmpty else { return (added: false, unplaced: false) }
         let size = BoardGeometry.componentSize
         let gap = 16
 
@@ -549,6 +568,7 @@ public final class BoardModel {
             map.frames.append(BoardFrame(label: localDocker, rect: rect))
         }
 
+        var unplaced = false
         for suggestion in fresh {
             guard let frameIndex = map.frames.firstIndex(where: { $0.label == localDocker }), var frame = map.frames[frameIndex].rect else { break }
             let members = map.components.filter { $0.place == localDocker }.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
@@ -565,8 +585,10 @@ public final class BoardModel {
             let placed = spot ?? BoardGeometry.elementDrop(seed.offsetBy(dx: frame.w + 48, dy: 0),
                                                          otherElements: elementRects(map, excluding: []), frames: frameRects(map, excluding: []))
             let place = spot == nil ? BoardMap.notPlaced : localDocker
+            if spot == nil { unplaced = true }
             map.components.append(BoardComponent(name: suggestion.name, kind: suggestion.kind, place: place, at: placed.origin))
         }
+        return (added: true, unplaced: unplaced)
     }
 
     private func scheduleWrite() {
