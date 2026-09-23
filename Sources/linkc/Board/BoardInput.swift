@@ -17,6 +17,9 @@ final class BoardInput {
     var onMagnify: (CGPoint, CGFloat) -> Void = { _, _ in }
     /// The canvas's frame in window coordinates, top-left origin (SwiftUI's global space).
     var canvasFrame: () -> CGRect = { .zero }
+    /// The window the canvas itself lives in, from `WindowReader` — not just any key window, so
+    /// a popover or the open panel being briefly key never steals the Board's keys.
+    var window: NSWindow?
 
     private var monitor: Any?
 
@@ -42,7 +45,7 @@ final class BoardInput {
         guard let window = event.window else { return false }
         switch event.type {
         case .keyDown, .keyUp:
-            guard window.isKeyWindow, !Self.isEditingText else { return false }
+            guard window === self.window, !Self.isEditingText else { return false }
             if event.keyCode == 49 {   // space
                 onSpace(event.type == .keyDown)
                 return true

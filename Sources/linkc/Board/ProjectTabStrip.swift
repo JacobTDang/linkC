@@ -63,6 +63,7 @@ struct ProjectTabStrip: View {
         .background(alignment: .bottom) {
             Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
         }
+        .background(WindowReader { keys.window = $0 })
         .onAppear {
             keys.onCommand = handle
             keys.start()
@@ -153,12 +154,15 @@ private struct TabChip: View {
 @MainActor
 final class TabKeys {
     var onCommand: (TabCommand) -> Void = { _ in }
+    /// The window the strip itself lives in, from `WindowReader` — not just any key window, so
+    /// a popover or the open panel being briefly key never steals these keys.
+    var window: NSWindow?
     private var monitor: Any?
 
     func start() {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window?.isKeyWindow == true, !BoardInput.isEditingText,
+            guard let self, event.window === self.window, !BoardInput.isEditingText,
                   let press = BoardInput.press(from: event),
                   let command = TabKeyMap.command(for: press) else { return event }
             self.onCommand(command)

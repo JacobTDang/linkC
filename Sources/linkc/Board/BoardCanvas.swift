@@ -58,6 +58,7 @@ struct BoardCanvas: View {
                 elements
                 overlays
             }
+            .background(WindowReader { input.window = $0 })
             .coordinateSpace(.named(Self.space))
             .clipped()
             .onAppear {
