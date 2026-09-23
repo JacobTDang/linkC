@@ -195,6 +195,30 @@ final class BoardModelTests: XCTestCase {
         XCTAssertFalse(board.canRedo, "a new edit clears the redo stack")
     }
 
+    /// A refusal left over from a rejected edit must not linger once undo or redo has moved the
+    /// board somewhere else — it describes an edit that no longer applies.
+    func testUndoAndRedoClearAStaleRefusal() throws {
+        let board = fresh()
+        let a = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
+        let b = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 400, y: 0)))
+
+        var clash = try XCTUnwrap(board.map.components.first { $0.name == b })
+        clash.name = a
+        XCTAssertFalse(board.updateComponent(b, to: clash))
+        XCTAssertNotNil(board.refusal, "the rename was refused")
+
+        board.undo()
+        XCTAssertNil(board.refusal, "undo clears a stale refusal")
+        XCTAssertNil(board.map.components.first { $0.name == b }, "the add of b really was undone")
+
+        XCTAssertFalse(board.addArrow(from: a, to: a))
+        XCTAssertNotNil(board.refusal, "a fresh refusal, right before redo")
+
+        board.redo()
+        XCTAssertNil(board.refusal, "redo clears a stale refusal")
+        XCTAssertNotNil(board.map.components.first { $0.name == b }, "the redo really brought b back")
+    }
+
     func testUndoKeepsAtMostAHundredSteps() {
         let board = fresh()
         for index in 0...150 { board.setSystem("\(index)") }

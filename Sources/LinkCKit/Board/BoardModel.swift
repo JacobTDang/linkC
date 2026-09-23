@@ -151,6 +151,7 @@ public final class BoardModel {
         guard canEdit, let previous = undoStack.popLast() else { return }
         redoStack.append(map)
         map = previous
+        refusal = nil
         afterMapChange()
     }
 
@@ -158,6 +159,7 @@ public final class BoardModel {
         guard canEdit, let next = redoStack.popLast() else { return }
         undoStack.append(map)
         map = next
+        refusal = nil
         afterMapChange()
     }
 
