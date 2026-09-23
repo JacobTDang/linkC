@@ -55,17 +55,21 @@ public enum SystemReconciler {
 
     public static func reconcile(map: SystemMap, discovered: [DiscoveredThing]) -> Reconciliation {
         var statuses: [String: ComponentStatus] = [:]
-        var matched: Set<String> = []
+        // Discovered names already backing a component, so one running thing cannot back two —
+        // the map's own component order decides who claims it first.
+        var claimed: Set<String> = []
+        let componentNames = Set(map.components.map { $0.name.lowercased() })
 
         for component in map.components {
             let match = discovered.first { thing in
                 let name = thing.name.lowercased()
+                guard !claimed.contains(name) else { return false }
                 if component.name.lowercased() == name { return true }
                 return namesInRuns(component.runs).contains(name)
             }
             if let match {
                 statuses[component.name] = .present
-                matched.insert(match.name.lowercased())
+                claimed.insert(match.name.lowercased())
             } else if component.intended {
                 // A plan is not a claim that something exists, so it can never be missing.
                 statuses[component.name] = .unchecked
@@ -74,17 +78,22 @@ public enum SystemReconciler {
             }
         }
 
+        // Never suggest something already claimed, and never suggest a name the map already
+        // carries — even when that component was matched through its `runs` text instead.
         let suggestions = discovered
-            .filter { !matched.contains($0.name.lowercased()) }
+            .filter { !claimed.contains($0.name.lowercased()) && !componentNames.contains($0.name.lowercased()) }
             .map { MapSuggestion(name: $0.name, kind: kind(forImage: $0.image), detail: $0.detail) }
         return Reconciliation(statuses: statuses, suggestions: suggestions)
     }
 
     /// A kind proposed from an image name, for something the map does not name yet.
     public static func kind(forImage image: String?) -> ComponentKind {
-        guard let image = image?.lowercased() else { return .service }
+        guard let image = image?.lowercased(), !image.isEmpty else { return .service }
+        // A digest pin sits after "@" and is never part of the repository name:
+        // "redis@sha256:9f2..." -> "redis", "redis:7@sha256:9f2..." -> "redis:7".
+        let withoutDigest = image.split(separator: "@", maxSplits: 1).first.map(String.init) ?? image
         // The repository's last path component, without its tag: "ghcr.io/x/redis:7" -> "redis".
-        let repository = image.split(separator: "/").last.map(String.init) ?? image
+        let repository = withoutDigest.split(separator: "/").last.map(String.init) ?? withoutDigest
         let name = repository.split(separator: ":").first.map(String.init) ?? repository
         switch name {
         case "postgres", "postgresql", "mysql", "mariadb": return .database
@@ -101,7 +110,9 @@ public enum SystemReconciler {
         return runs.contains("docker") || runs.contains("compose")
     }
 
-    /// The names inside a `runs` text: "docker compose (db)" names "db".
+    /// The names inside a `runs` text: "docker compose (db)" names "db", and a parenthetical
+    /// naming several things, comma-separated, names each of them: "docker compose (api, worker)"
+    /// names "api" and "worker", not the combined "api, worker".
     private static func namesInRuns(_ runs: String?) -> Set<String> {
         guard let runs else { return [] }
         var names: Set<String> = []
@@ -114,7 +125,10 @@ public enum SystemReconciler {
                 current = ""
             case ")", "]":
                 if depth > 0, !current.isEmpty {
-                    names.insert(current.trimmingCharacters(in: .whitespaces).lowercased())
+                    for piece in current.split(separator: ",") {
+                        let trimmed = piece.trimmingCharacters(in: .whitespaces).lowercased()
+                        if !trimmed.isEmpty { names.insert(trimmed) }
+                    }
                 }
                 depth = max(0, depth - 1)
                 current = ""

@@ -83,4 +83,66 @@ final class SystemReconcilerTests: XCTestCase {
         XCTAssertEqual(result.suggestions.map(\.name), ["a", "b"])
         XCTAssertTrue(result.statuses.isEmpty)
     }
+
+    // MARK: - Finding 1: a parenthetical naming several things names each of them
+
+    /// "docker compose (api, worker)" must match either name, not the combined "api, worker" text.
+    func testAParentheticalNamingSeveralThingsNamesEachOfThem() {
+        let map = SystemMap(components: [
+            SystemComponent(name: "background", kind: .service, runs: "docker compose (api, worker)"),
+        ])
+        XCTAssertEqual(status(map, [thing("worker")], "background"), .present)
+        XCTAssertEqual(status(map, [thing("api")], "background"), .present)
+    }
+
+    // MARK: - Finding 2: a digest-pinned image guesses the right kind
+
+    func testDigestPinnedImageGuessesFromRepositoryName() {
+        XCTAssertEqual(
+            SystemReconciler.kind(forImage: "redis@sha256:9f2c1d0e5e3a4b7c8d9e0f1a2b3c4d5e"), .cache)
+    }
+
+    func testRegistryHostWithPortGuessesFromRepositoryName() {
+        XCTAssertEqual(SystemReconciler.kind(forImage: "localhost:5000/redis:7"), .cache)
+    }
+
+    func testImageWithNoTagGuessesFromRepositoryName() {
+        XCTAssertEqual(SystemReconciler.kind(forImage: "redis"), .cache)
+    }
+
+    func testEmptyImageStringFallsBackToService() {
+        XCTAssertEqual(SystemReconciler.kind(forImage: ""), .service)
+    }
+
+    // MARK: - Finding 3: one running thing backs at most one component, and never both suggested and matched
+
+    /// The first component in the map's order claims a shared running thing; whichever component
+    /// is listed first must win, so the result cannot depend on discovery or component order.
+    func testOnlyTheFirstMatchingComponentClaimsARunningThing() {
+        let discovered = [thing("app")]
+        let web = SystemComponent(name: "web", kind: .service, runs: "docker compose (app)")
+        let mirror = SystemComponent(name: "web-mirror", kind: .service, runs: "docker compose (app)")
+
+        let webFirst = SystemMap(components: [web, mirror])
+        XCTAssertEqual(status(webFirst, discovered, "web"), .present)
+        XCTAssertEqual(status(webFirst, discovered, "web-mirror"), .missing)
+
+        let mirrorFirst = SystemMap(components: [mirror, web])
+        XCTAssertEqual(status(mirrorFirst, discovered, "web-mirror"), .present)
+        XCTAssertEqual(status(mirrorFirst, discovered, "web"), .missing)
+    }
+
+    /// A running container literally named "api" is never offered as "not on the map" once the
+    /// map already names "api" — even though that component matched a different container by
+    /// its `runs` text.
+    func testARunningThingMatchingAComponentNameIsNeverSuggestedEvenWhenMatchedElsewhere() {
+        let map = SystemMap(components: [
+            SystemComponent(name: "api", kind: .service, runs: "docker compose (worker)"),
+        ])
+        let discovered = [thing("worker"), thing("api")]
+        let result = SystemReconciler.reconcile(map: map, discovered: discovered)
+
+        XCTAssertEqual(status(map, discovered, "api"), .present)
+        XCTAssertTrue(result.suggestions.isEmpty)
+    }
 }
