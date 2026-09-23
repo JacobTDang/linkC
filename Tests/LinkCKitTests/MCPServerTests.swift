@@ -360,6 +360,45 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(ctxText.contains("Config format"), "Context should include the note: \(ctxText)")
     }
 
+    private func getProjectContext() throws -> String {
+        let req = """
+        {
+          "jsonrpc": "2.0",
+          "id": 7,
+          "method": "tools/call",
+          "params": {
+            "name": "linkc_get_project_context"
+          }
+        }
+        """.data(using: .utf8)!
+        let res = try XCTUnwrap(server.handleMessage(req))
+        let json = try JSONSerialization.jsonObject(with: res) as? [String: Any]
+        let content = (json?["result"] as? [String: Any])?["content"] as? [[String: Any]]
+        return content?.first?["text"] as? String ?? ""
+    }
+
+    func testProjectContextIncludesTheSystemMapWhenTheProjectHasOne() throws {
+        let systemJSON = """
+        {"version": 1, "components": [{"name": "redis", "kind": "cache"}]}
+        """.data(using: .utf8)!
+        try systemJSON.write(to: tempDir.appendingPathComponent("system-map.json"))
+
+        let text = try getProjectContext()
+
+        XCTAssertTrue(text.contains("## System"), "Expected the system map section: \(text)")
+        XCTAssertTrue(text.contains("redis"), "Expected the component to be listed: \(text)")
+    }
+
+    func testProjectContextSaysSoWhenTheSystemMapCannotBeRead() throws {
+        try Data("{ not json".utf8).write(to: tempDir.appendingPathComponent("system-map.json"))
+
+        let text = try getProjectContext()
+
+        XCTAssertTrue(
+            text.lowercased().contains("could not be read"),
+            "A broken map must say so, not be silently omitted: \(text)")
+    }
+
     func testDelegateTaskValidationErrors() throws {
         // Missing 'to'
         let req1 = """

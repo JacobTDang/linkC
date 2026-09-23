@@ -213,7 +213,7 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_get_project_context",
-                "description": "Get context on all peer agents active in this workspace, their goals, claimed files, and shared notes.",
+                "description": "Get this project's system map — its components, how each is reached, and what exists versus what is only intended — plus all peer agents active in this workspace, their goals, claimed files, and shared notes.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [:]
@@ -465,6 +465,16 @@ public final class MCPServer: Sendable {
                         text += "### \(n.title) (by \(n.authorAgent.displayName))\n"
                         text += "\(n.content)\n\n"
                     }
+                }
+
+                // The project's own map of its components, when it keeps one. A map that cannot be read
+                // says so: an agent must not be told a project has no components when it has a broken file.
+                do {
+                    if let map = try SystemMapStore(workspacePath: board.projectPath).load() {
+                        text += SystemMapReport.markdown(for: map, statuses: [:])
+                    }
+                } catch {
+                    text += "## System\n_The system map could not be read: \(error.localizedDescription)_\n\n"
                 }
 
                 return toolResultResponse(id: id, text: text)
