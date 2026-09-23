@@ -22,10 +22,17 @@ public enum ClaudeRateLimits {
     }
 
     /// The later of two readings. Readings hop to the main actor in separate tasks, so one taken
-    /// earlier can land after one taken later.
+    /// earlier can land after one taken later. A reading with no timestamp must never displace one
+    /// that has a timestamp.
     public static func newer(_ current: AgentUsage?, _ incoming: AgentUsage) -> AgentUsage {
-        guard let current, let currentAt = current.observedAt, let incomingAt = incoming.observedAt else {
+        guard let current else {
             return incoming
+        }
+        guard let currentAt = current.observedAt else {
+            return incoming
+        }
+        guard let incomingAt = incoming.observedAt else {
+            return current
         }
         return incomingAt >= currentAt ? incoming : current
     }

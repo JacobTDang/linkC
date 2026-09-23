@@ -63,6 +63,12 @@ final class ClaudeRateLimitsTests: XCTestCase {
         XCTAssertEqual(ClaudeRateLimits.newer(late, early), late, "an older reading landing last must not win")
     }
 
+    func testAnUntimedReadingNeverDisplacesATimedOne() {
+        let timed = AgentUsage(agent: .claude, windows: [], planType: nil, observedAt: arrived, unavailableReason: nil)
+        let untimed = AgentUsage(agent: .claude, windows: [], planType: nil, observedAt: nil, unavailableReason: nil)
+        XCTAssertEqual(ClaudeRateLimits.newer(timed, untimed), timed, "untimed incoming must not displace timed current")
+    }
+
     func testUsagePrefersTheReadingThenTheReasonNoneCanCome() {
         let reading = AgentUsage(agent: .claude, windows: [], planType: nil, observedAt: arrived, unavailableReason: nil)
         XCTAssertEqual(ClaudeRateLimits.usage(reading: reading, userOwnsStatusLine: true), reading)
