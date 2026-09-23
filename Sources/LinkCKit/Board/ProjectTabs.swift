@@ -13,12 +13,14 @@ public struct ProjectTab: Equatable, Sendable, Identifiable {
     public let title: String
     /// Mid-turn: closing it asks first.
     public let isWorking: Bool
+    public let activity: ShownActivity?
 
-    public init(id: String, kind: Kind, title: String, isWorking: Bool) {
+    public init(id: String, kind: Kind, title: String, isWorking: Bool, activity: ShownActivity? = nil) {
         self.id = id
         self.kind = kind
         self.title = title
         self.isWorking = isWorking
+        self.activity = activity
     }
 }
 
@@ -33,15 +35,20 @@ public enum ProjectTabs {
     }
 
     /// The Board, then the project's agent sessions, then its terminals — each in the order they
-    /// were opened. `titles` holds live session titles, which win over the stored ones.
-    public static func tabs(project path: String, sessions: [Session], shells: [ShellRow], titles: [String: String]) -> [ProjectTab] {
+    /// were opened. `titles` holds live session titles, which win over the stored ones. `activities`
+    /// holds each working or permission-waiting session's current action, keyed by session id.
+    public static func tabs(
+        project path: String, sessions: [Session], shells: [ShellRow], titles: [String: String],
+        activities: [String: String] = [:]
+    ) -> [ProjectTab] {
         let folder = standardized(path)
         var tabs = [ProjectTab(id: boardID(folder), kind: .board, title: "Board", isWorking: false)]
         for session in sessions where standardized(session.cwd) == folder {
             tabs.append(ProjectTab(
                 id: session.id, kind: .agent(session.agentKind),
                 title: titles[session.id] ?? session.title,
-                isWorking: session.state.bucket == .active))
+                isWorking: session.state.bucket == .active,
+                activity: ShownActivity(activity: activities[session.id], state: session.state)))
         }
         for shell in shells where standardized(shell.cwd) == folder {
             tabs.append(ProjectTab(id: shell.id, kind: .terminal, title: shell.title, isWorking: false))

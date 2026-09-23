@@ -12,12 +12,14 @@ public struct SidebarSessionRow: Identifiable, Equatable, Sendable {
     public let agentKind: AgentKind
     public let title: String
     public let status: SessionRowStatus
+    public let activity: ShownActivity?
 
-    public init(id: String, agentKind: AgentKind, title: String, status: SessionRowStatus) {
+    public init(id: String, agentKind: AgentKind, title: String, status: SessionRowStatus, activity: ShownActivity? = nil) {
         self.id = id
         self.agentKind = agentKind
         self.title = title
         self.status = status
+        self.activity = activity
     }
 }
 
@@ -38,12 +40,17 @@ public enum SidebarModel {
         public let title: String
         public let status: SessionRowStatus
         public let hasRunningSubagents: Bool
+        public let activity: String?
 
-        public init(session: Session, title: String, status: SessionRowStatus, hasRunningSubagents: Bool) {
+        public init(
+            session: Session, title: String, status: SessionRowStatus, hasRunningSubagents: Bool,
+            activity: String? = nil
+        ) {
             self.session = session
             self.title = title
             self.status = status
             self.hasRunningSubagents = hasRunningSubagents
+            self.activity = activity
         }
     }
 
@@ -71,7 +78,9 @@ public enum SidebarModel {
                 dot: dot(for: rows),
                 isExpanded: expandOverrides[group.workspacePath] ?? holdsSelection,
                 sessions: rows.map {
-                    SidebarSessionRow(id: $0.session.id, agentKind: $0.session.agentKind, title: $0.title, status: $0.status)
+                    SidebarSessionRow(
+                        id: $0.session.id, agentKind: $0.session.agentKind, title: $0.title, status: $0.status,
+                        activity: ShownActivity(activity: $0.activity, state: $0.session.state))
                 }
             )
         }

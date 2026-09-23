@@ -58,7 +58,8 @@ extension AppModel {
                 session: session,
                 title: titles[session.id] ?? session.agentKind.shortName,
                 status: rowStatus(session, now: now),
-                hasRunningSubagents: visibleAgents(session.id, now: now).contains(where: \.isRunning)
+                hasRunningSubagents: visibleAgents(session.id, now: now).contains(where: \.isRunning),
+                activity: ShownActivity.applies(to: session.state) ? currentActivity(session) : nil
             )
         }
         return SidebarModel.projects(

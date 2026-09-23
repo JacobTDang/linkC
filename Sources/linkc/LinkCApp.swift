@@ -621,7 +621,13 @@ final class AppModel {
 
     var projectTabs: [ProjectTab] {
         guard let project = currentProject else { return [] }
-        return ProjectTabs.tabs(project: project, sessions: sessions, shells: shellRows, titles: sessionTitles)
+        var activities: [String: String] = [:]
+        for session in sessions where ShownActivity.applies(to: session.state) {
+            activities[session.id] = currentActivity(session)
+        }
+        return ProjectTabs.tabs(
+            project: project, sessions: sessions, shells: shellRows, titles: sessionTitles,
+            activities: activities)
     }
 
     /// The tab showing: the project's Board, or the selected session or terminal.

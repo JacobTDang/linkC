@@ -71,6 +71,7 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
     var isSelected: Bool = false
     var indent: CGFloat = 0
     var help: String? = nil
+    var activity: ShownActivity? = nil
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
@@ -85,11 +86,15 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
                 HStack(spacing: 8) {
                     leading()
                         .frame(width: 16)
-                    Text(title)
-                        .font(.system(size: 13))
-                        .foregroundStyle(titleColor)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    if let activity {
+                        ActivityLabel(text: activity.text, isWorking: activity.isWorking, size: 12)
+                    } else {
+                        Text(title)
+                            .font(.system(size: 13))
+                            .foregroundStyle(titleColor)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                     Spacer(minLength: 6)
                 }
                 .contentShape(Rectangle())
@@ -350,6 +355,7 @@ private struct SessionRow: View {
             isSelected: isSelected,
             indent: 18,
             help: "\(row.agentKind.displayName) — \(row.title)",
+            activity: row.activity,
             action: { model.focus(row.id) }
         ) {
             AgentLogoView(agent: row.agentKind)

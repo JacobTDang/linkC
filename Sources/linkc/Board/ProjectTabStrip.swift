@@ -16,49 +16,56 @@ struct ProjectTabStrip: View {
     private static let maxTab: CGFloat = 180
 
     var body: some View {
-        let tabs = model.projectTabs
-        let selected = model.selectedTabID
-        HStack(spacing: 4) {
-            if let onBack {
-                ChromeButton(systemName: "chevron.left", help: "Back", action: onBack)
-            }
-            if let board = tabs.first {
-                TabChip(tab: board, isSelected: board.id == selected, width: nil,
-                        onSelect: { model.select(board) }, onClose: nil)
-            }
-            Rectangle().fill(Color.white.opacity(0.1)).frame(width: 1, height: 14)
-            GeometryReader { geometry in
-                let sessions = Array(tabs.dropFirst())
-                let width = sessions.isEmpty
-                    ? Self.maxTab
-                    : min(Self.maxTab, max(Self.minTab, geometry.size.width / CGFloat(sessions.count) - 2))
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 2) {
-                        ForEach(sessions) { tab in
-                            TabChip(tab: tab, isSelected: tab.id == selected, width: width,
-                                    onSelect: { model.select(tab) }, onClose: { requestClose(tab) })
+        // A terminal-read action isn't observable, so the strip re-reads once a second while
+        // one of its sessions is working, and hourly (effectively never) otherwise — one
+        // `TimelineView`, same schedule type either way, so switching the interval never tears
+        // down the key monitor or the confirmation dialog below, which stay on this outer view.
+        let anyWorking = model.projectTabs.contains(where: \.isWorking)
+        TimelineView(.periodic(from: .now, by: anyWorking ? 1 : 3600)) { _ in
+            let tabs = model.projectTabs
+            let selected = model.selectedTabID
+            HStack(spacing: 4) {
+                if let onBack {
+                    ChromeButton(systemName: "chevron.left", help: "Back", action: onBack)
+                }
+                if let board = tabs.first {
+                    TabChip(tab: board, isSelected: board.id == selected, width: nil,
+                            onSelect: { model.select(board) }, onClose: nil)
+                }
+                Rectangle().fill(Color.white.opacity(0.1)).frame(width: 1, height: 14)
+                GeometryReader { geometry in
+                    let sessions = Array(tabs.dropFirst())
+                    let width = sessions.isEmpty
+                        ? Self.maxTab
+                        : min(Self.maxTab, max(Self.minTab, geometry.size.width / CGFloat(sessions.count) - 2))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 2) {
+                            ForEach(sessions) { tab in
+                                TabChip(tab: tab, isSelected: tab.id == selected, width: width,
+                                        onSelect: { model.select(tab) }, onClose: { requestClose(tab) })
+                            }
+                        }
+                        .frame(minWidth: geometry.size.width, alignment: .leading)
+                        .frame(height: geometry.size.height, alignment: .bottom)
+                        .background(WindowDragHandle())
+                    }
+                    .scrollDisabled(CGFloat(sessions.count) * (width + 2) <= geometry.size.width)
+                }
+                .frame(height: 30)
+                Menu {
+                    ForEach(AgentKind.allCases.filter { $0 != .shell }, id: \.self) { kind in
+                        Button("Add \(kind.displayName)") {
+                            if let project = model.currentProject { model.spawnTeammate(in: project, agent: kind) }
                         }
                     }
-                    .frame(minWidth: geometry.size.width, alignment: .leading)
-                    .frame(height: geometry.size.height, alignment: .bottom)
-                    .background(WindowDragHandle())
+                } label: {
+                    RowGlyph(systemName: "plus")
                 }
-                .scrollDisabled(CGFloat(sessions.count) * (width + 2) <= geometry.size.width)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Add an agent to this project")
             }
-            .frame(height: 30)
-            Menu {
-                ForEach(AgentKind.allCases.filter { $0 != .shell }, id: \.self) { kind in
-                    Button("Add \(kind.displayName)") {
-                        if let project = model.currentProject { model.spawnTeammate(in: project, agent: kind) }
-                    }
-                }
-            } label: {
-                RowGlyph(systemName: "plus")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Add an agent to this project")
         }
         .padding(.horizontal, 10)
         .padding(.top, 8)
@@ -126,10 +133,14 @@ private struct TabChip: View {
             case .terminal:
                 Image(systemName: "terminal").font(.system(size: 9))
             }
-            Text(tab.title)
-                .font(.system(size: 11.5))
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if let activity = tab.activity {
+                ActivityLabel(text: activity.text, isWorking: activity.isWorking, size: 11.5)
+            } else {
+                Text(tab.title)
+                    .font(.system(size: 11.5))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             if let onClose {
                 Spacer(minLength: 0)
                 Button(action: onClose) {

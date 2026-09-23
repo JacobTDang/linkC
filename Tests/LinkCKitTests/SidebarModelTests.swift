@@ -68,4 +68,20 @@ final class SidebarModelTests: XCTestCase {
         let projects = build([input("1", cwd: "/p/a")], order: ["/p/gone", "/p/a"])
         XCTAssertEqual(projects.map(\.path), ["/p/a"])
     }
+
+    func testAWorkingRowCarriesItsActionAndAnIdleOneDoesNot() {
+        var working = Session(id: "w", cwd: "/p/a", title: "a", agentKind: .claude)
+        working.state = .working
+        var idle = Session(id: "i", cwd: "/p/a", title: "a", agentKind: .claude)
+        idle.state = .finished
+        let status = SessionRowStatus(text: "", tone: .quiet)
+        let rows = SidebarModel.projects(
+            inputs: [
+                SidebarModel.Input(session: working, title: "w", status: status, hasRunningSubagents: false, activity: "$ swift test"),
+                SidebarModel.Input(session: idle, title: "i", status: status, hasRunningSubagents: false, activity: "$ swift test"),
+            ],
+            order: [], expandOverrides: [:], selectedId: nil
+        )[0].sessions
+        XCTAssertEqual(rows.map(\.activity?.text), ["$ swift test", nil])
+    }
 }

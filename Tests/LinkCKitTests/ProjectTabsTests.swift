@@ -48,4 +48,11 @@ final class ProjectTabsTests: XCTestCase {
         XCTAssertEqual(ProjectTabs.cycle(from: ProjectTabs.boardID("/p"), in: tabs, backwards: true)?.id, "b")
         XCTAssertEqual(ProjectTabs.cycle(from: "gone", in: tabs, backwards: false)?.id, "a", "an unknown current starts from the Board")
     }
+
+    func testAWorkingTabCarriesItsActionAndAnIdleOneDoesNot() {
+        let tabs = ProjectTabs.tabs(
+            project: "/p", sessions: [session("a", "/p", .working), session("b", "/p", .ready)], shells: [],
+            titles: [:], activities: ["a": "Read the panel's drag gate", "b": "$ ls"])
+        XCTAssertEqual(tabs.map(\.activity?.text), [nil, "Read the panel's drag gate", nil])
+    }
 }

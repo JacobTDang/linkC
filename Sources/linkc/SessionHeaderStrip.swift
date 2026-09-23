@@ -69,15 +69,7 @@ struct SessionHeaderStrip: View {
             TimelineView(.periodic(from: .now, by: 1.0)) { _ in
                 if let activity = model.currentActivity(session), !activity.isEmpty {
                     HStack(spacing: 6) {
-                        Image(systemName: activityIcon(for: activity))
-                            .font(.system(size: 9))
-                            .foregroundStyle(session.state == .working ? Theme.accent : Theme.textTertiary)
-                        Text(activity)
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.textSecondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .smoothShimmer(isWorking: session.state == .working)
+                        ActivityLabel(text: activity, isWorking: session.state == .working)
                         Spacer(minLength: 0)
                     }
                 }
