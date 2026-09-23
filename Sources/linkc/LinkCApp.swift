@@ -205,8 +205,7 @@ final class AppModel {
             // below — so this is the one place both paths funnel through: whichever one focused
             // a session, drop whatever was covering it.
             coordinator.onSessionFocused = { [weak self] _ in
-                self?.boardProject = nil
-                self?.activeScreen = nil
+                self?.showSelection()
             }
             try coordinator.start()
             coordinator.usageTracker = usage
@@ -416,7 +415,7 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.newSession(cwd: cwd, agent: agent, mode: .new)
-            activeScreen = nil  // the new session is selected — show it
+            showSelection()  // the new session is selected — show it
             recents?.record(cwd)
         } catch {
             lastError = error.localizedDescription
@@ -467,7 +466,7 @@ final class AppModel {
                     .trimmingCharacters(in: .whitespaces),
                 title: title
             )
-            activeScreen = nil  // the new terminal is selected — show it
+            showSelection()  // the new terminal is selected — show it
         } catch {
             lastError = error.localizedDescription
         }
@@ -547,7 +546,7 @@ final class AppModel {
             lastError = nil
             try shells.restore(shell)
             recents?.record(shell.cwd)
-            activeScreen = nil   // the new terminal is selected — show it
+            showSelection()  // the new terminal is selected — show it
         } catch {
             lastError = error.localizedDescription
         }
@@ -633,6 +632,13 @@ final class AppModel {
 
     func showBoard(_ path: String) {
         boardProject = ProjectTabs.standardized(path)
+        activeScreen = nil
+    }
+
+    /// A session or terminal was just selected — show it. Clears both what could cover it: an
+    /// open screen, and another project's Board (else the new one opens hidden underneath it).
+    private func showSelection() {
+        boardProject = nil
         activeScreen = nil
     }
 
@@ -751,7 +757,7 @@ final class AppModel {
             lastError = nil
             try shells.launch(cwd: url.path)
             recents?.record(url.path)
-            activeScreen = nil  // the new terminal is selected — show it
+            showSelection()  // the new terminal is selected — show it
         } catch {
             lastError = error.localizedDescription
         }
@@ -766,7 +772,7 @@ final class AppModel {
             lastError = nil
             try shells.relaunch(row)
             recents?.record(row.cwd)
-            activeScreen = nil
+            showSelection()  // the new terminal is selected — show it
         } catch {
             lastError = error.localizedDescription
         }
@@ -880,7 +886,7 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.newSession(cwd: url.path, agent: agent, mode: mode)
-            activeScreen = nil  // the new session is selected — show it
+            showSelection()  // the new session is selected — show it
             recents?.record(url.path)
         } catch {
             lastError = error.localizedDescription
@@ -931,7 +937,7 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.restore(r, as: agent)
-            activeScreen = nil  // the new session is selected — show it
+            showSelection()  // the new session is selected — show it
             recents?.record(r.cwd)
         } catch {
             lastError = error.localizedDescription
@@ -944,7 +950,7 @@ final class AppModel {
         do {
             lastError = nil
             try coordinator.restoreAll()
-            activeScreen = nil  // the new session is selected — show it
+            showSelection()  // the new session is selected — show it
         } catch {
             lastError = error.localizedDescription
         }
