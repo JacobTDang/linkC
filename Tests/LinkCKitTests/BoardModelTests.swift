@@ -440,6 +440,29 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.refusal, "No room left in Local docker — the new component is outside it; drag it in or make room.")
     }
 
+    /// When "Local docker" has no room and cannot grow, the container is filed under whichever
+    /// frame its landing spot's centre actually falls in — not blindly "Not placed" just because
+    /// it overflowed Local docker.
+    func testASuggestionThatOverflowsLocalDockerIsFiledUnderTheFrameItLandsIn() throws {
+        let board = fresh()
+        let dockerLabel = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 200, h: 96)))
+        XCTAssertTrue(board.renameFrame(dockerLabel, to: BoardModel.localDocker))
+        // Blocks Local docker from growing downward.
+        _ = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 96, w: 200, h: 96)))
+        // Sits exactly where the overflow's fallback spot lands — to the right of Local docker.
+        let other = try XCTUnwrap(board.addFrame(BoardRect(x: 248, y: 0, w: 300, h: 150)))
+
+        board.addSuggestion(MapSuggestion(name: "first", kind: .service, detail: "container first"))
+        XCTAssertEqual(board.map.components.first { $0.name == "first" }?.place, BoardModel.localDocker, "the first one still fits")
+
+        board.addSuggestion(MapSuggestion(name: "second", kind: .service, detail: "container second"))
+        let second = try XCTUnwrap(board.map.components.first { $0.name == "second" })
+        let secondRect = try XCTUnwrap(second.at.map(BoardGeometry.rect(ofComponentAt:)))
+        let otherRect = try XCTUnwrap(board.map.frames.first { $0.label == other }?.rect)
+        XCTAssertTrue(otherRect.contains(secondRect.center), "the landing spot really is inside the other frame")
+        XCTAssertEqual(second.place, other, "its place must match where it actually landed")
+    }
+
     /// A note (or text) already inside "Local docker" is not a component, so it has no `place` —
     /// but it must still be avoided, both when searching for a spot and when growing the frame.
     func testAddingARunningContainerAvoidsANoteAtTheFramesFirstFreeSpot() throws {

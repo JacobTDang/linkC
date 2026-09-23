@@ -602,7 +602,9 @@ public final class BoardModel {
             }
             let placed = spot ?? BoardGeometry.elementDrop(seed.offsetBy(dx: frame.w + 48, dy: 0),
                                                          otherElements: elementRects(map, excluding: []), frames: frameRects(map, excluding: []))
-            let place = spot == nil ? BoardMap.notPlaced : localDocker
+            // Overflow that lands inside another frame is filed there, as the containment rule
+            // says — not blindly "Not placed" just because it did not fit in Local docker.
+            let place = spot != nil ? localDocker : (BoardGeometry.frame(containing: placed, frames: map.frames)?.label ?? BoardMap.notPlaced)
             if spot == nil { unplaced = true }
             map.components.append(BoardComponent(name: suggestion.name, kind: suggestion.kind, place: place, at: placed.origin))
         }
