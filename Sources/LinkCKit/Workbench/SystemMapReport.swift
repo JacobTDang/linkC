@@ -53,10 +53,16 @@ public enum SystemMapReport {
         // `DATABASE_URL`), and underscore-emphasis needs a pair with no space touching either
         // inner edge to render at all, so a lone `_` cannot forge structure the way `*` or a
         // backtick can.
+        //
+        // The escape character itself is escaped first. Otherwise a field's own backslash
+        // sitting right next to a `*` or backtick combines with the backslash this function
+        // inserts — `\*` becomes `\\*`, an escaped backslash followed by a live, unescaped
+        // asterisk — cancelling the very escaping this is meant to guarantee.
         var neutralised = ""
         neutralised.reserveCapacity(collapsed.count)
         for character in collapsed {
             switch character {
+            case "\\": neutralised.append("\\")
             case "*", "`": neutralised.append("\\")
             default: break
             }

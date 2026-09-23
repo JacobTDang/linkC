@@ -61,6 +61,19 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(SidebarState(defaults: defaults).projectOrder, ["/a", "/c"])
     }
 
+    /// A removed project must not keep its closed-board entry forever — the same forgetting
+    /// `prune` already does for a stale expand override.
+    func testPruneAlsoForgetsAClosedBoardForARemovedProject() {
+        let state = SidebarState(defaults: defaults)
+        state.noteProjects(["/a", "/b"])
+        state.setWorkbenchOpen("/b", false)
+        state.prune(keeping: ["/a"])
+
+        XCTAssertTrue(
+            SidebarState(defaults: defaults).isWorkbenchOpen("/b"),
+            "a pruned project's closed board must not linger")
+    }
+
     func testAProjectThatTurnsCoralExpandsAndAManualCollapseSticksWhileItStaysCoral() {
         let state = SidebarState(defaults: defaults)
         state.noteCoral(["/a"])

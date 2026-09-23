@@ -63,9 +63,11 @@ public final class SidebarState {
     public func prune(keeping paths: Set<String>) {
         let order = projectOrder.filter { paths.contains($0) }
         let overrides = expandOverrides.filter { paths.contains($0.key) }
-        guard order != projectOrder || overrides != expandOverrides else { return }
+        let closed = workbenchClosed.filter { paths.contains($0.key) }
+        guard order != projectOrder || overrides != expandOverrides || closed != workbenchClosed else { return }
         projectOrder = order
         expandOverrides = overrides
+        workbenchClosed = closed
         save()
     }
 

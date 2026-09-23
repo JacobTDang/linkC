@@ -118,6 +118,22 @@ final class SystemMapReportTests: XCTestCase {
         XCTAssertFalse(line.contains("`rm -rf /`"), "a raw, unescaped backtick pair must not survive: \(line)")
     }
 
+    /// A field's own backslash must be escaped too, and before `*`/backtick are — otherwise a
+    /// backslash sitting right next to one of those combines with the escaping backslash this
+    /// function inserts, cancelling it out: `\*x\*` must render as that literal text, not as a
+    /// stray backslash plus live emphasis.
+    func testABackslashInAFieldCannotCancelTheEscapeOfAnAsterisk() throws {
+        let map = SystemMap(components: [
+            SystemComponent(name: "evil", kind: .service, reachedBy: #"\*x\*"#),
+        ])
+        let text = SystemMapReport.markdown(for: map, statuses: [:])
+        let line = try XCTUnwrap(text.split(separator: "\n").first { $0.contains("evil") })
+        // The field's own backslash must render as an escaped backslash (`\\`) in its own right,
+        // leaving the asterisk right after it still escaped (`\*`) rather than freed to open
+        // live emphasis — so each `\*` in the field becomes `\\\*` in the report.
+        XCTAssertTrue(line.contains(#"\\\*x\\\*"#), String(line))
+    }
+
     /// A field is capped so one component cannot balloon a tool result an agent has to read.
     func testAnOverlongFieldIsCapped() throws {
         let long = String(repeating: "a", count: 4000)

@@ -44,7 +44,14 @@ struct WorkbenchBand: View {
     private var header: some View {
         HStack(spacing: 8) {
             Button {
-                model.sidebarState.setWorkbenchOpen(workspacePath, !isOpen)
+                let opening = !isOpen
+                model.sidebarState.setWorkbenchOpen(workspacePath, opening)
+                // Statuses were last reconciled in `.task`, which only ever runs once — without
+                // this, something that started or stopped while the board was collapsed would
+                // still show its old status the moment the board expands again.
+                if opening {
+                    workbench.reconcile(with: model.discoveredThings(in: workspacePath))
+                }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: isOpen ? "chevron.down" : "chevron.right")
@@ -249,6 +256,11 @@ private struct ComponentTile: View {
 
     private var isMissing: Bool { status == .missing && !component.intended }
 
+    /// A component the map still calls intended, but that discovery actually found, must not be
+    /// drawn dashed while also showing the running dot — that contradicts itself. The evidence
+    /// wins: it is drawn present, and only the tooltip notes the map still calls it intended.
+    private var drawnAsIntended: Bool { component.intended && status != .present }
+
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: WorkbenchBand.glyphName(for: component.kind))
@@ -275,11 +287,11 @@ private struct ComponentTile: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: Theme.rowRadius)
-                .fill(component.intended ? Color.clear : Theme.hover))
+                .fill(drawnAsIntended ? Color.clear : Theme.hover))
         .overlay(
             RoundedRectangle(cornerRadius: Theme.rowRadius)
                 .strokeBorder(
-                    component.intended ? Theme.textTertiary : .clear,
+                    drawnAsIntended ? Theme.textTertiary : .clear,
                     style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
         .opacity(isMissing ? 0.55 : 1)
         .offset(drag)
@@ -307,7 +319,11 @@ private struct ComponentTile: View {
         case .missing: parts.append("linkC looked for this and did not find it")
         case .unchecked, nil: parts.append("linkC cannot check this one")
         }
-        if component.intended { parts.append("intended — does not exist yet") }
+        if drawnAsIntended {
+            parts.append("intended — does not exist yet")
+        } else if component.intended {
+            parts.append("the map still marks this intended")
+        }
         return parts.joined(separator: " · ")
     }
 }

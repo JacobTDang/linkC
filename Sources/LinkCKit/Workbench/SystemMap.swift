@@ -124,7 +124,11 @@ public struct SystemMap: Equatable, Sendable {
                 usedBy: try stringArray(raw, "used_by", context: context) ?? [],
                 intended: try bool(raw, "intended", context: context) ?? false,
                 at: try gridPoint(raw, context: context))
-            component.extras = try? JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys])
+            do {
+                component.extras = try JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys])
+            } catch {
+                throw LinkCError.parse("\(context) could not be recorded verbatim: \(error.localizedDescription)")
+            }
             components.append(component)
         }
 
@@ -134,7 +138,11 @@ public struct SystemMap: Equatable, Sendable {
         var map = SystemMap(
             version: try int(root, "version", context: "system-map.json") ?? 1,
             components: components)
-        map.extras = try? JSONSerialization.data(withJSONObject: rootExtras, options: [.sortedKeys])
+        do {
+            map.extras = try JSONSerialization.data(withJSONObject: rootExtras, options: [.sortedKeys])
+        } catch {
+            throw LinkCError.parse("system-map.json could not be recorded verbatim: \(error.localizedDescription)")
+        }
         return map
     }
 
@@ -185,11 +193,10 @@ public struct SystemMap: Equatable, Sendable {
 
     /// The file's bytes, keeping every key linkC does not know and omitting empty fields.
     public func encoded() throws -> Data {
-        var root = (extras.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]) ?? [:]
+        var root = try extrasObject(extras, context: "the system map's own extras")
         root["version"] = version
-        root["components"] = components.map { component in
-            var object = (component.extras.flatMap { try? JSONSerialization.jsonObject(with: $0) }
-                as? [String: Any]) ?? [:]
+        root["components"] = try components.map { component in
+            var object = try extrasObject(component.extras, context: "component \"\(component.name)\"'s extras")
             object["name"] = component.name
             object["kind"] = component.kind.raw
             set(&object, "reached_by", component.reachedBy)
@@ -207,6 +214,24 @@ public struct SystemMap: Equatable, Sendable {
             return try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
         } catch {
             throw LinkCError.parse("failed to write the system map: \(error.localizedDescription)")
+        }
+    }
+
+    /// Reads a stored `extras` blob back into the object it was serialized from. Unknown keys
+    /// surviving an edit is the one guarantee this type makes; silently dropping them here (the
+    /// old behaviour, via `try?` defaulting to `[:]`) would let a write go ahead anyway and
+    /// quietly lose them, which is exactly the kind of silent data loss this must never allow.
+    private func extrasObject(_ data: Data?, context: String) throws -> [String: Any] {
+        guard let data else { return [:] }
+        do {
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw LinkCError.parse("\(context) did not decode back into an object")
+            }
+            return object
+        } catch let error as LinkCError {
+            throw error
+        } catch {
+            throw LinkCError.parse("\(context) could not be read back: \(error.localizedDescription)")
         }
     }
 

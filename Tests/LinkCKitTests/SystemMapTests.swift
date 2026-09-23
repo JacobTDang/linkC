@@ -165,4 +165,24 @@ final class SystemMapTests: XCTestCase {
         XCTAssertNil(object["version"], "version lives on the struct; it should not linger in extras")
         XCTAssertEqual(object["notes"] as? String, "n")
     }
+
+    // MARK: - Unknown keys surviving is a guarantee, so reading `extras` back must fail loud
+
+    /// Encoding used to read a component's stored `extras` back with `try?`, defaulting to an
+    /// empty object on failure — silently dropping every unknown key the file carried, while
+    /// still writing the file. That must fail loud instead.
+    func testEncodingFailsLoudWhenAComponentsExtrasCannotBeRead() {
+        var component = SystemComponent(name: "api", kind: .service)
+        component.extras = Data("not json".utf8)
+        let map = SystemMap(components: [component])
+        XCTAssertThrowsError(try map.encoded())
+    }
+
+    /// The same guarantee at the top level: the map's own `extras` must fail loud rather than
+    /// silently encoding as if no unknown top-level keys had ever existed.
+    func testEncodingFailsLoudWhenTheMapsOwnExtrasCannotBeRead() {
+        var map = SystemMap(components: [SystemComponent(name: "api", kind: .service)])
+        map.extras = Data("not json".utf8)
+        XCTAssertThrowsError(try map.encoded())
+    }
 }
