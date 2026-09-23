@@ -27,6 +27,24 @@ struct BoardCanvas: View {
     /// A frame being resized: its label and the proposed rect, until release.
     @State private var resizing: (label: String, rect: BoardRect)?
     @State private var input = BoardInput()
+    @State private var lastKind: ComponentKind = .service
+    /// The component whose inspector card is open.
+    @State private var inspecting: String?
+    @State private var editingNote: UUID?
+    @State private var editingText: UUID?
+    @State private var editingFrame: String?
+    @State private var editingArrow: BoardModel.ArrowKey?
+    /// A component under the pointer, whose side handles are showing.
+    @State private var hovered: String?
+    /// An arrow being drawn: the component it leaves and the pointer, in screen points.
+    @State private var arrowDraft: (from: String, to: CGPoint)?
+    /// A frame being drawn, in screen points.
+    @State private var frameDraft: CGRect?
+    /// Where the quick-add menu opens, in screen points.
+    @State private var quickAddAt: CGPoint?
+    @State private var showingSuggestions = false
+    @State private var systemDraft = ""
+    @FocusState private var systemFocused: Bool
 
     var body: some View {
         GeometryReader { geometry in
@@ -69,6 +87,9 @@ struct BoardCanvas: View {
                 DragGesture(minimumDistance: 3, coordinateSpace: .named(Self.space))
                     .onChanged(backgroundDragChanged)
                     .onEnded(backgroundDragEnded))
+            .onTapGesture(count: 2, coordinateSpace: .named(Self.space)) { location in
+                backgroundDoubleTapped(at: location)
+            }
             .onTapGesture(count: 1, coordinateSpace: .named(Self.space)) { location in
                 backgroundTapped(at: location)
             }
@@ -84,6 +105,18 @@ struct BoardCanvas: View {
                 context.fill(path, with: .color(Theme.accent.opacity(0.08)))
                 context.stroke(path, with: .color(Theme.accent.opacity(0.6)), lineWidth: 1)
             }
+            if let frameDraft {
+                let path = Path(roundedRect: frameDraft, cornerRadius: 12 * viewport.zoom)
+                context.stroke(path, with: .color(Theme.accent.opacity(0.7)), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+            }
+            if let arrowDraft, let source = board.map.components.first(where: { $0.name == arrowDraft.from }),
+               let rect = componentRect(source) {
+                let start = viewport.toScreen(CGPoint(x: Double(rect.center.x), y: Double(rect.center.y)))
+                var path = Path()
+                path.move(to: start)
+                path.addLine(to: arrowDraft.to)
+                context.stroke(path, with: .color(Theme.accent), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+            }
         }
         .allowsHitTesting(false)
     }
@@ -98,27 +131,65 @@ struct BoardCanvas: View {
                 if let at = component.at {
                     ComponentBox(component: component, status: board.statuses[component.name],
                                  isSelected: board.selection.contains(.component(component.name)))
+                        .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component.name) } }
+                        .onHover { inside in
+                            if inside { hovered = component.name } else if hovered == component.name { hovered = nil }
+                        }
+                        .popover(isPresented: Binding(get: { inspecting == component.name }, set: { if !$0 { inspecting = nil } }),
+                                 arrowEdge: .trailing) {
+                            ComponentInspector(
+                                component: component,
+                                livesIn: component.place,
+                                uses: component.uses.keys.sorted().map { ($0, component.uses[$0] ?? "") },
+                                refusal: board.refusal,
+                                commit: { board.updateComponent(component.name, to: $0) },
+                                close: { inspecting = nil })
+                        }
                         .offset(x: CGFloat(at.x), y: CGFloat(at.y))
                         .offset(liveOffset(for: .component(component.name), place: component.place))
-                        .gesture(elementDrag(.component(component.name)))
-                        .onTapGesture { select(.component(component.name)) }
+                        .gesture(board.tool == .arrow ? AnyGesture(arrowDrag(from: component.name).map { _ in () })
+                                                      : AnyGesture(elementDrag(.component(component.name)).map { _ in () }))
+                        .onTapGesture {
+                            select(.component(component.name))
+                            if !NSEvent.modifierFlags.contains(.shift) { inspecting = component.name }
+                        }
                 }
             }
             ForEach(board.map.notes.filter { note in note.at.map { BoardGeometry.rect(ofNoteAt: $0).intersects(visible) } ?? false }) { note in
                 if let at = note.at {
-                    NoteCard(note: note, isSelected: board.selection.contains(.note(note.id)))
-                        .offset(x: CGFloat(at.x), y: CGFloat(at.y))
-                        .offset(liveOffset(for: .note(note.id), place: nil, rect: BoardGeometry.rect(ofNoteAt: at)))
-                        .gesture(elementDrag(.note(note.id)))
-                        .onTapGesture { select(.note(note.id)) }
+                    Group {
+                        if editingNote == note.id {
+                            NoteEditor(text: note.text) { text in
+                                board.setNoteText(note.id, to: text)
+                                editingNote = nil
+                            }
+                        } else {
+                            NoteCard(note: note, isSelected: board.selection.contains(.note(note.id)))
+                                .gesture(elementDrag(.note(note.id)))
+                                .onTapGesture(count: 2) { editingNote = note.id }
+                                .onTapGesture { select(.note(note.id)) }
+                        }
+                    }
+                    .offset(x: CGFloat(at.x), y: CGFloat(at.y))
+                    .offset(liveOffset(for: .note(note.id), place: nil, rect: BoardGeometry.rect(ofNoteAt: at)))
                 }
             }
             ForEach(board.map.texts.filter { BoardGeometry.rect(of: $0).intersects(visible) }) { text in
-                TextLabel(text: text, isSelected: board.selection.contains(.text(text.id)))
-                    .offset(x: CGFloat(text.at.x), y: CGFloat(text.at.y))
-                    .offset(liveOffset(for: .text(text.id), place: nil, rect: BoardGeometry.rect(of: text)))
-                    .gesture(elementDrag(.text(text.id)))
-                    .onTapGesture { select(.text(text.id)) }
+                Group {
+                    if editingText == text.id {
+                        LineEditor(text: text.text, font: TextLabel.font(text.style), width: CGFloat(max(text.width, 120))) { words in
+                            board.setText(text.id, to: words, width: TextLabel.width(of: words, style: text.style))
+                            editingText = nil
+                        }
+                    } else {
+                        TextLabel(text: text, isSelected: board.selection.contains(.text(text.id)))
+                            .gesture(elementDrag(.text(text.id)))
+                            .onTapGesture(count: 2) { editingText = text.id }
+                            .onTapGesture { select(.text(text.id)) }
+                    }
+                }
+                .offset(x: CGFloat(text.at.x), y: CGFloat(text.at.y))
+                .offset(liveOffset(for: .text(text.id), place: nil, rect: BoardGeometry.rect(of: text)))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -130,11 +201,21 @@ struct BoardCanvas: View {
     private func frameHandles(_ frame: BoardFrame) -> some View {
         if let rect = frameRect(frame) {
             let offset = liveOffset(for: .frame(frame.label), place: nil)
-            FrameLabel(label: frame.label, isSelected: board.selection.contains(.frame(frame.label)))
-                .offset(x: CGFloat(rect.x + 12), y: CGFloat(rect.y) - 9)
-                .offset(offset)
-                .gesture(elementDrag(.frame(frame.label)))
-                .onTapGesture { select(.frame(frame.label)) }
+            Group {
+                if editingFrame == frame.label {
+                    LineEditor(text: frame.label, font: .system(size: 10, weight: .semibold), width: 160) { label in
+                        board.renameFrame(frame.label, to: label)
+                        editingFrame = nil
+                    }
+                } else {
+                    FrameLabel(label: frame.label, isSelected: board.selection.contains(.frame(frame.label)))
+                        .gesture(elementDrag(.frame(frame.label)))
+                        .onTapGesture(count: 2) { editingFrame = frame.label }
+                        .onTapGesture { select(.frame(frame.label)) }
+                }
+            }
+            .offset(x: CGFloat(rect.x + 12), y: CGFloat(rect.y) - 9)
+            .offset(offset)
             FrameGrip()
                 .offset(x: CGFloat(rect.maxX) - 16, y: CGFloat(rect.maxY) - 16)
                 .offset(offset)
@@ -157,25 +238,85 @@ struct BoardCanvas: View {
                 startEmpty: { board.startMap() })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .loaded:
-            VStack(spacing: 6) {
-                if board.changedOnDisk {
-                    BoardBanner(text: "system-map.json changed on disk. Reload to see it — edits not yet saved here are dropped.",
-                                tone: Theme.contextWarn, action: ("Reload", { board.reload() }))
+            ZStack {
+                VStack(spacing: 6) {
+                    HStack(alignment: .top) {
+                        TextField("What is this project?", text: $systemDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.textPrimary)
+                            .frame(maxWidth: 360, alignment: .leading)
+                            .focused($systemFocused)
+                            .onSubmit { board.setSystem(systemDraft) }
+                            .onChange(of: systemFocused) { _, focused in
+                                if !focused { board.setSystem(systemDraft) }
+                            }
+                        Spacer()
+                        if !board.suggestions.isEmpty {
+                            Button { showingSuggestions = true } label: {
+                                Text("\(board.suggestions.count) running, not on the map ›")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Theme.accent)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(Capsule().fill(Theme.accent.opacity(0.12)))
+                                    .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.3), lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                            .popover(isPresented: $showingSuggestions) {
+                                SuggestionList(
+                                    suggestions: board.suggestions,
+                                    add: { board.addSuggestion($0) },
+                                    addAll: { board.addAllRunning(); showingSuggestions = false })
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    if board.changedOnDisk {
+                        BoardBanner(text: "system-map.json changed on disk. Reload to see it — edits not yet saved here are dropped.",
+                                    tone: Theme.contextWarn, action: ("Reload", { board.reload() }))
+                    }
+                    if let failure = board.writeFailure {
+                        BoardBanner(text: "Couldn't save the map: \(failure)", tone: Theme.contextWarn,
+                                    action: ("Retry", { board.saveNow() }))
+                    }
+                    Spacer()
+                    if let refusal = board.refusal {
+                        Text(refusal).font(.system(size: 11)).foregroundStyle(Theme.accent)
+                    }
+                    BoardToolbar(board: board, lastKind: $lastKind)
+                        .padding(.bottom, 12)
                 }
-                if let failure = board.writeFailure {
-                    BoardBanner(text: "Couldn't save the map: \(failure)", tone: Theme.contextWarn,
-                                action: ("Retry", { board.saveNow() }))
+                .padding(.top, 10)
+
+                if let quickAddAt {
+                    Color.clear
+                        .frame(width: 1, height: 1)
+                        .position(quickAddAt)
+                        .popover(isPresented: Binding(get: { self.quickAddAt != nil }, set: { if !$0 { self.quickAddAt = nil } })) {
+                            QuickAddMenu { choice in
+                                place(choice, at: viewport.toCanvas(quickAddAt))
+                                self.quickAddAt = nil
+                            }
+                        }
                 }
-                Spacer()
-                if let refusal = board.refusal {
-                    Text(refusal)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.accent)
-                        .padding(.bottom, 58)
+
+                if let editingArrow, let points = board.routes[editingArrow], let mid = labelPoint(
+                    points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }) {
+                    LineEditor(
+                        text: board.map.components.first { $0.name == editingArrow.from }?.uses[editingArrow.to] ?? "",
+                        font: .system(size: 10), width: 160
+                    ) { label in
+                        board.setArrowLabel(editingArrow, to: label)
+                        self.editingArrow = nil
+                    }
+                    .position(mid)
                 }
             }
-            .padding(.top, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onChange(of: board.map.system, initial: true) { _, system in
+                if !systemFocused { systemDraft = system ?? "" }
+            }
         }
     }
 
@@ -377,11 +518,15 @@ struct BoardCanvas: View {
         case .cancel:
             board.selection = []
             board.tool = .select
+            inspecting = nil
+            quickAddAt = nil
+            arrowDraft = nil
+            frameDraft = nil
         case .undo: board.undo()
         case .redo: board.redo()
         case .fitAll: fitAll()
         case .selectTool: board.tool = .select
-        case .componentTool: board.tool = .component(.service)
+        case .componentTool: board.tool = .component(lastKind)
         case .arrowTool: board.tool = .arrow
         case .frameTool: board.tool = .frame
         case .noteTool: board.tool = .note
@@ -432,12 +577,49 @@ struct BoardCanvas: View {
             }
     }
 
+    /// The four side handles on a hovered component; dragging one draws an arrow.
+    private func handles(for name: String) -> some View {
+        let size = BoardGeometry.componentSize
+        let points = [CGPoint(x: size.x / 2, y: 0), CGPoint(x: size.x, y: size.y / 2),
+                      CGPoint(x: size.x / 2, y: size.y), CGPoint(x: 0, y: size.y / 2)]
+        return ZStack(alignment: .topLeading) {
+            ForEach(points.indices, id: \.self) { index in
+                Circle()
+                    .fill(Theme.boardBackground)
+                    .overlay(Circle().strokeBorder(Theme.accent, lineWidth: 1.5))
+                    .frame(width: 10, height: 10)
+                    .position(points[index])
+                    .gesture(arrowDrag(from: name))
+            }
+        }
+        .frame(width: CGFloat(size.x), height: CGFloat(size.y))
+    }
+
+    private func arrowDrag(from name: String) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(Self.space))
+            .onChanged { value in arrowDraft = (name, value.location) }
+            .onEnded { value in
+                arrowDraft = nil
+                let point = viewport.toCanvas(value.location)
+                let dropped = BoardPoint(x: Int(point.x), y: Int(point.y))
+                if let target = board.map.components.first(where: { componentRect($0)?.contains(dropped) == true }) {
+                    board.addArrow(from: name, to: target.name)
+                }
+                board.tool = .select
+            }
+    }
+
     private func backgroundDragChanged(_ value: DragGesture.Value) {
         if spaceHeld || panStart != nil {
             if panStart == nil { panStart = viewport }
             if let panStart {
                 viewport = panStart.panned(byScreenDX: Double(value.translation.width), dy: Double(value.translation.height))
             }
+            return
+        }
+        if board.tool == .frame {
+            frameDraft = CGRect(x: min(value.startLocation.x, value.location.x), y: min(value.startLocation.y, value.location.y),
+                                width: abs(value.location.x - value.startLocation.x), height: abs(value.location.y - value.startLocation.y))
             return
         }
         guard board.tool == .select else { return }
@@ -448,6 +630,15 @@ struct BoardCanvas: View {
     private func backgroundDragEnded(_ value: DragGesture.Value) {
         if panStart != nil {
             panStart = nil
+            return
+        }
+        if let frameDraft {
+            self.frameDraft = nil
+            let topLeft = viewport.toCanvas(frameDraft.origin)
+            let bottomRight = viewport.toCanvas(CGPoint(x: frameDraft.maxX, y: frameDraft.maxY))
+            editingFrame = board.addFrame(BoardRect(x: Int(topLeft.x), y: Int(topLeft.y),
+                                                    w: Int(bottomRight.x - topLeft.x), h: Int(bottomRight.y - topLeft.y)))
+            board.tool = .select
             return
         }
         guard let marquee else { return }
@@ -469,13 +660,50 @@ struct BoardCanvas: View {
         board.selection = NSEvent.modifierFlags.contains(.shift) ? board.selection.union(picked) : picked
     }
 
-    /// A tap on empty canvas selects the arrow under it, if any, and otherwise clears the selection.
+    /// A tap on empty canvas places what the tool makes, or — with Select — selects the arrow
+    /// under it, or clears the selection.
     private func backgroundTapped(at location: CGPoint) {
-        if let arrow = arrow(near: location) {
-            select(.arrow(arrow))
-        } else {
-            board.selection = []
+        let point = viewport.toCanvas(location)
+        switch board.tool {
+        case .component(let kind): place(.component(kind), at: point)
+        case .note: place(.note, at: point)
+        case .text: place(.text, at: point)
+        case .frame: place(.frame, at: point)
+        case .arrow: board.selection = []
+        case .select:
+            if let arrow = arrow(near: location) { select(.arrow(arrow)) } else { board.selection = [] }
         }
+    }
+
+    private func backgroundDoubleTapped(at location: CGPoint) {
+        guard board.tool == .select else { return }
+        if let arrow = arrow(near: location) {
+            board.selection = [.arrow(arrow)]
+            editingArrow = arrow
+        } else {
+            quickAddAt = location
+        }
+    }
+
+    /// Places one thing centred on `point` (canvas), opens its editor, and returns to Select.
+    private func place(_ choice: QuickAddChoice, at point: CGPoint) {
+        let x = Int(point.x), y = Int(point.y)
+        switch choice {
+        case .component(let kind):
+            let size = BoardGeometry.componentSize
+            if let name = board.addComponent(kind: kind, at: BoardPoint(x: x - size.x / 2, y: y - size.y / 2)) {
+                inspecting = name
+            }
+        case .note:
+            let size = BoardGeometry.noteSize
+            editingNote = board.addNote(at: BoardPoint(x: x - size.x / 2, y: y - size.y / 2))
+        case .text:
+            let width = TextLabel.width(of: "Text", style: .label)
+            editingText = board.addText(at: BoardPoint(x: x - width / 2, y: y - 10), style: .label, text: "Text", width: width)
+        case .frame:
+            editingFrame = board.addFrame(BoardRect(x: x - 160, y: y - 100, w: 320, h: 200))
+        }
+        board.tool = .select
     }
 
     /// The arrow within 6 screen points of `location`, if any.
