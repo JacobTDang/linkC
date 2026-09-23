@@ -241,20 +241,28 @@ public enum TerminalPreview {
     /// then a running timer — "✳ Bunning… (2s · thinking with xhigh effort)" gives "Bunning…".
     /// The nearest glyph-led row decides, so a finished turn's "✻ Brewed for 18s" (no timer)
     /// reads as idle. Rows led by anything else — banners, the effort badge, todo rows, tool
-    /// output — are passed over. `rows` holds visible text, nearest the input box first.
+    /// output — are passed over. Two of the glyphs, "·" and "*", also lead ordinary prose and
+    /// markdown bullets, so a timer-shaped match alone isn't proof: a real spinner row's timer
+    /// closes its parenthesis group at the very end of the row, while prose that merely contains
+    /// "… (3s" keeps going past it — "* Loading… (3s) — finished" is rejected because the row
+    /// continues after the ")". `rows` holds visible text, nearest the input box first.
     private static func claudeSpinnerPhrase<Rows: Sequence>(nearestGlyphRowIn rows: Rows) -> String?
     where Rows.Element == String {
         guard let row = rows.first(where: { $0.first.map { claudeSpinnerGlyphs.contains($0) } ?? false }) else {
             return nil
         }
         let phrase = row.dropFirst().trimmingCharacters(in: .whitespaces)
-        // Old-style spinner rows from before status lines end with "esc to interrupt)".
-        // If we're reading the spinner row because of an idle prompt (no working footer),
-        // the row must be from a past turn, so don't return activity.
+        // Old-style spinner rows from before status lines end with "esc to interrupt)". When
+        // we're reading the spinner row because of an idle prompt (no working footer), a row
+        // still carrying that hint is one a redraw left behind from a finished turn: the input
+        // box is idle now, so a stale spinner row above it must not read as running.
         if phrase.hasSuffix("esc to interrupt)") {
             return nil
         }
-        guard let timer = phrase.range(of: #"… \(\d+[hms]"#, options: .regularExpression) else { return nil }
+        guard let timer = phrase.range(of: #"… \(\d+[hms]"#, options: .regularExpression),
+              let closeParen = phrase[timer.lowerBound...].firstIndex(of: ")"),
+              closeParen == phrase.index(before: phrase.endIndex)
+        else { return nil }
         let words = phrase[..<timer.lowerBound].trimmingCharacters(in: .whitespaces)
         return words.isEmpty ? nil : words + "…"
     }

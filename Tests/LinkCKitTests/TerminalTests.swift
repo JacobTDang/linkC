@@ -530,6 +530,34 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.liveActivity(from: withTodos), "Bunning…")
     }
 
+    /// "·" and "*" also lead ordinary prose and markdown bullets, not just Claude's spinner. A
+    /// finished turn whose last line happens to start with one of those glyphs and to contain a
+    /// "… (Ns" style aside must still read as idle — the row's timer-looking group doesn't close
+    /// the row the way a real spinner's does.
+    func testOrdinaryOutputLedByABulletIsNotReadAsASpinnerRow() {
+        let rule = String(repeating: "─", count: 110)
+        let footer = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+
+        let finishedBullet = [
+            "* Loading… (3s) — finished, see the log above",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: finishedBullet))
+
+        let midDotProse = [
+            "· parsed 12 files… (2s) and wrote the report",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: midDotProse))
+
+        let markdownBulletList = [
+            "* Verified the schema matches",
+            "* Ran the migration… (4s) without errors",
+            rule, "❯ ", rule, footer,
+        ]
+        XCTAssertNil(TerminalPreview.liveActivity(from: markdownBulletList))
+    }
+
     /// The nearest glyph-led row above the box decides: a finished turn's summary has no timer.
     func testLiveActivityReadsAFinishedClaudeTurnWithNoFooterHintAsIdle() {
         let rule = String(repeating: "─", count: 110)
