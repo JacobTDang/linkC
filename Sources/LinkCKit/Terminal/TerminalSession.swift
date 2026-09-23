@@ -344,8 +344,5 @@ private final class ProcessDelegate: NSObject, LocalProcessTerminalViewDelegate 
     func processTerminated(source: TerminalView, exitCode: Int32?) { onExit?(exitCode) }
 }
 
-/// A specialized LocalProcessTerminalView that disables window moving on mouse clicks/drags,
-/// ensuring that clicking and dragging inside the terminal highlights text instead of moving the window.
-public final class LinkCTerminalView: LocalProcessTerminalView {
-    public override var mouseDownCanMoveWindow: Bool { false }
-}
+/// The terminal view `TerminalSession` hosts.
+public final class LinkCTerminalView: LocalProcessTerminalView {}
