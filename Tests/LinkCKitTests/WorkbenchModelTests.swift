@@ -59,6 +59,40 @@ final class WorkbenchModelTests: XCTestCase {
         XCTAssertTrue(model.map.components.isEmpty)
     }
 
+    /// Opening a project's dashboard and closing it must never create a file nobody asked for —
+    /// `saveNow()` only fires the pending timer early; it must not invent a write of its own.
+    func testSaveNowWritesNothingWhenABoardWasOnlyLookedAt() {
+        let model = makeModel(gate: Gate())
+        model.load()
+        model.reconcile(with: [])
+        model.saveNow()
+
+        let store = SystemMapStore(workspacePath: workspace.path)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: store.fileURL.path),
+            "a board nobody edited must leave an absent file absent")
+    }
+
+    /// The same, for a project that already has a hand-edited map: looking at it must not
+    /// re-encode it — that would reorder keys, trim values, and materialise a default `kind`
+    /// into a component that omitted it, producing a spurious diff in a committed file.
+    func testSaveNowLeavesAHandEditedFileUntouchedWhenABoardWasOnlyLookedAt() throws {
+        let store = SystemMapStore(workspacePath: workspace.path)
+        try FileManager.default.createDirectory(
+            at: store.fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let handEdited = Data(#"{"version": 1, "components": [{"name": "redis"}]}"#.utf8)
+        try handEdited.write(to: store.fileURL)
+
+        let model = makeModel(gate: Gate())
+        model.load()
+        model.reconcile(with: [])
+        model.saveNow()
+
+        XCTAssertEqual(
+            try Data(contentsOf: store.fileURL), handEdited,
+            "a board nobody edited must not materialise a default kind into a hand-edited file")
+    }
+
     func testAnUnreadableMapFailsLoudAndRefusesToWrite() throws {
         let store = SystemMapStore(workspacePath: workspace.path)
         try FileManager.default.createDirectory(

@@ -158,8 +158,12 @@ public final class WorkbenchModel {
         }
     }
 
+    /// A write happens only when there is something to write: `saveNow()` fires this early, but
+    /// a board that was only looked at — never edited — must never touch the file. Writing
+    /// unconditionally here would create `system.json` for a project that never had one, and
+    /// would re-encode a hand-edited file on every open and close.
     private func write() {
-        guard canEdit else { return }
+        guard canEdit, hasUnwrittenEdits else { return }
         do {
             try store.save(map)
             writeFailure = nil
