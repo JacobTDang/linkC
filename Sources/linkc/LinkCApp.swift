@@ -858,8 +858,11 @@ final class AppModel {
         healthTimer = nil
         shellSweepTask?.cancel()
         shellSweepTask = nil
-        shells?.prepareForShutdown()
-        coordinator?.prepareForShutdown(selectedId: selectedId)
+        // Boards, sessions and shells all flush together — a quit within the Board's 600 ms
+        // settle must not lose the edit, and the restore keys must not go stale. Safe to run
+        // again on top of `applicationDidResignActive`'s own flush: every part of it is a
+        // re-writable snapshot, not a one-shot.
+        flushStateToDisk()
         coordinator?.shutdown()
     }
 
