@@ -88,15 +88,20 @@ public final class BoardModel {
     // MARK: - Lifecycle
 
     /// Reads the file. Refuses to replace a map with edits not yet written, so a reload can never
-    /// silently discard work — `reload()` is the deliberate way to do that.
+    /// silently discard work — `reload()` is the deliberate way to do that. When the bytes on
+    /// disk are exactly what they were last time — reappearing after a tab switch, say — the
+    /// map, undo, redo and selection are left exactly as they are; a real change on disk still
+    /// reloads and clears them, as always.
     public func load() {
         guard !hasUnwrittenEdits else { return }
         do {
             if let loaded = try store.load() {
+                guard loaded.bytes != diskBytes else { return }
                 map = loaded.map
                 diskBytes = loaded.bytes
                 state = .loaded
             } else {
+                guard diskBytes != nil else { return }
                 map = .empty
                 diskBytes = nil
                 state = .empty

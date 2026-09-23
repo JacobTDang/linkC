@@ -147,6 +147,38 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(try store.load()?.map.system, "June, again")
     }
 
+    /// Reappearing — a tab switch back to the Board — must not wipe undo: `LinkCApp.swift`
+    /// promises it survives switching tabs. Reloading bytes that did not change is a no-op.
+    func testReappearingWithNoChangeOnDiskKeepsUndoAndSelection() throws {
+        let board = fresh()
+        let api = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
+        board.setSystem("June")
+        board.saveNow()
+        XCTAssertTrue(board.canUndo)
+        board.selection = [.component(api)]
+
+        board.load()
+        XCTAssertTrue(board.canUndo, "the file on disk did not change, so undo must survive reappearing")
+        XCTAssertEqual(board.map.system, "June")
+        XCTAssertEqual(board.selection, [.component(api)], "selection is kept too")
+    }
+
+    /// A real change on disk — a hand edit, a git pull — still reloads and clears undo, exactly
+    /// as it always has.
+    func testAChangeOnDiskStillReloadsAndClearsUndo() throws {
+        let board = fresh()
+        board.setSystem("June")
+        board.saveNow()
+        XCTAssertTrue(board.canUndo)
+
+        let theirs = Data(#"{"version": 2, "system": "theirs", "places": {"Not placed": {}}}"#.utf8)
+        try theirs.write(to: store.fileURL)
+
+        board.load()
+        XCTAssertFalse(board.canUndo, "a real change on disk still clears undo")
+        XCTAssertEqual(board.map.system, "theirs")
+    }
+
     // MARK: Undo
 
     func testUndoAndRedoWalkTheEdits() {
