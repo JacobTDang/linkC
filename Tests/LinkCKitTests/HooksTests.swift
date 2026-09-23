@@ -295,6 +295,35 @@ final class HookServerTests: XCTestCase {
         }
     }
 
+    private final class ReadingBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [AgentUsage] = []
+
+        func record(_ reading: AgentUsage) {
+            lock.lock()
+            stored.append(reading)
+            lock.unlock()
+        }
+
+        var all: [AgentUsage] {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+    }
+
+    private func postStatusLine(port: UInt16, token: String?, body: String) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/hook")!)
+        request.httpMethod = "POST"
+        request.setValue("status_line", forHTTPHeaderField: "X-LinkC-Event")
+        if let token { request.setValue(token, forHTTPHeaderField: "X-LinkC-Token") }
+        request.httpBody = Data(body.utf8)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        return (data, try XCTUnwrap(response as? HTTPURLResponse))
+    }
+
+    private let rateLimitsBody = #"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#
+
     func testEndToEndLoopbackDeliversDecodedEventAndRespondsOKWithEmptyJSONBody() async throws {
         let server = HookServer(port: 0)
         let box = EventBox()
@@ -371,5 +400,56 @@ final class HookServerTests: XCTestCase {
         }
 
         XCTAssertTrue(box.all.isEmpty, "an oversized request must never decode into an event")
+    }
+
+    func testATokenedStatusLineDeliversClaudesLimitsAndNoSessionEvent() async throws {
+        let server = HookServer(port: 0)
+        server.requiredToken = "tok"
+        let events = EventBox()
+        let readings = ReadingBox()
+        server.onEvent = { events.record($0) }
+        server.onStatusLine = { readings.record($0) }
+        try server.start()
+        defer { server.stop() }
+
+        let (data, response) = try await postStatusLine(port: server.port, token: "tok", body: rateLimitsBody)
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(String(data: data, encoding: .utf8), "{}")
+        XCTAssertEqual(readings.all.count, 1)
+        XCTAssertEqual(readings.all.first?.windows.map(\.usedPercent), [66, 92])
+        XCTAssertTrue(events.all.isEmpty, "a status line report is not a session event")
+    }
+
+    func testAStatusLineWithTheWrongTokenDeliversNothing() async throws {
+        let server = HookServer(port: 0)
+        server.requiredToken = "tok"
+        let readings = ReadingBox()
+        server.onStatusLine = { readings.record($0) }
+        try server.start()
+        defer { server.stop() }
+
+        let (_, wrong) = try await postStatusLine(port: server.port, token: "wrong", body: rateLimitsBody)
+        let (_, missing) = try await postStatusLine(port: server.port, token: nil, body: rateLimitsBody)
+
+        XCTAssertEqual(wrong.statusCode, 200)
+        XCTAssertEqual(missing.statusCode, 200)
+        XCTAssertTrue(readings.all.isEmpty)
+    }
+
+    func testAStatusLineWithoutRateLimitsDeliversNothingButStillAnswers() async throws {
+        let server = HookServer(port: 0)
+        server.requiredToken = "tok"
+        let readings = ReadingBox()
+        server.onStatusLine = { readings.record($0) }
+        try server.start()
+        defer { server.stop() }
+
+        let (_, noLimits) = try await postStatusLine(port: server.port, token: "tok", body: #"{"session_id":"c1"}"#)
+        let (_, notJSON) = try await postStatusLine(port: server.port, token: "tok", body: "not json")
+
+        XCTAssertEqual(noLimits.statusCode, 200)
+        XCTAssertEqual(notJSON.statusCode, 200, "an unreadable report is logged, and the status line never waits on it")
+        XCTAssertTrue(readings.all.isEmpty)
     }
 }
