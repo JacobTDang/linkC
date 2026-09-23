@@ -39,7 +39,9 @@ struct ProjectTabStrip: View {
                                     onSelect: { model.select(tab) }, onClose: { requestClose(tab) })
                         }
                     }
+                    .frame(minWidth: geometry.size.width, alignment: .leading)
                     .frame(height: geometry.size.height, alignment: .bottom)
+                    .background(WindowDragHandle())
                 }
                 .scrollDisabled(CGFloat(sessions.count) * (width + 2) <= geometry.size.width)
             }
@@ -60,6 +62,7 @@ struct ProjectTabStrip: View {
         }
         .padding(.horizontal, 10)
         .padding(.top, 8)
+        .background(WindowDragHandle())
         .background(alignment: .bottom) {
             Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
         }

@@ -204,6 +204,7 @@ private struct BrandRow: View {
         .padding(.trailing, 10)
         .padding(.top, 10)
         .padding(.bottom, 6)
+        .background(WindowDragHandle())
     }
 }
 
@@ -273,9 +274,6 @@ private struct ProjectsSection: View {
             ForEach(projects) { project in
                 ProjectRow(project: project, model: model) { onInspect(project.path) }
                 if project.isExpanded {
-                    BoardRow(isSelected: model.boardProject == ProjectTabs.standardized(project.path)) {
-                        model.showBoard(project.path)
-                    }
                     ForEach(project.sessions) { row in
                         SessionRow(row: row, isSelected: row.id == model.selectedId && model.boardProject == nil, model: model)
                     }
@@ -349,30 +347,6 @@ private struct ProjectDotView: View {
             Circle()
                 .fill(Theme.accent)
                 .frame(width: 6, height: 6)
-        }
-    }
-}
-
-/// The first row under an expanded project: its Board.
-private struct BoardRow: View {
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        SidebarRow(
-            title: "Board",
-            titleColor: Theme.textSecondary,
-            isSelected: isSelected,
-            indent: 18,
-            help: "This project's system map",
-            action: action
-        ) {
-            Image(systemName: "square.grid.2x2")
-                .font(.system(size: 10))
-                .foregroundStyle(Theme.textTertiary)
-                .frame(width: 12)
-        } trailing: { _ in
-            EmptyView()
         }
     }
 }

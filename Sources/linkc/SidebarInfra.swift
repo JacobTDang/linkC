@@ -318,7 +318,7 @@ private struct CloudNoticeRow: View {
                 .foregroundStyle(isWarning ? Theme.statusError : Theme.textTertiary)
                 .lineLimit(2)
                 .truncationMode(.tail)
-                .selectableText()
+                .textSelection(.enabled)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
@@ -419,13 +419,13 @@ private struct SupabaseDetailPanel: View {
                 .foregroundStyle(Theme.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .selectableText()
+                .textSelection(.enabled)
             Text(healthLine)
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(healthColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .selectableText()
+                .textSelection(.enabled)
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
                 QuietLink("dashboard", size: 10) {
@@ -586,7 +586,7 @@ private struct CloudDetailPanel: View {
                 .foregroundStyle(Theme.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .selectableText()
+                .textSelection(.enabled)
             // Security: who has been touching the account.
             HStack(spacing: 4) {
                 Text(auditLine)

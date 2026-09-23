@@ -96,6 +96,7 @@ private struct RightPane: View {
                     }
                     ScreenHost(model: model, screen: screen)
                 }
+                .background(alignment: .top) { WindowDragHandle().frame(height: 36) }
                 .transition(.opacity)
             } else if model.currentProject != nil {
                 VStack(spacing: 0) {
@@ -110,6 +111,7 @@ private struct RightPane: View {
                 .transition(.opacity)
             } else {
                 EmptyStateView(model: model)
+                    .background(alignment: .top) { WindowDragHandle().frame(height: 36) }
                     .transition(.opacity)
             }
         }
@@ -125,11 +127,8 @@ private struct TerminalPane: View {
     let onBack: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.setWindowDraggable) private var setWindowDraggable
     /// An agent opened for reading — replaces the terminal until dismissed.
     @State private var readerAgent: AgentRun?
-    /// Whether the pointer is over the terminal (dragging the window is off there).
-    @State private var isHoveringTerminal = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -165,25 +164,6 @@ private struct TerminalPane: View {
         ZStack {
             TerminalContainer(session: model.selectedTerminal)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
-                .onHover { hovering in
-                    let active = hovering && model.selectedTerminal != nil
-                    if active != isHoveringTerminal {
-                        isHoveringTerminal = active
-                        setWindowDraggable(!active)
-                    }
-                }
-                .onDisappear {
-                    if isHoveringTerminal {
-                        isHoveringTerminal = false
-                        setWindowDraggable(true)
-                    }
-                }
-                .onChange(of: model.selectedTerminal?.id) { _, newId in
-                    if newId == nil && isHoveringTerminal {
-                        isHoveringTerminal = false
-                        setWindowDraggable(true)
-                    }
-                }
             if model.selectedTerminal == nil {
                 Text("Select a session")
                     .font(.system(size: 12))
@@ -562,7 +542,7 @@ struct ErrorBar: View {
                 .font(.system(size: 11))
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .selectableText()
+                .textSelection(.enabled)
             Spacer(minLength: 0)
         }
         .foregroundStyle(Theme.statusError)

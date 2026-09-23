@@ -7,26 +7,10 @@ import SwiftUI
 /// The panel that hosts `PanelView`. Overriding `canBecomeKey` is REQUIRED: without it a
 /// borderless/utility panel refuses key status and the embedded SwiftTerm terminal never
 /// receives keystrokes.
-/// The panel's content host. `mouseDownCanMoveWindow` is the ONE place AppKit asks whether
-/// a drag should move the window, so it is answered from a gate the UI can close while the
-/// pointer is over selectable text — see `selectableText()`.
+/// The panel's content host. The body never moves the window; `WindowDragHandle` does, behind
+/// the top rows.
 final class PanelHostingView<Content: View>: NSHostingView<Content> {
-    private let gate: WindowDragGate
-
-    init(gate: WindowDragGate, rootView: Content) {
-        self.gate = gate
-        super.init(rootView: rootView)
-    }
-
-    @MainActor required init(rootView: Content) {
-        fatalError("use init(gate:rootView:)")
-    }
-
-    @MainActor required dynamic init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override var mouseDownCanMoveWindow: Bool { gate.allowsDrag }
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 final class StatusPanel: NSPanel {
@@ -56,16 +40,13 @@ final class StatusPanel: NSPanel {
 ///
 /// Placement: a compact rectangle stuck in the screen's top-right corner. One consistent size
 /// regardless of selection: the user's dragged size (persisted) or a small, short default. Movable
-/// (drag the body) and resizable (drag edges), always clamped fully on-screen. `AppModel` stays the
+/// (drag the top) and resizable (drag edges), always clamped fully on-screen. `AppModel` stays the
 /// source of truth — this controller mirrors show/hide into `panelVisible`.
 @MainActor
 final class StatusPanelController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private let statusItem: NSStatusItem
     private var panel: StatusPanel!
-    /// Whether a drag on the body currently moves the panel. Closed while the pointer is
-    /// over text the user may want to select.
-    private let dragGate = WindowDragGate()
 
     /// The selection value the panel width currently reflects. Guards the selection handler so
     /// that unrelated model changes (e.g. running/waiting counts) don't re-trigger it — only a
@@ -118,7 +99,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         panel.title = ""
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.isMovableByWindowBackground = true    // drag the body to MOVE; drag edges/corners to RESIZE
+        panel.isMovableByWindowBackground = false    // drag the top to MOVE; drag edges/corners to RESIZE
         panel.level = .floating
         panel.hidesOnDeactivate = false        // stays open while the user works elsewhere
         panel.becomesKeyOnlyIfNeeded = false   // full key so the terminal gets keystrokes
@@ -149,11 +130,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         effect.layer?.borderWidth = 1
         effect.layer?.borderColor = NSColor(white: 1, alpha: 0.08).cgColor   // glass-edge hairline
 
-        let hosting = PanelHostingView(
-            gate: dragGate,
-            rootView: PanelView(model: model)
-                .environment(\.setWindowDraggable) { [dragGate] in dragGate.setDraggable($0) }
-        )
+        let hosting = PanelHostingView(rootView: PanelView(model: model))
         hosting.autoresizingMask = [.width, .height]
         hosting.frame = effect.bounds
         effect.addSubview(hosting)
@@ -203,9 +180,6 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     func hide() {
         model.panelVisible = false
-        // The pointer can leave with the panel rather than off the edge of a hovered view,
-        // so no exit event arrives; reopening must not find the panel stuck in place.
-        dragGate.reset()
         guard panel.isVisible, !reduceMotion else {
             panel.orderOut(nil)
             panel.alphaValue = 1
