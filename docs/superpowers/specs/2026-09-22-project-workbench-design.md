@@ -80,7 +80,7 @@ A project with no `.linkc/system.json` shows an empty band with one action: star
 
 ## Discovery and reconciliation
 
-linkC already finds real components: `ComposeDiscovery` (the project's compose file and its service names), `DockerPS`/`DockerDetail` (running containers, with image, state and compose service), `SupabaseService`, `OracleService`, `KnownStacksStore`. This feature adds no new discovery.
+linkC already finds real components, and this feature adds no new discovery. Two sources can be tied to a project folder, so only these two are checked: running containers (`DockerPS` through `ToolServerService`, matched by the compose working directory) and the compose services of a stack linkC knows for that folder (`KnownStacksStore`). The Supabase and Oracle services know nothing about which project folder uses them, so components living there are never reported missing — they are unchecked until linkC learns that link.
 
 **Matching.** A component matches a discovered thing when, ignoring case, its `name` equals a compose service name or a container name, or its `runs` names that compose service. Nothing else is guessed.
 
@@ -130,6 +130,6 @@ Pure, tested types in LinkCKit, with the app target holding only the view:
 
 ## Known gaps
 
-- Discovery only covers compose, containers, Supabase and the Oracle box; anything else is unchecked until linkC learns to look for it.
+- Discovery only covers running containers and the compose services of a known stack; everything else, including anything on Supabase or the Oracle box, is unchecked until linkC learns to tie it to a project folder.
 - A renamed component loses its live match and its position until the map is edited to match.
 - `linkc_get_usage_status`-style consumers elsewhere in linkC are untouched; this feature adds one MCP section and nothing else.
