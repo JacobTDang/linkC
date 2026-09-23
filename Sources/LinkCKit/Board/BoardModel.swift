@@ -470,8 +470,10 @@ public final class BoardModel {
         scheduleWrite()
     }
 
-    /// Called after every load. Task 6 lays out whatever the file left without a place on the board.
+    /// Called after every load: lays out whatever the file left without a place on the board. In
+    /// memory only — this is not an edit, so it writes nothing.
     func mapLoaded() {
+        map = Self.laidOut(map)
         recomputeRoutes()
         reconcile(with: lastDiscovered)
     }
