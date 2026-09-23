@@ -439,4 +439,23 @@ final class BoardModelTests: XCTestCase {
         XCTAssertTrue(allRects.filter { $0 != secondRect }.allSatisfy { !$0.intersects(secondRect) }, "overlaps nothing")
         XCTAssertEqual(board.refusal, "No room left in Local docker — the new component is outside it; drag it in or make room.")
     }
+
+    /// A note (or text) already inside "Local docker" is not a component, so it has no `place` —
+    /// but it must still be avoided, both when searching for a spot and when growing the frame.
+    func testAddingARunningContainerAvoidsANoteAtTheFramesFirstFreeSpot() throws {
+        let board = fresh()
+        let label = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 400, h: 200)))
+        XCTAssertTrue(board.renameFrame(label, to: BoardModel.localDocker))
+        let frame = try XCTUnwrap(board.map.frames.first { $0.label == BoardModel.localDocker }?.rect)
+        let seedOrigin = BoardPoint(x: frame.x + BoardGeometry.frameInset, y: frame.y + BoardGeometry.frameInset)
+        let note = try XCTUnwrap(board.addNote(at: seedOrigin))
+        XCTAssertEqual(board.map.notes.first { $0.id == note }?.at, seedOrigin, "the note must land exactly at the frame's first free spot")
+
+        board.addSuggestion(MapSuggestion(name: "svc", kind: .service, detail: "container svc"))
+        let svc = try XCTUnwrap(board.map.components.first { $0.name == "svc" })
+        XCTAssertEqual(svc.place, BoardModel.localDocker)
+        let svcRect = try XCTUnwrap(svc.at.map(BoardGeometry.rect(ofComponentAt:)))
+        let noteRect = try XCTUnwrap(board.map.notes.first { $0.id == note }?.at.map(BoardGeometry.rect(ofNoteAt:)))
+        XCTAssertFalse(svcRect.intersects(noteRect), "the new component must not land on the note already in the frame")
+    }
 }

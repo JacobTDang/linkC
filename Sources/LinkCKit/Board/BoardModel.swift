@@ -579,12 +579,22 @@ public final class BoardModel {
         var unplaced = false
         for suggestion in fresh {
             guard let frameIndex = map.frames.firstIndex(where: { $0.label == localDocker }), var frame = map.frames[frameIndex].rect else { break }
-            let members = map.components.filter { $0.place == localDocker }.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
-            let foreign = elementRects(map, excluding: Set(map.components.filter { $0.place == localDocker }.map { .component($0.name) }))
-                .filter { !frame.contains($0) }
+            // Everything already inside the frame is avoided — not just its components. A note
+            // or text has no `place`, so membership is geometric: wholly inside the interior.
+            let interior = BoardGeometry.interior(of: frame)
+            let memberComponents = Set(map.components.filter { $0.place == localDocker }.map(\.name))
+            let memberNotes = Set(map.notes.filter { $0.at.map { interior.contains(BoardGeometry.rect(ofNoteAt: $0)) } ?? false }.map(\.id))
+            let memberTexts = Set(map.texts.filter { interior.contains(BoardGeometry.rect(of: $0)) }.map(\.id))
+            let members = map.components.filter { memberComponents.contains($0.name) }.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
+                + map.notes.filter { memberNotes.contains($0.id) }.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }
+                + map.texts.filter { memberTexts.contains($0.id) }.map(BoardGeometry.rect(of:))
+            let excluded = Set(memberComponents.map { Element.component($0) })
+                .union(memberNotes.map { Element.note($0) })
+                .union(memberTexts.map { Element.text($0) })
+            let foreign = elementRects(map, excluding: excluded).filter { !frame.contains($0) }
             let others = frameRects(map, excluding: [localDocker])
             let seed = BoardRect(x: frame.x + BoardGeometry.frameInset, y: frame.y + BoardGeometry.frameInset, w: size.x, h: size.y)
-            var spot = BoardGeometry.nearestFreeSpot(for: seed, avoiding: members, inside: BoardGeometry.interior(of: frame))
+            var spot = BoardGeometry.nearestFreeSpot(for: seed, avoiding: members, inside: interior)
             if spot == nil, let grown = BoardGeometry.grow(frame, toFit: size, members: members, otherFrames: others, foreignElements: foreign) {
                 frame = grown
                 map.frames[frameIndex].rect = grown
