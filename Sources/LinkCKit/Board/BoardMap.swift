@@ -402,11 +402,7 @@ public struct BoardMap: Equatable, Sendable {
         guard JSONSerialization.isValidJSONObject(root) else {
             throw LinkCError.parse("the system map could not be represented as JSON")
         }
-        do {
-            return try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
-        } catch {
-            throw LinkCError.parse("failed to write the system map: \(error.localizedDescription)")
-        }
+        return try BoardMapJSON.write(root)
     }
 
     // MARK: - Field readers: a known key present with the wrong type refuses the whole file

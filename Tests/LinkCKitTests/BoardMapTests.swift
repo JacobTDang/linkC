@@ -77,6 +77,99 @@ final class BoardMapTests: XCTestCase {
         XCTAssertEqual((layout["frames"] as? [String: [Int]])?["Oracle box"], [408, 96, 192, 112])
     }
 
+    /// The exact bytes `encoded()` writes: architecture-first key order at the top, every other
+    /// object's keys sorted the way `.sortedKeys` gives them, 2-space indent, number arrays kept
+    /// to one line, `/` never escaped, and a single trailing newline. This is what pins order —
+    /// the shape test above only parses into a dictionary, so it can't see it.
+    private var goldenSource: Data {
+        Data("""
+        {
+          "version": 2,
+          "system": "June — audio journaling",
+          "owner": "jacob",
+          "places": {
+            "Local docker": {
+              "api": {
+                "kind": "service",
+                "does": "HTTP api",
+                "reached_by": "https://api.example.com/v1",
+                "status": "planned",
+                "uses": { "postgres": "reads and writes entries" },
+                "team": "core"
+              }
+            },
+            "Not placed": {}
+          },
+          "notes": ["Redis is for the session cache."],
+          "layout": {
+            "components": { "api": [64, 128] },
+            "frames": { "Local docker": [40, 96, 344, 200] },
+            "notes": [[640, 112]],
+            "texts": [{ "text": "June", "style": "title", "at": [32, 32], "w": 64 }]
+          }
+        }
+        """.utf8)
+    }
+
+    private var goldenBytes: Data {
+        Data("""
+        {
+          "version": 2,
+          "system": "June — audio journaling",
+          "places": {
+            "Local docker": {
+              "api": {
+                "does": "HTTP api",
+                "kind": "service",
+                "reached_by": "https://api.example.com/v1",
+                "status": "planned",
+                "team": "core",
+                "uses": {
+                  "postgres": "reads and writes entries"
+                }
+              }
+            },
+            "Not placed": {}
+          },
+          "notes": [
+            "Redis is for the session cache."
+          ],
+          "owner": "jacob",
+          "layout": {
+            "components": {
+              "api": [64, 128]
+            },
+            "frames": {
+              "Local docker": [40, 96, 344, 200]
+            },
+            "notes": [
+              [640, 112]
+            ],
+            "texts": [
+              {
+                "at": [32, 32],
+                "style": "title",
+                "text": "June",
+                "w": 64
+              }
+            ]
+          }
+        }
+        """.utf8) + Data("\n".utf8)
+    }
+
+    func testEncodedMatchesTheGoldenBytesExactly() throws {
+        let map = try BoardMap.decode(goldenSource)
+        XCTAssertEqual(try map.encoded(), goldenBytes)
+    }
+
+    /// Decoding what was just written and encoding it again lands on the exact same bytes.
+    func testDecodingTheEncodedGoldenMapReencodesToTheSameBytes() throws {
+        let once = try BoardMap.decode(goldenSource).encoded()
+        let decodedAgain = try BoardMap.decode(once)
+        XCTAssertEqual(try decodedAgain.encoded(), once)
+    }
+
     /// "Not placed" is reserved and always written, even when empty, so an agent never
     /// wonders where the rest went.
     func testAnEmptyMapStillWritesNotPlaced() throws {
