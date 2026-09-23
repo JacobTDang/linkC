@@ -82,9 +82,9 @@ public final class ToolServerService {
             let output = try await runner.run(
                 dockerPath, args: ["ps", "--all", "--format", "json"], cwd: nil, timeout: Self.listTimeout
             )
-            // Assigned only when it actually differs: BoardPane redraws off `projects`, and an
-            // Observable property's own equality guard aside, a reassignment here should never
-            // be reached at all for a sweep that found nothing new.
+            // Assigning only on change keeps observers such as the Board from redrawing every
+            // 15 s. This package declares Swift tools 6.0, so it can't rely on the 6.3 macro's
+            // equality skip — the check here has to do that work itself.
             let grouped = ToolServerCatalog.group(DockerPS.parse(output))
             if projects != grouped.projects { projects = grouped.projects }
             if standalone != grouped.standalone { standalone = grouped.standalone }
