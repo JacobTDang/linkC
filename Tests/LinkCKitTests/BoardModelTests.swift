@@ -179,6 +179,62 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.map.system, "theirs")
     }
 
+    /// R1: a corrupted file locks the board, same as `testAnUnreadableMapLocksTheBoard`. Once the
+    /// exact old bytes are back, "Try again" (`reload()`) must unlock it — even though those bytes
+    /// equal what `diskBytes` already held, the shortcut that keeps state untouched must not fire
+    /// while the board is `.failed`.
+    func testTryAgainRecoversOnceTheOldBytesAreRestoredAfterCorruption() throws {
+        let board = fresh()
+        board.setSystem("June")
+        board.saveNow()
+        let goodBytes = try Data(contentsOf: store.fileURL)
+
+        try Data("{ not json".utf8).write(to: store.fileURL)
+        board.load()
+        guard case .failed = board.state else { return XCTFail("expected .failed, got \(board.state)") }
+
+        try goodBytes.write(to: store.fileURL)
+        board.reload()
+        XCTAssertEqual(board.state, .loaded, "Try again must unlock once the old bytes are back")
+        XCTAssertEqual(board.map.system, "June")
+    }
+
+    /// R2: a file malformed on first open — `diskBytes` is still nil, nothing was ever read. Once
+    /// it is deleted, "Try again" must settle on `.empty`, not stay stuck `.failed`.
+    func testTryAgainRecoversWhenAMalformedFileIsDeleted() throws {
+        try Data("{ not json".utf8).write(to: store.fileURL)
+        let board = model()
+        board.load()
+        guard case .failed = board.state else { return XCTFail("expected .failed, got \(board.state)") }
+
+        try FileManager.default.removeItem(at: store.fileURL)
+        board.reload()
+        XCTAssertEqual(board.state, .empty, "Try again must recover once the malformed file is gone")
+    }
+
+    /// R3: locked by `changedOnDisk`, then the disk goes back to exactly linkC's own last bytes —
+    /// a stash, then a pop. Reload must still unlock, and must still drop the unwritten edit that
+    /// caused the refusal, even though the bytes it reads back match `diskBytes` exactly.
+    func testReloadRecoversWhenTheDiskGoesBackToLinkCsOwnBytes() throws {
+        let board = fresh()
+        board.setSystem("mine")
+        board.saveNow()
+        let ownBytes = try Data(contentsOf: store.fileURL)
+
+        let theirs = Data(#"{"version": 2, "system": "theirs", "places": {"Not placed": {}}}"#.utf8)
+        try theirs.write(to: store.fileURL)
+
+        board.setSystem("mine again")
+        board.saveNow()
+        XCTAssertTrue(board.changedOnDisk)
+        XCTAssertNil(board.addComponent(kind: .cache, at: BoardPoint(x: 0, y: 0)), "no edits while the disk disagrees")
+
+        try ownBytes.write(to: store.fileURL)   // the stash pop: back to linkC's own last bytes
+        board.reload()
+        XCTAssertFalse(board.changedOnDisk, "reload must unlock even when the file is back to linkC's own bytes")
+        XCTAssertEqual(board.map.system, "mine", "the unwritten edit reload should drop must be gone")
+    }
+
     // MARK: Undo
 
     func testUndoAndRedoWalkTheEdits() {

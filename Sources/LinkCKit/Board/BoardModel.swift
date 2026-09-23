@@ -91,17 +91,24 @@ public final class BoardModel {
     /// silently discard work — `reload()` is the deliberate way to do that. When the bytes on
     /// disk are exactly what they were last time — reappearing after a tab switch, say — the
     /// map, undo, redo and selection are left exactly as they are; a real change on disk still
-    /// reloads and clears them, as always.
+    /// reloads and clears them, as always. That shortcut only ever applies from a healthy,
+    /// unlocked board: `.failed` or `changedOnDisk` always does the full read below, so "Try
+    /// again" and "Reload" can never find the bytes unchanged and leave the board stuck.
     public func load() {
         guard !hasUnwrittenEdits else { return }
+        let canKeepEverything: Bool
+        switch state {
+        case .loaded, .empty: canKeepEverything = !changedOnDisk
+        case .failed: canKeepEverything = false
+        }
         do {
             if let loaded = try store.load() {
-                guard loaded.bytes != diskBytes else { return }
+                guard !canKeepEverything || loaded.bytes != diskBytes else { return }
                 map = loaded.map
                 diskBytes = loaded.bytes
                 state = .loaded
             } else {
-                guard diskBytes != nil else { return }
+                guard !canKeepEverything || diskBytes != nil else { return }
                 map = .empty
                 diskBytes = nil
                 state = .empty
