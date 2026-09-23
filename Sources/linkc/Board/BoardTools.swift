@@ -166,14 +166,19 @@ struct ComponentInspector: View {
     }
 }
 
-/// A note being edited in place. Commits when focus leaves.
+/// A note being edited in place. Commits when focus leaves — and, since a notification click or
+/// a tab switch can tear the Board down without ever delivering that focus-lost transition,
+/// also on disappear, when there is still an unsaved change to lose.
 struct NoteEditor: View {
     let commit: (String) -> Void
+    private let original: String
     @State private var text: String
+    @State private var closed = false
     @FocusState private var focused: Bool
 
     init(text: String, commit: @escaping (String) -> Void) {
         self.commit = commit
+        self.original = text
         _text = State(wrappedValue: text)
     }
 
@@ -189,7 +194,14 @@ struct NoteEditor: View {
             .focused($focused)
             .onAppear { focused = true }
             .onChange(of: focused) { _, isFocused in
-                if !isFocused { commit(text) }
+                guard !isFocused, !closed else { return }
+                closed = true
+                commit(text)
+            }
+            .onDisappear {
+                guard !closed, text != original else { return }
+                closed = true
+                commit(text)
             }
     }
 }
@@ -197,11 +209,15 @@ struct NoteEditor: View {
 /// A single line being edited in place — a text, a frame's label, an arrow's label. Commits on
 /// Return or when focus leaves. `commit` returns false when the board refused the value, which
 /// keeps the editor open with what was typed; `refusal` is shown beneath it when that happens.
+/// Also commits on disappear — a notification click or a tab switch can tear the Board down
+/// without ever delivering the focus-lost transition — when there is still an unsaved change;
+/// `closed` keeps that from ever running twice.
 struct LineEditor: View {
     let font: Font
     let width: CGFloat
     let refusal: String?
     let commit: (String) -> Bool
+    private let original: String
     @State private var text: String
     @State private var closed = false
     @FocusState private var focused: Bool
@@ -211,6 +227,7 @@ struct LineEditor: View {
         self.width = width
         self.refusal = refusal
         self.commit = commit
+        self.original = text
         _text = State(wrappedValue: text)
     }
 
@@ -229,6 +246,11 @@ struct LineEditor: View {
                 .onSubmit(finish)
                 .onChange(of: focused) { _, isFocused in
                     if !isFocused { finish() }
+                }
+                .onDisappear {
+                    guard !closed, text != original else { return }
+                    closed = true
+                    _ = commit(text)
                 }
             if let refusal {
                 Text(refusal).font(.system(size: 9.5)).foregroundStyle(Theme.accent)
