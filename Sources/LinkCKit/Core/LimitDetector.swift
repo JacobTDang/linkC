@@ -72,6 +72,7 @@ public struct LimitDetector: Sendable {
     ]
 
     private static let codexRules: [LimitRule] = [
+        LimitRule(canonicalPattern: "You've reached your usage limit", regexPattern: "you(?:'|’)?ve (?:reached|hit) your (?:(?:usage|session|rate) )?limit"),
         LimitRule(canonicalPattern: "429 Too Many Requests", regexPattern: "429\\s+Too\\s+Many\\s+Requests"),
         LimitRule(canonicalPattern: "Rate limit exceeded", regexPattern: "\\brate limit exceeded\\b"),
         LimitRule(canonicalPattern: "quota exceeded", regexPattern: "\\bquota exceeded\\b"),

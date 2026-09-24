@@ -182,6 +182,15 @@ final class LimitDetectorTests: XCTestCase {
     }
 
     // MARK: - Codex Tests
+    func testCodexUsageCapBannerDetected() {
+        let text = "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:05 PM."
+        let match = LimitDetector.detectLimit(inOutput: text, agent: .codex)
+        XCTAssertNotNil(match)
+        XCTAssertEqual(match?.agent, .codex)
+        XCTAssertEqual(match?.matchedPattern, "You've reached your usage limit")
+        // No explicit cooldown specified for claude/codex banner rule in general, so default is 15 mins (15 * 60)
+        XCTAssertEqual(match?.cooldown, 15 * 60)
+    }
 
     func testCodex429TooManyRequestsDetected() {
         let text = "HTTP 429 Too Many Requests: Server overloaded, please back off."
@@ -277,7 +286,7 @@ final class LimitDetectorTests: XCTestCase {
 
     func testCrossAgentIsolation() {
         // Claude pattern should not trigger on Codex
-        let claudeText = "You've reached your usage limit."
+        let claudeText = "Claude is currently unavailable."
         XCTAssertNil(LimitDetector.detectLimit(inOutput: claudeText, agent: .codex))
 
         // Antigravity pattern should not trigger on Claude
