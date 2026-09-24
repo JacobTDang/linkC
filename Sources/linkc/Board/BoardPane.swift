@@ -32,10 +32,14 @@ struct BoardPane: View {
         }
     }
 
-    /// The Board follows its file live while it's on screen. When the watch itself can't start
-    /// (the project folder is gone, say), the board still works — it just says live updates are
-    /// off, rather than pretending it's watching.
+    /// The Board follows its file live while it's on screen. Stops any watcher already running
+    /// first — `prepare` can fire more than once per `onDisappear` (a scene change, say), and a
+    /// second watcher left running alongside the first would double-fire `diskChanged()`. When
+    /// the watch itself can't start (the project folder is gone, say), the board still works — it
+    /// just says live updates are off, rather than pretending it's watching.
     private func startWatching() {
+        watcher?.stop()
+        watcher = nil
         do {
             watcher = try BoardFileWatcher(fileURL: board.fileURL) { board.diskChanged() }
         } catch {
