@@ -31,7 +31,8 @@ public enum BoardMerge {
         // The Board never edits either extras blob: whichever unknown keys theirs carried win.
         merged.extras = theirs.extras
         merged.layoutExtras = theirs.layoutExtras
-        merged.components = droppingDanglingUses(merged.components)
+        let everComponentName = Set((base.components + mine.components + theirs.components).map { $0.name.lowercased() })
+        merged.components = droppingDanglingUses(merged.components, everComponentName: everComponentName)
         return merged
     }
 
@@ -39,13 +40,21 @@ public enum BoardMerge {
     /// mine deletes `x`, theirs connects `y` → `x`, and mine's deletion wins the component while
     /// `y`'s `uses` entry, untouched by mine, survives on its own. Left alone that arrow would
     /// name nothing real: invisible on the canvas, since nothing routes to a component that
-    /// isn't there. A last pass over the merged components drops any `uses` key that doesn't
-    /// name one of them.
-    private static func droppingDanglingUses(_ components: [BoardComponent]) -> [BoardComponent] {
-        let names = Set(components.map { $0.name.lowercased() })
+    /// isn't there. A last pass over the merged components drops such a key — but only when the
+    /// merge actually removed its target: the file format also allows `uses` to name something
+    /// that was never a component at all (a hand-written `"api": {"uses": {"stripe": "payments"}}`,
+    /// say), and that arrow must survive untouched. `everComponentName` is every name that was a
+    /// component on any of the three sides, so "never a component anywhere" and "a component the
+    /// merge removed" are told apart.
+    private static func droppingDanglingUses(_ components: [BoardComponent], everComponentName: Set<String>) -> [BoardComponent] {
+        let mergedNames = Set(components.map { $0.name.lowercased() })
         return components.map { component in
             var component = component
-            component.uses = component.uses.filter { names.contains($0.key.lowercased()) }
+            component.uses = component.uses.filter { entry in
+                let lowerKey = entry.key.lowercased()
+                guard everComponentName.contains(lowerKey) else { return true }
+                return mergedNames.contains(lowerKey)
+            }
             return component
         }
     }

@@ -49,13 +49,13 @@ final class BoardMergeTests: XCTestCase {
     }
 
     func testTheSameElementFieldByFieldMineWinsATie() {
-        let base = map([c("api", does: "a"), c("db")])
-        let mine = map([c("api", does: "mine", at: BoardPoint(x: 400, y: 0)), c("db")])
-        let theirs = map([c("api", does: "theirs", uses: ["db": "reads"]), c("db")])
-        let api = BoardMerge.merge(base: base, mine: mine, theirs: theirs).components.first { $0.name == "api" }
+        let base = map([c("api", does: "a")])
+        let mine = map([c("api", does: "mine", at: BoardPoint(x: 400, y: 0))])
+        let theirs = map([c("api", does: "theirs", uses: ["db": "reads"])])
+        let api = BoardMerge.merge(base: base, mine: mine, theirs: theirs).components.first
         XCTAssertEqual(api?.does, "mine")
         XCTAssertEqual(api?.at, BoardPoint(x: 400, y: 0))
-        XCTAssertEqual(api?.uses, ["db": "reads"], "an arrow only theirs added survives")
+        XCTAssertEqual(api?.uses, ["db": "reads"], "an arrow only theirs added survives, even to something that is not a component")
     }
 
     func testDeletionsCountAsChanges() {
@@ -129,11 +129,11 @@ final class BoardMergeTests: XCTestCase {
     // MARK: - `uses` keys merge case-insensitively (review finding 3)
 
     func testUsesKeyMergesCaseInsensitively() {
-        let base = map([c("api", uses: ["postgres": ""]), c("postgres")])
-        let mine = map([c("api", uses: ["postgres": "reads"]), c("postgres")])
-        let theirs = map([c("api", uses: ["Postgres": ""]), c("postgres")])
+        let base = map([c("api", uses: ["postgres": ""])])
+        let mine = map([c("api", uses: ["postgres": "reads"])])
+        let theirs = map([c("api", uses: ["Postgres": ""])])
         let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
-        XCTAssertEqual(merged.components.first { $0.name == "api" }?.uses, ["postgres": "reads"], "the hand-recased key is no real change, and never mints a second arrow")
+        XCTAssertEqual(merged.components.first?.uses, ["postgres": "reads"], "the hand-recased key is no real change, and never mints a second arrow")
     }
 
     func testUsesKeyTakesTargetComponentsRealMergedName() {
@@ -184,11 +184,11 @@ final class BoardMergeTests: XCTestCase {
     }
 
     func testUsesKeyBothSidesRelabelledDifferentlyMineWins() {
-        let base = map([c("api", uses: ["db": ""]), c("db")])
-        let mine = map([c("api", uses: ["db": "reads"]), c("db")])
-        let theirs = map([c("api", uses: ["db": "writes"]), c("db")])
+        let base = map([c("api", uses: ["db": ""])])
+        let mine = map([c("api", uses: ["db": "reads"])])
+        let theirs = map([c("api", uses: ["db": "writes"])])
         let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
-        XCTAssertEqual(merged.components.first { $0.name == "api" }?.uses, ["db": "reads"])
+        XCTAssertEqual(merged.components.first?.uses, ["db": "reads"])
     }
 
     func testExtrasAndLayoutExtrasComeFromTheirs() throws {
@@ -223,6 +223,19 @@ final class BoardMergeTests: XCTestCase {
         let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
         XCTAssertNil(merged.components.first { $0.name == "x" }, "mine's deletion wins")
         XCTAssertEqual(merged.components.first { $0.name == "y" }?.uses, [:], "no arrow may name a component that isn't on the merged map")
+    }
+
+    /// The file format allows `uses` to name something that is not a component at all — a
+    /// hand-written `"api": {"uses": {"stripe": "payments"}}`. `droppingDanglingUses` must only
+    /// drop a `uses` key when the merge actually removed its target — a target that was never a
+    /// component anywhere (base, mine or theirs) is left alone, whatever else the merge touches.
+    func testAnArrowToSomethingThatIsNotAComponentSurvivesAMergeThatTouchesSomethingElse() {
+        let base = map([c("api", uses: ["stripe": "payments"])])
+        let mine = map([c("api", does: "http", uses: ["stripe": "payments"])])
+        let theirs = base
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertEqual(merged.components.first { $0.name == "api" }?.uses, ["stripe": "payments"],
+                       "an arrow to something that was never a component must survive untouched")
     }
 
     func testBothSidesDeleteSameComponentIsGone() {
