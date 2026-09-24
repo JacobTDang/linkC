@@ -79,6 +79,9 @@ public final class BoardModel {
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var hasUnwrittenEdits = false
+    /// Whether `read()` has ever run — `load()`'s very first call has no "before" map worth
+    /// taking a real change on disk against, so it always reads in full regardless of state.
+    @ObservationIgnored private var hasLoadedOnce = false
     /// Exactly what the file held when last read or written — what a save must still find.
     @ObservationIgnored private var diskBytes: Data?
     /// The decoded map of `diskBytes` — what `BoardMerge` calls `base`. Set wherever `diskBytes`
@@ -103,13 +106,22 @@ public final class BoardModel {
     /// Reads the file. Refuses to replace a map with edits not yet written, so a reload can never
     /// silently discard work — `reload()` is the deliberate way to do that. When the bytes on
     /// disk are exactly what they were last time — reappearing after a tab switch, say — the
-    /// map, undo, redo and selection are left exactly as they are; a real change on disk still
-    /// reloads and clears them, as always. That shortcut only ever applies from a healthy,
-    /// unlocked board: `.failed` or `changedOnDisk` always reads in full, so "Try
-    /// again" and "Reload" can never find the bytes unchanged and leave the board stuck.
+    /// map, undo, redo and selection are left exactly as they are.
+    ///
+    /// Past the first load, on a healthy, unlocked board with nothing pending, a real change on
+    /// disk found this way is taken exactly as `diskChanged()` takes one — as one undo step, with
+    /// `outsideChange` set — a reappear is no different from the watcher having fired while the
+    /// Board was open. The very first load, a load after `.failed`, and `reload()` are always a
+    /// full read instead: the first load has no "before" map worth remembering, and `.failed` or
+    /// `changedOnDisk` must never find the bytes unchanged and leave the board stuck — only "Try
+    /// again" (`reload()`) and Reload are the deliberate way out of those.
     public func load() {
         guard !hasUnwrittenEdits else { return }
-        read(keepingAnUnchangedMap: true)
+        guard hasLoadedOnce, canEdit else {
+            read(keepingAnUnchangedMap: true)
+            return
+        }
+        diskChanged()
     }
 
     /// Drops any unwritten edits and reads the file again — the way out of `changedOnDisk` and
@@ -121,6 +133,7 @@ public final class BoardModel {
     }
 
     private func read(keepingAnUnchangedMap: Bool) {
+        hasLoadedOnce = true
         let canKeepEverything: Bool
         switch state {
         case .loaded, .empty: canKeepEverything = keepingAnUnchangedMap && !changedOnDisk

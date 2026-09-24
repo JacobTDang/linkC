@@ -163,9 +163,12 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.selection, [.component(api)], "selection is kept too")
     }
 
-    /// A real change on disk — a hand edit, a git pull — still reloads and clears undo, exactly
-    /// as it always has.
-    func testAChangeOnDiskStillReloadsAndClearsUndo() throws {
+    /// A real change on disk found on reappear — a hand edit, a git pull, while the Board wasn't
+    /// watching — is no longer a silent reload: past the first load, on a healthy board with
+    /// nothing pending, it is taken exactly as the watcher would take it, as one undo step, with
+    /// `outsideChange` set. Formerly `testAChangeOnDiskStillReloadsAndClearsUndo`, which pinned
+    /// the old "reload wipes undo" rule.
+    func testAChangeOnDiskFoundOnReappearIsTakenAsOneUndoStep() throws {
         let board = fresh()
         board.setSystem("June")
         board.saveNow()
@@ -175,8 +178,45 @@ final class BoardModelTests: XCTestCase {
         try theirs.write(to: store.fileURL)
 
         board.load()
-        XCTAssertFalse(board.canUndo, "a real change on disk still clears undo")
+        XCTAssertTrue(board.canUndo, "a reappear takes a real change on disk as one undo step, not a silent reload")
         XCTAssertEqual(board.map.system, "theirs")
+        XCTAssertNotNil(board.outsideChange)
+
+        board.undo()
+        XCTAssertEqual(board.map.system, "June", "undo restores the map the outside change replaced")
+        board.saveNow()
+        XCTAssertEqual(try XCTUnwrap(try store.load()).map.system, "June", "and writes it back")
+    }
+
+    /// The very first `load()` — nothing has ever been read yet — is always a full read: there is
+    /// no "before" map worth remembering as an undo step, even though the file already holds
+    /// content the first time the board ever looks.
+    func testTheFirstLoadIsNeverTakenAsAnOutsideChange() throws {
+        try Data(#"{"version": 2, "system": "already here", "places": {"Not placed": {}}}"#.utf8).write(to: store.fileURL)
+        let board = model()
+        board.load()
+        XCTAssertEqual(board.map.system, "already here")
+        XCTAssertFalse(board.canUndo, "the first load is not an undo step")
+        XCTAssertNil(board.outsideChange)
+    }
+
+    /// `load()` must recover from `.failed` too, not only `reload()` — matching the doc comment's
+    /// "a load after `.failed`... stay full reads", and, since it's a full read, not an
+    /// outside-change undo step.
+    func testLoadAfterAFailedReadIsStillAFullRead() throws {
+        let board = fresh()
+        board.setSystem("June")
+        board.saveNow()
+        try Data("{ not json".utf8).write(to: store.fileURL)
+        board.load()
+        guard case .failed = board.state else { return XCTFail("expected .failed, got \(board.state)") }
+
+        let goodBytes = Data(#"{"version": 2, "system": "recovered", "places": {"Not placed": {}}}"#.utf8)
+        try goodBytes.write(to: store.fileURL)
+        board.load()
+        XCTAssertEqual(board.state, .loaded, "load() must recover from .failed too, not just reload()")
+        XCTAssertEqual(board.map.system, "recovered")
+        XCTAssertFalse(board.canUndo, "a load() recovering from .failed is a full read, not an outside-change undo step")
     }
 
     /// R1: a corrupted file locks the board, same as `testAnUnreadableMapLocksTheBoard`. Once the
