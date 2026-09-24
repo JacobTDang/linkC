@@ -331,35 +331,40 @@ struct LineEditor: View {
 }
 
 /// An arrow's label and style, edited together at the route's midpoint: the label as a text
-/// field, plus a compact plain/conditional/control/bus picker and, for bus, a bits field (1…4096,
-/// default 32). Return, in either text field, commits both — `commit` calls `BoardModel.setArrow`
-/// once, so the whole edit is one undo step and a no-op when nothing changed. So does focus
-/// leaving both fields (a click on the picker doesn't take focus, so it never triggers this) —
-/// tracked as one group so moving between the label and bits fields themselves never closes the
-/// editor early. Also commits on disappear, for the same reasons `LineEditor` does. Esc behaves
-/// exactly as it does for `LineEditor`, since the label field is the same kind of field.
+/// field, plus a compact plain/conditional/control/bus picker and, for bus, a bits field (empty
+/// unless the arrow already carries one — the field never invents 32). Return, in either text
+/// field, commits — `commit` calls `BoardModel.setArrow` once, so the whole edit is one undo step
+/// and a no-op when nothing changed. An empty bits field means nil; anything else must be a whole
+/// number 1…4096, refused inline exactly as `LineEditor`'s commit is — the editor stays open and
+/// shows why, instead of silently coercing "abc" or clamping "9999". So does focus leaving both
+/// fields (a click on the picker doesn't take focus, so it never triggers this) — tracked as one
+/// group so moving between the label and bits fields themselves never closes the editor early.
+/// Also commits on disappear, for the same reasons `LineEditor` does, but only when bits still
+/// parses — an invalid value left on the field when the view is torn down from outside is
+/// dropped, never coerced into something that was never typed. Esc behaves exactly as it does for
+/// `LineEditor`, since the label field is the same kind of field.
 struct ArrowEditor: View {
     let commit: (_ label: String, _ style: BoardArrowStyle, _ bits: Int?) -> Void
     private let originalLabel: String
     private let originalStyle: BoardArrowStyle
-    private let originalBits: String
+    private let originalBitsText: String
     @State private var label: String
     @State private var style: BoardArrowStyle
     @State private var bitsText: String
+    @State private var refusal: String?
     @State private var closed = false
     private enum Field: Hashable { case label, bits }
     @FocusState private var focusedField: Field?
-
-    static let defaultBits = 32
 
     init(label: String, style: BoardArrowStyle, bits: Int?, commit: @escaping (String, BoardArrowStyle, Int?) -> Void) {
         self.commit = commit
         self.originalLabel = label
         self.originalStyle = style
-        self.originalBits = String(bits ?? Self.defaultBits)
+        let bitsText = bits.map(String.init) ?? ""
+        self.originalBitsText = bitsText
         _label = State(wrappedValue: label)
         _style = State(wrappedValue: style)
-        _bitsText = State(wrappedValue: originalBits)
+        _bitsText = State(wrappedValue: bitsText)
     }
 
     var body: some View {
@@ -381,14 +386,14 @@ struct ArrowEditor: View {
             .controlSize(.small)
             .frame(width: 200)
             if style == .bus {
-                HStack(spacing: 4) {
-                    Text("bits").font(.system(size: 9)).foregroundStyle(Theme.textTertiary)
-                    TextField("", text: $bitsText)
-                        .font(.system(size: 10))
-                        .boardMiniField(width: 44, borderColor: Color.white.opacity(0.15))
-                        .focused($focusedField, equals: .bits)
-                        .onSubmit(finish)
-                }
+                TextField("bits", text: $bitsText)
+                    .font(.system(size: 10))
+                    .boardMiniField(width: 60, borderColor: Color.white.opacity(0.15))
+                    .focused($focusedField, equals: .bits)
+                    .onSubmit(finish)
+            }
+            if let refusal {
+                Text(refusal).font(.system(size: 9.5)).foregroundStyle(Theme.accent)
             }
         }
         .padding(6)
@@ -398,23 +403,35 @@ struct ArrowEditor: View {
             if newValue == nil { finish() }
         }
         .onDisappear {
-            guard !closed, label != originalLabel || style != originalStyle || (style == .bus && bitsText != originalBits) else { return }
+            guard !closed, label != originalLabel || style != originalStyle || (style == .bus && bitsText != originalBitsText) else { return }
+            guard case .value(let bits) = parsedBits() else { return }
             closed = true
-            commit(label, style, resolvedBits)
+            commit(label, style, bits)
         }
     }
 
-    /// `bitsText` clamped to 1…4096, defaulting to 32 when it isn't a number — only meaningful
-    /// with `.bus`, nil otherwise.
-    private var resolvedBits: Int? {
-        guard style == .bus else { return nil }
-        return min(max(Int(bitsText) ?? Self.defaultBits, 1), 4096)
+    private enum BitsParse { case value(Int?); case invalid(String) }
+
+    /// `bitsText`, parsed: empty means nil; anything else must be a whole number 1…4096, or it is
+    /// refused with the reason.
+    private func parsedBits() -> BitsParse {
+        guard style == .bus else { return .value(nil) }
+        let trimmed = bitsText.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return .value(nil) }
+        guard let value = Int(trimmed) else { return .invalid("bits must be a whole number") }
+        guard (1...4096).contains(value) else { return .invalid("bits must be between 1 and 4096") }
+        return .value(value)
     }
 
     private func finish() {
         guard !closed else { return }
-        closed = true
-        commit(label, style, resolvedBits)
+        switch parsedBits() {
+        case .value(let bits):
+            closed = true
+            commit(label, style, bits)
+        case .invalid(let reason):
+            refusal = reason
+        }
     }
 }
 
