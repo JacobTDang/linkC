@@ -156,7 +156,7 @@ extension BoardModel {
     /// (sized for its components, in a row to the right of what is already laid out), a
     /// position inside its own frame for each component (the file's place wins over a stray
     /// position), and room for every note and text — nothing overlapping. Pure and idempotent.
-    public static func laidOut(_ source: BoardMap) -> BoardMap {
+    public nonisolated static func laidOut(_ source: BoardMap) -> BoardMap {
         var map = source
         let size = BoardGeometry.componentSize
         let gap = 16

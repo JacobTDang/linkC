@@ -41,8 +41,8 @@ public final class BoardModel {
     }
 
     public static let undoLimit = 100
-    public static let localDocker = "Local docker"
-    static let noRoomInLocalDocker = "No room left in Local docker — the new component is outside it; drag it in or make room."
+    public nonisolated static let localDocker = "Local docker"
+    nonisolated static let noRoomInLocalDocker = "No room left in Local docker — the new component is outside it; drag it in or make room."
 
     public private(set) var state: State = .empty
     public internal(set) var map: BoardMap = .empty
@@ -522,7 +522,7 @@ public final class BoardModel {
         routes = next
     }
 
-    static func elementRects(_ map: BoardMap, excluding excluded: Set<Element>) -> [BoardRect] {
+    nonisolated static func elementRects(_ map: BoardMap, excluding excluded: Set<Element>) -> [BoardRect] {
         var rects: [BoardRect] = []
         for component in map.components where !excluded.contains(.component(component.name)) {
             if let at = component.at { rects.append(BoardGeometry.rect(ofComponentAt: at)) }
@@ -536,15 +536,15 @@ public final class BoardModel {
         return rects
     }
 
-    static func frameRects(_ map: BoardMap, excluding excluded: Set<String>) -> [BoardRect] {
+    nonisolated static func frameRects(_ map: BoardMap, excluding excluded: Set<String>) -> [BoardRect] {
         map.frames.filter { !excluded.contains($0.label) }.compactMap(\.rect)
     }
 
-    static func index(of name: String, in map: BoardMap) -> Int? {
+    nonisolated static func index(of name: String, in map: BoardMap) -> Int? {
         map.components.firstIndex { $0.name.lowercased() == name.lowercased() }
     }
 
-    static func uniqueName(_ base: String, taken: Set<String>, separator: String = "-") -> String {
+    nonisolated static func uniqueName(_ base: String, taken: Set<String>, separator: String = "-") -> String {
         var name = base
         var suffix = 2
         while taken.contains(name.lowercased()) {
@@ -557,9 +557,74 @@ public final class BoardModel {
     /// A text's width, always rounded up to the grid before it is stored — never down, so it
     /// stays wide enough for its words, and never left as-is, so the collision check (which
     /// rounds too) checks the exact number that ends up on the map.
-    static func roundedUpToGrid(_ width: Int) -> Int {
+    nonisolated static func roundedUpToGrid(_ width: Int) -> Int {
         let step = BoardPoint.grid
         return ((width + step - 1) / step) * step
+    }
+
+    /// Adds `component` inside the frame labelled `label` — grown to fit when there is no room
+    /// — and returns whether it landed there. When the frame has no room and cannot grow, the
+    /// component is filed outside it instead: under whichever frame its fallback spot's centre
+    /// lands in, or `BoardMap.notPlaced` — the containment rule any overflow follows.
+    @discardableResult
+    nonisolated static func placeComponent(_ component: BoardComponent, inFrame label: String, into map: inout BoardMap) -> Bool {
+        guard let frameIndex = map.frames.firstIndex(where: { $0.label == label }), var frame = map.frames[frameIndex].rect else {
+            return false
+        }
+        let size = BoardGeometry.componentSize
+        // Everything already inside the frame is avoided — not just its components. A note or
+        // text has no `place`, so membership is geometric: wholly inside the interior.
+        let interior = BoardGeometry.interior(of: frame)
+        let memberComponents = Set(map.components.filter { $0.place == label }.map(\.name))
+        let memberNotes = Set(map.notes.filter { $0.at.map { interior.contains(BoardGeometry.rect(ofNoteAt: $0)) } ?? false }.map(\.id))
+        let memberTexts = Set(map.texts.filter { interior.contains(BoardGeometry.rect(of: $0)) }.map(\.id))
+        let members = map.components.filter { memberComponents.contains($0.name) }.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
+            + map.notes.filter { memberNotes.contains($0.id) }.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }
+            + map.texts.filter { memberTexts.contains($0.id) }.map(BoardGeometry.rect(of:))
+        let excluded = Set(memberComponents.map { Element.component($0) })
+            .union(memberNotes.map { Element.note($0) })
+            .union(memberTexts.map { Element.text($0) })
+        let foreign = elementRects(map, excluding: excluded).filter { !frame.contains($0) }
+        let others = frameRects(map, excluding: [label])
+        let seed = BoardRect(x: frame.x + BoardGeometry.frameInset, y: frame.y + BoardGeometry.frameInset, w: size.x, h: size.y)
+        var spot = BoardGeometry.nearestFreeSpot(for: seed, avoiding: members, inside: interior)
+        if spot == nil, let grown = BoardGeometry.grow(frame, toFit: size, members: members, otherFrames: others, foreignElements: foreign) {
+            frame = grown
+            map.frames[frameIndex].rect = grown
+            spot = BoardGeometry.nearestFreeSpot(for: seed, avoiding: members, inside: BoardGeometry.interior(of: grown))
+        }
+        let landed = spot ?? BoardGeometry.elementDrop(seed.offsetBy(dx: frame.w + 48, dy: 0),
+                                                     otherElements: elementRects(map, excluding: []), frames: frameRects(map, excluding: []))
+        // Overflow that lands inside another frame is filed there, as the containment rule
+        // says — not blindly "Not placed" just because it did not fit in this frame.
+        var placed = component
+        placed.place = spot != nil ? label : (BoardGeometry.frame(containing: landed, frames: map.frames)?.label ?? BoardMap.notPlaced)
+        placed.at = landed.origin
+        map.components.append(placed)
+        return spot != nil
+    }
+
+    /// A new frame labelled `label`, sized `size`, dropped to the right of everything already on
+    /// the board.
+    nonisolated static func appendFrame(label: String, size: BoardPoint, into map: inout BoardMap) {
+        let wanted = BoardRect(x: 0, y: 0, w: size.x, h: size.y).snapped
+        let content = elementRects(map, excluding: []) + frameRects(map, excluding: [])
+        let seedX = (content.map(\.maxX).max() ?? 0) + (content.isEmpty ? 0 : 48)
+        let rect = BoardGeometry.frameDrop(wanted.offsetBy(dx: seedX, dy: 0).snapped, otherFrames: [], foreignElements: content)
+        map.frames.append(BoardFrame(label: label, rect: rect))
+    }
+
+    /// `component`, placed to the right of everything on the board, overlapping nothing — filed
+    /// under whichever frame its landing spot's centre falls in, or `BoardMap.notPlaced`.
+    nonisolated static func placeLoose(_ component: BoardComponent, into map: inout BoardMap) {
+        let size = BoardGeometry.componentSize
+        let content = elementRects(map, excluding: []) + frameRects(map, excluding: [])
+        let seed = BoardRect(x: (content.map(\.maxX).max() ?? 0) + 48, y: 0, w: size.x, h: size.y)
+        let landed = BoardGeometry.elementDrop(seed, otherElements: elementRects(map, excluding: []), frames: frameRects(map, excluding: []))
+        var placed = component
+        placed.place = BoardGeometry.frame(containing: landed, frames: map.frames)?.label ?? BoardMap.notPlaced
+        placed.at = landed.origin
+        map.components.append(placed)
     }
 
     // MARK: - Internals
@@ -596,46 +661,16 @@ public final class BoardModel {
         if !map.frames.contains(where: { $0.label == localDocker }) {
             let columns = min(4, fresh.count)
             let rows = (fresh.count + columns - 1) / columns
-            let wanted = BoardRect(x: 0, y: 0,
-                                   w: max(BoardGeometry.frameMinSize.x, columns * (size.x + gap) + gap),
-                                   h: max(BoardGeometry.frameMinSize.y, rows * (size.y + gap) + gap)).snapped
-            let content = elementRects(map, excluding: []) + frameRects(map, excluding: [])
-            let seedX = (content.map(\.maxX).max() ?? 0) + (content.isEmpty ? 0 : 48)
-            let rect = BoardGeometry.frameDrop(wanted.offsetBy(dx: seedX, dy: 0).snapped, otherFrames: [], foreignElements: content)
-            map.frames.append(BoardFrame(label: localDocker, rect: rect))
+            let wanted = BoardPoint(
+                x: max(BoardGeometry.frameMinSize.x, columns * (size.x + gap) + gap),
+                y: max(BoardGeometry.frameMinSize.y, rows * (size.y + gap) + gap))
+            appendFrame(label: localDocker, size: wanted, into: &map)
         }
 
         var unplaced = false
         for suggestion in fresh {
-            guard let frameIndex = map.frames.firstIndex(where: { $0.label == localDocker }), var frame = map.frames[frameIndex].rect else { break }
-            // Everything already inside the frame is avoided — not just its components. A note
-            // or text has no `place`, so membership is geometric: wholly inside the interior.
-            let interior = BoardGeometry.interior(of: frame)
-            let memberComponents = Set(map.components.filter { $0.place == localDocker }.map(\.name))
-            let memberNotes = Set(map.notes.filter { $0.at.map { interior.contains(BoardGeometry.rect(ofNoteAt: $0)) } ?? false }.map(\.id))
-            let memberTexts = Set(map.texts.filter { interior.contains(BoardGeometry.rect(of: $0)) }.map(\.id))
-            let members = map.components.filter { memberComponents.contains($0.name) }.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
-                + map.notes.filter { memberNotes.contains($0.id) }.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }
-                + map.texts.filter { memberTexts.contains($0.id) }.map(BoardGeometry.rect(of:))
-            let excluded = Set(memberComponents.map { Element.component($0) })
-                .union(memberNotes.map { Element.note($0) })
-                .union(memberTexts.map { Element.text($0) })
-            let foreign = elementRects(map, excluding: excluded).filter { !frame.contains($0) }
-            let others = frameRects(map, excluding: [localDocker])
-            let seed = BoardRect(x: frame.x + BoardGeometry.frameInset, y: frame.y + BoardGeometry.frameInset, w: size.x, h: size.y)
-            var spot = BoardGeometry.nearestFreeSpot(for: seed, avoiding: members, inside: interior)
-            if spot == nil, let grown = BoardGeometry.grow(frame, toFit: size, members: members, otherFrames: others, foreignElements: foreign) {
-                frame = grown
-                map.frames[frameIndex].rect = grown
-                spot = BoardGeometry.nearestFreeSpot(for: seed, avoiding: members, inside: BoardGeometry.interior(of: grown))
-            }
-            let placed = spot ?? BoardGeometry.elementDrop(seed.offsetBy(dx: frame.w + 48, dy: 0),
-                                                         otherElements: elementRects(map, excluding: []), frames: frameRects(map, excluding: []))
-            // Overflow that lands inside another frame is filed there, as the containment rule
-            // says — not blindly "Not placed" just because it did not fit in Local docker.
-            let place = spot != nil ? localDocker : (BoardGeometry.frame(containing: placed, frames: map.frames)?.label ?? BoardMap.notPlaced)
-            if spot == nil { unplaced = true }
-            map.components.append(BoardComponent(name: suggestion.name, kind: suggestion.kind, place: place, at: placed.origin))
+            let landed = placeComponent(BoardComponent(name: suggestion.name, kind: suggestion.kind), inFrame: localDocker, into: &map)
+            if !landed { unplaced = true }
         }
         return (added: true, unplaced: unplaced)
     }
