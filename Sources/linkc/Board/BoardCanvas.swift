@@ -122,10 +122,16 @@ struct BoardCanvas: View {
                 backgroundTapped(at: location)
             }
             .onContinuousHover { phase in
-                guard dragging.isEmpty, board.tool == .select else { hoveredArrow = nil; return }
+                guard dragging.isEmpty, board.tool == .select else {
+                    if hoveredArrow != nil { hoveredArrow = nil }
+                    return
+                }
                 switch phase {
-                case .active(let location): hoveredArrow = arrow(near: location, tolerance: 5)
-                case .ended: hoveredArrow = nil
+                case .active(let location):
+                    let found = arrow(near: location, tolerance: 5)
+                    if hoveredArrow != found { hoveredArrow = found }
+                case .ended:
+                    if hoveredArrow != nil { hoveredArrow = nil }
                 }
             }
     }
@@ -184,8 +190,8 @@ struct BoardCanvas: View {
                     ComponentBox(component: component, status: board.statuses[component.name],
                                  isSelected: board.selection.contains(.component(component.name)))
                         .opacity(focusedComponent.map { isConnected(component.name, to: $0) ? 1 : 0.3 } ?? 1)
-                        .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component.name) } }
-                        .overlay { glow(.component(component.name), cornerRadius: 10) }
+                        .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component.name, kind: component.kind) } }
+                        .overlay { glow(.component(component.name), cornerRadius: 10, inset: BoardShape.insets(for: component.kind)) }
                         .onHover { inside in
                             if inside { hovered = component.name } else if hovered == component.name { hovered = nil }
                         }
@@ -254,11 +260,17 @@ struct BoardCanvas: View {
     }
 
     /// The soft accent outline an outside change leaves on a component or note; nothing when it
-    /// isn't glowing.
+    /// isn't glowing. `inset` pulls it to a kind's drawn outline rather than the box behind it —
+    /// zero, the box itself, for a note or any kind whose shape already reaches every edge.
     @ViewBuilder
-    private func glow(_ element: BoardModel.Element, cornerRadius: CGFloat) -> some View {
+    private func glow(
+        _ element: BoardModel.Element, cornerRadius: CGFloat,
+        inset: (left: CGFloat, right: CGFloat, top: CGFloat, bottom: CGFloat) = (0, 0, 0, 0)
+    ) -> some View {
         if glowing.contains(element) {
-            RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(Theme.accent.opacity(glowOpacity), lineWidth: 2)
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(Theme.accent.opacity(glowOpacity), lineWidth: 2)
+                .padding(EdgeInsets(top: inset.top, leading: inset.left, bottom: inset.bottom, trailing: inset.right))
         }
     }
 
@@ -454,21 +466,26 @@ struct BoardCanvas: View {
         let isPreview: Bool
     }
 
-    /// Every arrow: routed, with rounded corners, its label pill where the layout placed one; a
-    /// focus turns its own arrows to the accent colour and shows every one of their labels, and
-    /// dims every other arrow to 12% with its pill hidden; hovering a hidden label's arrow, with
-    /// no focus, reveals it at its longest segment's midpoint.
+    /// Every arrow: routed, with rounded corners, ending at its kind's drawn outline rather than
+    /// the box behind it, its label pill where the layout placed one; a focus turns its own
+    /// arrows to the accent colour and shows every one of their labels, and dims every other
+    /// arrow to 12% with its pill hidden — unless that other arrow is itself hovered, which shows
+    /// its label and brings it to full opacity for the hover, focus or not. A bundle's pill draws
+    /// once for the whole bundle, never once per member. Every pill is hidden while an arrow it
+    /// touches is being dragged; the drag's own straight preview line still draws.
     private func drawArrows(in context: inout GraphicsContext) {
         let focus = focusedComponent
+        var drawnBundlePills: Set<String> = []
         for component in board.map.components {
             for (target, label) in component.uses {
                 let key = BoardModel.ArrowKey(from: component.name, to: target)
                 guard let draw = arrowDraw(for: key) else { continue }
-                let screen = draw.points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
+                let canvasPoints = draw.isPreview ? draw.points : extendedEndpoints(draw.points, from: key.from, to: key.to)
+                let screen = canvasPoints.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
                 let touchesFocus = focus != nil && (key.from == focus || key.to == focus)
                 let isHovered = hoveredArrow == key
                 let highlighted = touchesFocus || isHovered || board.selection.contains(.arrow(key))
-                let dimmed = focus != nil && !touchesFocus
+                let dimmed = focus != nil && !touchesFocus && !isHovered
                 let planned = board.map.components.first { $0.name == target }?.planned == true
                 let colour = (highlighted ? Theme.accent : Theme.boardArrow).opacity(dimmed ? 0.12 : 1)
                 let path = draw.isPreview ? straightPath(screen) : roundedArrowPath(screen)
@@ -476,19 +493,60 @@ struct BoardCanvas: View {
                                style: StrokeStyle(lineWidth: highlighted ? 1.8 : 1.3, lineCap: .round, lineJoin: .round,
                                                   dash: (planned || draw.isPreview) ? [4, 4] : []))
                 if !draw.isPreview, let head = arrowHead(screen) { context.fill(head, with: .color(colour)) }
-                guard !label.isEmpty else { continue }
+                guard !label.isEmpty, !isMoving(key.from), !isMoving(key.to) else { continue }
+                let bundleId = board.routes[key]?.bundle
+                let bundleAlreadyDrawn = bundleId.map { drawnBundlePills.contains($0) } ?? false
                 if focus != nil {
-                    guard touchesFocus else { continue }
+                    guard touchesFocus || isHovered else { continue }
+                    guard !bundleAlreadyDrawn else { continue }
                     if let center = board.labelRects[key]?.center ?? fallbackLabelCenter(draw.points) {
-                        drawPill(at: center, label: label, in: &context)
+                        if let bundleId { drawnBundlePills.insert(bundleId) }
+                        drawPill(at: center, label: label, highlighted: highlighted, in: &context)
                     }
                 } else if let rect = board.labelRects[key] {
-                    drawPill(at: rect.center, label: label, in: &context)
+                    guard !bundleAlreadyDrawn else { continue }
+                    if let bundleId { drawnBundlePills.insert(bundleId) }
+                    drawPill(at: rect.center, label: label, highlighted: highlighted, in: &context)
                 } else if isHovered, let center = fallbackLabelCenter(draw.points) {
-                    drawPill(at: center, label: label, in: &context)
+                    drawPill(at: center, label: label, highlighted: highlighted, in: &context)
                 }
             }
         }
+    }
+
+    /// Whether `name`'s box is being dragged right now, either directly or carried by its frame.
+    private func isMoving(_ name: String) -> Bool {
+        guard !dragging.isEmpty else { return false }
+        if dragging.contains(.component(name)) { return true }
+        guard let place = board.map.components.first(where: { $0.name == name })?.place else { return false }
+        return dragging.contains(.frame(place))
+    }
+
+    /// `points` with the first and last segment's endpoint moved from the box edge to the kind's
+    /// actual drawn outline on that side — so an arrow visibly touches the shape, not the fixed
+    /// 176×84 box behind it.
+    private func extendedEndpoints(_ points: [BoardPoint], from sourceName: String, to targetName: String) -> [BoardPoint] {
+        guard points.count >= 2 else { return points }
+        var points = points
+        if let source = board.map.components.first(where: { $0.name == sourceName }), let rect = componentRect(source) {
+            points[0] = insetEndpoint(points[0], box: rect, kind: source.kind)
+        }
+        let last = points.count - 1
+        if let target = board.map.components.first(where: { $0.name == targetName }), let rect = componentRect(target) {
+            points[last] = insetEndpoint(points[last], box: rect, kind: target.kind)
+        }
+        return points
+    }
+
+    /// `port`, sitting on one edge of `box`, moved inward along that same edge's normal by the
+    /// kind's inset there — the point where the shape's own outline actually is.
+    private func insetEndpoint(_ port: BoardPoint, box: BoardRect, kind: ComponentKind) -> BoardPoint {
+        let inset = BoardShape.insets(for: kind)
+        if port.x == box.minX { return BoardPoint(x: port.x + Int(inset.left), y: port.y) }
+        if port.x == box.maxX { return BoardPoint(x: port.x - Int(inset.right), y: port.y) }
+        if port.y == box.minY { return BoardPoint(x: port.x, y: port.y + Int(inset.top)) }
+        if port.y == box.maxY { return BoardPoint(x: port.x, y: port.y - Int(inset.bottom)) }
+        return port
     }
 
     /// An arrow's route, or — while its source or target is being dragged — a straight line
@@ -558,15 +616,27 @@ struct BoardCanvas: View {
         return path
     }
 
+    /// The zoom below which an unhighlighted pill draws nothing at rest — it would be unreadably
+    /// small, and at that scale pills tend to overlap boxes and each other.
+    private static let pillHiddenBelowZoom = 0.45
+
     /// An arrow label's pill: a rounded rect in `Theme.boardBackground`, stroked in a faint
-    /// white, the label centred in it — drawn at `center` (canvas points).
-    private func drawPill(at center: BoardPoint, label: String, in context: inout GraphicsContext) {
+    /// white, the label centred in it — drawn at `center` (canvas points), its own 10 pt text, 7
+    /// pt padding and 18 pt height scaled by the viewport's zoom, exactly like its placed canvas
+    /// rect scaled the same way. `highlighted` (focused, hovered or selected) turns the text
+    /// `Theme.accent`, floors the scale at 1 so it stays readable however far zoomed out, and
+    /// skips the below-`pillHiddenBelowZoom` hide — the one case a pill may draw larger than its
+    /// placed rect × zoom.
+    private func drawPill(at center: BoardPoint, label: String, highlighted: Bool, in context: inout GraphicsContext) {
+        guard highlighted || viewport.zoom >= Self.pillHiddenBelowZoom else { return }
+        let scale = highlighted ? max(viewport.zoom, 1) : viewport.zoom
         let screenCenter = viewport.toScreen(CGPoint(x: Double(center.x), y: Double(center.y)))
-        let text = context.resolve(Text(label).font(.system(size: 10)).foregroundColor(Theme.textSecondary))
-        let measured = text.measure(in: CGSize(width: 320, height: 30))
-        let box = CGRect(x: screenCenter.x - measured.width / 2 - 7, y: screenCenter.y - 9,
-                         width: measured.width + 14, height: 18)
-        let path = Path(roundedRect: box, cornerRadius: 9)
+        let textColor = highlighted ? Theme.accent : Theme.textSecondary
+        let text = context.resolve(Text(label).font(.system(size: 10 * scale)).foregroundColor(textColor))
+        let measured = text.measure(in: CGSize(width: 320 * scale, height: 30 * scale))
+        let box = CGRect(x: screenCenter.x - measured.width / 2 - 7 * scale, y: screenCenter.y - 9 * scale,
+                         width: measured.width + 14 * scale, height: 18 * scale)
+        let path = Path(roundedRect: box, cornerRadius: 9 * scale)
         context.fill(path, with: .color(Theme.boardBackground))
         context.stroke(path, with: .color(Color.white.opacity(0.12)), lineWidth: 1)
         context.draw(text, at: screenCenter)
@@ -725,11 +795,13 @@ struct BoardCanvas: View {
             }
     }
 
-    /// The four side handles on a hovered component; dragging one draws an arrow.
-    private func handles(for name: String) -> some View {
+    /// The four side handles on a hovered component, on the kind's drawn outline rather than the
+    /// box behind it; dragging one draws an arrow.
+    private func handles(for name: String, kind: ComponentKind) -> some View {
         let size = BoardGeometry.componentSize
-        let points = [CGPoint(x: size.x / 2, y: 0), CGPoint(x: size.x, y: size.y / 2),
-                      CGPoint(x: size.x / 2, y: size.y), CGPoint(x: 0, y: size.y / 2)]
+        let inset = BoardShape.insets(for: kind)
+        let points = [CGPoint(x: CGFloat(size.x) / 2, y: inset.top), CGPoint(x: CGFloat(size.x) - inset.right, y: CGFloat(size.y) / 2),
+                      CGPoint(x: CGFloat(size.x) / 2, y: CGFloat(size.y) - inset.bottom), CGPoint(x: inset.left, y: CGFloat(size.y) / 2)]
         return ZStack(alignment: .topLeading) {
             ForEach(points.indices, id: \.self) { index in
                 Circle()

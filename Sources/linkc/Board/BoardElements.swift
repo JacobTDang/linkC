@@ -43,7 +43,9 @@ struct ComponentBox: View {
         .frame(width: Self.width, height: Self.height)
         .overlay(alignment: .topTrailing) {
             if status == .present {
-                Circle().fill(Theme.statusRunning).frame(width: 6, height: 6).padding(7)
+                let sideInset = BoardShape.insets(for: component.kind)
+                Circle().fill(Theme.statusRunning).frame(width: 6, height: 6)
+                    .padding(.top, 7 + sideInset.top).padding(.trailing, 7 + sideInset.right)
             }
         }
         .opacity(isMissing ? 0.5 : 1)
@@ -163,6 +165,22 @@ enum BoardShape {
         case .host: return server
         case .external: return cloud
         default: return card
+        }
+    }
+
+    /// How far a kind's drawn outline sits inside the fixed 176×84 box, on the sides an arrow, a
+    /// status dot, a side handle or the change glow might otherwise land past the shape: the
+    /// cloud's left and right (it never reaches either side edge), the pipe's top and bottom, and
+    /// the card's top and bottom. Zero elsewhere — those shapes already reach the box's edge on
+    /// every side that matters.
+    static func insets(for kind: ComponentKind) -> (left: CGFloat, right: CGFloat, top: CGFloat, bottom: CGFloat) {
+        switch kind {
+        case .database, .cache: return (0, 0, 0, 0)
+        case .queue: return (0, 0, 12, 12)
+        case .storage: return (0, 0, 0, 0)
+        case .host: return (0, 0, 0, 0)
+        case .external: return (31, 9, 0, 0)
+        default: return (0, 0, 8, 8)
         }
     }
 
