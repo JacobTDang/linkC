@@ -616,10 +616,6 @@ struct BoardCanvas: View {
         return path
     }
 
-    /// The head points along the arrow's last segment, `scale` times its ordinary 7 pt length —
-    /// a bus passes its line width's own ratio to `1.3` (the plain arrow's line width) here, so
-    /// its thicker line gets a proportionally bigger head instead of the same small one a thin
-    /// line gets.
     /// `points` with its last point pulled back along the final segment to where the arrowhead's
     /// base crosses it, never past the segment's start.
     private func endingAtHeadBase(_ points: [CGPoint], headScale: CGFloat) -> [CGPoint] {
@@ -634,6 +630,10 @@ struct BoardCanvas: View {
         return trimmed
     }
 
+    /// The head points along the arrow's last segment, `scale` times its ordinary 7 pt length —
+    /// a bus passes its line width's own ratio to `1.3` (the plain arrow's line width) here, so
+    /// its thicker line gets a proportionally bigger head instead of the same small one a thin
+    /// line gets.
     private func arrowHead(_ points: [CGPoint], scale: CGFloat = 1) -> Path? {
         guard points.count >= 2, let tip = points.last else { return nil }
         let from = points[points.count - 2]
