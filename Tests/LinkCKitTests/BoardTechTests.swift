@@ -42,6 +42,13 @@ final class BoardTechTests: XCTestCase {
         XCTAssertEqual(BoardTech.info("redis")?.isDark, false)
     }
 
+    /// The luminance < 0.08 rule applies to lobe logos too, not just Simple Icons'. LangGraph's
+    /// only fill, #1C3C3C, has a luminance of 0.038 — too dark for the dark board — so it must be
+    /// tinted like any other dark brand, instead of drawn nearly invisible as-is.
+    func testLangGraphLogoIsFlaggedDark() {
+        XCTAssertEqual(BoardTech.info("langgraph")?.isDark, true)
+    }
+
     func testResolveUsesTechThenAnExactName() {
         XCTAssertEqual(BoardTech.resolve(BoardComponent(name: "db", kind: .database, tech: "pg"))?.id, "postgresql")
         XCTAssertEqual(BoardTech.resolve(BoardComponent(name: "Redis", kind: .cache))?.id, "redis")
