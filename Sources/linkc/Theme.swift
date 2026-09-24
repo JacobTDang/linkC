@@ -97,6 +97,20 @@ enum Theme {
     /// A conditional or control arrow's dashed line, arrowhead and pill text — the same gold as
     /// the router and control unit outlines above.
     static let boardConditional = boardGold
+
+    // The new AI-agent kinds' own glyph colours (from the approved palettes mockup).
+    /// The agent kind's sparkle glyph (~#E8A27F).
+    static let boardAgentGlyph = Color(red: 0.910, green: 0.635, blue: 0.498)
+    /// The tool kind's wrench glyph, and the vector store's dot grid and memory's history glyph
+    /// (~#9FB4D8).
+    static let boardGlyphBlue = Color(red: 0.624, green: 0.706, blue: 0.847)
+    /// The prompt kind's document glyph (~#C9B27C).
+    static let boardPromptGlyph = Color(red: 0.788, green: 0.698, blue: 0.486)
+    /// The clock kind's square-wave glyph (~#8AB4F8).
+    static let boardClockGlyph = Color(red: 0.541, green: 0.706, blue: 0.973)
+    /// A bus arrow's slash mark and bit-width digits — kind-neutral, unlike the line itself
+    /// (~#C9C9D3).
+    static let boardBusMark = Color(red: 0.788, green: 0.788, blue: 0.827)
 }
 
 /// The shared card treatment: one flat translucent fill, nothing else.

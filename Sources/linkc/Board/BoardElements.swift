@@ -179,6 +179,10 @@ struct ComponentBox: View {
     /// wave glyph, and above the bus bar. Several of these sit outside the component's own
     /// 176×84 box, on purpose, exactly as the mockup draws them — the canvas never clips a
     /// component's box, only its own viewport.
+    ///
+    /// The mockup's y's are SVG text baselines; `.position(y:)` instead centres the view. Each is
+    /// converted here — centre ≈ baseline − 0.35 × the font size — so the name sits centred where
+    /// the mockup draws it, not ~3.5 pt low.
     @ViewBuilder
     private var embeddedNameContent: some View {
         let cx = Self.width / 2
@@ -186,28 +190,28 @@ struct ComponentBox: View {
             switch component.kind {
             case .start, .end:
                 Text(component.name).font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.textPrimary)
-                    .position(x: cx, y: 47)
+                    .position(x: cx, y: 42.45)
             case .alu:
                 Text(component.name).font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.textPrimary)
-                    .position(x: cx + 6, y: 47)
+                    .position(x: cx + 6, y: 42.1)
             case .mux, .demux:
                 Text(component.name).font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.textPrimary)
-                    .position(x: cx, y: 46)
+                    .position(x: cx, y: 42.15)
                 Text("sel").font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.textSecondary)
-                    .position(x: cx, y: 96)
+                    .position(x: cx, y: 93.2)
             case .decoder:
                 Text(component.name).font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.textPrimary)
-                    .position(x: cx, y: 46)
+                    .position(x: cx, y: 42.15)
             case .adder:
                 Text(component.name).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.textSecondary)
-                    .position(x: cx, y: 96)
+                    .position(x: cx, y: 92.85)
             case .clock:
                 ClockWaveGlyph()
                 Text(component.name).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.textSecondary)
-                    .position(x: cx, y: 92)
+                    .position(x: cx, y: 88.85)
             case .bus:
                 Text(component.name).font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.textSecondary)
-                    .position(x: cx, y: 30)
+                    .position(x: cx, y: 26.5)
             default:
                 EmptyView()
             }
@@ -226,8 +230,23 @@ struct ComponentBox: View {
         } else {
             Image(systemName: component.kind.glyph)
                 .font(.system(size: 15))
-                .foregroundStyle(Theme.textSecondary)
+                .foregroundStyle(iconColor)
                 .frame(width: 24, height: 24)
+        }
+    }
+
+    /// The SF Symbol icon's tint — the mockup's own glyph colour for the AI-agent kinds it gives
+    /// one (agent's sparkle, tool's wrench, prompt's document, state's brace, human's person; mcp
+    /// draws `PlugGlyph` instead, already in its own colour); every other kind, System included,
+    /// keeps the neutral `textSecondary` it always had.
+    private var iconColor: Color {
+        switch component.kind {
+        case .agent: return Theme.boardAgentGlyph
+        case .tool: return Theme.boardGlyphBlue
+        case .prompt: return Theme.boardPromptGlyph
+        case .state: return Theme.boardViolet
+        case .human: return Theme.boardGold
+        default: return Theme.textSecondary
         }
     }
 
@@ -318,15 +337,16 @@ private struct PlugGlyph: View {
 private struct ClockWaveGlyph: View {
     var body: some View {
         Path { p in
-            p.move(to: CGPoint(x: 76.3, y: 48.7))
-            p.addLine(to: CGPoint(x: 76.3, y: 39.3))
-            p.addLine(to: CGPoint(x: 83.3, y: 39.3))
-            p.addLine(to: CGPoint(x: 83.3, y: 48.7))
-            p.addLine(to: CGPoint(x: 90.3, y: 48.7))
-            p.addLine(to: CGPoint(x: 90.3, y: 39.3))
-            p.addLine(to: CGPoint(x: 95, y: 39.3))
+            p.move(to: CGPoint(x: 76.33, y: 48.67))
+            p.addLine(to: CGPoint(x: 81, y: 48.67))
+            p.addLine(to: CGPoint(x: 81, y: 39.33))
+            p.addLine(to: CGPoint(x: 88, y: 39.33))
+            p.addLine(to: CGPoint(x: 88, y: 48.67))
+            p.addLine(to: CGPoint(x: 95, y: 48.67))
+            p.addLine(to: CGPoint(x: 95, y: 39.33))
+            p.addLine(to: CGPoint(x: 99.67, y: 39.33))
         }
-        .stroke(Theme.boardHardwareStroke, style: StrokeStyle(lineWidth: 1.8, lineJoin: .round))
+        .stroke(Theme.boardClockGlyph, style: StrokeStyle(lineWidth: 1.8, lineJoin: .round))
     }
 }
 
@@ -337,10 +357,6 @@ enum BoardShape {
     private static let w = CGFloat(BoardGeometry.componentSize.x)
     private static let h = CGFloat(BoardGeometry.componentSize.y)
 
-    /// A recurring cool-blue accent for small glyph strokes (the mockup's `#9fb4d8`) — distinct
-    /// from `Theme.boardHardwareStroke`, and only ever used for these decorations, so it stays a
-    /// local constant rather than a Theme token.
-    private static let glyphBlue = Color(red: 0.624, green: 0.706, blue: 0.847)
     private static let startFill = Color(red: 0.122, green: 0.227, blue: 0.173) // #1F3A2C
     private static let endFill = Color(red: 0.227, green: 0.141, blue: 0.141) // #3A2424
     private static let endStroke = Color(red: 0.851, green: 0.541, blue: 0.541) // #D98A8A
@@ -473,6 +489,7 @@ enum BoardShape {
         case .control: return (13, 19)
         case .decoder: return (-4, 58)
         case .clock: return (13, 57)
+        case .mcp: return (6, 6)
         default:
             let inset = insets(for: kind)
             return (inset.top, inset.right)
@@ -717,7 +734,7 @@ enum BoardShape {
                 }
             }
         }
-        .fill(glyphBlue)
+        .fill(Theme.boardGlyphBlue)
     }
 
     /// A memory's history glyph: a near-full ring with a short hand, standing in for the mockup's
@@ -725,13 +742,13 @@ enum BoardShape {
     private static var memoryHistoryGlyph: some View {
         ZStack {
             Path { p in p.addArc(center: CGPoint(x: w - 30, y: 46), radius: 8, startAngle: .degrees(-50), endAngle: .degrees(230), clockwise: false) }
-                .stroke(glyphBlue, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                .stroke(Theme.boardGlyphBlue, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
             Path { p in
                 p.move(to: CGPoint(x: w - 30, y: 42))
                 p.addLine(to: CGPoint(x: w - 30, y: 46))
                 p.addLine(to: CGPoint(x: w - 24, y: 46))
             }
-            .stroke(glyphBlue, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+            .stroke(Theme.boardGlyphBlue, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
         }
     }
 
