@@ -36,23 +36,22 @@ public enum BoardLayout {
         if !clusters.isEmpty {
             let nameToComponent = Dictionary(uniqueKeysWithValues: map.components.map { ($0.name.lowercased(), $0) })
 
-            // Cluster graph: an edge C→D when some component in C uses one in D.
-            var clusterEdges: [String?: Set<String?>] = [:]
+            // Cluster graph: weight(C→D) = how many arrows go from a component in C to one in D.
+            var clusterWeights: [String?: [String?: Int]] = [:]
             for cluster in clusters {
                 for component in cluster.components {
                     for used in component.uses.keys {
                         guard let usedComponent = nameToComponent[used.lowercased()] else { continue }
                         let target = effectivePlace(usedComponent, frames: map.frames)
                         guard target != cluster.label else { continue }
-                        clusterEdges[cluster.label, default: []].insert(target)
+                        clusterWeights[cluster.label, default: [:]][target, default: 0] += 1
                     }
                 }
             }
-            let clusterAdjacency = clusterEdges.mapValues { Array($0) }
 
             let clusterLabels = clusters.map(\.label)
-            let clusterOrder = processingOrder(clusterLabels)
-            let (rank, dag) = longestPathRanks(nodes: clusterLabels, order: clusterOrder, edges: clusterAdjacency)
+            let clusterOrder = weightedOrdering(nodes: clusterLabels, weights: clusterWeights, sortKey: labelKey)
+            let (rank, dag) = ranksAndDAG(nodes: clusterLabels, order: clusterOrder, weights: clusterWeights)
             let predecessors = reversed(dag)
 
             var layouts: [String?: ClusterLayout] = [:]
@@ -124,6 +123,10 @@ public enum BoardLayout {
         frames.contains { $0.label == component.place } ? component.place : nil
     }
 
+    /// A cluster label's sort key: its lowercased name, or a sentinel that always sorts last for
+    /// the virtual (`nil`) cluster.
+    private static func labelKey(_ label: String?) -> String { label?.lowercased() ?? "\u{FFFF}" }
+
     private static func buildClusters(_ map: BoardMap) -> [Cluster] {
         var byPlace: [String: [BoardComponent]] = [:]
         var virtual: [BoardComponent] = []
@@ -152,23 +155,25 @@ public enum BoardLayout {
     private static func columnsAndRows(for components: [BoardComponent]) -> (positions: [String: (col: Int, row: Int)], cols: Int, rows: Int) {
         guard !components.isEmpty else { return ([:], 1, 1) }
         let names = Set(components.map(\.name))
-        var directed: [String: Set<String>] = [:]
+        // weight 1 per arrow — a component's `uses` dict can carry at most one arrow to a given
+        // target, so this is 0-or-1 per ordered pair, same as the old adjacency, just counted.
+        var directed: [String: [String: Int]] = [:]
         for component in components {
             for used in component.uses.keys where used != component.name && names.contains(used) {
-                directed[component.name, default: []].insert(used)
+                directed[component.name, default: [:]][used, default: 0] += 1
             }
         }
         var undirected: [String: Set<String>] = [:]
         for (from, tos) in directed {
-            for to in tos {
+            for to in tos.keys {
                 undirected[from, default: []].insert(to)
                 undirected[to, default: []].insert(from)
             }
         }
 
         let allNames = components.map(\.name)
-        let order = processingOrder(allNames.map { Optional($0) }).map { $0! }
-        let (columnRank, _) = longestPathRanks(nodes: allNames, order: order, edges: directed.mapValues(Array.init))
+        let order = weightedOrdering(nodes: allNames, weights: directed, sortKey: { $0.lowercased() })
+        let (columnRank, _) = ranksAndDAG(nodes: allNames, order: order, weights: directed)
 
         let cols = (columnRank.values.max() ?? 0) + 1
         var byColumn: [[String]] = Array(repeating: [], count: cols)
@@ -217,60 +222,91 @@ public enum BoardLayout {
         _ labels: [String?], predecessors: [String?: [String?]], rects: [String?: BoardRect]
     ) -> [String?] {
         func key(_ label: String?) -> (Double, String) {
-            let labelKey = label?.lowercased() ?? "\u{FFFF}"
             let ys = (predecessors[label] ?? []).compactMap { rects[$0]?.center.y }.map(Double.init)
-            guard !ys.isEmpty else { return (0, labelKey) }
-            return (ys.reduce(0, +) / Double(ys.count), labelKey)
+            guard !ys.isEmpty else { return (0, labelKey(label)) }
+            return (ys.reduce(0, +) / Double(ys.count), labelKey(label))
         }
         return labels.sorted { key($0) < key($1) }
     }
 
-    // MARK: - Cycle-broken longest-path ranking, shared by clusters and columns
+    // MARK: - Weighted cycle-breaking, shared by clusters and columns
 
-    /// `nodes` processed in DESCENDING lowercased order (ties among real labels; `nil` — the
-    /// virtual cluster — always sorts last), used both to pick DFS roots and to order each node's
-    /// own edges, so the DFS is fully deterministic.
-    private static func processingOrder(_ labels: [String?]) -> [String?] {
-        let real = Set(labels.compactMap { $0 }).sorted { $0.lowercased() > $1.lowercased() }
-        var order: [String?] = real.map { $0 }
-        if labels.contains(where: { $0 == nil }) { order.append(nil) }
-        return order
+    /// A permutation of `nodes` that keeps as many edges forward as possible — Eades–Lin–Smyth's
+    /// greedy heuristic for the weighted feedback arc set: repeatedly move a sink to the end,
+    /// then a source to the front, then (when neither exists) the node with the largest out-weight
+    /// minus in-weight to the front. Ties break by `sortKey`, ascending. `weights[u][v]` is the
+    /// number of arrows from `u` to `v`; a node with no entry has none.
+    ///
+    /// Kept internal (not `private`) so `BoardLayoutTests` can drive it directly.
+    static func weightedOrdering<Node: Hashable>(
+        nodes: [Node], weights: [Node: [Node: Int]], sortKey: (Node) -> String
+    ) -> [Node] {
+        var remaining = Set(nodes)
+        var out: [Node: Int] = [:]
+        var incoming: [Node: Int] = [:]
+        for u in nodes { out[u] = (weights[u] ?? [:]).values.reduce(0, +) }
+        for (_, tos) in weights {
+            for (v, w) in tos { incoming[v, default: 0] += w }
+        }
+
+        func remove(_ u: Node) {
+            remaining.remove(u)
+            for (v, w) in weights[u] ?? [:] where remaining.contains(v) { incoming[v, default: 0] -= w }
+            for w in remaining {
+                if let ww = weights[w]?[u] { out[w, default: 0] -= ww }
+            }
+        }
+
+        var front: [Node] = []
+        var back: [Node] = []
+        while !remaining.isEmpty {
+            if let sink = remaining.filter({ (out[$0] ?? 0) == 0 }).sorted(by: { sortKey($0) < sortKey($1) }).first {
+                back.insert(sink, at: 0)
+                remove(sink)
+                continue
+            }
+            if let source = remaining.filter({ (incoming[$0] ?? 0) == 0 }).sorted(by: { sortKey($0) < sortKey($1) }).first {
+                front.append(source)
+                remove(source)
+                continue
+            }
+            let best = remaining.sorted { a, b in
+                let sa = (out[a] ?? 0) - (incoming[a] ?? 0)
+                let sb = (out[b] ?? 0) - (incoming[b] ?? 0)
+                if sa != sb { return sa > sb }
+                return sortKey(a) < sortKey(b)
+            }.first!
+            front.append(best)
+            remove(best)
+        }
+        return front + back
     }
 
-    /// Breaks cycles with a DFS over `nodes` in `order`: an edge to a node already on the current
-    /// DFS stack is reversed. `rank(C)` is then the longest path from a source in that acyclic
-    /// graph. Returns the rank per node and the acyclic graph itself (for barycentre lookups).
-    private static func longestPathRanks<Node: Hashable>(
-        nodes: [Node], order: [Node], edges: [Node: [Node]]
+    /// The longest-path rank per node and the forward DAG over `weights`, keeping only the edges
+    /// that go forward in `order`; a backward edge is dropped, never reversed, so a mutual pair
+    /// contributes at most one DAG edge — never a duplicate. Each `dag[u]` lists a given neighbour
+    /// at most once, since it is built straight from `weights[u]`'s own keys.
+    ///
+    /// Kept internal (not `private`) so `BoardLayoutTests` can drive it directly.
+    static func ranksAndDAG<Node: Hashable>(
+        nodes: [Node], order: [Node], weights: [Node: [Node: Int]]
     ) -> (rank: [Node: Int], dag: [Node: [Node]]) {
         let position = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
-        var onStack: Set<Node> = []
-        var visited: Set<Node> = []
         var dag: [Node: [Node]] = [:]
-
-        func dfs(_ u: Node) {
-            onStack.insert(u)
-            visited.insert(u)
-            let neighbours = (edges[u] ?? []).sorted { (position[$0] ?? .max) < (position[$1] ?? .max) }
-            for v in neighbours {
-                if onStack.contains(v) {
-                    dag[v, default: []].append(u)
-                } else if !visited.contains(v) {
-                    dag[u, default: []].append(v)
-                    dfs(v)
-                } else {
-                    dag[u, default: []].append(v)
-                }
+        for u in nodes {
+            guard let pu = position[u] else { continue }
+            for (v, w) in weights[u] ?? [:] where w > 0 {
+                guard let pv = position[v], pv > pu else { continue }
+                dag[u, default: []].append(v)
             }
-            onStack.remove(u)
         }
-        for u in order where !visited.contains(u) { dfs(u) }
+        dag = dag.mapValues { tos in tos.sorted { (position[$0] ?? 0) < (position[$1] ?? 0) } }
 
         var indegree = Dictionary(uniqueKeysWithValues: nodes.map { ($0, 0) })
         for (_, tos) in dag { for v in tos { indegree[v, default: 0] += 1 } }
         var rank = Dictionary(uniqueKeysWithValues: nodes.map { ($0, 0) })
         var remaining = indegree
-        var frontier = nodes.filter { indegree[$0] == 0 }
+        var frontier = nodes.filter { indegree[$0] == 0 }.sorted { (position[$0] ?? 0) < (position[$1] ?? 0) }
         while !frontier.isEmpty {
             var next: [Node] = []
             for u in frontier {
@@ -280,7 +316,7 @@ public enum BoardLayout {
                     if remaining[v] == 0 { next.append(v) }
                 }
             }
-            frontier = next
+            frontier = next.sorted { (position[$0] ?? 0) < (position[$1] ?? 0) }
         }
         return (rank, dag)
     }

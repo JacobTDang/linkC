@@ -70,6 +70,86 @@ final class BoardLayoutTests: XCTestCase {
         for note in m.notes { XCTAssertGreaterThanOrEqual(try XCTUnwrap(note.at).x, maxX) }
     }
 
+    func testCycleBreakingFollowsArrowWeightNotAlphabet() throws {
+        // "Alpha Heavy" sorts first ascending / last descending. Its one component sends 4 arrows
+        // into "Zulu Light"; one of Zulu Light's components sends a single arrow back. The heavy
+        // side must win the cycle regardless of what a name-only tiebreak would have picked.
+        var m = BoardMap()
+        m.frames = [BoardFrame(label: "Alpha Heavy"), BoardFrame(label: "Zulu Light")]
+        m.components = [
+            BoardComponent(name: "hub", kind: .service, uses: ["z1": "", "z2": "", "z3": "", "z4": ""], place: "Alpha Heavy"),
+            BoardComponent(name: "z1", kind: .service, uses: ["hub": ""], place: "Zulu Light"),
+            BoardComponent(name: "z2", kind: .service, place: "Zulu Light"),
+            BoardComponent(name: "z3", kind: .service, place: "Zulu Light"),
+            BoardComponent(name: "z4", kind: .service, place: "Zulu Light"),
+        ]
+        let arranged = BoardLayout.arranged(m)
+        func x(_ label: String) throws -> Int { try XCTUnwrap(arranged.frames.first { $0.label == label }?.rect?.x) }
+        XCTAssertLessThan(try x("Alpha Heavy"), try x("Zulu Light"), "4 arrows out beats 1 arrow back")
+    }
+
+    func testCycleBreakingByWeightIgnoresAlphabeticalOrder() throws {
+        // Mirror of the above with the heavy side renamed to sort last: "Zulu Heavy" still sends 4
+        // arrows into "Alpha Light", which sends 1 back. The heavy side must still end up upstream.
+        var m = BoardMap()
+        m.frames = [BoardFrame(label: "Zulu Heavy"), BoardFrame(label: "Alpha Light")]
+        m.components = [
+            BoardComponent(name: "hub", kind: .service, uses: ["a1": "", "a2": "", "a3": "", "a4": ""], place: "Zulu Heavy"),
+            BoardComponent(name: "a1", kind: .service, uses: ["hub": ""], place: "Alpha Light"),
+            BoardComponent(name: "a2", kind: .service, place: "Alpha Light"),
+            BoardComponent(name: "a3", kind: .service, place: "Alpha Light"),
+            BoardComponent(name: "a4", kind: .service, place: "Alpha Light"),
+        ]
+        let arranged = BoardLayout.arranged(m)
+        func x(_ label: String) throws -> Int { try XCTUnwrap(arranged.frames.first { $0.label == label }?.rect?.x) }
+        XCTAssertLessThan(try x("Zulu Heavy"), try x("Alpha Light"), "the heavy side stays upstream even though its name sorts last")
+    }
+
+    func testClusterBarycentreDedupesAMutualCyclePartner() throws {
+        // Base1, Base2, Base3 are three independent sources. W and V each take one real arrow from
+        // a single base. Z cycles with Base1 (Base1↔Z) and also takes a real arrow from Base3 — so
+        // Z's correct predecessors are {Base1, Base3}. A duplicated Base1 predecessor (the old
+        // bug) skews Z's barycentre mean below W's, putting Z above W; deduplicated, W's single
+        // predecessor (Base2, the middle base) still beats Z's average of the top and bottom base.
+        var m = BoardMap()
+        m.frames = [
+            BoardFrame(label: "Base1"), BoardFrame(label: "Base2"), BoardFrame(label: "Base3"),
+            BoardFrame(label: "W"), BoardFrame(label: "Z"), BoardFrame(label: "V"),
+        ]
+        m.components = [
+            BoardComponent(name: "b1", kind: .service, uses: ["z": ""], place: "Base1"),
+            BoardComponent(name: "b2", kind: .service, uses: ["w": ""], place: "Base2"),
+            BoardComponent(name: "b3", kind: .service, uses: ["z": "", "v": ""], place: "Base3"),
+            BoardComponent(name: "w", kind: .service, place: "W"),
+            BoardComponent(name: "z", kind: .service, uses: ["b1": ""], place: "Z"),
+            BoardComponent(name: "v", kind: .service, place: "V"),
+        ]
+        let arranged = BoardLayout.arranged(m)
+        func y(_ label: String) throws -> Int { try XCTUnwrap(arranged.frames.first { $0.label == label }?.rect?.y) }
+        XCTAssertLessThan(try y("W"), try y("Z"), "W's single predecessor still outranks Z's deduplicated pair")
+        XCTAssertLessThan(try y("Z"), try y("V"))
+    }
+
+    func testWeightedRankingBuildsADAGWithoutDuplicateEdges() {
+        // A→B carries weight 2, B→A carries weight 1 (a mutual cycle), and B→C carries weight 1.
+        // The old DFS-reversal cycle break could append a cycle partner twice into the same node's
+        // edge list; the weighted ordering must never do that, and must drop the back edge (B→A)
+        // rather than keep both directions.
+        let weights: [String?: [String?: Int]] = [
+            "A": ["B": 2],
+            "B": ["A": 1, "C": 1],
+        ]
+        let nodes: [String?] = ["A", "B", "C"]
+        let sortKey: (String?) -> String = { $0?.lowercased() ?? "\u{FFFF}" }
+        let order = BoardLayout.weightedOrdering(nodes: nodes, weights: weights, sortKey: sortKey)
+        let (_, dag) = BoardLayout.ranksAndDAG(nodes: nodes, order: order, weights: weights)
+        let edgeCount = dag.values.reduce(0) { $0 + $1.count }
+        XCTAssertEqual(edgeCount, 2, "A→B and B→C survive; B→A is the back edge and drops")
+        for (_, tos) in dag {
+            XCTAssertEqual(tos.count, Set(tos).count, "no duplicate edge to the same neighbour")
+        }
+    }
+
     func testACycleDoesNotHangAndNotPlacedIsItsOwnCluster() throws {
         var m = BoardMap()
         m.components = [BoardComponent(name: "a", kind: .service, uses: ["b": ""]),
