@@ -66,8 +66,15 @@ server.
 - To file a terminal under a project, drag the terminal onto the project.
 - To remove a terminal from its project, drag it onto the **Terminals** label. You can also use
   **Move out of** in its context menu.
-- A terminal that is not filed shows under the project that has its folder. All other terminals
-  show in the **Terminals** section.
+- A plain terminal shows the name of its current folder. After `cd Sources`, its name is
+  `Sources`. The home folder shows as `~`.
+- A terminal that is not filed shows under the deepest project that contains its current folder.
+  Thus, when you `cd` into a different project, the terminal moves to that project.
+- A filed terminal stays in its project when you `cd`. All other terminals show in the
+  **Terminals** section.
+- A terminal that runs a command, for example `docker logs`, keeps its name and its folder.
+- linkC saves the current folder of each terminal. A terminal that you start again opens in
+  that folder.
 - A terminal that exits stays in the sidebar with its output until you dismiss it.
 
 ### The Board
