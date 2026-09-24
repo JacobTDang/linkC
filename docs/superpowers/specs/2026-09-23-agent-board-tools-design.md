@@ -130,11 +130,13 @@ changing. The store writes atomically, by rename, so the folder is watched rathe
   Each component, component field, arrow, frame, note and position comes from the side that
   changed it. If both changed the same thing, **mine wins**. A deletion counts as a change. The
   merged map is written once, as one undo step.
-- **An unreadable file** (e.g. git conflict markers): the Board locks and says why, as today.
+- **An unreadable file** (e.g. git conflict markers): the Board locks and says why, as today. When the file becomes readable again, the Board takes it as a fresh load, with undo cleared.
 
 **Saves stop locking.** A save that finds the file changed since the Board last read it merges,
 by the same rule, instead of refusing. The "changed on disk → Reload" state remains only for a file
 that can't be read.
+
+A save that collides again straight after merging, with a file that keeps changing under it, falls back to the existing lock with Reload, as a last resort.
 
 This supersedes the Project Board spec's rule that such a save is refused and the Board locked
 until reload.
