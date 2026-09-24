@@ -89,6 +89,17 @@ public struct ProcessSnooper: Sendable {
         return pid_t(info.pbi_ppid)
     }
 
+    /// The canonical, symlink-resolved form of `path` via `realpath(3)`. Nil when the path
+    /// doesn't exist or the kernel refuses. Unlike `URL.resolvingSymlinksInPath` and
+    /// `NSString.resolvingSymlinksInPath`, this never re-strips `/private` off a path the
+    /// kernel already resolved — both of those "clean up" `/private/tmp` back to `/tmp`,
+    /// which would defeat the comparison this exists for.
+    public static func canonicalPath(_ path: String) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(path, &buffer) != nil else { return nil }
+        return String(cString: buffer)
+    }
+
     /// The process's current folder via `proc_pidinfo(PROC_PIDVNODEPATHINFO)`, as the kernel
     /// reports it (symlinks resolved, e.g. `/private/tmp`). Nil for invalid pids or when the
     /// kernel refuses (a process that is gone, or one owned by another user).

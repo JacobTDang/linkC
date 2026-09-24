@@ -254,4 +254,60 @@ final class ShellPersistenceTests: XCTestCase {
         XCTAssertEqual(entry.cwd, "/usr", "a restore reopens where the shell was left")
         XCTAssertEqual(entry.title, "usr")
     }
+
+    /// `/tmp` is itself a symlink to `/private/tmp`, which the kernel always resolves — so a
+    /// terminal launched at `/tmp` that never `cd`s must not appear to move on the first tick.
+    func testALaunchFolderThatNeverChangesStaysPut() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let terminals = TerminalSessionManager()
+        defer { for session in terminals.sessions { terminals.terminate(session.id) } }
+        let coordinator = ShellCoordinator(terminals: terminals, manifestDir: dir, shellPath: { "/bin/cat" })
+
+        let row = try coordinator.launch(cwd: "/tmp")
+        for _ in 0..<5 { coordinator.sampleDirectories() }
+
+        XCTAssertEqual(coordinator.store.row(id: row.id)?.cwd, "/tmp", "no cd happened")
+        XCTAssertEqual(coordinator.store.row(id: row.id)?.title, "tmp")
+        XCTAssertEqual(ShellManifest(directory: dir).entries.first { $0.id == row.id }?.cwd, "/tmp")
+    }
+
+    /// A launch folder that is itself a symlink (e.g. `~/Desktop/projects` -> `~/Projects`) must
+    /// not move the terminal on the first sample: the kernel reports the resolved target, but
+    /// without a real `cd` the row should keep the symlink path it was launched with.
+    func testASymlinkedLaunchFolderDoesNotMoveTheTerminalWithoutACd() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let target = tempDir()
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: target) }
+        let link = tempDir()
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        defer { try? FileManager.default.removeItem(at: link) }
+
+        let terminals = TerminalSessionManager()
+        defer { for session in terminals.sessions { terminals.terminate(session.id) } }
+        let coordinator = ShellCoordinator(terminals: terminals, manifestDir: dir, shellPath: { "/bin/cat" })
+
+        let row = try coordinator.launch(cwd: link.path)
+        for _ in 0..<5 { coordinator.sampleDirectories() }
+
+        XCTAssertEqual(coordinator.store.row(id: row.id)?.cwd, link.path, "a symlinked launch folder is not a cd")
+    }
+
+    /// Command terminals (relaunch/restore re-run their command in the stored folder) must never
+    /// follow their shell into a folder it `cd`s into.
+    func testACommandTerminalKeepsItsLaunchFolder() async throws {
+        let terminals = TerminalSessionManager()
+        defer { for session in terminals.sessions { terminals.terminate(session.id) } }
+        let coordinator = ShellCoordinator(terminals: terminals, shellPath: { "/bin/sh" })
+
+        let row = try coordinator.launch(cwd: "/tmp", command: "cd /usr && exec sleep 5")
+        for _ in 0..<20 {
+            coordinator.sampleDirectories()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertEqual(coordinator.store.row(id: row.id)?.cwd, "/tmp", "command terminals keep the folder they were launched in")
+    }
 }

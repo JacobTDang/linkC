@@ -18,7 +18,9 @@ public final class ShellCoordinator {
     /// sync with the manifest so the UI can observe one source.
     public private(set) var restorables: [RestorableShell] = []
     /// Ids whose folder read failed and was logged. Cleared on the next successful read, so a
-    /// failure is logged once, not every second.
+    /// failure is logged once, not every second. Bookkeeping only — nothing observes it, and it
+    /// must not invalidate `ShellCoordinator`'s observers on every tick.
+    @ObservationIgnored
     private var unreadableDirectories: Set<String> = []
 
     public init(
@@ -122,9 +124,14 @@ public final class ShellCoordinator {
 
     /// Follows each running shell into the folder it is now in after a `cd`. The row's folder,
     /// and a plain terminal's name, update, and the manifest remembers the new folder so a
-    /// restore reopens there. Runs from the one-second shell sweep.
+    /// restore reopens there. Runs from the one-second shell sweep. Command terminals (relaunch
+    /// and restore re-run their command in the stored folder) are skipped outright — the shell
+    /// underneath them may `cd`, but the terminal itself must not follow it.
     public func sampleDirectories() {
+        let runningIds = Set(store.rows.filter { $0.state == .running }.map(\.id))
+        unreadableDirectories.formIntersection(runningIds)
         for row in store.rows where row.state == .running {
+            guard row.command == nil else { continue }
             guard let terminal = terminals.session(id: row.id), terminal.isRunning, terminal.processId > 0 else { continue }
             guard let raw = ProcessSnooper.currentDirectory(ofPid: terminal.processId) else {
                 if unreadableDirectories.insert(row.id).inserted {
@@ -133,6 +140,14 @@ public final class ShellCoordinator {
                 continue
             }
             unreadableDirectories.remove(row.id)
+            // The kernel resolves every symlink in the path; `row.cwd` may not be resolved (it's
+            // whatever the terminal was launched with, or last `cd`'d to). Comparing the raw
+            // kernel path against `row.cwd`'s OWN canonical form tells a real `cd` apart from a
+            // symlinked launch folder that merely reads back resolved — e.g. `/tmp` is itself a
+            // symlink to `/private/tmp`. `standardizingPath` isn't enough here: it only special
+            // -cases a handful of paths like `/private/tmp` back to `/tmp`, not an arbitrary
+            // symlink such as `~/Desktop/projects` -> `~/Projects`.
+            if ProcessSnooper.canonicalPath(row.cwd) == raw { continue }
             let directory = (raw as NSString).standardizingPath
             guard let updated = store.updateDirectory(id: row.id, to: directory) else { continue }
             manifest?.upsert(RestorableShell(

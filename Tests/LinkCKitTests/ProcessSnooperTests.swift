@@ -118,4 +118,23 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertNil(ProcessSnooper.currentDirectory(ofPid: 0))
         XCTAssertNil(ProcessSnooper.currentDirectory(ofPid: pid_t(Int32.max)))
     }
+
+    func testCanonicalPathResolvesPrivateAndSymlinks() throws {
+        XCTAssertEqual(ProcessSnooper.canonicalPath("/tmp"), "/private/tmp")
+
+        let target = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-canonicalpath-target-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: target) }
+        let link = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-canonicalpath-link-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        defer { try? FileManager.default.removeItem(at: link) }
+
+        XCTAssertEqual(ProcessSnooper.canonicalPath(link.path), ProcessSnooper.canonicalPath(target.path))
+    }
+
+    func testCanonicalPathIsNilForAPathThatDoesNotExist() {
+        XCTAssertNil(ProcessSnooper.canonicalPath("/no/such/path-\(UUID().uuidString)"))
+    }
 }
