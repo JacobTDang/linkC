@@ -40,4 +40,27 @@ final class BoardTechTests: XCTestCase {
         XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "x", kind: .service, tech: "agy")), .agy)
         XCTAssertNil(BoardTech.resolve(BoardComponent(name: "codex", kind: .service)))
     }
+
+    /// A component named like an agent still draws its explicit `tech`: inference from the name
+    /// — agent names included — only applies when `tech` is nil or empty. `agent(for:)` checks
+    /// `tech` first and never falls back to the name once `tech` is set to something else.
+    func testATechOverridesAnAgentLikeName() {
+        let component = BoardComponent(name: "claude", kind: .service, tech: "postgresql")
+        XCTAssertNil(BoardTech.agent(for: component), "an explicit tech must not fall back to matching the name")
+        XCTAssertEqual(BoardTech.resolve(component)?.id, "postgresql", "the explicit tech wins over the agent-like name")
+    }
+
+    /// Same rule for a name that would otherwise resolve to an ordinary tech logo: an unrelated
+    /// explicit `tech` — even one nobody recognises — must not fall back to the name either.
+    func testAnUnknownTechDoesNotFallBackToTheName() {
+        let component = BoardComponent(name: "redis", kind: .cache, tech: "oracle")
+        XCTAssertNil(BoardTech.resolve(component), "an unknown tech draws the kind's icon, not the name's logo")
+    }
+
+    /// An empty `tech` — a hand-edited file's stray `"tech": ""`, say — is "no tech" exactly like
+    /// nil: inference from the name still applies.
+    func testAnEmptyTechIsTreatedAsNoTechForNameInference() {
+        XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "claude", kind: .service, tech: "")), .claude)
+        XCTAssertEqual(BoardTech.resolve(BoardComponent(name: "Redis", kind: .cache, tech: ""))?.id, "redis")
+    }
 }

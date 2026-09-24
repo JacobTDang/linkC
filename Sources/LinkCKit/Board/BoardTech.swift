@@ -110,22 +110,30 @@ public enum BoardTech {
         "agy": .agy,
     ]
 
+    /// `component.tech`, or nil when it is unset or empty — "no tech" either way, for inference
+    /// from the name to fall back to.
+    private static func explicitTech(_ component: BoardComponent) -> String? {
+        guard let tech = component.tech, !tech.isEmpty else { return nil }
+        return tech
+    }
+
     /// An agent's logo for a component named like an agent (claude, codex, cursor, antigravity, agy).
-    /// Checked against `tech` first, then the name — `agent(for:)` is what the app checks first,
-    /// before `resolve`.
+    /// A tech overrides the name: inference from the name — agent names included — applies only
+    /// when `tech` is nil or empty; an explicit `tech` that names no agent means no agent logo,
+    /// never a fall back to the name. `agent(for:)` is what the app checks first, before `resolve`.
     public static func agent(for component: BoardComponent) -> AgentKind? {
-        if let tech = component.tech, let kind = agentNames[tech.lowercased()] {
-            return kind
+        if let tech = explicitTech(component) {
+            return agentNames[tech.lowercased()]
         }
         return agentNames[component.name.lowercased()]
     }
 
     /// What a component is drawn with: its `tech` when known, else an exact (case-insensitive)
-    /// name match to a known id or alias. Never writes anything. Agent names resolve to nil here;
-    /// callers check `agent(for:)` first.
+    /// name match to a known id or alias — only once `tech` is nil or empty. Never writes
+    /// anything. Agent names resolve to nil here; callers check `agent(for:)` first.
     public static func resolve(_ component: BoardComponent) -> BoardTechInfo? {
         guard agent(for: component) == nil else { return nil }
-        if let tech = component.tech {
+        if let tech = explicitTech(component) {
             return canonical(tech).flatMap(info)
         }
         return canonical(component.name).flatMap(info)
