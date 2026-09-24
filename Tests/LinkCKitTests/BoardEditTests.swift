@@ -140,4 +140,153 @@ final class BoardEditTests: XCTestCase {
         XCTAssertEqual(Set(result.map.components.map(\.place)), ["Local docker"])
         assertNoOverlaps(result.map)
     }
+
+    // MARK: - "planned": 1 must not decode as true
+
+    func testJSONNumberOneIsNotAcceptedAsABool() throws {
+        let json = try JSONSerialization.jsonObject(with: Data(#"[{"add":"x","planned":1}]"#.utf8))
+        XCTAssertThrowsError(try BoardEdit.steps(from: json)) { error in
+            XCTAssertEqual((error as? BoardEditRefusal)?.description, #"step 1: "planned" must be true or false"#)
+        }
+    }
+
+    func testJSONBooleansDecodeCorrectlyThroughTheWirePath() throws {
+        let json = try JSONSerialization.jsonObject(with: Data(#"[{"add":"x","planned":true},{"add":"y","planned":false}]"#.utf8))
+        let result = try apply(json, to: BoardMap.empty)
+        XCTAssertEqual(result.map.components.first { $0.name == "x" }?.planned, true)
+        XCTAssertEqual(result.map.components.first { $0.name == "y" }?.planned, false)
+    }
+
+    // MARK: - connect / remove / disconnect match arrow keys case-insensitively
+
+    /// A component whose own arrow key was hand-edited to a different case than the real name.
+    private func apiUsingLegacyCasedPostgres() throws -> BoardMap {
+        try BoardMap.decode(Data("""
+        { "version": 2, "places": {
+            "Not placed": { "api": { "kind": "service", "uses": { "Postgres": "" } },
+                            "postgres": { "kind": "database" } } } }
+        """.utf8))
+    }
+
+    func testConnectRelabelsAnExistingArrowEvenWhenItsKeyCaseDiffers() throws {
+        let result = try apply([["connect": "api", "to": "postgres", "label": "reads"]], to: try apiUsingLegacyCasedPostgres())
+        let api = try XCTUnwrap(result.map.components.first { $0.name == "api" })
+        XCTAssertEqual(api.uses, ["postgres": "reads"], "the legacy-cased key is relabelled, not duplicated")
+    }
+
+    func testRemoveDropsArrowsRegardlessOfKeyCase() throws {
+        let result = try apply([["remove": "postgres"]], to: try apiUsingLegacyCasedPostgres())
+        XCTAssertEqual(result.map.components.first { $0.name == "api" }?.uses, [:])
+    }
+
+    func testDisconnectDropsAnArrowRegardlessOfKeyCase() throws {
+        let result = try apply([["disconnect": "api", "to": "postgres"]], to: try apiUsingLegacyCasedPostgres())
+        XCTAssertEqual(result.map.components.first { $0.name == "api" }?.uses, [:])
+    }
+
+    // MARK: - disconnect
+
+    func testDisconnectRemovesTheArrowAndReportsIt() throws {
+        let result = try apply([["disconnect": "api", "to": "postgres"]], to: june())
+        XCTAssertEqual(result.map.components.first { $0.name == "api" }?.uses, [:])
+        XCTAssertEqual(result.lines, ["disconnected api → postgres"])
+    }
+
+    func testDisconnectIsRefusedWhenThereIsNoSuchArrow() throws {
+        XCTAssertEqual(refusal([["disconnect": "api", "to": "june-audio"]], on: try june())?.description,
+                       #"step 1: no arrow api → june-audio"#)
+    }
+
+    // MARK: - renamePlace
+
+    func testRenamePlaceMovesItsComponentsAndReportsIt() throws {
+        let result = try apply([["place": "Local docker", "rename": "Docker Compose"]], to: june())
+        XCTAssertEqual(result.map.frames.map(\.label), ["Docker Compose"])
+        let api = try XCTUnwrap(result.map.components.first { $0.name == "api" })
+        XCTAssertEqual(api.place, "Docker Compose")
+        XCTAssertEqual(result.lines, ["renamed place Local docker → Docker Compose"])
+    }
+
+    func testRenamePlaceIsRefusedOnADuplicateLabel() throws {
+        let withTwoPlaces = try apply([["place": "Oracle box"]], to: june()).map
+        XCTAssertNotNil(refusal([["place": "Local docker", "rename": "Oracle box"]], on: withTwoPlaces))
+    }
+
+    func testRenamePlaceIsRefusedOnNotPlaced() throws {
+        XCTAssertNotNil(refusal([["place": "Local docker", "rename": "not placed"]], on: try june()))
+    }
+
+    // MARK: - duplicate-name refusals
+
+    func testAddIsRefusedOnADuplicateName() throws {
+        XCTAssertNotNil(refusal([["add": "api"]], on: try june()))
+    }
+
+    func testAddPlaceIsRefusedOnADuplicateLabel() throws {
+        XCTAssertNotNil(refusal([["place": "Local docker"]], on: try june()))
+    }
+
+    // MARK: - update clearing fields with ""
+
+    func testUpdateWithEmptyStringsClearsDoesReachedByAndRuns() throws {
+        let filled = try apply(
+            [["update": "api", "does": "handles requests", "reached_by": "PORT", "runs": "compose"]], to: june()
+        ).map
+        let before = try XCTUnwrap(filled.components.first { $0.name == "api" })
+        XCTAssertEqual(before.does, "handles requests")
+        XCTAssertEqual(before.reachedBy, "PORT")
+        XCTAssertEqual(before.runs, "compose")
+
+        let result = try apply([["update": "api", "does": "", "reached_by": "", "runs": ""]], to: filled)
+        let api = try XCTUnwrap(result.map.components.first { $0.name == "api" })
+        XCTAssertNil(api.does)
+        XCTAssertNil(api.reachedBy)
+        XCTAssertNil(api.runs)
+    }
+
+    // MARK: - a same-name rename is an update, not a rename
+
+    func testUpdateWithRenameEqualToTheCurrentNameIsReportedAsAnUpdate() throws {
+        let result = try apply([["update": "api", "rename": "api"]], to: june())
+        XCTAssertEqual(result.lines, ["updated api"])
+    }
+
+    // MARK: - "(none)" wording when a refusal lists an empty set
+
+    func testComponentRefusalListsNoneWhenTheMapIsEmpty() throws {
+        XCTAssertEqual(refusal([["remove": "ghost"]], on: .empty)?.description,
+                       #"step 1: no component "ghost" — components: (none)"#)
+    }
+
+    func testPlaceRefusalListsNoneWhenTheMapIsEmpty() throws {
+        XCTAssertEqual(refusal([["add": "x", "in": "Nowhere"]], on: .empty)?.description,
+                       #"step 1: no place "Nowhere" — places: (none)"#)
+    }
+
+    // MARK: - summary lines, asserted exactly
+
+    func testPlaceSummaryLine() throws {
+        let result = try apply([["place": "Oracle box"]], to: june())
+        XCTAssertEqual(result.lines, ["added place Oracle box"])
+    }
+
+    func testRemovePlaceSummaryLine() throws {
+        let result = try apply([["remove_place": "Local docker"]], to: june())
+        XCTAssertEqual(result.lines, ["removed place Local docker"])
+    }
+
+    func testNoteSummaryLine() throws {
+        let result = try apply([["note": "hello"]], to: june())
+        XCTAssertEqual(result.lines, ["added a note"])
+    }
+
+    func testRemoveNoteSummaryLine() throws {
+        let result = try apply([["remove_note": "Stream uploads."]], to: june())
+        XCTAssertEqual(result.lines, ["removed a note"])
+    }
+
+    func testSystemSummaryLine() throws {
+        let result = try apply([["system": "June — audio journaling"]], to: june())
+        XCTAssertEqual(result.lines, ["set the summary"])
+    }
 }

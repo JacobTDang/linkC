@@ -75,8 +75,14 @@ public enum BoardEdit {
         }
         func boolField(_ key: String) throws -> Bool? {
             guard let value = object[key] else { return nil }
-            guard let bool = value as? Bool else { throw BoardEditRefusal(step: step, reason: "\"\(key)\" must be true or false") }
-            return bool
+            // `JSONSerialization` bridges every number to `NSNumber`, and `NSNumber as? Bool`
+            // bridges any of them — `1`, not just `true` — to `Bool`. A real boolean carries the
+            // `CFBoolean` type; a plain number does not, so it is refused rather than silently
+            // treated as true or false. Matches `BoardMapJSON.isBoolNumber`'s own check.
+            guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+                throw BoardEditRefusal(step: step, reason: "\"\(key)\" must be true or false")
+            }
+            return number.boolValue
         }
 
         guard let verbValue = try stringField(verb) else {
@@ -224,7 +230,7 @@ public enum BoardEdit {
             try placeComponent(moving, at: place, number: number, map: &map)
         }
 
-        if let newName { return "renamed \(oldName) → \(newName)" }
+        if let newName, newName != oldName { return "renamed \(oldName) → \(newName)" }
         return "updated \(oldName)"
     }
 
@@ -257,7 +263,12 @@ public enum BoardEdit {
         let index = try requireComponent(name, in: map, step: number)
         let removedName = map.components[index].name
         map.components.remove(at: index)
-        for i in map.components.indices { map.components[i].uses.removeValue(forKey: removedName) }
+        for i in map.components.indices {
+            // Case-insensitive, so a legacy-cased key from a hand-edited file is never left dangling.
+            if let key = map.components[i].uses.keys.first(where: { $0.lowercased() == removedName.lowercased() }) {
+                map.components[i].uses.removeValue(forKey: key)
+            }
+        }
         return "removed \(removedName)"
     }
 
@@ -273,8 +284,15 @@ public enum BoardEdit {
         guard realSource.lowercased() != realTarget.lowercased() else {
             throw BoardEditRefusal(step: number, reason: "An arrow needs two different components.")
         }
-        let existing = map.components[sourceIndex].uses[realTarget]
+        // An existing arrow is found case-insensitively, as `BoardModel.addArrow` does, and
+        // relabelled in place rather than duplicated — a legacy-cased key from a hand-edited file
+        // is normalised to the component's real name.
+        let existingKey = map.components[sourceIndex].uses.keys.first { $0.lowercased() == realTarget.lowercased() }
+        let existing = existingKey.map { map.components[sourceIndex].uses[$0]! }
         let resolvedLabel = label.map(trimmed) ?? existing ?? ""
+        if let existingKey, existingKey != realTarget {
+            map.components[sourceIndex].uses.removeValue(forKey: existingKey)
+        }
         map.components[sourceIndex].uses[realTarget] = resolvedLabel
         guard !resolvedLabel.isEmpty else { return "\(realSource) → \(realTarget)" }
         return "\(realSource) → \(realTarget) \"\(resolvedLabel)\""
