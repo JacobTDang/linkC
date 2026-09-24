@@ -182,24 +182,44 @@ public final class BoardModel {
     /// undo step, or — when there is an edit not yet written — merges it with that edit through
     /// `BoardMerge`, keeping the pending write, which now saves the merge.
     public func diskChanged() {
-        let loaded: BoardMapStore.Loaded?
+        // Raw bytes first, undecoded — a decode is only worth doing once they actually differ
+        // from what's already known (or the board doesn't trust what it knows, being `.failed`).
+        let bytes: Data?
         do {
-            loaded = try store.load()
+            bytes = try store.currentBytes()
         } catch {
             state = .failed(message(for: error))
             return
         }
-        guard loaded?.bytes != diskBytes else { return }   // the Board's own write; nothing outside changed
+        // The own-write guard only means anything while the board still trusts `diskBytes` as
+        // the last good bytes it read. A `.failed` board doesn't: the bad read that got it there
+        // never updated `diskBytes`, so the *exact* old good bytes coming back — `git merge
+        // --abort` restoring them, say — would otherwise look exactly like "nothing changed" and
+        // leave the board stuck, instead of being taken as the fresh, readable file it now is.
+        var isFailed: Bool { if case .failed = state { return true } else { return false } }
+        guard isFailed || bytes != diskBytes else { return }   // the Board's own write; nothing outside changed
 
-        let theirs = loaded?.map ?? .empty
+        let theirs: BoardMap
+        do {
+            theirs = try bytes.map { try BoardMap.decode($0) } ?? .empty
+        } catch {
+            state = .failed(message(for: error))
+            return
+        }
+
         let before = map
         map = hasUnwrittenEdits
             ? Self.laidOut(BoardMerge.merge(base: baseMap, mine: map, theirs: theirs))
-            : Self.laidOut(theirs)
-        diskBytes = loaded?.bytes
+            : Self.laidOut(Self.carryingIds(from: before, into: theirs))
+        diskBytes = bytes
         baseMap = theirs
 
-        let fileExists = loaded != nil
+        // A reformat with no real change to the map — same content, different bytes — must not
+        // mint a phantom undo step or glow; `diskBytes`/`baseMap` above still move, so a further,
+        // real outside change merges against what's actually on disk now.
+        let mapReallyChanged = map != before
+
+        let fileExists = bytes != nil
         switch state {
         case .failed:
             // A fresh start, exactly as a load is: nothing stale carries over, and this is not
@@ -215,14 +235,16 @@ public final class BoardModel {
         case .loaded:
             if !fileExists && !hasUnwrittenEdits {
                 state = .empty
-            } else {
+            } else if mapReallyChanged {
                 undoStack.append(before)
                 if undoStack.count > Self.undoLimit { undoStack.removeFirst(undoStack.count - Self.undoLimit) }
                 redoStack.removeAll()
             }
         }
 
-        outsideChange = OutsideChange(id: UUID(), elements: Self.changed(from: before, to: map))
+        if mapReallyChanged {
+            outsideChange = OutsideChange(id: UUID(), elements: Self.changed(from: before, to: map))
+        }
         selection = selection.filter(exists)
         recomputeRoutes()
         reconcile(with: lastDiscovered)
@@ -752,6 +774,18 @@ public final class BoardModel {
         }
 
         return result
+    }
+
+    /// `theirs`, with any note or text that is really the same one as in `before` — matched by
+    /// text (and style, for a text) and position, `BoardMerge`'s own pairing rule — keeping
+    /// `before`'s id instead of the fresh one a decode always mints. Without this, an open
+    /// `NoteEditor` or a selection keyed by the old id goes dead the moment an outside change
+    /// that never touched that note replaces the map.
+    nonisolated private static func carryingIds(from before: BoardMap, into theirs: BoardMap) -> BoardMap {
+        var theirs = theirs
+        theirs.notes = BoardMerge.carryingIds(from: before.notes, into: theirs.notes)
+        theirs.texts = BoardMerge.carryingIds(from: before.texts, into: theirs.texts)
+        return theirs
     }
 
     /// Puts running things on the map inside the "Local docker" frame, laid out four to a row.

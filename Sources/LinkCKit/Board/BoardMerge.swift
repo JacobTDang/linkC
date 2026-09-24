@@ -50,6 +50,59 @@ public enum BoardMerge {
         }
     }
 
+    // MARK: - Carrying ids across a fresh decode (not a merge — `BoardModel.diskChanged()`, when
+    // nothing is pending, just replaces the map with a fresh decode, which mints new ids for
+    // every note and text; these carry the old ones over for whatever didn't actually change)
+
+    /// Re-identifies `after`'s notes with `before`'s ids wherever the same note — matched by text
+    /// and position, the same pairing a merge itself uses — survived the decode. Everything else
+    /// about `after` (order, fields) is untouched; an id only carries over when it already meant
+    /// "this note" in `before`, so a selection or an open editor keyed by that id survives.
+    public static func carryingIds(from before: [BoardNote], into after: [BoardNote]) -> [BoardNote] {
+        var beforeGroups: [String: [BoardNote]] = [:]
+        for note in before { beforeGroups[note.text, default: []].append(note) }
+        var afterGroups: [String: [BoardNote]] = [:]
+        for note in after { afterGroups[note.text, default: []].append(note) }
+
+        var carried: [UUID: UUID] = [:]
+        for (text, beforeGroup) in beforeGroups {
+            guard let afterGroup = afterGroups[text] else { continue }
+            let pairing = pairToBase(base: beforeGroup, other: afterGroup, position: { $0.at })
+            for (index, other) in pairing.paired.enumerated() {
+                guard let other else { continue }
+                carried[other.id] = beforeGroup[index].id
+            }
+        }
+        return after.map { note in
+            guard let id = carried[note.id] else { return note }
+            return BoardNote(id: id, text: note.text, at: note.at)
+        }
+    }
+
+    /// The same, for texts — grouped by `(text, style)` instead of text alone.
+    public static func carryingIds(from before: [BoardText], into after: [BoardText]) -> [BoardText] {
+        var beforeGroups: [TextKey: [BoardText]] = [:]
+        for text in before { beforeGroups[TextKey(text: text.text, style: text.style), default: []].append(text) }
+        var afterGroups: [TextKey: [BoardText]] = [:]
+        for text in after { afterGroups[TextKey(text: text.text, style: text.style), default: []].append(text) }
+
+        var carried: [UUID: UUID] = [:]
+        for (key, beforeGroup) in beforeGroups {
+            guard let afterGroup = afterGroups[key] else { continue }
+            let pairing = pairToBase(base: beforeGroup, other: afterGroup, position: { $0.at })
+            for (index, other) in pairing.paired.enumerated() {
+                guard let other else { continue }
+                carried[other.id] = beforeGroup[index].id
+            }
+        }
+        return after.map { text in
+            guard let id = carried[text.id] else { return text }
+            var carriedText = BoardText(id: id, text: text.text, style: text.style, at: text.at, width: text.width)
+            carriedText.extras = text.extras
+            return carriedText
+        }
+    }
+
     // MARK: - The one merge rule
 
     /// `pick(b, m, t) = m != b ? m : t`: whoever changed a value wins; mine wins a tie.

@@ -252,6 +252,27 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.state, .empty, "Try again must recover once the malformed file is gone")
     }
 
+    /// The own-write guard (`loaded?.bytes != diskBytes`) must not apply while `.failed`: it
+    /// exists to ignore the board's own write, but a `.failed` board never updates `diskBytes` on
+    /// the bad read, so the exact old good bytes coming back — `git merge --abort` restoring
+    /// them, say — would otherwise look exactly like "nothing changed" and leave the board
+    /// stuck, even though a conflict was just resolved.
+    func testTheBoardUnlocksWhenTheFileReturnsToItsLastGoodBytes() throws {
+        let board = fresh()
+        board.setSystem("June")
+        board.saveNow()
+        let goodBytes = try Data(contentsOf: store.fileURL)
+
+        try Data("<<<<<<< HEAD".utf8).write(to: store.fileURL)
+        board.diskChanged()
+        guard case .failed = board.state else { return XCTFail("expected .failed, got \(board.state)") }
+
+        try goodBytes.write(to: store.fileURL)
+        board.diskChanged()
+        XCTAssertEqual(board.state, .loaded, "the exact old bytes coming back must still unlock the board")
+        XCTAssertEqual(board.map.system, "June")
+    }
+
     /// R3, updated for the merge rule: was `testReloadRecoversWhenTheDiskGoesBackToLinkCsOwnBytes`,
     /// which pinned the old locking rule (a stash-pop back to linkC's own bytes had to unlock a
     /// `changedOnDisk` board via `reload()`). There is no lock to recover from now, so this
@@ -359,6 +380,68 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.state, .loaded, "a readable file again unlocks it")
         XCTAssertEqual(board.map.system, "theirs")
         XCTAssertFalse(board.canUndo, "recovering is not an undo step")
+    }
+
+    /// An outside change that only reformats the file — different bytes, the same map — must not
+    /// add a phantom undo step or a glow for nothing actually different; but the bytes and base
+    /// it now trusts must still move, so a further, real outside change merges cleanly against
+    /// them rather than the pre-reformat state.
+    func testAnOutsideReformatWithNoRealChangeAddsNoUndoStepAndNoOutsideChange() throws {
+        let board = fresh()
+        board.setSystem("mine")
+        board.saveNow()
+        XCTAssertTrue(board.canUndo)
+
+        let reformatted = Data(#"{"places":{"Not placed":{}},"system":"mine","version":2}"#.utf8)
+        try reformatted.write(to: store.fileURL, options: .atomic)
+        board.diskChanged()
+        XCTAssertNil(board.outsideChange, "nothing on the map actually changed")
+
+        board.undo()
+        XCTAssertNil(board.map.system, "exactly one real undo step, not a second phantom one from the reformat")
+        board.redo()
+
+        try writeOutside(outsideMap)
+        board.diskChanged()
+        XCTAssertEqual(board.map.system, "theirs", "a further real outside change still merges cleanly")
+        XCTAssertNotNil(board.outsideChange)
+    }
+
+    /// Every decode mints fresh note/text ids, so a straight replace-by-theirs must carry the old
+    /// id forward for whatever the outside change didn't touch — otherwise an open editor or a
+    /// selection keyed by that id goes dead the moment the watcher fires.
+    func testANoteKeepsItsIdAndSelectionAcrossAnUntouchedOutsideChange() throws {
+        let board = fresh()
+        let noteId = try XCTUnwrap(board.addNote(at: BoardPoint(x: 0, y: 0)))
+        board.setNoteText(noteId, to: "Redis is for sessions")
+        board.saveNow()
+        board.selection = [.note(noteId)]
+
+        var theirs = board.map
+        theirs.components.append(BoardComponent(name: "redis", kind: .cache, place: BoardMap.notPlaced, at: BoardPoint(x: 400, y: 400)))
+        try theirs.encoded().write(to: store.fileURL, options: .atomic)
+
+        board.diskChanged()
+        XCTAssertEqual(board.map.notes.first?.id, noteId, "the same note, just redecoded, keeps its id")
+        XCTAssertEqual(board.selection, [.note(noteId)], "so its selection survives too")
+        board.setNoteText(noteId, to: "edited")
+        XCTAssertEqual(board.map.notes.first?.text, "edited", "a commit keyed by the old id still lands")
+    }
+
+    /// The same guarantee for texts, paired by `(text, style)` instead of just text.
+    func testATextKeepsItsIdAndSelectionAcrossAnUntouchedOutsideChange() throws {
+        let board = fresh()
+        let textId = try XCTUnwrap(board.addText(at: BoardPoint(x: 0, y: 0), style: .label, text: "hi", width: 64))
+        board.saveNow()
+        board.selection = [.text(textId)]
+
+        var theirs = board.map
+        theirs.components.append(BoardComponent(name: "redis", kind: .cache, place: BoardMap.notPlaced, at: BoardPoint(x: 400, y: 400)))
+        try theirs.encoded().write(to: store.fileURL, options: .atomic)
+
+        board.diskChanged()
+        XCTAssertEqual(board.map.texts.first?.id, textId, "the same text, just redecoded, keeps its id")
+        XCTAssertEqual(board.selection, [.text(textId)])
     }
 
     func testAMapCreatedOutsideShowsOnAnEmptyBoard() throws {

@@ -40,7 +40,9 @@ public struct BoardMapStore: Sendable {
         return data
     }
 
-    private func currentBytes() throws -> Data? {
+    /// The file's exact bytes, undecoded — what a caller compares against before deciding whether
+    /// a decode is even worth doing.
+    public func currentBytes() throws -> Data? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         do {
             return try Data(contentsOf: fileURL)
