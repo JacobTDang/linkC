@@ -218,8 +218,17 @@ public final class TerminalSession {
     private static let bracketedPasteStart: [UInt8] = [0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e]
     private static let bracketedPasteEnd: [UInt8] = [0x1b, 0x5b, 0x32, 0x30, 0x31, 0x7e]
 
+    /// The most recently queued plan's task. A new `sendInput` chains onto it rather than
+    /// replacing it outright, so plans for this session always run one after another in call
+    /// order — the next plan's task awaits this one's completion (its submit included) before it
+    /// writes anything of its own. Without this, a second `sendInput` arriving during the first
+    /// plan's settle wait would write its text into the middle of the first delivery and both
+    /// would submit. Only `sendInput` ever assigns this; no caller runs a plan directly.
+    private var runningPlan: Task<Void, Never>?
+
     /// Sends text input to the running child process via the terminal PTY and submits it.
-    /// Logs dropped input if the child process is not alive.
+    /// Logs dropped input if the child process is not alive. Queued behind whatever this session
+    /// is already sending — see `runningPlan` — so two calls can never interleave.
     public func sendInput(_ text: String) {
         guard liveness.withLock({ $0 }) else {
             // The residual window between a liveness check upstream and this call can never be
@@ -233,29 +242,28 @@ public final class TerminalSession {
         if case .text(let raw) = plan.first, raw.contains("\n") {
             NSLog("linkC: session %@ has not negotiated bracketed paste; sending raw multi-line text", id)
         }
-        executeInputPlan(plan[...])
+        let previous = runningPlan
+        runningPlan = Task { @MainActor in
+            await previous?.value
+            await self.executeInputPlan(plan)
+        }
     }
 
-    /// Keep the initial writes synchronous; one task resumes the ordered remainder after a wait.
-    private func executeInputPlan(_ steps: ArraySlice<InputStep>) {
-        for (index, step) in steps.enumerated() {
-            if case .wait = step {
-                let remaining = steps.dropFirst(index)
-                Task { @MainActor in
-                    for step in remaining {
-                        if case .wait(let milliseconds) = step {
-                            do {
-                                try await Task.sleep(for: .milliseconds(milliseconds))
-                            } catch {
-                                NSLog("linkC: session %@ dropped pending input — settle interrupted: %@", self.id, String(describing: error))
-                                return
-                            }
-                        } else {
-                            guard self.sendInputStep(step) else { return }
-                        }
-                    }
+    /// Runs `steps` in order. A `.wait` suspends via `Task.sleep` before the plan continues;
+    /// every other step re-checks liveness (`sendInputStep`) immediately before writing, and a
+    /// dead child stops the plan right there with a log line. Only ever awaited from the chained
+    /// task `sendInput` creates — never called directly — so one plan finishes, submit included,
+    /// before the next one (this session's or any other caller's) writes a byte.
+    private func executeInputPlan(_ steps: [InputStep]) async {
+        for step in steps {
+            if case .wait(let milliseconds) = step {
+                do {
+                    try await Task.sleep(for: .milliseconds(milliseconds))
+                } catch {
+                    NSLog("linkC: session %@ dropped pending input — settle interrupted: %@", id, String(describing: error))
+                    return
                 }
-                return
+                continue
             }
             guard sendInputStep(step) else { return }
         }

@@ -43,6 +43,36 @@ extension TerminalSessionTests {
         XCTAssertEqual(session.terminalView.getTerminal().getCursorLocation().y - initialRow, 1)
     }
 
+    func testTwoBackToBackSendInputCallsNeverInterleave() async throws {
+        // A second `sendInput` arriving during the first plan's 300 ms settle must not write its
+        // text until the first plan's submit has gone out. `tee` captures the raw bytes written
+        // to the pty in order, so an interleaved delivery (text1text2\r\r) is distinguishable
+        // from the required text1\rtext2\r.
+        let capture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("terminal-interleave-\(UUID().uuidString)")
+        let session = TerminalSession(id: "interleave", cwd: FileManager.default.currentDirectoryPath, title: "cat")
+        try session.start(executable: "/bin/sh",
+                           args: ["-c", "stty raw -echo; printf '\\033[?2004h'; exec /usr/bin/tee '\(capture.path)'"],
+                           env: [:])
+        defer {
+            session.terminate()
+            try? FileManager.default.removeItem(at: capture)
+        }
+        for _ in 0..<100 {
+            if session.acceptsPaste { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(session.acceptsPaste)
+
+        session.sendInput("text1")
+        session.sendInput("text2")
+
+        try await Task.sleep(for: .milliseconds(2 * TerminalSession.pasteSettleMilliseconds + 600))
+        let received = try String(contentsOf: capture, encoding: .utf8)
+        XCTAssertEqual(received, "text1\rtext2\r",
+                        "the second delivery must wait for the first plan's submit, never interleave")
+    }
+
     func testSendInputBeforeStartIsSafeNoOp() {
         let session = TerminalSession(id: "test-unstarted", cwd: "/tmp", title: "unstarted")
         // Calling sendInput on an unstarted session must be a safe no-op.
