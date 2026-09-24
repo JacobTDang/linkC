@@ -30,11 +30,11 @@ final class BoardPlacementTests: XCTestCase {
 
     func testAFullFrameGrowsToTakeTheComponent() throws {
         var map = BoardMap()
-        map.frames = [BoardFrame(label: "Tight", rect: BoardRect(x: 0, y: 0, w: 176, h: 80))]
+        map.frames = [BoardFrame(label: "Tight", rect: BoardRect(x: 0, y: 0, w: 192, h: 100))]
         map.components = [BoardComponent(name: "a", kind: .service, place: "Tight", at: BoardPoint(x: 8, y: 8))]
         XCTAssertTrue(BoardModel.placeComponent(BoardComponent(name: "b", kind: .service), inFrame: "Tight", into: &map))
         let frame = try XCTUnwrap(map.frames.first?.rect)
-        XCTAssertGreaterThan(frame.w * frame.h, 176 * 80, "the frame grew")
+        XCTAssertGreaterThan(frame.w * frame.h, 192 * 100, "the frame grew")
         XCTAssertEqual(map.components.map(\.place), ["Tight", "Tight"])
         assertNoOverlaps(map)
     }

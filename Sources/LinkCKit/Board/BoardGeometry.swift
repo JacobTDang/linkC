@@ -3,9 +3,9 @@ import Foundation
 /// The board's plain maths: sizes, containment, collisions, arrow routes and what is on screen.
 /// No UI, no state — every rule the canvas follows is here and tested here.
 public enum BoardGeometry {
-    public static let componentSize = BoardPoint(x: 152, y: 56)
+    public static let componentSize = BoardPoint(x: 176, y: 84)
     public static let noteSize = BoardPoint(x: 176, y: 120)
-    public static let frameMinSize = BoardPoint(x: 176, y: 96)
+    public static let frameMinSize = BoardPoint(x: 192, y: 100)
     /// The margin kept between a frame's border and anything inside it.
     public static let frameInset = 8
     /// How far an arrow's elbow keeps clear of the box it bends around.

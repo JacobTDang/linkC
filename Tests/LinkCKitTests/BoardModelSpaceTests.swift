@@ -113,10 +113,10 @@ final class BoardModelSpaceTests: XCTestCase {
     func testMovingTwoBoxesTogetherKeepsTheirArrangement() throws {
         let board = fresh()
         let a = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
-        let b = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 160, y: 0)))
+        let b = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 184, y: 0)))
         board.move([.component(a), .component(b)], by: BoardPoint(x: 160, y: 0))
         XCTAssertEqual(board.map.components.first { $0.name == a }?.at, BoardPoint(x: 160, y: 0))
-        XCTAssertEqual(board.map.components.first { $0.name == b }?.at, BoardPoint(x: 320, y: 0))
+        XCTAssertEqual(board.map.components.first { $0.name == b }?.at, BoardPoint(x: 344, y: 0))
     }
 
     func testAMoveIsOneUndoStep() throws {

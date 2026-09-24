@@ -268,6 +268,23 @@ extension BoardModel {
                 BoardGeometry.rect(of: text), otherElements: elementRects(map, excluding: [.text(text.id)]),
                 frames: frameRects(map, excluding: [])).origin
         }
+
+        // A component whose box now overlaps an earlier component's box — grown into it by a
+        // component-size change, say — moves clear, keeping its frame by containment. This keeps
+        // a board written by an older linkC valid without ever touching the file on disk.
+        for index in map.components.indices.sorted(by: { map.components[$0].name < map.components[$1].name }) {
+            guard let at = map.components[index].at else { continue }
+            let name = map.components[index].name
+            let current = BoardGeometry.rect(ofComponentAt: at)
+            let earlier = map.components.indices
+                .filter { map.components[$0].name < name }
+                .compactMap { map.components[$0].at.map(BoardGeometry.rect(ofComponentAt:)) }
+            guard earlier.contains(where: { $0.intersects(current) }) else { continue }
+            let landed = BoardGeometry.elementDrop(
+                current, otherElements: elementRects(map, excluding: [.component(name)]), frames: frameRects(map, excluding: []))
+            map.components[index].at = landed.origin
+            map.components[index].place = BoardGeometry.frame(containing: landed, frames: map.frames)?.label ?? BoardMap.notPlaced
+        }
         return map
     }
 

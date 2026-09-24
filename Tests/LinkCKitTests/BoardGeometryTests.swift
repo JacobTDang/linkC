@@ -5,7 +5,7 @@ final class BoardGeometryTests: XCTestCase {
     private func box(_ x: Int, _ y: Int, _ w: Int = 16, _ h: Int = 16) -> BoardRect { BoardRect(x: x, y: y, w: w, h: h) }
 
     func testElementSizes() {
-        XCTAssertEqual(BoardGeometry.rect(ofComponentAt: BoardPoint(x: 8, y: 16)), BoardRect(x: 8, y: 16, w: 152, h: 56))
+        XCTAssertEqual(BoardGeometry.rect(ofComponentAt: BoardPoint(x: 8, y: 16)), BoardRect(x: 8, y: 16, w: 176, h: 84))
         XCTAssertEqual(BoardGeometry.rect(ofNoteAt: BoardPoint(x: 0, y: 0)), BoardRect(x: 0, y: 0, w: 176, h: 120))
         let title = BoardText(text: "June", style: .title, at: BoardPoint(x: 0, y: 0), width: 64)
         XCTAssertEqual(BoardGeometry.rect(of: title), BoardRect(x: 0, y: 0, w: 64, h: 32))
@@ -81,13 +81,13 @@ final class BoardGeometryTests: XCTestCase {
     }
 
     func testAFrameGrowsDownToFitOneMore() throws {
-        let frame = box(0, 0, 168, 72)
-        let resident = BoardRect(x: 8, y: 8, w: 152, h: 56)
+        let frame = box(0, 0, 192, 100)
+        let resident = BoardRect(x: 8, y: 8, w: 176, h: 84)
         let grown = try XCTUnwrap(BoardGeometry.grow(frame, toFit: BoardGeometry.componentSize, members: [resident], otherFrames: [], foreignElements: []))
         XCTAssertEqual(grown.x, 0)
-        XCTAssertEqual(grown.w, 168)
-        XCTAssertGreaterThan(grown.h, 72)
-        XCTAssertNil(BoardGeometry.grow(frame, toFit: BoardGeometry.componentSize, members: [resident], otherFrames: [box(0, 72, 168, 400)], foreignElements: []),
+        XCTAssertEqual(grown.w, 192)
+        XCTAssertGreaterThan(grown.h, 100)
+        XCTAssertNil(BoardGeometry.grow(frame, toFit: BoardGeometry.componentSize, members: [resident], otherFrames: [box(0, 100, 192, 400)], foreignElements: []),
                      "a frame hemmed in below cannot grow")
     }
 

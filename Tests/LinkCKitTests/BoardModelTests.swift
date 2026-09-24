@@ -921,10 +921,10 @@ final class BoardModelTests: XCTestCase {
     /// does not fit lands outside every frame, and the board says why.
     func testASuggestionThatCannotFitIsPlacedOutsideEveryFrameAndRefused() throws {
         let board = fresh()
-        let dockerLabel = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 200, h: 96)))
+        let dockerLabel = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 200, h: 100)))
         XCTAssertTrue(board.renameFrame(dockerLabel, to: BoardModel.localDocker))
         // Directly under it, touching its bottom edge, so growing downward runs straight into it.
-        _ = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 96, w: 200, h: 96)))
+        _ = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 100, w: 200, h: 96)))
 
         board.addSuggestion(MapSuggestion(name: "first", kind: .service, detail: "container first"))
         XCTAssertEqual(board.map.components.first { $0.name == "first" }?.place, BoardModel.localDocker, "the first one still fits")
@@ -946,10 +946,10 @@ final class BoardModelTests: XCTestCase {
     /// it overflowed Local docker.
     func testASuggestionThatOverflowsLocalDockerIsFiledUnderTheFrameItLandsIn() throws {
         let board = fresh()
-        let dockerLabel = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 200, h: 96)))
+        let dockerLabel = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 200, h: 100)))
         XCTAssertTrue(board.renameFrame(dockerLabel, to: BoardModel.localDocker))
         // Blocks Local docker from growing downward.
-        _ = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 96, w: 200, h: 96)))
+        _ = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 100, w: 200, h: 96)))
         // Sits exactly where the overflow's fallback spot lands — to the right of Local docker.
         let other = try XCTUnwrap(board.addFrame(BoardRect(x: 248, y: 0, w: 300, h: 150)))
 
