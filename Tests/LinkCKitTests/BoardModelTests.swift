@@ -113,8 +113,11 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(loaded.map.components.count, 1)
     }
 
-    /// A change made underneath the board — a git pull, a hand edit — is never overwritten.
-    func testAChangeOnDiskRefusesTheWriteAndLocksUntilReload() throws {
+    /// A change made underneath the board — a git pull, a hand edit — is never overwritten, but
+    /// it no longer locks the board either: the save that finds it merges and retries. Formerly
+    /// `testAChangeOnDiskRefusesTheWriteAndLocksUntilReload`, which pinned the old locking rule;
+    /// now asserts the merge lands on disk and the board stays editable.
+    func testAChangeOnDiskDuringAnEditMergesOnSaveInsteadOfLocking() throws {
         let board = fresh()
         board.setSystem("mine")
         board.saveNow()
@@ -123,13 +126,10 @@ final class BoardModelTests: XCTestCase {
 
         board.setSystem("mine again")
         board.saveNow()
-        XCTAssertTrue(board.changedOnDisk)
-        XCTAssertEqual(try Data(contentsOf: store.fileURL), theirs)
-        XCTAssertNil(board.addComponent(kind: .cache, at: BoardPoint(x: 0, y: 0)), "no edits while the disk disagrees")
-
-        board.reload()
-        XCTAssertFalse(board.changedOnDisk)
-        XCTAssertEqual(board.map.system, "theirs")
+        XCTAssertFalse(board.changedOnDisk, "a save collision merges instead of locking")
+        XCTAssertEqual(board.map.system, "mine again", "mine changed, so mine wins the merge")
+        XCTAssertEqual(try XCTUnwrap(try store.load()).map.system, "mine again", "the merge, not theirs' raw bytes, is what landed")
+        XCTAssertNotNil(board.addComponent(kind: .cache, at: BoardPoint(x: 0, y: 0)), "the board is never locked by a save collision alone")
     }
 
     func testAFailedWriteStaysEditableAndRetries() throws {
@@ -212,27 +212,29 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.state, .empty, "Try again must recover once the malformed file is gone")
     }
 
-    /// R3: locked by `changedOnDisk`, then the disk goes back to exactly linkC's own last bytes —
-    /// a stash, then a pop. Reload must still unlock, and must still drop the unwritten edit that
-    /// caused the refusal, even though the bytes it reads back match `diskBytes` exactly.
-    func testReloadRecoversWhenTheDiskGoesBackToLinkCsOwnBytes() throws {
+    /// R3, updated for the merge rule: was `testReloadRecoversWhenTheDiskGoesBackToLinkCsOwnBytes`,
+    /// which pinned the old locking rule (a stash-pop back to linkC's own bytes had to unlock a
+    /// `changedOnDisk` board via `reload()`). There is no lock to recover from now, so this
+    /// instead checks that the merge a save collision lands becomes the new `baseMap` — a further
+    /// pending edit, merged against a further outside change, merges against what the earlier
+    /// merge actually wrote, not against stale, pre-merge state.
+    func testAMergedSaveUpdatesTheBaseForTheNextMerge() throws {
         let board = fresh()
         board.setSystem("mine")
         board.saveNow()
-        let ownBytes = try Data(contentsOf: store.fileURL)
 
         let theirs = Data(#"{"version": 2, "system": "theirs", "places": {"Not placed": {}}}"#.utf8)
         try theirs.write(to: store.fileURL)
-
         board.setSystem("mine again")
         board.saveNow()
-        XCTAssertTrue(board.changedOnDisk)
-        XCTAssertNil(board.addComponent(kind: .cache, at: BoardPoint(x: 0, y: 0)), "no edits while the disk disagrees")
+        XCTAssertFalse(board.changedOnDisk, "the first collision merges")
 
-        try ownBytes.write(to: store.fileURL)   // the stash pop: back to linkC's own last bytes
-        board.reload()
-        XCTAssertFalse(board.changedOnDisk, "reload must unlock even when the file is back to linkC's own bytes")
-        XCTAssertEqual(board.map.system, "mine", "the unwritten edit reload should drop must be gone")
+        _ = board.addComponent(kind: .database, at: BoardPoint(x: 0, y: 0))   // pending
+        try writeOutside(outsideMap)
+        board.diskChanged()
+        XCTAssertEqual(board.map.system, "theirs", "mine did not change again, so this merge takes theirs")
+        XCTAssertNotNil(board.map.components.first { $0.name == "new-database" })
+        XCTAssertNotNil(board.map.components.first { $0.name == "redis" })
     }
 
     func testReloadOnAHealthyBoardDropsTheUnwrittenEdit() throws {
@@ -244,6 +246,89 @@ final class BoardModelTests: XCTestCase {
         board.reload()
         XCTAssertEqual(board.map.system, "mine", "reload drops what was never written, even with the file unchanged")
         XCTAssertFalse(board.canUndo, "reload is a fresh read, so nothing is left to undo")
+    }
+
+    // MARK: Outside changes
+
+    private func writeOutside(_ json: String) throws {
+        try Data(json.utf8).write(to: store.fileURL, options: .atomic)
+    }
+
+    private let outsideMap = #"{ "version": 2, "system": "theirs", "places": { "Not placed": { "redis": { "kind": "cache" } } } }"#
+
+    func testItsOwnWriteIsIgnored() throws {
+        let board = fresh()
+        board.setSystem("mine")
+        board.saveNow()
+        board.diskChanged()
+        XCTAssertNil(board.outsideChange)
+        XCTAssertEqual(board.map.system, "mine")
+    }
+
+    func testAnOutsideChangeIsTakenAsOneUndoStep() throws {
+        let board = fresh()
+        board.setSystem("mine")
+        board.saveNow()
+        try writeOutside(outsideMap)
+        board.diskChanged()
+        XCTAssertEqual(board.map.system, "theirs")
+        XCTAssertNotNil(board.map.components.first { $0.name == "redis" }?.at, "laid out")
+        XCTAssertEqual(board.outsideChange?.elements.contains(.component("redis")), true)
+        board.undo()
+        XCTAssertEqual(board.map.system, "mine")
+        board.saveNow()
+        XCTAssertEqual(try XCTUnwrap(try store.load()).map.system, "mine", "undo writes the old map back")
+    }
+
+    func testAnOutsideChangeMergesWithAnEditNotYetWritten() throws {
+        let board = fresh()
+        board.setSystem("base")
+        board.saveNow()
+        _ = board.addComponent(kind: .database, at: BoardPoint(x: 0, y: 0))   // pending
+        try writeOutside(outsideMap)
+        board.diskChanged()
+        XCTAssertEqual(board.map.system, "theirs", "their change is taken")
+        XCTAssertNotNil(board.map.components.first { $0.name == "new-database" }, "my pending edit survives")
+        XCTAssertNotNil(board.map.components.first { $0.name == "redis" })
+        board.saveNow()
+        let onDisk = try XCTUnwrap(try store.load()).map
+        XCTAssertEqual(Set(onDisk.components.map(\.name)), ["new-database", "redis"])
+        XCTAssertFalse(board.changedOnDisk)
+    }
+
+    func testASaveThatFindsTheFileChangedMergesInsteadOfLocking() throws {
+        let board = fresh()
+        board.setSystem("base")
+        board.saveNow()
+        _ = board.addComponent(kind: .database, at: BoardPoint(x: 0, y: 0))
+        try writeOutside(outsideMap)   // the watcher has not fired yet
+        board.saveNow()
+        XCTAssertFalse(board.changedOnDisk)
+        XCTAssertEqual(Set(try XCTUnwrap(try store.load()).map.components.map(\.name)), ["new-database", "redis"])
+    }
+
+    func testAnUnreadableFileLocksAndAFixedOneRecovers() throws {
+        let board = fresh()
+        board.setSystem("base")
+        board.saveNow()
+        try Data("<<<<<<< HEAD".utf8).write(to: store.fileURL)
+        board.diskChanged()
+        guard case .failed = board.state else { return XCTFail("an unreadable file locks") }
+        try writeOutside(outsideMap)
+        board.diskChanged()
+        XCTAssertEqual(board.state, .loaded, "a readable file again unlocks it")
+        XCTAssertEqual(board.map.system, "theirs")
+        XCTAssertFalse(board.canUndo, "recovering is not an undo step")
+    }
+
+    func testAMapCreatedOutsideShowsOnAnEmptyBoard() throws {
+        let board = model()
+        board.load()
+        XCTAssertEqual(board.state, .empty)
+        try writeOutside(outsideMap)
+        board.diskChanged()
+        XCTAssertEqual(board.state, .loaded)
+        XCTAssertEqual(board.map.system, "theirs")
     }
 
     // MARK: Undo

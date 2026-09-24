@@ -40,6 +40,12 @@ public final class BoardModel {
         case arrow(ArrowKey)
     }
 
+    /// What an outside change — an agent, git — just did to the map, for a glow.
+    public struct OutsideChange: Equatable, Sendable {
+        public let id: UUID
+        public let elements: Set<Element>
+    }
+
     public static let undoLimit = 100
     public nonisolated static let localDocker = "Local docker"
     nonisolated static let noRoomInLocalDocker = "No room left in Local docker — the new component is outside it; drag it in or make room."
@@ -55,14 +61,18 @@ public final class BoardModel {
     public private(set) var refusal: String?
     /// A save that did not stick. The board stays editable; the next edit or `saveNow` retries.
     public private(set) var writeFailure: String?
-    /// The file changed underneath the board. Edits are locked until `reload()`.
+    /// The file changed underneath the board. Set only when a save collides twice running — the
+    /// last resort; see `write()`.
     public private(set) var changedOnDisk = false
+    /// What the last `diskChanged()` actually changed on the map — new each time, for a glow.
+    public private(set) var outsideChange: OutsideChange?
 
     public var canUndo: Bool { !undoStack.isEmpty }
     public var canRedo: Bool { !redoStack.isEmpty }
     public var isEmpty: Bool {
         map.components.isEmpty && map.frames.isEmpty && map.notes.isEmpty && map.texts.isEmpty
     }
+    public var fileURL: URL { store.fileURL }
 
     @ObservationIgnored private let store: BoardMapStore
     @ObservationIgnored private let settle: Duration
@@ -71,6 +81,9 @@ public final class BoardModel {
     @ObservationIgnored private var hasUnwrittenEdits = false
     /// Exactly what the file held when last read or written — what a save must still find.
     @ObservationIgnored private var diskBytes: Data?
+    /// The decoded map of `diskBytes` — what `BoardMerge` calls `base`. Set wherever `diskBytes`
+    /// is: `read`, `write`, `diskChanged`.
+    @ObservationIgnored private var baseMap: BoardMap = .empty
     @ObservationIgnored private var undoStack: [BoardMap] = []
     @ObservationIgnored private var redoStack: [BoardMap] = []
     @ObservationIgnored private var lastDiscovered: [DiscoveredThing] = []
@@ -118,11 +131,13 @@ public final class BoardModel {
                 guard !canKeepEverything || loaded.bytes != diskBytes else { return }
                 map = loaded.map
                 diskBytes = loaded.bytes
+                baseMap = loaded.map
                 state = .loaded
             } else {
                 guard !canKeepEverything || diskBytes != nil else { return }
                 map = .empty
                 diskBytes = nil
+                baseMap = .empty
                 state = .empty
             }
         } catch {
@@ -148,6 +163,57 @@ public final class BoardModel {
         let result = BoardReconciler.reconcile(map: map, discovered: discovered)
         statuses = result.statuses
         suggestions = result.suggestions
+    }
+
+    /// The file watcher's entry point: the file changed outside linkC. Takes the new map as one
+    /// undo step, or — when there is an edit not yet written — merges it with that edit through
+    /// `BoardMerge`, keeping the pending write, which now saves the merge.
+    public func diskChanged() {
+        let loaded: BoardMapStore.Loaded?
+        do {
+            loaded = try store.load()
+        } catch {
+            state = .failed(message(for: error))
+            return
+        }
+        guard loaded?.bytes != diskBytes else { return }   // the Board's own write; nothing outside changed
+
+        let theirs = loaded?.map ?? .empty
+        let before = map
+        map = hasUnwrittenEdits
+            ? Self.laidOut(BoardMerge.merge(base: baseMap, mine: map, theirs: theirs))
+            : Self.laidOut(theirs)
+        diskBytes = loaded?.bytes
+        baseMap = theirs
+
+        let fileExists = loaded != nil
+        switch state {
+        case .failed:
+            // A fresh start, exactly as a load is: nothing stale carries over, and this is not
+            // an edit to undo back out of.
+            state = fileExists ? .loaded : .empty
+            undoStack.removeAll()
+            redoStack.removeAll()
+            selection = []
+        case .empty:
+            // Past the guard above, the only way to reach `.empty` here is a file that did not
+            // exist before now existing.
+            state = .loaded
+        case .loaded:
+            if !fileExists && !hasUnwrittenEdits {
+                state = .empty
+            } else {
+                undoStack.append(before)
+                if undoStack.count > Self.undoLimit { undoStack.removeFirst(undoStack.count - Self.undoLimit) }
+                redoStack.removeAll()
+            }
+        }
+
+        outsideChange = OutsideChange(id: UUID(), elements: Self.changed(from: before, to: map))
+        selection = selection.filter(exists)
+        recomputeRoutes()
+        reconcile(with: lastDiscovered)
+        if hasUnwrittenEdits { scheduleWrite() }
     }
 
     /// Writes now rather than after the settle — for the board closing. Still writes only when
@@ -644,6 +710,31 @@ public final class BoardModel {
         }
     }
 
+    /// What `diskChanged()` just did to the map, for `outsideChange`: components new, or
+    /// different by value, by name (a relabelled or new arrow included — it lives in its source
+    /// component's `uses`, so a changed arrow always changes its source's value too); frames new,
+    /// or different, by label; notes whose text is new. Texts carry no such signal.
+    nonisolated private static func changed(from before: BoardMap, to after: BoardMap) -> Set<Element> {
+        var result: Set<Element> = []
+
+        let beforeComponents = Dictionary(before.components.map { ($0.name.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        for component in after.components where beforeComponents[component.name.lowercased()] != component {
+            result.insert(.component(component.name))
+        }
+
+        let beforeFrames = Dictionary(before.frames.map { ($0.label.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        for frame in after.frames where beforeFrames[frame.label.lowercased()] != frame {
+            result.insert(.frame(frame.label))
+        }
+
+        let beforeNoteTexts = Set(before.notes.map(\.text))
+        for note in after.notes where !beforeNoteTexts.contains(note.text) {
+            result.insert(.note(note.id))
+        }
+
+        return result
+    }
+
     /// Puts running things on the map inside the "Local docker" frame, laid out four to a row.
     /// Reports whether anything was added — a suggestion already named on the map, or repeated
     /// within this same batch, adds nothing — and whether any addition had no room and was left
@@ -694,10 +785,26 @@ public final class BoardModel {
         guard canEdit, hasUnwrittenEdits else { return }
         do {
             diskBytes = try store.save(map, expecting: diskBytes)
+            baseMap = map
             hasUnwrittenEdits = false
             writeFailure = nil
         } catch BoardMapStoreError.changedOnDisk {
-            changedOnDisk = true
+            // The file changed while this save was in flight. `diskChanged()` merges it with the
+            // edit — still unwritten, so it still applies — instead of leaving the save refused.
+            // Only a second collision right here, the file changing again under the very save
+            // meant to land that merge, falls back to the lock: a last resort, not the everyday
+            // case a watcher-driven `diskChanged()` already handles.
+            diskChanged()
+            do {
+                diskBytes = try store.save(map, expecting: diskBytes)
+                baseMap = map
+                hasUnwrittenEdits = false
+                writeFailure = nil
+            } catch BoardMapStoreError.changedOnDisk {
+                changedOnDisk = true
+            } catch {
+                writeFailure = message(for: error)
+            }
         } catch {
             writeFailure = message(for: error)
         }
