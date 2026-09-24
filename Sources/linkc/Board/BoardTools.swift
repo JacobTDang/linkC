@@ -10,12 +10,16 @@ struct BoardToolbar: View {
         HStack(spacing: 2) {
             toolButton(.select, glyph: "cursorarrow", title: "Select", key: "V")
             Menu {
-                ForEach(ComponentKind.known, id: \.raw) { kind in
-                    Button {
-                        lastKind = kind
-                        board.tool = .component(kind)
-                    } label: {
-                        Label(kind.raw.capitalized, systemImage: kind.glyph)
+                ForEach(ComponentKind.groups, id: \.title) { group in
+                    Section(group.title) {
+                        ForEach(group.kinds, id: \.raw) { kind in
+                            Button {
+                                lastKind = kind
+                                board.tool = .component(kind)
+                            } label: {
+                                Label(kind.raw.capitalized, systemImage: kind.glyph)
+                            }
+                        }
                     }
                 }
             } label: {

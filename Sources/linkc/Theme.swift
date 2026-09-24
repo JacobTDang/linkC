@@ -84,6 +84,16 @@ enum Theme {
     static let boardCylinderRim = Color(red: 0.173, green: 0.173, blue: 0.204)
     static let noteFill = Color(red: 0.231, green: 0.204, blue: 0.137)
     static let noteText = Color(red: 0.937, green: 0.886, blue: 0.749)
+
+    // The new AI-agent and hardware kinds' accent outlines (from the approved palettes mockup).
+    /// Router, control unit and human-in-the-loop outlines (~#E6C07B).
+    static let boardGold = Color(red: 0.902, green: 0.753, blue: 0.482)
+    /// The state kind's outline (~#B39DDB).
+    static let boardViolet = Color(red: 0.702, green: 0.616, blue: 0.859)
+    /// MCP and start-pill outlines (~#7CC4A0).
+    static let boardGreen = Color(red: 0.486, green: 0.769, blue: 0.627)
+    /// Every hardware kind's outline (~#8A9BB8).
+    static let boardHardwareStroke = Color(red: 0.541, green: 0.608, blue: 0.722)
 }
 
 /// The shared card treatment: one flat translucent fill, nothing else.

@@ -3,7 +3,9 @@ import SwiftUI
 import LinkCKit
 
 extension ComponentKind {
-    /// The kind's glyph. Anything linkC does not know draws as a service.
+    /// The kind's glyph, an SF Symbol shown in menus and pickers. Anything linkC does not know
+    /// draws as a service. The component's own face may draw something richer (a logo, or a
+    /// hand-drawn glyph for `mcp`) — see `ComponentBox.icon`.
     var glyph: String {
         switch self {
         case .database: return "cylinder.split.1x2"
@@ -12,6 +14,28 @@ extension ComponentKind {
         case .storage: return "externaldrive"
         case .host: return "server.rack"
         case .external: return "cloud"
+        case .agent: return "sparkle"
+        case .model: return "cpu"
+        case .tool: return "wrench.adjustable"
+        case .mcp: return "cable.connector"
+        case .router: return "arrow.triangle.branch"
+        case .start: return "play.circle"
+        case .end: return "stop.circle"
+        case .vectorStore: return "square.stack.3d.up"
+        case .memory: return "clock.arrow.circlepath"
+        case .prompt: return "doc.text"
+        case .state: return "curlybraces"
+        case .human: return "person"
+        case .alu: return "function"
+        case .mux: return "arrow.triangle.merge"
+        case .demux: return "arrow.triangle.branch"
+        case .register: return "square.stack"
+        case .ram: return "memorychip"
+        case .control: return "slider.horizontal.3"
+        case .adder: return "plus.circle"
+        case .decoder: return "list.bullet.rectangle"
+        case .clock: return "waveform.path"
+        case .bus: return "arrow.left.arrow.right"
         default: return "shippingbox"
         }
     }
@@ -19,7 +43,8 @@ extension ComponentKind {
 
 /// A component's box: its kind's shape (a cylinder for a database, a pipe for a queue, a bucket
 /// for storage, a server for a host, a dashed cloud for an external service, a card for a
-/// service), solid when it exists, dashed while planned, dimmed when linkC looked for it and did
+/// service — and, for the AI-agent and hardware kinds, the shapes in the approved palettes
+/// mockup), solid when it exists, dashed while planned, dimmed when linkC looked for it and did
 /// not find it, a green dot when it is running now.
 struct ComponentBox: View {
     let component: BoardComponent
@@ -28,6 +53,18 @@ struct ComponentBox: View {
 
     private static let width = CGFloat(BoardGeometry.componentSize.x)
     private static let height = CGFloat(BoardGeometry.componentSize.y)
+
+    /// Kinds whose name is set inside the shape, centred, with a second centred line — the
+    /// mockup draws these with `anchor="middle"` on both lines, unlike every left-aligned card.
+    private static let centeredLabelKinds: Set<ComponentKind> = [.router, .register, .control]
+    /// Kinds whose name is the only text, drawn in or under the shape itself rather than in a
+    /// leading icon-and-text row.
+    private static let embeddedNameKinds: Set<ComponentKind> = [
+        .start, .end, .alu, .mux, .demux, .adder, .decoder, .clock, .bus,
+    ]
+    /// Kinds with no leading icon at all — their name and sub-line sit further left than the
+    /// standard icon row leaves room for.
+    private static let noIconKinds: Set<ComponentKind> = [.vectorStore, .memory, .ram]
 
     private var isMissing: Bool { status == .missing && !component.planned }
 
@@ -52,20 +89,22 @@ struct ComponentBox: View {
         .help(help)
     }
 
-    /// A database or cache draws as two separate shapes, body then rim, exactly as the mockup
-    /// paints them: a `<path>` for the body, then an `<ellipse>` on top for the rim — never one
-    /// combined path, which is what made the rim read as a hole (opposite winding) with a stroked
-    /// line across it (the body's own closing edge).
+    /// A database, cache, vector store or memory draws as two separate shapes, body then rim,
+    /// exactly as the mockup paints them: a `<path>` for the body, then an `<ellipse>` on top for
+    /// the rim — never one combined path, which is what made the rim read as a hole (opposite
+    /// winding) with a stroked line across it (the body's own closing edge). Every other kind is
+    /// one filled, stroked path, with its own fill and stroke colour where the mockup gives it
+    /// one (a start pill's green tint, a bus's slate fill, and so on).
     @ViewBuilder
     private var shape: some View {
         switch component.kind {
-        case .database, .cache:
+        case .database, .cache, .vectorStore, .memory:
             BoardShape.cylinderBody.fill(fillColor(Theme.boardBox))
             BoardShape.cylinderBody.stroke(strokeColor, style: strokeStyle)
             BoardShape.cylinderRim.fill(fillColor(Theme.boardCylinderRim))
             BoardShape.cylinderRim.stroke(strokeColor, style: strokeStyle)
         default:
-            BoardShape.path(for: component.kind).fill(fillColor(Theme.boardBox))
+            BoardShape.path(for: component.kind).fill(fillColor(BoardShape.fillColor(for: component.kind)))
             BoardShape.path(for: component.kind).stroke(strokeColor, style: strokeStyle)
         }
     }
@@ -73,21 +112,107 @@ struct ComponentBox: View {
     private func fillColor(_ solid: Color) -> Color { component.planned ? Color.clear : solid }
     private var strokeStyle: StrokeStyle { StrokeStyle(lineWidth: isSelected ? 1.5 : 1, dash: dash) }
 
+    @ViewBuilder
     private var content: some View {
+        switch component.kind {
+        case _ where Self.centeredLabelKinds.contains(component.kind):
+            centeredLabelContent
+        case _ where Self.embeddedNameKinds.contains(component.kind):
+            embeddedNameContent
+        case _ where Self.noIconKinds.contains(component.kind):
+            textStack
+        default:
+            standardContent
+        }
+    }
+
+    /// The default row: a leading icon, the name, and its sub-line — every System kind, and the
+    /// AI-agent kinds that keep that layout (agent, model, tool, mcp, prompt, state, human).
+    private var standardContent: some View {
         HStack(spacing: 10) {
             icon
-            VStack(alignment: .leading, spacing: 2) {
-                Text(component.name)
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
-                Text(subLine)
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+            nameAndSubLine(nameColor: Theme.textPrimary)
+        }
+    }
+
+    /// The same name-and-sub-line column, without a leading icon — a vector store's dot grid and
+    /// a memory's history glyph are accents on the shape itself, not a content-row icon; same for
+    /// RAM's cell lines. Positioned by `inset`, exactly like `standardContent`.
+    private var textStack: some View {
+        nameAndSubLine(nameColor: Theme.textPrimary)
+    }
+
+    private func nameAndSubLine(nameColor: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(component.name)
+                .font(.system(size: 13.5, weight: .semibold))
+                .foregroundStyle(nameColor)
+                .lineLimit(1)
+            Text(subLine)
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+
+    /// Router, register and control: the name and a second, smaller line, both centred in the
+    /// shape — the mockup's only two-line labels drawn with `text-anchor="middle"`.
+    private var centeredLabelContent: some View {
+        VStack(spacing: 2) {
+            Text(component.name)
+                .font(.system(size: 13, weight: .semibold))
+                .italic(component.kind == .control)
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+            Text(subLine)
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+        }
+        .frame(width: Self.width, height: Self.height)
+    }
+
+    /// The kinds that carry only their own name, positioned exactly where the mockup places it —
+    /// centred in the pill for start/end, centred in the trapezoid for a mux/demux (with "sel"
+    /// captioned below), under the circle for an adder, under the small clock square beside its
+    /// wave glyph, and above the bus bar. Several of these sit outside the component's own
+    /// 176×84 box, on purpose, exactly as the mockup draws them — the canvas never clips a
+    /// component's box, only its own viewport.
+    @ViewBuilder
+    private var embeddedNameContent: some View {
+        let cx = Self.width / 2
+        ZStack {
+            switch component.kind {
+            case .start, .end:
+                Text(component.name).font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.textPrimary)
+                    .position(x: cx, y: 47)
+            case .alu:
+                Text(component.name).font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.textPrimary)
+                    .position(x: cx + 6, y: 47)
+            case .mux, .demux:
+                Text(component.name).font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.textPrimary)
+                    .position(x: cx, y: 46)
+                Text("sel").font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+                    .position(x: cx, y: 96)
+            case .decoder:
+                Text(component.name).font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.textPrimary)
+                    .position(x: cx, y: 46)
+            case .adder:
+                Text(component.name).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+                    .position(x: cx, y: 96)
+            case .clock:
+                ClockWaveGlyph()
+                Text(component.name).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+                    .position(x: cx, y: 92)
+            case .bus:
+                Text(component.name).font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.textSecondary)
+                    .position(x: cx, y: 30)
+            default:
+                EmptyView()
             }
         }
+        .frame(width: Self.width, height: Self.height, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -96,6 +221,8 @@ struct ComponentBox: View {
             AgentLogoView(agent: agent, size: 24)
         } else if let info = BoardTech.resolve(component) {
             TechLogoView(info: info, size: 24)
+        } else if component.kind == .mcp {
+            PlugGlyph().frame(width: 24, height: 24)
         } else {
             Image(systemName: component.kind.glyph)
                 .font(.system(size: 15))
@@ -104,17 +231,22 @@ struct ComponentBox: View {
         }
     }
 
-    /// `KIND · <tech display name>`; else `KIND · <reachedBy>`, truncated; else `KIND`.
+    /// `KIND · <tech display name>`; else `KIND · <reachedBy>`, truncated; else the kind's own
+    /// whole-line default (the new kinds' mockup label, such as "MCP SERVER" or "AGENT NODE");
+    /// else, when that default is nil, the bare kind — which already matches the mockup for every
+    /// kind whose default is just its own name (model, tool, router, memory, register).
     private var subLine: String {
         let kind = component.kind.raw.uppercased()
         if let agent = BoardTech.agent(for: component) { return "\(kind) · \(agent.displayName)" }
         if let info = BoardTech.resolve(component) { return "\(kind) · \(info.displayName)" }
         if let reachedBy = component.reachedBy, !reachedBy.isEmpty { return "\(kind) · \(reachedBy)" }
-        return kind
+        return BoardShape.defaultSubLine(for: component.kind) ?? kind
     }
 
     /// Where the icon and text sit inside the kind's shape — leading inset and a small vertical
-    /// nudge, both taken from the mockup's per-kind geometry.
+    /// nudge, both taken from the mockup's per-kind geometry. The centred and embedded-name kinds
+    /// size their own content, so this is (0, 0) for them — the padding and offset below are then
+    /// a no-op.
     private var inset: (leading: CGFloat, verticalOffset: CGFloat) {
         switch component.kind {
         case .database, .cache: return (14, 2)
@@ -122,12 +254,24 @@ struct ComponentBox: View {
         case .storage: return (18, 0)
         case .host: return (14, 0)
         case .external: return (26, 6)
+        case .agent, .model: return (14, 0)
+        case .tool: return (16, 0)
+        case .mcp: return (24, 0)
+        case .prompt: return (16, 0)
+        case .state: return (14, 3)
+        case .human: return (18, 0)
+        case .vectorStore, .memory: return (16, 4)
+        case .ram: return (36, -2)
+        case _ where Self.centeredLabelKinds.contains(component.kind): return (0, 0)
+        case _ where Self.embeddedNameKinds.contains(component.kind): return (0, 0)
         default: return (14, 0)
         }
     }
 
     private var strokeColor: Color {
-        isSelected ? Theme.accent : (component.planned ? Theme.textTertiary : Theme.boardBoxStroke)
+        if isSelected { return Theme.accent }
+        if component.planned { return Theme.textTertiary }
+        return BoardShape.strokeColor(for: component.kind)
     }
 
     /// Planned draws dashed, as always; an external component draws dashed too — it lives outside
@@ -150,21 +294,133 @@ struct ComponentBox: View {
     }
 }
 
+/// The MCP kind's fallback glyph when no service logo resolves: a plug, translated from the
+/// mockup's `GLYPHS["plug"]` (two prongs, a socket body, a short leg), in a 24×24 box.
+private struct PlugGlyph: View {
+    var body: some View {
+        Path { p in
+            p.move(to: CGPoint(x: 9, y: 3)); p.addLine(to: CGPoint(x: 9, y: 8))
+            p.move(to: CGPoint(x: 15, y: 3)); p.addLine(to: CGPoint(x: 15, y: 8))
+            p.move(to: CGPoint(x: 6, y: 8))
+            p.addLine(to: CGPoint(x: 18, y: 8))
+            p.addLine(to: CGPoint(x: 18, y: 11))
+            p.addArc(center: CGPoint(x: 12, y: 11), radius: 6, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 12, y: 17)); p.addLine(to: CGPoint(x: 12, y: 21))
+        }
+        .stroke(Theme.boardGreen, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+    }
+}
+
+/// The clock kind's glyph, centred in its small rounded square: a square/step wave (a clock
+/// signal), translated from the mockup's `GLYPHS["clockwave"]` — not an SF Symbol, since
+/// `waveform.path` reads as an audio waveform rather than a clock's square wave.
+private struct ClockWaveGlyph: View {
+    var body: some View {
+        Path { p in
+            p.move(to: CGPoint(x: 76.3, y: 48.7))
+            p.addLine(to: CGPoint(x: 76.3, y: 39.3))
+            p.addLine(to: CGPoint(x: 83.3, y: 39.3))
+            p.addLine(to: CGPoint(x: 83.3, y: 48.7))
+            p.addLine(to: CGPoint(x: 90.3, y: 48.7))
+            p.addLine(to: CGPoint(x: 90.3, y: 39.3))
+            p.addLine(to: CGPoint(x: 95, y: 39.3))
+        }
+        .stroke(Theme.boardHardwareStroke, style: StrokeStyle(lineWidth: 1.8, lineJoin: .round))
+    }
+}
+
 /// The kind's shape, in the component box's own 176×84 space — translated from the approved
-/// mockup's SVG generator. Every shape fits the same box so the layout grid never has to know
-/// which kind it is placing.
+/// mockup's SVG generator (`ai()` and `hw()`). Every shape fits the same box so the layout grid
+/// never has to know which kind it is placing.
 enum BoardShape {
     private static let w = CGFloat(BoardGeometry.componentSize.x)
     private static let h = CGFloat(BoardGeometry.componentSize.y)
 
+    /// A recurring cool-blue accent for small glyph strokes (the mockup's `#9fb4d8`) — distinct
+    /// from `Theme.boardHardwareStroke`, and only ever used for these decorations, so it stays a
+    /// local constant rather than a Theme token.
+    private static let glyphBlue = Color(red: 0.624, green: 0.706, blue: 0.847)
+    private static let startFill = Color(red: 0.122, green: 0.227, blue: 0.173) // #1F3A2C
+    private static let endFill = Color(red: 0.227, green: 0.141, blue: 0.141) // #3A2424
+    private static let endStroke = Color(red: 0.851, green: 0.541, blue: 0.541) // #D98A8A
+    private static let busFill = Color(red: 0.224, green: 0.259, blue: 0.310) // #39424F
+    private static let ramLineColor = Color(red: 0.227, green: 0.227, blue: 0.275) // #3A3A46
+
     static func path(for kind: ComponentKind) -> Path {
         switch kind {
-        case .database, .cache: return cylinderBody
+        case .database, .cache, .vectorStore, .memory: return cylinderBody
         case .queue: return pipe
         case .storage: return bucket
         case .host: return server
         case .external: return cloud
+        case .agent: return agentCard
+        case .model: return modelCard
+        case .tool: return toolCard
+        case .mcp: return mcpHexagon
+        case .router: return routerDiamond
+        case .start, .end: return pillCard
+        case .prompt: return promptDoc
+        case .state: return stateFolder
+        case .human: return humanCapsule
+        case .alu: return aluShape
+        case .mux: return muxShape
+        case .demux: return demuxShape
+        case .register: return registerRect
+        case .ram: return ramRect
+        case .control: return controlEllipse
+        case .adder: return adderCircle
+        case .decoder: return decoderShape
+        case .clock: return clockSquare
+        case .bus: return busBar
         default: return card
+        }
+    }
+
+    /// The shape's own fill, where the mockup gives it one other than the ordinary card fill
+    /// (`Theme.boardBox`): a start pill's green tint, an end pill's red tint, a bus's slate fill.
+    static func fillColor(for kind: ComponentKind) -> Color {
+        switch kind {
+        case .start: return startFill
+        case .end: return endFill
+        case .bus: return busFill
+        default: return Theme.boardBox
+        }
+    }
+
+    /// The shape's own outline colour, where the mockup gives it an accent (unselected, not
+    /// planned) — everything else keeps the ordinary `Theme.boardBoxStroke`.
+    static func strokeColor(for kind: ComponentKind) -> Color {
+        switch kind {
+        case .agent: return Theme.accent.opacity(0.55)
+        case .mcp: return Theme.boardGreen.opacity(0.6)
+        case .router: return Theme.boardGold.opacity(0.6)
+        case .control: return Theme.boardGold.opacity(0.7)
+        case .human: return Theme.boardGold.opacity(0.5)
+        case .state: return Theme.boardViolet.opacity(0.5)
+        case .start: return Theme.boardGreen
+        case .end: return endStroke
+        case .alu, .mux, .demux, .register, .ram, .adder, .decoder, .clock, .bus:
+            return Theme.boardHardwareStroke
+        default: return Theme.boardBoxStroke
+        }
+    }
+
+    /// The whole-line default the new kinds show when a component has no tech and no
+    /// reached-by — the mockup's own fixed label (e.g. "MCP SERVER", "AGENT NODE"), not
+    /// `KIND · <default>`. `nil` falls back to the bare kind name, which already matches the
+    /// mockup for every kind whose default is just its own name (model, tool, router, memory,
+    /// register).
+    static func defaultSubLine(for kind: ComponentKind) -> String? {
+        switch kind {
+        case .agent: return "AGENT NODE"
+        case .mcp: return "MCP SERVER"
+        case .vectorStore: return "VECTOR STORE"
+        case .prompt: return "PROMPT · CONTEXT"
+        case .human: return "HUMAN IN THE LOOP"
+        case .ram: return "MEMORY"
+        case .control: return "CONTROL UNIT"
+        default: return nil
         }
     }
 
@@ -173,36 +429,60 @@ enum BoardShape {
     /// status dot, a side handle or the change glow might otherwise land past the shape: the
     /// bucket's taper (measured at that height, not its wider top), the cloud's left and right
     /// (it never reaches either side edge there — measured on the outline itself, not the widest
-    /// point either lobe happens to reach at some other height), the pipe's top and bottom, and
-    /// the card's top and bottom. Zero elsewhere — those shapes already reach the box's edge on
-    /// every side that matters.
+    /// point either lobe happens to reach at some other height), the pipe's top and bottom, the
+    /// card's top and bottom, a diamond's or hexagon's vertices, a trapezoid's slanted sides, and
+    /// so on for the new kinds — each measured the same way, on the rendered outline at that
+    /// height (top/bottom at x = 88, left/right at y = 42). Zero elsewhere — those shapes already
+    /// reach the box's edge on every side that matters.
     static func insets(for kind: ComponentKind) -> (left: CGFloat, right: CGFloat, top: CGFloat, bottom: CGFloat) {
         switch kind {
-        case .database, .cache: return (0, 0, 0, 0)
+        case .database, .cache, .vectorStore, .memory: return (0, 0, 0, 0)
         case .queue: return (0, 0, 12, 12)
         case .storage: return (8, 8, 8, 8)
         case .host: return (0, 0, 0, 0)
         case .external: return (37, 15.5, 0, 0)
+        case .agent, .model, .tool, .human: return (0, 0, 8, 8)
+        case .mcp: return (0, 0, 4, 4)
+        case .router: return (18, 18, 0, 0)
+        case .start, .end: return (28, 28, 20, 20)
+        case .prompt: return (6, 6, 6, 6)
+        case .state: return (0, 0, 8, 0)
+        case .alu: return (54, 40, 12, 12)
+        case .mux, .demux: return (62, 62, 9, 9)
+        case .register: return (20, 20, 6, 6)
+        case .ram: return (26, 26, 0, 0)
+        case .control: return (10, 10, 6, 6)
+        case .adder: return (62, 62, 16, 16)
+        case .decoder: return (50, 50, 8, 8)
+        case .clock: return (58, 58, 20, 20)
+        case .bus: return (0, 0, 35, 35)
         default: return (0, 0, 8, 8)
         }
     }
 
     /// Where the "present" status dot sits, padded in from the box's own top-right corner. Every
     /// straight-edged shape's `insets` value is the same at any height, so it places the dot
-    /// correctly too — except the cloud, whose `insets` are measured at the arrow's mid-height and
-    /// don't reach anywhere near its actual top-right lobe, which sits much lower and further in;
-    /// measured separately here, on that lobe's own outline, so the dot lands on it instead of
-    /// floating in the empty box above.
+    /// correctly too — except shapes whose outline curves or angles sharply away from a
+    /// rectangular corner (the cloud, the router's diamond, the control unit's ellipse, the
+    /// decoder's and the clock's own outlines), measured separately here, on the outline itself
+    /// near the top right, so the dot lands on it instead of floating past the shape.
     static func statusDotInset(for kind: ComponentKind) -> (top: CGFloat, right: CGFloat) {
-        guard kind == .external else {
+        switch kind {
+        case .external: return (36, 22)
+        case .router: return (7, 58)
+        case .control: return (13, 19)
+        case .decoder: return (-4, 58)
+        case .clock: return (13, 57)
+        default:
             let inset = insets(for: kind)
             return (inset.top, inset.right)
         }
-        return (36, 22)
     }
 
     /// The decoration that rides on top of the shape and never changes colour with state: a
-    /// queue's chevrons, a host's rack lines, a cache's second, dashed rim.
+    /// queue's chevrons, a host's rack lines, a cache's second, dashed rim, a model's dashed inner
+    /// border, a vector store's dot grid, a memory's history glyph, a prompt's folded-corner
+    /// crease, a register's clock notch and RAM's memory-cell lines.
     @ViewBuilder
     static func accents(for kind: ComponentKind) -> some View {
         switch kind {
@@ -212,15 +492,33 @@ enum BoardShape {
             ForEach(0..<3, id: \.self) { i in rackLine(atY: 26 + CGFloat(i) * 15) }
         case .cache:
             cacheRim
+        case .model:
+            modelInnerBorder
+        case .vectorStore:
+            vectorDots
+        case .memory:
+            memoryHistoryGlyph
+        case .prompt:
+            promptFold
+        case .register:
+            registerNotch
+        case .ram:
+            ramLines
+        case .adder:
+            adderCross
         default:
             EmptyView()
         }
     }
 
+    // MARK: - System shapes (unchanged)
+
     /// A cylinder's body: the side walls plus the bottom elliptical arc, left open along the top
     /// — exactly the mockup's path (`M x top L x bot A w/2 ry 0 0 0 x+w bot L x+w top`, never
     /// closed). Fill implicitly closes it along that top edge; stroke does not draw that edge, so
     /// no line crosses the rim. The rim itself is `cylinderRim`, a separate shape drawn on top.
+    /// Also `vector-store`'s and `memory`'s shape — the same cylinder, with a dot grid or a
+    /// history glyph as their accent instead of nothing.
     static var cylinderBody: Path {
         let ry: CGFloat = 11
         let top = ry, bot = h - ry
@@ -316,6 +614,243 @@ enum BoardShape {
     private static var cacheRim: some View {
         Path { p in p.addEllipse(in: CGRect(x: 0, y: 16, width: w, height: 22)) }
             .stroke(Theme.boardBoxStroke, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+    }
+
+    // MARK: - AI-agent shapes
+
+    /// `agent`: the default card, at a wider 14 pt corner radius, with an accent outline.
+    private static var agentCard: Path {
+        Path(roundedRect: CGRect(x: 0, y: 8, width: w, height: h - 16), cornerRadius: 14)
+    }
+
+    /// `model`: a 10 pt-radius card; its dashed inner border is a separate accent.
+    private static var modelCard: Path {
+        Path(roundedRect: CGRect(x: 0, y: 8, width: w, height: h - 16), cornerRadius: 10)
+    }
+
+    /// `tool`: a card with all four corners clipped diagonally by 10 pt.
+    private static var toolCard: Path {
+        var p = Path()
+        p.move(to: CGPoint(x: 10, y: 8))
+        p.addLine(to: CGPoint(x: w - 10, y: 8))
+        p.addLine(to: CGPoint(x: w, y: 18))
+        p.addLine(to: CGPoint(x: w, y: h - 18))
+        p.addLine(to: CGPoint(x: w - 10, y: h - 8))
+        p.addLine(to: CGPoint(x: 10, y: h - 8))
+        p.addLine(to: CGPoint(x: 0, y: h - 18))
+        p.addLine(to: CGPoint(x: 0, y: 18))
+        p.closeSubpath()
+        return p
+    }
+
+    /// `mcp`: a hexagon, its two points sitting exactly on the box's left and right mid-edges.
+    private static var mcpHexagon: Path {
+        var p = Path()
+        p.move(to: CGPoint(x: 18, y: 4))
+        p.addLine(to: CGPoint(x: w - 18, y: 4))
+        p.addLine(to: CGPoint(x: w, y: h / 2))
+        p.addLine(to: CGPoint(x: w - 18, y: h - 4))
+        p.addLine(to: CGPoint(x: 18, y: h - 4))
+        p.addLine(to: CGPoint(x: 0, y: h / 2))
+        p.closeSubpath()
+        return p
+    }
+
+    /// `router`: a diamond, its side points on the mid-edges.
+    private static var routerDiamond: Path {
+        var p = Path()
+        p.move(to: CGPoint(x: w / 2, y: 0))
+        p.addLine(to: CGPoint(x: w - 18, y: h / 2))
+        p.addLine(to: CGPoint(x: w / 2, y: h))
+        p.addLine(to: CGPoint(x: 18, y: h / 2))
+        p.closeSubpath()
+        return p
+    }
+
+    /// `start`/`end`: a full stadium pill, tinted green or red in `fillColor(for:)`/`strokeColor(for:)`.
+    private static var pillCard: Path {
+        Path(roundedRect: CGRect(x: 28, y: 20, width: w - 56, height: h - 40), cornerRadius: (h - 40) / 2)
+    }
+
+    /// `prompt`: a document with its top-right corner folded down; the crease is a separate accent.
+    private static var promptDoc: Path {
+        var p = Path()
+        p.move(to: CGPoint(x: 6, y: 6))
+        p.addLine(to: CGPoint(x: w - 28, y: 6))
+        p.addLine(to: CGPoint(x: w - 6, y: 28))
+        p.addLine(to: CGPoint(x: w - 6, y: h - 6))
+        p.addLine(to: CGPoint(x: 6, y: h - 6))
+        p.closeSubpath()
+        return p
+    }
+
+    /// `state`: a folder-tab card — a small notch cut into the top-left corner.
+    private static var stateFolder: Path {
+        var p = Path()
+        p.move(to: CGPoint(x: 0, y: 18))
+        p.addLine(to: CGPoint(x: 54, y: 18))
+        p.addLine(to: CGPoint(x: 62, y: 8))
+        p.addLine(to: CGPoint(x: w, y: 8))
+        p.addLine(to: CGPoint(x: w, y: h))
+        p.addLine(to: CGPoint(x: 0, y: h))
+        p.closeSubpath()
+        return p
+    }
+
+    /// `human`: a full stadium capsule, nearly the whole box.
+    private static var humanCapsule: Path {
+        Path(roundedRect: CGRect(x: 0, y: 8, width: w, height: h - 16), cornerRadius: 34)
+    }
+
+    private static var modelInnerBorder: some View {
+        Path(roundedRect: CGRect(x: 4, y: 12, width: w - 8, height: h - 24), cornerRadius: 7)
+            .stroke(Theme.boardBoxStroke, style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
+    }
+
+    private static var vectorDots: some View {
+        Path { p in
+            for i in 0..<4 {
+                for j in 0..<3 {
+                    let cx = w - 40 + CGFloat(i) * 8
+                    let cy = 36 + CGFloat(j) * 9
+                    p.addEllipse(in: CGRect(x: cx - 1.8, y: cy - 1.8, width: 3.6, height: 3.6))
+                }
+            }
+        }
+        .fill(glyphBlue)
+    }
+
+    /// A memory's history glyph: a near-full ring with a short hand, standing in for the mockup's
+    /// clock-with-a-backward-arrow icon.
+    private static var memoryHistoryGlyph: some View {
+        ZStack {
+            Path { p in p.addArc(center: CGPoint(x: w - 30, y: 46), radius: 8, startAngle: .degrees(-50), endAngle: .degrees(230), clockwise: false) }
+                .stroke(glyphBlue, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+            Path { p in
+                p.move(to: CGPoint(x: w - 30, y: 42))
+                p.addLine(to: CGPoint(x: w - 30, y: 46))
+                p.addLine(to: CGPoint(x: w - 24, y: 46))
+            }
+            .stroke(glyphBlue, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+        }
+    }
+
+    private static var promptFold: some View {
+        Path { p in
+            p.move(to: CGPoint(x: w - 28, y: 6))
+            p.addLine(to: CGPoint(x: w - 28, y: 28))
+            p.addLine(to: CGPoint(x: w - 6, y: 28))
+        }
+        .stroke(Theme.boardBoxStroke, lineWidth: 1)
+    }
+
+    // MARK: - Hardware shapes
+
+    /// `alu`: the classic notched ALU trapezoid — narrower on the right, with a V cut into the
+    /// left edge at mid-height.
+    private static var aluShape: Path {
+        var p = Path()
+        p.move(to: CGPoint(x: 40, y: 0))
+        p.addLine(to: CGPoint(x: w - 40, y: 24))
+        p.addLine(to: CGPoint(x: w - 40, y: h - 24))
+        p.addLine(to: CGPoint(x: 40, y: h))
+        p.addLine(to: CGPoint(x: 40, y: 52))
+        p.addLine(to: CGPoint(x: 54, y: h / 2))
+        p.addLine(to: CGPoint(x: 40, y: 32))
+        p.closeSubpath()
+        return p
+    }
+
+    /// `mux`: wide on the left (inputs), narrow on the right (the single output).
+    private static var muxShape: Path {
+        var p = Path()
+        p.move(to: CGPoint(x: 62, y: 0))
+        p.addLine(to: CGPoint(x: w - 62, y: 18))
+        p.addLine(to: CGPoint(x: w - 62, y: h - 18))
+        p.addLine(to: CGPoint(x: 62, y: h))
+        p.closeSubpath()
+        return p
+    }
+
+    /// `demux`: the mirror of `mux` — narrow input on the left, wide outputs on the right.
+    private static var demuxShape: Path {
+        var p = Path()
+        p.move(to: CGPoint(x: 62, y: 18))
+        p.addLine(to: CGPoint(x: w - 62, y: 0))
+        p.addLine(to: CGPoint(x: w - 62, y: h))
+        p.addLine(to: CGPoint(x: 62, y: h - 18))
+        p.closeSubpath()
+        return p
+    }
+
+    /// `register`: a plain rectangle; the clock notch on its bottom edge is a separate accent.
+    private static var registerRect: Path {
+        Path(CGRect(x: 20, y: 6, width: w - 40, height: h - 12))
+    }
+
+    /// `ram`: a tall rectangle spanning the full box height; its memory-cell lines are a separate accent.
+    private static var ramRect: Path {
+        Path(CGRect(x: 26, y: 0, width: w - 52, height: h))
+    }
+
+    /// `control`: an ellipse.
+    private static var controlEllipse: Path {
+        Path(ellipseIn: CGRect(x: 10, y: 6, width: w - 20, height: h - 12))
+    }
+
+    /// `adder`: a circle; the plus sign on it is a separate accent.
+    private static var adderCircle: Path {
+        Path(ellipseIn: CGRect(x: w / 2 - 26, y: h / 2 - 26, width: 52, height: 52))
+    }
+
+    /// `decoder`: the reverse of `mux` at a wider taper — narrow input on the left, wide outputs
+    /// on the right, with no "sel" caption.
+    private static var decoderShape: Path {
+        var p = Path()
+        p.move(to: CGPoint(x: 50, y: 16))
+        p.addLine(to: CGPoint(x: w - 50, y: 0))
+        p.addLine(to: CGPoint(x: w - 50, y: h))
+        p.addLine(to: CGPoint(x: 50, y: h - 16))
+        p.closeSubpath()
+        return p
+    }
+
+    /// `clock`: a small rounded square, centred in the box, holding the wave glyph.
+    private static var clockSquare: Path {
+        Path(roundedRect: CGRect(x: w / 2 - 30, y: h / 2 - 22, width: 60, height: 44), cornerRadius: 6)
+    }
+
+    /// `bus`: a thick bar spanning the full width, centred vertically.
+    private static var busBar: Path {
+        Path(roundedRect: CGRect(x: 0, y: h / 2 - 7, width: w, height: 14), cornerRadius: 3)
+    }
+
+    private static var registerNotch: some View {
+        Path { p in
+            p.move(to: CGPoint(x: w / 2 - 8, y: h - 6))
+            p.addLine(to: CGPoint(x: w / 2, y: h - 16))
+            p.addLine(to: CGPoint(x: w / 2 + 8, y: h - 6))
+        }
+        .stroke(Theme.boardHardwareStroke, lineWidth: 1)
+    }
+
+    private static var ramLines: some View {
+        Path { p in
+            for i in 1...5 {
+                let y = CGFloat(i) * 14
+                p.move(to: CGPoint(x: w - 60, y: y))
+                p.addLine(to: CGPoint(x: w - 26, y: y))
+            }
+        }
+        .stroke(ramLineColor, lineWidth: 1)
+    }
+
+    private static var adderCross: some View {
+        Path { p in
+            p.move(to: CGPoint(x: w / 2 - 10, y: h / 2)); p.addLine(to: CGPoint(x: w / 2 + 10, y: h / 2))
+            p.move(to: CGPoint(x: w / 2, y: h / 2 - 10)); p.addLine(to: CGPoint(x: w / 2, y: h / 2 + 10))
+        }
+        .stroke(Theme.textPrimary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
     }
 }
 
