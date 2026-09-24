@@ -9,7 +9,8 @@ public enum BoardLayout {
     private static let columnGapBetweenClusters = 184
     private static let rowStep = 132
     private static let framePadding = 24
-    private static let frameTitleBand = 34
+    /// Kept internal (not private) so `BoardLabels` can read the same band as an obstacle.
+    static let frameTitleBand = 34
     private static let origin = BoardPoint(x: 40, y: 40)
     private static let notesGap = 48
     private static let noteStackGap = 24

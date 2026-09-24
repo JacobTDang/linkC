@@ -1,0 +1,52 @@
+import XCTest
+@testable import LinkCKit
+
+final class BoardLabelsTests: XCTestCase {
+    private func arranged() throws -> BoardMap {
+        BoardLayout.arranged(try BoardMap.decode(Data("""
+        { "version": 2, "places": {
+          "App": { "api": {"kind":"service","uses":{"db":"reads and writes","cache":"session cache","jobs":"enqueues"}},
+                   "hub": {"kind":"service","uses":{"w1":"hosts","w2":"hosts","w3":"hosts"}} },
+          "Data": { "db": {"kind":"database"}, "cache": {"kind":"cache"}, "jobs": {"kind":"queue"} },
+          "Workers": { "w1": {"kind":"service"}, "w2": {"kind":"service"}, "w3": {"kind":"service"} },
+          "Not placed": {} } }
+        """.utf8)))
+    }
+
+    private func labels(_ m: BoardMap) -> [BoardModel.ArrowKey: String] {
+        var out: [BoardModel.ArrowKey: String] = [:]
+        for c in m.components { for (t, l) in c.uses where !l.isEmpty { out[BoardModel.ArrowKey(from: c.name, to: t)] = l } }
+        return out
+    }
+
+    func testNoPillOverlapsABoxAFrameTitleOrAnotherPill() throws {
+        let m = try arranged()
+        let obstacles = BoardLabels.obstacles(for: m)
+        let placed = BoardLabels.placed(routes: BoardRouter.routes(for: m), labels: labels(m), obstacles: obstacles)
+        XCTAssertFalse(placed.isEmpty)
+        let pills = Array(placed.values)
+        for p in pills { for o in obstacles { XCTAssertFalse(p.intersects(o)) } }
+        for i in pills.indices { for j in pills.indices where j > i { XCTAssertFalse(pills[i].intersects(pills[j])) } }
+    }
+
+    func testABundleIsLabelledOnce() throws {
+        let m = try arranged()
+        let placed = BoardLabels.placed(routes: BoardRouter.routes(for: m), labels: labels(m), obstacles: BoardLabels.obstacles(for: m))
+        XCTAssertEqual(placed.keys.filter { $0.from == "hub" }.count, 1)
+    }
+
+    func testNoRoomMeansNotPlaced() {
+        var m = BoardMap()
+        m.components = [BoardComponent(name: "a", kind: .service, uses: ["b": "a label far too long to fit in this gap"], at: BoardPoint(x: 0, y: 0)),
+                        BoardComponent(name: "b", kind: .service, at: BoardPoint(x: 200, y: 0))]
+        let placed = BoardLabels.placed(routes: BoardRouter.routes(for: m), labels: labels(m), obstacles: BoardLabels.obstacles(for: m))
+        XCTAssertTrue(placed.isEmpty)
+    }
+
+    func testTheSameInputPlacesTheSameWay() throws {
+        let m = try arranged()
+        let routes = BoardRouter.routes(for: m)
+        XCTAssertEqual(BoardLabels.placed(routes: routes, labels: labels(m), obstacles: BoardLabels.obstacles(for: m)),
+                       BoardLabels.placed(routes: routes, labels: labels(m), obstacles: BoardLabels.obstacles(for: m)))
+    }
+}
