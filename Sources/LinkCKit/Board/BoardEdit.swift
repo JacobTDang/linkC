@@ -52,8 +52,6 @@ public enum BoardEdit {
     private static let verbKeys: Set<String> = [
         "add", "update", "remove", "connect", "disconnect", "place", "remove_place", "note", "remove_note", "system",
     ]
-    private static let stringFieldKeys: Set<String> = ["kind", "does", "reached_by", "runs", "in", "rename", "to", "label"]
-    private static let boolFieldKeys: Set<String> = ["planned"]
 
     /// The fields each verb accepts besides its own name-bearing key, in the order the tool's
     /// schema documents them — what an unknown-field refusal lists as "takes:".
@@ -88,8 +86,8 @@ public enum BoardEdit {
         guard verbsPresent.count == 1, let verb = verbsPresent.first else {
             throw BoardEditRefusal(step: step, reason: "needs exactly one of \(verbKeys.sorted().joined(separator: ", "))")
         }
-        for key in object.keys where key != verb && !stringFieldKeys.contains(key) && !boolFieldKeys.contains(key) {
-            let allowed = allowedFields[verb] ?? []
+        let allowed = allowedFields[verb] ?? []
+        for key in object.keys where key != verb && !allowed.contains(key) {
             let takes = allowed.isEmpty ? "(none)" : allowed.joined(separator: ", ")
             throw BoardEditRefusal(step: step, reason: "unknown field \"\(key)\" — \(verb) takes: \(takes)")
         }

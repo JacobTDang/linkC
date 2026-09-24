@@ -150,6 +150,17 @@ final class BoardEditTests: XCTestCase {
         }
     }
 
+    /// A field that is a real key for *some* verb — just not this one — must still be refused:
+    /// the check is against what this verb takes, not against the whole global set of field keys.
+    func testUnknownFieldRefusalCatchesAFieldAnotherVerbTakes() throws {
+        XCTAssertEqual(refusal([["add": "redis", "to": "api"]], on: try june())?.description,
+                       #"step 1: unknown field "to" — add takes: kind, in, does, reached_by, runs, planned"#)
+        XCTAssertEqual(refusal([["connect": "api", "to": "postgres", "rename": "db"]], on: try june())?.description,
+                       #"step 1: unknown field "rename" — connect takes: to, label"#)
+        XCTAssertEqual(refusal([["remove": "postgres", "in": "Local docker"]], on: try june())?.description,
+                       #"step 1: unknown field "in" — remove takes: (none)"#)
+    }
+
     func testUnknownFieldRefusalListsTheVerbsAllowedFields() throws {
         XCTAssertEqual(refusal([["add": "x", "name": "y"]], on: .empty)?.description,
                        #"step 1: unknown field "name" — add takes: kind, in, does, reached_by, runs, planned"#)
