@@ -63,6 +63,30 @@ public enum BoardTech {
         ("flydotio", "Fly.io", ["fly"]),
         ("railway", "Railway", []),
         ("render", "Render", []),
+        // AI brands: models, frameworks and MCP (spec §3). `claude` keeps resolving to the Claude
+        // agent logo — see `agentNames` below — so it is not a tech id.
+        ("openai", "OpenAI", ["gpt", "chatgpt"]),
+        ("anthropic", "Anthropic", []),
+        ("gemini", "Gemini", ["google-ai"]),
+        ("mistral", "Mistral", []),
+        ("meta", "Meta", ["llama"]),
+        ("deepseek", "DeepSeek", []),
+        ("ollama", "Ollama", []),
+        ("huggingface", "Hugging Face", ["hf"]),
+        ("langchain", "LangChain", []),
+        ("langgraph", "LangGraph", []),
+        ("llamaindex", "LlamaIndex", []),
+        ("crewai", "CrewAI", ["crew"]),
+        ("groq", "Groq", []),
+        ("perplexity", "Perplexity", []),
+        ("cohere", "Cohere", []),
+        ("qwen", "Qwen", []),
+        ("xai", "xAI", ["grok"]),
+        ("mcp", "MCP", []),
+        ("openrouter", "OpenRouter", []),
+        ("vertexai", "Vertex AI", ["vertex"]),
+        ("bedrock", "Bedrock", []),
+        ("azure", "Azure", []),
     ]
 
     /// Every canonical id, sorted — for the tool description.

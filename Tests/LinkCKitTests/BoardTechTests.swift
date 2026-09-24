@@ -12,7 +12,7 @@ final class BoardTechTests: XCTestCase {
     }
 
     func testEveryKnownLogoLoadsAsA24PointSVG() throws {
-        XCTAssertEqual(BoardTech.knownIDs.count, 47)
+        XCTAssertEqual(BoardTech.knownIDs.count, 69) // 47 Simple Icons + 22 AI brands from lobe-icons
         for id in BoardTech.knownIDs {
             let info = try XCTUnwrap(BoardTech.info(id), id)
             let image = try XCTUnwrap(NSImage(data: Data(info.svg.utf8)), "\(id) does not load")
@@ -21,6 +21,20 @@ final class BoardTechTests: XCTestCase {
             XCTAssertEqual(image.size, NSSize(width: 24, height: 24), id)
             XCTAssertFalse(info.displayName.isEmpty, id)
         }
+    }
+
+    func testTheAIBrandsLoad() throws {
+        for id in ["openai", "anthropic", "gemini", "mistral", "meta", "deepseek", "ollama", "huggingface", "langchain", "langgraph",
+                   "llamaindex", "crewai", "groq", "perplexity", "cohere", "qwen", "xai", "mcp", "openrouter", "vertexai", "bedrock", "azure"] {
+            let info = try XCTUnwrap(BoardTech.info(id), id)
+            let image = try XCTUnwrap(NSImage(data: Data(info.svg.utf8)), id)
+            XCTAssertTrue(image.isValid, id)
+            XCTAssertEqual(image.size, NSSize(width: 24, height: 24), id)
+        }
+        XCTAssertEqual(BoardTech.knownIDs.count, 69)
+        XCTAssertEqual(BoardTech.canonical("gpt"), "openai")
+        XCTAssertEqual(BoardTech.canonical("grok"), "xai")
+        XCTAssertEqual(BoardTech.canonical("llama"), "meta")
     }
 
     func testDarkBrandsAreFlagged() {
