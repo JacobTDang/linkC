@@ -95,9 +95,9 @@ public struct ProcessSnooper: Sendable {
     /// kernel already resolved — both of those "clean up" `/private/tmp` back to `/tmp`,
     /// which would defeat the comparison this exists for.
     public static func canonicalPath(_ path: String) -> String? {
-        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        guard realpath(path, &buffer) != nil else { return nil }
-        return String(cString: buffer)
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     /// The process's current folder via `proc_pidinfo(PROC_PIDVNODEPATHINFO)`, as the kernel
