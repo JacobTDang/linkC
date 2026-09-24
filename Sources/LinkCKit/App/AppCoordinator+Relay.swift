@@ -726,7 +726,7 @@ extension AppCoordinator {
         // Candidates: installed, not limited, not this agent; prefer ones already active here.
         let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor]
         var candidates = supportedPeers.filter { candidate in
-            guard candidate != session.agentKind else { return false }
+            guard candidate != session.agentKind && candidate != currentTask?.fromAgent else { return false }
             do {
                 guard try inboxStore.isAgentLimited(agent: candidate) == nil else { return false }
             } catch {
