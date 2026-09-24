@@ -44,9 +44,10 @@ public enum BoardReport {
         if !component.uses.isEmpty {
             let uses = component.uses.keys.sorted().map { target -> String in
                 let arrow = component.uses[target] ?? BoardArrow()
-                var text = arrow.label.isEmpty ? sanitized(target) : "\(sanitized(target)) (\(sanitized(arrow.label)))"
-                if let styleText = styleText(for: arrow) { text += " (\(styleText))" }
-                return text
+                var details: [String] = []
+                if !arrow.label.isEmpty { details.append(sanitized(arrow.label)) }
+                if let styleText = styleText(for: arrow) { details.append(styleText) }
+                return details.isEmpty ? sanitized(target) : "\(sanitized(target)) (\(details.joined(separator: ", ")))"
             }
             parts.append("uses \(uses.joined(separator: ", "))")
         }

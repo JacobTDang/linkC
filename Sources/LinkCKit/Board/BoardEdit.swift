@@ -272,8 +272,8 @@ public enum BoardEdit {
         map.components[index] = component
         if let newName, newName != oldName {
             for other in map.components.indices {
-                if let label = map.components[other].uses.removeValue(forKey: oldName) {
-                    map.components[other].uses[newName] = label
+                if let arrow = map.components[other].uses.removeValue(forKey: oldName) {
+                    map.components[other].uses[newName] = arrow
                 }
             }
         }

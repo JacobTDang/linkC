@@ -460,8 +460,8 @@ public final class BoardModel {
             map.components[index] = next
             if finalName != name {
                 for other in map.components.indices {
-                    if let label = map.components[other].uses.removeValue(forKey: name) {
-                        map.components[other].uses[finalName] = label
+                    if let arrow = map.components[other].uses.removeValue(forKey: name) {
+                        map.components[other].uses[finalName] = arrow
                     }
                 }
                 // Carried here, before `afterMapChange` filters the selection against the renamed

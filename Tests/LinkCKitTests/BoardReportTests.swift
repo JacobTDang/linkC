@@ -86,9 +86,21 @@ final class BoardReportTests: XCTestCase {
         XCTAssertTrue(BoardReport.markdown(for: m).contains("database · postgres"))
     }
 
+    /// A label and a style share one set of parens, comma-joined — `done (done, conditional)`,
+    /// not `done (done) (conditional)` — and an unlabelled bus still shows just its bit width.
     func testTheReportNamesArrowStyles() {
         var m = BoardMap()
-        m.components = [BoardComponent(name: "cpu", kind: .register, uses: ["alu": BoardArrow(style: .bus, bits: 32)]), BoardComponent(name: "alu", kind: .alu)]
-        XCTAssertTrue(BoardReport.markdown(for: m).contains("bus, 32-bit"))
+        m.components = [
+            BoardComponent(name: "cpu", kind: .register, uses: ["alu": BoardArrow(style: .bus, bits: 32)]),
+            BoardComponent(name: "alu", kind: .alu, uses: ["regs": BoardArrow(label: "data", style: .bus, bits: 32)]),
+            BoardComponent(name: "regs", kind: .register),
+            BoardComponent(name: "route", kind: .router, uses: ["done": BoardArrow(label: "done", style: .conditional)]),
+            BoardComponent(name: "done", kind: .end),
+        ]
+        let text = BoardReport.markdown(for: m)
+        XCTAssertTrue(text.contains("alu (bus, 32-bit)"), text)
+        XCTAssertTrue(text.contains("regs (data, bus, 32-bit)"), text)
+        XCTAssertTrue(text.contains("done (done, conditional)"), text)
+        XCTAssertFalse(text.contains(") ("), "label and style must share one set of parens, not two")
     }
 }
