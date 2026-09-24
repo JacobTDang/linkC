@@ -124,6 +124,15 @@ final class BoardEditTests: XCTestCase {
         XCTAssertNotNil(refusal([["connect": "a", "to": "b", "style": "bus", "bits": 0]], on: base))
     }
 
+    /// `"bits": 12.7` must not silently truncate to 12 — a non-integer is refused like any other
+    /// bad value, with the step's number.
+    func testNonIntegerBitsIsRefused() throws {
+        let base = try apply([["add": "a"], ["add": "b"]], to: .empty).map
+        let refused = refusal([["connect": "a", "to": "b", "style": "bus", "bits": 12.7]], on: base)
+        XCTAssertEqual(refused?.step, 1)
+        XCTAssertEqual(refused?.reason, "\"bits\" must be a whole number")
+    }
+
     func testRenameAndRemoveCarryStyledArrows() throws {
         var m = try apply([["add": "r", "kind": "router"], ["add": "x", "kind": "end"], ["connect": "r", "to": "x", "label": "done"]], to: .empty).map
         m = try apply([["update": "x", "rename": "finish"]], to: m).map

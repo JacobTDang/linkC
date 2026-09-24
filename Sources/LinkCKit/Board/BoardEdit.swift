@@ -117,8 +117,11 @@ public enum BoardEdit {
             guard let value = object[key] else { return nil }
             // The reverse of `boolField`'s check: a `CFBoolean`-typed `NSNumber` bridges to an
             // `Int` just as readily as a real one, so it is refused rather than silently read as
-            // 0 or 1.
-            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            // 0 or 1. A fractional number bridges to `Int` too, truncating silently (`12.7` →
+            // `12`), so it is refused the same way rather than losing precision without a word.
+            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue == number.doubleValue.rounded(.towardZero)
+            else {
                 throw BoardEditRefusal(step: step, reason: "\"\(key)\" must be a whole number")
             }
             return number.intValue

@@ -498,6 +498,12 @@ public struct BoardMap: Equatable, Sendable {
 
     private static func int(_ raw: [String: Any], _ key: String, context: String) throws -> Int? {
         guard let value = raw[key] else { return nil }
+        // A `CFBoolean`-typed `NSNumber` bridges to `Int` just as readily as a real one — `true`
+        // reads as `1` — so it is refused rather than silently accepted. Matches `BoardEdit`'s
+        // own check on the same field.
+        if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() {
+            throw LinkCError.parse("\(context) has \"\(key)\" but it is not a whole number")
+        }
         guard let int = value as? Int else { throw LinkCError.parse("\(context) has \"\(key)\" but it is not a whole number") }
         return int
     }

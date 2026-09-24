@@ -443,9 +443,21 @@ final class BoardMapTests: XCTestCase {
     }
 
     func testBadArrowStylesAreRefused() {
-        for bad in [#"{"style":"wavy"}"#, #"{"bits":8}"#, #"{"style":"bus","bits":0}"#, #"{"style":"bus","bits":5000}"#, #"{"label":3}"#, #"{"colour":"red"}"#] {
+        for bad in [
+            #"{"style":"wavy"}"#, #"{"bits":8}"#, #"{"style":"bus","bits":0}"#, #"{"style":"bus","bits":5000}"#,
+            #"{"label":3}"#, #"{"colour":"red"}"#, #"{"style":"bus","bits":true}"#,
+        ] {
             let json = #"{"version":2,"places":{"Not placed":{"a":{"kind":"service","uses":{"b":"# + bad + #"}},"b":{"kind":"service"}}}}"#
             XCTAssertThrowsError(try BoardMap.decode(Data(json.utf8)), bad)
+        }
+    }
+
+    /// A `CFBoolean` bridges to `Int` just as readily as a real number — `true` must not read as
+    /// `1` — so the file decoder refuses it, the same way `BoardEdit` refuses it from an agent.
+    func testBooleanBitsIsRefused() {
+        let json = #"{"version":2,"places":{"Not placed":{"a":{"kind":"service","uses":{"b":{"style":"bus","bits":true}}},"b":{"kind":"service"}}}}"#
+        XCTAssertThrowsError(try BoardMap.decode(Data(json.utf8))) { error in
+            XCTAssertTrue("\(error)".contains("whole number"), "\(error)")
         }
     }
 
