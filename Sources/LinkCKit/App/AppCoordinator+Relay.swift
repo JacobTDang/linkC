@@ -454,8 +454,11 @@ extension AppCoordinator {
                         injectMessageBatch(batch, into: group.session)
                         return true
                     }
+                    // Stop the batch here rather than skip to the next message: this one stays
+                    // queued, and letting later messages in the group send ahead of it would
+                    // deliver them out of order. It gets another chance next tick.
                     NSLog("[linkC relay] dispatchMessages: message %@ mark delivered — %@", message.id, String(describing: error))
-                    continue
+                    break
                 }
                 batch.append(message)
                 if standalone { break }
