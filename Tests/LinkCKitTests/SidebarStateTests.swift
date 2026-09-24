@@ -97,7 +97,7 @@ final class SidebarStateTests: XCTestCase {
                 session: Session(id: "s2", cwd: "/a", title: "a"),
                 title: "t", status: SessionRowStatus(text: "", tone: .quiet), hasRunningSubagents: false)],
             order: ["/a"], expandOverrides: state.expandOverrides, selectedId: nil
-        ).first?.isExpanded, true)
+        ).projects.first?.isExpanded, true)
     }
 
     func testUnreadableStoredStateStartsFresh() {
@@ -117,5 +117,22 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(SidebarState(defaults: defaults).boardViewport(for: "/p"), viewport, "it survives a relaunch")
         state.prune(keeping: ["/other"])
         XCTAssertNil(state.boardViewport(for: "/p"))
+    }
+
+    func testFilingsPersistAndPrune() {
+        let state = SidebarState(defaults: defaults)
+        state.file(terminal: "t1", under: "/p/june")
+        
+        let reloaded = SidebarState(defaults: defaults)
+        XCTAssertEqual(reloaded.terminalProjects, ["t1": "/p/june"])
+        
+        reloaded.unfile(terminal: "t1")
+        XCTAssertEqual(reloaded.terminalProjects, [:])
+        
+        reloaded.file(terminal: "t1", under: "/p/june")
+        reloaded.file(terminal: "t2", under: "/p/linkc")
+        
+        reloaded.pruneTerminals(keeping: ["t2"])
+        XCTAssertEqual(reloaded.terminalProjects, ["t2": "/p/linkc"])
     }
 }

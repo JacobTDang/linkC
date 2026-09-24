@@ -16,6 +16,7 @@ public final class SidebarState {
         var expandOverrides: [String: Bool] = [:]
         var openSections: Set<Section> = []
         var boardViewports: [String: BoardViewport]?
+        var terminalProjects: [String: String]?
     }
 
     static let key = "sidebarState"
@@ -30,6 +31,7 @@ public final class SidebarState {
     /// counts as newly coral once.
     @ObservationIgnored private var coralProjects: Set<String> = []
     private var boardViewports: [String: BoardViewport] = [:]
+    public private(set) var terminalProjects: [String: String] = [:]
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults = .standard) {
@@ -46,6 +48,27 @@ public final class SidebarState {
         expandOverrides = stored.expandOverrides
         openSections = stored.openSections
         boardViewports = stored.boardViewports ?? [:]
+        terminalProjects = stored.terminalProjects ?? [:]
+    }
+
+    public func file(terminal id: String, under project: String) {
+        let standardized = URL(fileURLWithPath: project).standardized.path
+        guard terminalProjects[id] != standardized else { return }
+        terminalProjects[id] = standardized
+        save()
+    }
+
+    public func unfile(terminal id: String) {
+        guard terminalProjects[id] != nil else { return }
+        terminalProjects.removeValue(forKey: id)
+        save()
+    }
+
+    public func pruneTerminals(keeping ids: Set<String>) {
+        let kept = terminalProjects.filter { ids.contains($0.key) }
+        guard kept != terminalProjects else { return }
+        terminalProjects = kept
+        save()
     }
 
     /// Append any project not seen before; everyone else keeps their place.
@@ -117,7 +140,7 @@ public final class SidebarState {
     }
 
     private func save() {
-        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections, boardViewports: boardViewports.isEmpty ? nil : boardViewports)
+        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections, boardViewports: boardViewports.isEmpty ? nil : boardViewports, terminalProjects: terminalProjects.isEmpty ? nil : terminalProjects)
         do {
             defaults.set(try JSONEncoder().encode(stored), forKey: Self.key)
         } catch {

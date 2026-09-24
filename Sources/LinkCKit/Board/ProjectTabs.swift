@@ -38,7 +38,7 @@ public enum ProjectTabs {
     /// were opened. `titles` holds live session titles, which win over the stored ones. `activities`
     /// holds each working or permission-waiting session's current action, keyed by session id.
     public static func tabs(
-        project path: String, sessions: [Session], shells: [ShellRow], titles: [String: String],
+        project path: String, sessions: [Session], shells: [ShellRow], filed: [String: String] = [:], titles: [String: String],
         activities: [String: String] = [:]
     ) -> [ProjectTab] {
         let folder = standardized(path)
@@ -50,8 +50,10 @@ public enum ProjectTabs {
                 isWorking: session.state.bucket == .active,
                 activity: ShownActivity(activity: activities[session.id], state: session.state)))
         }
-        for shell in shells where standardized(shell.cwd) == folder {
-            tabs.append(ProjectTab(id: shell.id, kind: .terminal, title: shell.title, isWorking: false))
+        for shell in shells {
+            if TerminalFiling.project(forTerminal: shell.id, cwd: shell.cwd, filed: filed, projects: [folder]) == folder {
+                tabs.append(ProjectTab(id: shell.id, kind: .terminal, title: shell.title, isWorking: false))
+            }
         }
         return tabs
     }

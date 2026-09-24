@@ -31,6 +31,7 @@ public struct SidebarProject: Identifiable, Equatable, Sendable {
     public let dot: ProjectDot
     public let isExpanded: Bool
     public let sessions: [SidebarSessionRow]
+    public let terminals: [ShellRow]
 }
 
 /// Builds the sidebar's Projects section from live sessions. Pure: every input is a value.
@@ -59,31 +60,70 @@ public enum SidebarModel {
     /// when `expandOverrides` says so; with no override it is open only while it holds the selected
     /// session, so moving into a project opens it and collapsing it afterwards sticks.
     public static func projects(
-        inputs: [Input], order: [String], expandOverrides: [String: Bool], selectedId: String?
-    ) -> [SidebarProject] {
+        inputs: [Input], shells: [ShellRow] = [], filed: [String: String] = [:], order: [String], expandOverrides: [String: Bool], selectedId: String?
+    ) -> (projects: [SidebarProject], unfiled: [ShellRow]) {
         let rank = Dictionary(order.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        
+        var projectPathsList: [String] = []
+        var seenPaths: Set<String> = []
+        
+        for input in inputs {
+            let path = (input.session.cwd as NSString).standardizingPath
+            if seenPaths.insert(path).inserted {
+                projectPathsList.append(path)
+            }
+        }
+        for path in filed.values {
+            let standardized = (path as NSString).standardizingPath
+            if seenPaths.insert(standardized).inserted {
+                projectPathsList.append(standardized)
+            }
+        }
+        
+        var projectTerminals: [String: [ShellRow]] = [:]
+        var unfiled: [ShellRow] = []
+        
+        for shell in shells {
+            if let p = TerminalFiling.project(forTerminal: shell.id, cwd: shell.cwd, filed: filed, projects: seenPaths) {
+                projectTerminals[p, default: []].append(shell)
+                if seenPaths.insert(p).inserted {
+                    projectPathsList.append(p)
+                }
+            } else {
+                unfiled.append(shell)
+            }
+        }
+        
         let groups = ProjectGroup.group(sessions: inputs.map(\.session))
-        let sorted = groups.enumerated().sorted { a, b in
-            (rank[a.element.workspacePath] ?? order.count + a.offset)
-                < (rank[b.element.workspacePath] ?? order.count + b.offset)
+        let groupMap = Dictionary(uniqueKeysWithValues: groups.map { ($0.workspacePath, $0) })
+        
+        let sorted = projectPathsList.enumerated().sorted { a, b in
+            (rank[a.element] ?? order.count + a.offset)
+                < (rank[b.element] ?? order.count + b.offset)
         }.map(\.element)
-        return sorted.map { group in
-            // Built from `inputs` rather than an id lookup: a duplicate session id (never expected)
-            // shows as a visible second row instead of trapping the app.
-            let rows = inputs.filter { ($0.session.cwd as NSString).standardizingPath == group.workspacePath }
-            let holdsSelection = rows.contains { $0.session.id == selectedId }
+        
+        let projectsList = sorted.map { path -> SidebarProject in
+            let group = groupMap[path]
+            let rows = inputs.filter { ($0.session.cwd as NSString).standardizingPath == path }
+            let terms = projectTerminals[path] ?? []
+            let holdsSelection = rows.contains { $0.session.id == selectedId } || terms.contains { $0.id == selectedId }
+            let name = group?.title ?? URL(fileURLWithPath: path).lastPathComponent
+            
             return SidebarProject(
-                path: group.workspacePath,
-                name: group.title,
+                path: path,
+                name: name,
                 dot: dot(for: rows),
-                isExpanded: expandOverrides[group.workspacePath] ?? holdsSelection,
+                isExpanded: expandOverrides[path] ?? holdsSelection,
                 sessions: rows.map {
                     SidebarSessionRow(
                         id: $0.session.id, agentKind: $0.session.agentKind, title: $0.title, status: $0.status,
                         activity: ShownActivity(activity: $0.activity, state: $0.session.state))
-                }
+                },
+                terminals: terms
             )
         }
+        
+        return (projects: projectsList, unfiled: unfiled)
     }
 
     static func dot(for rows: [Input]) -> ProjectDot {

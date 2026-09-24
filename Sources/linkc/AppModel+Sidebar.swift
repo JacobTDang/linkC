@@ -67,7 +67,7 @@ extension AppModel {
             order: sidebarState.projectOrder,
             expandOverrides: sidebarState.expandOverrides,
             selectedId: selectedId
-        )
+        ).projects
     }
 
     /// Sessions that want the user — drives the menu-bar tint.

@@ -55,4 +55,14 @@ final class ProjectTabsTests: XCTestCase {
             titles: [:], activities: ["a": "Read the panel's drag gate", "b": "$ ls"])
         XCTAssertEqual(tabs.map(\.activity?.text), [nil, "Read the panel's drag gate", nil])
     }
+
+    func testAFiledTerminalIsATabOfItsProject() {
+        let tabs = ProjectTabs.tabs(
+            project: "/p/june",
+            sessions: [],
+            shells: [shell("s1", "/Users/j/school")],
+            filed: ["s1": "/p/june"],
+            titles: [:])
+        XCTAssertEqual(tabs.map(\.id), [ProjectTabs.boardID("/p/june"), "s1"])
+    }
 }

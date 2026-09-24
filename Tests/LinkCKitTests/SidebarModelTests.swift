@@ -14,9 +14,9 @@ final class SidebarModelTests: XCTestCase {
     }
 
     private func build(
-        _ inputs: [SidebarModel.Input], order: [String] = [], overrides: [String: Bool] = [:], selected: String? = nil
+        _ inputs: [SidebarModel.Input], shells: [ShellRow] = [], filed: [String: String] = [:], order: [String] = [], overrides: [String: Bool] = [:], selected: String? = nil
     ) -> [SidebarProject] {
-        SidebarModel.projects(inputs: inputs, order: order, expandOverrides: overrides, selectedId: selected)
+        SidebarModel.projects(inputs: inputs, shells: shells, filed: filed, order: order, expandOverrides: overrides, selectedId: selected).projects
     }
 
     func testProjectsFollowTheStoredOrderAndUnknownOnesComeLastInOpenedOrder() {
@@ -81,7 +81,36 @@ final class SidebarModelTests: XCTestCase {
                 SidebarModel.Input(session: idle, title: "i", status: status, hasRunningSubagents: false, activity: "$ swift test"),
             ],
             order: [], expandOverrides: [:], selectedId: nil
-        )[0].sessions
+        ).projects[0].sessions
         XCTAssertEqual(rows.map(\.activity?.text), ["$ swift test", nil])
+    }
+
+    func testTerminalsListUnderTheirProjectAndAFiledOnlyProjectShows() {
+        let s1 = ShellRow(id: "s1", cwd: "/p/linkc", title: "s1", state: .running)
+        let s2 = ShellRow(id: "s2", cwd: "/Users/j/school", title: "s2", state: .running)
+        let s3 = ShellRow(id: "s3", cwd: "/tmp", title: "s3", state: .running)
+        
+        let out = SidebarModel.projects(
+            inputs: [input("session1", cwd: "/p/linkc")],
+            shells: [s1, s2, s3],
+            filed: ["s2": "/p/june"],
+            order: ["/p/linkc", "/p/june"],
+            expandOverrides: [:],
+            selectedId: nil
+        )
+        let projects = out.projects
+        
+        XCTAssertEqual(projects.count, 2)
+        XCTAssertEqual(projects[0].path, "/p/linkc")
+        XCTAssertEqual(projects[0].sessions.map(\.id), ["session1"])
+        XCTAssertEqual(projects[0].terminals.map(\.id), ["s1"])
+        
+        XCTAssertEqual(projects[1].path, "/p/june")
+        XCTAssertEqual(projects[1].name, "june") // last component
+        XCTAssertEqual(projects[1].dot, .none) // quiet dot
+        XCTAssertEqual(projects[1].sessions.count, 0)
+        XCTAssertEqual(projects[1].terminals.map(\.id), ["s2"])
+        
+        XCTAssertEqual(out.unfiled.map(\.id), ["s3"])
     }
 }
