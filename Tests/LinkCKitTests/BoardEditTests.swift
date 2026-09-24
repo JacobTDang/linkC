@@ -135,6 +135,34 @@ final class BoardEditTests: XCTestCase {
         XCTAssertThrowsError(try BoardEdit.steps(from: "add redis"))
     }
 
+    // MARK: - The steps-list refusal names no step number; a per-verb unknown field lists what is allowed
+
+    func testTheStepsListRefusalNamesNoStepNumber() throws {
+        XCTAssertThrowsError(try BoardEdit.steps(from: [] as [Any])) { error in
+            let description = (error as? BoardEditRefusal)?.description ?? ""
+            XCTAssertFalse(description.lowercased().contains("step 0"), description)
+            XCTAssertTrue(description.contains("1"), description)
+            XCTAssertTrue(description.contains("50"), description)
+        }
+        XCTAssertThrowsError(try BoardEdit.steps(from: Array(repeating: ["note": "n"], count: 51))) { error in
+            let description = (error as? BoardEditRefusal)?.description ?? ""
+            XCTAssertFalse(description.lowercased().contains("step 0"), description)
+        }
+    }
+
+    func testUnknownFieldRefusalListsTheVerbsAllowedFields() throws {
+        XCTAssertEqual(refusal([["add": "x", "name": "y"]], on: .empty)?.description,
+                       #"step 1: unknown field "name" — add takes: kind, in, does, reached_by, runs, planned"#)
+        XCTAssertEqual(refusal([["update": "x", "name": "y"]], on: try june())?.description,
+                       #"step 1: unknown field "name" — update takes: kind, in, does, reached_by, runs, planned, rename"#)
+        XCTAssertEqual(refusal([["connect": "api", "to": "postgres", "foo": "bar"]], on: try june())?.description,
+                       #"step 1: unknown field "foo" — connect takes: to, label"#)
+        XCTAssertEqual(refusal([["place": "x", "foo": "bar"]], on: .empty)?.description,
+                       #"step 1: unknown field "foo" — place takes: rename"#)
+        XCTAssertEqual(refusal([["remove": "x", "foo": "bar"]], on: .empty)?.description,
+                       #"step 1: unknown field "foo" — remove takes: (none)"#)
+    }
+
     func testAnEmptyMapStartsFromNothing() throws {
         let result = try apply([["place": "Local docker"], ["add": "api", "in": "Local docker"], ["add": "db", "kind": "database", "in": "Local docker"], ["connect": "api", "to": "db"]], to: .empty)
         XCTAssertEqual(Set(result.map.components.map(\.place)), ["Local docker"])

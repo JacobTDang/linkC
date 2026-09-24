@@ -83,6 +83,35 @@ final class MCPServerBoardTests: XCTestCase {
         XCTAssertTrue(names.isSuperset(of: ["linkc_get_board", "linkc_edit_board"]))
     }
 
+    /// Agents can only discover the step grammar from the tool schema itself — one line per verb,
+    /// naming its fields exactly, plus how `"planned"` shows up on a read.
+    func testEditBoardToolDescribesTheStepGrammar() throws {
+        let req: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/list"]
+        let res = try XCTUnwrap(server().handleMessage(try JSONSerialization.data(withJSONObject: req)))
+        let tools = (((try JSONSerialization.jsonObject(with: res) as? [String: Any])?["result"] as? [String: Any])?["tools"] as? [[String: Any]]) ?? []
+        let tool = try XCTUnwrap(tools.first { $0["name"] as? String == "linkc_edit_board" })
+        let schema = try XCTUnwrap(tool["inputSchema"] as? [String: Any])
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        let steps = try XCTUnwrap(properties["steps"] as? [String: Any])
+        let description = try XCTUnwrap(steps["description"] as? String)
+        for line in [
+            #"add: {"add": name, "kind"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool}"#,
+            #"update: {"update": name, same optional fields, "rename"?: new name}"#,
+            #"remove: {"remove": name}"#,
+            #"connect: {"connect": from, "to": to, "label"?}"#,
+            #"disconnect: {"disconnect": from, "to": to}"#,
+            #"place: {"place": label} or {"place": label, "rename": new label}"#,
+            #"remove_place: {"remove_place": label}"#,
+            #"note: {"note": text}"#,
+            #"remove_note: {"remove_note": exact text}"#,
+            #"system: {"system": one line}"#,
+        ] {
+            XCTAssertTrue(description.contains(line), "missing: \(line)")
+        }
+        XCTAssertTrue(description.contains("\"planned\": true"), description)
+        XCTAssertTrue(description.contains("\"status\": \"planned\""), description)
+    }
+
     // MARK: - The retry-once path
 
     func testEditBoardRetriesOnceWhenTheFileChangesUnderneathIt() throws {

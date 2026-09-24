@@ -76,6 +76,24 @@ public final class MCPServer: Sendable {
     public static let unidentifiedCallerMessage =
         "Cannot identify calling agent; pass agent: \"claude\" | \"agy\" | \"cursor\" | \"codex\"."
 
+    /// `linkc_edit_board`'s `steps` schema description: the only place an agent can discover the
+    /// step grammar, so it names every verb's fields exactly, one short line each, matching
+    /// `BoardEdit`'s own decoding.
+    static let stepsSchemaDescription = """
+        1 to 50 steps, applied in order, all or nothing. One verb per step, naming its fields exactly:
+        add: {"add": name, "kind"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool}
+        update: {"update": name, same optional fields, "rename"?: new name}
+        remove: {"remove": name}
+        connect: {"connect": from, "to": to, "label"?}
+        disconnect: {"disconnect": from, "to": to}
+        place: {"place": label} or {"place": label, "rename": new label}
+        remove_place: {"remove_place": label}
+        note: {"note": text}
+        remove_note: {"remove_note": exact text}
+        system: {"system": one line}
+        "planned": true marks something not built yet — linkc_get_board shows it as "status": "planned".
+        """
+
     public init(
         workspaceRoot: String,
         store: BlackboardStore? = nil,
@@ -236,7 +254,7 @@ public final class MCPServer: Sendable {
                         "steps": [
                             "type": "array",
                             "items": ["type": "object"],
-                            "description": "1 to 50 steps, applied in order, all or nothing. For example, to add a component: { \"add\": \"redis\", \"kind\": \"cache\", \"in\": \"Local docker\", \"does\": \"…\", \"reached_by\": \"…\", \"runs\": \"…\", \"planned\": true } — only \"add\" is required. To connect two components: { \"connect\": \"api\", \"to\": \"redis\", \"label\": \"session cache\" }."
+                            "description": Self.stepsSchemaDescription
                         ]
                     ],
                     "required": ["steps"]

@@ -27,11 +27,12 @@ public enum BoardEditStep: Equatable, Sendable {
 }
 
 /// A step `BoardEdit` would not apply, and why. `apply` is all-or-nothing: the first refusal
-/// throws and nothing is returned.
+/// throws and nothing is returned. `step` is 1-based; `0` means the refusal is about the `steps`
+/// list itself, not any one step in it, so `description` names no step number for it.
 public struct BoardEditRefusal: Error, Equatable, CustomStringConvertible {
-    public let step: Int          // 1-based
+    public let step: Int          // 1-based; 0 for a refusal about the list itself
     public let reason: String
-    public var description: String { "step \(step): \(reason)" }
+    public var description: String { step > 0 ? "step \(step): \(reason)" : reason }
 }
 
 /// Turns the MCP tool's `steps` argument into a `BoardMap`, by the Board's own placement and
@@ -46,12 +47,27 @@ public enum BoardEdit {
     private static let stringFieldKeys: Set<String> = ["kind", "does", "reached_by", "runs", "in", "rename", "to", "label"]
     private static let boolFieldKeys: Set<String> = ["planned"]
 
+    /// The fields each verb accepts besides its own name-bearing key, in the order the tool's
+    /// schema documents them — what an unknown-field refusal lists as "takes:".
+    private static let allowedFields: [String: [String]] = [
+        "add": ["kind", "in", "does", "reached_by", "runs", "planned"],
+        "update": ["kind", "in", "does", "reached_by", "runs", "planned", "rename"],
+        "remove": [],
+        "connect": ["to", "label"],
+        "disconnect": ["to"],
+        "place": ["rename"],
+        "remove_place": [],
+        "note": [],
+        "remove_note": [],
+        "system": [],
+    ]
+
     // MARK: - Decoding
 
     /// Decodes the tool's `steps` argument. Throws `BoardEditRefusal` for a malformed step.
     public static func steps(from json: Any?) throws -> [BoardEditStep] {
         guard let array = json as? [Any], !array.isEmpty, array.count <= maxSteps else {
-            throw BoardEditRefusal(step: 0, reason: "\"steps\" must be a list of 1 to \(maxSteps) steps")
+            throw BoardEditRefusal(step: 0, reason: "steps must be a list of 1 to \(maxSteps) objects")
         }
         return try array.enumerated().map { index, raw in try decodeStep(raw, step: index + 1) }
     }
@@ -65,7 +81,9 @@ public enum BoardEdit {
             throw BoardEditRefusal(step: step, reason: "needs exactly one of \(verbKeys.sorted().joined(separator: ", "))")
         }
         for key in object.keys where key != verb && !stringFieldKeys.contains(key) && !boolFieldKeys.contains(key) {
-            throw BoardEditRefusal(step: step, reason: "unknown field \"\(key)\"")
+            let allowed = allowedFields[verb] ?? []
+            let takes = allowed.isEmpty ? "(none)" : allowed.joined(separator: ", ")
+            throw BoardEditRefusal(step: step, reason: "unknown field \"\(key)\" — \(verb) takes: \(takes)")
         }
 
         func stringField(_ key: String) throws -> String? {
