@@ -1,17 +1,13 @@
 import Foundation
 
-/// The board's plain maths: sizes, containment, collisions, arrow routes and what is on screen.
-/// No UI, no state — every rule the canvas follows is here and tested here.
+/// The board's plain maths: sizes, containment, collisions and what is on screen. No UI, no
+/// state — every rule the canvas follows is here and tested here.
 public enum BoardGeometry {
     public static let componentSize = BoardPoint(x: 176, y: 84)
     public static let noteSize = BoardPoint(x: 176, y: 120)
     public static let frameMinSize = BoardPoint(x: 192, y: 100)
     /// The margin kept between a frame's border and anything inside it.
     public static let frameInset = 8
-    /// How far an arrow's elbow keeps clear of the box it bends around.
-    static let clearance = 16
-    /// The furthest an elbow may swing from the straight line; beyond it there is no simple route.
-    static let maxDetour = 480
 
     public static func textHeight(_ style: BoardTextStyle) -> Int {
         style == .title ? 32 : 20
@@ -160,58 +156,6 @@ public enum BoardGeometry {
             if (otherFrames + foreignElements).contains(where: { $0.intersects(candidate) }) { return nil }
         }
         return nil
-    }
-
-    /// An arrow's path: from the side of `source` facing `target` to the side of `target` facing
-    /// `source`. Straight when clear; otherwise an elbow around the boxes in the way, on whichever
-    /// side is shorter; direct again when neither elbow is clear.
-    public static func route(from source: BoardRect, to target: BoardRect, obstacles: [BoardRect]) -> [BoardPoint] {
-        let blockers = obstacles.filter { $0 != source && $0 != target }
-        let dx = target.center.x - source.center.x
-        let dy = target.center.y - source.center.y
-        let horizontal = abs(dx) >= abs(dy)
-
-        let start: BoardPoint
-        let end: BoardPoint
-        if horizontal {
-            start = BoardPoint(x: dx >= 0 ? source.maxX : source.minX, y: source.center.y)
-            end = BoardPoint(x: dx >= 0 ? target.minX : target.maxX, y: target.center.y)
-        } else {
-            start = BoardPoint(x: source.center.x, y: dy >= 0 ? source.maxY : source.minY)
-            end = BoardPoint(x: target.center.x, y: dy >= 0 ? target.minY : target.maxY)
-        }
-
-        let direct = [start, end]
-        let inTheWay = blockers.filter { segmentIntersects(start, end, $0) }
-        guard !inTheWay.isEmpty else { return direct }
-
-        var options: [[BoardPoint]] = []
-        if horizontal {
-            let lead = dx >= 0 ? clearance : -clearance
-            let above = (inTheWay.map(\.minY).min() ?? start.y) - clearance
-            let below = (inTheWay.map(\.maxY).max() ?? start.y) + clearance
-            for detour in [above, below] where abs(detour - start.y) <= maxDetour {
-                options.append([start, BoardPoint(x: start.x + lead, y: start.y), BoardPoint(x: start.x + lead, y: detour),
-                                BoardPoint(x: end.x - lead, y: detour), BoardPoint(x: end.x - lead, y: end.y), end])
-            }
-        } else {
-            let lead = dy >= 0 ? clearance : -clearance
-            let left = (inTheWay.map(\.minX).min() ?? start.x) - clearance
-            let right = (inTheWay.map(\.maxX).max() ?? start.x) + clearance
-            for detour in [left, right] where abs(detour - start.x) <= maxDetour {
-                options.append([start, BoardPoint(x: start.x, y: start.y + lead), BoardPoint(x: detour, y: start.y + lead),
-                                BoardPoint(x: detour, y: end.y - lead), BoardPoint(x: end.x, y: end.y - lead), end])
-            }
-        }
-
-        let clear = options.filter { path in
-            zip(path, path.dropFirst()).allSatisfy { a, b in !blockers.contains { segmentIntersects(a, b, $0) } }
-        }
-        return clear.min { length($0) < length($1) } ?? direct
-    }
-
-    private static func length(_ path: [BoardPoint]) -> Int {
-        zip(path, path.dropFirst()).reduce(0) { total, pair in total + abs(pair.1.x - pair.0.x) + abs(pair.1.y - pair.0.y) }
     }
 
     /// Whether the segment from `a` to `b` passes through the inside of `rect` (touching an edge

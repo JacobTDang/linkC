@@ -30,6 +30,8 @@ struct BoardToolbar: View {
             toolButton(.frame, glyph: "rectangle.dashed", title: "Frame", key: "F")
             toolButton(.note, glyph: "note.text", title: "Note", key: "N")
             toolButton(.text, glyph: "textformat", title: "Text", key: "T")
+            Rectangle().fill(Theme.textTertiary.opacity(0.25)).frame(width: 1, height: 16).padding(.horizontal, 2)
+            tidyUpButton
         }
         .padding(5)
         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.boardBox.opacity(0.96)))
@@ -40,6 +42,24 @@ struct BoardToolbar: View {
     private var isComponentTool: Bool {
         if case .component = board.tool { return true }
         return false
+    }
+
+    /// Rearranges the whole map by flow, as one undo step — disabled while the board refuses
+    /// edits, or while there's nothing to arrange.
+    private var tidyUpButton: some View {
+        Button { board.tidyUp() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "wand.and.stars").font(.system(size: 11))
+                Text("Tidy up").font(.system(size: 11))
+            }
+            .foregroundStyle(Theme.textSecondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(board.isLocked || board.isEmpty)
+        .help("Tidy up — rearrange the whole map by flow")
     }
 
     private func toolButton(_ tool: BoardModel.Tool, glyph: String, title: String, key: String) -> some View {

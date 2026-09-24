@@ -37,8 +37,11 @@ struct BoardCanvas: View {
     /// something else.
     @State private var frameRenameRefusal: String?
     @State private var editingArrow: BoardModel.ArrowKey?
-    /// A component under the pointer, whose side handles are showing.
+    /// A component under the pointer, whose side handles are showing — also the focus, when
+    /// nothing is hovered but exactly one component is selected.
     @State private var hovered: String?
+    /// An arrow under the pointer, while the pointer moves over empty canvas.
+    @State private var hoveredArrow: BoardModel.ArrowKey?
     /// An arrow being drawn: the component it leaves and the pointer, in screen points.
     @State private var arrowDraft: (from: String, to: CGPoint)?
     /// A frame being drawn, in screen points.
@@ -118,6 +121,29 @@ struct BoardCanvas: View {
             .onTapGesture(count: 1, coordinateSpace: .named(Self.space)) { location in
                 backgroundTapped(at: location)
             }
+            .onContinuousHover { phase in
+                guard dragging.isEmpty, board.tool == .select else { hoveredArrow = nil; return }
+                switch phase {
+                case .active(let location): hoveredArrow = arrow(near: location, tolerance: 5)
+                case .ended: hoveredArrow = nil
+                }
+            }
+    }
+
+    /// The hovered component, or else the one selected component — what a focus dims everything
+    /// else around. View state only; nothing here writes to the model.
+    private var focusedComponent: String? {
+        if let hovered { return hovered }
+        if board.selection.count == 1, case let .component(name)? = board.selection.first { return name }
+        return nil
+    }
+
+    /// Whether `name` is the focus itself, or shares an arrow with it either way.
+    private func isConnected(_ name: String, to focus: String) -> Bool {
+        if name == focus { return true }
+        if board.map.components.first(where: { $0.name == focus })?.uses.keys.contains(name) == true { return true }
+        if board.map.components.first(where: { $0.name == name })?.uses.keys.contains(focus) == true { return true }
+        return false
     }
 
     private var drawing: some View {
@@ -157,6 +183,7 @@ struct BoardCanvas: View {
                 if let at = component.at {
                     ComponentBox(component: component, status: board.statuses[component.name],
                                  isSelected: board.selection.contains(.component(component.name)))
+                        .opacity(focusedComponent.map { isConnected(component.name, to: $0) ? 1 : 0.3 } ?? 1)
                         .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component.name) } }
                         .overlay { glow(.component(component.name), cornerRadius: 10) }
                         .onHover { inside in
@@ -421,62 +448,107 @@ struct BoardCanvas: View {
         }
     }
 
+    /// One arrow's points, and whether they are a live drag preview rather than its real route.
+    private struct ArrowDraw {
+        let points: [BoardPoint]
+        let isPreview: Bool
+    }
+
+    /// Every arrow: routed, with rounded corners, its label pill where the layout placed one; a
+    /// focus turns its own arrows to the accent colour and shows every one of their labels, and
+    /// dims every other arrow to 12% with its pill hidden; hovering a hidden label's arrow, with
+    /// no focus, reveals it at its longest segment's midpoint.
     private func drawArrows(in context: inout GraphicsContext) {
+        let focus = focusedComponent
         for component in board.map.components {
             for (target, label) in component.uses {
                 let key = BoardModel.ArrowKey(from: component.name, to: target)
-                guard let points = livePoints(for: key) else { continue }
-                let screen = points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
-                let selected = board.selection.contains(.arrow(key))
+                guard let draw = arrowDraw(for: key) else { continue }
+                let screen = draw.points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
+                let touchesFocus = focus != nil && (key.from == focus || key.to == focus)
+                let isHovered = hoveredArrow == key
+                let highlighted = touchesFocus || isHovered || board.selection.contains(.arrow(key))
+                let dimmed = focus != nil && !touchesFocus
                 let planned = board.map.components.first { $0.name == target }?.planned == true
-                let colour = selected ? Theme.accent : Theme.boardArrow
-                context.stroke(arrowPath(screen), with: .color(colour),
-                               style: StrokeStyle(lineWidth: selected ? 1.8 : 1.3, lineCap: .round, lineJoin: .round, dash: planned ? [4, 4] : []))
-                if let head = arrowHead(screen) { context.fill(head, with: .color(colour)) }
-                if !label.isEmpty, let mid = labelPoint(screen) {
-                    let text = context.resolve(Text(label).font(.system(size: 9.5)).foregroundColor(Theme.textSecondary))
-                    let measured = text.measure(in: CGSize(width: 240, height: 40))
-                    let box = CGRect(x: mid.x - measured.width / 2 - 5, y: mid.y - measured.height / 2 - 2,
-                                     width: measured.width + 10, height: measured.height + 4)
-                    context.fill(Path(roundedRect: box, cornerRadius: 4), with: .color(Theme.boardBackground))
-                    context.draw(text, at: mid)
+                let colour = (highlighted ? Theme.accent : Theme.boardArrow).opacity(dimmed ? 0.12 : 1)
+                let path = draw.isPreview ? straightPath(screen) : roundedArrowPath(screen)
+                context.stroke(path, with: .color(colour),
+                               style: StrokeStyle(lineWidth: highlighted ? 1.8 : 1.3, lineCap: .round, lineJoin: .round,
+                                                  dash: (planned || draw.isPreview) ? [4, 4] : []))
+                if !draw.isPreview, let head = arrowHead(screen) { context.fill(head, with: .color(colour)) }
+                guard !label.isEmpty else { continue }
+                if focus != nil {
+                    guard touchesFocus else { continue }
+                    if let center = board.labelRects[key]?.center ?? fallbackLabelCenter(draw.points) {
+                        drawPill(at: center, label: label, in: &context)
+                    }
+                } else if let rect = board.labelRects[key] {
+                    drawPill(at: rect.center, label: label, in: &context)
+                } else if isHovered, let center = fallbackLabelCenter(draw.points) {
+                    drawPill(at: center, label: label, in: &context)
                 }
             }
         }
     }
 
-    /// A straight arrow draws as a gentle curve leaving and entering along its anchor sides; an
-    /// elbow draws through its points with rounded joins.
-    private func arrowPath(_ points: [CGPoint]) -> Path {
-        var path = Path()
-        guard let first = points.first, let last = points.last else { return path }
-        path.move(to: first)
-        if points.count == 2 {
-            let horizontal = abs(last.x - first.x) >= abs(last.y - first.y)
-            let pull = horizontal ? (last.x - first.x) * 0.4 : (last.y - first.y) * 0.4
-            let c1 = horizontal ? CGPoint(x: first.x + pull, y: first.y) : CGPoint(x: first.x, y: first.y + pull)
-            let c2 = horizontal ? CGPoint(x: last.x - pull, y: last.y) : CGPoint(x: last.x, y: last.y - pull)
-            path.addCurve(to: last, control1: c1, control2: c2)
-        } else {
-            for point in points.dropFirst() { path.addLine(to: point) }
+    /// An arrow's route, or — while its source or target is being dragged — a straight line
+    /// between their live centres. The router never runs during a drag; the model re-routes on
+    /// release.
+    private func arrowDraw(for key: BoardModel.ArrowKey) -> ArrowDraw? {
+        guard !dragging.isEmpty else {
+            guard let points = board.routes[key]?.points else { return nil }
+            return ArrowDraw(points: points, isPreview: false)
         }
+        func liveRect(_ name: String) -> BoardRect? {
+            guard let component = board.map.components.first(where: { $0.name == name }), let rect = componentRect(component) else { return nil }
+            let offset = liveOffset(for: .component(name), place: component.place)
+            return rect.offsetBy(dx: Int(offset.width), dy: Int(offset.height))
+        }
+        guard let from = liveRect(key.from), let to = liveRect(key.to) else { return nil }
+        let moved = liveOffset(for: .component(key.from), place: nil) != .zero
+            || liveOffset(for: .component(key.to), place: nil) != .zero
+            || board.map.components.contains { ($0.name == key.from || $0.name == key.to) && dragging.contains(.frame($0.place)) }
+        guard moved else {
+            guard let points = board.routes[key]?.points else { return nil }
+            return ArrowDraw(points: points, isPreview: false)
+        }
+        return ArrowDraw(points: [from.center, to.center], isPreview: true)
+    }
+
+    /// A routed arrow's corners round off by 7 pt; a straight (2-point) arrow, routed or a drag
+    /// preview, is just the line between them.
+    private func roundedArrowPath(_ points: [CGPoint], radius: CGFloat = 7) -> Path {
+        guard points.count > 2 else { return straightPath(points) }
+        var path = Path()
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        func towards(_ a: CGPoint, _ b: CGPoint, _ dist: CGFloat) -> CGPoint {
+            let length = max(abs(b.x - a.x) + abs(b.y - a.y), 0.0001)
+            let k = min(dist, length / 2) / length
+            return CGPoint(x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k)
+        }
+        for i in 1..<(points.count - 1) {
+            let p0 = points[i - 1], p1 = points[i], p2 = points[i + 1]
+            path.addLine(to: towards(p1, p0, radius))
+            path.addQuadCurve(to: towards(p1, p2, radius), control: p1)
+        }
+        path.addLine(to: points[points.count - 1])
         return path
     }
 
-    /// The head points the way the arrow arrives: along its anchor side for a curve, along the
-    /// last segment for an elbow.
+    private func straightPath(_ points: [CGPoint]) -> Path {
+        var path = Path()
+        guard let first = points.first, let last = points.last else { return path }
+        path.move(to: first)
+        path.addLine(to: last)
+        return path
+    }
+
+    /// The head points along the arrow's last segment.
     private func arrowHead(_ points: [CGPoint]) -> Path? {
         guard points.count >= 2, let tip = points.last else { return nil }
-        let angle: Double
-        if points.count == 2 {
-            let first = points[0]
-            angle = abs(tip.x - first.x) >= abs(tip.y - first.y)
-                ? (tip.x >= first.x ? 0 : .pi)
-                : (tip.y >= first.y ? .pi / 2 : -.pi / 2)
-        } else {
-            let from = points[points.count - 2]
-            angle = atan2(Double(tip.y - from.y), Double(tip.x - from.x))
-        }
+        let from = points[points.count - 2]
+        let angle = atan2(Double(tip.y - from.y), Double(tip.x - from.x))
         let length = 7.0
         var path = Path()
         path.move(to: tip)
@@ -484,6 +556,32 @@ struct BoardCanvas: View {
         path.addLine(to: CGPoint(x: tip.x - length * cos(angle + 0.45), y: tip.y - length * sin(angle + 0.45)))
         path.closeSubpath()
         return path
+    }
+
+    /// An arrow label's pill: a rounded rect in `Theme.boardBackground`, stroked in a faint
+    /// white, the label centred in it — drawn at `center` (canvas points).
+    private func drawPill(at center: BoardPoint, label: String, in context: inout GraphicsContext) {
+        let screenCenter = viewport.toScreen(CGPoint(x: Double(center.x), y: Double(center.y)))
+        let text = context.resolve(Text(label).font(.system(size: 10)).foregroundColor(Theme.textSecondary))
+        let measured = text.measure(in: CGSize(width: 320, height: 30))
+        let box = CGRect(x: screenCenter.x - measured.width / 2 - 7, y: screenCenter.y - 9,
+                         width: measured.width + 14, height: 18)
+        let path = Path(roundedRect: box, cornerRadius: 9)
+        context.fill(path, with: .color(Theme.boardBackground))
+        context.stroke(path, with: .color(Color.white.opacity(0.12)), lineWidth: 1)
+        context.draw(text, at: screenCenter)
+    }
+
+    /// Where an arrow's label goes when the layout found it no room: the midpoint of its longest
+    /// segment, canvas points.
+    private func fallbackLabelCenter(_ points: [BoardPoint]) -> BoardPoint? {
+        var longest: (a: BoardPoint, b: BoardPoint, length: Int)?
+        for (a, b) in zip(points, points.dropFirst()) {
+            let length = abs(b.x - a.x) + abs(b.y - a.y)
+            if longest == nil || length > longest!.length { longest = (a, b, length) }
+        }
+        guard let longest else { return nil }
+        return BoardPoint(x: (longest.a.x + longest.b.x) / 2, y: (longest.a.y + longest.b.y) / 2)
     }
 
     private func labelPoint(_ points: [CGPoint]) -> CGPoint? {
@@ -521,21 +619,6 @@ struct BoardCanvas: View {
         } ?? false
         guard dragging.contains(element) || carriedByPlace || carriedByFrame else { return .zero }
         return CGSize(width: dragOffset.width / viewport.zoom, height: dragOffset.height / viewport.zoom)
-    }
-
-    /// An arrow's points, following its ends live while either is being dragged.
-    private func livePoints(for key: BoardModel.ArrowKey) -> [BoardPoint]? {
-        guard !dragging.isEmpty else { return board.routes[key]?.points }
-        func liveRect(_ name: String) -> BoardRect? {
-            guard let component = board.map.components.first(where: { $0.name == name }), let rect = componentRect(component) else { return nil }
-            let offset = liveOffset(for: .component(name), place: component.place)
-            return rect.offsetBy(dx: Int(offset.width), dy: Int(offset.height))
-        }
-        guard let from = liveRect(key.from), let to = liveRect(key.to) else { return nil }
-        let moved = liveOffset(for: .component(key.from), place: nil) != .zero
-            || liveOffset(for: .component(key.to), place: nil) != .zero
-            || board.map.components.contains { ($0.name == key.from || $0.name == key.to) && dragging.contains(.frame($0.place)) }
-        return moved ? BoardGeometry.route(from: from, to: to, obstacles: []) : board.routes[key]?.points
     }
 
     // MARK: - Viewport
@@ -773,11 +856,11 @@ struct BoardCanvas: View {
         board.tool = .select
     }
 
-    /// The arrow within 6 screen points of `location`, if any.
-    func arrow(near location: CGPoint) -> BoardModel.ArrowKey? {
+    /// The arrow within `tolerance` screen points of `location`, if any.
+    func arrow(near location: CGPoint, tolerance: CGFloat = 6) -> BoardModel.ArrowKey? {
         for (key, route) in board.routes {
             let screen = route.points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
-            for (a, b) in zip(screen, screen.dropFirst()) where distance(from: location, toSegment: a, b) < 6 {
+            for (a, b) in zip(screen, screen.dropFirst()) where distance(from: location, toSegment: a, b) < tolerance {
                 return key
             }
         }

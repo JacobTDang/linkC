@@ -91,41 +91,12 @@ final class BoardGeometryTests: XCTestCase {
                      "a frame hemmed in below cannot grow")
     }
 
-    func testAnArrowLeavesFromTheFacingSides() {
-        let api = BoardRect(x: 0, y: 0, w: 152, h: 56)
-        let db = BoardRect(x: 400, y: 0, w: 152, h: 56)
-        XCTAssertEqual(BoardGeometry.route(from: api, to: db, obstacles: []), [BoardPoint(x: 152, y: 28), BoardPoint(x: 400, y: 28)])
-        let below = BoardRect(x: 0, y: 300, w: 152, h: 56)
-        XCTAssertEqual(BoardGeometry.route(from: api, to: below, obstacles: []), [BoardPoint(x: 76, y: 56), BoardPoint(x: 76, y: 300)])
-    }
-
-    func testAnArrowBendsAroundABoxInItsWay() {
-        let api = BoardRect(x: 0, y: 100, w: 152, h: 56)
-        let blocker = BoardRect(x: 220, y: 100, w: 152, h: 56)
-        let db = BoardRect(x: 440, y: 100, w: 152, h: 56)
-        let route = BoardGeometry.route(from: api, to: db, obstacles: [blocker])
-        XCTAssertGreaterThan(route.count, 2, "it bends")
-        for (a, b) in zip(route, route.dropFirst()) {
-            XCTAssertFalse(BoardGeometry.segmentIntersects(a, b, blocker), "\(a) → \(b) crosses the blocker")
-        }
-        XCTAssertEqual(route.first, BoardPoint(x: 152, y: 128))
-        XCTAssertEqual(route.last, BoardPoint(x: 440, y: 128))
-    }
-
-    func testWithNoSimpleRouteTheArrowGoesDirect() {
-        let api = BoardRect(x: 0, y: 100, w: 152, h: 56)
-        let wall = BoardRect(x: 200, y: -5000, w: 20, h: 10000)
-        let db = BoardRect(x: 440, y: 100, w: 152, h: 56)
-        XCTAssertEqual(BoardGeometry.route(from: api, to: db, obstacles: [wall]).count, 2)
-    }
-
     func testOnlyWhatIsOnScreenIsKept() {
         let rects = [box(0, 0), box(900, 900), box(100, 100)]
         XCTAssertEqual(BoardGeometry.visibleIndices(of: rects, in: box(0, 0, 200, 200)), [0, 2])
     }
 
-    /// The budget: 200 drops and 200 routes on a 200-component board, well under a second even
-    /// in a debug build.
+    /// The budget: 200 drops on a 200-component board, well under a second even in a debug build.
     func testTwoHundredComponentsStayFast() {
         var placed: [BoardRect] = []
         for index in 0..<200 {
@@ -136,9 +107,6 @@ final class BoardGeometryTests: XCTestCase {
             _ = BoardGeometry.elementDrop(placed[index].offsetBy(dx: 40, dy: 40),
                                           otherElements: placed.enumerated().filter { $0.offset != index }.map(\.element),
                                           frames: [])
-        }
-        for index in 0..<199 {
-            _ = BoardGeometry.route(from: placed[index], to: placed[index + 1], obstacles: placed)
         }
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
     }

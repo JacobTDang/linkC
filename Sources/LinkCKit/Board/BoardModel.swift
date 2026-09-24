@@ -638,6 +638,10 @@ public final class BoardModel {
         return !changedOnDisk
     }
 
+    /// Whether the board currently refuses edits — `canEdit` itself, for the app: the Tidy up
+    /// button disables on this.
+    public var isLocked: Bool { !canEdit }
+
     /// Every edit: refused outright while the board is locked; otherwise applied to a copy, and —
     /// when it changed something — recorded for undo and followed by one scheduled write.
     func edit(_ change: (inout BoardMap) -> Bool) {
