@@ -89,7 +89,7 @@ final class SidebarModelTests: XCTestCase {
         let s1 = ShellRow(id: "s1", cwd: "/p/linkc", title: "s1", state: .running)
         let s2 = ShellRow(id: "s2", cwd: "/Users/j/school", title: "s2", state: .running)
         let s3 = ShellRow(id: "s3", cwd: "/tmp", title: "s3", state: .running)
-        
+
         let out = SidebarModel.projects(
             inputs: [input("session1", cwd: "/p/linkc")],
             shells: [s1, s2, s3],
@@ -99,18 +99,27 @@ final class SidebarModelTests: XCTestCase {
             selectedId: nil
         )
         let projects = out.projects
-        
+
         XCTAssertEqual(projects.count, 2)
         XCTAssertEqual(projects[0].path, "/p/linkc")
         XCTAssertEqual(projects[0].sessions.map(\.id), ["session1"])
         XCTAssertEqual(projects[0].terminals.map(\.id), ["s1"])
-        
+
         XCTAssertEqual(projects[1].path, "/p/june")
         XCTAssertEqual(projects[1].name, "june") // last component
         XCTAssertEqual(projects[1].dot, .none) // quiet dot
         XCTAssertEqual(projects[1].sessions.count, 0)
         XCTAssertEqual(projects[1].terminals.map(\.id), ["s2"])
-        
+
         XCTAssertEqual(out.unfiled.map(\.id), ["s3"])
+    }
+
+    func testFiledOnlyProjectsComeOutInAStableOrderRegardlessOfDictionaryOrder() {
+        let shells = ["e", "a", "c", "d", "b"].map { ShellRow(id: "t\($0)", cwd: "/tmp", title: "t\($0)", state: .running) }
+        let filed = Dictionary(uniqueKeysWithValues: shells.map { ($0.id, "/p/\($0.title.dropFirst())") })
+
+        let projects = build([], shells: shells, filed: filed, order: [])
+
+        XCTAssertEqual(projects.map(\.path), ["/p/a", "/p/b", "/p/c", "/p/d", "/p/e"])
     }
 }

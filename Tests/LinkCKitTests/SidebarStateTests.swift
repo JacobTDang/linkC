@@ -122,16 +122,16 @@ final class SidebarStateTests: XCTestCase {
     func testFilingsPersistAndPrune() {
         let state = SidebarState(defaults: defaults)
         state.file(terminal: "t1", under: "/p/june")
-        
+
         let reloaded = SidebarState(defaults: defaults)
         XCTAssertEqual(reloaded.terminalProjects, ["t1": "/p/june"])
-        
+
         reloaded.unfile(terminal: "t1")
         XCTAssertEqual(reloaded.terminalProjects, [:])
-        
+
         reloaded.file(terminal: "t1", under: "/p/june")
         reloaded.file(terminal: "t2", under: "/p/linkc")
-        
+
         reloaded.pruneTerminals(keeping: ["t2"])
         XCTAssertEqual(reloaded.terminalProjects, ["t2": "/p/linkc"])
     }

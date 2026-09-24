@@ -272,6 +272,9 @@ private struct ProjectsSection: View {
                     ForEach(project.sessions) { row in
                         SessionRow(row: row, isSelected: row.id == model.selectedId && model.boardProject == nil, model: model)
                     }
+                    ForEach(project.terminals) { row in
+                        ShellSidebarRow(row: row, isSelected: row.id == model.selectedId, model: model, indent: 18)
+                    }
                 }
             }
         }
@@ -341,7 +344,10 @@ private struct ProjectRow: View {
                 return false
             }
             let id = String(item.dropFirst("linkc-terminal:".count))
-            guard model.shellRows.contains(where: { $0.id == id }) else { return false }
+            guard model.shellRows.contains(where: { $0.id == id }) else {
+                NSLog("[linkC] drag ignored: no live terminal with id \(id)")
+                return false
+            }
             model.sidebarState.file(terminal: id, under: project.path)
             return true
         } isTargeted: { targeted in
@@ -440,6 +446,7 @@ private struct ShellSidebarRow: View {
     let row: ShellRow
     let isSelected: Bool
     let model: AppModel
+    var indent: CGFloat = 0
 
     private var isRunning: Bool { row.state == .running }
 
@@ -455,6 +462,7 @@ private struct ShellSidebarRow: View {
             title: row.title,
             titleColor: isRunning ? Theme.textPrimary : Theme.textSecondary,
             isSelected: isSelected,
+            indent: indent,
             help: isRunning ? "Open \(row.title)" : "View \(row.title)'s last output",
             action: { model.focus(row.id) }
         ) {

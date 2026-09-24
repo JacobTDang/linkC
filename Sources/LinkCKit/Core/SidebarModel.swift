@@ -63,26 +63,26 @@ public enum SidebarModel {
         inputs: [Input], shells: [ShellRow] = [], filed: [String: String] = [:], order: [String], expandOverrides: [String: Bool], selectedId: String?
     ) -> (projects: [SidebarProject], unfiled: [ShellRow]) {
         let rank = Dictionary(order.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
-        
+
         var projectPathsList: [String] = []
         var seenPaths: Set<String> = []
-        
+
         for input in inputs {
             let path = (input.session.cwd as NSString).standardizingPath
             if seenPaths.insert(path).inserted {
                 projectPathsList.append(path)
             }
         }
-        for path in filed.values {
+        for path in filed.values.sorted() {
             let standardized = (path as NSString).standardizingPath
             if seenPaths.insert(standardized).inserted {
                 projectPathsList.append(standardized)
             }
         }
-        
+
         var projectTerminals: [String: [ShellRow]] = [:]
         var unfiled: [ShellRow] = []
-        
+
         for shell in shells {
             if let p = TerminalFiling.project(forTerminal: shell.id, cwd: shell.cwd, filed: filed, projects: seenPaths) {
                 projectTerminals[p, default: []].append(shell)
@@ -93,22 +93,22 @@ public enum SidebarModel {
                 unfiled.append(shell)
             }
         }
-        
+
         let groups = ProjectGroup.group(sessions: inputs.map(\.session))
         let groupMap = Dictionary(uniqueKeysWithValues: groups.map { ($0.workspacePath, $0) })
-        
+
         let sorted = projectPathsList.enumerated().sorted { a, b in
             (rank[a.element] ?? order.count + a.offset)
                 < (rank[b.element] ?? order.count + b.offset)
         }.map(\.element)
-        
+
         let projectsList = sorted.map { path -> SidebarProject in
             let group = groupMap[path]
             let rows = inputs.filter { ($0.session.cwd as NSString).standardizingPath == path }
             let terms = projectTerminals[path] ?? []
             let holdsSelection = rows.contains { $0.session.id == selectedId } || terms.contains { $0.id == selectedId }
             let name = group?.title ?? URL(fileURLWithPath: path).lastPathComponent
-            
+
             return SidebarProject(
                 path: path,
                 name: name,
@@ -122,7 +122,7 @@ public enum SidebarModel {
                 terminals: terms
             )
         }
-        
+
         return (projects: projectsList, unfiled: unfiled)
     }
 

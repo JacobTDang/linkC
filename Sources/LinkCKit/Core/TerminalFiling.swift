@@ -7,15 +7,14 @@ public enum TerminalFiling {
         if let explicit = filed[id] {
             return explicit
         }
-        
-        let url = URL(fileURLWithPath: cwd).standardized
+
+        let standardizedCwd = (cwd as NSString).standardizingPath
         for p in projects {
-            let pUrl = URL(fileURLWithPath: p).standardized
-            if url.path == pUrl.path {
+            if standardizedCwd == (p as NSString).standardizingPath {
                 return p
             }
         }
-        
+
         return nil
     }
 }

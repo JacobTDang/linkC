@@ -116,7 +116,8 @@ extension AppModel {
         let now = Date()
         attention.retain(only: Set(sessions.map(\.id)))
         markOnScreenSeen(at: now)
-        sidebarState.noteProjects(ProjectGroup.group(sessions: sessions).map(\.workspacePath))
+        let filedPaths = Set(sidebarState.terminalProjects.values.map { ($0 as NSString).standardizingPath }).sorted()
+        sidebarState.noteProjects(ProjectGroup.group(sessions: sessions).map(\.workspacePath) + filedPaths)
         let selectedProject = sessions.first { $0.id == selectedId }
             .map { ($0.cwd as NSString).standardizingPath }
         sidebarState.noteSelectedProject(selectedProject)
