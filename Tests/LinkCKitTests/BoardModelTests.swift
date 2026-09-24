@@ -548,6 +548,35 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.selection, [.component("postgres")])
     }
 
+    /// `updateComponent(_:fields:rename:)` — the one implementation behind the inspector's
+    /// "commit only what the user touched" — must leave every field the caller left `nil` exactly
+    /// as it already is, so an outside change to a field the user never opened stays in place.
+    func testUpdateComponentFieldsOnlyTouchesWhatWasGiven() throws {
+        let board = fresh()
+        let name = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
+
+        // An outside edit — or any prior edit — changed `does`.
+        XCTAssertTrue(board.updateComponent(name, fields: BoardComponentFields(does: "handles requests")))
+
+        // The user only touches `kind`: `does` must survive untouched.
+        XCTAssertTrue(board.updateComponent(name, fields: BoardComponentFields(kind: .database)))
+        let updated = try XCTUnwrap(board.map.components.first { $0.name == name })
+        XCTAssertEqual(updated.kind, .database, "the user's own change lands")
+        XCTAssertEqual(updated.does, "handles requests", "a field the user never touched survives untouched")
+    }
+
+    /// With no `rename` given, the fields overload never runs the rename/uniqueness check at
+    /// all — not even when the current name would, coincidentally, fail it.
+    func testUpdateComponentFieldsWithNoRenameNeverTouchesTheName() throws {
+        let board = fresh()
+        let a = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
+        _ = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 400, y: 0)))
+
+        XCTAssertTrue(board.updateComponent(a, fields: BoardComponentFields(does: "reads and writes")))
+        XCTAssertEqual(board.map.components.first { $0.name == a }?.name, a, "the name is untouched")
+        XCTAssertNil(board.refusal)
+    }
+
     func testANameInUseIsRefusedAndNothingChanges() throws {
         let board = fresh()
         let a = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))

@@ -378,40 +378,68 @@ public final class BoardModel {
     /// Takes the editable fields from `updated`: name, kind, what it does, how it is reached, where
     /// it runs, whether it is planned. Its place, position and arrows are the drawing's. Returns
     /// false only when the edit was refused — the inspector stays open on false.
+    ///
+    /// A thin shim over `updateComponent(_:fields:rename:)`: every field is passed as an explicit
+    /// "set to this" value — a `nil` `does`/`reachedBy`/`runs` becomes `""`, which that overload
+    /// reads the same way, as "clear it" — and the name is always passed to `rename`, since this
+    /// overload has no notion of "leave a field alone".
     @discardableResult
     public func updateComponent(_ name: String, to updated: BoardComponent) -> Bool {
+        let fields = BoardComponentFields(
+            kind: updated.kind, does: updated.does ?? "", reachedBy: updated.reachedBy ?? "",
+            runs: updated.runs ?? "", planned: updated.planned)
+        return updateComponent(name, fields: fields, rename: updated.name)
+    }
+
+    /// Changes only the fields `fields` actually carries — `nil` leaves that field exactly as it
+    /// is, `""` clears `does`, `reachedBy` or `runs` — and renames it only when `rename` is given,
+    /// with the same checks `updateComponent(_:to:)` always ran: a blank name is refused, and so
+    /// is a clash with another component. The one implementation of the rename and uniqueness
+    /// rules; `updateComponent(_:to:)` is the other caller. Returns false only when refused.
+    ///
+    /// This is what lets an inspector card open on a stale, opened-time copy commit safely: with
+    /// `rename: nil` and only the fields the user actually touched, whatever changed on the same
+    /// component in the meantime — an agent's edit, say — is left exactly as it now is.
+    @discardableResult
+    public func updateComponent(_ name: String, fields: BoardComponentFields, rename newName: String? = nil) -> Bool {
         var refused = false
-        let newName = updated.name.trimmingCharacters(in: .whitespacesAndNewlines)
         edit { map in
             guard let index = Self.index(of: name, in: map) else { return false }
-            guard !newName.isEmpty else {
-                refused = true
-                return refuse("A component needs a name.")
-            }
-            if newName.lowercased() != name.lowercased(),
-               map.components.contains(where: { $0.name.lowercased() == newName.lowercased() }) {
-                refused = true
-                return refuse("This map already has a component named \"\(newName)\".")
-            }
             let old = map.components[index]
             var next = old
-            next.name = newName
-            next.kind = updated.kind
-            next.does = updated.does
-            next.reachedBy = updated.reachedBy
-            next.runs = updated.runs
-            next.planned = updated.planned
+            if let kind = fields.kind { next.kind = kind }
+            if let does = fields.does { next.does = does.isEmpty ? nil : does }
+            if let reachedBy = fields.reachedBy { next.reachedBy = reachedBy.isEmpty ? nil : reachedBy }
+            if let runs = fields.runs { next.runs = runs.isEmpty ? nil : runs }
+            if let planned = fields.planned { next.planned = planned }
+
+            var finalName = name
+            if let newName {
+                let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    refused = true
+                    return refuse("A component needs a name.")
+                }
+                if trimmed.lowercased() != name.lowercased(),
+                   map.components.contains(where: { $0.name.lowercased() == trimmed.lowercased() }) {
+                    refused = true
+                    return refuse("This map already has a component named \"\(trimmed)\".")
+                }
+                next.name = trimmed
+                finalName = trimmed
+            }
+
             guard next != old else { return false }
             map.components[index] = next
-            if newName != name {
+            if finalName != name {
                 for other in map.components.indices {
                     if let label = map.components[other].uses.removeValue(forKey: name) {
-                        map.components[other].uses[newName] = label
+                        map.components[other].uses[finalName] = label
                     }
                 }
                 // Carried here, before `afterMapChange` filters the selection against the renamed
                 // map — done afterward, the old name would already be gone and filtered out.
-                selection = Set(selection.map { $0 == .component(name) ? .component(newName) : $0 })
+                selection = Set(selection.map { $0 == .component(name) ? .component(finalName) : $0 })
             }
             return true
         }
