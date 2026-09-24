@@ -23,6 +23,8 @@ public enum BoardRouter {
     /// The extra cost, per unit of length, of running an arrow's route through a foreign frame's
     /// inflated rect. Component and note boxes are never this soft — they stay hard obstacles.
     private static let frameCrossingCost = 6.0
+    /// How far outward and upward a self-loop reaches before turning back into the box.
+    private static let selfLoopReach = 20
 
     // MARK: - Public entry point
 
@@ -50,8 +52,10 @@ public enum BoardRouter {
         let arrowKeys = labelOf.keys.sorted(by: orderKey)
         guard !arrowKeys.isEmpty else { return [:] }
 
-        // 2. Bundles.
-        let (bundleOf, outAnchors, inAnchors) = bundles(arrowKeys: arrowKeys, labelOf: labelOf, byLowercasedName: byLowercasedName)
+        // 2. Bundles. An arrow from a component to itself never bundles — it always draws its
+        // own fixed corner loop, whatever label it shares with other arrows.
+        let bundleableKeys = arrowKeys.filter { $0.from.lowercased() != $0.to.lowercased() }
+        let (bundleOf, outAnchors, inAnchors) = bundles(arrowKeys: bundleableKeys, labelOf: labelOf, byLowercasedName: byLowercasedName)
 
         // Geometry shared by every arrow.
         let componentBox = Dictionary(uniqueKeysWithValues: map.components.compactMap { c -> (String, BoardRect)? in
@@ -75,6 +79,17 @@ public enum BoardRouter {
                 map: map, sourceName: source.name, targetName: target.name,
                 sourceBox: sourceBox, targetBox: targetBox, componentBox: componentBox, noteBoxes: noteBoxes)
             obstaclesByArrow[key] = hardObstacles
+
+            // An arrow to itself: a small fixed loop, never bundled, never routed through A*.
+            if key.from.lowercased() == key.to.lowercased() {
+                let points = selfLoop(sourceBox)
+                let selfId = arrowId(key)
+                results[key] = BoardRoute(points: points, bundle: nil)
+                for (a, b) in zip(points, points.dropFirst()) {
+                    routedSegments.append((a: a, b: b, id: selfId))
+                }
+                continue
+            }
 
             let bundleId = bundleOf[key]
             let selfId = bundleId ?? arrowId(key)
@@ -120,7 +135,7 @@ public enum BoardRouter {
             }
         }
 
-        nudge(&results, obstaclesByArrow: obstaclesByArrow, bundleOf: bundleOf)
+        nudge(&results, obstaclesByArrow: obstaclesByArrow)
         return results
     }
 
@@ -245,6 +260,25 @@ public enum BoardRouter {
     private static func stub(_ port: BoardPoint, _ side: Side) -> BoardPoint {
         let o = outward(side)
         return BoardPoint(x: port.x + o.dx * clearance, y: port.y + o.dy * clearance)
+    }
+
+    // MARK: - Self-loop
+
+    /// An arrow from a box to itself: out its right side, up past its top, left to the top's 3/4
+    /// point, and down into the top — a small loop on the top-right corner that never crosses the
+    /// box, since every leg runs at or beyond the box's own right or top edge.
+    private static func selfLoop(_ box: BoardRect) -> [BoardPoint] {
+        let topY = box.minY
+        let rightX = box.maxX
+        let aboveY = topY - selfLoopReach
+        let entryX = box.minX + (box.w * 3) / 4
+        return [
+            BoardPoint(x: rightX, y: topY),
+            BoardPoint(x: rightX + selfLoopReach, y: topY),
+            BoardPoint(x: rightX + selfLoopReach, y: aboveY),
+            BoardPoint(x: entryX, y: aboveY),
+            BoardPoint(x: entryX, y: topY),
+        ]
     }
 
     // MARK: - Straight case
@@ -618,15 +652,19 @@ public enum BoardRouter {
     }
 
     private static func nudge(
-        _ routes: inout [BoardModel.ArrowKey: BoardRoute], obstaclesByArrow: [BoardModel.ArrowKey: [BoardRect]],
-        bundleOf: [BoardModel.ArrowKey: String]
+        _ routes: inout [BoardModel.ArrowKey: BoardRoute], obstaclesByArrow: [BoardModel.ArrowKey: [BoardRect]]
     ) {
         var horizontal: [Int: [NudgeSeg]] = [:]
         var vertical: [Int: [NudgeSeg]] = [:]
 
         for key in routes.keys.sorted(by: orderKey) {
             guard let points = routes[key]?.points, points.count >= 4 else { continue }
-            let id = bundleOf[key] ?? arrowId(key)
+            // Per arrow, not per bundle: a bundle's shared segment is the one this loop's range
+            // already excludes (index 0 for an out-bundle, the last for an in-bundle), so every
+            // segment reaching here is already past the fan-out. Grouping those by the bundle's
+            // id instead of the arrow's own would stop two members' fanned-out segments — now
+            // genuinely different paths — from ever being recognised as different lanes.
+            let id = arrowId(key)
             for i in 1..<(points.count - 2) {
                 let a = points[i], b = points[i + 1]
                 if a.y == b.y, a.x != b.x {
@@ -690,6 +728,24 @@ public enum BoardRouter {
                         if obstacles.contains(where: { BoardGeometry.segmentIntersects(newA, newB, $0) }) {
                             valid = false
                             break
+                        }
+                        // The two segments sharing this one's endpoints change shape too — one
+                        // end moves with the shift, the other stays put — so a nudge that leaves
+                        // the shifted segment clear can still swing a neighbour into a box. Both
+                        // get the same check; either crossing reverts the whole shift.
+                        if r.seg.index - 1 >= 0 {
+                            let prevPoint = points[r.seg.index - 1]
+                            if obstacles.contains(where: { BoardGeometry.segmentIntersects(prevPoint, newA, $0) }) {
+                                valid = false
+                                break
+                            }
+                        }
+                        if r.seg.index + 2 < points.count {
+                            let nextPoint = points[r.seg.index + 2]
+                            if obstacles.contains(where: { BoardGeometry.segmentIntersects(newB, nextPoint, $0) }) {
+                                valid = false
+                                break
+                            }
                         }
                     }
                     guard valid else { continue }

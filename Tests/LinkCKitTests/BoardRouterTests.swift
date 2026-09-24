@@ -147,6 +147,50 @@ final class BoardRouterTests: XCTestCase {
         XCTAssertEqual(route.points.count, 2, "a straight line through its own (mislabelled) frame is not penalised")
     }
 
+    // MARK: - Nudging re-checks neighbours
+    //
+    // No test constructs a naive nudge pushing a neighbouring segment into a box: every reachable
+    // bend coordinate in this router's grid is either a source/target stub (exactly `clearance`
+    // from that box) or an obstacle's own inflated boundary — A*'s cost minimises away any slack,
+    // so it never leaves room between a bend and the obstacle that placed it there. A trap
+    // obstacle wide enough to reach the few-point nudge window (at most a handful of `laneGap`
+    // steps) around that bend is, at minimum-component-width 176, also wide enough to already
+    // overlap the unshifted neighbour's own span — so it either changes the pre-nudge route too
+    // (no longer isolating the nudge) or overlaps an existing box outright. The fix (re-checking
+    // both neighbours and reverting the shift) is implemented in `applyNudge` regardless.
+
+    // MARK: - An arrow to itself
+
+    /// A loop on the box's top-right: out the right side, up past the top, left to the top's 3/4
+    /// point, and down into the top. It must never cross the box.
+    func testAnArrowToItselfDrawsALoopAtTheTopRight() {
+        var m = BoardMap()
+        m.components = [BoardComponent(name: "a", kind: .service, uses: ["a": ""], at: BoardPoint(x: 100, y: 100))]
+        let route = BoardRouter.routes(for: m)[BoardModel.ArrowKey(from: "a", to: "a")]!
+        let box = BoardGeometry.rect(ofComponentAt: BoardPoint(x: 100, y: 100))
+        XCTAssertEqual(route.points.count, 5)
+        for (a, b) in segments(route) {
+            XCTAssertFalse(crosses(a, b, box), "loop crosses its own box")
+            XCTAssertTrue(a.x == b.x || a.y == b.y, "orthogonal")
+        }
+    }
+
+    // MARK: - Bundles after fan-out
+
+    /// Three members of one out-bundle share `hub`'s port, then fan out: `a` and `c` mirror each
+    /// other above and below the shared exit, and `e` sits above, close to `a` — its fanned-out
+    /// run genuinely overlaps `a`'s, not merely touching where they meet the shared port.
+    func testBundleMembersFanOutToSeparateLanes() {
+        var m = BoardMap()
+        m.components = [BoardComponent(name: "hub", kind: .service, uses: ["a": "hosts", "c": "hosts", "e": "hosts"], at: BoardPoint(x: 0, y: 200)),
+                        BoardComponent(name: "a", kind: .service, at: BoardPoint(x: 480, y: 0)),
+                        BoardComponent(name: "c", kind: .service, at: BoardPoint(x: 480, y: 400)),
+                        BoardComponent(name: "e", kind: .service, at: BoardPoint(x: 480, y: 90))]
+        let routes = BoardRouter.routes(for: m)
+        var vertical: [Int: Int] = [:]
+        for route in routes.values { for (a, b) in segments(route) where a.x == b.x && abs(a.y - b.y) > 40 { vertical[a.x, default: 0] += 1 } }
+        XCTAssertTrue(vertical.values.allSatisfy { $0 == 1 }, "no two members' long vertical runs share an x: \(vertical)")
+    }
 
     func testTwoHundredComponentsRouteWithinBudget() {
         var m = BoardMap()
