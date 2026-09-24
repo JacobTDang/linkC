@@ -167,7 +167,7 @@ struct BoardCanvas: View {
                                 component: component,
                                 livesIn: component.place,
                                 uses: component.uses.keys.sorted().map { ($0, component.uses[$0] ?? "") },
-                                commit: { board.updateComponent(component.name, to: $0) },
+                                commit: { fields, rename in board.updateComponent(component.name, fields: fields, rename: rename) },
                                 currentRefusal: { board.refusal },
                                 close: { inspecting = nil })
                         }

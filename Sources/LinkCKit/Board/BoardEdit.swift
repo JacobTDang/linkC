@@ -9,6 +9,14 @@ public struct BoardComponentFields: Equatable, Sendable {
     public var reachedBy: String?   // "" clears
     public var runs: String?        // "" clears
     public var planned: Bool?
+
+    public init(kind: ComponentKind? = nil, does: String? = nil, reachedBy: String? = nil, runs: String? = nil, planned: Bool? = nil) {
+        self.kind = kind
+        self.does = does
+        self.reachedBy = reachedBy
+        self.runs = runs
+        self.planned = planned
+    }
 }
 
 /// One instruction from the `linkc_edit_board` tool.

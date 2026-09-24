@@ -64,28 +64,36 @@ struct BoardToolbar: View {
     }
 }
 
-/// The card beside a selected component.
+/// The card beside a selected component. Opens on a snapshot of the component and never updates
+/// it from further re-renders while it's open — an agent's change to a field the user hasn't
+/// touched must go on showing what the user typed, not jump underneath it — so Done can commit
+/// just the fields the user actually changed, leaving anything else exactly as it now is.
 struct ComponentInspector: View {
     let livesIn: String
     let uses: [(target: String, label: String)]
-    /// Commits the draft; returns false when the board refused it, which keeps the card open.
-    let commit: (BoardComponent) -> Bool
+    /// Commits only the fields the user changed, and the new name when it changed too; returns
+    /// false when the board refused it, which keeps the card open.
+    let commit: (BoardComponentFields, _ rename: String?) -> Bool
     /// The board's refusal reason, read only when this card's own Done is refused — never a
     /// stale reason left over from something else.
     let currentRefusal: () -> String?
     let close: () -> Void
 
+    /// The component exactly as it was when the card opened — `@State` so it, like `draft`,
+    /// ignores every later `init` this view's re-renders pass it, and never drifts.
+    @State private var original: BoardComponent
     @State private var draft: BoardComponent
     @State private var refusal: String?
     @FocusState private var nameFocused: Bool
 
     init(component: BoardComponent, livesIn: String, uses: [(target: String, label: String)],
-         commit: @escaping (BoardComponent) -> Bool, currentRefusal: @escaping () -> String?, close: @escaping () -> Void) {
+         commit: @escaping (BoardComponentFields, _ rename: String?) -> Bool, currentRefusal: @escaping () -> String?, close: @escaping () -> Void) {
         self.livesIn = livesIn
         self.uses = uses
         self.commit = commit
         self.currentRefusal = currentRefusal
         self.close = close
+        _original = State(wrappedValue: component)
         _draft = State(wrappedValue: component)
     }
 
@@ -121,7 +129,7 @@ struct ComponentInspector: View {
             HStack {
                 Spacer()
                 Button("Done") {
-                    if commit(draft) {
+                    if commit(changedFields, draft.name != original.name ? draft.name : nil) {
                         close()
                     } else {
                         refusal = currentRefusal()
@@ -135,6 +143,17 @@ struct ComponentInspector: View {
         .padding(12)
         .frame(width: 280)
         .onAppear { nameFocused = true }
+    }
+
+    /// Only the fields that differ from `original` — `nil` for the rest, so `updateComponent`
+    /// leaves them exactly as they now are, whatever changed them since the card opened.
+    private var changedFields: BoardComponentFields {
+        BoardComponentFields(
+            kind: draft.kind != original.kind ? draft.kind : nil,
+            does: draft.does != original.does ? (draft.does ?? "") : nil,
+            reachedBy: draft.reachedBy != original.reachedBy ? (draft.reachedBy ?? "") : nil,
+            runs: draft.runs != original.runs ? (draft.runs ?? "") : nil,
+            planned: draft.planned != original.planned ? draft.planned : nil)
     }
 
     /// The known kinds, plus this component's own kind when linkC does not know it — so a
