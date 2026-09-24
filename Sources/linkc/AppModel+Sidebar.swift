@@ -64,10 +64,33 @@ extension AppModel {
         }
         return SidebarModel.projects(
             inputs: inputs,
+            shells: shellRows,
+            filed: sidebarState.terminalProjects,
             order: sidebarState.projectOrder,
             expandOverrides: sidebarState.expandOverrides,
             selectedId: selectedId
         ).projects
+    }
+
+    func unfiledTerminals() -> [ShellRow] {
+        let titles = sessionTitles
+        let inputs = sessions.map { session in
+            SidebarModel.Input(
+                session: session,
+                title: titles[session.id] ?? session.agentKind.shortName,
+                status: rowStatus(session, now: Date()),
+                hasRunningSubagents: false,
+                activity: nil
+            )
+        }
+        return SidebarModel.projects(
+            inputs: inputs,
+            shells: shellRows,
+            filed: sidebarState.terminalProjects,
+            order: sidebarState.projectOrder,
+            expandOverrides: sidebarState.expandOverrides,
+            selectedId: selectedId
+        ).unfiled
     }
 
     /// Sessions that want the user — drives the menu-bar tint.

@@ -58,6 +58,10 @@ struct ProjectTabStrip: View {
                             if let project = model.currentProject { model.spawnTeammate(in: project, agent: kind) }
                         }
                     }
+                    Divider()
+                    Button("New terminal") {
+                        if let project = model.currentProject { model.newTerminal(in: project) }
+                    }
                 } label: {
                     RowGlyph(systemName: "plus")
                 }

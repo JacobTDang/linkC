@@ -216,6 +216,8 @@ final class AppModel {
             let linkCSupport = support.appendingPathComponent("linkC", isDirectory: true)
             self.shells = ShellCoordinator(terminals: terminals, manifestDir: linkCSupport)
             self.shells?.restoreActiveShells()
+            let liveTerminals = Set(shellRows.map(\.id))
+            sidebarState.pruneTerminals(keeping: liveTerminals)
             startShellSweep()
             // Forget remembered folders with no live session and no Earlier entry.
             let standardized: (String) -> String = { ($0 as NSString).standardizingPath }
@@ -615,7 +617,10 @@ final class AppModel {
         if let boardProject { return boardProject }
         guard let id = selectedId else { return nil }
         if let session = sessions.first(where: { $0.id == id }) { return ProjectTabs.standardized(session.cwd) }
-        if let shell = shellRows.first(where: { $0.id == id }) { return ProjectTabs.standardized(shell.cwd) }
+        if let shell = shellRows.first(where: { $0.id == id }) {
+            let projects = Set(sidebarProjects(now: Date()).map(\.path))
+            return TerminalFiling.project(forTerminal: shell.id, cwd: shell.cwd, filed: sidebarState.terminalProjects, projects: projects) ?? ProjectTabs.standardized(shell.cwd)
+        }
         return nil
     }
 
@@ -628,7 +633,7 @@ final class AppModel {
             activities[session.id] = currentActivity(session)
         }
         return ProjectTabs.tabs(
-            project: project, sessions: sessions, shells: shellRows, titles: sessionTitles,
+            project: project, sessions: sessions, shells: shellRows, filed: sidebarState.terminalProjects, titles: sessionTitles,
             activities: activities)
     }
 
@@ -761,6 +766,18 @@ final class AppModel {
         }
     }
 
+    func newTerminal(in project: String) {
+        guard let shells else { return }
+        do {
+            lastError = nil
+            let row = try shells.launch(cwd: project)
+            sidebarState.file(terminal: row.id, under: project)
+            showSelection() // the new terminal is selected by launch — show it
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     /// Open a new dev terminal: pick a folder, get your login shell there.
     func newShellTerminal() {
         guard let shells else { return }
@@ -783,13 +800,20 @@ final class AppModel {
     }
 
     func stopShell(_ id: String) { shells?.stop(id) }
-    func dismissShell(_ id: String) { shells?.dismiss(id) }
+    func dismissShell(_ id: String) {
+        shells?.dismiss(id)
+        sidebarState.unfile(terminal: id)
+    }
 
     func relaunchShell(_ row: ShellRow) {
         guard let shells else { return }
         do {
             lastError = nil
-            try shells.relaunch(row)
+            let newRow = try shells.relaunch(row)
+            if let filedProject = sidebarState.terminalProjects[row.id] {
+                sidebarState.unfile(terminal: row.id)
+                sidebarState.file(terminal: newRow.id, under: filedProject)
+            }
             recents?.record(row.cwd)
             showSelection()  // the new terminal is selected — show it
         } catch {

@@ -283,6 +283,8 @@ private struct ProjectRow: View {
     let model: AppModel
     let onInspect: () -> Void
 
+    @State private var isTargeted = false
+
     var body: some View {
         SidebarRow(
             title: project.name,
@@ -299,6 +301,8 @@ private struct ProjectRow: View {
                         ForEach(AgentKind.allCases.filter { $0 != .shell }, id: \.self) { kind in
                             Button("Add \(kind.displayName)") { model.spawnTeammate(in: project.path, agent: kind) }
                         }
+                        Divider()
+                        Button("New terminal") { model.newTerminal(in: project.path) }
                     } label: {
                         RowGlyph(systemName: "plus")
                     }
@@ -322,6 +326,26 @@ private struct ProjectRow: View {
                 }
                 ProjectDotView(dot: project.dot)
             }
+        }
+        .overlay {
+            if isTargeted {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Theme.hover)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Theme.accent, lineWidth: 1)
+            }
+        }
+        .dropDestination(for: String.self) { items, _ in
+            guard let item = items.first, item.hasPrefix("linkc-terminal:") else {
+                NSLog("[linkC] drag ignored: unknown payload \(items)")
+                return false
+            }
+            let id = String(item.dropFirst("linkc-terminal:".count))
+            guard model.shellRows.contains(where: { $0.id == id }) else { return false }
+            model.sidebarState.file(terminal: id, under: project.path)
+            return true
+        } isTargeted: { targeted in
+            isTargeted = targeted
         }
     }
 }
@@ -393,10 +417,20 @@ private struct TerminalsSidebarSection: View {
     let model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            SectionLabel(title: "Terminals")
-            ForEach(model.shellRows) { row in
-                ShellSidebarRow(row: row, isSelected: row.id == model.selectedId, model: model)
+        let unfiled = model.unfiledTerminals()
+        if !unfiled.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                SectionLabel(title: "Terminals")
+                    .dropDestination(for: String.self) { items, _ in
+                        guard let item = items.first, item.hasPrefix("linkc-terminal:") else { return false }
+                        let id = String(item.dropFirst("linkc-terminal:".count))
+                        guard model.shellRows.contains(where: { $0.id == id }) else { return false }
+                        model.sidebarState.unfile(terminal: id)
+                        return true
+                    }
+                ForEach(unfiled) { row in
+                    ShellSidebarRow(row: row, isSelected: row.id == model.selectedId, model: model)
+                }
             }
         }
     }
@@ -444,6 +478,15 @@ private struct ShellSidebarRow: View {
                     }
                 }
                 Circle().fill(dotColor).frame(width: 6, height: 6)
+            }
+        }
+        .draggable("linkc-terminal:\(row.id)")
+        .contextMenu {
+            if let filed = model.sidebarState.terminalProjects[row.id] {
+                let name = URL(fileURLWithPath: filed).lastPathComponent
+                Button("Move out of \(name)") {
+                    model.sidebarState.unfile(terminal: row.id)
+                }
             }
         }
     }
