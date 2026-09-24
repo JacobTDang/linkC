@@ -730,6 +730,36 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.map.components.first { $0.name == api }?.uses[db], "reads entries")
     }
 
+    /// Starting a newer recompute cancels the detached task a superseded one is still running —
+    /// cheap insurance so a stale recompute stops doing work rather than racing to a result that
+    /// gets thrown away anyway. Capturing the handle right after the first call and asserting on
+    /// it before the second returns is deterministic: task creation is synchronous on the main
+    /// actor, so there is no race to capture the right handle or to observe the cancel.
+    func testASupersededRoutingTaskIsCancelled() async {
+        let board = fresh()
+        _ = board.recomputeRoutes()
+        let supersededDetached = board.routingTask
+        let latest = board.recomputeRoutes()
+        XCTAssertEqual(supersededDetached?.isCancelled, true, "a newer recompute must cancel the one it supersedes")
+        await latest.value
+    }
+
+    /// `routesAndLabels` checks cancellation between routing and labelling: routing itself is not
+    /// cancellation-aware and always completes, but labelling is skipped once cancelled.
+    func testRoutesAndLabelsSkipsLabellingOnceCancelledBetweenRouterAndLabels() throws {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "a", kind: .service, uses: ["b": "reads"], at: BoardPoint(x: 0, y: 0)),
+            BoardComponent(name: "b", kind: .service, at: BoardPoint(x: 400, y: 0)),
+        ]
+        let cancelled = BoardModel.routesAndLabels(for: m, isCancelled: { true })
+        XCTAssertNil(cancelled, "cancelled between the router and labels, so labelling — and the result — is skipped")
+
+        let notCancelled = try XCTUnwrap(BoardModel.routesAndLabels(for: m, isCancelled: { false }))
+        XCTAssertFalse(notCancelled.routes.isEmpty, "routing itself is not cancellation-aware and always completes")
+        XCTAssertFalse(notCancelled.labelRects.isEmpty)
+    }
+
     /// A second arrow to the same component spelled in another case is still the same arrow —
     /// not a second entry under a different key.
     func testAddArrowDuplicateCheckIsCaseInsensitiveAndKeepsTheRealSpelling() throws {

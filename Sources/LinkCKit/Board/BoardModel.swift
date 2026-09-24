@@ -86,6 +86,10 @@ public final class BoardModel {
     /// A separate counter from `generation` — writes and routing race independently, and a route
     /// recompute must never be skipped or delayed by an unrelated write in flight, nor vice versa.
     @ObservationIgnored private var routingGeneration = 0
+    /// The detached task doing the current recompute's work, cancelled the moment a newer one
+    /// starts — a superseded recompute stops rather than racing to a result that would be
+    /// dropped anyway. Internal, not private, so a test can capture and assert on the handle.
+    @ObservationIgnored var routingTask: Task<(routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect])?, Never>?
     @ObservationIgnored private var hasUnwrittenEdits = false
     /// Whether `read()` has ever run — `load()`'s very first call has no "before" map worth
     /// taking a real change on disk against, so it always reads in full regardless of state.
@@ -681,29 +685,42 @@ public final class BoardModel {
 
     /// Routes every arrow and places every label off the main actor, from a `Sendable` snapshot
     /// of `map` — `BoardRouter` and `BoardLabels` are pure and never touch the model themselves.
-    /// The result lands back on the main actor only if no newer recompute has since started; a
-    /// generation counter of its own, separate from `generation` (writes), decides that — a write
-    /// in flight must never skip or delay a route recompute, nor the other way around. Internal,
-    /// not private, so a test can await the returned `Task` instead of racing the recompute.
+    /// The detached task doing that work is cancelled the moment a newer recompute starts, so a
+    /// superseded one stops rather than racing to a result thrown away anyway; the result also
+    /// lands back on the main actor only if no newer recompute has since started, by a generation
+    /// counter of its own, separate from `generation` (writes) — a write in flight must never
+    /// skip or delay a route recompute, nor the other way around. Internal, not private, so a
+    /// test can await the returned `Task`, or capture and assert on `routingTask`, instead of
+    /// racing the recompute.
     @discardableResult
     func recomputeRoutes() -> Task<Void, Never> {
         routingGeneration += 1
         let scheduled = routingGeneration
         let snapshot = map
+        routingTask?.cancel()
+        let detached = Task.detached {
+            Self.routesAndLabels(for: snapshot)
+        }
+        routingTask = detached
         return Task { @MainActor [weak self] in
-            let (routes, labelRects) = await Task.detached {
-                Self.routesAndLabels(for: snapshot)
-            }.value
+            guard let result = await detached.value, !Task.isCancelled else { return }
             guard let self, self.routingGeneration == scheduled else { return }
-            self.routes = routes
-            self.labelRects = labelRects
+            self.routes = result.routes
+            self.labelRects = result.labelRects
         }
     }
 
     /// The pure computation `recomputeRoutes()` runs off the main actor: every arrow's route, then
-    /// every labelled arrow's pill, from the same routes.
-    nonisolated private static func routesAndLabels(for map: BoardMap) -> (routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect]) {
+    /// every labelled arrow's pill, from the same routes. `BoardRouter` is not cancellation-aware
+    /// and always completes; `isCancelled` is checked once routing is done, before the (pricier,
+    /// skippable) labelling pass — cheap insurance against doing work for a result about to be
+    /// dropped. Internal, not private, and `isCancelled` is injectable, so a test can drive it
+    /// deterministically instead of racing real `Task` cancellation.
+    nonisolated static func routesAndLabels(
+        for map: BoardMap, isCancelled: () -> Bool = { Task.isCancelled }
+    ) -> (routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect])? {
         let routes = BoardRouter.routes(for: map)
+        guard !isCancelled() else { return nil }
         var labelOf: [ArrowKey: String] = [:]
         for component in map.components {
             for (target, label) in component.uses where !label.isEmpty {
