@@ -49,6 +49,9 @@ struct BoardCanvas: View {
     @State private var showingSuggestions = false
     @State private var systemDraft = ""
     @FocusState private var systemFocused: Bool
+    /// What the last outside change touched, glowing while `glowOpacity` fades back to 0.
+    @State private var glowing: Set<BoardModel.Element> = []
+    @State private var glowOpacity = 0.0
 
     var body: some View {
         GeometryReader { geometry in
@@ -79,6 +82,23 @@ struct BoardCanvas: View {
             }
         }
         .background(Theme.boardBackground)
+        .onChange(of: board.outsideChange?.id) { _, _ in outsideChangeArrived() }
+    }
+
+    /// Lights up what the change touched at full opacity, then — on the next runloop turn, so
+    /// SwiftUI has actually rendered that full-opacity frame first — fades it out over 2 seconds.
+    /// `glowing` clears itself once the fade completes, unless a newer change has since landed.
+    private func outsideChangeArrived() {
+        glowing = board.outsideChange?.elements ?? []
+        glowOpacity = 1
+        let change = board.outsideChange?.id
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 2)) {
+                glowOpacity = 0
+            } completion: {
+                if board.outsideChange?.id == change { glowing = [] }
+            }
+        }
     }
 
     // MARK: - Layers
@@ -137,6 +157,7 @@ struct BoardCanvas: View {
                     ComponentBox(component: component, status: board.statuses[component.name],
                                  isSelected: board.selection.contains(.component(component.name)))
                         .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component.name) } }
+                        .overlay { glow(.component(component.name), cornerRadius: 10) }
                         .onHover { inside in
                             if inside { hovered = component.name } else if hovered == component.name { hovered = nil }
                         }
@@ -173,6 +194,7 @@ struct BoardCanvas: View {
                                 .gesture(elementDrag(.note(note.id)))
                                 .onTapGesture(count: 2) { editingNote = note.id }
                                 .onTapGesture { select(.note(note.id)) }
+                                .overlay { glow(.note(note.id), cornerRadius: 10) }
                         }
                     }
                     .offset(x: CGFloat(at.x), y: CGFloat(at.y))
@@ -201,6 +223,15 @@ struct BoardCanvas: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .scaleEffect(viewport.zoom, anchor: .topLeading)
         .offset(x: -viewport.originX * viewport.zoom, y: -viewport.originY * viewport.zoom)
+    }
+
+    /// The soft accent outline an outside change leaves on a component or note; nothing when it
+    /// isn't glowing.
+    @ViewBuilder
+    private func glow(_ element: BoardModel.Element, cornerRadius: CGFloat) -> some View {
+        if glowing.contains(element) {
+            RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(Theme.accent.opacity(glowOpacity), lineWidth: 2)
+        }
     }
 
     @ViewBuilder
@@ -366,6 +397,9 @@ struct BoardCanvas: View {
             context.fill(path, with: .color(Theme.boardFrameFill))
             let selected = board.selection.contains(.frame(frame.label))
             context.stroke(path, with: .color(selected ? Theme.accent.opacity(0.7) : Theme.boardFrameStroke), lineWidth: 1)
+            if glowing.contains(.frame(frame.label)) {
+                context.stroke(path, with: .color(Theme.accent.opacity(glowOpacity)), lineWidth: 2)
+            }
         }
     }
 

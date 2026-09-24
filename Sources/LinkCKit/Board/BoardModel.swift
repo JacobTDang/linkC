@@ -223,6 +223,12 @@ public final class BoardModel {
         write()
     }
 
+    /// The file watcher couldn't start. The board stays exactly as it loaded — editable, just not
+    /// live — and says so on its banner.
+    public func liveUpdatesFailed(_ message: String) {
+        writeFailure = "Live updates are off: \(message)"
+    }
+
     // MARK: - Undo
 
     public func undo() {
