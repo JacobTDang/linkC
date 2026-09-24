@@ -46,4 +46,17 @@ final class BoardFileWatcherTests: XCTestCase {
     func testAMissingFolderThrows() {
         XCTAssertThrowsError(try BoardFileWatcher(fileURL: folder.appendingPathComponent("nope/system-map.json")) {})
     }
+
+    /// `stop()` must be safe to call more than once — `BoardPane` calls it on disappear, and a
+    /// caller that replaces a watcher without keeping a stale reference around must never hang or
+    /// crash doing so either way: explicitly, or by just letting the old one go.
+    func testStopIsIdempotentAndDeinitWithoutAnExplicitStopIsSafe() throws {
+        let watcher = try BoardFileWatcher(fileURL: file) {}
+        watcher.stop()
+        watcher.stop()   // must not hang or crash
+
+        var another: BoardFileWatcher? = try BoardFileWatcher(fileURL: file) {}
+        another = nil   // deinit, with no explicit stop() first — must not hang or crash
+        _ = another
+    }
 }

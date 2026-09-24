@@ -11,6 +11,8 @@ public final class BoardFileWatcher: @unchecked Sendable {
     /// Owns every dispatch source and descriptor below; only this queue ever touches them, so
     /// the folder event, the file event and `stop()`'s teardown never race each other.
     private let queue = DispatchQueue(label: "linkc.board-file-watcher")
+    /// Tags `queue`, so `teardown()` can tell whether it is already running on it — see there.
+    private let queueKey = DispatchSpecificKey<Void>()
     private var folderSource: DispatchSourceFileSystemObject?
     private var fileSource: DispatchSourceFileSystemObject?
 
@@ -22,6 +24,7 @@ public final class BoardFileWatcher: @unchecked Sendable {
     public init(fileURL: URL, onChange: @escaping @MainActor () -> Void) throws {
         self.fileURL = fileURL
         self.onChange = onChange
+        queue.setSpecific(key: queueKey, value: ())
 
         let folderPath = fileURL.deletingLastPathComponent().path
         let folderDescriptor = open(folderPath, O_EVTONLY)
@@ -57,13 +60,26 @@ public final class BoardFileWatcher: @unchecked Sendable {
         }
     }
 
+    /// Cancels both sources. Safe to call from `deinit`, which can run on `queue` itself: the
+    /// last strong reference to this watcher can be released from inside its own event handler
+    /// (`[weak self] in self?.folderChanged()` briefly holds one for the call), and if nothing
+    /// else outlives that moment, `deinit` fires right there, synchronously, on `queue`. A plain
+    /// `queue.sync` here would then deadlock — a serial queue can never `sync` into itself. When
+    /// `queueKey` shows we're already running on `queue`, cancelling inline is not just safe but
+    /// correct: we are already exactly as serialized as `sync` would make us.
     private func teardown() {
-        queue.sync {
-            folderSource?.cancel()
-            folderSource = nil
-            fileSource?.cancel()
-            fileSource = nil
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            cancelSources()
+        } else {
+            queue.sync { cancelSources() }
         }
+    }
+
+    private func cancelSources() {
+        folderSource?.cancel()
+        folderSource = nil
+        fileSource?.cancel()
+        fileSource = nil
     }
 
     // MARK: - Confined to `queue`
