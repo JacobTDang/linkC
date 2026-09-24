@@ -330,7 +330,7 @@ final class AppModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled else { break }
-                self?.sampleShellAgents()
+                self?.sampleShells()
                 self?.sampleSidebar()
             }
         }
@@ -531,7 +531,8 @@ final class AppModel {
         }
     }
 
-    func sampleShellAgents() {
+    func sampleShells() {
+        shells?.sampleDirectories()
         shells?.sampleAgents()
         var shellAgents: [String: [AgentKind]] = [:]
         for row in shellRows {

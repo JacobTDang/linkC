@@ -232,4 +232,26 @@ final class ShellPersistenceTests: XCTestCase {
         XCTAssertTrue(coordinator.restorables.isEmpty)
         XCTAssertTrue(ShellManifest(directory: dir).entries.isEmpty, "persisted")
     }
+
+    func testAShellThatChangesFolderIsRenamedAndRememberedThere() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let terminals = TerminalSessionManager()
+        defer { for session in terminals.sessions { terminals.terminate(session.id) } }
+        let coordinator = ShellCoordinator(terminals: terminals, manifestDir: dir, shellPath: { "/bin/sh" })
+
+        let row = try coordinator.launch(cwd: "/tmp")
+        terminals.sendInput(sessionId: row.id, text: "cd /usr")
+        for _ in 0..<150 {
+            coordinator.sampleDirectories()
+            if coordinator.store.row(id: row.id)?.cwd == "/usr" { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertEqual(coordinator.store.row(id: row.id)?.cwd, "/usr")
+        XCTAssertEqual(coordinator.store.row(id: row.id)?.title, "usr")
+        let entry = try XCTUnwrap(ShellManifest(directory: dir).entries.first { $0.id == row.id })
+        XCTAssertEqual(entry.cwd, "/usr", "a restore reopens where the shell was left")
+        XCTAssertEqual(entry.title, "usr")
+    }
 }

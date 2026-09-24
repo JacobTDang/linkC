@@ -17,6 +17,9 @@ public final class ShellCoordinator {
     /// Shells remembered from a previous run — restorable rows, not live ones. Kept in
     /// sync with the manifest so the UI can observe one source.
     public private(set) var restorables: [RestorableShell] = []
+    /// Ids whose folder read failed and was logged. Cleared on the next successful read, so a
+    /// failure is logged once, not every second.
+    private var unreadableDirectories: Set<String> = []
 
     public init(
         terminals: TerminalSessionManager,
@@ -114,6 +117,33 @@ public final class ShellCoordinator {
                 let agent = terminal.sampleForegroundAgent()
                 store.updateDetectedAgent(id: row.id, agent: agent == .shell ? nil : agent)
             }
+        }
+    }
+
+    /// Follows each running shell into the folder it is now in after a `cd`. The row's folder,
+    /// and a plain terminal's name, update, and the manifest remembers the new folder so a
+    /// restore reopens there. Runs from the one-second shell sweep.
+    public func sampleDirectories() {
+        for row in store.rows where row.state == .running {
+            guard let terminal = terminals.session(id: row.id), terminal.isRunning, terminal.processId > 0 else { continue }
+            guard let raw = ProcessSnooper.currentDirectory(ofPid: terminal.processId) else {
+                if unreadableDirectories.insert(row.id).inserted {
+                    NSLog("[linkC] shell %@: could not read the folder of pid %d", row.id, terminal.processId)
+                }
+                continue
+            }
+            unreadableDirectories.remove(row.id)
+            let directory = (raw as NSString).standardizingPath
+            guard let updated = store.updateDirectory(id: row.id, to: directory) else { continue }
+            manifest?.upsert(RestorableShell(
+                id: updated.id,
+                cwd: updated.cwd,
+                title: updated.title,
+                command: updated.command,
+                wasActiveOnQuit: true,
+                detectedAgent: updated.detectedAgent,
+                endedAt: nil
+            ))
         }
     }
 
