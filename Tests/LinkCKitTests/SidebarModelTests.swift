@@ -166,4 +166,21 @@ final class SidebarModelTests: XCTestCase {
         XCTAssertEqual(out.projects[1].terminals.map(\.id), ["s2"], "a filed terminal stays where it was filed")
         XCTAssertTrue(out.unfiled.isEmpty)
     }
+
+    func testATerminalInASubfolderListsUnderItsProject() {
+        let s1 = ShellRow(id: "s1", cwd: "/p/linkc/Sources", title: "s1", state: .running)
+
+        let out = SidebarModel.projects(
+            inputs: [input("session1", cwd: "/p/linkc")],
+            shells: [s1],
+            filed: [:],
+            order: [],
+            expandOverrides: [:],
+            selectedId: nil
+        )
+
+        XCTAssertEqual(out.projects.map(\.path), ["/p/linkc"])
+        XCTAssertEqual(out.projects[0].terminals.map(\.id), ["s1"])
+        XCTAssertTrue(out.unfiled.isEmpty)
+    }
 }

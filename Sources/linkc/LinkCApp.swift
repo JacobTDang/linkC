@@ -537,7 +537,13 @@ final class AppModel {
         var shellAgents: [String: [AgentKind]] = [:]
         for row in shellRows {
             if let agent = row.detectedAgent {
-                shellAgents[row.cwd, default: []].append(agent)
+                // The same resolution `currentProject` uses: a terminal that `cd`s into a
+                // subfolder (e.g. `cd Sources`) must still count toward its project's swarm
+                // check, not toward the subfolder as if it were a separate project.
+                let key = TerminalFiling.project(
+                    forTerminal: row.id, cwd: row.cwd, filed: sidebarState.terminalProjects, projects: knownProjectPaths
+                ) ?? ProjectTabs.standardized(row.cwd)
+                shellAgents[key, default: []].append(agent)
             }
         }
         coordinator?.sampleSwarms(additionalAgents: shellAgents)
