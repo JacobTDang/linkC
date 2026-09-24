@@ -341,6 +341,9 @@ struct BoardCanvas: View {
                         BoardBanner(text: "Couldn't save the map: \(failure)", tone: Theme.contextWarn,
                                     action: ("Retry", { board.saveNow() }))
                     }
+                    if let liveUpdatesOff = board.liveUpdatesOff {
+                        BoardBanner(text: liveUpdatesOff, tone: Theme.textTertiary)
+                    }
                     Spacer()
                     if let refusal = board.refusal {
                         Text(refusal).font(.system(size: 11)).foregroundStyle(Theme.accent)
@@ -851,7 +854,9 @@ struct BoardNotice: View {
 struct BoardBanner: View {
     let text: String
     let tone: Color
-    let action: (String, () -> Void)
+    /// `nil` for a quiet banner with nothing to do about it — the watcher being off, say, where
+    /// there is no retry that means anything.
+    var action: (String, () -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -860,10 +865,12 @@ struct BoardBanner: View {
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textPrimary)
                 .lineLimit(2)
-            Button(action.0, action: action.1)
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(tone)
+            if let action {
+                Button(action.0, action: action.1)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tone)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)

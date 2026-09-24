@@ -147,6 +147,21 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(try store.load()?.map.system, "June, again")
     }
 
+    /// The watcher failing to start is not a save failure: it must not read as one (no "Couldn't
+    /// save the map" banner with a Retry that retries a save), and a save succeeding must not
+    /// silently clear it — the two are unrelated conditions.
+    func testLiveUpdatesFailedSetsItsOwnBannerSeparateFromWriteFailure() throws {
+        let board = fresh()
+        board.liveUpdatesFailed("no such file")
+        XCTAssertEqual(board.liveUpdatesOff, "Live updates are off: no such file")
+        XCTAssertNil(board.writeFailure, "must not be mistaken for a save failure")
+
+        board.setSystem("June")
+        board.saveNow()
+        XCTAssertNil(board.writeFailure)
+        XCTAssertEqual(board.liveUpdatesOff, "Live updates are off: no such file", "a save has nothing to do with the watcher")
+    }
+
     /// A save collision's retry must not run once `diskChanged()` (called to resolve the
     /// collision) finds the file has actually gone unreadable — that already locked the board as
     /// `.failed`; running the retry anyway used to make the save fail a second time too, setting

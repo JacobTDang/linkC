@@ -61,6 +61,9 @@ public final class BoardModel {
     public private(set) var refusal: String?
     /// A save that did not stick. The board stays editable; the next edit or `saveNow` retries.
     public private(set) var writeFailure: String?
+    /// The file watcher couldn't start. The board is otherwise fine — editable, just not live —
+    /// so this is never read as a save failure, and a save landing has nothing to do with it.
+    public private(set) var liveUpdatesOff: String?
     /// The file changed underneath the board. Set only when a save collides twice running — the
     /// last resort; see `write()`.
     public private(set) var changedOnDisk = false
@@ -259,9 +262,9 @@ public final class BoardModel {
     }
 
     /// The file watcher couldn't start. The board stays exactly as it loaded — editable, just not
-    /// live — and says so on its banner.
+    /// live — and says so on its own quiet banner, never the save-failure one.
     public func liveUpdatesFailed(_ message: String) {
-        writeFailure = "Live updates are off: \(message)"
+        liveUpdatesOff = "Live updates are off: \(message)"
     }
 
     // MARK: - Undo
