@@ -439,6 +439,31 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(Set(try XCTUnwrap(try store.load()).map.components.map(\.name)), ["new-database", "redis"])
     }
 
+    /// A tab switch while the file is unreadable must not wipe a pending edit's map: when the
+    /// file comes back, the merge would read the wiped map as "mine deleted everything" and
+    /// write that to disk.
+    func testReappearingOnAnUnreadableFileKeepsAPendingEditAndLosesNothing() throws {
+        let board = fresh()
+        board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0))
+        board.addComponent(kind: .database, at: BoardPoint(x: 400, y: 0))
+        board.saveNow()
+        let good = try Data(contentsOf: store.fileURL)
+        board.setSystem("pending")   // not yet written
+        try Data("<<<<<<< HEAD".utf8).write(to: store.fileURL)
+        board.diskChanged()
+        guard case .failed = board.state else { return XCTFail("an unreadable file locks") }
+
+        board.load()   // the tab switch back, file still broken
+        try good.write(to: store.fileURL, options: .atomic)
+        board.diskChanged()
+        board.saveNow()
+
+        XCTAssertEqual(Set(board.map.components.map(\.name)), ["new-service", "new-database"])
+        let onDisk = try XCTUnwrap(try store.load()).map
+        XCTAssertEqual(Set(onDisk.components.map(\.name)), ["new-service", "new-database"], "nothing wiped on disk")
+        XCTAssertEqual(board.map.system, "pending", "the pending edit survives")
+    }
+
     func testAnUnreadableFileLocksAndAFixedOneRecovers() throws {
         let board = fresh()
         board.setSystem("base")

@@ -120,11 +120,15 @@ public final class BoardModel {
     /// must never find the bytes unchanged and leave the board stuck — only "Try again"
     /// (`reload()`) and Reload are the deliberate way out of those.
     public func load() {
-        guard hasLoadedOnce, canEdit else {
-            read(keepingAnUnchangedMap: true)
+        if hasLoadedOnce, canEdit {
+            diskChanged()
             return
         }
-        diskChanged()
+        // A locked board holding an edit not yet written keeps it: a full read here would wipe
+        // the map while the edit still counts as pending, and the next merge would then read
+        // that wiped map as "mine deleted everything" and write it. Only Reload drops it.
+        guard !hasUnwrittenEdits else { return }
+        read(keepingAnUnchangedMap: true)
     }
 
     /// Drops any unwritten edits and reads the file again — the way out of `changedOnDisk` and
