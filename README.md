@@ -34,8 +34,16 @@ resizable, always clamped fully on-screen.
 
 ## Screenshots
 
-<!-- screenshot: home overview -->
-<!-- screenshot: session terminal -->
+**Project Board.** Every project gets a Board: a live architecture diagram that you and your
+agents edit (agents through linkC's MCP tools). It sits in tabs beside the project's sessions
+and terminals.
+
+![The Board, showing linkC's own architecture as components, frames and labelled arrows, next to the project sidebar](docs/images/board.png)
+
+**Session terminal.** An agent session in its embedded terminal. The sidebar groups sessions
+by project and ends with a usage summary.
+
+![A Claude Code session in its embedded terminal, next to the project sidebar](docs/images/session.png)
 
 ## Requirements
 
