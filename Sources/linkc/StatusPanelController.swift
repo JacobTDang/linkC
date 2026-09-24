@@ -52,6 +52,10 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     /// genuine `selectedId` transition resizes or auto-opens the panel.
     private var lastSelectedId: String?
 
+    /// The display `present` last put the panel on. A move off it is the user's choice only while
+    /// it is still connected; otherwise macOS is evacuating an unplugged monitor.
+    private var placedDisplayID: UInt32?
+
     /// Width: the user's persisted size, widened for the sidebar split while a session is
     /// selected. Height derives from the persisted size too.
     private let panelMinSize = CGSize(width: 340, height: 220)
@@ -65,6 +69,8 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         static let width = "StatusPanel.width"
         static let height = "StatusPanel.height"
     }
+
+    private static let panelDisplayIDKey = "LinkCPanelDisplayID"
 
     init(model: AppModel) {
         self.model = model
@@ -155,7 +161,10 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     /// short fade + drop from the menu bar; re-presenting an already-visible panel (or Reduce
     /// Motion) skips the motion.
     func present(activating: Bool) {
-        let target = anchoredFrame()
+        let (target, displayID) = anchoredFrame()
+        // Placed before the frame changes, so this call's own moves never read as the user's.
+        placedDisplayID = displayID
+        if rememberedPanelScreenID() == nil, let displayID { savePanelScreen(displayID) }
         let wasVisible = panel.isVisible
         model.panelVisible = true
         if activating { NSApp.activate(ignoringOtherApps: true) }
@@ -300,16 +309,51 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         )
     }
 
-    /// A rectangle stuck in the screen's top-right corner — right + top edges pinned to the corner,
-    /// just inside the menu bar. Uses the screen showing the status-item icon (multi-monitor),
-    /// never centered.
-    private func anchoredFrame() -> NSRect {
-        let screen = statusItemScreen() ?? NSScreen.main ?? NSScreen.screens[0]
+    /// A rectangle stuck in the chosen screen's top-right corner — right + top edges pinned to the
+    /// corner, just inside the menu bar. The last screen wins while it remains connected. Returns
+    /// the chosen display too, nil when there is no screen at all.
+    private func anchoredFrame() -> (frame: NSRect, displayID: UInt32?) {
         let size = panelSize()
+        let screens = NSScreen.screens
+        let pickedID = PanelScreenChoice.pick(
+            remembered: rememberedPanelScreenID(),
+            connected: screens.compactMap(\.displayID),
+            underMouse: screenUnderMouse()?.displayID,
+            statusItem: statusItemScreen()?.displayID
+        )
+        guard let pickedID, let screen = screens.first(where: { $0.displayID == pickedID }) else {
+            NSLog("linkC: no screen available for the status panel")
+            return (NSRect(origin: panel.frame.origin, size: size), nil)
+        }
         let visible = screen.visibleFrame
         let rightX = visible.maxX - edgeGap    // stuck in the top-right corner, not under the icon
         let topY = visible.maxY - edgeGap
-        return clampToScreen(NSRect(x: rightX - size.width, y: topY - size.height, width: size.width, height: size.height))
+        let frame = clampToScreen(NSRect(x: rightX - size.width, y: topY - size.height, width: size.width, height: size.height))
+        return (frame, pickedID)
+    }
+
+    private func rememberedPanelScreenID() -> UInt32? {
+        (UserDefaults.standard.object(forKey: Self.panelDisplayIDKey) as? NSNumber)?.uint32Value
+    }
+
+    private func savePanelScreen(_ displayID: UInt32) {
+        UserDefaults.standard.set(NSNumber(value: displayID), forKey: Self.panelDisplayIDKey)
+    }
+
+    /// Tracks where the panel really is; a user's move off the placed display is also remembered.
+    private func notePanelMoved() {
+        let move = PanelScreenChoice.afterMove(
+            to: screenContainingMost(panel.frame)?.displayID,
+            placed: placedDisplayID,
+            connected: NSScreen.screens.compactMap(\.displayID)
+        )
+        if let save = move.save { savePanelScreen(save) }
+        placedDisplayID = move.placed
+    }
+
+    private func screenUnderMouse() -> NSScreen? {
+        let location = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(location) }
     }
 
     /// The status-item icon's rect in screen coordinates (nil if it has no window yet — e.g. it's
@@ -327,7 +371,10 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     /// Keep a frame fully within its screen's visible area. Prefers holding the top and right
     /// edges (the anchor), shifting only when it would otherwise spill off screen.
     private func clampToScreen(_ frame: NSRect) -> NSRect {
-        let screen = screenContaining(frame) ?? NSScreen.main ?? NSScreen.screens[0]
+        guard let screen = screenContainingMost(frame) ?? NSScreen.main ?? NSScreen.screens.first else {
+            NSLog("linkC: no screen available to constrain the status panel")
+            return frame
+        }
         let visible = screen.visibleFrame
         var f = frame
         if f.maxX > visible.maxX { f.origin.x = visible.maxX - f.width }
@@ -337,8 +384,18 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         return f
     }
 
-    private func screenContaining(_ frame: NSRect) -> NSScreen? {
-        NSScreen.screens.first { $0.frame.intersects(frame) }
+    private func screenContainingMost(_ frame: NSRect) -> NSScreen? {
+        var bestScreen: NSScreen?
+        var bestArea: CGFloat = 0
+        for screen in NSScreen.screens {
+            let overlap = screen.frame.intersection(frame)
+            let area = overlap.width * overlap.height
+            if area > bestArea {
+                bestArea = area
+                bestScreen = screen
+            }
+        }
+        return bestScreen
     }
 
     // MARK: - Terminal focus
@@ -368,5 +425,19 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         // the consistent default on the next open.
         UserDefaults.standard.set(Double(panel.frame.width), forKey: SizeKey.width)
         UserDefaults.standard.set(Double(panel.frame.height), forKey: SizeKey.height)
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        notePanelMoved()
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        notePanelMoved()
+    }
+}
+
+private extension NSScreen {
+    var displayID: CGDirectDisplayID? {
+        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
 }
