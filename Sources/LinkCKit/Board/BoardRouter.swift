@@ -20,9 +20,15 @@ public enum BoardRouter {
     private static let turnPenalty = 40.0
     private static let proximityWeight = 0.3
     private static let proximityRadius = 4
+    /// The extra cost, per unit of length, of running an arrow's route through a foreign frame's
+    /// inflated rect. Component and note boxes are never this soft — they stay hard obstacles.
+    private static let frameCrossingCost = 6.0
 
     // MARK: - Public entry point
 
+    /// The Board never produces overlapping component or note boxes — `BoardModel.laidOut`
+    /// separates them on load, and every spatial edit keeps that true — so this assumes no two
+    /// boxes overlap and never checks for it.
     public static func routes(for map: BoardMap) -> [BoardModel.ArrowKey: BoardRoute] {
         let byLowercasedName = Dictionary(uniqueKeysWithValues: map.components.compactMap { c -> (String, BoardComponent)? in
             guard c.at != nil else { return nil }
@@ -53,7 +59,6 @@ public enum BoardRouter {
             return (c.name.lowercased(), BoardGeometry.rect(ofComponentAt: at))
         })
         let noteBoxes = map.notes.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }
-        let diagramBounds = boundsOfEverything(map: map, componentBoxes: Array(componentBox.values), noteBoxes: noteBoxes)
 
         var routedSegments: [(a: BoardPoint, b: BoardPoint, id: String)] = []
         var obstaclesByArrow: [BoardModel.ArrowKey: [BoardRect]] = [:]
@@ -66,10 +71,10 @@ public enum BoardRouter {
             let sourceBox = BoardGeometry.rect(ofComponentAt: sourceAt)
             let targetBox = BoardGeometry.rect(ofComponentAt: targetAt)
 
-            let obstacles = obstaclesFor(
+            let (hardObstacles, frameObstacles) = obstaclesFor(
                 map: map, sourceName: source.name, targetName: target.name,
-                sourcePlace: source.place, targetPlace: target.place, componentBox: componentBox, noteBoxes: noteBoxes)
-            obstaclesByArrow[key] = obstacles
+                sourceBox: sourceBox, targetBox: targetBox, componentBox: componentBox, noteBoxes: noteBoxes)
+            obstaclesByArrow[key] = hardObstacles
 
             let bundleId = bundleOf[key]
             let selfId = bundleId ?? arrowId(key)
@@ -98,13 +103,14 @@ public enum BoardRouter {
             }
 
             var points: [BoardPoint]
-            if !forced, let straight = straightCase(sourceBox, sourceSide, targetBox, targetSide, obstacles) {
+            if !forced, let straight = straightCase(sourceBox, sourceSide, targetBox, targetSide, hardObstacles + frameObstacles) {
                 points = straight
             } else {
                 let sourceStub = stub(sourcePort, sourceSide)
                 let targetStub = stub(targetPort, targetSide)
-                let path = aStar(from: sourceStub, to: targetStub, obstacles: obstacles, avoid: routedSegments, selfId: selfId)
-                    ?? outsideFallback(sourcePort: sourcePort, targetPort: targetPort, bounds: diagramBounds)
+                let path = aStar(
+                    from: sourceStub, to: targetStub, hardObstacles: hardObstacles, frames: frameObstacles,
+                    avoid: routedSegments, selfId: selfId) ?? lastResort()
                 points = simplify([sourcePort] + path + [targetPort])
             }
 
@@ -276,32 +282,29 @@ public enum BoardRouter {
         BoardRect(x: rect.x - amount, y: rect.y - amount, w: rect.w + 2 * amount, h: rect.h + 2 * amount)
     }
 
+    /// Hard obstacles — every component and note box except this arrow's own two ends, inflated
+    /// by `clearance` — and separately, the foreign frames: every frame rect inflated the same
+    /// way, except one whose *geometry* holds either end's box centre. Geometry always wins over
+    /// a hand-edited `place` that disagrees with it — a component's `place` plays no part here.
     private static func obstaclesFor(
-        map: BoardMap, sourceName: String, targetName: String, sourcePlace: String, targetPlace: String,
+        map: BoardMap, sourceName: String, targetName: String, sourceBox: BoardRect, targetBox: BoardRect,
         componentBox: [String: BoardRect], noteBoxes: [BoardRect]
-    ) -> [BoardRect] {
-        var result: [BoardRect] = []
+    ) -> (hard: [BoardRect], frames: [BoardRect]) {
+        var hard: [BoardRect] = []
         let sourceKey = sourceName.lowercased(), targetKey = targetName.lowercased()
         for component in map.components {
             let key = component.name.lowercased()
             guard key != sourceKey, key != targetKey, let box = componentBox[key] else { continue }
-            result.append(inflate(box, by: clearance))
+            hard.append(inflate(box, by: clearance))
         }
-        for box in noteBoxes { result.append(inflate(box, by: clearance)) }
-        for frame in map.frames {
-            guard let rect = frame.rect, frame.label != sourcePlace, frame.label != targetPlace else { continue }
-            result.append(inflate(rect, by: clearance))
-        }
-        return result
-    }
+        for box in noteBoxes { hard.append(inflate(box, by: clearance)) }
 
-    private static func boundsOfEverything(map: BoardMap, componentBoxes: [BoardRect], noteBoxes: [BoardRect]) -> BoardRect {
-        var rects = componentBoxes + noteBoxes
-        rects.append(contentsOf: map.frames.compactMap(\.rect))
-        guard !rects.isEmpty else { return BoardRect(x: 0, y: 0, w: 0, h: 0) }
-        let minX = rects.map(\.minX).min()!, minY = rects.map(\.minY).min()!
-        let maxX = rects.map(\.maxX).max()!, maxY = rects.map(\.maxY).max()!
-        return BoardRect(x: minX, y: minY, w: maxX - minX, h: maxY - minY)
+        var frames: [BoardRect] = []
+        for frame in map.frames {
+            guard let rect = frame.rect, !rect.contains(sourceBox.center), !rect.contains(targetBox.center) else { continue }
+            frames.append(inflate(rect, by: clearance))
+        }
+        return (hard, frames)
     }
 
     // MARK: - Simplify
@@ -343,22 +346,34 @@ public enum BoardRouter {
     }
 
     private static func aStar(
-        from start: BoardPoint, to goal: BoardPoint, obstacles: [BoardRect],
+        from start: BoardPoint, to goal: BoardPoint, hardObstacles: [BoardRect], frames: [BoardRect],
         avoid: [(a: BoardPoint, b: BoardPoint, id: String)], selfId: String
     ) -> [BoardPoint]? {
+        // The proximity nudge only ever matters near one of the two ends — a long arrow's open
+        // middle stretch has nothing to be nudged away from. Scoping `nearby` to two small boxes
+        // around `start` and `goal`, instead of the whole (possibly huge) obstacle window, keeps
+        // the per-edge proximity scan cheap even when hundreds of other arrows have already been
+        // routed, without changing which obstacles are found (that window is untouched below).
+        let nearMargin = 48
+        let startBox = BoardRect(x: start.x - nearMargin, y: start.y - nearMargin, w: 2 * nearMargin, h: 2 * nearMargin)
+        let goalBox = BoardRect(x: goal.x - nearMargin, y: goal.y - nearMargin, w: 2 * nearMargin, h: 2 * nearMargin)
+        let nearby = avoid.filter {
+            let lo = min($0.a.x, $0.b.x) - proximityRadius, hi = max($0.a.x, $0.b.x) + proximityRadius
+            let top = min($0.a.y, $0.b.y) - proximityRadius, bottom = max($0.a.y, $0.b.y) + proximityRadius
+            let segBox = BoardRect(x: lo, y: top, w: hi - lo, h: bottom - top)
+            return segBox.intersects(startBox) || segBox.intersects(goalBox)
+        }
+
         var expand = windowMargin
         for attempt in 0...maxWindowDoublings {
             if attempt > 0 { expand *= 2 }
             let minX = min(start.x, goal.x) - expand, maxX = max(start.x, goal.x) + expand
             let minY = min(start.y, goal.y) - expand, maxY = max(start.y, goal.y) + expand
             let window = BoardRect(x: minX, y: minY, w: maxX - minX, h: maxY - minY)
-            let windowed = obstacles.filter { $0.intersects(window) }
-            let nearby = avoid.filter {
-                let lo = min($0.a.x, $0.b.x) - proximityRadius, hi = max($0.a.x, $0.b.x) + proximityRadius
-                let top = min($0.a.y, $0.b.y) - proximityRadius, bottom = max($0.a.y, $0.b.y) + proximityRadius
-                return lo <= window.maxX && hi >= window.minX && top <= window.maxY && bottom >= window.minY
-            }
-            if let path = aStarAttempt(from: start, to: goal, obstacles: windowed, avoid: nearby, selfId: selfId) {
+            let windowedHard = hardObstacles.filter { $0.intersects(window) }
+            let windowedFrames = frames.filter { $0.intersects(window) }
+            if let path = aStarAttempt(
+                from: start, to: goal, hardObstacles: windowedHard, frames: windowedFrames, avoid: nearby, selfId: selfId) {
                 return path
             }
         }
@@ -366,20 +381,23 @@ public enum BoardRouter {
     }
 
     private static func aStarAttempt(
-        from start: BoardPoint, to goal: BoardPoint, obstacles: [BoardRect],
+        from start: BoardPoint, to goal: BoardPoint, hardObstacles: [BoardRect], frames: [BoardRect],
         avoid: [(a: BoardPoint, b: BoardPoint, id: String)], selfId: String
     ) -> [BoardPoint]? {
         var xsSet: Set<Int> = [start.x, goal.x]
         var ysSet: Set<Int> = [start.y, goal.y]
-        for o in obstacles { xsSet.insert(o.minX); xsSet.insert(o.maxX); ysSet.insert(o.minY); ysSet.insert(o.maxY) }
+        for o in hardObstacles { xsSet.insert(o.minX); xsSet.insert(o.maxX); ysSet.insert(o.minY); ysSet.insert(o.maxY) }
+        for o in frames { xsSet.insert(o.minX); xsSet.insert(o.maxX); ysSet.insert(o.minY); ysSet.insert(o.maxY) }
         let xs = insertMidpoints(xsSet.sorted())
         let ys = insertMidpoints(ysSet.sorted())
         guard let sx = xs.firstIndex(of: start.x), let sy = ys.firstIndex(of: start.y),
               let gx = xs.firstIndex(of: goal.x), let gy = ys.firstIndex(of: goal.y)
         else { return nil }
 
+        // Only component and note boxes ever block a node — a foreign frame never does, so an
+        // endpoint enclosed by frames still has somewhere to stand; it costs its way out instead.
         var blocked = [[Bool]](repeating: [Bool](repeating: false, count: ys.count), count: xs.count)
-        for o in obstacles {
+        for o in hardObstacles {
             let xLo = lowerBound(xs, strictlyGreaterThan: o.minX), xHi = upperBound(xs, strictlyLessThan: o.maxX)
             guard xLo <= xHi else { continue }
             let yLo = lowerBound(ys, strictlyGreaterThan: o.minY), yHi = upperBound(ys, strictlyLessThan: o.maxY)
@@ -402,10 +420,32 @@ public enum BoardRouter {
             }
         }
 
+        // Every unit of length that runs strictly inside a foreign frame's inflated rect (not
+        // merely touching its border) costs `frameCrossingCost` more — enough that A* only ever
+        // crosses one when there is no way around it.
+        func framePenalty(_ a: BoardPoint, _ b: BoardPoint) -> Double {
+            guard !frames.isEmpty else { return 0 }
+            var penalty = 0.0
+            if a.y == b.y {
+                let x0 = min(a.x, b.x), x1 = max(a.x, b.x)
+                for rect in frames where a.y > rect.minY && a.y < rect.maxY {
+                    let overlap = min(x1, rect.maxX) - max(x0, rect.minX)
+                    if overlap > 0 { penalty += Double(overlap) * frameCrossingCost }
+                }
+            } else {
+                let y0 = min(a.y, b.y), y1 = max(a.y, b.y)
+                for rect in frames where a.x > rect.minX && a.x < rect.maxX {
+                    let overlap = min(y1, rect.maxY) - max(y0, rect.minY)
+                    if overlap > 0 { penalty += Double(overlap) * frameCrossingCost }
+                }
+            }
+            return penalty
+        }
+
         func cost(_ a: BoardPoint, _ b: BoardPoint) -> Double {
             let length = Double(abs(b.x - a.x) + abs(b.y - a.y))
-            guard !avoid.isEmpty else { return length }
-            var penalty = 0.0
+            var penalty = framePenalty(a, b)
+            guard !avoid.isEmpty else { return length + penalty }
             if a.y == b.y {
                 let x0 = min(a.x, b.x), x1 = max(a.x, b.x)
                 for dy in -proximityRadius...proximityRadius {
@@ -428,18 +468,30 @@ public enum BoardRouter {
             return length + penalty
         }
 
-        func heuristic(_ ix: Int, _ iy: Int) -> Double { Double(abs(xs[ix] - xs[gx]) + abs(ys[iy] - ys[gy])) }
+        func heuristic(_ ix: Int, _ iy: Int) -> Double {
+            let dx = abs(xs[ix] - xs[gx]), dy = abs(ys[iy] - ys[gy])
+            let bend = (dx != 0 && dy != 0) ? turnPenalty : 0.0
+            return Double(dx + dy) + bend
+        }
 
-        let startState = GridState(ix: sx, iy: sy, dir: 0)
-        var bestG: [GridState: Double] = [startState: 0]
-        var cameFrom: [GridState: GridState] = [:]
-        var heap = BinaryHeap<(state: GridState, g: Double, f: Double)> { $0.f < $1.f }
-        heap.push((startState, 0, heuristic(sx, sy)))
+        // `bestG`/`cameFrom` are flat arrays keyed by a packed (ix, iy, dir) index rather than a
+        // `GridState`-keyed dictionary — the search below pops a state per grid edge crossed, so
+        // this is the hottest loop in the router; plain array indexing avoids hashing a struct on
+        // every pop and every relaxed edge.
+        let ysCount = ys.count
+        func packed(_ ix: Int, _ iy: Int, _ dir: Int) -> Int { (ix * ysCount + iy) * 3 + dir }
+        let stateCount = xs.count * ysCount * 3
+        var bestG = [Double](repeating: .infinity, count: stateCount)
+        var cameFrom = [Int](repeating: -1, count: stateCount)
+        let startIndex = packed(sx, sy, 0)
+        bestG[startIndex] = 0
+        var heap = BinaryHeap<(state: GridState, index: Int, g: Double, f: Double)> { $0.f < $1.f }
+        heap.push((GridState(ix: sx, iy: sy, dir: 0), startIndex, 0, heuristic(sx, sy)))
 
         while let current = heap.pop() {
-            if current.g > (bestG[current.state] ?? .infinity) { continue }
+            if current.g > bestG[current.index] { continue }
             if current.state.ix == gx, current.state.iy == gy {
-                return reconstruct(cameFrom, current.state, xs: xs, ys: ys)
+                return reconstruct(cameFrom, current.index, xs: xs, ys: ys, ysCount: ysCount)
             }
             let (ix, iy, dir) = (current.state.ix, current.state.iy, current.state.dir)
             let a = BoardPoint(x: xs[ix], y: ys[iy])
@@ -453,11 +505,11 @@ public enum BoardRouter {
                 let b = BoardPoint(x: xs[nix], y: ys[niy])
                 let turn = (dir != 0 && dir != ndir) ? turnPenalty : 0.0
                 let newG = current.g + cost(a, b) + turn
-                let newState = GridState(ix: nix, iy: niy, dir: ndir)
-                if newG < (bestG[newState] ?? .infinity) {
-                    bestG[newState] = newG
-                    cameFrom[newState] = current.state
-                    heap.push((newState, newG, newG + heuristic(nix, niy)))
+                let newIndex = packed(nix, niy, ndir)
+                if newG < bestG[newIndex] {
+                    bestG[newIndex] = newG
+                    cameFrom[newIndex] = current.index
+                    heap.push((GridState(ix: nix, iy: niy, dir: ndir), newIndex, newG, newG + heuristic(nix, niy)))
                 }
             }
         }
@@ -489,7 +541,7 @@ public enum BoardRouter {
         var result: [Int] = []
         for i in values.indices {
             result.append(values[i])
-            if i + 1 < values.count {
+            if i + 1 < values.count, values[i + 1] - values[i] >= 2 * clearance {
                 let mid = (values[i] + values[i + 1]) / 2
                 if mid != values[i], mid != values[i + 1] { result.append(mid) }
             }
@@ -497,23 +549,26 @@ public enum BoardRouter {
         return result
     }
 
-    private static func reconstruct(_ cameFrom: [GridState: GridState], _ end: GridState, xs: [Int], ys: [Int]) -> [BoardPoint] {
-        var path: [GridState] = [end]
+    private static func reconstruct(_ cameFrom: [Int], _ end: Int, xs: [Int], ys: [Int], ysCount: Int) -> [BoardPoint] {
+        var path: [Int] = [end]
         var current = end
-        while let previous = cameFrom[current] {
-            path.append(previous)
-            current = previous
+        while cameFrom[current] != -1 {
+            current = cameFrom[current]
+            path.append(current)
         }
-        return path.reversed().map { BoardPoint(x: xs[$0.ix], y: ys[$0.iy]) }
+        return path.reversed().map { index in
+            let ix = index / (ysCount * 3)
+            let iy = (index / 3) % ysCount
+            return BoardPoint(x: xs[ix], y: ys[iy])
+        }
     }
 
-    /// A path around the outside of the whole diagram's bounding box — always obstacle-free
-    /// since nothing on the map extends past it.
-    private static func outsideFallback(sourcePort: BoardPoint, targetPort: BoardPoint, bounds: BoardRect) -> [BoardPoint] {
-        let margin = clearance * 3
-        let y = bounds.maxY + margin
-        return [BoardPoint(x: sourcePort.x, y: y), BoardPoint(x: targetPort.x, y: y)]
-    }
+    /// Last resort for an impossible board: A* found no path even after crossing every frame,
+    /// which only happens when a stub itself sits inside a hard (box) obstacle — the endpoint is
+    /// genuinely walled in. An empty path leaves just the source and target ports, so the route
+    /// is a single straight segment between them; it may cut through a box, since nothing here
+    /// promises a clean route once the board has sealed an endpoint in on every side.
+    private static func lastResort() -> [BoardPoint] { [] }
 
     // MARK: - Binary heap
 
