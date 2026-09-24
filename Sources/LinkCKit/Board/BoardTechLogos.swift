@@ -1,6 +1,6 @@
 // Generated from simple-icons 16.32.0 (CC0 1.0) — https://simpleicons.org
 //
-// Generator: .superpowers/sdd/task-2-brief.md's step 3, run once against
+// Generator: docs/superpowers/plans/2026-09-24-board-diagram-engine.md, Task 2, run once against
 // `npm pack simple-icons@16.32.0`. Each icon's single `<path d="…">` had its
 // arc commands rewritten with explicit separators (CoreSVG misreads packed arc
 // flags such as `012.285` and draws a line instead) and was wrapped in a plain
