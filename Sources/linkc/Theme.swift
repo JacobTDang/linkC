@@ -80,6 +80,8 @@ enum Theme {
     static let boardArrow = Color.white.opacity(0.45)
     static let boardBox = Color(red: 0.149, green: 0.149, blue: 0.169)
     static let boardBoxStroke = Color.white.opacity(0.09)
+    /// A cylinder's top rim, lighter than the box fill so it reads as the lid.
+    static let boardCylinderRim = Color(red: 0.173, green: 0.173, blue: 0.204)
     static let noteFill = Color(red: 0.231, green: 0.204, blue: 0.137)
     static let noteText = Color(red: 0.937, green: 0.886, blue: 0.749)
 }

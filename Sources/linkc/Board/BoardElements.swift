@@ -33,10 +33,7 @@ struct ComponentBox: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            BoardShape.path(for: component.kind)
-                .fill(component.planned ? Color.clear : Theme.boardBox)
-            BoardShape.path(for: component.kind)
-                .stroke(strokeColor, style: StrokeStyle(lineWidth: isSelected ? 1.5 : 1, dash: dash))
+            shape
             BoardShape.accents(for: component.kind)
             content
                 .padding(.leading, inset.leading)
@@ -52,6 +49,27 @@ struct ComponentBox: View {
         .opacity(isMissing ? 0.5 : 1)
         .help(help)
     }
+
+    /// A database or cache draws as two separate shapes, body then rim, exactly as the mockup
+    /// paints them: a `<path>` for the body, then an `<ellipse>` on top for the rim — never one
+    /// combined path, which is what made the rim read as a hole (opposite winding) with a stroked
+    /// line across it (the body's own closing edge).
+    @ViewBuilder
+    private var shape: some View {
+        switch component.kind {
+        case .database, .cache:
+            BoardShape.cylinderBody.fill(fillColor(Theme.boardBox))
+            BoardShape.cylinderBody.stroke(strokeColor, style: strokeStyle)
+            BoardShape.cylinderRim.fill(fillColor(Theme.boardCylinderRim))
+            BoardShape.cylinderRim.stroke(strokeColor, style: strokeStyle)
+        default:
+            BoardShape.path(for: component.kind).fill(fillColor(Theme.boardBox))
+            BoardShape.path(for: component.kind).stroke(strokeColor, style: strokeStyle)
+        }
+    }
+
+    private func fillColor(_ solid: Color) -> Color { component.planned ? Color.clear : solid }
+    private var strokeStyle: StrokeStyle { StrokeStyle(lineWidth: isSelected ? 1.5 : 1, dash: dash) }
 
     private var content: some View {
         HStack(spacing: 10) {
@@ -139,7 +157,7 @@ enum BoardShape {
 
     static func path(for kind: ComponentKind) -> Path {
         switch kind {
-        case .database, .cache: return cylinder
+        case .database, .cache: return cylinderBody
         case .queue: return pipe
         case .storage: return bucket
         case .host: return server
@@ -164,9 +182,11 @@ enum BoardShape {
         }
     }
 
-    /// A cylinder: an elliptical top rim over a body with a rounded bottom. The rim's ellipse is
-    /// its own subpath, drawn (and stroked) on top of the body.
-    private static var cylinder: Path {
+    /// A cylinder's body: the side walls plus the bottom elliptical arc, left open along the top
+    /// — exactly the mockup's path (`M x top L x bot A w/2 ry 0 0 0 x+w bot L x+w top`, never
+    /// closed). Fill implicitly closes it along that top edge; stroke does not draw that edge, so
+    /// no line crosses the rim. The rim itself is `cylinderRim`, a separate shape drawn on top.
+    static var cylinderBody: Path {
         let ry: CGFloat = 11
         let top = ry, bot = h - ry
         let kappa: CGFloat = 0.5522847498
@@ -179,8 +199,16 @@ enum BoardShape {
         p.addCurve(to: CGPoint(x: w, y: bot),
                   control1: CGPoint(x: w / 2 + rx * kappa, y: bot + ry), control2: CGPoint(x: w, y: bot + ry * kappa))
         p.addLine(to: CGPoint(x: w, y: top))
-        p.closeSubpath()
-        p.addEllipse(in: CGRect(x: 0, y: top - ry, width: w, height: ry * 2))
+        return p
+    }
+
+    /// A cylinder's top rim: its own ellipse, drawn and stroked as a separate shape on top of the
+    /// body — never unioned into the same path, which is what made the two subpaths' opposite
+    /// windings read as a hole.
+    static var cylinderRim: Path {
+        let ry: CGFloat = 11
+        var p = Path()
+        p.addEllipse(in: CGRect(x: 0, y: 0, width: w, height: ry * 2))
         return p
     }
 
@@ -211,19 +239,22 @@ enum BoardShape {
     }
 
     /// A cloud, its outline four circular arcs — computed once for the fixed 176×84 box, from the
-    /// mockup generator's `shape()`.
+    /// mockup generator's `shape()`. Each lobe's large arc must bulge outward, not cut through the
+    /// cloud's inside: the SVG source's sweep-flag 0 is counter-clockwise on screen (a y-down
+    /// space), which is `clockwise: true` here — `Path.addArc`'s `clockwise` is defined against
+    /// the flipped, y-up Core Graphics convention, so it inverts relative to what is drawn.
     private static var cloud: Path {
         var p = Path()
         p.move(to: CGPoint(x: 36, y: 78))
         p.addLine(to: CGPoint(x: 148, y: 78))
         p.addArc(center: CGPoint(x: 145.927, y: 57.103), radius: 21,
-                 startAngle: .degrees(84.334), endAngle: .degrees(-73.190), clockwise: false)
+                 startAngle: .degrees(84.334), endAngle: .degrees(-73.190), clockwise: true)
         p.addArc(center: CGPoint(x: 123.008, y: 37.683), radius: 29,
-                 startAngle: .degrees(-1.350), endAngle: .degrees(-149.581), clockwise: false)
+                 startAngle: .degrees(-1.350), endAngle: .degrees(-149.581), clockwise: true)
         p.addArc(center: CGPoint(x: 78.696, y: 38.886), radius: 25,
-                 startAngle: .degrees(-39.452), endAngle: .degrees(-171.058), clockwise: false)
+                 startAngle: .degrees(-39.452), endAngle: .degrees(-171.058), clockwise: true)
         p.addArc(center: CGPoint(x: 53.000, y: 56.500), radius: 21.523,
-                 startAngle: .degrees(-87.337), endAngle: .degrees(-267.337), clockwise: false)
+                 startAngle: .degrees(-87.337), endAngle: .degrees(-267.337), clockwise: true)
         p.closeSubpath()
         return p
     }
