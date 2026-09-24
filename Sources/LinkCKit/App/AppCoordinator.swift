@@ -125,6 +125,7 @@ public final class AppCoordinator {
     /// Minimum interval between injections into the same terminal. Tests can override it.
     public static let injectionGap: TimeInterval = 2
     let injectionGap: TimeInterval
+    private var turnEndDebounce: TurnEndDebounce
     var lastInjectionAt: [String: Date] = [:]
 
     /// How long `dispatchTasks` requires a session to have been paste-ready before delivering
@@ -163,6 +164,7 @@ public final class AppCoordinator {
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
         deliverySettle: TimeInterval = AppCoordinator.defaultDeliverySettle,
         injectionGap: TimeInterval = AppCoordinator.injectionGap,
+        turnEndQuietPeriod: TimeInterval = 5.0,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
@@ -180,6 +182,7 @@ public final class AppCoordinator {
         self.modelSettings = modelSettings
         self.injectionGap = injectionGap
         self.deliverySettle = deliverySettle
+        self.turnEndDebounce = TurnEndDebounce(quietPeriod: turnEndQuietPeriod)
         self.now = now
         self.isWatching = isWatching
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
@@ -428,6 +431,7 @@ public final class AppCoordinator {
         try? FileManager.default.removeItem(at: settingsFile)
         notifications.forget(sessionId)
         screenSignatures.removeValue(forKey: sessionId)
+        turnEndDebounce.forget(sessionId: sessionId)
         usageTracker?.unbind(sessionId: sessionId)
         injectedText.removeValue(forKey: sessionId)
         lastInjectionAt.removeValue(forKey: sessionId)
@@ -891,24 +895,31 @@ public final class AppCoordinator {
                     store.updateState(id: session.id, to: .working)
                 }
             } else {
-                // If it was working and now finished its turn
-                if currentSession.state.bucket == .active {
-                    store.updateState(id: session.id, to: .finished)
-                    let updated = store.session(id: session.id) ?? currentSession
-                    if FocusPolicy.shouldNotify(
-                        session: updated,
-                        enteredNotifiable: true,
-                        isWatchingThisSession: isWatching(session.id)
-                    ) {
-                        notifications.post(session: updated)
-                    }
-                    relayTurnEnd(sessionId: session.id, workspacePath: session.cwd)
-                } else if currentSession.state == .starting,
-                          ProcessSnooper.detectAgent(inProcessTreeOf: term.processId) != nil {
-                    // A booting TUI is also silent. Promote only once the agent CLI is actually
-                    // running, or the relay types the next frame into a process that cannot read it.
+                // A booting TUI is also silent. Promote only once the agent CLI is actually
+                // running, or the relay types the next frame into a process that cannot read it.
+                if currentSession.state == .starting,
+                   ProcessSnooper.detectAgent(inProcessTreeOf: term.processId) != nil {
                     store.updateState(id: session.id, to: .ready)
                 }
+            }
+
+            // An idle stretch only counts while the session stays working; any other state ends it,
+            // so it can never carry into the next task's turn.
+            guard currentSession.state.bucket == .active else {
+                turnEndDebounce.forget(sessionId: session.id)
+                continue
+            }
+            if turnEndDebounce.poll(sessionId: session.id, isWorking: isWorking, now: now()) {
+                store.updateState(id: session.id, to: .finished)
+                let updated = store.session(id: session.id) ?? currentSession
+                if FocusPolicy.shouldNotify(
+                    session: updated,
+                    enteredNotifiable: true,
+                    isWatchingThisSession: isWatching(session.id)
+                ) {
+                    notifications.post(session: updated)
+                }
+                relayTurnEnd(sessionId: session.id, workspacePath: session.cwd)
             }
         }
 

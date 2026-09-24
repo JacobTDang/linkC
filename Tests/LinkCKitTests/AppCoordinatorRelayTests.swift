@@ -55,6 +55,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         models: AgentModelSettings = .seeded,
         deliverySettle: TimeInterval = 0,
         injectionGap: TimeInterval = 0,
+        turnEndQuietPeriod: TimeInterval = 0,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         userHome: URL? = nil
@@ -95,6 +96,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             // both this and `now` to prove the threshold without sleeping through it.
             deliverySettle: deliverySettle,
             injectionGap: injectionGap,
+            turnEndQuietPeriod: turnEndQuietPeriod,
             now: now,
             isWatching: { _ in false }
         )
@@ -2479,6 +2481,142 @@ final class AppCoordinatorRelayTests: XCTestCase {
         coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
 
         XCTAssertNotNil(coordinator.store.session(id: worker.id))
+    }
+    @MainActor
+    func testRerouteExcludesDelegatorAndMovesToAnotherPeer() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: claudeSession.id, to: .ready)
+        let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
+        coordinator.store.updateState(id: cursorSession.id, to: .working)
+
+        let task = try inbox.createTask(from: .claude, to: .cursor, prompt: "Refactor router", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: cursorSession.id)
+
+        coordinator.terminals.sendInput(sessionId: cursorSession.id, text: "Rate limit reached\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: cursorSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: cursorSession.id))
+        let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+
+        XCTAssertNotEqual(copy.toAgent, .claude)
+    }
+
+    @MainActor
+    func testRerouteExcludesDelegatorAndNotifiesIfNoPeerLeft() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let scriptPath = tempDir.appendingPathComponent("mock_agent.sh").path
+        let coordinator = makeCoordinator(agentPathResolver: { agent in
+            if agent == .claude || agent == .cursor { return scriptPath }
+            return nil
+        })
+        defer { coordinator.shutdown() }
+
+        let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: claudeSession.id, to: .ready)
+        let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
+        coordinator.store.updateState(id: cursorSession.id, to: .working)
+
+        let task = try inbox.createTask(from: .claude, to: .cursor, prompt: "Refactor router", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: cursorSession.id)
+
+        coordinator.terminals.sendInput(sessionId: cursorSession.id, text: "Rate limit reached\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: cursorSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: cursorSession.id))
+
+        let openTasks = try inbox.openTasks()
+        XCTAssertFalse(openTasks.contains(where: { $0.hop == 1 }), "No hop-1 task should be created since no peer is left")
+
+        let claudeInbound = try inbox.fetchPending().filter { $0.toAgent == .claude }
+        let notice = try XCTUnwrap(claudeInbound.first)
+        XCTAssertEqual(notice.kind, .notice)
+        XCTAssertTrue(notice.prompt.contains("fallback"))
+    }
+
+    @MainActor
+    func testTurnEndedWithoutReportIsDebouncedByQuietPeriod() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
+        defer { coordinator.shutdown() }
+
+        let codexSession = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "test task", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: codexSession.id)
+        coordinator.store.updateState(id: codexSession.id, to: .working)
+
+        coordinator.terminals.sendInput(sessionId: codexSession.id, text: "Some output\n")
+        _ = try await waitUntil {
+            coordinator.terminals.session(id: codexSession.id)?.recentOutput(lines: 10).contains("Some output") ?? false
+        }
+
+        coordinator.sampleAgentStates()
+
+        coordinator.terminals.sendInput(sessionId: codexSession.id, text: "\u{1b}[2J\u{1b}[H")
+        _ = try await waitUntil {
+            let out = coordinator.terminals.session(id: codexSession.id)?.recentOutput(lines: 10) ?? ""
+            return out.isEmpty || out == "\u{1b}[2J\u{1b}[H"
+        }
+
+        coordinator.sampleAgentStates()
+
+        let session = try XCTUnwrap(coordinator.store.session(id: codexSession.id))
+        XCTAssertEqual(session.state, SessionState.working)
+        var msgs = try inbox.load().messages
+        XCTAssertEqual(msgs.count, 0)
+
+        currentTime = currentTime.addingTimeInterval(5.1)
+        coordinator.sampleAgentStates()
+
+        let finishedSession = try XCTUnwrap(coordinator.store.session(id: codexSession.id))
+        XCTAssertEqual(finishedSession.state, SessionState.finished)
+        msgs = try inbox.load().messages
+        XCTAssertEqual(msgs.count, 1)
+        let msg = try XCTUnwrap(msgs.first)
+        XCTAssertEqual(msg.kind, .completion)
+        XCTAssertTrue(msg.prompt.contains("turn ended without a report"))
+    }
+
+    @MainActor
+    func testAnIdleStretchCutShortByAnotherStateDoesNotEndTheNextTasksTurn() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
+        defer { coordinator.shutdown() }
+
+        let codexSession = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "test task", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: codexSession.id)
+
+        // Working with no activity line: an idle stretch starts, then something else takes the
+        // session out of the working state before the quiet period ends.
+        coordinator.store.updateState(id: codexSession.id, to: .working)
+        coordinator.sampleAgentStates()
+        currentTime = currentTime.addingTimeInterval(1)
+        coordinator.store.updateState(id: codexSession.id, to: .ready)
+        coordinator.sampleAgentStates()
+
+        // Much later the next delivery marks it working; its first idle poll is a new stretch.
+        currentTime = currentTime.addingTimeInterval(100)
+        coordinator.store.updateState(id: codexSession.id, to: .working)
+        coordinator.sampleAgentStates()
+
+        XCTAssertEqual(coordinator.store.session(id: codexSession.id)?.state, .working)
+        XCTAssertFalse(try inbox.load().messages.contains { $0.prompt.contains("turn ended without a report") })
     }
 }
 

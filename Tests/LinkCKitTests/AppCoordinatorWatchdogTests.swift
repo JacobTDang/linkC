@@ -54,7 +54,7 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         }
         let settingsDir = tempDir.appendingPathComponent("settings")
         try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
-        return AppCoordinator(
+        let coordinator = AppCoordinator(
             terminals: TerminalSessionManager(),
             hookServer: HookServer(port: 0),
             notifications: NotificationManager(sink: sink, now: { Date() }),
@@ -64,9 +64,11 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
             manifestDir: tempDir.appendingPathComponent("manifest"),
             agentPathResolver: { _ in scriptURL.path },
             deliverySettle: 0,
+            turnEndQuietPeriod: 0.0,
             now: now,
             isWatching: { _ in false }
         )
+        return coordinator
     }
 
     @MainActor
@@ -185,6 +187,7 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         // The screen moves: the mark clears and a later stall is reported again.
         term.sendInput("Ran 1 shell command\r")
         _ = try await waitUntil { term.recentOutput(lines: 5).contains("Ran 1 shell command") }
+        coordinator.sampleAgentStates()
         coordinator.sampleAgentStates()
         coordinator.store.updateState(id: quiet.id, to: .working)
         coordinator.processPendingMessages(workspacePath: ws)

@@ -55,7 +55,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             attrs[.posixPermissions] = 0o755
             try? FileManager.default.setAttributes(attrs, ofItemAtPath: scriptURL.path)
         }
-        return AppCoordinator(
+        let coordinator = AppCoordinator(
             terminals: TerminalSessionManager(),
             hookServer: HookServer(port: 0),
             notifications: NotificationManager(sink: sink, now: { Date() }),
@@ -68,8 +68,10 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
             // make dispatch tests wait for real. Zero here; production keeps the default.
             deliverySettle: 0,
+            turnEndQuietPeriod: 0.0,
             isWatching: { _ in false }
         )
+        return coordinator
     }
 
     /// Fires one hook at the live server and waits for its 200 — so by the time it returns,
@@ -986,6 +988,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.store.session(id: "A1")?.state.bucket, .active)
 
         // Calling sampleAgentStates with no live activity transitions from .working to .finished (.needsYou)
+        coordinator.sampleAgentStates()
         coordinator.sampleAgentStates()
         XCTAssertEqual(coordinator.store.session(id: "A1")?.state, .finished)
         XCTAssertEqual(coordinator.store.session(id: "A1")?.state.bucket, .needsYou)
