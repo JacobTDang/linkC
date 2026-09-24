@@ -334,7 +334,7 @@ struct BoardCanvas: View {
                     }
                     .padding(.horizontal, 14)
                     if board.changedOnDisk {
-                        BoardBanner(text: "system-map.json changed on disk. Reload to see it — edits not yet saved here are dropped.",
+                        BoardBanner(text: "system-map.json keeps changing under the Board. Reload takes the file; edits not saved here are dropped.",
                                     tone: Theme.contextWarn, action: ("Reload", { board.reload() }))
                     }
                     if let failure = board.writeFailure {
