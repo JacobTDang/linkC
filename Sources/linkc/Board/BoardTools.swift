@@ -332,13 +332,12 @@ struct LineEditor: View {
 
 /// An arrow's label and style, edited together at the route's midpoint: the label as a text
 /// field, plus a compact plain/conditional/control/bus picker and, for bus, a bits field (1…4096,
-/// default 32). Return, in either text field, commits both — `commit` calls `setArrowLabel` and
-/// `setArrowStyle`, each its own undo step and each a no-op when that part never changed. So does
-/// focus leaving both fields (a click on the picker doesn't take focus, so it never triggers
-/// this) — tracked as one group so moving between the label and bits fields themselves never
-/// closes the editor early. Also commits on disappear, for the same reasons `LineEditor` does.
-/// Esc behaves exactly as it does for `LineEditor`, since the label field is the same kind of
-/// field.
+/// default 32). Return, in either text field, commits both — `commit` calls `BoardModel.setArrow`
+/// once, so the whole edit is one undo step and a no-op when nothing changed. So does focus
+/// leaving both fields (a click on the picker doesn't take focus, so it never triggers this) —
+/// tracked as one group so moving between the label and bits fields themselves never closes the
+/// editor early. Also commits on disappear, for the same reasons `LineEditor` does. Esc behaves
+/// exactly as it does for `LineEditor`, since the label field is the same kind of field.
 struct ArrowEditor: View {
     let commit: (_ label: String, _ style: BoardArrowStyle, _ bits: Int?) -> Void
     private let originalLabel: String

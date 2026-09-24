@@ -726,20 +726,56 @@ final class BoardModelTests: XCTestCase {
         XCTAssertFalse(board.addArrow(from: api, to: db), "no second arrow the same way")
         await board.recomputeRoutes().value
         XCTAssertNotNil(board.routes[BoardModel.ArrowKey(from: api, to: db)])
-        board.setArrowLabel(BoardModel.ArrowKey(from: api, to: db), to: "reads entries")
+        board.setArrow(BoardModel.ArrowKey(from: api, to: db), label: "reads entries", style: .plain, bits: nil)
         XCTAssertEqual(board.map.components.first { $0.name == api }?.uses[db], "reads entries")
     }
 
-    func testAddArrowAppliesTheDefaultRuleAndSetArrowStyleIsOneUndoStep() throws {
+    func testAddArrowAppliesTheDefaultRuleAndSetArrowIsOneUndoStep() throws {
         let board = fresh()
         let r = try XCTUnwrap(board.addComponent(kind: .router, at: BoardPoint(x: 0, y: 0)))
         let e = try XCTUnwrap(board.addComponent(kind: .end, at: BoardPoint(x: 480, y: 0)))
         XCTAssertTrue(board.addArrow(from: r, to: e))
         XCTAssertEqual(board.map.components.first { $0.name == r }?.uses[e]?.style, .conditional)
-        board.setArrowStyle(BoardModel.ArrowKey(from: r, to: e), to: .bus, bits: 64)
+        board.setArrow(BoardModel.ArrowKey(from: r, to: e), label: "", style: .bus, bits: 64)
         XCTAssertEqual(board.map.components.first { $0.name == r }?.uses[e], BoardArrow(style: .bus, bits: 64))
         board.undo()
         XCTAssertEqual(board.map.components.first { $0.name == r }?.uses[e]?.style, .conditional)
+    }
+
+    /// A label and a style edited together must land as one undo step, not two — otherwise a
+    /// single edit in the Arrow editor takes two undos to take back.
+    func testSetArrowChangesLabelAndStyleInOneUndoStep() throws {
+        let board = fresh()
+        let r = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
+        let e = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 480, y: 0)))
+        XCTAssertTrue(board.addArrow(from: r, to: e))
+        let key = BoardModel.ArrowKey(from: r, to: e)
+        let before = board.map
+
+        board.setArrow(key, label: "data", style: .bus, bits: 32)
+        XCTAssertEqual(board.map.components.first { $0.name == r }?.uses[e], BoardArrow(label: "data", style: .bus, bits: 32))
+
+        board.undo()
+        XCTAssertEqual(board.map, before, "one undo restores both the label and the style")
+    }
+
+    /// `setArrow` refuses bits outside 1…4096, and bits on a non-bus style, the same as
+    /// `setArrowStyle` did — and changes nothing when refused.
+    func testSetArrowRefusesBadBitsAndLeavesTheArrowUnchanged() throws {
+        let board = fresh()
+        let a = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
+        let b = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 480, y: 0)))
+        XCTAssertTrue(board.addArrow(from: a, to: b))
+        let key = BoardModel.ArrowKey(from: a, to: b)
+        let before = board.map
+
+        board.setArrow(key, label: "", style: .plain, bits: 8)
+        XCTAssertEqual(board.map, before, "bits need style bus")
+        XCTAssertNotNil(board.refusal)
+
+        board.setArrow(key, label: "", style: .bus, bits: 0)
+        XCTAssertEqual(board.map, before, "bits must be between 1 and 4096")
+        XCTAssertNotNil(board.refusal)
     }
 
     /// Starting a newer recompute cancels the detached task a superseded one is still running —
@@ -1036,7 +1072,7 @@ final class BoardModelTests: XCTestCase {
         let a = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
         let b = try XCTUnwrap(board.addComponent(kind: .database, at: BoardPoint(x: 480, y: 0)))
         _ = board.addArrow(from: a, to: b)
-        board.setArrowLabel(BoardModel.ArrowKey(from: a, to: b), to: "reads")
+        board.setArrow(BoardModel.ArrowKey(from: a, to: b), label: "reads", style: .plain, bits: nil)
         await board.recomputeRoutes().value
         XCTAssertNotNil(board.routes[BoardModel.ArrowKey(from: a, to: b)])
         XCTAssertNotNil(board.labelRects[BoardModel.ArrowKey(from: a, to: b)])

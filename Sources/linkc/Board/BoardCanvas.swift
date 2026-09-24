@@ -408,8 +408,7 @@ struct BoardCanvas: View {
                     points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }) {
                     let arrow = board.map.components.first { $0.name == editingArrow.from }?.uses[editingArrow.to] ?? BoardArrow()
                     ArrowEditor(label: arrow.label, style: arrow.style, bits: arrow.bits) { label, style, bits in
-                        board.setArrowLabel(editingArrow, to: label)
-                        board.setArrowStyle(editingArrow, to: style, bits: bits)
+                        board.setArrow(editingArrow, label: label, style: style, bits: bits)
                         self.editingArrow = nil
                     }
                     .position(mid)
