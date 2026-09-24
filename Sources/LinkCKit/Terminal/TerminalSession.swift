@@ -44,7 +44,7 @@ public final class TerminalSession {
     /// True while the child process is alive, reading the same lock `sendInput` and
     /// `terminate()` guard on. The relay checks this immediately before recording a message as
     /// delivered — durably marking delivery for a child that is already gone would lose the
-    /// message silently, since `sendInput` drops input for a dead child without a trace.
+    /// message silently, and `sendInput` logs any residual race with child exit.
     public var isRunning: Bool { liveness.withLock { $0 } }
     /// Idempotence for `terminate()` (main-actor only).
     private var terminationRequested = false
@@ -192,15 +192,34 @@ public final class TerminalSession {
         return ready
     }
 
-    /// How long a TUI needs to apply a bracketed paste before it will accept Return. Measured
-    /// against the real Claude and Codex CLIs: a Return sent immediately is swallowed.
+    /// Settle before submitting text to a TUI, whether typed or bracketed-pasted.
+    /// Claude Code 2.1.281 absorbs immediate and 75 ms Returns; 300 ms submits reliably.
+    /// Raw multi-line shell input is submitted line by line without this TUI delay.
     static let pasteSettleMilliseconds = 300
+
+    enum InputStep: Equatable {
+        case text(String), pasteStart, pasteEnd, wait(milliseconds: Int), submit
+    }
+
+    static func inputPlan(for text: String, negotiatedPaste: Bool) -> [InputStep] {
+        var trimmed = text
+        while trimmed.hasSuffix("\n") || trimmed.hasSuffix("\r") || trimmed.hasSuffix("\r\n") {
+            trimmed.removeLast()
+        }
+        guard !trimmed.isEmpty else { return [.submit] }
+        if trimmed.contains("\n") {
+            guard negotiatedPaste else { return [.text(trimmed), .submit] }
+            return [.pasteStart, .text(trimmed), .pasteEnd,
+                    .wait(milliseconds: pasteSettleMilliseconds), .submit]
+        }
+        return [.text(trimmed), .wait(milliseconds: pasteSettleMilliseconds), .submit]
+    }
 
     private static let bracketedPasteStart: [UInt8] = [0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e]
     private static let bracketedPasteEnd: [UInt8] = [0x1b, 0x5b, 0x32, 0x30, 0x31, 0x7e]
 
     /// Sends text input to the running child process via the terminal PTY and submits it.
-    /// Safely ignored if the child process is not alive.
+    /// Logs dropped input if the child process is not alive.
     public func sendInput(_ text: String) {
         guard liveness.withLock({ $0 }) else {
             // The residual window between a liveness check upstream and this call can never be
@@ -210,60 +229,51 @@ public final class TerminalSession {
             NSLog("linkC: session %@ dropped input — child process is not running", id)
             return
         }
-        var trimmed = text
-        while trimmed.hasSuffix("\n") || trimmed.hasSuffix("\r") {
-            trimmed.removeLast()
-        }
-        let multiLine = !trimmed.isEmpty && trimmed.contains("\n")
-        let negotiatedPaste = terminalView.getTerminal().bracketedPasteMode
-        if multiLine && !negotiatedPaste {
-            // Wrapping this in a bracketed paste anyway would not help: a raw-mode readline shell
-            // (bash, a python or node REPL) that never negotiated paste has no parser looking for
-            // the ESC[200~/ESC[201~ markers, so those bytes can be consumed as partial key
-            // sequences instead of shown as text — worse than sending raw text, not safer. Delivery
-            // now waits for negotiation before a brief is ever injected (see `AppCoordinator.
-            // defaultDeliverySettle`), so a caller reaching this path is sending multi-line text directly,
-            // outside that gate — send it raw and let the shell submit it line by line.
+        let plan = Self.inputPlan(for: text, negotiatedPaste: terminalView.getTerminal().bracketedPasteMode)
+        if case .text(let raw) = plan.first, raw.contains("\n") {
             NSLog("linkC: session %@ has not negotiated bracketed paste; sending raw multi-line text", id)
         }
-        let pasted = multiLine && negotiatedPaste
-        if !trimmed.isEmpty {
-            if pasted {
-                terminalView.send(data: Self.bracketedPasteStart[0...])
-                terminalView.send(txt: trimmed)
-                terminalView.send(data: Self.bracketedPasteEnd[0...])
-            } else {
-                terminalView.send(txt: trimmed)
+        executeInputPlan(plan[...])
+    }
+
+    /// Keep the initial writes synchronous; one task resumes the ordered remainder after a wait.
+    private func executeInputPlan(_ steps: ArraySlice<InputStep>) {
+        for (index, step) in steps.enumerated() {
+            if case .wait = step {
+                let remaining = steps.dropFirst(index)
+                Task { @MainActor in
+                    for step in remaining {
+                        if case .wait(let milliseconds) = step {
+                            do {
+                                try await Task.sleep(for: .milliseconds(milliseconds))
+                            } catch {
+                                NSLog("linkC: session %@ dropped pending input — settle interrupted: %@", self.id, String(describing: error))
+                                return
+                            }
+                        } else {
+                            guard self.sendInputStep(step) else { return }
+                        }
+                    }
+                }
+                return
             }
+            guard sendInputStep(step) else { return }
         }
+    }
 
-        if pasted {
-            // A task frame is multi-line, so it arrives as a bracketed paste. Agent TUIs buffer that
-            // paste and apply it on a later runloop tick; a Return arriving in the same read is
-            // absorbed by the buffer, leaving the frame sitting in the composer unsent. Let the paste
-            // land first, then submit once.
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(Self.pasteSettleMilliseconds))
-                guard let self = self, self.liveness.withLock({ $0 }) else { return }
-                self.terminalView.send(txt: "\r")
-            }
-            return
+    private func sendInputStep(_ step: InputStep) -> Bool {
+        guard liveness.withLock({ $0 }) else {
+            NSLog("linkC: session %@ dropped input — child process is not running", id)
+            return false
         }
-
-        terminalView.send(txt: "\r")
-        terminalView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
-
-        // Delayed newline submission:
-        // CLI agents running on Node.js/Ink/React (e.g. Cursor Agent) or complex TTY runloops
-        // process raw input asynchronously in a component state update. If Return is sent
-        // exclusively in the same frame/packet, it can be swallowed or discarded before rendering completes.
-        // A secondary delayed dispatch guarantees autonomous submission without manual Enter.
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(75))
-            guard let self = self, self.liveness.withLock({ $0 }) else { return }
-            self.terminalView.send(txt: "\r")
-            self.terminalView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        switch step {
+        case .text(let text): terminalView.send(txt: text)
+        case .pasteStart: terminalView.send(data: Self.bracketedPasteStart[...])
+        case .pasteEnd: terminalView.send(data: Self.bracketedPasteEnd[...])
+        case .submit: terminalView.send(txt: "\r")
+        case .wait: preconditionFailure("wait must be executed asynchronously")
         }
+        return true
     }
 
     /// The last `lines` content rows of the terminal's visible screen, as plain text — for the

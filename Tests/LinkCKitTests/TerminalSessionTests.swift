@@ -4,6 +4,45 @@ import XCTest
 @MainActor
 extension TerminalSessionTests {
 
+    func testAOneLineMessageWaitsForTheSettleThenSubmitsOnce() {
+        XCTAssertEqual(TerminalSession.inputPlan(for: "[linkC task X] done (unverified)\n", negotiatedPaste: true),
+                       [.text("[linkC task X] done (unverified)"), .wait(milliseconds: TerminalSession.pasteSettleMilliseconds), .submit])
+        XCTAssertEqual(TerminalSession.inputPlan(for: "ls\r\n", negotiatedPaste: false),
+                       [.text("ls"), .wait(milliseconds: TerminalSession.pasteSettleMilliseconds), .submit])
+    }
+
+    func testAMultiLineMessagePastesThenSubmitsOnceAfterTheSettle() {
+        XCTAssertEqual(TerminalSession.inputPlan(for: "a\nb", negotiatedPaste: true),
+                       [.pasteStart, .text("a\nb"), .pasteEnd, .wait(milliseconds: TerminalSession.pasteSettleMilliseconds), .submit])
+    }
+
+    func testARawShellGetsMultiLineTextAsIs() {
+        XCTAssertEqual(TerminalSession.inputPlan(for: "a\nb", negotiatedPaste: false), [.text("a\nb"), .submit])
+    }
+
+    func testEveryPlanSubmitsExactlyOnce() {
+        for (text, paste) in [("x", true), ("x", false), ("a\nb", true), ("a\nb", false), ("", true)] {
+            XCTAssertEqual(TerminalSession.inputPlan(for: text, negotiatedPaste: paste).filter { $0 == .submit }.count, 1, "\(text) \(paste)")
+        }
+    }
+
+
+    func testOneLineInputEchoesExactlyOneReturnAfterTheSettle() async throws {
+        let session = TerminalSession(id: "return-once", cwd: FileManager.default.currentDirectoryPath, title: "cat")
+        try session.start(executable: "/bin/sh", args: ["-c", "stty -echo; printf '\\033[?2004h'; exec /bin/cat"], env: [:])
+        defer { session.terminate() }
+        for _ in 0..<100 {
+            if session.acceptsPaste { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(session.acceptsPaste)
+        let initialRow = session.terminalView.getTerminal().getCursorLocation().y
+        session.sendInput("one submission\r\n")
+        try await Task.sleep(for: .milliseconds(TerminalSession.pasteSettleMilliseconds + 400))
+        XCTAssertTrue(session.recentOutput(lines: 10).contains("one submission"))
+        XCTAssertEqual(session.terminalView.getTerminal().getCursorLocation().y - initialRow, 1)
+    }
+
     func testSendInputBeforeStartIsSafeNoOp() {
         let session = TerminalSession(id: "test-unstarted", cwd: "/tmp", title: "unstarted")
         // Calling sendInput on an unstarted session must be a safe no-op.
