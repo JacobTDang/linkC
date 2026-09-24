@@ -93,6 +93,7 @@ public final class MCPServer: Sendable {
         system: {"system": one line}
         "kind": service, database, cache, queue, storage, host, external — any other kind is kept and drawn as a service.
         "planned": true marks something not built yet — linkc_get_board shows it as "status": "planned".
+        "tech": a known technology id or alias — \(BoardTech.knownIDs.joined(separator: ", "))
         """
 
     public init(

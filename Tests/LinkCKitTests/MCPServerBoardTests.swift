@@ -114,6 +114,19 @@ final class MCPServerBoardTests: XCTestCase {
         XCTAssertTrue(description.contains("kept and drawn as a service"), description)
     }
 
+    /// The `tech` field's known ids are only discoverable from the tool schema itself.
+    func testEditBoardToolDescribesTheKnownTechIDs() throws {
+        let req: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/list"]
+        let res = try XCTUnwrap(server().handleMessage(try JSONSerialization.data(withJSONObject: req)))
+        let tools = (((try JSONSerialization.jsonObject(with: res) as? [String: Any])?["result"] as? [String: Any])?["tools"] as? [[String: Any]]) ?? []
+        let tool = try XCTUnwrap(tools.first { $0["name"] as? String == "linkc_edit_board" })
+        let schema = try XCTUnwrap(tool["inputSchema"] as? [String: Any])
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        let steps = try XCTUnwrap(properties["steps"] as? [String: Any])
+        let description = try XCTUnwrap(steps["description"] as? String)
+        XCTAssertTrue(description.contains("postgresql"), description)
+    }
+
     // MARK: - The retry-once path
 
     func testEditBoardRetriesOnceWhenTheFileChangesUnderneathIt() throws {
