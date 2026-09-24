@@ -9,7 +9,7 @@
 //
 // The 22 AI-brand logos (models, frameworks, MCP) are generated from
 // @lobehub/icons-static-svg 1.95.1 (MIT) — https://github.com/lobehub/lobe-icons. Generator:
-// docs/superpowers/sdd/task-3-brief.md, run once against `npm pack @lobehub/icons-static-svg@1.95.1`,
+// docs/superpowers/plans/2026-09-24-board-palettes.md, Task 3, run once against `npm pack @lobehub/icons-static-svg@1.95.1`,
 // using each id's `<id>-color.svg` where a colour variant exists, else `<id>.svg`. Every file's
 // structure was kept whole (several paths, gradients and defs allowed): each `d` had its arc
 // commands rewritten the same way as Simple Icons', the root SVG was resized to 24×24, `style`,
