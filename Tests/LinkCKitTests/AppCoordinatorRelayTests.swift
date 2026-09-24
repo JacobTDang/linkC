@@ -54,6 +54,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         verifier: any TaskVerifier = VerificationRunner(),
         models: AgentModelSettings = .seeded,
         deliverySettle: TimeInterval = 0,
+        injectionGap: TimeInterval = 0,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         userHome: URL? = nil
@@ -93,6 +94,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             // make every dispatch test wait for real. Zero by default; a settle test overrides
             // both this and `now` to prove the threshold without sleeping through it.
             deliverySettle: deliverySettle,
+            injectionGap: injectionGap,
             now: now,
             isWatching: { _ in false }
         )
@@ -117,6 +119,86 @@ final class AppCoordinatorRelayTests: XCTestCase {
             coordinator.terminals.session(id: sessionId)?.acceptsPaste ?? false
         }
         XCTAssertTrue(ready, "mock agent session \(sessionId) never negotiated bracketed paste")
+    }
+
+    @MainActor
+    func testTwoNoticesForOneSessionGoOutAsOneInjection() async throws {
+        let capture = tempDir.appendingPathComponent("received-input")
+        let script = tempDir.appendingPathComponent("mock_agent.sh")
+        try "#!/bin/sh\nstty raw -echo\nprintf '\\033[?2004h'\nexec /usr/bin/tee '\(capture.path)'\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let coordinator = makeCoordinator(injectionGap: 2)
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .claude)
+        try await waitForPasteReady(coordinator, sessionId: session.id)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .codex, fromSessionId: session.id, prompt: "work", files: [])
+        let first = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: task.id, body: "turn ended without a report")
+        let second = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: task.id, body: "done (unverified)")
+        coordinator.dispatchMessages(workspacePath: tempDir.path, inboxStore: inbox)
+        try await Task.sleep(for: .milliseconds(600))
+        let received = try String(contentsOf: capture, encoding: .utf8)
+        XCTAssertEqual(received, "\u{1b}[200~" + first.prompt + "\n" + second.prompt + "\u{1b}[201~\r", "both notices must be one paste and one Return")
+        XCTAssertEqual(coordinator.recentlyInjectedTexts(sessionId: session.id), [first.prompt, second.prompt])
+        XCTAssertTrue(try inbox.fetchPending().isEmpty)
+    }
+
+    @MainActor
+    func testATaskBriefAndAMessageForOneSessionNeverLandTogether() async throws {
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(injectionGap: 2, now: clock.now)
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .codex)
+        try await waitForPasteReady(coordinator, sessionId: session.id)
+        clock.set(Date())
+        coordinator.store.updateState(id: session.id, to: .ready)
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "work", files: [])
+        let message = try inbox.enqueue(from: .claude, to: .codex, kind: .completion, taskId: task.id, body: "done (unverified)")
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+        // A quick idle hook must not bypass the gap following the brief.
+        coordinator.store.updateState(id: session.id, to: .ready)
+        coordinator.dispatchMessages(workspacePath: tempDir.path, inboxStore: inbox)
+        XCTAssertEqual(try inbox.fetchPending().map(\.id), [message.id])
+        XCTAssertEqual(coordinator.recentlyInjectedTexts(sessionId: session.id).count, 1)
+        clock.set(clock.now().addingTimeInterval(2))
+        coordinator.dispatchMessages(workspacePath: tempDir.path, inboxStore: inbox)
+        XCTAssertTrue(try inbox.fetchPending().isEmpty)
+        XCTAssertEqual(coordinator.recentlyInjectedTexts(sessionId: session.id).last, message.prompt)
+        let nextTask = try inbox.createTask(from: .claude, to: .codex, prompt: "next work", files: [])
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+        XCTAssertEqual(try inbox.task(id: nextTask.id)?.state, .queued)
+        clock.set(clock.now().addingTimeInterval(2))
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+        XCTAssertEqual(try inbox.task(id: nextTask.id)?.state, .delivered)
+    }
+
+    @MainActor
+    func testACommandIsNeverBatched() async throws {
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(injectionGap: 2, now: clock.now)
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .agy)
+        try await waitForPasteReady(coordinator, sessionId: session.id)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let first = try inbox.enqueue(from: .claude, to: .agy, kind: .peerNote, body: "first")
+        let command = try inbox.enqueue(from: .agy, to: .agy, kind: .command, body: "/model gemini-3.8-flash-low")
+        let last = try inbox.enqueue(from: .claude, to: .agy, kind: .peerNote, body: "last")
+        coordinator.dispatchMessages(workspacePath: tempDir.path, inboxStore: inbox)
+        XCTAssertEqual(coordinator.recentlyInjectedTexts(sessionId: session.id), [first.prompt])
+        XCTAssertEqual(try inbox.fetchPending().map(\.id), [command.id, last.id])
+        clock.set(clock.now().addingTimeInterval(2))
+        coordinator.dispatchMessages(workspacePath: tempDir.path, inboxStore: inbox)
+        XCTAssertEqual(coordinator.recentlyInjectedTexts(sessionId: session.id), [first.prompt, command.prompt])
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.modelTier, .light)
+        XCTAssertEqual(try inbox.fetchPending().map(\.id), [last.id])
+        clock.set(clock.now().addingTimeInterval(2))
+        coordinator.dispatchMessages(workspacePath: tempDir.path, inboxStore: inbox)
+        XCTAssertEqual(coordinator.recentlyInjectedTexts(sessionId: session.id), [first.prompt, command.prompt, last.prompt])
+        XCTAssertTrue(try inbox.fetchPending().isEmpty)
     }
 
     /// A coordinator whose `.claude` agent is a mock script that negotiates bracketed paste and

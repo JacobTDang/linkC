@@ -208,6 +208,11 @@ extension AppCoordinator {
         )
     }
 
+    func injectionGapElapsed(sessionId: String) -> Bool {
+        guard let last = lastInjectionAt[sessionId] else { return true }
+        return now().timeIntervalSince(last) >= injectionGap
+    }
+
     // MARK: - Tasks
 
     /// Returns `true` when the phase ended early because the inbox lock was still contended after
@@ -228,6 +233,7 @@ extension AppCoordinator {
         }
         guard !queued.isEmpty else { return false }
 
+        var loggedInjectionWait = false
         for task in queued {
             let candidates = store.sessions.filter {
                 ($0.cwd as NSString).standardizingPath == workspacePath && $0.agentKind == task.toAgent
@@ -262,11 +268,23 @@ extension AppCoordinator {
                 }
                 continue
             }
-            let idleCandidates = candidates.filter { isIdle($0.state) }
+            let idleCandidates = candidates.filter {
+                guard isIdle($0.state) else { return false }
+                guard injectionGapElapsed(sessionId: $0.id) else {
+                    if !loggedInjectionWait {
+                        NSLog("[linkC relay] dispatchTasks: waiting for the injection gap")
+                        loggedInjectionWait = true
+                    }
+                    return false
+                }
+                return true
+            }
             guard !idleCandidates.isEmpty else {
-                NSLog("[linkC relay] dispatchTasks: task %@ has %@ session(s) for %@ but none is idle — waiting",
-                      task.shortId, String(candidates.count), task.toAgent.displayName)
-                continue // all busy: wait for a later tick
+                if !candidates.contains(where: { isIdle($0.state) }) {
+                    NSLog("[linkC relay] dispatchTasks: task %@ has %@ session(s) for %@ but none is idle — waiting",
+                          task.shortId, String(candidates.count), task.toAgent.displayName)
+                }
+                continue // busy or inside the injection gap: retry on a later tick
             }
             // The brief is always multi-line, so it must arrive as one bracketed paste — never as
             // raw text a line-oriented TUI would submit line by line. Require negotiation here,
@@ -329,6 +347,9 @@ extension AppCoordinator {
         // whoever is waiting on it while a run is in flight.
         let verificationInFlight = verificationsInFlight[workspacePath] != nil
 
+        var groups: [String: (session: Session, messages: [PendingMessage])] = [:]
+        var sessionOrder: [String] = []
+        var loggedInjectionWait = false
         for message in pending where message.status == .queued {
             if message.kind == .task, verificationInFlight { continue }
 
@@ -396,38 +417,66 @@ extension AppCoordinator {
                 continue
             }
 
-            // The mark durably records delivery before the terminal ever shows the text, and its
-            // own disk I/O and lock wait sit inside the window between reading `target` above and
-            // `sendInput` below. A child that dies in that window makes `sendInput` drop the text
-            // silently, so the message would be recorded delivered and never shown, with no trace.
-            // This check cannot close the window completely — the child can still die between here
-            // and the send — but it closes the common case, and `sendInput` itself now logs the
-            // residual one.
-            guard terminals.session(id: session.id)?.isRunning == true else { continue }
-
-            // Mark before injecting: if the mark throws — a lock timeout under contention — the
-            // row stays queued and must not be sent this tick, or the next tick injects the same
-            // text again on top of it. `dispatchTasks` marks first for the same reason.
-            do {
-                try inboxStore.markMessageDelivered(id: message.id, timeout: Self.relayLockTimeout)
-            } catch {
-                if isRelayLockTimeout(error) { return true }
-                NSLog("[linkC relay] dispatchMessages: message %@ mark delivered — %@", message.id, String(describing: error))
+            guard injectionGapElapsed(sessionId: session.id) else {
+                if !loggedInjectionWait {
+                    NSLog("[linkC relay] dispatchMessages: waiting for the injection gap")
+                    loggedInjectionWait = true
+                }
                 continue
             }
-            terminals.sendInput(sessionId: session.id, text: message.prompt)
-            recordInjection(sessionId: session.id, text: message.prompt)
-            // A hand switch makes the pin a lie. Re-derive it here, where the switch actually
-            // happens: an id that maps to a tier takes it, an unmapped one clears the pin, and a
-            // session with no pin receives no tiered work.
-            if message.kind == .command, message.prompt.hasPrefix("/model ") {
-                let id = String(message.prompt.dropFirst("/model ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-                store.updateModel(id: session.id, model: id.isEmpty ? nil : id,
-                                  modelTier: tier(forModel: id, agent: session.agentKind))
+            guard terminals.session(id: session.id)?.isRunning == true else {
+                NSLog("[linkC relay] dispatchMessages: session %@ child exited — leaving queued", session.id)
+                continue
             }
-            if message.kind == .task { store.updateState(id: session.id, to: .working) }
+            if groups[session.id] == nil {
+                sessionOrder.append(session.id)
+                groups[session.id] = (session, [])
+            }
+            groups[session.id]?.messages.append(message)
+        }
+
+        for sessionId in sessionOrder {
+            guard let group = groups[sessionId] else { continue }
+            var batch: [PendingMessage] = []
+            for message in group.messages {
+                let standalone = message.kind == .command || message.kind == .task
+                if standalone && !batch.isEmpty { break }
+                // Recheck before marking, since a prior group's store work can take time.
+                guard terminals.session(id: sessionId)?.isRunning == true else {
+                    NSLog("[linkC relay] dispatchMessages: session %@ child exited — leaving queued", sessionId)
+                    break
+                }
+                do {
+                    try inboxStore.markMessageDelivered(id: message.id, timeout: Self.relayLockTimeout)
+                } catch {
+                    if isRelayLockTimeout(error) {
+                        // Earlier marks are durable: send that portion before ending the tick.
+                        injectMessageBatch(batch, into: group.session)
+                        return true
+                    }
+                    NSLog("[linkC relay] dispatchMessages: message %@ mark delivered — %@", message.id, String(describing: error))
+                    continue
+                }
+                batch.append(message)
+                if standalone { break }
+            }
+            injectMessageBatch(batch, into: group.session)
         }
         return false
+    }
+
+    private func injectMessageBatch(_ messages: [PendingMessage], into session: Session) {
+        guard !messages.isEmpty else { return }
+        let prompts = messages.map(\.prompt)
+        terminals.sendInput(sessionId: session.id, text: prompts.joined(separator: "\n"))
+        recordInjection(sessionId: session.id, texts: prompts)
+        // Commands and legacy briefs are always singleton batches.
+        if let message = messages.first, message.kind == .command, message.prompt.hasPrefix("/model ") {
+            let id = String(message.prompt.dropFirst("/model ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            store.updateModel(id: session.id, model: id.isEmpty ? nil : id,
+                              modelTier: tier(forModel: id, agent: session.agentKind))
+        }
+        if messages.first?.kind == .task { store.updateState(id: session.id, to: .working) }
     }
 
     // MARK: - Verification

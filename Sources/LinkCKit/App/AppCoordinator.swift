@@ -122,6 +122,11 @@ public final class AppCoordinator {
     /// The current tier → model mapping. A closure, not a value, so a settings edit is seen on
     /// the next spawn without anyone re-injecting anything.
     private let modelSettings: @MainActor @Sendable () -> AgentModelSettings
+    /// Minimum interval between injections into the same terminal. Tests can override it.
+    public static let injectionGap: TimeInterval = 2
+    let injectionGap: TimeInterval
+    var lastInjectionAt: [String: Date] = [:]
+
     /// How long `dispatchTasks` requires a session to have been paste-ready before delivering
     /// to it. Defaults to `AppCoordinator.defaultDeliverySettle`; tests inject 0 so a mock's
     /// near-instant negotiation is immediately a candidate without a real sleep. Production
@@ -157,6 +162,7 @@ public final class AppCoordinator {
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
         deliverySettle: TimeInterval = AppCoordinator.defaultDeliverySettle,
+        injectionGap: TimeInterval = AppCoordinator.injectionGap,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
@@ -172,6 +178,7 @@ public final class AppCoordinator {
         self.userHome = userHome
         self.verifier = verifier
         self.modelSettings = modelSettings
+        self.injectionGap = injectionGap
         self.deliverySettle = deliverySettle
         self.now = now
         self.isWatching = isWatching
@@ -423,6 +430,7 @@ public final class AppCoordinator {
         screenSignatures.removeValue(forKey: sessionId)
         usageTracker?.unbind(sessionId: sessionId)
         injectedText.removeValue(forKey: sessionId)
+        lastInjectionAt.removeValue(forKey: sessionId)
         if wasWorker {
             // A worker was linkC's, not the user's: its report is in the task record, so it
             // leaves nothing under Earlier.
@@ -506,12 +514,18 @@ public final class AppCoordinator {
     /// Records that linkC just typed `text` into `sessionId`'s terminal. Every call the coordinator
     /// makes to inject text into a session must call this right alongside `terminals.sendInput`.
     func recordInjection(sessionId: String, text: String) {
+        recordInjection(sessionId: sessionId, texts: [text])
+    }
+
+    /// A batch keeps each prompt in the echo history and stamps its one injection once.
+    func recordInjection(sessionId: String, texts: [String]) {
         var entries = injectedText[sessionId] ?? []
-        entries.append(text)
+        entries.append(contentsOf: texts)
         if entries.count > Self.injectedHistoryLimit {
             entries.removeFirst(entries.count - Self.injectedHistoryLimit)
         }
         injectedText[sessionId] = entries
+        lastInjectionAt[sessionId] = now()
     }
 
     /// Everything linkC has typed into `sessionId`'s terminal, passed to the limit detector so an
