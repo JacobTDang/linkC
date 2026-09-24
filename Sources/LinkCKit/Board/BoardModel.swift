@@ -568,7 +568,10 @@ public final class BoardModel {
     /// lands in, or `BoardMap.notPlaced` — the containment rule any overflow follows.
     @discardableResult
     nonisolated static func placeComponent(_ component: BoardComponent, inFrame label: String, into map: inout BoardMap) -> Bool {
-        guard let frameIndex = map.frames.firstIndex(where: { $0.label == label }), var frame = map.frames[frameIndex].rect else {
+        guard let frameIndex = map.frames.firstIndex(where: { $0.label == label }) else {
+            preconditionFailure("placeComponent: no frame labelled \"\(label)\"")
+        }
+        guard var frame = map.frames[frameIndex].rect else {
             return false
         }
         let size = BoardGeometry.componentSize
