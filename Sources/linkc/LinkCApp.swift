@@ -538,9 +538,8 @@ final class AppModel {
         let projects = knownProjectPaths
         for row in shellRows {
             if let agent = row.detectedAgent {
-                // The same resolution `currentProject` uses: a terminal that `cd`s into a
-                // subfolder (e.g. `cd Sources`) must still count toward its project's swarm
-                // check, not toward the subfolder as if it were a separate project.
+                // The same resolution `currentProject` uses: a filed terminal counts toward the
+                // project it is filed under, wherever its shell has `cd`'d to.
                 let key = TerminalFiling.project(
                     forTerminal: row.id, cwd: row.cwd, filed: sidebarState.terminalProjects, projects: projects
                 ) ?? ProjectTabs.standardized(row.cwd)

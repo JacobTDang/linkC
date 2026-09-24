@@ -14,23 +14,18 @@ final class TerminalFilingTests: XCTestCase {
         XCTAssertEqual(TerminalFiling.project(forTerminal: "t1", cwd: "/Users/j/school", filed: ["t1": "/p/june/./"], projects: []), "/p/june")
     }
 
-    func testATerminalInASubfolderBelongsToItsAncestorProject() {
+    func testATerminalInASubfolderIsNotInItsParentProject() {
+        XCTAssertNil(TerminalFiling.project(forTerminal: "t1", cwd: "/p/linkc/Sources", filed: [:], projects: ["/p/linkc"]))
         XCTAssertEqual(
-            TerminalFiling.project(forTerminal: "t1", cwd: "/p/linkc/Sources", filed: [:], projects: ["/p/linkc"]),
-            "/p/linkc")
+            TerminalFiling.project(forTerminal: "t1", cwd: "/p/linkc/Sources", filed: [:], projects: ["/p/linkc", "/p/linkc/Sources"]),
+            "/p/linkc/Sources")
     }
 
-    func testTheDeepestAncestorProjectWins() {
-        XCTAssertEqual(
-            TerminalFiling.project(forTerminal: "t1", cwd: "/p/linkc/Sources", filed: [:], projects: ["/p", "/p/linkc"]),
-            "/p/linkc")
-    }
-
-    func testASimilarlyNamedSiblingFolderIsNotAnAncestor() {
+    func testASimilarlyNamedFolderIsNotTheProject() {
         XCTAssertNil(TerminalFiling.project(forTerminal: "t1", cwd: "/p/linkc2", filed: [:], projects: ["/p/linkc"]))
     }
 
-    func testAFilingStillBeatsAnAncestorFolder() {
+    func testAFilingBeatsAnyFolder() {
         XCTAssertEqual(
             TerminalFiling.project(forTerminal: "t1", cwd: "/p/linkc/Sources", filed: ["t1": "/p/june"], projects: ["/p/linkc"]),
             "/p/june")

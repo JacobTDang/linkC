@@ -167,7 +167,7 @@ final class SidebarModelTests: XCTestCase {
         XCTAssertTrue(out.unfiled.isEmpty)
     }
 
-    func testATerminalInASubfolderListsUnderItsProject() {
+    func testATerminalInASubfolderIsNotListedUnderItsParentProject() {
         let s1 = ShellRow(id: "s1", cwd: "/p/linkc/Sources", title: "s1", state: .running)
 
         let out = SidebarModel.projects(
@@ -180,7 +180,7 @@ final class SidebarModelTests: XCTestCase {
         )
 
         XCTAssertEqual(out.projects.map(\.path), ["/p/linkc"])
-        XCTAssertEqual(out.projects[0].terminals.map(\.id), ["s1"])
-        XCTAssertTrue(out.unfiled.isEmpty)
+        XCTAssertTrue(out.projects[0].terminals.isEmpty)
+        XCTAssertEqual(out.unfiled.map(\.id), ["s1"])
     }
 }
