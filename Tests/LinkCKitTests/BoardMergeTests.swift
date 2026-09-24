@@ -9,7 +9,7 @@ final class BoardMergeTests: XCTestCase {
         m.notes = notes.enumerated().map { BoardNote(text: $0.element, at: BoardPoint(x: 0, y: $0.offset * 200)) }
         return m
     }
-    private func c(_ name: String, does: String? = nil, at: BoardPoint? = BoardPoint(x: 0, y: 0), uses: [String: String] = [:]) -> BoardComponent {
+    private func c(_ name: String, does: String? = nil, at: BoardPoint? = BoardPoint(x: 0, y: 0), uses: [String: BoardArrow] = [:]) -> BoardComponent {
         BoardComponent(name: name, kind: .service, does: does, uses: uses, at: at)
     }
     private func n(_ text: String, at: BoardPoint) -> BoardNote { BoardNote(text: text, at: at) }
@@ -250,5 +250,11 @@ final class BoardMergeTests: XCTestCase {
         let theirs = map([c("api")])
         let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
         XCTAssertNil(merged.components.first { $0.name == "db" })
+    }
+
+    func testAnArrowsStyleMergesAsOneValue() {
+        let base = map([BoardComponent(name: "r", kind: .router, uses: ["x": "go"]), BoardComponent(name: "x", kind: .end)])
+        var mine = base; mine.components[0].uses["x"] = BoardArrow(label: "go", style: .conditional)
+        XCTAssertEqual(BoardMerge.merge(base: base, mine: mine, theirs: base).components[0].uses["x"]?.style, .conditional)
     }
 }

@@ -426,6 +426,34 @@ final class BoardMapTests: XCTestCase {
 
     // MARK: - Orphaned layout entries
 
+    // MARK: - Arrow styles
+
+    func testPlainArrowsStayStringsAndStyledOnesRoundTrip() throws {
+        let source = Data(#"{"version":2,"places":{"Not placed":{"a":{"kind":"router","uses":{"b":{"label":"done","style":"conditional"},"c":"reads","d":{"style":"bus","bits":32}}},"b":{"kind":"end"},"c":{"kind":"tool"},"d":{"kind":"alu"}}}}"#.utf8)
+        let map = try BoardMap.decode(source)
+        let a = try XCTUnwrap(map.components.first { $0.name == "a" })
+        XCTAssertEqual(a.uses["b"], BoardArrow(label: "done", style: .conditional))
+        XCTAssertEqual(a.uses["c"], "reads")
+        XCTAssertEqual(a.uses["d"], BoardArrow(style: .bus, bits: 32))
+        let text = String(decoding: try map.encoded(), as: UTF8.self)
+        XCTAssertTrue(text.contains(#""c": "reads""#), "plain stays a string")
+        XCTAssertTrue(text.contains(#""style": "conditional""#))
+        XCTAssertTrue(text.contains(#""bits": 32"#))
+        XCTAssertEqual(try BoardMap.decode(try map.encoded()), map)
+    }
+
+    func testBadArrowStylesAreRefused() {
+        for bad in [#"{"style":"wavy"}"#, #"{"bits":8}"#, #"{"style":"bus","bits":0}"#, #"{"style":"bus","bits":5000}"#, #"{"label":3}"#, #"{"colour":"red"}"#] {
+            let json = #"{"version":2,"places":{"Not placed":{"a":{"kind":"service","uses":{"b":"# + bad + #"}},"b":{"kind":"service"}}}}"#
+            XCTAssertThrowsError(try BoardMap.decode(Data(json.utf8)), bad)
+        }
+    }
+
+    func testExistingFilesRoundTripByteIdentical() throws {
+        let once = try BoardMap.decode(Data(#"{"version":2,"places":{"Not placed":{"a":{"kind":"service","uses":{"b":"x"}},"b":{"kind":"service"}}}}"#.utf8)).encoded()
+        XCTAssertEqual(try BoardMap.decode(once).encoded(), once)
+    }
+
     func testAnOrphanedLayoutEntryIsDroppedWhileRealOnesAreKept() throws {
         let data = Data("""
         { "version": 2,

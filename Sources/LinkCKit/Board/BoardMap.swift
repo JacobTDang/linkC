@@ -65,6 +65,30 @@ public struct BoardRect: Hashable, Sendable {
     }
 }
 
+/// How an arrow is drawn. `.plain` is what the file has always had.
+public enum BoardArrowStyle: String, Sendable, CaseIterable {
+    case plain, conditional, control, bus
+}
+
+/// One `uses` edge: its label, and how it should be drawn. `bits` only means anything with
+/// `.bus`. `ExpressibleByStringLiteral` keeps `uses: ["b": "x"]` reading naturally, in code and
+/// in tests — a plain arrow is just its label.
+public struct BoardArrow: Equatable, Sendable, ExpressibleByStringLiteral {
+    public var label: String
+    public var style: BoardArrowStyle
+    public var bits: Int?
+
+    public init(label: String = "", style: BoardArrowStyle = .plain, bits: Int? = nil) {
+        self.label = label
+        self.style = style
+        self.bits = bits
+    }
+
+    public init(stringLiteral value: String) {
+        self.init(label: value)
+    }
+}
+
 /// One part of the system: a box on the board, and an entry under its place in the file.
 public struct BoardComponent: Equatable, Sendable, Identifiable {
     public var id: String { name }
@@ -81,8 +105,8 @@ public struct BoardComponent: Equatable, Sendable, Identifiable {
     public var tech: String?
     /// True while it does not exist yet.
     public var planned: Bool
-    /// What it uses: each component's name, mapped to the arrow's label (`""` when unlabelled).
-    public var uses: [String: String]
+    /// What it uses: each component's name, mapped to the arrow to it.
+    public var uses: [String: BoardArrow]
     /// Version-1 `used_by` names that were not components, kept verbatim.
     public var legacyUsedBy: [String]
     /// The label of the frame it sits in, or `BoardMap.notPlaced`.
@@ -94,7 +118,7 @@ public struct BoardComponent: Equatable, Sendable, Identifiable {
 
     public init(
         name: String, kind: ComponentKind, does: String? = nil, reachedBy: String? = nil, runs: String? = nil,
-        tech: String? = nil, planned: Bool = false, uses: [String: String] = [:], legacyUsedBy: [String] = [],
+        tech: String? = nil, planned: Bool = false, uses: [String: BoardArrow] = [:], legacyUsedBy: [String] = [],
         place: String = BoardMap.notPlaced, at: BoardPoint? = nil
     ) {
         self.name = name
@@ -268,7 +292,7 @@ public struct BoardMap: Equatable, Sendable {
                     runs: try string(raw, "runs", context: context),
                     tech: try string(raw, "tech", context: context),
                     planned: try plannedStatus(raw, context: context),
-                    uses: try stringMap(raw, "uses", context: context) ?? [:],
+                    uses: try arrowMap(raw, "uses", context: context) ?? [:],
                     legacyUsedBy: try stringArray(raw, "used_by", context: context) ?? [],
                     place: place,
                     at: positions[name])
@@ -330,7 +354,7 @@ public struct BoardMap: Equatable, Sendable {
                 runs: try string(raw, "runs", context: context),
                 tech: try string(raw, "tech", context: context),
                 planned: intended || statusPlanned,
-                uses: try stringMap(raw, "uses", context: context) ?? [:],
+                uses: try arrowMap(raw, "uses", context: context) ?? [:],
                 at: at)
             component.extras = try extras(of: raw, excluding: versionOneComponentKeys, context: context)
             components.append(component)
@@ -397,7 +421,7 @@ public struct BoardMap: Equatable, Sendable {
             Self.set(&object, "runs", component.runs)
             Self.set(&object, "tech", component.tech)
             if component.planned { object["status"] = "planned" } else { object.removeValue(forKey: "status") }
-            if component.uses.isEmpty { object.removeValue(forKey: "uses") } else { object["uses"] = component.uses }
+            if component.uses.isEmpty { object.removeValue(forKey: "uses") } else { object["uses"] = Self.encodedUses(component.uses) }
             if component.legacyUsedBy.isEmpty { object.removeValue(forKey: "used_by") } else { object["used_by"] = component.legacyUsedBy }
             places[component.place, default: [:]][component.name] = object
         }
@@ -474,12 +498,61 @@ public struct BoardMap: Equatable, Sendable {
         return array
     }
 
-    private static func stringMap(_ raw: [String: Any], _ key: String, context: String) throws -> [String: String]? {
+    private static func arrowMap(_ raw: [String: Any], _ key: String, context: String) throws -> [String: BoardArrow]? {
         guard let value = raw[key] else { return nil }
-        guard let map = value as? [String: String] else {
-            throw LinkCError.parse("\(context) has \"\(key)\" but it is not an object of text")
+        guard let object = value as? [String: Any] else {
+            throw LinkCError.parse("\(context) has \"\(key)\" but it is not an object")
         }
-        return map
+        var result: [String: BoardArrow] = [:]
+        for (target, entry) in object {
+            result[target] = try arrow(entry, in: context, to: target)
+        }
+        return result
+    }
+
+    /// One `uses` value: a string is a plain arrow with that label; an object may carry
+    /// `label`, `style` and `bits`. Refused loud, naming both the component (from `context`) and
+    /// the target, on an unknown key, a wrong type, an unknown style, `bits` without
+    /// `style: "bus"`, or `bits` outside 1…4096.
+    private static func arrow(_ entry: Any, in context: String, to target: String) throws -> BoardArrow {
+        if let label = entry as? String { return BoardArrow(label: label) }
+        let arrowContext = "\(context)'s arrow to \"\(target)\""
+        guard let object = entry as? [String: Any] else {
+            throw LinkCError.parse("\(arrowContext) is not text or an object")
+        }
+        let knownKeys: Set<String> = ["label", "style", "bits"]
+        if let unknownKey = object.keys.sorted().first(where: { !knownKeys.contains($0) }) {
+            throw LinkCError.parse("\(arrowContext) has an unknown key \"\(unknownKey)\"")
+        }
+        let label = try string(object, "label", context: arrowContext) ?? ""
+        let styleName = try string(object, "style", context: arrowContext) ?? BoardArrowStyle.plain.rawValue
+        guard let style = BoardArrowStyle(rawValue: styleName) else {
+            throw LinkCError.parse("\(arrowContext) has style \"\(styleName)\"; styles are plain, conditional, control and bus")
+        }
+        let bits = try int(object, "bits", context: arrowContext)
+        if let bits {
+            guard style == .bus else {
+                throw LinkCError.parse("\(arrowContext) has \"bits\" but its style is not \"bus\"")
+            }
+            guard (1...4096).contains(bits) else {
+                throw LinkCError.parse("\(arrowContext) has \"bits\" \(bits) but it must be between 1 and 4096")
+            }
+        }
+        return BoardArrow(label: label, style: style, bits: bits)
+    }
+
+    /// `uses`, ready to write: a `.plain` arrow is its label string; any other style is an
+    /// object. Key order is left to `BoardMapJSON`, which sorts every object's keys already.
+    private static func encodedUses(_ uses: [String: BoardArrow]) -> [String: Any] {
+        uses.mapValues(encodedArrow)
+    }
+
+    private static func encodedArrow(_ arrow: BoardArrow) -> Any {
+        guard arrow.style != .plain else { return arrow.label }
+        var object: [String: Any] = ["style": arrow.style.rawValue]
+        if !arrow.label.isEmpty { object["label"] = arrow.label }
+        if arrow.style == .bus, let bits = arrow.bits { object["bits"] = bits }
+        return object
     }
 
     private static func dictionary(_ raw: [String: Any], _ key: String, context: String) throws -> [String: Any]? {

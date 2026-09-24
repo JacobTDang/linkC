@@ -200,7 +200,7 @@ struct BoardCanvas: View {
                             ComponentInspector(
                                 component: component,
                                 livesIn: component.place,
-                                uses: component.uses.keys.sorted().map { ($0, component.uses[$0] ?? "") },
+                                uses: component.uses.keys.sorted().map { ($0, component.uses[$0]?.label ?? "") },
                                 commit: { fields, rename in board.updateComponent(component.name, fields: fields, rename: rename) },
                                 currentRefusal: { board.refusal },
                                 close: { inspecting = nil })
@@ -407,7 +407,7 @@ struct BoardCanvas: View {
                 if let editingArrow, let points = board.routes[editingArrow]?.points, let mid = labelPoint(
                     points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }) {
                     LineEditor(
-                        text: board.map.components.first { $0.name == editingArrow.from }?.uses[editingArrow.to] ?? "",
+                        text: board.map.components.first { $0.name == editingArrow.from }?.uses[editingArrow.to]?.label ?? "",
                         font: .system(size: 10), width: 160
                     ) { label in
                         board.setArrowLabel(editingArrow, to: label)
@@ -477,7 +477,8 @@ struct BoardCanvas: View {
         let focus = focusedComponent
         var drawnBundlePills: Set<String> = []
         for component in board.map.components {
-            for (target, label) in component.uses {
+            for (target, arrow) in component.uses {
+                let label = arrow.label
                 let key = BoardModel.ArrowKey(from: component.name, to: target)
                 guard let draw = arrowDraw(for: key) else { continue }
                 let canvasPoints = draw.isPreview ? draw.points : extendedEndpoints(draw.points, from: key.from, to: key.to)

@@ -54,9 +54,9 @@ public enum BoardRouter {
         var labelOf: [BoardModel.ArrowKey: String] = [:]
         for component in map.components {
             guard component.at != nil else { continue }
-            for (targetName, label) in component.uses {
+            for (targetName, arrow) in component.uses {
                 guard let target = byLowercasedName[targetName.lowercased()] else { continue }
-                labelOf[BoardModel.ArrowKey(from: component.name, to: target.name)] = label
+                labelOf[BoardModel.ArrowKey(from: component.name, to: target.name)] = arrow.label
             }
         }
         let arrowKeys = labelOf.keys.sorted(by: orderKey)

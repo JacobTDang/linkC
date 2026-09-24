@@ -207,7 +207,7 @@ final class BoardRouterTests: XCTestCase {
     func testTwoHundredComponentsRouteWithinBudget() {
         var m = BoardMap()
         for i in 0..<200 {
-            let uses = i + 1 < 200 ? ["c\(i + 1)": ""] : [:]
+            let uses: [String: BoardArrow] = i + 1 < 200 ? ["c\(i + 1)": ""] : [:]
             var extra = uses
             if i + 7 < 200 && i % 2 == 0 { extra["c\(i + 7)"] = "" }
             m.components.append(BoardComponent(name: "c\(i)", kind: .service, uses: extra, at: BoardPoint(x: (i % 20) * 312, y: (i / 20) * 132)))

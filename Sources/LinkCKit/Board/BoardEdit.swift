@@ -322,11 +322,11 @@ public enum BoardEdit {
         // is normalised to the component's real name.
         let existingKey = map.components[sourceIndex].uses.keys.first { $0.lowercased() == realTarget.lowercased() }
         let existing = existingKey.map { map.components[sourceIndex].uses[$0]! }
-        let resolvedLabel = label.map(trimmed) ?? existing ?? ""
+        let resolvedLabel = label.map(trimmed) ?? existing?.label ?? ""
         if let existingKey, existingKey != realTarget {
             map.components[sourceIndex].uses.removeValue(forKey: existingKey)
         }
-        map.components[sourceIndex].uses[realTarget] = resolvedLabel
+        map.components[sourceIndex].uses[realTarget] = BoardArrow(label: resolvedLabel, style: existing?.style ?? .plain, bits: existing?.bits)
         guard !resolvedLabel.isEmpty else { return "\(realSource) → \(realTarget)" }
         return "\(realSource) → \(realTarget) \"\(resolvedLabel)\""
     }

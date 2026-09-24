@@ -85,4 +85,10 @@ final class BoardReportTests: XCTestCase {
         m.components = [BoardComponent(name: "db", kind: .database, tech: "postgres")]
         XCTAssertTrue(BoardReport.markdown(for: m).contains("database · postgres"))
     }
+
+    func testTheReportNamesArrowStyles() {
+        var m = BoardMap()
+        m.components = [BoardComponent(name: "cpu", kind: .register, uses: ["alu": BoardArrow(style: .bus, bits: 32)]), BoardComponent(name: "alu", kind: .alu)]
+        XCTAssertTrue(BoardReport.markdown(for: m).contains("bus, 32-bit"))
+    }
 }

@@ -554,10 +554,10 @@ public final class BoardModel {
 
     public func setArrowLabel(_ arrow: ArrowKey, to label: String) {
         edit { map in
-            guard let index = Self.index(of: arrow.from, in: map), map.components[index].uses[arrow.to] != nil else { return false }
+            guard let index = Self.index(of: arrow.from, in: map), let existing = map.components[index].uses[arrow.to] else { return false }
             let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard map.components[index].uses[arrow.to] != trimmed else { return false }
-            map.components[index].uses[arrow.to] = trimmed
+            guard existing.label != trimmed else { return false }
+            map.components[index].uses[arrow.to] = BoardArrow(label: trimmed, style: existing.style, bits: existing.bits)
             return true
         }
     }
@@ -724,8 +724,8 @@ public final class BoardModel {
         guard !isCancelled() else { return nil }
         var labelOf: [ArrowKey: String] = [:]
         for component in map.components {
-            for (target, label) in component.uses where !label.isEmpty {
-                labelOf[ArrowKey(from: component.name, to: target)] = label
+            for (target, arrow) in component.uses where !arrow.label.isEmpty {
+                labelOf[ArrowKey(from: component.name, to: target)] = arrow.label
             }
         }
         let labelRects = BoardLabels.placed(routes: routes, labels: labelOf, obstacles: BoardLabels.obstacles(for: map))

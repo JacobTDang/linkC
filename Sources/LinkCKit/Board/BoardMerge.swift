@@ -190,13 +190,13 @@ public enum BoardMerge {
     /// there — that is the name the arrow should point at — else mine's spelling of the key, else
     /// theirs'.
     private static func mergedUses(
-        _ base: [String: String], _ mine: [String: String], _ theirs: [String: String],
+        _ base: [String: BoardArrow], _ mine: [String: BoardArrow], _ theirs: [String: BoardArrow],
         componentsBase: [BoardComponent], componentsMine: [BoardComponent], componentsTheirs: [BoardComponent]
-    ) -> [String: String] {
+    ) -> [String: BoardArrow] {
         let baseByKey = lowercasedKeyed(base)
         let mineByKey = lowercasedKeyed(mine)
         let theirsByKey = lowercasedKeyed(theirs)
-        var result: [String: String] = [:]
+        var result: [String: BoardArrow] = [:]
         for lowerKey in Set(baseByKey.keys).union(mineByKey.keys).union(theirsByKey.keys) {
             guard let value = pick(baseByKey[lowerKey]?.value, mineByKey[lowerKey]?.value, theirsByKey[lowerKey]?.value) else { continue }
             let realName = mergedComponentName(
@@ -207,8 +207,10 @@ public enum BoardMerge {
         return result
     }
 
-    /// `uses`' keys, grouped by their lowercased form, each still holding its original spelling.
-    private static func lowercasedKeyed(_ uses: [String: String]) -> [String: (key: String, value: String)] {
+    /// `uses`' keys, grouped by their lowercased form, each still holding its original spelling
+    /// and its whole arrow — merging by key must carry the arrow whole, style included, never
+    /// just its label, or a hand-edit that only recases a key would drop the other side's style.
+    private static func lowercasedKeyed(_ uses: [String: BoardArrow]) -> [String: (key: String, value: BoardArrow)] {
         Dictionary(uses.map { ($0.key.lowercased(), (key: $0.key, value: $0.value)) }, uniquingKeysWith: { first, _ in first })
     }
 

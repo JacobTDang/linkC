@@ -15,7 +15,7 @@ final class BoardLabelsTests: XCTestCase {
 
     private func labels(_ m: BoardMap) -> [BoardModel.ArrowKey: String] {
         var out: [BoardModel.ArrowKey: String] = [:]
-        for c in m.components { for (t, l) in c.uses where !l.isEmpty { out[BoardModel.ArrowKey(from: c.name, to: t)] = l } }
+        for c in m.components { for (t, arrow) in c.uses where !arrow.label.isEmpty { out[BoardModel.ArrowKey(from: c.name, to: t)] = arrow.label } }
         return out
     }
 

@@ -43,8 +43,10 @@ public enum BoardReport {
         if let runs = nonEmpty(component.runs) { parts.append("runs \(sanitized(runs))") }
         if !component.uses.isEmpty {
             let uses = component.uses.keys.sorted().map { target -> String in
-                let label = component.uses[target] ?? ""
-                return label.isEmpty ? sanitized(target) : "\(sanitized(target)) (\(sanitized(label)))"
+                let arrow = component.uses[target] ?? BoardArrow()
+                var text = arrow.label.isEmpty ? sanitized(target) : "\(sanitized(target)) (\(sanitized(arrow.label)))"
+                if let styleText = styleText(for: arrow) { text += " (\(styleText))" }
+                return text
             }
             parts.append("uses \(uses.joined(separator: ", "))")
         }
@@ -52,6 +54,17 @@ public enum BoardReport {
             parts.append("used by \(component.legacyUsedBy.map(sanitized).joined(separator: ", "))")
         }
         return parts.isEmpty ? "\(head)\n" : "\(head) — \(parts.joined(separator: "; "))\n"
+    }
+
+    /// What follows an arrow's label text for a non-plain style: nil for `.plain`, which adds
+    /// nothing.
+    private static func styleText(for arrow: BoardArrow) -> String? {
+        switch arrow.style {
+        case .plain: return nil
+        case .conditional: return "conditional"
+        case .control: return "control"
+        case .bus: return arrow.bits.map { "bus, \($0)-bit" } ?? "bus"
+        }
     }
 
     private static func nonEmpty(_ text: String?) -> String? {
