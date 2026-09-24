@@ -29,7 +29,7 @@ public enum BoardEditStep: Equatable, Sendable {
     case add(String, BoardComponentFields, place: String?)
     case update(String, BoardComponentFields, place: String?, rename: String?)
     case remove(String)
-    case connect(String, to: String, label: String?)
+    case connect(String, to: String, label: String?, style: BoardArrowStyle?, bits: Int?)
     case disconnect(String, to: String)
     case addPlace(String)
     case renamePlace(String, to: String)
@@ -64,7 +64,7 @@ public enum BoardEdit {
         "add": ["kind", "tech", "in", "does", "reached_by", "runs", "planned"],
         "update": ["kind", "tech", "in", "does", "reached_by", "runs", "planned", "rename"],
         "remove": [],
-        "connect": ["to", "label"],
+        "connect": ["to", "label", "style", "bits"],
         "disconnect": ["to"],
         "place": ["rename"],
         "remove_place": [],
@@ -113,6 +113,23 @@ public enum BoardEdit {
             }
             return number.boolValue
         }
+        func intField(_ key: String) throws -> Int? {
+            guard let value = object[key] else { return nil }
+            // The reverse of `boolField`'s check: a `CFBoolean`-typed `NSNumber` bridges to an
+            // `Int` just as readily as a real one, so it is refused rather than silently read as
+            // 0 or 1.
+            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else {
+                throw BoardEditRefusal(step: step, reason: "\"\(key)\" must be a whole number")
+            }
+            return number.intValue
+        }
+        func styleField(_ key: String) throws -> BoardArrowStyle? {
+            guard let raw = try stringField(key) else { return nil }
+            guard let style = BoardArrowStyle(rawValue: raw) else {
+                throw BoardEditRefusal(step: step, reason: "\"style\" must be plain, conditional, control or bus")
+            }
+            return style
+        }
 
         guard let verbValue = try stringField(verb) else {
             throw BoardEditRefusal(step: step, reason: "\"\(verb)\" must be text")
@@ -128,6 +145,8 @@ public enum BoardEdit {
         let to = try stringField("to")
         let label = try stringField("label")
         let planned = try boolField("planned")
+        let style = try styleField("style")
+        let bits = try intField("bits")
 
         switch verb {
         case "add":
@@ -140,7 +159,7 @@ public enum BoardEdit {
             return .remove(verbValue)
         case "connect":
             guard let to else { throw BoardEditRefusal(step: step, reason: "\"connect\" needs \"to\"") }
-            return .connect(verbValue, to: to, label: label)
+            return .connect(verbValue, to: to, label: label, style: style, bits: bits)
         case "disconnect":
             guard let to else { throw BoardEditRefusal(step: step, reason: "\"disconnect\" needs \"to\"") }
             return .disconnect(verbValue, to: to)
@@ -181,8 +200,8 @@ public enum BoardEdit {
             return try applyUpdate(rawName, fields, place: place, rename: rename, number: number, map: &map)
         case .remove(let rawName):
             return try applyRemove(rawName, number: number, map: &map)
-        case .connect(let rawSource, let to, let label):
-            return try applyConnect(rawSource, to: to, label: label, number: number, map: &map)
+        case .connect(let rawSource, let to, let label, let style, let bits):
+            return try applyConnect(rawSource, to: to, label: label, style: style, bits: bits, number: number, map: &map)
         case .disconnect(let rawSource, let to):
             return try applyDisconnect(rawSource, to: to, number: number, map: &map)
         case .addPlace(let rawLabel):
@@ -307,7 +326,9 @@ public enum BoardEdit {
 
     // MARK: - connect / disconnect
 
-    private static func applyConnect(_ rawSource: String, to: String, label: String?, number: Int, map: inout BoardMap) throws -> String {
+    private static func applyConnect(
+        _ rawSource: String, to: String, label: String?, style: BoardArrowStyle?, bits: Int?, number: Int, map: inout BoardMap
+    ) throws -> String {
         let sourceName = trimmed(rawSource)
         let targetName = trimmed(to)
         let sourceIndex = try requireComponent(sourceName, in: map, step: number)
@@ -323,12 +344,41 @@ public enum BoardEdit {
         let existingKey = map.components[sourceIndex].uses.keys.first { $0.lowercased() == realTarget.lowercased() }
         let existing = existingKey.map { map.components[sourceIndex].uses[$0]! }
         let resolvedLabel = label.map(trimmed) ?? existing?.label ?? ""
+
+        // With no style given, a new arrow takes the default rule and an existing arrow keeps its
+        // style; a given style always wins. Bits ride along with the style they were resolved
+        // with: given explicitly, or kept only when the style did not change.
+        let resolvedStyle = style ?? existing?.style ?? BoardArrowStyle.default(from: map.components[sourceIndex].kind)
+        var resolvedBits: Int?
+        if let bits {
+            resolvedBits = bits
+        } else if let existing, existing.style == resolvedStyle {
+            resolvedBits = existing.bits
+        }
+        guard resolvedStyle == .bus || resolvedBits == nil else {
+            throw BoardEditRefusal(step: number, reason: "\"bits\" needs style \"bus\"")
+        }
+        if let resolvedBits {
+            guard (1...4096).contains(resolvedBits) else {
+                throw BoardEditRefusal(step: number, reason: "\"bits\" must be between 1 and 4096")
+            }
+        }
+
         if let existingKey, existingKey != realTarget {
             map.components[sourceIndex].uses.removeValue(forKey: existingKey)
         }
-        map.components[sourceIndex].uses[realTarget] = BoardArrow(label: resolvedLabel, style: existing?.style ?? .plain, bits: existing?.bits)
-        guard !resolvedLabel.isEmpty else { return "\(realSource) → \(realTarget)" }
-        return "\(realSource) → \(realTarget) \"\(resolvedLabel)\""
+        map.components[sourceIndex].uses[realTarget] = BoardArrow(label: resolvedLabel, style: resolvedStyle, bits: resolvedBits)
+
+        var line = "\(realSource) → \(realTarget)"
+        if !resolvedLabel.isEmpty { line += " \"\(resolvedLabel)\"" }
+        if resolvedStyle != .plain {
+            if resolvedStyle == .bus {
+                line += resolvedBits.map { " (bus, \($0)-bit)" } ?? " (bus)"
+            } else {
+                line += " (\(resolvedStyle.rawValue))"
+            }
+        }
+        return line
     }
 
     private static func applyDisconnect(_ rawSource: String, to: String, number: Int, map: inout BoardMap) throws -> String {

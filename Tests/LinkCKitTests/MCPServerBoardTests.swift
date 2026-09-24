@@ -98,7 +98,7 @@ final class MCPServerBoardTests: XCTestCase {
             #"add: {"add": name, "kind"?, "tech"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool}"#,
             #"update: {"update": name, same optional fields, "rename"?: new name}"#,
             #"remove: {"remove": name}"#,
-            #"connect: {"connect": from, "to": to, "label"?}"#,
+            #"connect: {"connect": from, "to": to, "label"?, "style"?: plain|conditional|control|bus, "bits"?: 1-4096 (bus only)}"#,
             #"disconnect: {"disconnect": from, "to": to}"#,
             #"place: {"place": label} or {"place": label, "rename": new label}"#,
             #"remove_place: {"remove_place": label}"#,
@@ -112,6 +112,21 @@ final class MCPServerBoardTests: XCTestCase {
         XCTAssertTrue(description.contains("\"status\": \"planned\""), description)
         XCTAssertTrue(description.contains("service, database, cache, queue, storage, host, external"), description)
         XCTAssertTrue(description.contains("kept and drawn as a service"), description)
+    }
+
+    /// Styles and the default rule are only discoverable from the tool schema itself.
+    func testTheEditToolDescribesStyles() throws {
+        let req: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/list"]
+        let res = try XCTUnwrap(server().handleMessage(try JSONSerialization.data(withJSONObject: req)))
+        let tools = (((try JSONSerialization.jsonObject(with: res) as? [String: Any])?["result"] as? [String: Any])?["tools"] as? [[String: Any]]) ?? []
+        let tool = try XCTUnwrap(tools.first { $0["name"] as? String == "linkc_edit_board" })
+        let schema = try XCTUnwrap(tool["inputSchema"] as? [String: Any])
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        let steps = try XCTUnwrap(properties["steps"] as? [String: Any])
+        let description = try XCTUnwrap(steps["description"] as? String)
+        XCTAssertTrue(description.contains("conditional"), description)
+        XCTAssertTrue(description.contains("bus"), description)
+        XCTAssertTrue(description.contains("defaults to conditional"), description)
     }
 
     /// The `tech` field's known ids are only discoverable from the tool schema itself.

@@ -68,6 +68,16 @@ public struct BoardRect: Hashable, Sendable {
 /// How an arrow is drawn. `.plain` is what the file has always had.
 public enum BoardArrowStyle: String, Sendable, CaseIterable {
     case plain, conditional, control, bus
+
+    /// The style a new arrow takes when nothing says otherwise: conditional from a router,
+    /// control from a control unit, plain from anything else.
+    public static func `default`(from source: ComponentKind) -> BoardArrowStyle {
+        switch source {
+        case .router: return .conditional
+        case .control: return .control
+        default: return .plain
+        }
+    }
 }
 
 /// One `uses` edge: its label, and how it should be drawn. `bits` only means anything with

@@ -730,6 +730,18 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.map.components.first { $0.name == api }?.uses[db], "reads entries")
     }
 
+    func testAddArrowAppliesTheDefaultRuleAndSetArrowStyleIsOneUndoStep() throws {
+        let board = fresh()
+        let r = try XCTUnwrap(board.addComponent(kind: .router, at: BoardPoint(x: 0, y: 0)))
+        let e = try XCTUnwrap(board.addComponent(kind: .end, at: BoardPoint(x: 480, y: 0)))
+        XCTAssertTrue(board.addArrow(from: r, to: e))
+        XCTAssertEqual(board.map.components.first { $0.name == r }?.uses[e]?.style, .conditional)
+        board.setArrowStyle(BoardModel.ArrowKey(from: r, to: e), to: .bus, bits: 64)
+        XCTAssertEqual(board.map.components.first { $0.name == r }?.uses[e], BoardArrow(style: .bus, bits: 64))
+        board.undo()
+        XCTAssertEqual(board.map.components.first { $0.name == r }?.uses[e]?.style, .conditional)
+    }
+
     /// Starting a newer recompute cancels the detached task a superseded one is still running —
     /// cheap insurance so a stale recompute stops doing work rather than racing to a result that
     /// gets thrown away anyway. Capturing the handle right after the first call and asserting on

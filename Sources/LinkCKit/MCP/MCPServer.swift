@@ -84,7 +84,7 @@ public final class MCPServer: Sendable {
         add: {"add": name, "kind"?, "tech"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool}
         update: {"update": name, same optional fields, "rename"?: new name}
         remove: {"remove": name}
-        connect: {"connect": from, "to": to, "label"?}
+        connect: {"connect": from, "to": to, "label"?, "style"?: plain|conditional|control|bus, "bits"?: 1-4096 (bus only)}
         disconnect: {"disconnect": from, "to": to}
         place: {"place": label} or {"place": label, "rename": new label}
         remove_place: {"remove_place": label}
@@ -94,6 +94,7 @@ public final class MCPServer: Sendable {
         "kind": service, database, cache, queue, storage, host, external — any other kind is kept and drawn as a service.
         "planned": true marks something not built yet — linkc_get_board shows it as "status": "planned".
         "tech": a known technology id or alias — \(BoardTech.knownIDs.joined(separator: ", "))
+        A new arrow from a router defaults to conditional, from a control unit to control.
         """
 
     public init(

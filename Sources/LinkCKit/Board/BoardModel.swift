@@ -545,7 +545,7 @@ public final class BoardModel {
             guard !map.components[sourceIndex].uses.keys.contains(where: { $0.lowercased() == realTarget.lowercased() }) else {
                 return refuse("\(source) already uses \(realTarget) — double-click that arrow to change its label.")
             }
-            map.components[sourceIndex].uses[realTarget] = ""
+            map.components[sourceIndex].uses[realTarget] = BoardArrow(style: BoardArrowStyle.default(from: map.components[sourceIndex].kind))
             landed = true
             return true
         }
@@ -558,6 +558,21 @@ public final class BoardModel {
             let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
             guard existing.label != trimmed else { return false }
             map.components[index].uses[arrow.to] = BoardArrow(label: trimmed, style: existing.style, bits: existing.bits)
+            return true
+        }
+    }
+
+    /// Sets an arrow's style and bits as one undo step. Refuses bits outside 1…4096 or bits on a
+    /// non-bus style; a no-op when nothing would change.
+    public func setArrowStyle(_ arrow: ArrowKey, to style: BoardArrowStyle, bits: Int?) {
+        edit { map in
+            guard let index = Self.index(of: arrow.from, in: map), let existing = map.components[index].uses[arrow.to] else { return false }
+            if let bits {
+                guard style == .bus else { return refuse("\"bits\" needs style \"bus\".") }
+                guard (1...4096).contains(bits) else { return refuse("\"bits\" must be between 1 and 4096.") }
+            }
+            guard existing.style != style || existing.bits != bits else { return false }
+            map.components[index].uses[arrow.to] = BoardArrow(label: existing.label, style: style, bits: bits)
             return true
         }
     }

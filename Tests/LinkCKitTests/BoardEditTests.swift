@@ -99,6 +99,39 @@ final class BoardEditTests: XCTestCase {
         XCTAssertNotNil(refusal([["connect": "api", "to": "api"]], on: try june()))
     }
 
+    // MARK: - connect carries style and bits; a router or control unit defaults theirs
+
+    func testConnectCarriesAStyleAndBits() throws {
+        let base = try apply([["add": "regs", "kind": "register"], ["add": "alu", "kind": "alu"]], to: .empty).map
+        let result = try apply([["connect": "regs", "to": "alu", "style": "bus", "bits": 32]], to: base)
+        XCTAssertEqual(result.map.components.first { $0.name == "regs" }?.uses["alu"], BoardArrow(style: .bus, bits: 32))
+        XCTAssertEqual(result.lines, ["regs → alu (bus, 32-bit)"])
+    }
+
+    func testArrowsFromARouterOrAControlUnitDefaultToTheirStyle() throws {
+        let base = try apply([["add": "route", "kind": "router"], ["add": "done", "kind": "end"], ["add": "cu", "kind": "control"], ["add": "mux", "kind": "mux"]], to: .empty).map
+        var result = try apply([["connect": "route", "to": "done", "label": "done"], ["connect": "cu", "to": "mux", "label": "ALUSrc"]], to: base)
+        XCTAssertEqual(result.map.components.first { $0.name == "route" }?.uses["done"]?.style, .conditional)
+        XCTAssertEqual(result.map.components.first { $0.name == "cu" }?.uses["mux"]?.style, .control)
+        result = try apply([["connect": "route", "to": "done", "style": "plain"]], to: result.map)
+        XCTAssertEqual(result.map.components.first { $0.name == "route" }?.uses["done"], BoardArrow(label: "done"), "an explicit style wins, the label stays")
+    }
+
+    func testBadStylesAreRefusedWithTheStep() throws {
+        let base = try apply([["add": "a"], ["add": "b"]], to: .empty).map
+        XCTAssertEqual(refusal([["connect": "a", "to": "b", "style": "wavy"]], on: base)?.step, 1)
+        XCTAssertNotNil(refusal([["connect": "a", "to": "b", "bits": 8]], on: base), "bits need bus")
+        XCTAssertNotNil(refusal([["connect": "a", "to": "b", "style": "bus", "bits": 0]], on: base))
+    }
+
+    func testRenameAndRemoveCarryStyledArrows() throws {
+        var m = try apply([["add": "r", "kind": "router"], ["add": "x", "kind": "end"], ["connect": "r", "to": "x", "label": "done"]], to: .empty).map
+        m = try apply([["update": "x", "rename": "finish"]], to: m).map
+        XCTAssertEqual(m.components.first { $0.name == "r" }?.uses["finish"]?.style, .conditional)
+        m = try apply([["remove": "finish"]], to: m).map
+        XCTAssertEqual(m.components.first { $0.name == "r" }?.uses, [:])
+    }
+
     func testRemoveTakesItsArrows() throws {
         let result = try apply([["remove": "postgres"]], to: june())
         XCTAssertNil(result.map.components.first { $0.name == "postgres" })
@@ -156,7 +189,7 @@ final class BoardEditTests: XCTestCase {
         XCTAssertEqual(refusal([["add": "redis", "to": "api"]], on: try june())?.description,
                        #"step 1: unknown field "to" — add takes: kind, tech, in, does, reached_by, runs, planned"#)
         XCTAssertEqual(refusal([["connect": "api", "to": "postgres", "rename": "db"]], on: try june())?.description,
-                       #"step 1: unknown field "rename" — connect takes: to, label"#)
+                       #"step 1: unknown field "rename" — connect takes: to, label, style, bits"#)
         XCTAssertEqual(refusal([["remove": "postgres", "in": "Local docker"]], on: try june())?.description,
                        #"step 1: unknown field "in" — remove takes: (none)"#)
     }
@@ -167,7 +200,7 @@ final class BoardEditTests: XCTestCase {
         XCTAssertEqual(refusal([["update": "x", "name": "y"]], on: try june())?.description,
                        #"step 1: unknown field "name" — update takes: kind, tech, in, does, reached_by, runs, planned, rename"#)
         XCTAssertEqual(refusal([["connect": "api", "to": "postgres", "foo": "bar"]], on: try june())?.description,
-                       #"step 1: unknown field "foo" — connect takes: to, label"#)
+                       #"step 1: unknown field "foo" — connect takes: to, label, style, bits"#)
         XCTAssertEqual(refusal([["place": "x", "foo": "bar"]], on: .empty)?.description,
                        #"step 1: unknown field "foo" — place takes: rename"#)
         XCTAssertEqual(refusal([["remove": "x", "foo": "bar"]], on: .empty)?.description,
