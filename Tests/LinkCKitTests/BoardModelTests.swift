@@ -147,6 +147,31 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(try store.load()?.map.system, "June, again")
     }
 
+    /// A save collision's retry must not run once `diskChanged()` (called to resolve the
+    /// collision) finds the file has actually gone unreadable — that already locked the board as
+    /// `.failed`; running the retry anyway used to make the save fail a second time too, setting
+    /// `changedOnDisk` on top of `.failed`, which then kept the board stuck locked even after the
+    /// file recovered — a `.failed` board `canEdit == false` from the first collision onward, so
+    /// the retry must never even attempt it.
+    func testARetryAfterAFailedReadDuringASaveCollisionLeavesTheBoardFailedNotLocked() throws {
+        let board = fresh()
+        board.setSystem("base")
+        board.saveNow()
+        _ = board.addComponent(kind: .database, at: BoardPoint(x: 0, y: 0))   // pending, unwritten
+        try Data("<<<<<<< HEAD".utf8).write(to: store.fileURL)   // changed underneath, and unreadable
+        board.saveNow()
+        guard case .failed = board.state else { return XCTFail("expected .failed, got \(board.state)") }
+        XCTAssertFalse(board.changedOnDisk, "a failed read must not also lock the board as changed-on-disk")
+
+        // The file recovers — the pending edit was never lost, and merges in cleanly, not stuck
+        // behind a stale changed-on-disk lock.
+        try writeOutside(outsideMap)
+        board.diskChanged()
+        XCTAssertEqual(board.state, .loaded)
+        XCTAssertFalse(board.changedOnDisk)
+        XCTAssertNotNil(board.map.components.first { $0.name == "new-database" }, "the pending edit survived the failed read")
+    }
+
     /// Reappearing — a tab switch back to the Board — must not wipe undo: `LinkCApp.swift`
     /// promises it survives switching tabs. Reloading bytes that did not change is a no-op.
     func testReappearingWithNoChangeOnDiskKeepsUndoAndSelection() throws {

@@ -865,10 +865,7 @@ public final class BoardModel {
     private func write() {
         guard canEdit, hasUnwrittenEdits else { return }
         do {
-            diskBytes = try store.save(map, expecting: diskBytes)
-            baseMap = map
-            hasUnwrittenEdits = false
-            writeFailure = nil
+            try commitSave()
         } catch BoardMapStoreError.changedOnDisk {
             // The file changed while this save was in flight. `diskChanged()` merges it with the
             // edit — still unwritten, so it still applies — instead of leaving the save refused.
@@ -876,11 +873,15 @@ public final class BoardModel {
             // meant to land that merge, falls back to the lock: a last resort, not the everyday
             // case a watcher-driven `diskChanged()` already handles.
             diskChanged()
+            // `diskChanged()` can itself find the file has gone unreadable and lock the board as
+            // `.failed` — already the real problem, and already shown. Retrying the save on top
+            // of that would only fail a second time and set `changedOnDisk` as well, compounding
+            // a `.failed` board with a stale "changed on disk" lock that then outlives the
+            // failure: recovering from `.failed` never clears `changedOnDisk` on its own, since
+            // the two are meant to be mutually exclusive reasons the board is unhappy.
+            guard canEdit else { return }
             do {
-                diskBytes = try store.save(map, expecting: diskBytes)
-                baseMap = map
-                hasUnwrittenEdits = false
-                writeFailure = nil
+                try commitSave()
             } catch BoardMapStoreError.changedOnDisk {
                 changedOnDisk = true
             } catch {
@@ -889,6 +890,16 @@ public final class BoardModel {
         } catch {
             writeFailure = message(for: error)
         }
+    }
+
+    /// The save both attempts in `write()` share on success: write `map`, expecting the file
+    /// still holds `diskBytes`, and record the result as the new known-good state. Throws
+    /// `BoardMapStoreError.changedOnDisk` unchanged for the caller to handle.
+    private func commitSave() throws {
+        diskBytes = try store.save(map, expecting: diskBytes)
+        baseMap = map
+        hasUnwrittenEdits = false
+        writeFailure = nil
     }
 
     private func message(for error: Error) -> String {
