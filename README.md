@@ -68,8 +68,9 @@ server.
   **Move out of** in its context menu.
 - A plain terminal shows the name of its current folder. After `cd Sources`, its name is
   `Sources`. The home folder shows as `~`.
-- A terminal that is not filed shows under the deepest project that contains its current folder.
-  Thus, when you `cd` into a different project, the terminal moves to that project.
+- A terminal that is not filed shows under the project whose folder is its current folder. Thus,
+  when you `cd` into a different project, the terminal moves to that project. A subfolder of a
+  project is not part of that project.
 - A filed terminal stays in its project when you `cd`. All other terminals show in the
   **Terminals** section.
 - A terminal that runs a command, for example `docker logs`, keeps its name and its folder.
