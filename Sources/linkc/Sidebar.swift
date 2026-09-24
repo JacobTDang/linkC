@@ -339,15 +339,7 @@ private struct ProjectRow: View {
             }
         }
         .dropDestination(for: String.self) { items, _ in
-            guard let item = items.first, item.hasPrefix("linkc-terminal:") else {
-                NSLog("[linkC] drag ignored: unknown payload \(items)")
-                return false
-            }
-            let id = String(item.dropFirst("linkc-terminal:".count))
-            guard model.shellRows.contains(where: { $0.id == id }) else {
-                NSLog("[linkC] drag ignored: no live terminal with id \(id)")
-                return false
-            }
+            guard let id = droppedTerminalID(items, model: model) else { return false }
             model.sidebarState.file(terminal: id, under: project.path)
             return true
         } isTargeted: { targeted in
@@ -419,6 +411,20 @@ private struct SessionRow: View {
 
 // MARK: - Terminals
 
+/// The live terminal a sidebar drop carries, or nil — logged — when the payload is anything else.
+@MainActor private func droppedTerminalID(_ items: [String], model: AppModel) -> String? {
+    guard let item = items.first, item.hasPrefix("linkc-terminal:") else {
+        NSLog("[linkC] drag ignored: unknown payload \(items)")
+        return nil
+    }
+    let id = String(item.dropFirst("linkc-terminal:".count))
+    guard model.shellRows.contains(where: { $0.id == id }) else {
+        NSLog("[linkC] drag ignored: no live terminal with id \(id)")
+        return nil
+    }
+    return id
+}
+
 private struct TerminalsSidebarSection: View {
     let model: AppModel
 
@@ -428,9 +434,7 @@ private struct TerminalsSidebarSection: View {
             VStack(alignment: .leading, spacing: 1) {
                 SectionLabel(title: "Terminals")
                     .dropDestination(for: String.self) { items, _ in
-                        guard let item = items.first, item.hasPrefix("linkc-terminal:") else { return false }
-                        let id = String(item.dropFirst("linkc-terminal:".count))
-                        guard model.shellRows.contains(where: { $0.id == id }) else { return false }
+                        guard let id = droppedTerminalID(items, model: model) else { return false }
                         model.sidebarState.unfile(terminal: id)
                         return true
                     }

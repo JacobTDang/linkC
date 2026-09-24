@@ -135,4 +135,10 @@ final class SidebarStateTests: XCTestCase {
         reloaded.pruneTerminals(keeping: ["t2"])
         XCTAssertEqual(reloaded.terminalProjects, ["t2": "/p/linkc"])
     }
+
+    func testAFilingStandardizesItsPathLikeTheRestOfTheSidebar() {
+        let state = SidebarState(defaults: defaults)
+        state.file(terminal: "t1", under: "~/june/")
+        XCTAssertEqual(state.terminalProjects["t1"], ("~/june" as NSString).standardizingPath)
+    }
 }

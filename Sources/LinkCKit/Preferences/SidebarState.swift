@@ -52,7 +52,7 @@ public final class SidebarState {
     }
 
     public func file(terminal id: String, under project: String) {
-        let standardized = URL(fileURLWithPath: project).standardized.path
+        let standardized = (project as NSString).standardizingPath
         guard terminalProjects[id] != standardized else { return }
         terminalProjects[id] = standardized
         save()

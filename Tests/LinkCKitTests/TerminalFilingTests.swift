@@ -9,4 +9,8 @@ final class TerminalFilingTests: XCTestCase {
         XCTAssertNil(TerminalFiling.project(forTerminal: "t3", cwd: "/Users/j/school", filed: [:], projects: projects))
         XCTAssertEqual(TerminalFiling.project(forTerminal: "t4", cwd: "/p/linkc", filed: ["t4": "/p/june"], projects: projects), "/p/june", "a filing beats the folder")
     }
+
+    func testAFilingComesBackStandardized() {
+        XCTAssertEqual(TerminalFiling.project(forTerminal: "t1", cwd: "/Users/j/school", filed: ["t1": "/p/june/./"], projects: []), "/p/june")
+    }
 }
