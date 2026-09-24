@@ -110,8 +110,35 @@ final class MCPServerBoardTests: XCTestCase {
         }
         XCTAssertTrue(description.contains("\"planned\": true"), description)
         XCTAssertTrue(description.contains("\"status\": \"planned\""), description)
-        XCTAssertTrue(description.contains("service, database, cache, queue, storage, host, external"), description)
+        XCTAssertTrue(description.contains("System: database, cache, queue, storage, service, host, external"), description)
         XCTAssertTrue(description.contains("kept and drawn as a service"), description)
+    }
+
+    /// Agents must be able to discover every kind linkC knows — including the AI-agent and
+    /// hardware kinds — from both the step grammar and the `linkc_get_board` footer.
+    func testEveryKnownKindAppearsInStepsDescriptionAndGetBoardFooter() throws {
+        let s = server()
+        _ = try call(s, "linkc_edit_board", ["steps": [["add": "api"]]])
+        let read = try call(s, "linkc_get_board")
+        XCTAssertFalse(read.isError, read.text)
+
+        let req: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/list"]
+        let res = try XCTUnwrap(s.handleMessage(try JSONSerialization.data(withJSONObject: req)))
+        let tools = (((try JSONSerialization.jsonObject(with: res) as? [String: Any])?["result"] as? [String: Any])?["tools"] as? [[String: Any]]) ?? []
+        let tool = try XCTUnwrap(tools.first { $0["name"] as? String == "linkc_edit_board" })
+        let schema = try XCTUnwrap(tool["inputSchema"] as? [String: Any])
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        let steps = try XCTUnwrap(properties["steps"] as? [String: Any])
+        let description = try XCTUnwrap(steps["description"] as? String)
+
+        for kind in ComponentKind.known {
+            XCTAssertTrue(description.contains(kind.raw), "steps description missing \(kind.raw)")
+            XCTAssertTrue(read.text.contains(kind.raw), "get_board footer missing \(kind.raw)")
+        }
+        XCTAssertTrue(description.contains("checkpointer"), description)
+        XCTAssertTrue(read.text.contains("checkpointer"), read.text)
+        XCTAssertTrue(description.contains("hardware memory"), description)
+        XCTAssertTrue(read.text.contains("hardware memory"), read.text)
     }
 
     /// Styles and the default rule are only discoverable from the tool schema itself.

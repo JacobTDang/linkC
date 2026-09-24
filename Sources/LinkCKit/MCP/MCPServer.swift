@@ -91,7 +91,7 @@ public final class MCPServer: Sendable {
         note: {"note": text}
         remove_note: {"remove_note": exact text}
         system: {"system": one line}
-        "kind": service, database, cache, queue, storage, host, external — any other kind is kept and drawn as a service.
+        "kind": \(ComponentKind.groupedKindList) — any other kind is kept and drawn as a service. "memory" is the AI agent's checkpointer; "ram" is hardware memory.
         "planned": true marks something not built yet — linkc_get_board shows it as "status": "planned".
         "tech": a known technology id or alias — \(BoardTech.knownIDs.joined(separator: ", "))
         A new arrow from a router defaults to conditional, from a control unit to control.
@@ -535,7 +535,8 @@ public final class MCPServer: Sendable {
                     }
                     let text = try loaded.map.architectureJSON()
                         + "\n\nVerbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system. "
-                        + "Kinds: service, database, cache, queue, storage, host, external (any other kind is kept and drawn as a service)."
+                        + "Kinds: \(ComponentKind.groupedKindList) (any other kind is kept and drawn as a service). "
+                        + "\"memory\" is the AI agent's checkpointer; \"ram\" is hardware memory."
                     return toolResultResponse(id: id, text: text)
                 } catch {
                     return toolResultResponse(id: id, text: BoardReport.sanitized(error.localizedDescription), isError: true)

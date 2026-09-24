@@ -67,4 +67,10 @@ public struct ComponentKind: Equatable, Hashable, Sendable {
     public static let known: [ComponentKind] = groups.flatMap(\.kinds)
 
     public var isKnown: Bool { Self.known.contains(self) }
+
+    /// `groups`, rendered as "System: …; AI agents: …; Hardware: …" for tool descriptions and the
+    /// `linkc_get_board` footer, so an agent can always discover every kind linkC knows.
+    public static var groupedKindList: String {
+        groups.map { group in "\(group.title): \(group.kinds.map(\.raw).joined(separator: ", "))" }.joined(separator: "; ")
+    }
 }
