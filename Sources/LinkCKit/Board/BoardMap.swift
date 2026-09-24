@@ -359,6 +359,25 @@ public struct BoardMap: Equatable, Sendable {
 
     /// The file's bytes: version 2, architecture first, layout last, sorted and snapped.
     public func encoded() throws -> Data {
+        try Self.writtenJSON(rootObject())
+    }
+
+    /// The architecture an agent is shown: `encoded()`'s own root, minus `layout` — no
+    /// coordinates, since they mean nothing to an agent. Same key order `BoardMapJSON` gives the
+    /// file itself, since this is that same root with one key removed.
+    public func architectureJSON() throws -> String {
+        var root = try rootObject()
+        root.removeValue(forKey: "layout")
+        guard let text = String(data: try Self.writtenJSON(root), encoding: .utf8) else {
+            throw LinkCError.parse("the system map's architecture could not be represented as text")
+        }
+        return text
+    }
+
+    /// Everything `encoded()` writes — architecture and layout both — as the untyped JSON object
+    /// `BoardMapJSON` orders and renders. Shared so `architectureJSON()` never re-derives the
+    /// architecture by any rule of its own.
+    private func rootObject() throws -> [String: Any] {
         var root = try Self.object(from: extras, context: "the system map's own extras")
         root["version"] = 2
         Self.set(&root, "system", system)
@@ -404,7 +423,10 @@ public struct BoardMap: Equatable, Sendable {
             return object
         }
         root["layout"] = layout
+        return root
+    }
 
+    private static func writtenJSON(_ root: [String: Any]) throws -> Data {
         guard JSONSerialization.isValidJSONObject(root) else {
             throw LinkCError.parse("the system map could not be represented as JSON")
         }

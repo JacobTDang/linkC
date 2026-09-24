@@ -67,7 +67,7 @@ public final class MCPServer: Sendable {
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
         "linkc_get_project_context", "linkc_check_conflicts", "linkc_get_inbox",
-        "linkc_get_task", "linkc_get_models", "linkc_get_usage_status"
+        "linkc_get_task", "linkc_get_models", "linkc_get_usage_status", "linkc_get_board"
     ]
 
     /// Tools whose `agent` argument is a target/filter rather than the caller's identity.
@@ -217,6 +217,29 @@ public final class MCPServer: Sendable {
                 "inputSchema": [
                     "type": "object",
                     "properties": [:]
+                ]
+            ],
+            [
+                "name": "linkc_get_board",
+                "description": "Read this project's Board — its architecture (system, places, components, notes) as JSON, exactly as `system-map.json` holds it minus layout. Use the exact names it shows with linkc_edit_board.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [:]
+                ]
+            ],
+            [
+                "name": "linkc_edit_board",
+                "description": "Change this project's Board with a list of steps, applied in order, all or nothing. Verbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system. linkC places everything on the canvas; the user sees it live. When you add or change infrastructure (a service, database, cache, queue, host…), reflect it on the Board.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "steps": [
+                            "type": "array",
+                            "items": ["type": "object"],
+                            "description": "1 to 50 steps, applied in order, all or nothing. For example, to add a component: { \"add\": \"redis\", \"kind\": \"cache\", \"in\": \"Local docker\", \"does\": \"…\", \"reached_by\": \"…\", \"runs\": \"…\", \"planned\": true } — only \"add\" is required. To connect two components: { \"connect\": \"api\", \"to\": \"redis\", \"label\": \"session cache\" }."
+                        ]
+                    ],
+                    "required": ["steps"]
                 ]
             ],
             [
@@ -472,6 +495,9 @@ public final class MCPServer: Sendable {
                 do {
                     if let loaded = try BoardMapStore(workspacePath: board.projectPath).load() {
                         text += BoardReport.markdown(for: loaded.map)
+                        text += "Read with `linkc_get_board`; change with `linkc_edit_board`.\n\n"
+                    } else {
+                        text += "## System\n_No map yet — `linkc_edit_board` starts one._\n\n"
                     }
                 } catch {
                     // The message can carry a name straight from the file — sanitized the same
@@ -480,6 +506,30 @@ public final class MCPServer: Sendable {
                 }
 
                 return toolResultResponse(id: id, text: text)
+
+            case "linkc_get_board":
+                do {
+                    guard let loaded = try BoardMapStore(workspacePath: workspaceRoot).load() else {
+                        return toolResultResponse(id: id, text: "This project has no map yet — linkc_edit_board creates one.")
+                    }
+                    let text = try loaded.map.architectureJSON()
+                        + "\n\nVerbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system. "
+                        + "Kinds: service, database, cache, queue, storage, host, external (any other kind is kept and drawn as a service)."
+                    return toolResultResponse(id: id, text: text)
+                } catch {
+                    return toolResultResponse(id: id, text: BoardReport.sanitized(error.localizedDescription), isError: true)
+                }
+
+            case "linkc_edit_board":
+                do {
+                    let steps = try BoardEdit.steps(from: args["steps"])
+                    let lines = try Self.editBoard(store: BoardMapStore(workspacePath: workspaceRoot), steps: steps)
+                    return toolResultResponse(id: id, text: lines.joined(separator: "\n") + "\nBoard updated.")
+                } catch let refusal as BoardEditRefusal {
+                    return toolResultResponse(id: id, text: refusal.description, isError: true)
+                } catch {
+                    return toolResultResponse(id: id, text: BoardReport.sanitized(error.localizedDescription), isError: true)
+                }
 
             case "linkc_delegate_task":
                 guard let toStr = args["to"] as? String, !toStr.isEmpty else {
@@ -1124,6 +1174,32 @@ public final class MCPServer: Sendable {
         guard let assignee = task.assigneeSessionId,
               let caller = callerSessionId() else { return true }
         return assignee == caller
+    }
+
+    /// Applies `steps` to the Board, load–apply–save, and retries once if the file changed on
+    /// disk between the load and the save — the same race `handleToolsCall` never otherwise
+    /// meets, since one `MCPServer` handles one call at a time, but another process (or another
+    /// linkC session) can still write `system-map.json` in between. `beforeSave` is a seam a test
+    /// uses to force that race; production never overrides it. Throws `BoardEditRefusal` for a
+    /// bad step, or `LinkCError.server` when the file kept changing after the retry.
+    static func editBoard(store: BoardMapStore, steps: [BoardEditStep], beforeSave: () throws -> Void = {}) throws -> [String] {
+        let first = try store.load()
+        let (map, lines) = try BoardEdit.apply(steps, to: first?.map ?? .empty)
+        try beforeSave()
+        do {
+            _ = try store.save(map, expecting: first?.bytes)
+            return lines
+        } catch BoardMapStoreError.changedOnDisk {
+            let second = try store.load()
+            let (retriedMap, retriedLines) = try BoardEdit.apply(steps, to: second?.map ?? .empty)
+            try beforeSave()
+            do {
+                _ = try store.save(retriedMap, expecting: second?.bytes)
+                return retriedLines
+            } catch BoardMapStoreError.changedOnDisk {
+                throw LinkCError.server("the map kept changing while this edit was saved — try again")
+            }
+        }
     }
 
     private func toolResultResponse(id: Any?, text: String, isError: Bool = false) -> Data? {
