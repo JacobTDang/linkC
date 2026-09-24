@@ -49,10 +49,10 @@ final class BoardMergeTests: XCTestCase {
     }
 
     func testTheSameElementFieldByFieldMineWinsATie() {
-        let base = map([c("api", does: "a")])
-        let mine = map([c("api", does: "mine", at: BoardPoint(x: 400, y: 0))])
-        let theirs = map([c("api", does: "theirs", uses: ["db": "reads"])])
-        let api = BoardMerge.merge(base: base, mine: mine, theirs: theirs).components.first
+        let base = map([c("api", does: "a"), c("db")])
+        let mine = map([c("api", does: "mine", at: BoardPoint(x: 400, y: 0)), c("db")])
+        let theirs = map([c("api", does: "theirs", uses: ["db": "reads"]), c("db")])
+        let api = BoardMerge.merge(base: base, mine: mine, theirs: theirs).components.first { $0.name == "api" }
         XCTAssertEqual(api?.does, "mine")
         XCTAssertEqual(api?.at, BoardPoint(x: 400, y: 0))
         XCTAssertEqual(api?.uses, ["db": "reads"], "an arrow only theirs added survives")
@@ -129,11 +129,11 @@ final class BoardMergeTests: XCTestCase {
     // MARK: - `uses` keys merge case-insensitively (review finding 3)
 
     func testUsesKeyMergesCaseInsensitively() {
-        let base = map([c("api", uses: ["postgres": ""])])
-        let mine = map([c("api", uses: ["postgres": "reads"])])
-        let theirs = map([c("api", uses: ["Postgres": ""])])
+        let base = map([c("api", uses: ["postgres": ""]), c("postgres")])
+        let mine = map([c("api", uses: ["postgres": "reads"]), c("postgres")])
+        let theirs = map([c("api", uses: ["Postgres": ""]), c("postgres")])
         let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
-        XCTAssertEqual(merged.components.first?.uses, ["postgres": "reads"], "the hand-recased key is no real change, and never mints a second arrow")
+        XCTAssertEqual(merged.components.first { $0.name == "api" }?.uses, ["postgres": "reads"], "the hand-recased key is no real change, and never mints a second arrow")
     }
 
     func testUsesKeyTakesTargetComponentsRealMergedName() {
@@ -184,11 +184,11 @@ final class BoardMergeTests: XCTestCase {
     }
 
     func testUsesKeyBothSidesRelabelledDifferentlyMineWins() {
-        let base = map([c("api", uses: ["db": ""])])
-        let mine = map([c("api", uses: ["db": "reads"])])
-        let theirs = map([c("api", uses: ["db": "writes"])])
+        let base = map([c("api", uses: ["db": ""]), c("db")])
+        let mine = map([c("api", uses: ["db": "reads"]), c("db")])
+        let theirs = map([c("api", uses: ["db": "writes"]), c("db")])
         let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
-        XCTAssertEqual(merged.components.first?.uses, ["db": "reads"])
+        XCTAssertEqual(merged.components.first { $0.name == "api" }?.uses, ["db": "reads"])
     }
 
     func testExtrasAndLayoutExtrasComeFromTheirs() throws {
@@ -209,6 +209,20 @@ final class BoardMergeTests: XCTestCase {
         XCTAssertNotNil(theirs.extras)
         XCTAssertEqual(merged.extras, theirs.extras)
         XCTAssertEqual(merged.layoutExtras, theirs.layoutExtras)
+    }
+
+    /// Mine deletes a component while theirs, at the same moment, points a new arrow at it —
+    /// mine's deletion wins the component (a deletion counts as a change), but the arrow theirs
+    /// added lives in the *other* component's `uses` and survives untouched, since mine never
+    /// touched that other component. Left alone, that arrow would name nothing: invisible on the
+    /// canvas, since nothing routes to a component that isn't there.
+    func testMineDeletesWhatTheirsConnectsToDropsTheDanglingArrow() {
+        let base = map([c("x"), c("y")])
+        let mine = map([c("y")])
+        let theirs = map([c("x"), c("y", uses: ["x": ""])])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertNil(merged.components.first { $0.name == "x" }, "mine's deletion wins")
+        XCTAssertEqual(merged.components.first { $0.name == "y" }?.uses, [:], "no arrow may name a component that isn't on the merged map")
     }
 
     func testBothSidesDeleteSameComponentIsGone() {

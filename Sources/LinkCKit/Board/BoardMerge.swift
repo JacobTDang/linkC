@@ -31,7 +31,23 @@ public enum BoardMerge {
         // The Board never edits either extras blob: whichever unknown keys theirs carried win.
         merged.extras = theirs.extras
         merged.layoutExtras = theirs.layoutExtras
+        merged.components = droppingDanglingUses(merged.components)
         return merged
+    }
+
+    /// One side's deletion of a component can outlive the other side's brand-new arrow to it —
+    /// mine deletes `x`, theirs connects `y` → `x`, and mine's deletion wins the component while
+    /// `y`'s `uses` entry, untouched by mine, survives on its own. Left alone that arrow would
+    /// name nothing real: invisible on the canvas, since nothing routes to a component that
+    /// isn't there. A last pass over the merged components drops any `uses` key that doesn't
+    /// name one of them.
+    private static func droppingDanglingUses(_ components: [BoardComponent]) -> [BoardComponent] {
+        let names = Set(components.map { $0.name.lowercased() })
+        return components.map { component in
+            var component = component
+            component.uses = component.uses.filter { names.contains($0.key.lowercased()) }
+            return component
+        }
     }
 
     // MARK: - The one merge rule
