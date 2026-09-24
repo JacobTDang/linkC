@@ -11,8 +11,6 @@ In this README:
 - A **terminal** is a plain shell, for example for a dev server.
 - A **project** is the folder where sessions and terminals run.
 
-## Screenshots
-
 **The Board.** Each project has a Board: a diagram of the system that you and your agents make
 together.
 
