@@ -223,4 +223,32 @@ final class BoardRouterTests: XCTestCase {
         XCTAssertEqual(routes.count, 199)
         XCTAssertLessThan(elapsed, 1.5, "debug-build guard; report the measured time")
     }
+
+    /// "Add what's running" packs boxes a few points apart — well inside `clearance` — so a
+    /// stub's push-out from one box's edge lands inside its immediate neighbour's own inflated
+    /// margin. A* must not give up and fall back to one straight (possibly diagonal, possibly
+    /// box-crossing) segment; it must still find an orthogonal path around, never through a raw
+    /// box.
+    func testPackedRowRoutesAroundWithoutCrossingRawBoxesOrGoingDiagonal() {
+        var m = BoardMap()
+        m.frames = [BoardFrame(label: "Row", rect: BoardRect(x: 0, y: 0, w: 1460, h: 140))]
+        let gap = 4
+        var components: [BoardComponent] = (0..<8).map { i in
+            BoardComponent(name: "c\(i)", kind: .service, place: "Row", at: BoardPoint(x: 8 + i * (176 + gap), y: 28))
+        }
+        components[0].uses = ["c3": ""]
+        components[1].uses = ["c5": ""]
+        components[2].uses = ["c6": ""]
+        m.components = components
+
+        let routes = BoardRouter.routes(for: m)
+        XCTAssertEqual(routes.count, 3)
+        for (key, route) in routes {
+            for c in m.components where c.name != key.from && c.name != key.to {
+                let box = BoardGeometry.rect(ofComponentAt: c.at!)
+                for (a, b) in segments(route) { XCTAssertFalse(crosses(a, b, box), "\(key) crosses \(c.name): \(route.points)") }
+            }
+            for (a, b) in segments(route) { XCTAssertTrue(a.x == b.x || a.y == b.y, "\(key) not diagonal: \(route.points)") }
+        }
+    }
 }

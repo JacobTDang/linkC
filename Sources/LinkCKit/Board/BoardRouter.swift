@@ -121,8 +121,13 @@ public enum BoardRouter {
             if !forced, let straight = straightCase(sourceBox, sourceSide, targetBox, targetSide, hardObstacles + frameObstacles) {
                 points = straight
             } else {
-                let sourceStub = stub(sourcePort, sourceSide)
-                let targetStub = stub(targetPort, targetSide)
+                // "Add what's running" packs boxes a few points apart, well inside `clearance` —
+                // a stub pushed the full `clearance` out could land inside a neighbour's raw
+                // body, not just its margin. The push stops at the nearest raw obstacle instead,
+                // so the stub itself is never inside anything solid, only possibly its margin.
+                let rawObstacles = hardObstacles.map { inflate($0, by: -clearance) }
+                let sourceStub = stub(sourcePort, sourceSide, avoiding: rawObstacles)
+                let targetStub = stub(targetPort, targetSide, avoiding: rawObstacles)
                 let path = aStar(
                     from: sourceStub, to: targetStub, hardObstacles: hardObstacles, frames: frameObstacles,
                     avoid: routedSegments, selfId: selfId) ?? lastResort()
@@ -257,9 +262,34 @@ public enum BoardRouter {
         }
     }
 
-    private static func stub(_ port: BoardPoint, _ side: Side) -> BoardPoint {
+    /// How far `port` can push outward, on `side`, before it would enter a raw obstacle — capped
+    /// at `clearance`, floored at 0 (right at the port, when a neighbour leaves no room at all).
+    /// Raw boxes stay hard no matter how tightly the board is packed.
+    private static func safePushDistance(from port: BoardPoint, side: Side, rawObstacles: [BoardRect]) -> Int {
+        var distance = clearance
+        for rect in rawObstacles {
+            switch side {
+            case .right:
+                guard rect.minX >= port.x, port.y > rect.minY, port.y < rect.maxY else { continue }
+                distance = min(distance, rect.minX - port.x)
+            case .left:
+                guard rect.maxX <= port.x, port.y > rect.minY, port.y < rect.maxY else { continue }
+                distance = min(distance, port.x - rect.maxX)
+            case .bottom:
+                guard rect.minY >= port.y, port.x > rect.minX, port.x < rect.maxX else { continue }
+                distance = min(distance, rect.minY - port.y)
+            case .top:
+                guard rect.maxY <= port.y, port.x > rect.minX, port.x < rect.maxX else { continue }
+                distance = min(distance, port.y - rect.maxY)
+            }
+        }
+        return max(0, distance)
+    }
+
+    private static func stub(_ port: BoardPoint, _ side: Side, avoiding rawObstacles: [BoardRect]) -> BoardPoint {
         let o = outward(side)
-        return BoardPoint(x: port.x + o.dx * clearance, y: port.y + o.dy * clearance)
+        let distance = safePushDistance(from: port, side: side, rawObstacles: rawObstacles)
+        return BoardPoint(x: port.x + o.dx * distance, y: port.y + o.dy * distance)
     }
 
     // MARK: - Self-loop
@@ -430,11 +460,16 @@ public enum BoardRouter {
 
         // Only component and note boxes ever block a node — a foreign frame never does, so an
         // endpoint enclosed by frames still has somewhere to stand; it costs its way out instead.
+        // A hard obstacle whose *inflated* margin reaches one of this arrow's own endpoints —
+        // two boxes packed only a point or two apart, say — is blocked by its raw rect instead:
+        // the margin is what keeps a route clear of a box it merely passes near, never a wall
+        // around an endpoint that has nowhere else to stand. The box itself stays hard regardless.
         var blocked = [[Bool]](repeating: [Bool](repeating: false, count: ys.count), count: xs.count)
         for o in hardObstacles {
-            let xLo = lowerBound(xs, strictlyGreaterThan: o.minX), xHi = upperBound(xs, strictlyLessThan: o.maxX)
+            let effective = (o.contains(start) || o.contains(goal)) ? inflate(o, by: -clearance) : o
+            let xLo = lowerBound(xs, strictlyGreaterThan: effective.minX), xHi = upperBound(xs, strictlyLessThan: effective.maxX)
             guard xLo <= xHi else { continue }
-            let yLo = lowerBound(ys, strictlyGreaterThan: o.minY), yHi = upperBound(ys, strictlyLessThan: o.maxY)
+            let yLo = lowerBound(ys, strictlyGreaterThan: effective.minY), yHi = upperBound(ys, strictlyLessThan: effective.maxY)
             guard yLo <= yHi else { continue }
             for ix in xLo...xHi {
                 for iy in yLo...yHi { blocked[ix][iy] = true }
