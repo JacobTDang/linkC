@@ -12,6 +12,20 @@ final class BoardMergeTests: XCTestCase {
     private func c(_ name: String, does: String? = nil, at: BoardPoint? = BoardPoint(x: 0, y: 0), uses: [String: String] = [:]) -> BoardComponent {
         BoardComponent(name: name, kind: .service, does: does, uses: uses, at: at)
     }
+    private func n(_ text: String, at: BoardPoint) -> BoardNote { BoardNote(text: text, at: at) }
+    private func noteMap(_ notes: [BoardNote]) -> BoardMap {
+        var m = BoardMap()
+        m.notes = notes
+        return m
+    }
+    private func t(_ text: String, style: BoardTextStyle = .label, at: BoardPoint, width: Int = 100) -> BoardText {
+        BoardText(text: text, style: style, at: at, width: width)
+    }
+    private func textMap(_ texts: [BoardText]) -> BoardMap {
+        var m = BoardMap()
+        m.texts = texts
+        return m
+    }
 
     func testOnlyTheirsChanged() {
         let base = map([c("api")]), mine = base, theirs = map([c("api", does: "http"), c("redis")])
@@ -70,5 +84,138 @@ final class BoardMergeTests: XCTestCase {
         XCTAssertEqual(merged.frames.first { $0.label == "Local docker" }?.rect?.x, 400)
         XCTAssertNotNil(merged.frames.first { $0.label == "Oracle" })
         XCTAssertEqual(merged.system, "new")
+    }
+
+    // MARK: - Duplicate-text notes and texts pair by position, not by index (review finding 1)
+
+    func testDuplicateTextNotesPairByExactPositionThenOrder() {
+        let base = noteMap([n("dup", at: BoardPoint(x: 0, y: 0)), n("dup", at: BoardPoint(x: 0, y: 200))])
+        let mine = noteMap([n("dup", at: BoardPoint(x: 0, y: 200))])
+        let theirs = noteMap([n("dup", at: BoardPoint(x: 0, y: 0)), n("dup", at: BoardPoint(x: 0, y: 400))])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertEqual(merged.notes.map(\.at), [BoardPoint(x: 0, y: 400)], "the deleted-by-mine note stays gone; the surviving one takes theirs' move")
+    }
+
+    func testDuplicateTextTextsPairByExactPositionThenOrder() {
+        let base = textMap([t("dup", at: BoardPoint(x: 0, y: 0)), t("dup", at: BoardPoint(x: 0, y: 200))])
+        let mine = textMap([t("dup", at: BoardPoint(x: 0, y: 200))])
+        let theirs = textMap([t("dup", at: BoardPoint(x: 0, y: 0)), t("dup", at: BoardPoint(x: 0, y: 400))])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertEqual(merged.texts.map(\.at), [BoardPoint(x: 0, y: 400)])
+    }
+
+    // MARK: - A note (or text) mine changed but theirs removed by identity is kept, and theirs' addition arrives too (review finding 2)
+
+    func testNoteMineChangedTheirsRemovedKeepsBoth() {
+        let base = noteMap([n("TODO: fix", at: BoardPoint(x: 0, y: 0))])
+        let mine = noteMap([n("TODO: fix", at: BoardPoint(x: 400, y: 0))])
+        let theirs = noteMap([n("TODO: fix this", at: BoardPoint(x: 0, y: 0))])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertEqual(merged.notes.count, 2)
+        XCTAssertEqual(merged.notes.first { $0.text == "TODO: fix" }?.at, BoardPoint(x: 400, y: 0), "mine's edit to the old note wins over theirs' deletion of it")
+        XCTAssertEqual(merged.notes.first { $0.text == "TODO: fix this" }?.at, BoardPoint(x: 0, y: 0), "theirs' new note still arrives")
+    }
+
+    func testTextMineChangedTheirsRemovedKeepsBoth() {
+        let base = textMap([t("TODO: fix", at: BoardPoint(x: 0, y: 0))])
+        let mine = textMap([t("TODO: fix", at: BoardPoint(x: 400, y: 0))])
+        let theirs = textMap([t("TODO: fix this", at: BoardPoint(x: 0, y: 0))])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertEqual(merged.texts.count, 2)
+        XCTAssertEqual(merged.texts.first { $0.text == "TODO: fix" }?.at, BoardPoint(x: 400, y: 0))
+        XCTAssertEqual(merged.texts.first { $0.text == "TODO: fix this" }?.at, BoardPoint(x: 0, y: 0))
+    }
+
+    // MARK: - `uses` keys merge case-insensitively (review finding 3)
+
+    func testUsesKeyMergesCaseInsensitively() {
+        let base = map([c("api", uses: ["postgres": ""])])
+        let mine = map([c("api", uses: ["postgres": "reads"])])
+        let theirs = map([c("api", uses: ["Postgres": ""])])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertEqual(merged.components.first?.uses, ["postgres": "reads"], "the hand-recased key is no real change, and never mints a second arrow")
+    }
+
+    func testUsesKeyTakesTargetComponentsRealMergedName() {
+        // "api" itself must be a real field-merge (both sides touch it), not a short-circuit to
+        // one side's whole component — that is the only path that runs mergedUses.
+        let basePostgres = c("postgres")
+        let base = map([c("api", does: "does", uses: ["postgres": ""]), basePostgres])
+        let mine = map([c("api", does: "mine", uses: ["postgres": "reads"]), basePostgres])
+        let theirs = map([c("api", does: "theirs", uses: ["postgres": ""]), c("Postgres")])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertEqual(merged.components.first { $0.name.lowercased() == "postgres" }?.name, "Postgres", "theirs recased the component itself, and mine never touched it")
+        XCTAssertEqual(merged.components.first { $0.name == "api" }?.uses, ["Postgres": "reads"], "the arrow's key follows the target's real merged name")
+    }
+
+    // MARK: - Missing coverage (review finding 4)
+
+    func testTextsAddedRemovedAndMovedOnEitherSide() {
+        let base = textMap([
+            t("Frontend", style: .title, at: BoardPoint(x: 0, y: 0)),
+            t("gone-mine", at: BoardPoint(x: 0, y: 200)),
+            t("gone-theirs", at: BoardPoint(x: 0, y: 400)),
+        ])
+        let mine = textMap([
+            t("Frontend", style: .title, at: BoardPoint(x: 400, y: 0)),
+            t("gone-theirs", at: BoardPoint(x: 0, y: 400)),
+            t("added-by-mine", at: BoardPoint(x: 0, y: 600)),
+        ])
+        let theirs = textMap([
+            t("Frontend", style: .title, at: BoardPoint(x: 0, y: 0)),
+            t("gone-mine", at: BoardPoint(x: 0, y: 200)),
+            t("added-by-theirs", at: BoardPoint(x: 0, y: 800)),
+        ])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertEqual(merged.texts.first { $0.text == "Frontend" }?.at, BoardPoint(x: 400, y: 0), "moved by mine, untouched by theirs")
+        XCTAssertNil(merged.texts.first { $0.text == "gone-mine" }, "mine deleted it, theirs left it alone")
+        XCTAssertNil(merged.texts.first { $0.text == "gone-theirs" }, "theirs deleted it, mine left it alone")
+        XCTAssertNotNil(merged.texts.first { $0.text == "added-by-mine" })
+        XCTAssertNotNil(merged.texts.first { $0.text == "added-by-theirs" })
+    }
+
+    func testBothSidesAddSameNewComponentMineWins() {
+        let base = map([])
+        let mine = map([c("cache", does: "mine")])
+        let theirs = map([c("cache", does: "theirs")])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertEqual(merged.components.count, 1)
+        XCTAssertEqual(merged.components.first { $0.name == "cache" }?.does, "mine")
+    }
+
+    func testUsesKeyBothSidesRelabelledDifferentlyMineWins() {
+        let base = map([c("api", uses: ["db": ""])])
+        let mine = map([c("api", uses: ["db": "reads"])])
+        let theirs = map([c("api", uses: ["db": "writes"])])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertEqual(merged.components.first?.uses, ["db": "reads"])
+    }
+
+    func testExtrasAndLayoutExtrasComeFromTheirs() throws {
+        let baseJSON = """
+        {"version":2,"system":"sys","places":{"Not placed":{}},"notes":[],
+         "layout":{"components":{},"frames":{},"notes":[],"texts":[]}}
+        """
+        let theirsJSON = """
+        {"version":2,"system":"sys","places":{"Not placed":{}},"notes":[],
+         "layout":{"components":{},"frames":{},"notes":[],"texts":[],"unknown_layout_key":"layoutvalue"},
+         "unknown_root_key":"rootvalue"}
+        """
+        let base = try BoardMap.decode(Data(baseJSON.utf8))
+        let mine = base
+        let theirs = try BoardMap.decode(Data(theirsJSON.utf8))
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertNil(base.extras)
+        XCTAssertNotNil(theirs.extras)
+        XCTAssertEqual(merged.extras, theirs.extras)
+        XCTAssertEqual(merged.layoutExtras, theirs.layoutExtras)
+    }
+
+    func testBothSidesDeleteSameComponentIsGone() {
+        let base = map([c("api"), c("db")])
+        let mine = map([c("api")])
+        let theirs = map([c("api")])
+        let merged = BoardMerge.merge(base: base, mine: mine, theirs: theirs)
+        XCTAssertNil(merged.components.first { $0.name == "db" })
     }
 }
