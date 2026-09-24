@@ -154,4 +154,10 @@ final class MCPServerBoardTests: XCTestCase {
             XCTAssertEqual(error as? LinkCError, .server("the map kept changing while this edit was saved — try again"))
         }
     }
+
+    func testAnAgentEditLeavesTheMapArranged() throws {
+        _ = try call(server(), "linkc_edit_board", ["steps": [["place": "App"], ["add": "api", "in": "App"], ["add": "db", "kind": "database"], ["connect": "api", "to": "db"]]])
+        let onDisk = try XCTUnwrap(try BoardMapStore(workspacePath: tempDir.path).load()).map
+        XCTAssertEqual(onDisk, BoardLayout.arranged(onDisk))
+    }
 }

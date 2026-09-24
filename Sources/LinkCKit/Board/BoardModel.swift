@@ -54,7 +54,9 @@ public final class BoardModel {
     public internal(set) var map: BoardMap = .empty
     public private(set) var statuses: [String: ComponentStatus] = [:]
     public private(set) var suggestions: [MapSuggestion] = []
-    public private(set) var routes: [ArrowKey: [BoardPoint]] = [:]
+    public private(set) var routes: [ArrowKey: BoardRoute] = [:]
+    /// Where each labelled arrow's pill goes; kept in step with `routes`, the same recompute.
+    public private(set) var labelRects: [ArrowKey: BoardRect] = [:]
     public var selection: Set<Element> = []
     public var tool: Tool = .select
     /// The last edit linkC would not make, and why. Cleared by the next edit that lands.
@@ -81,6 +83,9 @@ public final class BoardModel {
     @ObservationIgnored private let settle: Duration
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private var generation = 0
+    /// A separate counter from `generation` — writes and routing race independently, and a route
+    /// recompute must never be skipped or delayed by an unrelated write in flight, nor vice versa.
+    @ObservationIgnored private var routingGeneration = 0
     @ObservationIgnored private var hasUnwrittenEdits = false
     /// Whether `read()` has ever run — `load()`'s very first call has no "before" map worth
     /// taking a real change on disk against, so it always reads in full regardless of state.
@@ -614,6 +619,18 @@ public final class BoardModel {
         if unplaced { refusal = Self.noRoomInLocalDocker }
     }
 
+    /// Rearranges the whole map by the flow of its arrows — `BoardLayout.arranged`, as one undo
+    /// step. Refused while locked, as every edit is; a map already arranged changes nothing, so
+    /// it is not an edit and leaves no undo step behind.
+    public func tidyUp() {
+        edit { map in
+            let arranged = BoardLayout.arranged(map)
+            guard arranged != map else { return false }
+            map = arranged
+            return true
+        }
+    }
+
     // MARK: - Hooks the spatial edits share
 
     var canEdit: Bool {
@@ -658,21 +675,39 @@ public final class BoardModel {
         reconcile(with: lastDiscovered)
     }
 
-    func recomputeRoutes() {
-        var rects: [String: BoardRect] = [:]
-        for component in map.components {
-            if let at = component.at { rects[component.name] = BoardGeometry.rect(ofComponentAt: at) }
+    /// Routes every arrow and places every label off the main actor, from a `Sendable` snapshot
+    /// of `map` — `BoardRouter` and `BoardLabels` are pure and never touch the model themselves.
+    /// The result lands back on the main actor only if no newer recompute has since started; a
+    /// generation counter of its own, separate from `generation` (writes), decides that — a write
+    /// in flight must never skip or delay a route recompute, nor the other way around. Internal,
+    /// not private, so a test can await the returned `Task` instead of racing the recompute.
+    @discardableResult
+    func recomputeRoutes() -> Task<Void, Never> {
+        routingGeneration += 1
+        let scheduled = routingGeneration
+        let snapshot = map
+        return Task { @MainActor [weak self] in
+            let (routes, labelRects) = await Task.detached {
+                Self.routesAndLabels(for: snapshot)
+            }.value
+            guard let self, self.routingGeneration == scheduled else { return }
+            self.routes = routes
+            self.labelRects = labelRects
         }
-        let obstacles = Array(rects.values) + map.notes.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }
-        var next: [ArrowKey: [BoardPoint]] = [:]
+    }
+
+    /// The pure computation `recomputeRoutes()` runs off the main actor: every arrow's route, then
+    /// every labelled arrow's pill, from the same routes.
+    nonisolated private static func routesAndLabels(for map: BoardMap) -> (routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect]) {
+        let routes = BoardRouter.routes(for: map)
+        var labelOf: [ArrowKey: String] = [:]
         for component in map.components {
-            guard let source = rects[component.name] else { continue }
-            for target in component.uses.keys {
-                guard let destination = rects[target] else { continue }
-                next[ArrowKey(from: component.name, to: target)] = BoardGeometry.route(from: source, to: destination, obstacles: obstacles)
+            for (target, label) in component.uses where !label.isEmpty {
+                labelOf[ArrowKey(from: component.name, to: target)] = label
             }
         }
-        routes = next
+        let labelRects = BoardLabels.placed(routes: routes, labels: labelOf, obstacles: BoardLabels.obstacles(for: map))
+        return (routes, labelRects)
     }
 
     nonisolated static func elementRects(_ map: BoardMap, excluding excluded: Set<Element>) -> [BoardRect] {

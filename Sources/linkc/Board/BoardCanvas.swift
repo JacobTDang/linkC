@@ -365,7 +365,7 @@ struct BoardCanvas: View {
                         }
                 }
 
-                if let editingArrow, let points = board.routes[editingArrow], let mid = labelPoint(
+                if let editingArrow, let points = board.routes[editingArrow]?.points, let mid = labelPoint(
                     points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }) {
                     LineEditor(
                         text: board.map.components.first { $0.name == editingArrow.from }?.uses[editingArrow.to] ?? "",
@@ -525,7 +525,7 @@ struct BoardCanvas: View {
 
     /// An arrow's points, following its ends live while either is being dragged.
     private func livePoints(for key: BoardModel.ArrowKey) -> [BoardPoint]? {
-        guard !dragging.isEmpty else { return board.routes[key] }
+        guard !dragging.isEmpty else { return board.routes[key]?.points }
         func liveRect(_ name: String) -> BoardRect? {
             guard let component = board.map.components.first(where: { $0.name == name }), let rect = componentRect(component) else { return nil }
             let offset = liveOffset(for: .component(name), place: component.place)
@@ -535,7 +535,7 @@ struct BoardCanvas: View {
         let moved = liveOffset(for: .component(key.from), place: nil) != .zero
             || liveOffset(for: .component(key.to), place: nil) != .zero
             || board.map.components.contains { ($0.name == key.from || $0.name == key.to) && dragging.contains(.frame($0.place)) }
-        return moved ? BoardGeometry.route(from: from, to: to, obstacles: []) : board.routes[key]
+        return moved ? BoardGeometry.route(from: from, to: to, obstacles: []) : board.routes[key]?.points
     }
 
     // MARK: - Viewport
@@ -775,8 +775,8 @@ struct BoardCanvas: View {
 
     /// The arrow within 6 screen points of `location`, if any.
     func arrow(near location: CGPoint) -> BoardModel.ArrowKey? {
-        for (key, points) in board.routes {
-            let screen = points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
+        for (key, route) in board.routes {
+            let screen = route.points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
             for (a, b) in zip(screen, screen.dropFirst()) where distance(from: location, toSegment: a, b) < 6 {
                 return key
             }

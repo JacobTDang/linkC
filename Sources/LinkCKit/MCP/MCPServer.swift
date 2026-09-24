@@ -1204,14 +1204,16 @@ public final class MCPServer: Sendable {
     /// bad step, or `LinkCError.server` when the file kept changing after the retry.
     static func editBoard(store: BoardMapStore, steps: [BoardEditStep], beforeSave: () throws -> Void = {}) throws -> [String] {
         let first = try store.load()
-        let (map, lines) = try BoardEdit.apply(steps, to: first?.map ?? .empty)
+        let (applied, lines) = try BoardEdit.apply(steps, to: first?.map ?? .empty)
+        let map = BoardLayout.arranged(applied)
         try beforeSave()
         do {
             _ = try store.save(map, expecting: first?.bytes)
             return lines
         } catch BoardMapStoreError.changedOnDisk {
             let second = try store.load()
-            let (retriedMap, retriedLines) = try BoardEdit.apply(steps, to: second?.map ?? .empty)
+            let (retriedApplied, retriedLines) = try BoardEdit.apply(steps, to: second?.map ?? .empty)
+            let retriedMap = BoardLayout.arranged(retriedApplied)
             try beforeSave()
             do {
                 _ = try store.save(retriedMap, expecting: second?.bytes)

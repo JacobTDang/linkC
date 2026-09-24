@@ -717,13 +717,14 @@ final class BoardModelTests: XCTestCase {
         XCTAssertNil(board.refusal, "the next edit that lands clears it")
     }
 
-    func testArrowRules() throws {
+    func testArrowRules() async throws {
         let board = fresh()
         let api = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
         let db = try XCTUnwrap(board.addComponent(kind: .database, at: BoardPoint(x: 400, y: 0)))
         XCTAssertFalse(board.addArrow(from: api, to: api), "no arrow to itself")
         XCTAssertTrue(board.addArrow(from: api, to: db))
         XCTAssertFalse(board.addArrow(from: api, to: db), "no second arrow the same way")
+        await board.recomputeRoutes().value
         XCTAssertNotNil(board.routes[BoardModel.ArrowKey(from: api, to: db)])
         board.setArrowLabel(BoardModel.ArrowKey(from: api, to: db), to: "reads entries")
         XCTAssertEqual(board.map.components.first { $0.name == api }?.uses[db], "reads entries")
@@ -740,7 +741,7 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.map.components.first { $0.name == api }?.uses, [db: ""], "one entry, under the real spelling")
     }
 
-    func testDeletingAComponentTakesItsArrowsAndDeletingAFrameKeepsItsContents() throws {
+    func testDeletingAComponentTakesItsArrowsAndDeletingAFrameKeepsItsContents() async throws {
         let board = fresh()
         let label = try XCTUnwrap(board.addFrame(BoardRect(x: 0, y: 0, w: 400, h: 200)))
         let api = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 16, y: 16)))
@@ -749,6 +750,7 @@ final class BoardModelTests: XCTestCase {
 
         board.delete([.component(db)])
         XCTAssertEqual(board.map.components.first { $0.name == api }?.uses, [:])
+        await board.recomputeRoutes().value
         XCTAssertTrue(board.routes.isEmpty)
 
         board.delete([.frame(label)])
@@ -981,5 +983,32 @@ final class BoardModelTests: XCTestCase {
         let svcRect = try XCTUnwrap(svc.at.map(BoardGeometry.rect(ofComponentAt:)))
         let noteRect = try XCTUnwrap(board.map.notes.first { $0.id == note }?.at.map(BoardGeometry.rect(ofNoteAt:)))
         XCTAssertFalse(svcRect.intersects(noteRect), "the new component must not land on the note already in the frame")
+    }
+
+    // MARK: Routing and tidying
+
+    func testRoutesAndLabelsAreComputedOffTheMainActor() async throws {
+        let board = fresh()
+        let a = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
+        let b = try XCTUnwrap(board.addComponent(kind: .database, at: BoardPoint(x: 480, y: 0)))
+        _ = board.addArrow(from: a, to: b)
+        board.setArrowLabel(BoardModel.ArrowKey(from: a, to: b), to: "reads")
+        await board.recomputeRoutes().value
+        XCTAssertNotNil(board.routes[BoardModel.ArrowKey(from: a, to: b)])
+        XCTAssertNotNil(board.labelRects[BoardModel.ArrowKey(from: a, to: b)])
+    }
+
+    func testTidyUpIsOneUndoStepAndArranges() throws {
+        let board = fresh()
+        _ = board.addComponent(kind: .service, at: BoardPoint(x: 900, y: 900))
+        _ = board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0))
+        let before = board.map
+        board.tidyUp()
+        XCTAssertEqual(board.map, BoardLayout.arranged(before))
+        board.undo()
+        XCTAssertEqual(board.map, before)
+        board.redo()
+        board.tidyUp()
+        XCTAssertEqual(board.canRedo, false)
     }
 }
