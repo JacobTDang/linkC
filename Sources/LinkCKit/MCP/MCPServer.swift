@@ -91,6 +91,7 @@ public final class MCPServer: Sendable {
         note: {"note": text}
         remove_note: {"remove_note": exact text}
         system: {"system": one line}
+        "kind": service, database, cache, queue, storage, host, external — any other kind is kept and drawn as a service.
         "planned": true marks something not built yet — linkc_get_board shows it as "status": "planned".
         """
 

@@ -110,6 +110,8 @@ final class MCPServerBoardTests: XCTestCase {
         }
         XCTAssertTrue(description.contains("\"planned\": true"), description)
         XCTAssertTrue(description.contains("\"status\": \"planned\""), description)
+        XCTAssertTrue(description.contains("service, database, cache, queue, storage, host, external"), description)
+        XCTAssertTrue(description.contains("kept and drawn as a service"), description)
     }
 
     // MARK: - The retry-once path
