@@ -106,20 +106,20 @@ public final class BoardModel {
 
     // MARK: - Lifecycle
 
-    /// Reads the file. Refuses to replace a map with edits not yet written, so a reload can never
-    /// silently discard work — `reload()` is the deliberate way to do that. When the bytes on
+    /// Reads the file. Never silently discards edits not yet written — a pending edit takes the
+    /// same merging path `diskChanged()` already takes, exactly as if the watcher had fired
+    /// instead; `reload()` is the deliberate way to drop a pending edit instead. When the bytes on
     /// disk are exactly what they were last time — reappearing after a tab switch, say — the
     /// map, undo, redo and selection are left exactly as they are.
     ///
-    /// Past the first load, on a healthy, unlocked board with nothing pending, a real change on
-    /// disk found this way is taken exactly as `diskChanged()` takes one — as one undo step, with
-    /// `outsideChange` set — a reappear is no different from the watcher having fired while the
-    /// Board was open. The very first load, a load after `.failed`, and `reload()` are always a
-    /// full read instead: the first load has no "before" map worth remembering, and `.failed` or
-    /// `changedOnDisk` must never find the bytes unchanged and leave the board stuck — only "Try
-    /// again" (`reload()`) and Reload are the deliberate way out of those.
+    /// Past the first load, on a healthy, unlocked board, a real change on disk found this way is
+    /// taken exactly as `diskChanged()` takes one — as one undo step, with `outsideChange` set —
+    /// a reappear is no different from the watcher having fired while the Board was open. The
+    /// very first load, a load after `.failed`, and `reload()` are always a full read instead:
+    /// the first load has no "before" map worth remembering, and `.failed` or `changedOnDisk`
+    /// must never find the bytes unchanged and leave the board stuck — only "Try again"
+    /// (`reload()`) and Reload are the deliberate way out of those.
     public func load() {
-        guard !hasUnwrittenEdits else { return }
         guard hasLoadedOnce, canEdit else {
             read(keepingAnUnchangedMap: true)
             return
@@ -211,9 +211,14 @@ public final class BoardModel {
         }
 
         let before = map
-        map = hasUnwrittenEdits
-            ? Self.laidOut(BoardMerge.merge(base: baseMap, mine: map, theirs: theirs))
-            : Self.laidOut(Self.carryingIds(from: before, into: theirs))
+        // `BoardMerge.merge` alone mints a fresh id for any note or text that neither side
+        // touched — it takes theirs' just-redecoded copy, which decodes with a new id every
+        // time, same as the plain-replace path below always needed `carryingIds` for. Run it on
+        // the merge's result too, or an edit pending at the same moment an outside change lands
+        // loses that note's or text's id (and any selection or open editor keyed by it) for no
+        // real reason.
+        let rawReplacement = hasUnwrittenEdits ? BoardMerge.merge(base: baseMap, mine: map, theirs: theirs) : theirs
+        map = Self.laidOut(Self.carryingIds(from: before, into: rawReplacement))
         diskBytes = bytes
         baseMap = theirs
 
@@ -265,6 +270,12 @@ public final class BoardModel {
     /// live — and says so on its own quiet banner, never the save-failure one.
     public func liveUpdatesFailed(_ message: String) {
         liveUpdatesOff = "Live updates are off: \(message)"
+    }
+
+    /// The watcher started (or restarted) successfully — called on that success path. Clears
+    /// whatever earlier failure's banner was still showing, since live updates are working again.
+    public func liveUpdatesStarted() {
+        liveUpdatesOff = nil
     }
 
     // MARK: - Undo

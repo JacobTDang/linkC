@@ -162,6 +162,17 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.liveUpdatesOff, "Live updates are off: no such file", "a save has nothing to do with the watcher")
     }
 
+    /// The banner from an earlier failed watcher start must not linger once the watcher (re)starts
+    /// successfully — the pane calls this on that success path.
+    func testLiveUpdatesStartedClearsTheBanner() throws {
+        let board = fresh()
+        board.liveUpdatesFailed("no such file")
+        XCTAssertNotNil(board.liveUpdatesOff)
+
+        board.liveUpdatesStarted()
+        XCTAssertNil(board.liveUpdatesOff, "a successful (re)start clears the banner")
+    }
+
     /// A save collision's retry must not run once `diskChanged()` (called to resolve the
     /// collision) finds the file has actually gone unreadable — that already locked the board as
     /// `.failed`; running the retry anyway used to make the save fail a second time too, setting
@@ -338,6 +349,26 @@ final class BoardModelTests: XCTestCase {
         XCTAssertNotNil(board.map.components.first { $0.name == "redis" })
     }
 
+    /// `load()` must not simply do nothing while an edit is pending — `diskChanged()` already
+    /// merges a pending edit with an outside write, and `load()` must take that same path rather
+    /// than skip it outright.
+    func testLoadMergesAPendingEditWithAnOutsideWriteAsOneUndoStep() throws {
+        let board = fresh()
+        board.setSystem("base")
+        board.saveNow()
+        let pending = try XCTUnwrap(board.addComponent(kind: .database, at: BoardPoint(x: 0, y: 0)))   // pending, unwritten
+        let beforeLoad = board.map
+        try writeOutside(outsideMap)
+
+        board.load()
+        XCTAssertEqual(board.map.system, "theirs", "load() merges a pending edit with an outside write, same as diskChanged()")
+        XCTAssertNotNil(board.map.components.first { $0.name == pending }, "the pending edit survives the merge")
+        XCTAssertNotNil(board.map.components.first { $0.name == "redis" }, "the outside change survives the merge too")
+
+        board.undo()
+        XCTAssertEqual(board.map, beforeLoad, "exactly one undo step for the whole merge")
+    }
+
     func testReloadOnAHealthyBoardDropsTheUnwrittenEdit() throws {
         let board = fresh()
         board.setSystem("mine")
@@ -466,6 +497,37 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.selection, [.note(noteId)], "so its selection survives too")
         board.setNoteText(noteId, to: "edited")
         XCTAssertEqual(board.map.notes.first?.text, "edited", "a commit keyed by the old id still lands")
+    }
+
+    /// With an edit pending, `diskChanged()`'s merge must still carry an untouched note's id
+    /// forward — `BoardMerge.merge` alone always takes theirs' freshly-decoded note once mine and
+    /// theirs both leave it where base had it, minting a *new* id even though nothing about the
+    /// note really changed. Left alone, an outside write that only reformats the file — same
+    /// note, different bytes — would look like a real change purely from the note's id churning,
+    /// adding a phantom undo step for it.
+    func testANoteKeepsItsIdAcrossAMergeWithAnEditPendingAndAddsNoPhantomUndoStep() throws {
+        let board = fresh()
+        let noteId = try XCTUnwrap(board.addNote(at: BoardPoint(x: 0, y: 0)))
+        board.setNoteText(noteId, to: "Redis is for sessions")
+        board.saveNow()
+
+        let pending = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 400, y: 400)))   // pending, unwritten
+        board.selection = [.note(noteId)]
+        let beforeDiskChanged = board.map
+
+        // An outside reformat of the same saved content: same note, different bytes, nothing real
+        // changed.
+        let reformatted = try Data(contentsOf: store.fileURL) + Data(" ".utf8)
+        try reformatted.write(to: store.fileURL, options: .atomic)
+
+        board.diskChanged()
+        XCTAssertEqual(board.map.notes.first?.id, noteId, "the untouched note keeps its id across a merge too")
+        XCTAssertEqual(board.selection, [.note(noteId)], "so its selection survives the merge")
+        XCTAssertEqual(board.map, beforeDiskChanged, "nothing really changed, so the merge must be a no-op")
+        XCTAssertNil(board.outsideChange, "no real change means no glow either")
+
+        board.undo()
+        XCTAssertNil(board.map.components.first { $0.name == pending }, "diskChanged pushed no undo step of its own, so this undo removes the pending add itself")
     }
 
     /// The same guarantee for texts, paired by `(text, style)` instead of just text.

@@ -42,6 +42,7 @@ struct BoardPane: View {
         watcher = nil
         do {
             watcher = try BoardFileWatcher(fileURL: board.fileURL) { board.diskChanged() }
+            board.liveUpdatesStarted()
         } catch {
             board.liveUpdatesFailed(error.localizedDescription)
         }
