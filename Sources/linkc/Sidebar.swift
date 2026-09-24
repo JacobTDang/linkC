@@ -414,12 +414,12 @@ private struct SessionRow: View {
 /// The live terminal a sidebar drop carries, or nil — logged — when the payload is anything else.
 @MainActor private func droppedTerminalID(_ items: [String], model: AppModel) -> String? {
     guard let item = items.first, item.hasPrefix("linkc-terminal:") else {
-        NSLog("[linkC] drag ignored: unknown payload \(items)")
+        NSLog("[linkC] drag ignored: unknown payload %@", String(describing: items))
         return nil
     }
     let id = String(item.dropFirst("linkc-terminal:".count))
     guard model.shellRows.contains(where: { $0.id == id }) else {
-        NSLog("[linkC] drag ignored: no live terminal with id \(id)")
+        NSLog("[linkC] drag ignored: no live terminal with id %@", id)
         return nil
     }
     return id
