@@ -216,13 +216,17 @@ final class AppModel {
             let linkCSupport = support.appendingPathComponent("linkC", isDirectory: true)
             self.shells = ShellCoordinator(terminals: terminals, manifestDir: linkCSupport)
             self.shells?.restoreActiveShells()
-            let liveTerminals = Set(shellRows.map(\.id))
-            sidebarState.pruneTerminals(keeping: liveTerminals)
+            // A filing is dropped only when its terminal is truly dismissed — keep it for a live
+            // terminal, and for one still offered back in Earlier, so a terminal that had exited by
+            // quit time, or whose folder was missing and so was skipped above, doesn't lose it.
+            let keptTerminals = Set(shellRows.map(\.id)).union(restorableShells.map(\.id))
+            sidebarState.pruneTerminals(keeping: keptTerminals)
             startShellSweep()
-            // Forget remembered folders with no live session and no Earlier entry.
+            // Forget remembered folders with no live session, no Earlier entry, and no filing.
             let standardized: (String) -> String = { ($0 as NSString).standardizingPath }
             var inUse = Set(sessions.map { standardized($0.cwd) })
             inUse.formUnion(restorables.map { standardized($0.cwd) })
+            inUse = SidebarState.inUseProjects(sessionPaths: inUse, filed: sidebarState.terminalProjects)
             sidebarState.prune(keeping: inUse)
             if let lastId = UserDefaults.standard.string(forKey: "LinkCLastSelectedSessionId"),
                terminals.sessions.contains(where: { $0.id == lastId }) {
@@ -546,7 +550,11 @@ final class AppModel {
         guard let shells else { return }
         do {
             lastError = nil
-            try shells.restore(shell)
+            let newRow = try shells.restore(shell)
+            if let filedProject = sidebarState.terminalProjects[shell.id] {
+                sidebarState.unfile(terminal: shell.id)
+                sidebarState.file(terminal: newRow.id, under: filedProject)
+            }
             recents?.record(shell.cwd)
             showSelection()  // the new terminal is selected — show it
         } catch {

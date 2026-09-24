@@ -114,12 +114,32 @@ final class SidebarModelTests: XCTestCase {
         XCTAssertEqual(out.unfiled.map(\.id), ["s3"])
     }
 
-    func testFiledOnlyProjectsComeOutInAStableOrderRegardlessOfDictionaryOrder() {
+    func testAFilingForATerminalThatIsNotLiveMakesNoProject() {
+        // s2 was filed under /p/june, then stopped: the filing survives (it's restorable), but
+        // it is no longer in `shells`. Without a live terminal, /p/june must not show as a project.
+        let s1 = ShellRow(id: "s1", cwd: "/p/linkc", title: "s1", state: .running)
+
+        let out = SidebarModel.projects(
+            inputs: [],
+            shells: [s1],
+            filed: ["s1": "/p/linkc", "s2": "/p/june"],
+            order: [],
+            expandOverrides: [:],
+            selectedId: nil
+        )
+
+        XCTAssertEqual(out.projects.map(\.path), ["/p/linkc"])
+    }
+
+    func testFiledOnlyProjectsFollowTheirTerminalsLaunchOrderRegardlessOfDictionaryOrder() {
+        // Filed-only projects are only ever reached through a `filed[id]` lookup (never by
+        // iterating the `filed` dictionary), so its own nondeterministic order can never leak in.
+        // The order that's left is `shells`' own — the terminals' launch order.
         let shells = ["e", "a", "c", "d", "b"].map { ShellRow(id: "t\($0)", cwd: "/tmp", title: "t\($0)", state: .running) }
         let filed = Dictionary(uniqueKeysWithValues: shells.map { ($0.id, "/p/\($0.title.dropFirst())") })
 
         let projects = build([], shells: shells, filed: filed, order: [])
 
-        XCTAssertEqual(projects.map(\.path), ["/p/a", "/p/b", "/p/c", "/p/d", "/p/e"])
+        XCTAssertEqual(projects.map(\.path), ["/p/e", "/p/a", "/p/c", "/p/d", "/p/b"])
     }
 }

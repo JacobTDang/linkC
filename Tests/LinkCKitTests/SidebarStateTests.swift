@@ -141,4 +141,25 @@ final class SidebarStateTests: XCTestCase {
         state.file(terminal: "t1", under: "~/june/")
         XCTAssertEqual(state.terminalProjects["t1"], ("~/june" as NSString).standardizingPath)
     }
+
+    func testInUseProjectsAddsTheFiledPathsStandardized() {
+        XCTAssertEqual(
+            SidebarState.inUseProjects(sessionPaths: ["/p/linkc"], filed: ["t1": "/p/june/./"]),
+            ["/p/linkc", "/p/june"])
+    }
+
+    func testAFiledOnlyProjectKeepsItsSlotAndCollapseThroughTheStartPrune() {
+        let state = SidebarState(defaults: defaults)
+        state.noteProjects(["/p/june", "/p/linkc"])
+        state.setExpanded("/p/june", false)
+
+        // june has no live session — only a filing — so a naive "sessions + Earlier" keep set
+        // would drop it and its collapse; the start prune must not.
+        let sessionPaths: Set<String> = ["/p/linkc"]
+        let filed = ["t1": "/p/june"]
+        state.prune(keeping: SidebarState.inUseProjects(sessionPaths: sessionPaths, filed: filed))
+
+        XCTAssertEqual(state.projectOrder, ["/p/june", "/p/linkc"])
+        XCTAssertEqual(state.expandOverrides["/p/june"], false)
+    }
 }

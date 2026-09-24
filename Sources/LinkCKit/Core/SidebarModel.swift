@@ -23,7 +23,8 @@ public struct SidebarSessionRow: Identifiable, Equatable, Sendable {
     }
 }
 
-/// One project row: a folder with at least one live session.
+/// One project row: a folder with at least one live session, or with at least one terminal filed
+/// under it.
 public struct SidebarProject: Identifiable, Equatable, Sendable {
     public var id: String { path }
     public let path: String
@@ -56,9 +57,12 @@ public enum SidebarModel {
     }
 
     /// Projects in `order` (the order they were first opened); a project not in `order` goes after
-    /// them in encounter order. Sessions stay in `inputs` order (opened order). A project is open
-    /// when `expandOverrides` says so; with no override it is open only while it holds the selected
-    /// session, so moving into a project opens it and collapsing it afterwards sticks.
+    /// them in encounter order. Sessions stay in `inputs` order (opened order). Each of `shells` is
+    /// filed under its project (`TerminalFiling.project`, using `filed`) or, with none, returned in
+    /// `unfiled` instead. A project with no live session still shows as long as a live terminal is
+    /// filed under it. A project is open when `expandOverrides` says so; with no override it is open
+    /// only while it holds the selected session or terminal, so moving into a project opens it and
+    /// collapsing it afterwards sticks.
     public static func projects(
         inputs: [Input], shells: [ShellRow] = [], filed: [String: String] = [:], order: [String], expandOverrides: [String: Bool], selectedId: String?
     ) -> (projects: [SidebarProject], unfiled: [ShellRow]) {
@@ -73,13 +77,6 @@ public enum SidebarModel {
                 projectPathsList.append(path)
             }
         }
-        for path in filed.values.sorted() {
-            let standardized = (path as NSString).standardizingPath
-            if seenPaths.insert(standardized).inserted {
-                projectPathsList.append(standardized)
-            }
-        }
-
         var projectTerminals: [String: [ShellRow]] = [:]
         var unfiled: [ShellRow] = []
 

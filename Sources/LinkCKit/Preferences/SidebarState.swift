@@ -82,6 +82,13 @@ public final class SidebarState {
         save()
     }
 
+    /// The folders in use at start: `sessionPaths` (live sessions and Earlier entries) plus every
+    /// filed project's folder, standardized — a filing is kept, and so is its order slot and its
+    /// collapse state, until the terminal it names is truly dismissed, not merely un-live at start.
+    public static func inUseProjects(sessionPaths: Set<String>, filed: [String: String]) -> Set<String> {
+        sessionPaths.union(filed.values.map { ($0 as NSString).standardizingPath })
+    }
+
     /// Forget folders that no longer have a live session or an Earlier entry. Run once at launch.
     public func prune(keeping paths: Set<String>) {
         let order = projectOrder.filter { paths.contains($0) }
