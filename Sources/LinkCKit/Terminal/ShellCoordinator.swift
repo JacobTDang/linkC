@@ -45,7 +45,7 @@ public final class ShellCoordinator {
         id: String? = nil
     ) throws -> ShellRow {
         let id = id ?? UUID().uuidString
-        let title = title ?? URL(fileURLWithPath: cwd).lastPathComponent
+        let title = title ?? ShellTitle.name(forDirectory: cwd, home: NSHomeDirectory())
         let shell = shellPath()
 
         let terminal = terminals.makeSession(id: id, cwd: cwd, title: title, agentKind: agent)

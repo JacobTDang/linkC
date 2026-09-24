@@ -81,4 +81,41 @@ final class ShellTerminalStoreTests: XCTestCase {
         XCTAssertTrue(fired.withLock { $0 })
         XCTAssertEqual(store.row(id: "T1")?.detectedAgent, .claude)
     }
+
+    func testAPlainTerminalTakesItsNewFoldersName() {
+        let store = ShellTerminalStore()
+        store.add(id: "T1", cwd: "/Users/j/Projects/linkC", title: "linkC")
+
+        let updated = store.updateDirectory(id: "T1", to: "/Users/j/Projects/linkC/Sources", home: "/Users/j")
+        XCTAssertEqual(updated?.cwd, "/Users/j/Projects/linkC/Sources")
+        XCTAssertEqual(updated?.title, "Sources")
+        XCTAssertEqual(store.row(id: "T1"), updated)
+
+        XCTAssertEqual(store.updateDirectory(id: "T1", to: "/Users/j", home: "/Users/j")?.title, "~")
+    }
+
+    func testACommandTerminalKeepsItsTitle() {
+        let store = ShellTerminalStore()
+        store.add(id: "T1", cwd: "/Users/j", title: "logs: web", command: "docker logs -f web")
+
+        let updated = store.updateDirectory(id: "T1", to: "/tmp", home: "/Users/j")
+        XCTAssertEqual(updated?.cwd, "/tmp")
+        XCTAssertEqual(updated?.title, "logs: web")
+    }
+
+    func testTheSameFolderChangesNothing() {
+        let store = ShellTerminalStore()
+        store.add(id: "T1", cwd: "/Users/j/Projects/linkC", title: "linkC")
+
+        XCTAssertNil(store.updateDirectory(id: "T1", to: "/Users/j/Projects/linkC", home: "/Users/j"))
+        XCTAssertNil(store.updateDirectory(id: "missing", to: "/tmp", home: "/Users/j"))
+    }
+
+    func testAnOldNameIsCorrectedInPlace() {
+        // A terminal restored with a name saved by an older linkC ("j" for the home folder).
+        let store = ShellTerminalStore()
+        store.add(id: "T1", cwd: "/Users/j", title: "j")
+
+        XCTAssertEqual(store.updateDirectory(id: "T1", to: "/Users/j", home: "/Users/j")?.title, "~")
+    }
 }

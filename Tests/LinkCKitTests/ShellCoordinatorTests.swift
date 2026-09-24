@@ -118,6 +118,12 @@ final class ShellCoordinatorTests: XCTestCase {
         try await waitUntil(coordinator.store.row(id: row.id)?.state == .exited(7))
         XCTAssertNotNil(terminals.session(id: row.id), "output stays inspectable")
     }
+
+    func testAPlainShellInTheHomeFolderIsNamedTilde() throws {
+        let coordinator = makeCoordinator(shell: "/bin/cat")
+        let row = try coordinator.launch(cwd: NSHomeDirectory())
+        XCTAssertEqual(row.title, "~")
+    }
 }
 
 /// Persistence: launching remembers a shell, exiting stamps it, dismissing forgets it,

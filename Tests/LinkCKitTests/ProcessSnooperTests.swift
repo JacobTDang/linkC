@@ -97,4 +97,25 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertEqual(ProcessSnooper.parseProcArgs2([]), [:])
         XCTAssertEqual(ProcessSnooper.parseProcArgs2([1, 2]), [:])
     }
+
+    func testCurrentDirectoryReadsALiveProcessesFolder() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "cd /tmp && exec sleep 5"]
+        try process.run()
+        defer { process.terminate() }
+
+        var seen: String?
+        for _ in 0..<100 {
+            seen = ProcessSnooper.currentDirectory(ofPid: process.processIdentifier)
+            if seen == "/private/tmp" { break }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertEqual(seen, "/private/tmp", "the kernel reports the resolved folder")
+    }
+
+    func testCurrentDirectoryIsNilForAPidThatDoesNotExist() {
+        XCTAssertNil(ProcessSnooper.currentDirectory(ofPid: 0))
+        XCTAssertNil(ProcessSnooper.currentDirectory(ofPid: pid_t(Int32.max)))
+    }
 }

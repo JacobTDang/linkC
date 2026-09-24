@@ -9,8 +9,8 @@ public enum ShellState: Sendable, Equatable {
 /// One dev terminal, shown in the sidebar's Terminals section and on the Terminals screen.
 public struct ShellRow: Sendable, Identifiable, Equatable {
     public let id: String
-    public let cwd: String
-    public let title: String
+    public internal(set) var cwd: String
+    public internal(set) var title: String
     /// Non-nil for command-mode shells (docker logs, a dev server) — relaunch re-runs it.
     public var command: String?
     public var state: ShellState
@@ -70,6 +70,23 @@ public final class ShellTerminalStore {
         if rows[index].detectedAgent != agent {
             rows[index].detectedAgent = agent
         }
+    }
+
+    /// Moves a row to the folder its shell is now in. A plain terminal (no command) is renamed
+    /// after the folder; a command terminal keeps its title. Writes only on a real change,
+    /// because the sweep runs every second, and returns the updated row, or nil when nothing
+    /// changed.
+    @discardableResult
+    public func updateDirectory(id: String, to directory: String, home: String = NSHomeDirectory()) -> ShellRow? {
+        guard let index = rows.firstIndex(where: { $0.id == id }) else { return nil }
+        var row = rows[index]
+        row.cwd = directory
+        if row.command == nil {
+            row.title = ShellTitle.name(forDirectory: directory, home: home)
+        }
+        guard row != rows[index] else { return nil }
+        rows[index] = row
+        return row
     }
 
     public func remove(id: String) {

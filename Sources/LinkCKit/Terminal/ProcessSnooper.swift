@@ -89,6 +89,21 @@ public struct ProcessSnooper: Sendable {
         return pid_t(info.pbi_ppid)
     }
 
+    /// The process's current folder via `proc_pidinfo(PROC_PIDVNODEPATHINFO)`, as the kernel
+    /// reports it (symlinks resolved, e.g. `/private/tmp`). Nil for invalid pids or when the
+    /// kernel refuses (a process that is gone, or one owned by another user).
+    public static func currentDirectory(ofPid pid: pid_t) -> String? {
+        guard pid > 0 else { return nil }
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        let got = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size)
+        guard got == size else { return nil }
+        let path = withUnsafeBytes(of: info.pvi_cdir.vip_path) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        return path.isEmpty ? nil : path
+    }
+
     /// Walks *up* from `pid` (exclusive) through at most `maxDepth` parents and returns the first
     /// ancestor whose executable is a known AI CLI, with that ancestor's pid.
     public static func detectAgent(inAncestorsOf pid: pid_t, maxDepth: Int = 8) -> (agent: AgentKind, pid: pid_t)? {

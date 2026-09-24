@@ -142,4 +142,28 @@ final class SidebarModelTests: XCTestCase {
 
         XCTAssertEqual(projects.map(\.path), ["/p/e", "/p/a", "/p/c", "/p/d", "/p/b"])
     }
+
+    @MainActor
+    func testATerminalThatChangesFolderFollowsTheFolderRuleUnlessFiled() {
+        let store = ShellTerminalStore()
+        store.add(id: "s1", cwd: "/Users/j", title: "~")
+        store.add(id: "s2", cwd: "/Users/j", title: "~")
+        store.updateDirectory(id: "s1", to: "/p/linkc", home: "/Users/j")
+        store.updateDirectory(id: "s2", to: "/p/linkc", home: "/Users/j")
+
+        let out = SidebarModel.projects(
+            inputs: [input("session1", cwd: "/p/linkc"), input("session2", cwd: "/p/june")],
+            shells: store.rows,
+            filed: ["s2": "/p/june"],
+            order: ["/p/linkc", "/p/june"],
+            expandOverrides: [:],
+            selectedId: nil
+        )
+
+        XCTAssertEqual(out.projects.map(\.path), ["/p/linkc", "/p/june"])
+        XCTAssertEqual(out.projects[0].terminals.map(\.id), ["s1"])
+        XCTAssertEqual(out.projects[0].terminals.map(\.title), ["linkc"])
+        XCTAssertEqual(out.projects[1].terminals.map(\.id), ["s2"], "a filed terminal stays where it was filed")
+        XCTAssertTrue(out.unfiled.isEmpty)
+    }
 }
