@@ -711,11 +711,12 @@ public final class BoardModel {
     }
 
     /// The pure computation `recomputeRoutes()` runs off the main actor: every arrow's route, then
-    /// every labelled arrow's pill, from the same routes. `BoardRouter` is not cancellation-aware
-    /// and always completes; `isCancelled` is checked once routing is done, before the (pricier,
-    /// skippable) labelling pass — cheap insurance against doing work for a result about to be
-    /// dropped. Internal, not private, and `isCancelled` is injectable, so a test can drive it
-    /// deterministically instead of racing real `Task` cancellation.
+    /// every labelled arrow's pill, from the same routes. Routing is the pricier of the two
+    /// (measured at 7–43 ms; labelling at 0.3 ms) and checks `isCancelled` itself, between arrows;
+    /// `isCancelled` is checked again once routing returns, before the labelling pass, in case
+    /// cancellation lands in the gap between them — cheap insurance either way against doing work
+    /// for a result about to be dropped. Internal, not private, and `isCancelled` is injectable,
+    /// so a test can drive it deterministically instead of racing real `Task` cancellation.
     nonisolated static func routesAndLabels(
         for map: BoardMap, isCancelled: () -> Bool = { Task.isCancelled }
     ) -> (routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect])? {

@@ -744,8 +744,10 @@ final class BoardModelTests: XCTestCase {
         await latest.value
     }
 
-    /// `routesAndLabels` checks cancellation between routing and labelling: routing itself is not
-    /// cancellation-aware and always completes, but labelling is skipped once cancelled.
+    /// `routesAndLabels` checks cancellation again right after routing returns, before labelling —
+    /// a second, cheap check for cancellation landing in the gap between the two (routing already
+    /// checks its own, real `Task.isCancelled` between arrows, which this `isCancelled` closure,
+    /// driven directly with no real `Task` involved, never reaches).
     func testRoutesAndLabelsSkipsLabellingOnceCancelledBetweenRouterAndLabels() throws {
         var m = BoardMap()
         m.components = [
@@ -756,7 +758,7 @@ final class BoardModelTests: XCTestCase {
         XCTAssertNil(cancelled, "cancelled between the router and labels, so labelling — and the result — is skipped")
 
         let notCancelled = try XCTUnwrap(BoardModel.routesAndLabels(for: m, isCancelled: { false }))
-        XCTAssertFalse(notCancelled.routes.isEmpty, "routing itself is not cancellation-aware and always completes")
+        XCTAssertFalse(notCancelled.routes.isEmpty)
         XCTAssertFalse(notCancelled.labelRects.isEmpty)
     }
 

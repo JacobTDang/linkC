@@ -113,19 +113,31 @@ final class BoardRouterTests: XCTestCase {
         XCTAssertEqual(crossedFrames.map(\.label), ["Right"], "crosses exactly one frame border region")
     }
 
-    /// The endpoint is walled in by hard obstacles on all four sides, touching with no gap — no
-    /// route exists even through frames (there are none here). The last resort is a single
-    /// straight segment between the two ports.
+    /// The endpoint is walled in by hard obstacles on every side, with no gap anywhere — no route
+    /// exists even through frames (there are none here). The last resort is a single straight
+    /// segment between the two ports.
+    ///
+    /// Four walls touching the target only at their own corners are not enough to seal it: since
+    /// a margin is now only ever a cost, never a wall, an orthogonal route can still thread the
+    /// single point (or the shared edge between two stacked walls) where two obstacles merely
+    /// touch, without ever entering either one's raw body — touching a border was always meant to
+    /// stay legal (`BoardGeometry.segmentIntersects`), so it does here too, corners included. A
+    /// dense ring of walls, each offset from its neighbours by half its own size in both
+    /// directions, overlaps every one of them by half — so every line a route could try to hug
+    /// runs through some wall's *interior*, not just its border, leaving genuinely no way out.
     func testAnImpossibleBoardFallsBackToAStraightSegment() {
         var m = BoardMap()
         m.components = [
             BoardComponent(name: "source", kind: .service, uses: ["target": ""], at: BoardPoint(x: 0, y: 400)),
             BoardComponent(name: "target", kind: .service, at: BoardPoint(x: 400, y: 400)),
-            BoardComponent(name: "wallLeft", kind: .service, at: BoardPoint(x: 224, y: 400)),
-            BoardComponent(name: "wallRight", kind: .service, at: BoardPoint(x: 576, y: 400)),
-            BoardComponent(name: "wallTop", kind: .service, at: BoardPoint(x: 400, y: 316)),
-            BoardComponent(name: "wallBottom", kind: .service, at: BoardPoint(x: 400, y: 484)),
         ]
+        let xs = [224, 312, 400, 488]
+        let ys = [316, 358, 400, 442]
+        for x in xs {
+            for y in ys where !(x == 400 && y == 400) {
+                m.components.append(BoardComponent(name: "wall\(x)_\(y)", kind: .service, at: BoardPoint(x: x, y: y)))
+            }
+        }
         let route = BoardRouter.routes(for: m)[BoardModel.ArrowKey(from: "source", to: "target")]!
         XCTAssertEqual(route.points, [BoardPoint(x: 176, y: 442), BoardPoint(x: 400, y: 442)])
     }
@@ -250,5 +262,86 @@ final class BoardRouterTests: XCTestCase {
             }
             for (a, b) in segments(route) { XCTAssertTrue(a.x == b.x || a.y == b.y, "\(key) not diagonal: \(route.points)") }
         }
+    }
+
+    // MARK: - Packed multi-row boards (a whole grid, not just one row)
+
+    /// A 4×3 block of 12 packed boxes — "Add what's running" packs containers 4 to a row, and
+    /// packs the rows themselves just as tight (0–4 pt gaps in both directions), not only along
+    /// one row. `arrows` names each (from, to) pair by grid index, row-major: index = row * 4 +
+    /// col.
+    private func packedGrid(arrows: [(from: Int, to: Int)]) -> BoardMap {
+        var m = BoardMap()
+        let cols = 4, rows = 3, gap = 4, inset = 8
+        let width = 2 * inset + cols * 176 + (cols - 1) * gap
+        let height = 2 * inset + rows * 84 + (rows - 1) * gap
+        m.frames = [BoardFrame(label: "Grid", rect: BoardRect(x: 0, y: 0, w: width, h: height))]
+        var components: [BoardComponent] = (0..<(rows * cols)).map { i in
+            let row = i / cols, col = i % cols
+            return BoardComponent(name: "svc\(i)", kind: .service, place: "Grid",
+                                  at: BoardPoint(x: inset + col * (176 + gap), y: inset + row * (84 + gap)))
+        }
+        for (from, to) in arrows { components[from].uses["svc\(to)"] = "" }
+        m.components = components
+        return m
+    }
+
+    /// No route crosses any raw box's interior — not another arrow's box, and not its own two end
+    /// boxes past their stub — and every segment is orthogonal.
+    private func assertRoutesStayClearAndOrthogonal(_ routes: [BoardModel.ArrowKey: BoardRoute], in m: BoardMap) {
+        for (key, route) in routes {
+            for c in m.components {
+                let box = BoardGeometry.rect(ofComponentAt: c.at!)
+                for (a, b) in segments(route) { XCTAssertFalse(crosses(a, b, box), "\(key) crosses \(c.name): \(route.points)") }
+            }
+            for (a, b) in segments(route) { XCTAssertTrue(a.x == b.x || a.y == b.y, "\(key) not diagonal: \(route.points)") }
+        }
+    }
+
+    /// The sparse set from the bug report: svc4→svc11 alone drew one straight diagonal through
+    /// svc7 and svc8's raw boxes, since the grid had no line through the 0–4 pt gaps and the
+    /// middle-row boxes were fenced in by their neighbours' margins.
+    func testPackedGridSparseArrowsRouteWithoutCrossingBoxesOrDiagonals() throws {
+        let arrows: [(from: Int, to: Int)] = [(4, 11), (0, 9), (1, 10), (2, 5), (3, 6), (7, 8)]
+        let m = packedGrid(arrows: arrows)
+        let routes = BoardRouter.routes(for: m)
+        XCTAssertEqual(routes.count, arrows.count)
+        assertRoutesStayClearAndOrthogonal(routes, in: m)
+    }
+
+    /// The dense set from the bug report: every box to the box two columns right and one row
+    /// down, where one exists — 36 arrows on the real board gave 6 diagonals and 35 crossings.
+    func testPackedGridDenseArrowsRouteWithoutCrossingBoxesOrDiagonals() throws {
+        var arrows: [(from: Int, to: Int)] = []
+        for row in 0..<3 {
+            for col in 0..<4 {
+                let targetRow = row + 1, targetCol = col + 2
+                guard targetRow < 3, targetCol < 4 else { continue }
+                arrows.append((row * 4 + col, targetRow * 4 + targetCol))
+            }
+        }
+        let m = packedGrid(arrows: arrows)
+        let routes = BoardRouter.routes(for: m)
+        XCTAssertEqual(routes.count, arrows.count)
+        assertRoutesStayClearAndOrthogonal(routes, in: m)
+    }
+
+    // MARK: - Cancellation
+
+    /// `routes(for:)` checks `isCancelled` between arrows and returns whatever is routed so far —
+    /// the caller drops a cancelled result outright, so finishing the rest is wasted work.
+    /// `isCancelled` is injectable so the test drives it deterministically instead of racing a
+    /// real `Task`.
+    func testCancelledRoutingReturnsEarly() {
+        var m = BoardMap()
+        m.components = (0..<5).map { i in
+            BoardComponent(name: "c\(i)", kind: .service, uses: i + 1 < 5 ? ["c\(i + 1)": ""] : [:], at: BoardPoint(x: i * 400, y: 0))
+        }
+        var calls = 0
+        let routes = BoardRouter.routes(for: m, isCancelled: {
+            calls += 1
+            return calls > 1
+        })
+        XCTAssertEqual(routes.count, 1, "stops after the first arrow once cancellation is seen")
     }
 }
