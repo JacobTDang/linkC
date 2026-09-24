@@ -43,9 +43,9 @@ struct ComponentBox: View {
         .frame(width: Self.width, height: Self.height)
         .overlay(alignment: .topTrailing) {
             if status == .present {
-                let sideInset = BoardShape.insets(for: component.kind)
+                let dotInset = BoardShape.statusDotInset(for: component.kind)
                 Circle().fill(Theme.statusRunning).frame(width: 6, height: 6)
-                    .padding(.top, 7 + sideInset.top).padding(.trailing, 7 + sideInset.right)
+                    .padding(.top, 7 + dotInset.top).padding(.trailing, 7 + dotInset.right)
             }
         }
         .opacity(isMissing ? 0.5 : 1)
@@ -168,20 +168,37 @@ enum BoardShape {
         }
     }
 
-    /// How far a kind's drawn outline sits inside the fixed 176×84 box, on the sides an arrow, a
+    /// How far a kind's drawn outline sits inside the fixed 176×84 box at the arrow's height
+    /// (y = 42, the box's mid-height — every side port lands there), on the sides an arrow, a
     /// status dot, a side handle or the change glow might otherwise land past the shape: the
-    /// cloud's left and right (it never reaches either side edge), the pipe's top and bottom, and
+    /// bucket's taper (measured at that height, not its wider top), the cloud's left and right
+    /// (it never reaches either side edge there — measured on the outline itself, not the widest
+    /// point either lobe happens to reach at some other height), the pipe's top and bottom, and
     /// the card's top and bottom. Zero elsewhere — those shapes already reach the box's edge on
     /// every side that matters.
     static func insets(for kind: ComponentKind) -> (left: CGFloat, right: CGFloat, top: CGFloat, bottom: CGFloat) {
         switch kind {
         case .database, .cache: return (0, 0, 0, 0)
         case .queue: return (0, 0, 12, 12)
-        case .storage: return (0, 0, 0, 0)
+        case .storage: return (8, 8, 8, 8)
         case .host: return (0, 0, 0, 0)
-        case .external: return (31, 9, 0, 0)
+        case .external: return (37, 15.5, 0, 0)
         default: return (0, 0, 8, 8)
         }
+    }
+
+    /// Where the "present" status dot sits, padded in from the box's own top-right corner. Every
+    /// straight-edged shape's `insets` value is the same at any height, so it places the dot
+    /// correctly too — except the cloud, whose `insets` are measured at the arrow's mid-height and
+    /// don't reach anywhere near its actual top-right lobe, which sits much lower and further in;
+    /// measured separately here, on that lobe's own outline, so the dot lands on it instead of
+    /// floating in the empty box above.
+    static func statusDotInset(for kind: ComponentKind) -> (top: CGFloat, right: CGFloat) {
+        guard kind == .external else {
+            let inset = insets(for: kind)
+            return (inset.top, inset.right)
+        }
+        return (36, 22)
     }
 
     /// The decoration that rides on top of the shape and never changes colour with state: a
@@ -263,7 +280,7 @@ enum BoardShape {
     /// the flipped, y-up Core Graphics convention, so it inverts relative to what is drawn.
     private static var cloud: Path {
         var p = Path()
-        p.move(to: CGPoint(x: 36, y: 78))
+        p.move(to: CGPoint(x: 52, y: 78))
         p.addLine(to: CGPoint(x: 148, y: 78))
         p.addArc(center: CGPoint(x: 145.927, y: 57.103), radius: 21,
                  startAngle: .degrees(84.334), endAngle: .degrees(-73.190), clockwise: true)
