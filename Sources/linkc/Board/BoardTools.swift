@@ -147,12 +147,16 @@ struct ComponentInspector: View {
 
     /// Only the fields that differ from `original` — `nil` for the rest, so `updateComponent`
     /// leaves them exactly as they now are, whatever changed them since the card opened.
+    /// `does`, `reachedBy` and `runs` compare with `?? ""` on both sides: typing into a field and
+    /// then deleting it leaves `draft`'s value as `""`, which must not count as a change from a
+    /// `nil` `original` — that would clear a value an agent set in the meantime, one the user
+    /// never actually touched.
     private var changedFields: BoardComponentFields {
         BoardComponentFields(
             kind: draft.kind != original.kind ? draft.kind : nil,
-            does: draft.does != original.does ? (draft.does ?? "") : nil,
-            reachedBy: draft.reachedBy != original.reachedBy ? (draft.reachedBy ?? "") : nil,
-            runs: draft.runs != original.runs ? (draft.runs ?? "") : nil,
+            does: (draft.does ?? "") != (original.does ?? "") ? (draft.does ?? "") : nil,
+            reachedBy: (draft.reachedBy ?? "") != (original.reachedBy ?? "") ? (draft.reachedBy ?? "") : nil,
+            runs: (draft.runs ?? "") != (original.runs ?? "") ? (draft.runs ?? "") : nil,
             planned: draft.planned != original.planned ? draft.planned : nil)
     }
 
