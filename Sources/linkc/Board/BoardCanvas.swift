@@ -151,6 +151,7 @@ struct BoardCanvas: View {
         return ZStack(alignment: .topLeading) {
             ForEach(board.map.frames.filter { frameRect($0)?.intersects(visible) == true }) { frame in
                 frameHandles(frame)
+                frameGlow(frame)
             }
             ForEach(board.map.components.filter { componentRect($0)?.intersects(visible) == true }) { component in
                 if let at = component.at {
@@ -231,6 +232,23 @@ struct BoardCanvas: View {
     private func glow(_ element: BoardModel.Element, cornerRadius: CGFloat) -> some View {
         if glowing.contains(element) {
             RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(Theme.accent.opacity(glowOpacity), lineWidth: 2)
+        }
+    }
+
+    /// The same outline for a frame — a view overlay, not a `Canvas` stroke: `Canvas` never
+    /// re-invokes its content closure per animation frame just because a plain `@State` it reads
+    /// is being animated with `withAnimation`, so a stroke drawn there jumps instead of fading.
+    /// A real view, like the component and note glow, participates in SwiftUI's animation system
+    /// properly and fades exactly as they do.
+    @ViewBuilder
+    private func frameGlow(_ frame: BoardFrame) -> some View {
+        if glowing.contains(.frame(frame.label)), let rect = frameRect(frame) {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Theme.accent.opacity(glowOpacity), lineWidth: 2)
+                .frame(width: CGFloat(rect.w), height: CGFloat(rect.h))
+                .offset(x: CGFloat(rect.x), y: CGFloat(rect.y))
+                .offset(liveOffset(for: .frame(frame.label), place: nil))
+                .allowsHitTesting(false)
         }
     }
 
@@ -397,9 +415,6 @@ struct BoardCanvas: View {
             context.fill(path, with: .color(Theme.boardFrameFill))
             let selected = board.selection.contains(.frame(frame.label))
             context.stroke(path, with: .color(selected ? Theme.accent.opacity(0.7) : Theme.boardFrameStroke), lineWidth: 1)
-            if glowing.contains(.frame(frame.label)) {
-                context.stroke(path, with: .color(Theme.accent.opacity(glowOpacity)), lineWidth: 2)
-            }
         }
     }
 
