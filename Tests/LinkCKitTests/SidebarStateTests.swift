@@ -142,6 +142,16 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(state.terminalProjects["t1"], ("~/june" as NSString).standardizingPath)
     }
 
+    func testAStateSavedBeforeFilingsExistedDecodesWithEmptyFilings() {
+        let json = """
+        {"projectOrder":["/a"],"expandOverrides":{},"openSections":[]}
+        """
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        let state = SidebarState(defaults: defaults)
+        XCTAssertEqual(state.projectOrder, ["/a"])
+        XCTAssertEqual(state.terminalProjects, [:])
+    }
+
     func testInUseProjectsAddsTheFiledPathsStandardized() {
         XCTAssertEqual(
             SidebarState.inUseProjects(sessionPaths: ["/p/linkc"], filed: ["t1": "/p/june/./"]),

@@ -20,12 +20,15 @@ struct Sidebar: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 1) {
                     NavSection(model: model, isSplit: isSplit)
-                    // Ages and states tick once a second while the sidebar is on screen.
+                    // Ages and states tick once a second while the sidebar is on screen. Built once
+                    // here — projects and unfiled terminals share the same underlying model — and
+                    // handed down, rather than each section rebuilding it.
                     TimelineView(.periodic(from: .now, by: 1.0)) { context in
-                        ProjectsSection(model: model, now: context.date) { inspectingWorkspace = $0 }
-                    }
-                    if !model.shellRows.isEmpty {
-                        TerminalsSidebarSection(model: model)
+                        let sections = model.sidebarSections(now: context.date)
+                        ProjectsSection(projects: sections.projects, model: model) { inspectingWorkspace = $0 }
+                        if !sections.unfiled.isEmpty {
+                            TerminalsSidebarSection(unfiled: sections.unfiled, model: model)
+                        }
                     }
                     if let running = model.serverSummary {
                         CollapsibleSection(title: "Servers", trailing: "\(running) running",
@@ -256,12 +259,11 @@ private struct NavSection: View {
 // MARK: - Projects
 
 private struct ProjectsSection: View {
+    let projects: [SidebarProject]
     let model: AppModel
-    let now: Date
     let onInspect: (String) -> Void
 
     var body: some View {
-        let projects = model.sidebarProjects(now: now)
         VStack(alignment: .leading, spacing: 1) {
             if !projects.isEmpty {
                 SectionLabel(title: "Projects")
@@ -425,22 +427,22 @@ private struct SessionRow: View {
     return id
 }
 
+/// Only terminals that belong to no project — the section hides once every terminal is filed
+/// under one; "Move out of" on a filed row (below) is then the way back to unfiled.
 private struct TerminalsSidebarSection: View {
+    let unfiled: [ShellRow]
     let model: AppModel
 
     var body: some View {
-        let unfiled = model.unfiledTerminals()
-        if !unfiled.isEmpty {
-            VStack(alignment: .leading, spacing: 1) {
-                SectionLabel(title: "Terminals")
-                    .dropDestination(for: String.self) { items, _ in
-                        guard let id = droppedTerminalID(items, model: model) else { return false }
-                        model.sidebarState.unfile(terminal: id)
-                        return true
-                    }
-                ForEach(unfiled) { row in
-                    ShellSidebarRow(row: row, isSelected: row.id == model.selectedId, model: model)
+        VStack(alignment: .leading, spacing: 1) {
+            SectionLabel(title: "Terminals")
+                .dropDestination(for: String.self) { items, _ in
+                    guard let id = droppedTerminalID(items, model: model) else { return false }
+                    model.sidebarState.unfile(terminal: id)
+                    return true
                 }
+            ForEach(unfiled) { row in
+                ShellSidebarRow(row: row, isSelected: row.id == model.selectedId, model: model)
             }
         }
     }
@@ -494,7 +496,11 @@ private struct ShellSidebarRow: View {
         }
         .draggable("linkc-terminal:\(row.id)")
         .contextMenu {
-            if let filed = model.sidebarState.terminalProjects[row.id] {
+            // Unfiling only does something when the folder rule wouldn't refile it right back:
+            // otherwise the terminal stays under `filed` by folder, and the menu item would
+            // visibly do nothing.
+            if let filed = model.sidebarState.terminalProjects[row.id],
+               filed != (row.cwd as NSString).standardizingPath {
                 let name = URL(fileURLWithPath: filed).lastPathComponent
                 Button("Move out of \(name)") {
                     model.sidebarState.unfile(terminal: row.id)

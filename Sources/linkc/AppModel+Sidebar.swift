@@ -51,7 +51,9 @@ extension AppModel {
         return nil
     }
 
-    func sidebarProjects(now: Date = Date()) -> [SidebarProject] {
+    /// The sidebar's Projects rows and the terminals that belong to none of them — built once from
+    /// the same inputs, so a caller needing both (the sidebar's body) never builds the model twice.
+    func sidebarSections(now: Date = Date()) -> (projects: [SidebarProject], unfiled: [ShellRow]) {
         let titles = sessionTitles
         let inputs = sessions.map { session in
             SidebarModel.Input(
@@ -69,28 +71,15 @@ extension AppModel {
             order: sidebarState.projectOrder,
             expandOverrides: sidebarState.expandOverrides,
             selectedId: selectedId
-        ).projects
+        )
     }
 
-    func unfiledTerminals() -> [ShellRow] {
-        let titles = sessionTitles
-        let inputs = sessions.map { session in
-            SidebarModel.Input(
-                session: session,
-                title: titles[session.id] ?? session.agentKind.shortName,
-                status: rowStatus(session, now: Date()),
-                hasRunningSubagents: false,
-                activity: nil
-            )
-        }
-        return SidebarModel.projects(
-            inputs: inputs,
-            shells: shellRows,
-            filed: sidebarState.terminalProjects,
-            order: sidebarState.projectOrder,
-            expandOverrides: sidebarState.expandOverrides,
-            selectedId: selectedId
-        ).unfiled
+    /// Every known project's folder, standardized: live sessions', plus any project that holds a
+    /// live filed terminal — exactly the paths `sidebarSections` would show as project rows.
+    /// Lets a terminal's project be resolved (`TerminalFiling.project`) without building the model.
+    var knownProjectPaths: Set<String> {
+        Set(sessions.map { ProjectTabs.standardized($0.cwd) })
+            .union(shellRows.compactMap { sidebarState.terminalProjects[$0.id] }.map(ProjectTabs.standardized))
     }
 
     /// Sessions that want the user — drives the menu-bar tint.
@@ -118,10 +107,17 @@ extension AppModel {
         markOnScreenSeen(at: now)
         let filedPaths = Set(sidebarState.terminalProjects.values.map { ($0 as NSString).standardizingPath }).sorted()
         sidebarState.noteProjects(ProjectGroup.group(sessions: sessions).map(\.workspacePath) + filedPaths)
-        let selectedProject = sessions.first { $0.id == selectedId }
-            .map { ($0.cwd as NSString).standardizingPath }
+        let selectedProject: String?
+        if let session = sessions.first(where: { $0.id == selectedId }) {
+            selectedProject = ProjectTabs.standardized(session.cwd)
+        } else if let shell = shellRows.first(where: { $0.id == selectedId }) {
+            selectedProject = TerminalFiling.project(
+                forTerminal: shell.id, cwd: shell.cwd, filed: sidebarState.terminalProjects, projects: knownProjectPaths)
+        } else {
+            selectedProject = nil
+        }
         sidebarState.noteSelectedProject(selectedProject)
-        let coral = sidebarProjects(now: now).filter { $0.dot == .attention }.map(\.path)
+        let coral = sidebarSections(now: now).projects.filter { $0.dot == .attention }.map(\.path)
         sidebarState.noteCoral(Set(coral))
     }
 

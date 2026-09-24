@@ -65,4 +65,16 @@ final class ProjectTabsTests: XCTestCase {
             titles: [:])
         XCTAssertEqual(tabs.map(\.id), [ProjectTabs.boardID("/p/june"), "s1"])
     }
+
+    func testATerminalFiledElsewhereIsLeftOutOfItsFoldersProjectTabs() {
+        // s1's folder is /p/linkc, but it's filed under /p/june: it belongs to june, so linkc's
+        // strip must not show it.
+        let tabs = ProjectTabs.tabs(
+            project: "/p/linkc",
+            sessions: [],
+            shells: [shell("s1", "/p/linkc")],
+            filed: ["s1": "/p/june"],
+            titles: [:])
+        XCTAssertEqual(tabs.map(\.id), [ProjectTabs.boardID("/p/linkc")])
+    }
 }

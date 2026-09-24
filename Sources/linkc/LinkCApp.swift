@@ -626,8 +626,9 @@ final class AppModel {
         guard let id = selectedId else { return nil }
         if let session = sessions.first(where: { $0.id == id }) { return ProjectTabs.standardized(session.cwd) }
         if let shell = shellRows.first(where: { $0.id == id }) {
-            let projects = Set(sidebarProjects(now: Date()).map(\.path))
-            return TerminalFiling.project(forTerminal: shell.id, cwd: shell.cwd, filed: sidebarState.terminalProjects, projects: projects) ?? ProjectTabs.standardized(shell.cwd)
+            return TerminalFiling.project(
+                forTerminal: shell.id, cwd: shell.cwd, filed: sidebarState.terminalProjects, projects: knownProjectPaths
+            ) ?? ProjectTabs.standardized(shell.cwd)
         }
         return nil
     }
