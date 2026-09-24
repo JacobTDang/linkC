@@ -313,6 +313,66 @@ final class BoardModelSpaceTests: XCTestCase {
         XCTAssertEqual(laid.components.first?.place, BoardMap.notPlaced)
     }
 
+    /// Regression: a board made before `componentSize` grew to 176 pt wide has frames still 176
+    /// wide, with an interior of only 160 — too narrow for a component box of the current size.
+    /// `laidOut` must widen such a frame to hold its members rather than demote them to "Not
+    /// placed". This is the literal shape of Jacob's own file: 5 frames, each still 176 wide,
+    /// placed side by side as the old engine left them, holding 23 components at their old-size
+    /// positions.
+    func testOldNarrowFramesWidenRatherThanEvictTheirComponents() throws {
+        var map = BoardMap.empty
+        map.frames = [
+            BoardFrame(label: "Agents", rect: BoardRect(x: 424, y: 0, w: 176, h: 352)),
+            BoardFrame(label: "Cloud", rect: BoardRect(x: 1096, y: 0, w: 176, h: 160)),
+            BoardFrame(label: "linkC app", rect: BoardRect(x: 200, y: 0, w: 176, h: 416)),
+            BoardFrame(label: "Project folder", rect: BoardRect(x: 648, y: 0, w: 176, h: 224)),
+            BoardFrame(label: "This Mac", rect: BoardRect(x: 872, y: 0, w: 176, h: 288)),
+        ]
+        func c(_ name: String, _ x: Int, _ y: Int, _ place: String) -> BoardComponent {
+            BoardComponent(name: name, kind: .service, place: place, at: BoardPoint(x: x, y: y))
+        }
+        map.components = [
+            c("antigravity", 432, 176, "Agents"), c("claude", 432, 8, "Agents"), c("codex", 432, 64, "Agents"),
+            c("cursor", 432, 120, "Agents"), c("linkc-mcp", 432, 232, "Agents"),
+            c("oracle-cloud", 1104, 8, "Cloud"), c("supabase", 1104, 64, "Cloud"),
+            c("board", 208, 232, "linkC app"), c("coordinator", 208, 64, "linkC app"), c("hook-server", 208, 176, "linkC app"),
+            c("panel", 208, 8, "linkC app"), c("terminals", 208, 120, "linkC app"), c("tool-servers", 208, 344, "linkC app"),
+            c("usage", 208, 288, "linkC app"),
+            c("Database", -208, 136, BoardMap.notPlaced), c("new-database", 0, -24, BoardMap.notPlaced),
+            c("blackboard", 656, 64, "Project folder"), c("inbox", 656, 8, "Project folder"), c("system-map", 656, 120, "Project folder"),
+            c("app-support", 880, 8, "This Mac"), c("docker", 880, 176, "This Mac"), c("notifications", 880, 120, "This Mac"),
+            c("transcripts", 880, 64, "This Mac"),
+        ]
+        XCTAssertEqual(map.components.count, 23)
+
+        let laid = BoardModel.laidOut(map)
+
+        for before in map.components {
+            let after = try XCTUnwrap(laid.components.first { $0.name == before.name })
+            XCTAssertEqual(after.place, before.place, "\(before.name) must keep its place")
+        }
+        for component in laid.components where component.place != BoardMap.notPlaced {
+            let rect = BoardGeometry.rect(ofComponentAt: try XCTUnwrap(component.at, component.name))
+            let frame = try XCTUnwrap(laid.frames.first { $0.label == component.place }?.rect, component.name)
+            XCTAssertTrue(BoardGeometry.interior(of: frame).contains(rect), component.name)
+        }
+        let boxes = laid.components.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
+        for i in boxes.indices { for j in boxes.indices where j > i {
+            XCTAssertFalse(boxes[i].intersects(boxes[j]), "\(map.components[i].name) overlaps \(map.components[j].name)")
+        } }
+        let frames = laid.frames.compactMap(\.rect)
+        for i in frames.indices { for j in frames.indices where j > i {
+            XCTAssertFalse(frames[i].intersects(frames[j]))
+        } }
+
+        // The next agent edit (or Tidy up) must not write the evicted map either.
+        let applied = try BoardEdit.apply([.system("still here")], to: map).map
+        for before in map.components {
+            let after = try XCTUnwrap(applied.components.first { $0.name == before.name })
+            XCTAssertEqual(after.place, before.place, "\(before.name) must keep its place through BoardEdit.apply")
+        }
+    }
+
     func testLoadingLaysOutWithoutWriting() throws {
         let store = BoardMapStore(workspacePath: workspace.path)
         let bytes = Data(#"{"version": 2, "places": {"Not placed": {"a": {}, "b": {}}}}"#.utf8)

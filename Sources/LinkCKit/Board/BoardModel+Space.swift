@@ -178,6 +178,18 @@ extension BoardModel {
                 seed, otherFrames: frameRects(map, excluding: [map.frames[index].label]), foreignElements: elementRects(map, excluding: []))
         }
 
+        // Frames made before `componentSize` grew can be narrower or shorter than one component
+        // box — 176 wide with an interior of 160, say. Before any member is placed, every frame
+        // is widened and heightened to fit at least one box, growing to the right and down so its
+        // origin never moves. This never demotes a component for want of room: the overlap pass
+        // right after this carries contents when the widening makes two frames collide.
+        let minFrameSize = BoardPoint(x: size.x + 2 * BoardGeometry.frameInset, y: size.y + 2 * BoardGeometry.frameInset)
+        for index in map.frames.indices {
+            guard let rect = map.frames[index].rect else { continue }
+            guard rect.w < minFrameSize.x || rect.h < minFrameSize.y else { continue }
+            map.frames[index].rect = BoardRect(x: rect.x, y: rect.y, w: max(rect.w, minFrameSize.x), h: max(rect.h, minFrameSize.y))
+        }
+
         // Frames that already had a rect in the file can still overlap one another — after a git
         // merge, say. Each is nudged to the nearest free spot, in label order, carrying its own
         // components, notes and texts along with it, exactly as a frame move does. Whether a
