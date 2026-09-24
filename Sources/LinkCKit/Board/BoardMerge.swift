@@ -170,6 +170,7 @@ public enum BoardMerge {
         merged.does = pick(base.does, mine.does, theirs.does)
         merged.reachedBy = pick(base.reachedBy, mine.reachedBy, theirs.reachedBy)
         merged.runs = pick(base.runs, mine.runs, theirs.runs)
+        merged.tech = pick(base.tech, mine.tech, theirs.tech)
         merged.planned = pick(base.planned, mine.planned, theirs.planned)
         merged.uses = mergedUses(
             base.uses, mine.uses, theirs.uses,

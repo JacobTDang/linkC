@@ -154,7 +154,7 @@ final class BoardEditTests: XCTestCase {
     /// the check is against what this verb takes, not against the whole global set of field keys.
     func testUnknownFieldRefusalCatchesAFieldAnotherVerbTakes() throws {
         XCTAssertEqual(refusal([["add": "redis", "to": "api"]], on: try june())?.description,
-                       #"step 1: unknown field "to" — add takes: kind, in, does, reached_by, runs, planned"#)
+                       #"step 1: unknown field "to" — add takes: kind, tech, in, does, reached_by, runs, planned"#)
         XCTAssertEqual(refusal([["connect": "api", "to": "postgres", "rename": "db"]], on: try june())?.description,
                        #"step 1: unknown field "rename" — connect takes: to, label"#)
         XCTAssertEqual(refusal([["remove": "postgres", "in": "Local docker"]], on: try june())?.description,
@@ -163,9 +163,9 @@ final class BoardEditTests: XCTestCase {
 
     func testUnknownFieldRefusalListsTheVerbsAllowedFields() throws {
         XCTAssertEqual(refusal([["add": "x", "name": "y"]], on: .empty)?.description,
-                       #"step 1: unknown field "name" — add takes: kind, in, does, reached_by, runs, planned"#)
+                       #"step 1: unknown field "name" — add takes: kind, tech, in, does, reached_by, runs, planned"#)
         XCTAssertEqual(refusal([["update": "x", "name": "y"]], on: try june())?.description,
-                       #"step 1: unknown field "name" — update takes: kind, in, does, reached_by, runs, planned, rename"#)
+                       #"step 1: unknown field "name" — update takes: kind, tech, in, does, reached_by, runs, planned, rename"#)
         XCTAssertEqual(refusal([["connect": "api", "to": "postgres", "foo": "bar"]], on: try june())?.description,
                        #"step 1: unknown field "foo" — connect takes: to, label"#)
         XCTAssertEqual(refusal([["place": "x", "foo": "bar"]], on: .empty)?.description,
@@ -327,5 +327,16 @@ final class BoardEditTests: XCTestCase {
     func testSystemSummaryLine() throws {
         let result = try apply([["system": "June — audio journaling"]], to: june())
         XCTAssertEqual(result.lines, ["set the summary"])
+    }
+
+    // MARK: - tech
+
+    func testTechOnAddAndUpdateAndClearing() throws {
+        var result = try apply([["add": "db", "kind": "database", "tech": "postgres", "planned": true]], to: .empty)
+        XCTAssertEqual(result.map.components.first?.tech, "postgres")
+        XCTAssertEqual(result.lines, ["added db (planned, postgres)"])
+        result = try apply([["update": "db", "tech": ""]], to: result.map)
+        XCTAssertNil(result.map.components.first?.tech)
+        XCTAssertNotNil(refusal([["connect": "db", "to": "x", "tech": "y"]], on: result.map), "connect takes no tech")
     }
 }

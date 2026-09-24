@@ -77,6 +77,8 @@ public struct BoardComponent: Equatable, Sendable, Identifiable {
     public var reachedBy: String?
     /// Where it runs, free text; naming a compose service in brackets is what matches it.
     public var runs: String?
+    /// The technology it is, e.g. "postgres", "redis", "docker" — drives which logo is drawn.
+    public var tech: String?
     /// True while it does not exist yet.
     public var planned: Bool
     /// What it uses: each component's name, mapped to the arrow's label (`""` when unlabelled).
@@ -92,7 +94,7 @@ public struct BoardComponent: Equatable, Sendable, Identifiable {
 
     public init(
         name: String, kind: ComponentKind, does: String? = nil, reachedBy: String? = nil, runs: String? = nil,
-        planned: Bool = false, uses: [String: String] = [:], legacyUsedBy: [String] = [],
+        tech: String? = nil, planned: Bool = false, uses: [String: String] = [:], legacyUsedBy: [String] = [],
         place: String = BoardMap.notPlaced, at: BoardPoint? = nil
     ) {
         self.name = name
@@ -100,6 +102,7 @@ public struct BoardComponent: Equatable, Sendable, Identifiable {
         self.does = does
         self.reachedBy = reachedBy
         self.runs = runs
+        self.tech = tech
         self.planned = planned
         self.uses = uses
         self.legacyUsedBy = legacyUsedBy
@@ -183,13 +186,13 @@ public struct BoardMap: Equatable, Sendable {
     public static let empty = BoardMap()
 
     private static let rootKeys: Set<String> = ["version", "system", "places", "notes", "layout"]
-    private static let componentKeys: Set<String> = ["kind", "does", "reached_by", "runs", "status", "uses", "used_by"]
+    private static let componentKeys: Set<String> = ["kind", "does", "reached_by", "runs", "tech", "status", "uses", "used_by"]
     private static let layoutKeys: Set<String> = ["components", "frames", "notes", "texts"]
     private static let textKeys: Set<String> = ["text", "style", "at", "w"]
     /// Every version-1 component key linkC now knows, version-2 fields included: a version-1
     /// component that also carries `does`, `status` or `uses` must read them typed, not verbatim.
     private static let versionOneComponentKeys: Set<String> = [
-        "name", "kind", "does", "reached_by", "runs", "status", "uses", "used_by", "intended", "at",
+        "name", "kind", "does", "reached_by", "runs", "tech", "status", "uses", "used_by", "intended", "at",
     ]
     /// Every version-1 root key linkC now knows, version-2 fields included: `system` and `notes`
     /// on a version-1 file read typed, not verbatim.
@@ -263,6 +266,7 @@ public struct BoardMap: Equatable, Sendable {
                     does: try string(raw, "does", context: context),
                     reachedBy: try string(raw, "reached_by", context: context),
                     runs: try string(raw, "runs", context: context),
+                    tech: try string(raw, "tech", context: context),
                     planned: try plannedStatus(raw, context: context),
                     uses: try stringMap(raw, "uses", context: context) ?? [:],
                     legacyUsedBy: try stringArray(raw, "used_by", context: context) ?? [],
@@ -324,6 +328,7 @@ public struct BoardMap: Equatable, Sendable {
                 does: try string(raw, "does", context: context),
                 reachedBy: try string(raw, "reached_by", context: context),
                 runs: try string(raw, "runs", context: context),
+                tech: try string(raw, "tech", context: context),
                 planned: intended || statusPlanned,
                 uses: try stringMap(raw, "uses", context: context) ?? [:],
                 at: at)
@@ -390,6 +395,7 @@ public struct BoardMap: Equatable, Sendable {
             Self.set(&object, "does", component.does)
             Self.set(&object, "reached_by", component.reachedBy)
             Self.set(&object, "runs", component.runs)
+            Self.set(&object, "tech", component.tech)
             if component.planned { object["status"] = "planned" } else { object.removeValue(forKey: "status") }
             if component.uses.isEmpty { object.removeValue(forKey: "uses") } else { object["uses"] = component.uses }
             if component.legacyUsedBy.isEmpty { object.removeValue(forKey: "used_by") } else { object["used_by"] = component.legacyUsedBy }

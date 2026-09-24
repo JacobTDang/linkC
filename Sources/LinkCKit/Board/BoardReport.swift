@@ -33,6 +33,7 @@ public enum BoardReport {
 
     private static func line(for component: BoardComponent) -> String {
         var head = "- **\(sanitized(component.name))** (\(sanitized(component.kind.raw))"
+        if let tech = nonEmpty(component.tech) { head += " · \(sanitized(tech))" }
         if component.planned { head += ", PLANNED — does not exist yet" }
         head += ")"
 

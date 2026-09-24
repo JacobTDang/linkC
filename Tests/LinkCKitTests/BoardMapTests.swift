@@ -330,6 +330,23 @@ final class BoardMapTests: XCTestCase {
         XCTAssertEqual(map.components.first?.kind, .service)
     }
 
+    // MARK: - tech
+
+    func testTechRoundTripsAndIsWrittenOnlyWhenSet() throws {
+        let source = Data(#"{"version":2,"places":{"Not placed":{"db":{"kind":"database","tech":"postgres"},"api":{"kind":"service"}}}}"#.utf8)
+        let map = try BoardMap.decode(source)
+        XCTAssertEqual(map.components.first { $0.name == "db" }?.tech, "postgres")
+        XCTAssertNil(map.components.first { $0.name == "api" }?.tech)
+        let text = String(decoding: try map.encoded(), as: UTF8.self)
+        XCTAssertTrue(text.contains(#""tech": "postgres""#))
+        XCTAssertEqual(text.components(separatedBy: "\"tech\"").count - 1, 1, "an unset tech is not written")
+        XCTAssertEqual(try BoardMap.decode(try map.encoded()), map)
+    }
+
+    func testATechOfTheWrongTypeIsRefused() {
+        XCTAssertThrowsError(try BoardMap.decode(Data(#"{"version":2,"places":{"Not placed":{"db":{"kind":"database","tech":5}}}}"#.utf8)))
+    }
+
     // MARK: - Version-1 upgrade keeps every version-2 field
 
     func testAVersionOneComponentsDoesSurvives() throws {

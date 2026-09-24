@@ -238,6 +238,12 @@ final class BoardMergeTests: XCTestCase {
                        "an arrow to something that was never a component must survive untouched")
     }
 
+    func testTechMergesLikeAnyField() {
+        let base = map([BoardComponent(name: "db", kind: .database)])
+        var mine = base; mine.components[0].tech = "postgres"
+        XCTAssertEqual(BoardMerge.merge(base: base, mine: mine, theirs: base).components.first?.tech, "postgres")
+    }
+
     func testBothSidesDeleteSameComponentIsGone() {
         let base = map([c("api"), c("db")])
         let mine = map([c("api")])

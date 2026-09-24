@@ -8,13 +8,18 @@ public struct BoardComponentFields: Equatable, Sendable {
     public var does: String?        // "" clears
     public var reachedBy: String?   // "" clears
     public var runs: String?        // "" clears
+    public var tech: String?        // "" clears
     public var planned: Bool?
 
-    public init(kind: ComponentKind? = nil, does: String? = nil, reachedBy: String? = nil, runs: String? = nil, planned: Bool? = nil) {
+    public init(
+        kind: ComponentKind? = nil, does: String? = nil, reachedBy: String? = nil, runs: String? = nil,
+        tech: String? = nil, planned: Bool? = nil
+    ) {
         self.kind = kind
         self.does = does
         self.reachedBy = reachedBy
         self.runs = runs
+        self.tech = tech
         self.planned = planned
     }
 }
@@ -56,8 +61,8 @@ public enum BoardEdit {
     /// The fields each verb accepts besides its own name-bearing key, in the order the tool's
     /// schema documents them — what an unknown-field refusal lists as "takes:".
     private static let allowedFields: [String: [String]] = [
-        "add": ["kind", "in", "does", "reached_by", "runs", "planned"],
-        "update": ["kind", "in", "does", "reached_by", "runs", "planned", "rename"],
+        "add": ["kind", "tech", "in", "does", "reached_by", "runs", "planned"],
+        "update": ["kind", "tech", "in", "does", "reached_by", "runs", "planned", "rename"],
         "remove": [],
         "connect": ["to", "label"],
         "disconnect": ["to"],
@@ -117,6 +122,7 @@ public enum BoardEdit {
         let does = try stringField("does")
         let reachedBy = try stringField("reached_by")
         let runs = try stringField("runs")
+        let tech = try stringField("tech")
         let inPlace = try stringField("in")
         let rename = try stringField("rename")
         let to = try stringField("to")
@@ -125,10 +131,10 @@ public enum BoardEdit {
 
         switch verb {
         case "add":
-            let fields = BoardComponentFields(kind: kind.map(ComponentKind.init), does: does, reachedBy: reachedBy, runs: runs, planned: planned)
+            let fields = BoardComponentFields(kind: kind.map(ComponentKind.init), does: does, reachedBy: reachedBy, runs: runs, tech: tech, planned: planned)
             return .add(verbValue, fields, place: inPlace)
         case "update":
-            let fields = BoardComponentFields(kind: kind.map(ComponentKind.init), does: does, reachedBy: reachedBy, runs: runs, planned: planned)
+            let fields = BoardComponentFields(kind: kind.map(ComponentKind.init), does: does, reachedBy: reachedBy, runs: runs, tech: tech, planned: planned)
             return .update(verbValue, fields, place: inPlace, rename: rename)
         case "remove":
             return .remove(verbValue)
@@ -208,6 +214,7 @@ public enum BoardEdit {
             does: fields.does,
             reachedBy: fields.reachedBy,
             runs: fields.runs,
+            tech: fields.tech,
             planned: fields.planned ?? false)
         try placeComponent(component, at: place, number: number, map: &map)
         let added = map.components.last!
@@ -226,6 +233,7 @@ public enum BoardEdit {
         if let does = fields.does { component.does = does.isEmpty ? nil : does }
         if let reachedBy = fields.reachedBy { component.reachedBy = reachedBy.isEmpty ? nil : reachedBy }
         if let runs = fields.runs { component.runs = runs.isEmpty ? nil : runs }
+        if let tech = fields.tech { component.tech = tech.isEmpty ? nil : tech }
         if let planned = fields.planned { component.planned = planned }
 
         var newName: String?
@@ -277,7 +285,8 @@ public enum BoardEdit {
     }
 
     private static func bracket(for component: BoardComponent) -> String {
-        (component.planned ? "planned, " : "") + component.kind.raw
+        let tech = component.tech?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (component.planned ? "planned, " : "") + (tech.isEmpty ? component.kind.raw : tech)
     }
 
     // MARK: - remove

@@ -79,4 +79,10 @@ final class BoardReportTests: XCTestCase {
     func testAnEmptyMapReportsNothing() {
         XCTAssertEqual(BoardReport.markdown(for: .empty), "")
     }
+
+    func testTheReportShowsTech() throws {
+        var m = BoardMap()
+        m.components = [BoardComponent(name: "db", kind: .database, tech: "postgres")]
+        XCTAssertTrue(BoardReport.markdown(for: m).contains("database · postgres"))
+    }
 }
