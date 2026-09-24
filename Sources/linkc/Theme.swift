@@ -94,6 +94,9 @@ enum Theme {
     static let boardGreen = Color(red: 0.486, green: 0.769, blue: 0.627)
     /// Every hardware kind's outline (~#8A9BB8).
     static let boardHardwareStroke = Color(red: 0.541, green: 0.608, blue: 0.722)
+    /// A conditional or control arrow's dashed line, arrowhead and pill text — the same gold as
+    /// the router and control unit outlines above.
+    static let boardConditional = boardGold
 }
 
 /// The shared card treatment: one flat translucent fill, nothing else.

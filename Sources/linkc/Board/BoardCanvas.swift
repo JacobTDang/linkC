@@ -406,13 +406,11 @@ struct BoardCanvas: View {
 
                 if let editingArrow, let points = board.routes[editingArrow]?.points, let mid = labelPoint(
                     points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }) {
-                    LineEditor(
-                        text: board.map.components.first { $0.name == editingArrow.from }?.uses[editingArrow.to]?.label ?? "",
-                        font: .system(size: 10), width: 160
-                    ) { label in
+                    let arrow = board.map.components.first { $0.name == editingArrow.from }?.uses[editingArrow.to] ?? BoardArrow()
+                    ArrowEditor(label: arrow.label, style: arrow.style, bits: arrow.bits) { label, style, bits in
                         board.setArrowLabel(editingArrow, to: label)
+                        board.setArrowStyle(editingArrow, to: style, bits: bits)
                         self.editingArrow = nil
-                        return true
                     }
                     .position(mid)
                 }
@@ -473,6 +471,10 @@ struct BoardCanvas: View {
     /// its label and brings it to full opacity for the hover, focus or not. A bundle's pill draws
     /// once for the whole bundle, never once per member. Every pill is hidden while an arrow it
     /// touches is being dragged; the drag's own straight preview line still draws.
+    ///
+    /// A conditional or control arrow draws dashed 5/4 in gold, with a gold arrowhead and gold
+    /// pill text. A bus draws 2.6 pt thick, with a slash mark and its bit width near the source,
+    /// even with no label of its own. Focus and hover still override every style with the accent.
     private func drawArrows(in context: inout GraphicsContext) {
         let focus = focusedComponent
         var drawnBundlePills: Set<String> = []
@@ -488,12 +490,18 @@ struct BoardCanvas: View {
                 let highlighted = touchesFocus || isHovered || board.selection.contains(.arrow(key))
                 let dimmed = focus != nil && !touchesFocus && !isHovered
                 let planned = board.map.components.first { $0.name == target }?.planned == true
-                let colour = (highlighted ? Theme.accent : Theme.boardArrow).opacity(dimmed ? 0.12 : 1)
+                let colour = arrowColor(style: arrow.style, highlighted: highlighted).opacity(dimmed ? 0.12 : 1)
                 let path = draw.isPreview ? straightPath(screen) : roundedArrowPath(screen)
+                let lineWidth: CGFloat = arrow.style == .bus ? 2.6 : (highlighted ? 1.8 : 1.3)
+                let dashed = arrow.style == .conditional || arrow.style == .control
                 context.stroke(path, with: .color(colour),
-                               style: StrokeStyle(lineWidth: highlighted ? 1.8 : 1.3, lineCap: .round, lineJoin: .round,
-                                                  dash: (planned || draw.isPreview) ? [4, 4] : []))
+                               style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round,
+                                                  dash: (planned || draw.isPreview) ? [4, 4] : (dashed ? [5, 4] : [])))
                 if !draw.isPreview, let head = arrowHead(screen) { context.fill(head, with: .color(colour)) }
+                if arrow.style == .bus, !draw.isPreview, !isMoving(key.from), !isMoving(key.to),
+                   let mark = busMarkPoint(canvasPoints) {
+                    drawBusMark(at: mark, bits: arrow.bits, colour: colour, in: &context)
+                }
                 guard !label.isEmpty, !isMoving(key.from), !isMoving(key.to) else { continue }
                 let bundleId = board.routes[key]?.bundle
                 let bundleAlreadyDrawn = bundleId.map { drawnBundlePills.contains($0) } ?? false
@@ -502,14 +510,14 @@ struct BoardCanvas: View {
                     guard !bundleAlreadyDrawn else { continue }
                     if let center = board.labelRects[key]?.center ?? fallbackLabelCenter(draw.points) {
                         if let bundleId { drawnBundlePills.insert(bundleId) }
-                        drawPill(at: center, label: label, highlighted: highlighted, in: &context)
+                        drawPill(at: center, label: label, style: arrow.style, highlighted: highlighted, in: &context)
                     }
                 } else if let rect = board.labelRects[key] {
                     guard !bundleAlreadyDrawn else { continue }
                     if let bundleId { drawnBundlePills.insert(bundleId) }
-                    drawPill(at: rect.center, label: label, highlighted: highlighted, in: &context)
+                    drawPill(at: rect.center, label: label, style: arrow.style, highlighted: highlighted, in: &context)
                 } else if isHovered, let center = fallbackLabelCenter(draw.points) {
-                    drawPill(at: center, label: label, highlighted: highlighted, in: &context)
+                    drawPill(at: center, label: label, style: arrow.style, highlighted: highlighted, in: &context)
                 }
             }
         }
@@ -617,6 +625,50 @@ struct BoardCanvas: View {
         return path
     }
 
+    /// An arrow's line, arrowhead and bus mark colour: the accent when highlighted — focus and
+    /// hover always win — else gold for a conditional or control arrow, the hardware kinds' own
+    /// neutral blue-grey for a bus (the mockup reuses that exact colour), or the plain arrow
+    /// colour for everything else.
+    private func arrowColor(style: BoardArrowStyle, highlighted: Bool) -> Color {
+        guard !highlighted else { return Theme.accent }
+        switch style {
+        case .conditional, .control: return Theme.boardConditional
+        case .bus: return Theme.boardHardwareStroke
+        case .plain: return Theme.boardArrow
+        }
+    }
+
+    /// Where a bus's slash mark sits: about 30 canvas points along the arrow's first segment,
+    /// which already starts at the kind's drawn outline rather than the box behind it — never
+    /// more than half that segment's own length, so a short first leg into a box still lands the
+    /// mark on the line instead of past its far end.
+    private func busMarkPoint(_ points: [BoardPoint]) -> BoardPoint? {
+        guard points.count >= 2 else { return nil }
+        let a = points[0], b = points[1]
+        let dx = Double(b.x - a.x), dy = Double(b.y - a.y)
+        let length = (dx * dx + dy * dy).squareRoot()
+        guard length > 0 else { return nil }
+        let distance = min(30.0, length / 2)
+        let t = distance / length
+        return BoardPoint(x: a.x + Int((dx * t).rounded()), y: a.y + Int((dy * t).rounded()))
+    }
+
+    /// A bus's slash mark: a 14 pt line at 45°, with its bit width in 9 pt bold beside it — both
+    /// scaled by the viewport's zoom, like a pill's text. Drawn even with no label; draws no text
+    /// when the arrow never got a bit width.
+    private func drawBusMark(at center: BoardPoint, bits: Int?, colour: Color, in context: inout GraphicsContext) {
+        let scale = viewport.zoom
+        let screenCenter = viewport.toScreen(CGPoint(x: Double(center.x), y: Double(center.y)))
+        let half = 7 * scale * 0.7071
+        var mark = Path()
+        mark.move(to: CGPoint(x: screenCenter.x - half, y: screenCenter.y + half))
+        mark.addLine(to: CGPoint(x: screenCenter.x + half, y: screenCenter.y - half))
+        context.stroke(mark, with: .color(colour), lineWidth: 1.4 * scale)
+        guard let bits else { return }
+        let text = context.resolve(Text("\(bits)").font(.system(size: 9 * scale, weight: .bold)).foregroundColor(colour))
+        context.draw(text, at: CGPoint(x: screenCenter.x + 6 * scale, y: screenCenter.y - 8 * scale), anchor: .leading)
+    }
+
     /// The zoom below which an unhighlighted pill draws nothing at rest — it would be unreadably
     /// small, and at that scale pills tend to overlap boxes and each other.
     private static let pillHiddenBelowZoom = 0.45
@@ -627,12 +679,13 @@ struct BoardCanvas: View {
     /// rect scaled the same way. `highlighted` (focused, hovered or selected) turns the text
     /// `Theme.accent`, floors the scale at 1 so it stays readable however far zoomed out, and
     /// skips the below-`pillHiddenBelowZoom` hide — the one case a pill may draw larger than its
-    /// placed rect × zoom.
-    private func drawPill(at center: BoardPoint, label: String, highlighted: Bool, in context: inout GraphicsContext) {
+    /// placed rect × zoom. A conditional or control arrow's pill text is gold instead, unless
+    /// highlighted.
+    private func drawPill(at center: BoardPoint, label: String, style: BoardArrowStyle, highlighted: Bool, in context: inout GraphicsContext) {
         guard highlighted || viewport.zoom >= Self.pillHiddenBelowZoom else { return }
         let scale = highlighted ? max(viewport.zoom, 1) : viewport.zoom
         let screenCenter = viewport.toScreen(CGPoint(x: Double(center.x), y: Double(center.y)))
-        let textColor = highlighted ? Theme.accent : Theme.textSecondary
+        let textColor = highlighted ? Theme.accent : (style == .conditional || style == .control ? Theme.boardConditional : Theme.textSecondary)
         let text = context.resolve(Text(label).font(.system(size: 10 * scale)).foregroundColor(textColor))
         let measured = text.measure(in: CGSize(width: 320 * scale, height: 30 * scale))
         let box = CGRect(x: screenCenter.x - measured.width / 2 - 7 * scale, y: screenCenter.y - 9 * scale,

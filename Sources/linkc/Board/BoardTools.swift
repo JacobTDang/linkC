@@ -253,6 +253,30 @@ struct NoteEditor: View {
     }
 }
 
+/// The board's small inline text field look: a `boardBox` fill and a coloured 1 pt border —
+/// shared by `LineEditor` and `ArrowEditor`'s label and bits fields. Leaves the font to the
+/// caller, since callers want different sizes and weights.
+private struct BoardMiniField: ViewModifier {
+    let width: CGFloat
+    let borderColor: Color
+
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.plain)
+            .foregroundStyle(Theme.textPrimary)
+            .padding(.horizontal, 4)
+            .frame(width: width)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Theme.boardBox))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(borderColor, lineWidth: 1))
+    }
+}
+
+private extension View {
+    func boardMiniField(width: CGFloat, borderColor: Color) -> some View {
+        modifier(BoardMiniField(width: width, borderColor: borderColor))
+    }
+}
+
 /// A single line being edited in place — a text, a frame's label, an arrow's label. Commits on
 /// Return or when focus leaves. `commit` returns false when the board refused the value, which
 /// keeps the editor open with what was typed; `refusal` is shown beneath it when that happens.
@@ -281,13 +305,8 @@ struct LineEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             TextField("", text: $text)
-                .textFieldStyle(.plain)
                 .font(font)
-                .foregroundStyle(Theme.textPrimary)
-                .padding(.horizontal, 4)
-                .frame(width: width)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Theme.boardBox))
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.accent, lineWidth: 1))
+                .boardMiniField(width: width, borderColor: Theme.accent)
                 .focused($focused)
                 .onAppear { focused = true }
                 .onSubmit(finish)
@@ -308,6 +327,95 @@ struct LineEditor: View {
     private func finish() {
         guard !closed else { return }
         if commit(text) { closed = true }
+    }
+}
+
+/// An arrow's label and style, edited together at the route's midpoint: the label as a text
+/// field, plus a compact plain/conditional/control/bus picker and, for bus, a bits field (1…4096,
+/// default 32). Return, in either text field, commits both — `commit` calls `setArrowLabel` and
+/// `setArrowStyle`, each its own undo step and each a no-op when that part never changed. So does
+/// focus leaving both fields (a click on the picker doesn't take focus, so it never triggers
+/// this) — tracked as one group so moving between the label and bits fields themselves never
+/// closes the editor early. Also commits on disappear, for the same reasons `LineEditor` does.
+/// Esc behaves exactly as it does for `LineEditor`, since the label field is the same kind of
+/// field.
+struct ArrowEditor: View {
+    let commit: (_ label: String, _ style: BoardArrowStyle, _ bits: Int?) -> Void
+    private let originalLabel: String
+    private let originalStyle: BoardArrowStyle
+    private let originalBits: String
+    @State private var label: String
+    @State private var style: BoardArrowStyle
+    @State private var bitsText: String
+    @State private var closed = false
+    private enum Field: Hashable { case label, bits }
+    @FocusState private var focusedField: Field?
+
+    static let defaultBits = 32
+
+    init(label: String, style: BoardArrowStyle, bits: Int?, commit: @escaping (String, BoardArrowStyle, Int?) -> Void) {
+        self.commit = commit
+        self.originalLabel = label
+        self.originalStyle = style
+        self.originalBits = String(bits ?? Self.defaultBits)
+        _label = State(wrappedValue: label)
+        _style = State(wrappedValue: style)
+        _bitsText = State(wrappedValue: originalBits)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("", text: $label)
+                .font(.system(size: 10))
+                .boardMiniField(width: 200, borderColor: Theme.accent)
+                .focused($focusedField, equals: .label)
+                .onAppear { focusedField = .label }
+                .onSubmit(finish)
+            Picker("", selection: $style) {
+                Text("Plain").tag(BoardArrowStyle.plain)
+                Text("Conditional").tag(BoardArrowStyle.conditional)
+                Text("Control").tag(BoardArrowStyle.control)
+                Text("Bus").tag(BoardArrowStyle.bus)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .frame(width: 200)
+            if style == .bus {
+                HStack(spacing: 4) {
+                    Text("bits").font(.system(size: 9)).foregroundStyle(Theme.textTertiary)
+                    TextField("", text: $bitsText)
+                        .font(.system(size: 10))
+                        .boardMiniField(width: 44, borderColor: Color.white.opacity(0.15))
+                        .focused($focusedField, equals: .bits)
+                        .onSubmit(finish)
+                }
+            }
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.boardBox.opacity(0.96)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.1), lineWidth: 1))
+        .onChange(of: focusedField) { _, newValue in
+            if newValue == nil { finish() }
+        }
+        .onDisappear {
+            guard !closed, label != originalLabel || style != originalStyle || (style == .bus && bitsText != originalBits) else { return }
+            closed = true
+            commit(label, style, resolvedBits)
+        }
+    }
+
+    /// `bitsText` clamped to 1…4096, defaulting to 32 when it isn't a number — only meaningful
+    /// with `.bus`, nil otherwise.
+    private var resolvedBits: Int? {
+        guard style == .bus else { return nil }
+        return min(max(Int(bitsText) ?? Self.defaultBits, 1), 4096)
+    }
+
+    private func finish() {
+        guard !closed else { return }
+        closed = true
+        commit(label, style, resolvedBits)
     }
 }
 
