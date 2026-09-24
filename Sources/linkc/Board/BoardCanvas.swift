@@ -493,13 +493,17 @@ struct BoardCanvas: View {
                 let path = draw.isPreview ? straightPath(screen) : roundedArrowPath(screen)
                 let lineWidth: CGFloat = arrow.style == .bus ? 2.6 : (highlighted ? 1.8 : 1.3)
                 let dashed = arrow.style == .conditional || arrow.style == .control
+                // A butt cap at the tip, on a bus, so its thick round cap never pokes past the
+                // arrowhead drawn on top of it.
                 context.stroke(path, with: .color(colour),
-                               style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round,
+                               style: StrokeStyle(lineWidth: lineWidth, lineCap: arrow.style == .bus ? .butt : .round, lineJoin: .round,
                                                   dash: (planned || draw.isPreview) ? [4, 4] : (dashed ? [5, 4] : [])))
-                if !draw.isPreview, let head = arrowHead(screen) { context.fill(head, with: .color(colour)) }
+                if !draw.isPreview, let head = arrowHead(screen, scale: arrow.style == .bus ? lineWidth / 1.3 : 1) {
+                    context.fill(head, with: .color(colour))
+                }
                 if arrow.style == .bus, !draw.isPreview, !isMoving(key.from), !isMoving(key.to),
                    let mark = busMarkPoint(canvasPoints) {
-                    drawBusMark(at: mark, bits: arrow.bits, colour: colour, in: &context)
+                    drawBusMark(at: mark, bits: arrow.bits, highlighted: highlighted, in: &context)
                 }
                 guard !label.isEmpty, !isMoving(key.from), !isMoving(key.to) else { continue }
                 let bundleId = board.routes[key]?.bundle
@@ -610,12 +614,15 @@ struct BoardCanvas: View {
         return path
     }
 
-    /// The head points along the arrow's last segment.
-    private func arrowHead(_ points: [CGPoint]) -> Path? {
+    /// The head points along the arrow's last segment, `scale` times its ordinary 7 pt length —
+    /// a bus passes its line width's own ratio to `1.3` (the plain arrow's line width) here, so
+    /// its thicker line gets a proportionally bigger head instead of the same small one a thin
+    /// line gets.
+    private func arrowHead(_ points: [CGPoint], scale: CGFloat = 1) -> Path? {
         guard points.count >= 2, let tip = points.last else { return nil }
         let from = points[points.count - 2]
         let angle = atan2(Double(tip.y - from.y), Double(tip.x - from.x))
-        let length = 7.0
+        let length = 7.0 * Double(scale)
         var path = Path()
         path.move(to: tip)
         path.addLine(to: CGPoint(x: tip.x - length * cos(angle - 0.45), y: tip.y - length * sin(angle - 0.45)))
@@ -653,18 +660,21 @@ struct BoardCanvas: View {
     }
 
     /// A bus's slash mark: a 14 pt line at 45°, with its bit width in 9 pt bold beside it — both
-    /// scaled by the viewport's zoom, like a pill's text. Drawn even with no label; draws no text
-    /// when the arrow never got a bit width.
-    private func drawBusMark(at center: BoardPoint, bits: Int?, colour: Color, in context: inout GraphicsContext) {
+    /// scaled by the viewport's zoom, like a pill's text, and both always drawn in the kind-neutral
+    /// `Theme.boardBusMark`, not the line's own (possibly highlighted) colour. Drawn even with no
+    /// label; draws no text when the arrow never got a bit width. The bit-width text hides below
+    /// `pillHiddenBelowZoom` at rest, exactly as a pill's does — the slash itself is small enough
+    /// to stay legible and keeps drawing, so a bus still reads as a bus zoomed all the way out.
+    private func drawBusMark(at center: BoardPoint, bits: Int?, highlighted: Bool, in context: inout GraphicsContext) {
         let scale = viewport.zoom
         let screenCenter = viewport.toScreen(CGPoint(x: Double(center.x), y: Double(center.y)))
         let half = 7 * scale * 0.7071
         var mark = Path()
         mark.move(to: CGPoint(x: screenCenter.x - half, y: screenCenter.y + half))
         mark.addLine(to: CGPoint(x: screenCenter.x + half, y: screenCenter.y - half))
-        context.stroke(mark, with: .color(colour), lineWidth: 1.4 * scale)
-        guard let bits else { return }
-        let text = context.resolve(Text("\(bits)").font(.system(size: 9 * scale, weight: .bold)).foregroundColor(colour))
+        context.stroke(mark, with: .color(Theme.boardBusMark), lineWidth: 1.4 * scale)
+        guard let bits, highlighted || scale >= Self.pillHiddenBelowZoom else { return }
+        let text = context.resolve(Text("\(bits)").font(.system(size: 9 * scale, weight: .bold)).foregroundColor(Theme.boardBusMark))
         context.draw(text, at: CGPoint(x: screenCenter.x + 6 * scale, y: screenCenter.y - 8 * scale), anchor: .leading)
     }
 
