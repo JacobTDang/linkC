@@ -435,22 +435,39 @@ struct ArrowEditor: View {
     }
 }
 
-/// What double-clicking empty canvas offers.
+/// What double-clicking empty canvas offers — the same three groups as the toolbar's Component
+/// menu (System, AI agents, Hardware), each under its own caption, followed by Note / Text /
+/// Frame — instead of the 32 kinds as one flat, ungrouped list.
 struct QuickAddMenu: View {
     let add: (QuickAddChoice) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            ForEach(ComponentKind.known, id: \.raw) { kind in
-                row(kind.raw.capitalized, glyph: kind.glyph) { add(.component(kind)) }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(ComponentKind.groups, id: \.title) { group in
+                    caption(group.title)
+                    ForEach(group.kinds, id: \.raw) { kind in
+                        row(kind.raw.capitalized, glyph: kind.glyph) { add(.component(kind)) }
+                    }
+                }
+                Divider().padding(.vertical, 3)
+                row("Note", glyph: "note.text") { add(.note) }
+                row("Text", glyph: "textformat") { add(.text) }
+                row("Frame", glyph: "rectangle.dashed") { add(.frame) }
             }
-            Divider().padding(.vertical, 3)
-            row("Note", glyph: "note.text") { add(.note) }
-            row("Text", glyph: "textformat") { add(.text) }
-            row("Frame", glyph: "rectangle.dashed") { add(.frame) }
+            .padding(6)
         }
-        .padding(6)
-        .frame(width: 170)
+        .frame(width: 170, height: 360)
+    }
+
+    private func caption(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 9, weight: .semibold))
+            .tracking(0.5)
+            .foregroundStyle(Theme.textTertiary)
+            .padding(.top, 6)
+            .padding(.bottom, 1)
+            .padding(.horizontal, 8)
     }
 
     private func row(_ title: String, glyph: String, action: @escaping () -> Void) -> some View {
