@@ -1060,6 +1060,7 @@ struct BoardCanvas: View {
         case .frameTool: board.tool = .frame
         case .noteTool: board.tool = .note
         case .textTool: board.tool = .text
+        case .goUp: break
         }
     }
 

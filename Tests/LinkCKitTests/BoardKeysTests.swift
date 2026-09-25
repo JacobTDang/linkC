@@ -37,4 +37,12 @@ final class BoardKeysTests: XCTestCase {
             XCTAssertNil(BoardKeyMap.command(for: press, isEditingText: true))
         }
     }
+
+    func testCommandUpGoesUpOneBoard() {
+        XCTAssertEqual(BoardKeyMap.command(for: KeyPress(.up, command: true), isEditingText: false), .goUp)
+        XCTAssertNil(BoardKeyMap.command(for: KeyPress(.up), isEditingText: false))
+        XCTAssertNil(BoardKeyMap.command(for: KeyPress(.up, command: true, shift: true), isEditingText: false))
+        XCTAssertNil(BoardKeyMap.command(for: KeyPress(.up, command: true), isEditingText: true))
+    }
 }
+

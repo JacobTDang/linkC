@@ -9,6 +9,7 @@ public struct KeyPress: Equatable, Sendable {
         case escape
         case delete
         case space
+        case up
     }
 
     public let key: Key
@@ -51,7 +52,7 @@ public enum TabKeyMap {
 
 public enum BoardCommand: Equatable, Sendable {
     case selectTool, componentTool, arrowTool, frameTool, noteTool, textTool
-    case delete, cancel, undo, redo, fitAll
+    case delete, cancel, undo, redo, fitAll, goUp
 }
 
 public enum BoardKeyMap {
@@ -64,6 +65,11 @@ public enum BoardKeyMap {
             return .cancel
         case .delete where noModifiers:
             return .delete
+        case .up:
+            if press.command, !press.control, !press.option, !press.shift {
+                return .goUp
+            }
+            return nil
         case .character(let raw):
             let character = raw.lowercased()
             if press.command, !press.control, !press.option, character == "z" {
