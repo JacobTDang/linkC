@@ -18,6 +18,10 @@ extension LinkCError: LocalizedError {
     }
 }
 
+extension LinkCError: CustomStringConvertible {
+    public var description: String { errorDescription ?? "" }
+}
+
 /// The lifecycle state of a single Claude Code session, derived purely from hook events.
 public enum SessionState: String, Sendable, Codable, CaseIterable, Equatable {
     case starting            // tab launched, no hook seen yet
