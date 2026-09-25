@@ -74,6 +74,12 @@ public enum BoardRouter {
         })
         let noteBoxes = map.notes.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }
 
+        // 3. Spread ends: which side, and which port on it, every non-self arrow's two ends use —
+        // decided once, up front, so unbundled ends sharing a side of the same box spread across a
+        // band instead of all landing on the exact same midpoint.
+        let endAssignments = spreadEnds(
+            keys: bundleableKeys, bundleOf: bundleOf, outAnchors: outAnchors, inAnchors: inAnchors, componentBox: componentBox)
+
         var routedSegments: [(a: BoardPoint, b: BoardPoint, id: String)] = []
         var obstaclesByArrow: [BoardModel.ArrowKey: [BoardRect]] = [:]
         var results: [BoardModel.ArrowKey: BoardRoute] = [:]
@@ -111,31 +117,24 @@ public enum BoardRouter {
             let bundleId = bundleOf[key]
             let selfId = bundleId ?? arrowId(key)
 
-            var sourceSide: Side
-            var targetSide: Side
-            var sourcePort: BoardPoint
-            var targetPort: BoardPoint
-            let forced: Bool
-
-            if let bundleId, bundleId.hasPrefix("out:"), let anchor = outAnchors[bundleId] {
-                (sourceSide, sourcePort) = anchor
-                targetSide = sides(from: sourceBox.center, to: targetBox.center).1
-                targetPort = sidePort(targetBox, targetSide)
-                forced = true
-            } else if let bundleId, bundleId.hasPrefix("in:"), let anchor = inAnchors[bundleId] {
-                (targetSide, targetPort) = anchor
-                sourceSide = sides(from: sourceBox.center, to: targetBox.center).0
-                sourcePort = sidePort(sourceBox, sourceSide)
-                forced = true
-            } else {
-                (sourceSide, targetSide) = sides(from: sourceBox.center, to: targetBox.center)
-                sourcePort = sidePort(sourceBox, sourceSide)
-                targetPort = sidePort(targetBox, targetSide)
-                forced = false
+            guard let ends = endAssignments[key] else {
+                // The pre-pass builds an assignment for every key in `bundleableKeys`, which
+                // comes from this very `arrowKeys` loop — a miss here means the two pre-passes
+                // disagree, a bug, never an expected path.
+                NSLog("[linkC] BoardRouter: spreadEnds produced no assignment for %@ → %@ — this arrow was skipped", key.from, key.to)
+                continue
             }
+            let sourceSide = ends.sourceSide
+            let targetSide = ends.targetSide
+            let sourcePort = ends.sourcePort
+            let targetPort = ends.targetPort
+            let forced = ends.forced
 
             var points: [BoardPoint]
-            if !forced, let straight = straightCase(sourceBox, sourceSide, targetBox, targetSide, othersRaw + frameObstacles) {
+            if !forced, let straight = straightCase(
+                sourceBox, sourceSide, sourcePort, targetBox, targetSide, targetPort,
+                sourceGroupSize: ends.sourceGroupSize, targetGroupSize: ends.targetGroupSize, othersRaw + frameObstacles
+            ) {
                 points = straight
             } else {
                 // "Add what's running" packs boxes a few points apart, well inside `clearance` —
@@ -174,9 +173,16 @@ public enum BoardRouter {
 
     // MARK: - Bundles
 
+    /// A bundle's anchor: which side of its own box it leaves from, that box's lowercased name (so
+    /// the spreading pass can group it with any unbundled arrow sharing the same box and side),
+    /// and the mean centre of the other ends — the ordering key `bundles` already computes, spent
+    /// again for the anchor's slot when the spreading pass orders it among siblings.
     private static func bundles(
         arrowKeys: [BoardModel.ArrowKey], labelOf: [BoardModel.ArrowKey: String], byLowercasedName: [String: BoardComponent]
-    ) -> (bundleOf: [BoardModel.ArrowKey: String], outAnchors: [String: (Side, BoardPoint)], inAnchors: [String: (Side, BoardPoint)]) {
+    ) -> (
+        bundleOf: [BoardModel.ArrowKey: String], outAnchors: [String: (side: Side, name: String, mean: BoardPoint)],
+        inAnchors: [String: (side: Side, name: String, mean: BoardPoint)]
+    ) {
         struct GroupKey: Hashable { let name: String; let label: String }
 
         var outGroups: [GroupKey: [BoardModel.ArrowKey]] = [:]
@@ -210,9 +216,10 @@ public enum BoardRouter {
             for k in keys { bundleOf[k] = id }
         }
 
-        // Anchors: one shared port per bundle, from the bundled box's centre toward the mean
-        // centre of the other ends it bundles with.
-        var outAnchors: [String: (Side, BoardPoint)] = [:]
+        // Anchors: one shared side per bundle, from the bundled box's centre toward the mean
+        // centre of the other ends it bundles with. The spreading pass turns this into the
+        // bundle's actual slot point, once it knows who else shares that box's side.
+        var outAnchors: [String: (side: Side, name: String, mean: BoardPoint)] = [:]
         for (id, keys) in groupedById(bundleOf, prefix: "out:") {
             guard let source = byLowercasedName[keys[0].from.lowercased()], let at = source.at else { continue }
             let box = BoardGeometry.rect(ofComponentAt: at)
@@ -220,9 +227,9 @@ public enum BoardRouter {
             guard !others.isEmpty else { continue }
             let mean = meanCenter(others)
             let side = sides(from: box.center, to: mean).0
-            outAnchors[id] = (side, sidePort(box, side))
+            outAnchors[id] = (side, source.name.lowercased(), mean)
         }
-        var inAnchors: [String: (Side, BoardPoint)] = [:]
+        var inAnchors: [String: (side: Side, name: String, mean: BoardPoint)] = [:]
         for (id, keys) in groupedById(bundleOf, prefix: "in:") {
             guard let target = byLowercasedName[keys[0].to.lowercased()], let at = target.at else { continue }
             let box = BoardGeometry.rect(ofComponentAt: at)
@@ -230,7 +237,7 @@ public enum BoardRouter {
             guard !others.isEmpty else { continue }
             let mean = meanCenter(others)
             let side = sides(from: mean, to: box.center).1
-            inAnchors[id] = (side, sidePort(box, side))
+            inAnchors[id] = (side, target.name.lowercased(), mean)
         }
 
         return (bundleOf, outAnchors, inAnchors)
@@ -252,7 +259,7 @@ public enum BoardRouter {
 
     // MARK: - Sides and ports
 
-    private enum Side { case left, right, top, bottom }
+    private enum Side: Hashable { case left, right, top, bottom }
 
     private static func sides(from source: BoardPoint, to target: BoardPoint) -> (Side, Side) {
         let dx = target.x - source.x, dy = target.y - source.y
@@ -310,6 +317,168 @@ public enum BoardRouter {
         return BoardPoint(x: port.x + o.dx * distance, y: port.y + o.dy * distance)
     }
 
+    // MARK: - Spread ends
+
+    /// Half the width of the band, around a side's own midpoint, that its ends spread across: 16
+    /// pt on a left or right side, 48 on a top or bottom one — wide enough on the short sides
+    /// without the offset ever reaching past a component's own corner (half-height 42, half-width
+    /// 88).
+    private static func bandHalfWidth(_ side: Side) -> Double {
+        switch side {
+        case .left, .right: return 16
+        case .top, .bottom: return 48
+        }
+    }
+
+    private static func isHorizontalAxis(_ side: Side) -> Bool { side == .left || side == .right }
+
+    /// Where one arrow's end lands, and how it was decided: `sourceSide`/`targetSide` exactly as
+    /// the main loop would compute them today, `sourcePort`/`targetPort` its slot on that side —
+    /// `sidePort` unchanged when it has that side to itself, spread across a band when it shares
+    /// the side with others — and `forced`, true whenever either end is a bundle's anchor (so the
+    /// main loop skips `straightCase` for it, as it always has). `sourceGroupSize`/
+    /// `targetGroupSize` say how many ends share that box's side, for `straightCase` to know which
+    /// port, if either, is still free to move.
+    private struct EndAssignment {
+        let sourceSide: Side
+        let sourcePort: BoardPoint
+        let targetSide: Side
+        let targetPort: BoardPoint
+        let forced: Bool
+        let sourceGroupSize: Int
+        let targetGroupSize: Int
+    }
+
+    private struct SideGroupKey: Hashable { let name: String; let side: Side }
+
+    private enum SideParticipant {
+        case individual(BoardModel.ArrowKey, isSource: Bool)
+        case bundle(String)
+    }
+
+    private struct SideEntry {
+        let orderValue: Int
+        let id: String
+        let participant: SideParticipant
+    }
+
+    /// A pre-pass, run once before the main loop routes anything: for every non-self arrow, the
+    /// side and port each of its two ends attaches to. Unbundled ends attaching to the same side
+    /// of the same box spread evenly across a band instead of all landing on the side's exact
+    /// midpoint; a bundle counts once, at its anchor, for its bundled end. Deterministic: within a
+    /// side, ends are ordered by their other end's centre along the side's axis, ties broken by
+    /// the arrow id (or the bundle id).
+    private static func spreadEnds(
+        keys: [BoardModel.ArrowKey], bundleOf: [BoardModel.ArrowKey: String],
+        outAnchors: [String: (side: Side, name: String, mean: BoardPoint)],
+        inAnchors: [String: (side: Side, name: String, mean: BoardPoint)], componentBox: [String: BoardRect]
+    ) -> [BoardModel.ArrowKey: EndAssignment] {
+        struct KeySides { let sourceSide: Side; let sourceBundle: String?; let targetSide: Side; let targetBundle: String?; let forced: Bool }
+
+        var keySides: [BoardModel.ArrowKey: KeySides] = [:]
+        var groups: [SideGroupKey: [SideEntry]] = [:]
+
+        for key in keys {
+            guard let sourceBox = componentBox[key.from.lowercased()], let targetBox = componentBox[key.to.lowercased()] else { continue }
+            let bundleId = bundleOf[key]
+            let sourceSide: Side, targetSide: Side, sourceBundle: String?, targetBundle: String?, forced: Bool
+            if let bundleId, bundleId.hasPrefix("out:"), let anchor = outAnchors[bundleId] {
+                sourceSide = anchor.side
+                targetSide = sides(from: sourceBox.center, to: targetBox.center).1
+                sourceBundle = bundleId
+                targetBundle = nil
+                forced = true
+            } else if let bundleId, bundleId.hasPrefix("in:"), let anchor = inAnchors[bundleId] {
+                targetSide = anchor.side
+                sourceSide = sides(from: sourceBox.center, to: targetBox.center).0
+                targetBundle = bundleId
+                sourceBundle = nil
+                forced = true
+            } else {
+                (sourceSide, targetSide) = sides(from: sourceBox.center, to: targetBox.center)
+                sourceBundle = nil
+                targetBundle = nil
+                forced = false
+            }
+            keySides[key] = KeySides(sourceSide: sourceSide, sourceBundle: sourceBundle, targetSide: targetSide, targetBundle: targetBundle, forced: forced)
+
+            if sourceBundle == nil {
+                let groupKey = SideGroupKey(name: key.from.lowercased(), side: sourceSide)
+                let orderValue = isHorizontalAxis(sourceSide) ? targetBox.center.y : targetBox.center.x
+                groups[groupKey, default: []].append(SideEntry(orderValue: orderValue, id: arrowId(key), participant: .individual(key, isSource: true)))
+            }
+            if targetBundle == nil {
+                let groupKey = SideGroupKey(name: key.to.lowercased(), side: targetSide)
+                let orderValue = isHorizontalAxis(targetSide) ? sourceBox.center.y : sourceBox.center.x
+                groups[groupKey, default: []].append(SideEntry(orderValue: orderValue, id: arrowId(key), participant: .individual(key, isSource: false)))
+            }
+        }
+
+        // Each bundle counts once, at its own anchor side, ordered by the mean centre `bundles`
+        // already computed for it.
+        for (id, anchor) in outAnchors {
+            let groupKey = SideGroupKey(name: anchor.name, side: anchor.side)
+            let orderValue = isHorizontalAxis(anchor.side) ? anchor.mean.y : anchor.mean.x
+            groups[groupKey, default: []].append(SideEntry(orderValue: orderValue, id: id, participant: .bundle(id)))
+        }
+        for (id, anchor) in inAnchors {
+            let groupKey = SideGroupKey(name: anchor.name, side: anchor.side)
+            let orderValue = isHorizontalAxis(anchor.side) ? anchor.mean.y : anchor.mean.x
+            groups[groupKey, default: []].append(SideEntry(orderValue: orderValue, id: id, participant: .bundle(id)))
+        }
+
+        var individualSourcePort: [BoardModel.ArrowKey: BoardPoint] = [:]
+        var individualTargetPort: [BoardModel.ArrowKey: BoardPoint] = [:]
+        var bundlePort: [String: BoardPoint] = [:]
+        var groupSize: [SideGroupKey: Int] = [:]
+
+        for (groupKey, entries) in groups {
+            groupSize[groupKey] = entries.count
+            guard let box = componentBox[groupKey.name] else { continue }
+            let ordered = entries.sorted { $0.orderValue != $1.orderValue ? $0.orderValue < $1.orderValue : $0.id < $1.id }
+            let n = ordered.count
+            for (i, entry) in ordered.enumerated() {
+                let point: BoardPoint
+                if n == 1 {
+                    point = sidePort(box, groupKey.side)
+                } else {
+                    let band = bandHalfWidth(groupKey.side)
+                    // An even split of the band, centred on the side's midpoint — widened to the
+                    // 12 pt minimum where the band allows it, so arrowheads never touch, and
+                    // otherwise as close to the middle as that minimum lets them be.
+                    let step = min(2 * band / Double(n - 1), max(12, 2 * band / Double(n)))
+                    let offset = Int((step * (Double(i) - Double(n - 1) / 2)).rounded())
+                    switch groupKey.side {
+                    case .left: point = BoardPoint(x: box.minX, y: box.center.y + offset)
+                    case .right: point = BoardPoint(x: box.maxX, y: box.center.y + offset)
+                    case .top: point = BoardPoint(x: box.center.x + offset, y: box.minY)
+                    case .bottom: point = BoardPoint(x: box.center.x + offset, y: box.maxY)
+                    }
+                }
+                switch entry.participant {
+                case .individual(let key, let isSource):
+                    if isSource { individualSourcePort[key] = point } else { individualTargetPort[key] = point }
+                case .bundle(let id):
+                    bundlePort[id] = point
+                }
+            }
+        }
+
+        var result: [BoardModel.ArrowKey: EndAssignment] = [:]
+        for key in keys {
+            guard let sides = keySides[key] else { continue }
+            let sourcePort = sides.sourceBundle.flatMap { bundlePort[$0] } ?? individualSourcePort[key]
+            let targetPort = sides.targetBundle.flatMap { bundlePort[$0] } ?? individualTargetPort[key]
+            guard let sourcePort, let targetPort else { continue }
+            let sourceGroupSize = groupSize[SideGroupKey(name: key.from.lowercased(), side: sides.sourceSide)] ?? 1
+            let targetGroupSize = groupSize[SideGroupKey(name: key.to.lowercased(), side: sides.targetSide)] ?? 1
+            result[key] = EndAssignment(
+                sourceSide: sides.sourceSide, sourcePort: sourcePort, targetSide: sides.targetSide, targetPort: targetPort,
+                forced: sides.forced, sourceGroupSize: sourceGroupSize, targetGroupSize: targetGroupSize)
+        }
+        return result
+    }
+
     // MARK: - Self-loop
 
     /// An arrow from a box to itself: out its right side, up past its top, left to the top's 3/4
@@ -331,26 +500,53 @@ public enum BoardRouter {
 
     // MARK: - Straight case
 
+    /// A straight line needs one shared coordinate along the overlap of the two boxes. When a
+    /// side has more than one end, its port is a fixed slot the other members are ordered
+    /// against, so it can't move to meet the other side — but a side with only one end has
+    /// nothing to stay in step with, and can freely take on the other port's coordinate instead of
+    /// forcing the true midpoint. Prefers moving the target to the source, then the source to the
+    /// target, then the shared midpoint when both are free to move; otherwise no straight line
+    /// exists and A* routes it.
     private static func straightCase(
-        _ sourceBox: BoardRect, _ sourceSide: Side, _ targetBox: BoardRect, _ targetSide: Side, _ obstacles: [BoardRect]
+        _ sourceBox: BoardRect, _ sourceSide: Side, _ sourcePort: BoardPoint,
+        _ targetBox: BoardRect, _ targetSide: Side, _ targetPort: BoardPoint,
+        sourceGroupSize: Int, targetGroupSize: Int, _ obstacles: [BoardRect]
     ) -> [BoardPoint]? {
         switch (sourceSide, targetSide) {
         case (.right, .left), (.left, .right):
             let lo = max(sourceBox.minY, targetBox.minY), hi = min(sourceBox.maxY, targetBox.maxY)
             guard lo < hi else { return nil }
-            let midY = (lo + hi) / 2
             let sourceX = sourceSide == .right ? sourceBox.maxX : sourceBox.minX
             let targetX = targetSide == .left ? targetBox.minX : targetBox.maxX
-            let a = BoardPoint(x: sourceX, y: midY), b = BoardPoint(x: targetX, y: midY)
+            let y: Int
+            if targetPort.y >= lo, targetPort.y <= hi, sourceGroupSize == 1 {
+                y = targetPort.y
+            } else if sourcePort.y >= lo, sourcePort.y <= hi, targetGroupSize == 1 {
+                y = sourcePort.y
+            } else if sourceGroupSize == 1, targetGroupSize == 1 {
+                y = (lo + hi) / 2
+            } else {
+                return nil
+            }
+            let a = BoardPoint(x: sourceX, y: y), b = BoardPoint(x: targetX, y: y)
             guard !obstacles.contains(where: { BoardGeometry.segmentIntersects(a, b, $0) }) else { return nil }
             return [a, b]
         case (.bottom, .top), (.top, .bottom):
             let lo = max(sourceBox.minX, targetBox.minX), hi = min(sourceBox.maxX, targetBox.maxX)
             guard lo < hi else { return nil }
-            let midX = (lo + hi) / 2
             let sourceY = sourceSide == .bottom ? sourceBox.maxY : sourceBox.minY
             let targetY = targetSide == .top ? targetBox.minY : targetBox.maxY
-            let a = BoardPoint(x: midX, y: sourceY), b = BoardPoint(x: midX, y: targetY)
+            let x: Int
+            if targetPort.x >= lo, targetPort.x <= hi, sourceGroupSize == 1 {
+                x = targetPort.x
+            } else if sourcePort.x >= lo, sourcePort.x <= hi, targetGroupSize == 1 {
+                x = sourcePort.x
+            } else if sourceGroupSize == 1, targetGroupSize == 1 {
+                x = (lo + hi) / 2
+            } else {
+                return nil
+            }
+            let a = BoardPoint(x: x, y: sourceY), b = BoardPoint(x: x, y: targetY)
             guard !obstacles.contains(where: { BoardGeometry.segmentIntersects(a, b, $0) }) else { return nil }
             return [a, b]
         default:

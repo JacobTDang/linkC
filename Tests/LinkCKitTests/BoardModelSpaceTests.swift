@@ -384,4 +384,32 @@ final class BoardModelSpaceTests: XCTestCase {
         board.saveNow()
         XCTAssertEqual(try Data(contentsOf: store.fileURL), bytes)
     }
+
+    // MARK: - Marquee pick
+
+    private func marqueeMap() -> BoardMap {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "shown", kind: .service, at: BoardPoint(x: 0, y: 0)),
+            BoardComponent(name: "hidden", kind: .service, at: BoardPoint(x: 400, y: 0)),
+        ]
+        m.notes = [BoardNote(text: "n", at: BoardPoint(x: 800, y: 0))]
+        return m
+    }
+
+    func testMarqueePickCoversEveryComponentAndNoteWhenNothingIsFocused() {
+        let map = marqueeMap()
+        let area = BoardRect(x: -50, y: -50, w: 1100, h: 300)
+        let picked = BoardModel.marqueePick(in: area, map: map, visibleParts: nil)
+        XCTAssertEqual(picked, [.component("shown"), .component("hidden"), .note(map.notes[0].id)])
+    }
+
+    /// While Focus is on, a marquee drawn over what looks like empty space must never pick a part
+    /// Focus is hiding — but a note or text, which Focus never hides, still comes through.
+    func testMarqueePickSkipsAComponentFocusHidesButStillPicksNotes() {
+        let map = marqueeMap()
+        let area = BoardRect(x: -50, y: -50, w: 1100, h: 300)
+        let picked = BoardModel.marqueePick(in: area, map: map, visibleParts: ["shown"])
+        XCTAssertEqual(picked, [.component("shown"), .note(map.notes[0].id)])
+    }
 }

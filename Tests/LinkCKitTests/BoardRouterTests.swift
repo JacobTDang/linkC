@@ -344,4 +344,116 @@ final class BoardRouterTests: XCTestCase {
         })
         XCTAssertEqual(routes.count, 1, "stops after the first arrow once cancellation is seen")
     }
+
+    // MARK: - Spread ends
+
+    /// The ALU case from the RISC-V Board: two differently labelled buses into one side.
+    private func twoIntoOneSide() -> BoardMap {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "rf", kind: .register, uses: ["alu": BoardArrow(label: "rs1 data", style: .bus, bits: 32)], at: BoardPoint(x: 0, y: 0)),
+            BoardComponent(name: "fwd", kind: .mux, uses: ["alu": BoardArrow(label: "operand A", style: .bus, bits: 32)], at: BoardPoint(x: 0, y: 300)),
+            BoardComponent(name: "alu", kind: .alu, at: BoardPoint(x: 500, y: 150)),
+        ]
+        return m
+    }
+
+    func testUnbundledArrowsIntoOneSideGetTheirOwnEnds() throws {
+        let routes = BoardRouter.routes(for: twoIntoOneSide())
+        let top = try XCTUnwrap(routes[.init(from: "rf", to: "alu")]?.points.last)
+        let bottom = try XCTUnwrap(routes[.init(from: "fwd", to: "alu")]?.points.last)
+        XCTAssertEqual(top.x, bottom.x, "both land on the ALU's left side")
+        XCTAssertGreaterThanOrEqual(abs(top.y - bottom.y), 12, "they no longer share one point")
+        XCTAssertLessThan(top.y, bottom.y, "ordered by their sources: rf above fwd")
+    }
+
+    func testSpreadEndsStayDeterministic() {
+        XCTAssertEqual(BoardRouter.routes(for: twoIntoOneSide()), BoardRouter.routes(for: twoIntoOneSide()))
+    }
+
+    /// Two ends on a left or right side sit 16 pt apart, ±8 pt from the side's midpoint — already
+    /// past the 12 pt minimum, so they stay near the middle, where every shape has an outline.
+    func testTwoUnbundledEndsStayNearTheMiddle() throws {
+        let routes = BoardRouter.routes(for: twoIntoOneSide())
+        let top = try XCTUnwrap(routes[.init(from: "rf", to: "alu")]?.points.last?.y)
+        let bottom = try XCTUnwrap(routes[.init(from: "fwd", to: "alu")]?.points.last?.y)
+        let mid = BoardGeometry.rect(ofComponentAt: BoardPoint(x: 500, y: 150)).center.y
+        XCTAssertEqual(top, mid - 8)
+        XCTAssertEqual(bottom, mid + 8)
+    }
+
+    /// Three sources into one side of the ALU: an even split of the ±16 pt band would put them
+    /// only 11 pt apart, where arrowheads touch, so they sit the 12 pt minimum apart instead —
+    /// the ±16 pt band allows it.
+    private func threeIntoOneSide() -> BoardMap {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "s0", kind: .service, uses: ["alu": ""], at: BoardPoint(x: 0, y: 0)),
+            BoardComponent(name: "s1", kind: .service, uses: ["alu": ""], at: BoardPoint(x: 0, y: 300)),
+            BoardComponent(name: "s2", kind: .service, uses: ["alu": ""], at: BoardPoint(x: 0, y: 600)),
+            BoardComponent(name: "alu", kind: .alu, at: BoardPoint(x: 500, y: 150)),
+        ]
+        return m
+    }
+
+    func testThreeEndsOnASideAreTwelvePointsApart() throws {
+        let routes = BoardRouter.routes(for: threeIntoOneSide())
+        let y0 = try XCTUnwrap(routes[.init(from: "s0", to: "alu")]?.points.last?.y)
+        let y1 = try XCTUnwrap(routes[.init(from: "s1", to: "alu")]?.points.last?.y)
+        let y2 = try XCTUnwrap(routes[.init(from: "s2", to: "alu")]?.points.last?.y)
+        let mid = BoardGeometry.rect(ofComponentAt: BoardPoint(x: 500, y: 150)).center.y
+        XCTAssertEqual(y0, mid - 12)
+        XCTAssertEqual(y1, mid)
+        XCTAssertEqual(y2, mid + 12)
+    }
+
+    // MARK: - Straight case's multi-end branches
+
+    /// `a` sits in `t1`'s own row, but `t1`'s left side already carries two ends — `a`'s own
+    /// right side has only the one, so it's free to move to `t1`'s slot instead of forcing the
+    /// row's raw midpoint.
+    private func sourceInTargetsRowTwoEndsOnTargetSide() -> BoardMap {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "a", kind: .service, uses: ["t1": ""], at: BoardPoint(x: 0, y: 0)),
+            BoardComponent(name: "b", kind: .service, uses: ["t1": ""], at: BoardPoint(x: 0, y: 200)),
+            BoardComponent(name: "t1", kind: .service, at: BoardPoint(x: 500, y: 0)),
+        ]
+        return m
+    }
+
+    /// (a) The existing router test's boxes never share a row, so `straightCase` always returns
+    /// nil before either multi-end branch runs. Here `a` and `t1` do share a row, and `t1`'s left
+    /// side already carries two ends (from `a` and `b`) — the line must run straight, at the
+    /// slot `spreadEnds` gave that side, not the row's own midpoint.
+    func testStraightLineUsesTheTargetsSlotWhenItsSideHasTwoEnds() throws {
+        let routes = BoardRouter.routes(for: sourceInTargetsRowTwoEndsOnTargetSide())
+        let route = try XCTUnwrap(routes[.init(from: "a", to: "t1")])
+        XCTAssertEqual(route.points, [BoardPoint(x: 176, y: 34), BoardPoint(x: 500, y: 34)],
+                       "straight, at t1's own slot — not the row's raw midpoint, 42")
+    }
+
+    /// `s`'s own right side and `t1`'s left side both already carry two ends of their own (`s`
+    /// also feeds `t2`; `t1` also receives from `s2`) — even though `s` and `t1` share a row, a
+    /// straight line through that row's raw midpoint must never appear: neither side is free to
+    /// move to it.
+    private func bothSidesAlreadySpread() -> BoardMap {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "s", kind: .service, uses: ["t1": "", "t2": ""], at: BoardPoint(x: 0, y: 0)),
+            BoardComponent(name: "s2", kind: .service, uses: ["t1": ""], at: BoardPoint(x: 0, y: 300)),
+            BoardComponent(name: "t1", kind: .service, at: BoardPoint(x: 500, y: 0)),
+            BoardComponent(name: "t2", kind: .service, at: BoardPoint(x: 500, y: 300)),
+        ]
+        return m
+    }
+
+    /// (b) Two ends on both the source's and the target's facing sides: it must never fall back
+    /// to the row's raw midpoint (176, 42)–(500, 42) — the straight branch only ever moves a side
+    /// with just one end.
+    func testStraightLineNeverFallsBackToTheMidpointWhenBothSidesHaveTwoEnds() throws {
+        let routes = BoardRouter.routes(for: bothSidesAlreadySpread())
+        let route = try XCTUnwrap(routes[.init(from: "s", to: "t1")])
+        XCTAssertNotEqual(route.points, [BoardPoint(x: 176, y: 42), BoardPoint(x: 500, y: 42)])
+    }
 }

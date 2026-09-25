@@ -86,7 +86,6 @@ struct ComponentBox: View {
             }
         }
         .opacity(isMissing ? 0.5 : 1)
-        .help(help)
     }
 
     /// A database, cache, vector store or memory draws as two separate shapes, body then rim,
@@ -298,18 +297,6 @@ struct ComponentBox: View {
     private var dash: [CGFloat] {
         guard !isSelected else { return [] }
         return (component.planned || component.kind == .external) ? [4, 3] : []
-    }
-
-    private var help: String {
-        var parts = [component.kind.raw]
-        if let does = component.does, !does.isEmpty { parts.append(does) }
-        switch status {
-        case .present: parts.append("running now")
-        case .missing: parts.append("linkC looked for this and did not find it")
-        case .unchecked, nil: parts.append("linkC cannot check this one")
-        }
-        if component.planned { parts.append("planned — does not exist yet") }
-        return parts.joined(separator: " · ")
     }
 }
 

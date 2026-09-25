@@ -729,10 +729,14 @@ public final class BoardModel {
     ) -> (routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect])? {
         let routes = BoardRouter.routes(for: map)
         guard !isCancelled() else { return nil }
+        // The placer's text is the arrow's full pill — label and width combined, or width alone
+        // for an unlabelled bus — never the router's own bundling label, which stays `arrow.label`
+        // so bundling is unaffected by what the pill happens to show.
         var labelOf: [ArrowKey: String] = [:]
         for component in map.components {
-            for (target, arrow) in component.uses where !arrow.label.isEmpty {
-                labelOf[ArrowKey(from: component.name, to: target)] = arrow.label
+            for (target, arrow) in component.uses {
+                guard let pill = BoardLabels.pillText(for: arrow) else { continue }
+                labelOf[ArrowKey(from: component.name, to: target)] = pill
             }
         }
         let labelRects = BoardLabels.placed(routes: routes, labels: labelOf, obstacles: BoardLabels.obstacles(for: map))
@@ -755,6 +759,27 @@ public final class BoardModel {
 
     nonisolated static func frameRects(_ map: BoardMap, excluding excluded: Set<String>) -> [BoardRect] {
         map.frames.filter { !excluded.contains($0.label) }.compactMap(\.rect)
+    }
+
+    /// Every component, note or text whose box intersects `area` — a marquee's own pick. A
+    /// component is skipped when `visibleParts` is given and doesn't name it, so a marquee drawn
+    /// while Focus is on can never pick what Focus is hiding; `nil` picks every component, as
+    /// when Focus is off. Notes and texts are always eligible — Focus never hides those.
+    public nonisolated static func marqueePick(in area: BoardRect, map: BoardMap, visibleParts: Set<String>?) -> Set<Element> {
+        var picked: Set<Element> = []
+        for component in map.components {
+            guard visibleParts?.contains(component.name) ?? true else { continue }
+            guard let at = component.at, BoardGeometry.rect(ofComponentAt: at).intersects(area) else { continue }
+            picked.insert(.component(component.name))
+        }
+        for note in map.notes {
+            guard let at = note.at, BoardGeometry.rect(ofNoteAt: at).intersects(area) else { continue }
+            picked.insert(.note(note.id))
+        }
+        for text in map.texts where BoardGeometry.rect(of: text).intersects(area) {
+            picked.insert(.text(text.id))
+        }
+        return picked
     }
 
     nonisolated static func index(of name: String, in map: BoardMap) -> Int? {

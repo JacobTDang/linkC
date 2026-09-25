@@ -111,6 +111,9 @@ enum Theme {
     /// A bus arrow's slash mark and bit-width digits — kind-neutral, unlike the line itself
     /// (~#C9C9D3).
     static let boardBusMark = Color(red: 0.788, green: 0.788, blue: 0.827)
+    /// The hover card's and the docked inspector's plane — a shade darker than `boardBox`, from
+    /// the approved mockup (~#232327).
+    static let boardCardFill = Color(red: 0.137, green: 0.137, blue: 0.153)
 }
 
 /// The shared card treatment: one flat translucent fill, nothing else.
