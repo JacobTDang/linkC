@@ -37,6 +37,7 @@ public enum BoardEditStep: Equatable, Sendable {
     case note(String)
     case removeNote(String)
     case system(String)
+    case detail(String)
 }
 
 /// A step `BoardEdit` would not apply, and why. `apply` is all-or-nothing: the first refusal
@@ -55,7 +56,7 @@ public enum BoardEdit {
     public static let maxSteps = 50
 
     private static let verbKeys: Set<String> = [
-        "add", "update", "remove", "connect", "disconnect", "place", "remove_place", "note", "remove_note", "system",
+        "add", "update", "remove", "connect", "disconnect", "place", "remove_place", "note", "remove_note", "system", "detail",
     ]
 
     /// The fields each verb accepts besides its own name-bearing key, in the order the tool's
@@ -71,6 +72,7 @@ public enum BoardEdit {
         "note": [],
         "remove_note": [],
         "system": [],
+        "detail": [],
     ]
 
     // MARK: - Decoding
@@ -177,6 +179,8 @@ public enum BoardEdit {
             return .removeNote(verbValue)
         case "system":
             return .system(verbValue)
+        case "detail":
+            return .detail(verbValue)
         default:
             preconditionFailure("decodeStep: unhandled verb \"\(verb)\"")
         }
@@ -186,16 +190,22 @@ public enum BoardEdit {
 
     /// Applies every step to a copy; the first refusal throws and nothing is returned.
     /// Returns the new map and one summary line per step.
-    public static func apply(_ steps: [BoardEditStep], to map: BoardMap) throws -> (map: BoardMap, lines: [String]) {
+    public static func apply(
+        _ steps: [BoardEditStep],
+        to map: BoardMap,
+        detailSlug: (String) -> String = { BoardSlug.part($0) }
+    ) throws -> (map: BoardMap, lines: [String]) {
         var map = BoardModel.laidOut(map)
         var lines: [String] = []
         for (index, step) in steps.enumerated() {
-            lines.append(try applyStep(step, number: index + 1, to: &map))
+            lines.append(try applyStep(step, number: index + 1, to: &map, detailSlug: detailSlug))
         }
         return (map, lines)
     }
 
-    private static func applyStep(_ step: BoardEditStep, number: Int, to map: inout BoardMap) throws -> String {
+    private static func applyStep(
+        _ step: BoardEditStep, number: Int, to map: inout BoardMap, detailSlug: (String) -> String
+    ) throws -> String {
         switch step {
         case .add(let rawName, let fields, let place):
             return try applyAdd(rawName, fields, place: place, number: number, map: &map)
@@ -219,6 +229,26 @@ public enum BoardEdit {
             return try applyRemoveNote(text, number: number, map: &map)
         case .system(let text):
             return applySystem(text, map: &map)
+        case .detail(let rawName):
+            return try applyDetail(rawName, number: number, map: &map, detailSlug: detailSlug)
+        }
+    }
+
+    private static func applyDetail(
+        _ rawName: String, number: Int, map: inout BoardMap, detailSlug: (String) -> String
+    ) throws -> String {
+        let name = trimmed(rawName)
+        let index = try requireComponent(name, in: map, step: number)
+        let component = map.components[index]
+        if component.outside != nil {
+            throw BoardEditRefusal(step: number, reason: "\"\(component.name)\" comes from the overview; go deeper from its own board")
+        }
+        if let existing = component.detail {
+            return "detail board for \(component.name): \(existing) (exists)"
+        } else {
+            let slug = detailSlug(component.name)
+            map.components[index].detail = slug
+            return "detail board for \(component.name): \(slug)"
         }
     }
 
@@ -249,6 +279,11 @@ public enum BoardEdit {
         let name = trimmed(rawName)
         let index = try requireComponent(name, in: map, step: number)
         let oldName = map.components[index].name
+        if map.components[index].outside != nil {
+            if fields.kind != nil || rename != nil {
+                throw BoardEditRefusal(step: number, reason: "\"\(oldName)\" comes from the overview; change it there")
+            }
+        }
         var component = map.components[index]
 
         if let kind = fields.kind { component.kind = kind }
@@ -340,6 +375,9 @@ public enum BoardEdit {
         let realTarget = map.components[targetIndex].name
         guard realSource.lowercased() != realTarget.lowercased() else {
             throw BoardEditRefusal(step: number, reason: "An arrow needs two different components.")
+        }
+        if map.components[sourceIndex].outside != nil && map.components[targetIndex].outside != nil {
+            throw BoardEditRefusal(step: number, reason: "an arrow between two parts from the overview belongs on the overview")
         }
         // An existing arrow is found case-insensitively, as `BoardModel.addArrow` does, and
         // relabelled in place rather than duplicated — a legacy-cased key from a hand-edited file

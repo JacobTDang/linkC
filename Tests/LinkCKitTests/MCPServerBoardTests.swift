@@ -202,4 +202,55 @@ final class MCPServerBoardTests: XCTestCase {
         let onDisk = try XCTUnwrap(try BoardMapStore(workspacePath: tempDir.path).load()).map
         XCTAssertEqual(onDisk, BoardLayout.arranged(onDisk))
     }
+
+    func testBoardDrillDownWorkflowViaMCP() throws {
+        let s = server()
+        let editResult = try call(s, "linkc_edit_board", [
+            "steps": [
+                ["add": "engine", "kind": "service"],
+                ["add": "api", "kind": "service"],
+                ["connect": "api", "to": "engine", "label": "requests"],
+                ["detail": "engine"]
+            ]
+        ])
+        XCTAssertFalse(editResult.isError, editResult.text)
+        XCTAssertTrue(editResult.text.contains("detail board for engine: engine"))
+
+        let engineFileURL = tempDir.appendingPathComponent("system-map.engine.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: engineFileURL.path))
+
+        // linkc_get_board with board: "engine" shows "outside" for api
+        let engineBoard = try call(s, "linkc_get_board", ["board": "engine"])
+        XCTAssertFalse(engineBoard.isError, engineBoard.text)
+        XCTAssertTrue(engineBoard.text.contains("\"outside\""), engineBoard.text)
+        XCTAssertTrue(engineBoard.text.contains("\"api\""), engineBoard.text)
+
+        // linkc_get_board shows a Boards: section listing overview and engine
+        let overviewBoard = try call(s, "linkc_get_board")
+        XCTAssertFalse(overviewBoard.isError, overviewBoard.text)
+        XCTAssertTrue(overviewBoard.text.contains("Boards:"), overviewBoard.text)
+        XCTAssertTrue(overviewBoard.text.contains("overview"), overviewBoard.text)
+        XCTAssertTrue(overviewBoard.text.contains("engine"), overviewBoard.text)
+
+        // board: "../x" and board: "missing" are refused with isError
+        let pathTraversal = try call(s, "linkc_get_board", ["board": "../x"])
+        XCTAssertTrue(pathTraversal.isError)
+        let missing = try call(s, "linkc_get_board", ["board": "missing"])
+        XCTAssertTrue(missing.isError)
+
+        // linkc_edit_board with board: "engine" adds a part inside, and the overview file is unchanged
+        let overviewBytesBefore = try Data(contentsOf: mapURL)
+        let editEngine = try call(s, "linkc_edit_board", [
+            "board": "engine",
+            "steps": [
+                ["add": "mixer", "kind": "service"]
+            ]
+        ])
+        XCTAssertFalse(editEngine.isError, editEngine.text)
+        let overviewBytesAfter = try Data(contentsOf: mapURL)
+        XCTAssertEqual(overviewBytesBefore, overviewBytesAfter, "overview file must be unchanged")
+
+        let engineMap = try XCTUnwrap(try BoardMapStore(workspacePath: tempDir.path, board: "engine").load()?.map)
+        XCTAssertTrue(engineMap.components.contains { $0.name == "mixer" })
+    }
 }

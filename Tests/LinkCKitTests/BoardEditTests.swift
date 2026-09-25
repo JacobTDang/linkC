@@ -381,4 +381,54 @@ final class BoardEditTests: XCTestCase {
         XCTAssertNil(result.map.components.first?.tech)
         XCTAssertNotNil(refusal([["connect": "db", "to": "x", "tech": "y"]], on: result.map), "connect takes no tech")
     }
+
+    // MARK: - detail and ghost refusals
+
+    func testDetailStepSetsLinkThroughResolverAndReportsLine() throws {
+        var map = BoardMap.empty
+        map.components = [BoardComponent(name: "Engine", kind: .service)]
+        let result = try BoardEdit.apply([.detail("Engine")], to: map, detailSlug: { _ in "custom-engine-slug" })
+        XCTAssertEqual(result.map.components.first?.detail, "custom-engine-slug")
+        XCTAssertEqual(result.lines, ["detail board for Engine: custom-engine-slug"])
+    }
+
+    func testSecondDetailStepOnSamePartReportsExistsAndKeepsLink() throws {
+        var map = BoardMap.empty
+        map.components = [BoardComponent(name: "Engine", kind: .service, detail: "engine")]
+        let result = try BoardEdit.apply([.detail("Engine")], to: map, detailSlug: { _ in "new-slug" })
+        XCTAssertEqual(result.map.components.first?.detail, "engine")
+        XCTAssertEqual(result.lines, ["detail board for Engine: engine (exists)"])
+    }
+
+    func testRenamingAGhostIsRefused() throws {
+        var map = BoardMap.empty
+        map.components = [BoardComponent(name: "A", kind: .service, outside: .in)]
+        let refused = refusal([["update": "A", "rename": "B"]], on: map)
+        XCTAssertEqual(refused?.description, #"step 1: "A" comes from the overview; change it there"#)
+    }
+
+    func testChangingAGhostKindIsRefused() throws {
+        var map = BoardMap.empty
+        map.components = [BoardComponent(name: "A", kind: .service, outside: .in)]
+        let refused = refusal([["update": "A", "kind": "database"]], on: map)
+        XCTAssertEqual(refused?.description, #"step 1: "A" comes from the overview; change it there"#)
+    }
+
+    func testConnectingTwoGhostsIsRefused() throws {
+        var map = BoardMap.empty
+        map.components = [
+            BoardComponent(name: "A", kind: .service, outside: .in),
+            BoardComponent(name: "B", kind: .service, outside: .out)
+        ]
+        let refused = refusal([["connect": "A", "to": "B"]], on: map)
+        XCTAssertEqual(refused?.description, "step 1: an arrow between two parts from the overview belongs on the overview")
+    }
+
+    func testRemovingAGhostSucceeds() throws {
+        var map = BoardMap.empty
+        map.components = [BoardComponent(name: "A", kind: .service, outside: .in)]
+        let result = try apply([["remove": "A"]], to: map)
+        XCTAssertTrue(result.map.components.isEmpty)
+        XCTAssertEqual(result.lines, ["removed A"])
+    }
 }
