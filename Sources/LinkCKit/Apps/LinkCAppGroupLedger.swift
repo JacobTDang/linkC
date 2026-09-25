@@ -22,7 +22,6 @@ public final class LinkCAppGroupLedger {
     public static var applicationSupport: LinkCAppGroupLedger {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("linkC", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return LinkCAppGroupLedger(directory: dir)
     }
 
@@ -99,8 +98,14 @@ public final class LinkCAppGroupLedger {
     // MARK: - IO (must run inside `lock`)
 
     private func unlockedLoad() -> [Entry] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        return (try? JSONDecoder().decode([Entry].self, from: data)) ?? []
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
+        do {
+            return try JSONDecoder().decode([Entry].self, from: Data(contentsOf: fileURL))
+        } catch {
+            NSLog("[linkC app] the app group ledger at %@ is unreadable, treating it as empty — %@",
+                  fileURL.path, String(describing: error))
+            return []
+        }
     }
 
     private func unlockedSave(_ entries: [Entry]) {
