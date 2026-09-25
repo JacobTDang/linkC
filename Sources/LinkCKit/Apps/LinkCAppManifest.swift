@@ -12,16 +12,20 @@ public struct LinkCAppManifest: Codable, Equatable, Sendable {
     /// The page linkC opens.
     public var path: String
     public var env: [String: String]
+    /// A preferred port. linkC uses it when it is free, so the page keeps one origin, and with it
+    /// its local storage, across starts. Otherwise linkC picks a free port.
+    public var port: Int?
 
     /// The file an app ships at its root.
     public static let relativePath = ".linkc/app.json"
 
-    public init(name: String, start: [String], health: String, path: String = "/", env: [String: String] = [:]) {
+    public init(name: String, start: [String], health: String, path: String = "/", env: [String: String] = [:], port: Int? = nil) {
         self.name = name
         self.start = start
         self.health = health
         self.path = path
         self.env = env
+        self.port = port
     }
 
     /// What one start needs: the argv with every `{port}` replaced, the extra environment, the
@@ -55,7 +59,12 @@ public struct LinkCAppManifest: Codable, Equatable, Sendable {
             guard let value = raw as? [String: String] else { throw field("env", "must map strings to strings") }
             env = value
         }
-        return try LinkCAppManifest(name: name, start: start, health: health, path: path, env: env).validated()
+        var port: Int?
+        if let raw = fields["port"] {
+            guard let value = raw as? Int else { throw field("port", Self.portRule) }
+            port = value
+        }
+        return try LinkCAppManifest(name: name, start: start, health: health, path: path, env: env, port: port).validated()
     }
 
     public func validated() throws -> LinkCAppManifest {
@@ -67,8 +76,11 @@ public struct LinkCAppManifest: Codable, Equatable, Sendable {
         guard path.hasPrefix("/"), URL(string: "http://127.0.0.1:1" + path) != nil else {
             throw Self.field("path", "must be a URL path that starts with /")
         }
+        if let port, !(1024...65535).contains(port) { throw Self.field("port", Self.portRule) }
         return self
     }
+
+    private static let portRule = "must be a whole number from 1024 to 65535"
 
     public func launch(port: Int) throws -> Launch {
         _ = try validated()

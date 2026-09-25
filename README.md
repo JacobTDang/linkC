@@ -195,6 +195,7 @@ An app for linkC is a local web app. linkC starts its server and shows its page 
 | `health` | Yes | A path that starts with `/`. It returns a 2xx status when the app is ready. |
 | `path` | No | The page that linkC opens. The default is `/`. |
 | `env` | No | Environment variables for the app. |
+| `port` | No | A preferred port, from 1024 to 65535. linkC uses it when it is free. Then the page keeps the same origin, and its local storage, from one start to the next. |
 
 The server must obey these rules:
 
@@ -204,6 +205,9 @@ The server must obey these rules:
   the app.
 - Write logs to stdout and stderr.
 - Keep data on disk. linkC stops the app when you close its tab.
+
+linkC keeps its own data in the `.linkc` folder of a project. If your repository ignores `.linkc/`,
+change that rule to `.linkc/*` and add the rule `!.linkc/app.json`.
 
 Optional: use a dark background. The page URL includes `linkc=1`, so the app can hide its own
 header when it runs in linkC.

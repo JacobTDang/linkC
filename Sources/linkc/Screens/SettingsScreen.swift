@@ -359,7 +359,8 @@ private struct AppSettingRow: View {
                 start: start,
                 health: healthText,
                 path: pathText,
-                env: storedManifest?.env ?? [:]
+                env: storedManifest?.env ?? [:],
+                port: storedManifest?.port
             ).validated()
             var apps = preferences.linkCApps
             guard let index = apps.firstIndex(where: { $0.folder == folder }) else { return }

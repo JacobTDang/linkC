@@ -182,4 +182,37 @@ final class LinkCAppProcessTests: XCTestCase {
         process.start()
         try await waitUntil { isRunning(process.state) }
     }
+
+    func testAFreePreferredPortIsUsed() throws {
+        let preferred = try LinkCAppProcess.freePort()
+        XCTAssertEqual(try LinkCAppProcess.choosePort(preferred: preferred), preferred)
+    }
+
+    func testABusyPreferredPortFallsBackToAFreeOne() throws {
+        let busy = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(busy) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(busy, $0, length) } }
+        XCTAssertEqual(listen(busy, 1), 0)
+        _ = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(busy, $0, &length) } }
+        let taken = Int(UInt16(bigEndian: address.sin_port))
+
+        let chosen = try LinkCAppProcess.choosePort(preferred: taken)
+        XCTAssertNotEqual(chosen, taken)
+        XCTAssertGreaterThan(chosen, 0)
+    }
+
+    func testAnAppWithAPreferredPortRunsOnIt() async throws {
+        let preferred = try LinkCAppProcess.freePort()
+        let process = app(server)
+        process.manifest.port = preferred
+        process.start()
+        try await waitUntil { isRunning(process.state) }
+        guard case .running(let url) = process.state else { return XCTFail("\(process.state)") }
+        XCTAssertEqual(url.port, preferred)
+    }
 }

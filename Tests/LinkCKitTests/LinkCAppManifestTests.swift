@@ -68,4 +68,18 @@ final class LinkCAppManifestTests: XCTestCase {
         let manifest = LinkCAppManifest(name: "A", start: ["a"], health: "/", path: "/desk?tab=2")
         XCTAssertEqual(try manifest.launch(port: 1).pageURL.absoluteString, "http://127.0.0.1:1/desk?tab=2&linkc=1")
     }
+
+    func testAPreferredPortIsOptionalAndChecked() throws {
+        XCTAssertNil(try decode(#"{"name": "A", "start": ["a"], "health": "/"}"#).port)
+        XCTAssertEqual(try decode(#"{"name": "A", "start": ["a"], "health": "/", "port": 2300}"#).port, 2300)
+        XCTAssertTrue(error(#"{"name": "A", "start": ["a"], "health": "/", "port": 80}"#).contains("\"port\""))
+        XCTAssertTrue(error(#"{"name": "A", "start": ["a"], "health": "/", "port": 70000}"#).contains("\"port\""))
+        XCTAssertTrue(error(#"{"name": "A", "start": ["a"], "health": "/", "port": "2300"}"#).contains("\"port\""))
+    }
+
+    func testASettingsAppSavedBeforePortsDecodes() throws {
+        let saved = #"{"folder": "/tools/notes", "manifest": {"name": "Notes", "start": ["a"], "health": "/", "path": "/", "env": {}}}"#
+        let setting = try JSONDecoder().decode(LinkCAppSetting.self, from: Data(saved.utf8))
+        XCTAssertNil(setting.manifest.port)
+    }
 }

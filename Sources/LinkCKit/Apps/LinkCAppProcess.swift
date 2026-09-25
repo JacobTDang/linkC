@@ -111,7 +111,7 @@ public final class LinkCAppProcess {
         partialLine = ""
         let launch: LinkCAppManifest.Launch
         do {
-            launch = try manifest.launch(port: try Self.freePort())
+            launch = try manifest.launch(port: try Self.choosePort(preferred: manifest.port))
         } catch {
             state = .failed(reason: error.localizedDescription)
             return
@@ -324,8 +324,21 @@ public final class LinkCAppProcess {
         return signal == 0 ? (status >> 8) & 0xff : 128 + signal
     }
 
+    /// The port for one start: `preferred` when it is free, otherwise a free port.
+    static func choosePort(preferred: Int?) throws -> Int {
+        // A preferred port that is busy is the normal case for a fallback, not an error to report.
+        if let preferred, let port = UInt16(exactly: preferred), (try? bindPort(port)) != nil { return preferred }
+        return try freePort()
+    }
+
     /// A free local port, from binding port 0 on 127.0.0.1.
     static func freePort() throws -> Int {
+        try bindPort(0)
+    }
+
+    /// Binds `port` on 127.0.0.1 (0 for any free port), then releases it, and returns the port
+    /// that was bound.
+    private static func bindPort(_ port: UInt16) throws -> Int {
         let socketFD = socket(AF_INET, SOCK_STREAM, 0)
         guard socketFD >= 0 else {
             throw LinkCError.process("could not open a socket to find a free port: \(String(cString: strerror(errno)))")
@@ -334,7 +347,7 @@ public final class LinkCAppProcess {
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = 0
+        address.sin_port = port.bigEndian
         address.sin_addr.s_addr = inet_addr("127.0.0.1")
         var length = socklen_t(MemoryLayout<sockaddr_in>.size)
         let bound = withUnsafePointer(to: &address) {
