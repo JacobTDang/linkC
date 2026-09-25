@@ -1,44 +1,59 @@
+/// The table and column named by a SQL foreign-key reference.
 public struct BoardColumnReference: Equatable, Hashable, Sendable {
-    public var table: String
-    public var column: String
+  /// The referenced table, including a non-public schema when present.
+  public var table: String
+  /// The referenced column.
+  public var column: String
 
-    public init(table: String, column: String) {
-        self.table = table
-        self.column = column
-    }
+  public init(table: String, column: String) {
+    self.table = table
+    self.column = column
+  }
 
-    public init?(parsing text: String) {
-        guard let dot = text.lastIndex(of: ".") else { return nil }
-        let table = String(text[..<dot])
-        let column = String(text[text.index(after: dot)...])
-        guard !table.isEmpty, !column.isEmpty else { return nil }
-        self.init(table: table, column: column)
-    }
+  /// Reads `table.column`, splitting at the last dot so a schema may prefix the table.
+  public init?(parsing text: String) {
+    guard let dot = text.lastIndex(of: ".") else { return nil }
+    let table = String(text[..<dot])
+    let column = String(text[text.index(after: dot)...])
+    guard !table.isEmpty, !column.isEmpty else { return nil }
+    self.init(table: table, column: column)
+  }
 
-    public var text: String { "\(table).\(column)" }
+  /// The reference written as `table.column`.
+  public var text: String { "\(table).\(column)" }
 }
 
+/// One ordered column in a table component.
 public struct BoardColumn: Equatable, Sendable {
-    public var name: String
-    public var type: String
-    public var pk: Bool
-    public var nullable: Bool
-    public var unique: Bool
-    public var defaultValue: String?
-    public var references: BoardColumnReference?
-    public var planned: Bool
+  /// The column's SQL identifier.
+  public var name: String
+  /// The column's SQL type text.
+  public var type: String
+  /// Whether this column belongs to the table's primary key.
+  public var pk: Bool
+  /// Whether this column accepts null values.
+  public var nullable: Bool
+  /// Whether this column has a single-column unique constraint.
+  public var unique: Bool
+  /// The SQL expression used as this column's default.
+  public var defaultValue: String?
+  /// The table column referenced by this column's foreign key.
+  public var references: BoardColumnReference?
+  /// Whether this column exists only in the planned design.
+  public var planned: Bool
 
-    public init(
-        name: String, type: String, pk: Bool = false, nullable: Bool = true, unique: Bool = false,
-        defaultValue: String? = nil, references: BoardColumnReference? = nil, planned: Bool = false
-    ) {
-        self.name = name
-        self.type = type
-        self.pk = pk
-        self.nullable = pk ? false : nullable
-        self.unique = unique
-        self.defaultValue = defaultValue
-        self.references = references
-        self.planned = planned
-    }
+  /// Creates a column, making every primary-key column non-nullable.
+  public init(
+    name: String, type: String, pk: Bool = false, nullable: Bool = true, unique: Bool = false,
+    defaultValue: String? = nil, references: BoardColumnReference? = nil, planned: Bool = false
+  ) {
+    self.name = name
+    self.type = type
+    self.pk = pk
+    self.nullable = pk ? false : nullable
+    self.unique = unique
+    self.defaultValue = defaultValue
+    self.references = references
+    self.planned = planned
+  }
 }
