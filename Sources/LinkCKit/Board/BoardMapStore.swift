@@ -21,6 +21,12 @@ public struct BoardMapStore: Sendable {
         fileURL = workspace.appendingPathComponent("system-map.json")
     }
 
+    /// A detail board's store: `system-map.<slug>.json` beside the overview. nil is the overview.
+    public init(workspacePath: String, board slug: String?) {
+        let workspace = URL(fileURLWithPath: (workspacePath as NSString).standardizingPath, isDirectory: true)
+        fileURL = workspace.appendingPathComponent(BoardSlug.fileName(for: slug))
+    }
+
     /// The project's map, or nil when it has none. Throws when a file exists but cannot be read.
     public func load() throws -> Loaded? {
         guard let bytes = try currentBytes() else { return nil }

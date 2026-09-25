@@ -99,6 +99,12 @@ public struct BoardArrow: Equatable, Sendable, ExpressibleByStringLiteral {
     }
 }
 
+/// Which edge of a detail board a ghost sits on: `in` for an overview neighbour whose arrow reaches
+/// the detailed part, `out` for one the part's arrows reach.
+public enum BoardGhostSide: String, Sendable {
+    case `in`, out
+}
+
 /// One part of the system: a box on the board, and an entry under its place in the file.
 public struct BoardComponent: Equatable, Sendable, Identifiable {
     public var id: String { name }
@@ -123,13 +129,17 @@ public struct BoardComponent: Equatable, Sendable, Identifiable {
     public var place: String
     /// Its box's top-left corner; nil until the board places it.
     public var at: BoardPoint?
+    public var detail: String?
+    public var outside: BoardGhostSide?
+    public var stale: Bool
     /// Keys linkC does not know, kept so an edit never drops them.
     var extras: Data?
 
     public init(
         name: String, kind: ComponentKind, does: String? = nil, reachedBy: String? = nil, runs: String? = nil,
         tech: String? = nil, planned: Bool = false, uses: [String: BoardArrow] = [:], legacyUsedBy: [String] = [],
-        place: String = BoardMap.notPlaced, at: BoardPoint? = nil
+        place: String = BoardMap.notPlaced, at: BoardPoint? = nil,
+        detail: String? = nil, outside: BoardGhostSide? = nil, stale: Bool = false
     ) {
         self.name = name
         self.kind = kind
@@ -142,6 +152,9 @@ public struct BoardComponent: Equatable, Sendable, Identifiable {
         self.legacyUsedBy = legacyUsedBy
         self.place = place
         self.at = at
+        self.detail = detail
+        self.outside = outside
+        self.stale = stale
         self.extras = nil
     }
 }
@@ -220,7 +233,7 @@ public struct BoardMap: Equatable, Sendable {
     public static let empty = BoardMap()
 
     private static let rootKeys: Set<String> = ["version", "system", "places", "notes", "layout"]
-    private static let componentKeys: Set<String> = ["kind", "does", "reached_by", "runs", "tech", "status", "uses", "used_by"]
+    private static let componentKeys: Set<String> = ["kind", "does", "reached_by", "runs", "tech", "status", "uses", "used_by", "detail", "outside", "stale"]
     private static let layoutKeys: Set<String> = ["components", "frames", "notes", "texts"]
     private static let textKeys: Set<String> = ["text", "style", "at", "w"]
     /// Every version-1 component key linkC now knows, version-2 fields included: a version-1
@@ -294,6 +307,16 @@ public struct BoardMap: Equatable, Sendable {
                     throw LinkCError.parse("component \"\(name)\" in system-map.json is not an object")
                 }
                 let context = "component \"\(name)\" in system-map.json"
+                let outsideName = try string(raw, "outside", context: context)
+                let outside: BoardGhostSide?
+                if let outsideName {
+                    guard let side = BoardGhostSide(rawValue: outsideName) else {
+                        throw LinkCError.parse("\(context): \"outside\" must be \"in\" or \"out\"")
+                    }
+                    outside = side
+                } else {
+                    outside = nil
+                }
                 var component = BoardComponent(
                     name: name,
                     kind: ComponentKind(try string(raw, "kind", context: context) ?? ComponentKind.service.raw),
@@ -305,7 +328,10 @@ public struct BoardMap: Equatable, Sendable {
                     uses: try arrowMap(raw, "uses", context: context) ?? [:],
                     legacyUsedBy: try stringArray(raw, "used_by", context: context) ?? [],
                     place: place,
-                    at: positions[name])
+                    at: positions[name],
+                    detail: try string(raw, "detail", context: context),
+                    outside: outside,
+                    stale: try bool(raw, "stale", context: context) ?? false)
                 component.extras = try extras(of: raw, excluding: componentKeys, context: context)
                 map.components.append(component)
             }
@@ -430,6 +456,9 @@ public struct BoardMap: Equatable, Sendable {
             Self.set(&object, "reached_by", component.reachedBy)
             Self.set(&object, "runs", component.runs)
             Self.set(&object, "tech", component.tech)
+            Self.set(&object, "detail", component.detail)
+            if let side = component.outside { object["outside"] = side.rawValue } else { object.removeValue(forKey: "outside") }
+            if component.stale { object["stale"] = true } else { object.removeValue(forKey: "stale") }
             if component.planned { object["status"] = "planned" } else { object.removeValue(forKey: "status") }
             if component.uses.isEmpty { object.removeValue(forKey: "uses") } else { object["uses"] = Self.encodedUses(component.uses) }
             if component.legacyUsedBy.isEmpty { object.removeValue(forKey: "used_by") } else { object["used_by"] = component.legacyUsedBy }
