@@ -103,6 +103,7 @@ struct BoardCanvas: View {
         .background(Theme.boardBackground)
         .onChange(of: board.outsideChange?.id) { _, _ in outsideChangeArrived() }
         .onChange(of: viewport.lens) { _, _ in sidebarState.setBoardViewport(viewport, for: projectPath) }
+        .onChange(of: board.map) { _, _ in unpinIfGone() }
         .onChange(of: hoverCandidate) { _, target in hoverCandidateChanged(target) }
     }
 
@@ -172,8 +173,8 @@ struct BoardCanvas: View {
     }
 
     /// What Focus keeps visible while it's on: the pinned part or arrow, its direct neighbours and
-    /// the arrows between them — `nil` when Focus is off or nothing is pinned, meaning everything
-    /// draws as usual.
+    /// the arrows between them — `nil` when Focus is off, nothing is pinned, or the pinned item is
+    /// gone, meaning everything draws as usual.
     private var focusVisible: BoardFocus.Visible? {
         guard focusOn, let pinned else { return nil }
         switch pinned {
@@ -551,6 +552,13 @@ struct BoardCanvas: View {
     private func unpin() {
         pinned = nil
         focusOn = false
+    }
+
+    /// Unpins once the pinned part or arrow has left the map — deleted here, undone, or removed
+    /// by an agent's edit.
+    private func unpinIfGone() {
+        guard let pinned, inspectionContent(for: pinned) == nil else { return }
+        unpin()
     }
 
     // MARK: - Drawing

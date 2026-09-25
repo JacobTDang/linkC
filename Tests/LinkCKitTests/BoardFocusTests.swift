@@ -14,15 +14,23 @@ final class BoardFocusTests: XCTestCase {
         return m
     }
 
-    func testAPartKeepsItselfAndItsDirectNeighboursBothWays() {
-        let visible = BoardFocus.visible(aroundPart: "B", in: map())
+    func testAPartKeepsItselfAndItsDirectNeighboursBothWays() throws {
+        let visible = try XCTUnwrap(BoardFocus.visible(aroundPart: "B", in: map()))
         XCTAssertEqual(visible.parts, ["A", "B", "C", "D"])
         XCTAssertEqual(visible.arrows, [.init(from: "A", to: "B"), .init(from: "B", to: "C"), .init(from: "D", to: "B")])
     }
 
-    func testAnArrowKeepsOnlyItsTwoEnds() {
-        let visible = BoardFocus.visible(aroundArrow: .init(from: "E", to: "C"), in: map())
+    func testAnArrowKeepsOnlyItsTwoEnds() throws {
+        let visible = try XCTUnwrap(BoardFocus.visible(aroundArrow: .init(from: "E", to: "C"), in: map()))
         XCTAssertEqual(visible.parts, ["E", "C"])
         XCTAssertEqual(visible.arrows, [.init(from: "E", to: "C")])
+    }
+
+    /// A part or arrow that's gone — deleted, undone, or removed by an agent — has nothing to
+    /// focus around, so Focus hides nothing rather than everything.
+    func testAGoneItemHasNoFocus() {
+        XCTAssertNil(BoardFocus.visible(aroundPart: "Z", in: map()))
+        XCTAssertNil(BoardFocus.visible(aroundArrow: .init(from: "A", to: "C"), in: map()))
+        XCTAssertNil(BoardFocus.visible(aroundArrow: .init(from: "Z", to: "B"), in: map()))
     }
 }
