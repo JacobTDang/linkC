@@ -46,6 +46,15 @@ public enum SQLSchema {
             && !reservedWords.contains(name)
         return plain ? name : "\"\(name.replacingOccurrences(of: "\"", with: "\"\""))\""
     }
+
+    /// The table-kind parts of `map`, lowercased-name order, ready for `createStatements(for:)`.
+    /// Planned tables and planned columns are included — only `kind` decides membership.
+    public static func tables(in map: BoardMap) -> [Table] {
+        map.components
+            .filter { $0.kind == .table }
+            .sorted { $0.name.lowercased() < $1.name.lowercased() }
+            .map { Table(name: $0.name, columns: $0.columns) }
+    }
 }
 
 /// ASCII character classes used by SQL identifier quoting.
