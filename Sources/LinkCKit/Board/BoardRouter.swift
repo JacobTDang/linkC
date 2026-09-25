@@ -443,11 +443,10 @@ public enum BoardRouter {
                     point = sidePort(box, groupKey.side)
                 } else {
                     let band = bandHalfWidth(groupKey.side)
-                    // Ends step across the whole band — `2·band / (n−1)` lands the two outermost
-                    // ends exactly on its edges — but never closer than 12 pt: past that many
-                    // ends, the fixed 12 pt floor pushes the outermost past the band rather than
-                    // crowd them past their own arrowheads.
-                    let step = max(12, 2 * band / Double(n - 1))
+                    // An even split of the band, centred on the side's midpoint — widened to the
+                    // 12 pt minimum where the band allows it, so arrowheads never touch, and
+                    // otherwise as close to the middle as that minimum lets them be.
+                    let step = min(2 * band / Double(n - 1), max(12, 2 * band / Double(n)))
                     let offset = Int((step * (Double(i) - Double(n - 1) / 2)).rounded())
                     switch groupKey.side {
                     case .left: point = BoardPoint(x: box.minX, y: box.center.y + offset)

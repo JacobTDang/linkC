@@ -371,20 +371,20 @@ final class BoardRouterTests: XCTestCase {
         XCTAssertEqual(BoardRouter.routes(for: twoIntoOneSide()), BoardRouter.routes(for: twoIntoOneSide()))
     }
 
-    /// Two ends on a left or right side spread to the band's own edges — ±16 pt from the side's
-    /// midpoint — rather than the old formula's inset ±8, which left half the ±16 pt band unused.
-    func testTwoUnbundledEndsSpreadToTheBandsEdges() throws {
+    /// Two ends on a left or right side sit 16 pt apart, ±8 pt from the side's midpoint — already
+    /// past the 12 pt minimum, so they stay near the middle, where every shape has an outline.
+    func testTwoUnbundledEndsStayNearTheMiddle() throws {
         let routes = BoardRouter.routes(for: twoIntoOneSide())
         let top = try XCTUnwrap(routes[.init(from: "rf", to: "alu")]?.points.last?.y)
         let bottom = try XCTUnwrap(routes[.init(from: "fwd", to: "alu")]?.points.last?.y)
         let mid = BoardGeometry.rect(ofComponentAt: BoardPoint(x: 500, y: 150)).center.y
-        XCTAssertEqual(top, mid - 16)
-        XCTAssertEqual(bottom, mid + 16)
+        XCTAssertEqual(top, mid - 8)
+        XCTAssertEqual(bottom, mid + 8)
     }
 
-    /// Three sources into one side of the ALU — a left/right band is ±16 pt, so three ends 12 pt
-    /// apart (today's formula) waste 5 of those 16 pt on each side. The fix uses the whole band:
-    /// 16 pt apart, at -16, 0 and +16 from the side's own midpoint.
+    /// Three sources into one side of the ALU: an even split of the ±16 pt band would put them
+    /// only 11 pt apart, where arrowheads touch, so they sit the 12 pt minimum apart instead —
+    /// the ±16 pt band allows it.
     private func threeIntoOneSide() -> BoardMap {
         var m = BoardMap()
         m.components = [
@@ -396,15 +396,15 @@ final class BoardRouterTests: XCTestCase {
         return m
     }
 
-    func testThreeUnbundledEndsSpreadEvenlyAcrossTheWholeBand() throws {
+    func testThreeEndsOnASideAreTwelvePointsApart() throws {
         let routes = BoardRouter.routes(for: threeIntoOneSide())
         let y0 = try XCTUnwrap(routes[.init(from: "s0", to: "alu")]?.points.last?.y)
         let y1 = try XCTUnwrap(routes[.init(from: "s1", to: "alu")]?.points.last?.y)
         let y2 = try XCTUnwrap(routes[.init(from: "s2", to: "alu")]?.points.last?.y)
         let mid = BoardGeometry.rect(ofComponentAt: BoardPoint(x: 500, y: 150)).center.y
-        XCTAssertEqual(y0, mid - 16)
+        XCTAssertEqual(y0, mid - 12)
         XCTAssertEqual(y1, mid)
-        XCTAssertEqual(y2, mid + 16)
+        XCTAssertEqual(y2, mid + 12)
     }
 
     // MARK: - Straight case's multi-end branches
@@ -429,7 +429,7 @@ final class BoardRouterTests: XCTestCase {
     func testStraightLineUsesTheTargetsSlotWhenItsSideHasTwoEnds() throws {
         let routes = BoardRouter.routes(for: sourceInTargetsRowTwoEndsOnTargetSide())
         let route = try XCTUnwrap(routes[.init(from: "a", to: "t1")])
-        XCTAssertEqual(route.points, [BoardPoint(x: 176, y: 26), BoardPoint(x: 500, y: 26)],
+        XCTAssertEqual(route.points, [BoardPoint(x: 176, y: 34), BoardPoint(x: 500, y: 34)],
                        "straight, at t1's own slot — not the row's raw midpoint, 42")
     }
 
