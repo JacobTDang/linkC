@@ -121,10 +121,16 @@ public struct AgentDescriptor: Sendable {
         }
     }
 
-    /// Build CLI arguments for launching the specified agent in `mode`.
-    public static func arguments(for kind: AgentKind, mode: LaunchMode) -> [String] {
+    /// Build CLI arguments for launching the specified agent in `mode`. For Codex, `sessionId`
+    /// also names the session to linkC's tool server: Codex serves every terminal's MCP servers
+    /// from one shared daemon, so the server can't find its session by walking up the process
+    /// tree. The override goes before `resume`, like every other flag.
+    public static func arguments(for kind: AgentKind, mode: LaunchMode, sessionId: String? = nil) -> [String] {
         let desc = descriptor(for: kind)
         var args = desc.yoloFlags
+        if kind == .codex, let sessionId {
+            args += ["-c", "mcp_servers.\(MCPRegistrar.serverName).env.LINKC_SESSION=\"\(sessionId)\""]
+        }
         switch mode {
         case .new:
             break

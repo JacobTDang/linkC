@@ -4,9 +4,12 @@ import Darwin
 /// Automatically configures and registers the `linkc-mcp` multiplier server
 /// across Claude Code, Cursor, Codex, and Antigravity configuration files.
 public struct MCPRegistrar: Sendable {
+    /// The name linkC's tool server is registered under in every agent's config.
+    public static let serverName = "linkc-multiplier"
+
     public static func registerServer(
         configFile: URL,
-        serverName: String = "linkc-multiplier",
+        serverName: String = MCPRegistrar.serverName,
         binaryPath: String,
         args: [String] = [],
         env: [String: String] = [:]
@@ -41,7 +44,7 @@ public struct MCPRegistrar: Sendable {
 
     public static func registerTomlServer(
         configFile: URL,
-        serverName: String = "linkc-multiplier",
+        serverName: String = MCPRegistrar.serverName,
         binaryPath: String,
         args: [String] = [],
         env: [String: String] = [:]

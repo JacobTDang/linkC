@@ -208,7 +208,7 @@ public final class MCPServer: Sendable {
                 "tools": ["listChanged": false]
             ],
             "serverInfo": [
-                "name": "linkc-multiplier",
+                "name": MCPRegistrar.serverName,
                 "version": "0.3.0"
             ]
         ]

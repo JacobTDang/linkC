@@ -63,6 +63,19 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(shellNew, [])
     }
 
+    /// Codex serves every terminal's MCP servers from one shared daemon, so linkC's tool server
+    /// can't find its session by walking up the process tree. Each Codex terminal names its
+    /// session to that server through a config override instead, placed before `resume` like
+    /// every other flag. No other agent needs it.
+    func testCodexNamesItsSessionToLinkCsToolServer() {
+        let override = ["-c", #"mcp_servers.linkc-multiplier.env.LINKC_SESSION="S-1""#]
+        XCTAssertEqual(AgentDescriptor.arguments(for: .codex, mode: .new, sessionId: "S-1"),
+                       ["--dangerously-bypass-approvals-and-sandbox"] + override)
+        XCTAssertEqual(AgentDescriptor.arguments(for: .codex, mode: .continueLast, sessionId: "S-1"),
+                       ["--dangerously-bypass-approvals-and-sandbox"] + override + ["resume", "--last"])
+        XCTAssertEqual(AgentDescriptor.arguments(for: .agy, mode: .new, sessionId: "S-1"), ["--dangerously-skip-permissions"])
+    }
+
     func testExecutableResolutionForKnownBinaries() {
         // At least zsh is always executable on macOS
         let zsh = AgentDescriptor.resolveExecutable(for: .shell)

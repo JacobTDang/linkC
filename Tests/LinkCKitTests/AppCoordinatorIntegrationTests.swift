@@ -49,7 +49,9 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             // `stty -echo` matches how a real CLI's raw-mode input loop behaves: without it the
             // pty's own kernel echo doubles every injected frame (once from the kernel, once from
             // `cat`'s own copy-through), which a real agent never exhibits.
-            let scriptContent = "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
+            // It also records its own argv, one argument per line, in `argv-<LINKC_SESSION>` beside
+            // itself, so a test can check exactly what linkC launched.
+            let scriptContent = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv-$LINKC_SESSION\"\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
             try? scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
             var attrs = (try? FileManager.default.attributesOfItem(atPath: scriptURL.path)) ?? [:]
             attrs[.posixPermissions] = 0o755
@@ -1136,6 +1138,26 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
 
         XCTAssertEqual(session.modelTier, .deep)
         XCTAssertEqual(session.model, "gpt-6-astra")
+    }
+
+    /// End to end: the argv a Codex terminal is really started with names its own session to
+    /// linkC's tool server.
+    @MainActor
+    func testACodexSessionIsLaunchedNamingItsSession() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .codex, mode: .new)
+
+        let expected = ["--dangerously-bypass-approvals-and-sandbox", "-c", "mcp_servers.linkc-multiplier.env.LINKC_SESSION=\"\(session.id)\""]
+        let argvFile = tempDir.appendingPathComponent("argv-\(session.id)")
+        var argv: [String] = []
+        let deadline = Date().addingTimeInterval(5)
+        while argv.count < expected.count, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            argv = ((try? String(contentsOf: argvFile, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        }
+        XCTAssertEqual(argv, expected)
     }
 
     @MainActor

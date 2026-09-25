@@ -631,7 +631,7 @@ public final class AppCoordinator {
                     throw LinkCError.process("Executable for \(agent.pillText) not found")
                 }
                 executable = resolved
-                args = AgentDescriptor.arguments(for: agent, mode: mode)
+                args = AgentDescriptor.arguments(for: agent, mode: mode, sessionId: session.id)
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
             }
 
