@@ -15,6 +15,11 @@ struct BoardCanvas: View {
     static let space = "board"
 
     @State private var viewport: BoardViewport = .initial
+    /// Which arrow styles draw at full strength — loaded from and saved with the Board viewport,
+    /// the same way pan and zoom persist. Kept apart from `viewport` itself because `panned` and
+    /// `zoomed` always build a fresh `BoardViewport` at `.all`, dropping whatever lens was set;
+    /// `viewportToSave` folds this back in at the point the value is actually persisted.
+    @State private var lens: BoardLens = .all
     @State private var size: CGSize = .zero
     @State private var canvasFrame: CGRect = .zero
     /// Screen offset of the elements being dragged, until they are dropped.
@@ -81,11 +86,17 @@ struct BoardCanvas: View {
             }
             .onDisappear {
                 input.stop()
-                sidebarState.setBoardViewport(viewport, for: projectPath)
+                sidebarState.setBoardViewport(viewportToSave, for: projectPath)
             }
         }
         .background(Theme.boardBackground)
         .onChange(of: board.outsideChange?.id) { _, _ in outsideChangeArrived() }
+        .onChange(of: lens) { _, _ in sidebarState.setBoardViewport(viewportToSave, for: projectPath) }
+    }
+
+    /// `viewport` with `lens` folded back in for persistence — see `lens`'s own doc.
+    private var viewportToSave: BoardViewport {
+        BoardViewport(originX: viewport.originX, originY: viewport.originY, zoom: viewport.zoom, lens: lens)
     }
 
     /// Lights up what the change touched at full opacity, then — on the next runloop turn, so
@@ -372,6 +383,11 @@ struct BoardCanvas: View {
                         }
                     }
                     .padding(.horizontal, 14)
+                    HStack {
+                        BoardLensChips(lens: $lens)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
                     if board.changedOnDisk {
                         BoardBanner(text: "system-map.json keeps changing under the Board. Reload takes the file; edits not saved here are dropped.",
                                     tone: Theme.contextWarn, action: ("Reload", { board.reload() }))
@@ -469,17 +485,20 @@ struct BoardCanvas: View {
     /// arrow to 12% with its pill hidden — unless that other arrow is itself hovered, which shows
     /// its label and brings it to full opacity for the hover, focus or not. A bundle's pill draws
     /// once for the whole bundle, never once per member. Every pill is hidden while an arrow it
-    /// touches is being dragged; the drag's own straight preview line still draws.
+    /// touches is being dragged; the drag's own straight preview line still draws. An arrow whose
+    /// style the lens excludes draws at 10% opacity, with no pill and no bus mark — the strongest
+    /// of the dimmings, so it applies whether or not the arrow would otherwise be highlighted.
     ///
     /// A conditional or control arrow draws dashed 5/4 in gold, with a gold arrowhead and gold
-    /// pill text. A bus draws 2.6 pt thick, with a slash mark and its bit width near the source,
-    /// even with no label of its own. Focus and hover still override every style with the accent.
+    /// pill text — the only arrows that ever dash; an arrow into a planned part draws exactly as
+    /// one into a real part, since planned already shows on the part's own dashed outline. A bus
+    /// draws 2.6 pt thick, with a slash mark near the source; its pill, when placed, carries its
+    /// width. Focus and hover still override every style with the accent.
     private func drawArrows(in context: inout GraphicsContext) {
         let focus = focusedComponent
         var drawnBundlePills: Set<String> = []
         for component in board.map.components {
             for (target, arrow) in component.uses {
-                let label = arrow.label
                 let key = BoardModel.ArrowKey(from: component.name, to: target)
                 guard let draw = arrowDraw(for: key) else { continue }
                 let canvasPoints = draw.isPreview ? draw.points : extendedEndpoints(draw.points, from: key.from, to: key.to)
@@ -488,8 +507,8 @@ struct BoardCanvas: View {
                 let isHovered = hoveredArrow == key
                 let highlighted = touchesFocus || isHovered || board.selection.contains(.arrow(key))
                 let dimmed = focus != nil && !touchesFocus && !isHovered
-                let planned = board.map.components.first { $0.name == target }?.planned == true
-                let colour = arrowColor(style: arrow.style, highlighted: highlighted).opacity(dimmed ? 0.12 : 1)
+                let inLens = lens.includes(arrow.style)
+                let colour = arrowColor(style: arrow.style, highlighted: highlighted).opacity(!inLens ? 0.1 : (dimmed ? 0.12 : 1))
                 let lineWidth: CGFloat = arrow.style == .bus ? 2.6 : (highlighted ? 1.8 : 1.3)
                 let headScale: CGFloat = arrow.style == .bus ? lineWidth / 1.3 : 1
                 // A bus's thick line stops at its arrowhead's base, butt-capped, so no square nub
@@ -499,31 +518,20 @@ struct BoardCanvas: View {
                 let dashed = arrow.style == .conditional || arrow.style == .control
                 context.stroke(path, with: .color(colour),
                                style: StrokeStyle(lineWidth: lineWidth, lineCap: arrow.style == .bus ? .butt : .round, lineJoin: .round,
-                                                  dash: (planned || draw.isPreview) ? [4, 4] : (dashed ? [5, 4] : [])))
+                                                  dash: draw.isPreview ? [4, 4] : (dashed ? [5, 4] : [])))
                 if !draw.isPreview, let head = arrowHead(screen, scale: headScale) {
                     context.fill(head, with: .color(colour))
                 }
-                if arrow.style == .bus, !draw.isPreview, !isMoving(key.from), !isMoving(key.to),
+                if inLens, arrow.style == .bus, !draw.isPreview, !isMoving(key.from), !isMoving(key.to),
                    let mark = busMarkPoint(canvasPoints) {
-                    drawBusMark(at: mark, bits: arrow.bits, highlighted: highlighted, dimmed: dimmed, in: &context)
+                    drawBusMark(at: mark, highlighted: highlighted, dimmed: dimmed, in: &context)
                 }
-                guard !label.isEmpty, !isMoving(key.from), !isMoving(key.to) else { continue }
+                guard inLens, !isMoving(key.from), !isMoving(key.to), let rect = board.labelRects[key] else { continue }
+                if focus != nil, !touchesFocus, !isHovered { continue }
                 let bundleId = board.routes[key]?.bundle
-                let bundleAlreadyDrawn = bundleId.map { drawnBundlePills.contains($0) } ?? false
-                if focus != nil {
-                    guard touchesFocus || isHovered else { continue }
-                    guard !bundleAlreadyDrawn else { continue }
-                    if let center = board.labelRects[key]?.center ?? fallbackLabelCenter(draw.points) {
-                        if let bundleId { drawnBundlePills.insert(bundleId) }
-                        drawPill(at: center, label: label, style: arrow.style, highlighted: highlighted, in: &context)
-                    }
-                } else if let rect = board.labelRects[key] {
-                    guard !bundleAlreadyDrawn else { continue }
-                    if let bundleId { drawnBundlePills.insert(bundleId) }
-                    drawPill(at: rect.center, label: label, style: arrow.style, highlighted: highlighted, in: &context)
-                } else if isHovered, let center = fallbackLabelCenter(draw.points) {
-                    drawPill(at: center, label: label, style: arrow.style, highlighted: highlighted, in: &context)
-                }
+                if let bundleId, drawnBundlePills.contains(bundleId) { continue }
+                if let bundleId { drawnBundlePills.insert(bundleId) }
+                drawPill(at: rect.center, arrow: arrow, style: arrow.style, highlighted: highlighted, in: &context)
             }
         }
     }
@@ -552,15 +560,82 @@ struct BoardCanvas: View {
         return points
     }
 
-    /// `port`, sitting on one edge of `box`, moved inward along that same edge's normal by the
-    /// kind's inset there — the point where the shape's own outline actually is.
+    /// `port`, sitting on one edge of `box`, moved inward along that same edge's normal until it
+    /// lies inside the kind's own drawn outline at that exact point on the side — not the one
+    /// mid-height inset every port on a side used to share. Spread ends put several ports at
+    /// different heights or offsets on the same side (`BoardRouter`), and a side's outline can
+    /// slant or notch away from what a flat mid-height measurement gives (the ALU's notched left
+    /// side, the mux/demux trapezoids, the control ellipse, the adder circle) — this keeps every
+    /// one of them on the shape actually drawn.
     private func insetEndpoint(_ port: BoardPoint, box: BoardRect, kind: ComponentKind) -> BoardPoint {
-        let inset = BoardShape.insets(for: kind)
-        if port.x == box.minX { return BoardPoint(x: port.x + Int(inset.left), y: port.y) }
-        if port.x == box.maxX { return BoardPoint(x: port.x - Int(inset.right), y: port.y) }
-        if port.y == box.minY { return BoardPoint(x: port.x, y: port.y + Int(inset.top)) }
-        if port.y == box.maxY { return BoardPoint(x: port.x, y: port.y - Int(inset.bottom)) }
+        if port.x == box.minX { return BoardPoint(x: port.x + Int(heightTrimmedInset(kind: kind, side: .left, port: port, box: box)), y: port.y) }
+        if port.x == box.maxX { return BoardPoint(x: port.x - Int(heightTrimmedInset(kind: kind, side: .right, port: port, box: box)), y: port.y) }
+        if port.y == box.minY { return BoardPoint(x: port.x, y: port.y + Int(heightTrimmedInset(kind: kind, side: .top, port: port, box: box))) }
+        if port.y == box.maxY { return BoardPoint(x: port.x, y: port.y - Int(heightTrimmedInset(kind: kind, side: .bottom, port: port, box: box))) }
         return port
+    }
+
+    /// One side of a component's fixed 176×84 box — named the way `insetEndpoint` and
+    /// `heightTrimmedInset` use it below.
+    private enum BoardEdgeSide: Hashable { case left, right, top, bottom }
+
+    private struct InsetCacheKey: Hashable { let kindRaw: String; let side: BoardEdgeSide; let offsetFromMid: Int }
+
+    /// Every `(kind, side, offset)` inset already walked, so the same combination is never walked
+    /// twice — the box is always the same fixed size wherever a component sits, so the trim never
+    /// depends on where in the map the part is, only on these three things. A static, not
+    /// per-canvas state: sharing it costs nothing (the geometry it caches is the same for every
+    /// Board) and it survives this view being torn down and rebuilt.
+    private static var insetCache: [InsetCacheKey: CGFloat] = [:]
+
+    /// How far `kind`'s drawn outline sits inside its box on `side`, at `port`'s own height or
+    /// offset — walked from the box edge inward along the side's normal, in 0.5 pt steps up to 40
+    /// pt, until the point lies inside the shape `BoardShape.path(for:)` draws. A side whose
+    /// constant mid-height inset (`BoardShape.insets(for:)`) is already zero draws flush with the
+    /// box at every height for every kind so measured, so it skips the walk and gives 0, as
+    /// before — walking there would land exactly on the outline's own edge, where point
+    /// containment is unreliable. When the walk finds nothing within 40 pt — the constant inset
+    /// itself exceeds that on the mux, demux and adder's slanted sides — the constant is used
+    /// instead, so an arrow still stops at a sensible point rather than reaching into the shape.
+    private func heightTrimmedInset(kind: ComponentKind, side: BoardEdgeSide, port: BoardPoint, box: BoardRect) -> CGFloat {
+        let constant = BoardShape.insets(for: kind)
+        let constantForSide: CGFloat
+        switch side {
+        case .left: constantForSide = constant.left
+        case .right: constantForSide = constant.right
+        case .top: constantForSide = constant.top
+        case .bottom: constantForSide = constant.bottom
+        }
+        guard constantForSide != 0 else { return 0 }
+
+        let w = CGFloat(BoardGeometry.componentSize.x), h = CGFloat(BoardGeometry.componentSize.y)
+        let offsetFromMid: Int
+        switch side {
+        case .left, .right: offsetFromMid = port.y - (box.minY + Int(h / 2))
+        case .top, .bottom: offsetFromMid = port.x - (box.minX + Int(w / 2))
+        }
+
+        let key = InsetCacheKey(kindRaw: kind.raw, side: side, offsetFromMid: offsetFromMid)
+        if let cached = Self.insetCache[key] { return cached }
+
+        let localStart: CGPoint
+        let direction: CGPoint
+        switch side {
+        case .left: localStart = CGPoint(x: 0, y: h / 2 + CGFloat(offsetFromMid)); direction = CGPoint(x: 1, y: 0)
+        case .right: localStart = CGPoint(x: w, y: h / 2 + CGFloat(offsetFromMid)); direction = CGPoint(x: -1, y: 0)
+        case .top: localStart = CGPoint(x: w / 2 + CGFloat(offsetFromMid), y: 0); direction = CGPoint(x: 0, y: 1)
+        case .bottom: localStart = CGPoint(x: w / 2 + CGFloat(offsetFromMid), y: h); direction = CGPoint(x: 0, y: -1)
+        }
+        let path = BoardShape.path(for: kind)
+        var distance: CGFloat = 0
+        var found = constantForSide
+        while distance <= 40 {
+            let point = CGPoint(x: localStart.x + direction.x * distance, y: localStart.y + direction.y * distance)
+            if path.contains(point) { found = distance; break }
+            distance += 0.5
+        }
+        Self.insetCache[key] = found
+        return found
     }
 
     /// An arrow's route, or — while its source or target is being dragged — a straight line
@@ -675,13 +750,11 @@ struct BoardCanvas: View {
         return BoardPoint(x: a.x + Int((dx * t).rounded()), y: a.y + Int((dy * t).rounded()))
     }
 
-    /// A bus's slash mark: a 14 pt line at 45°, with its bit width in 9 pt bold beside it — both
-    /// scaled by the viewport's zoom, like a pill's text. At rest both draw in the kind-neutral
-    /// `Theme.boardBusMark`; they turn the accent with a highlighted arrow and fade with a dimmed
-    /// one. Drawn even with no label; draws no text when the arrow never got a bit width. The
-    /// bit-width text hides below `pillHiddenBelowZoom` at rest, exactly as a pill's does — the
-    /// slash itself keeps drawing, so a bus still reads as a bus zoomed all the way out.
-    private func drawBusMark(at center: BoardPoint, bits: Int?, highlighted: Bool, dimmed: Bool, in context: inout GraphicsContext) {
+    /// A bus's slash mark: a 14 pt line at 45°, scaled by the viewport's zoom. At rest it draws in
+    /// the kind-neutral `Theme.boardBusMark`; it turns the accent with a highlighted arrow and
+    /// fades with a dimmed one. Its width no longer draws here — a bus's pill carries it instead,
+    /// so no number stacks beside the mark near the source.
+    private func drawBusMark(at center: BoardPoint, highlighted: Bool, dimmed: Bool, in context: inout GraphicsContext) {
         let scale = viewport.zoom
         let screenCenter = viewport.toScreen(CGPoint(x: Double(center.x), y: Double(center.y)))
         let half = 7 * scale * 0.7071
@@ -690,9 +763,6 @@ struct BoardCanvas: View {
         mark.move(to: CGPoint(x: screenCenter.x - half, y: screenCenter.y + half))
         mark.addLine(to: CGPoint(x: screenCenter.x + half, y: screenCenter.y - half))
         context.stroke(mark, with: .color(markColor), lineWidth: 1.4 * scale)
-        guard let bits, highlighted || scale >= Self.pillHiddenBelowZoom else { return }
-        let text = context.resolve(Text("\(bits)").font(.system(size: 9 * scale, weight: .bold)).foregroundColor(markColor))
-        context.draw(text, at: CGPoint(x: screenCenter.x + 6 * scale, y: screenCenter.y - 8 * scale), anchor: .leading)
     }
 
     /// The zoom below which an unhighlighted pill draws nothing at rest — it would be unreadably
@@ -700,38 +770,37 @@ struct BoardCanvas: View {
     private static let pillHiddenBelowZoom = 0.45
 
     /// An arrow label's pill: a rounded rect in `Theme.boardBackground`, stroked in a faint
-    /// white, the label centred in it — drawn at `center` (canvas points), its own 10 pt text, 7
-    /// pt padding and 18 pt height scaled by the viewport's zoom, exactly like its placed canvas
-    /// rect scaled the same way. `highlighted` (focused, hovered or selected) turns the text
-    /// `Theme.accent`, floors the scale at 1 so it stays readable however far zoomed out, and
-    /// skips the below-`pillHiddenBelowZoom` hide — the one case a pill may draw larger than its
-    /// placed rect × zoom. A conditional or control arrow's pill text is gold instead, unless
-    /// highlighted.
-    private func drawPill(at center: BoardPoint, label: String, style: BoardArrowStyle, highlighted: Bool, in context: inout GraphicsContext) {
+    /// white, its text centred in it — drawn at `center` (canvas points), 10 pt text, 7 pt
+    /// padding and 18 pt height scaled by the viewport's zoom, exactly like its placed canvas
+    /// rect scaled the same way. The text is `arrow.label`, then two spaces and the width in bold
+    /// when `arrow.bits` is set; with no label, the width alone draws bold — the same combined
+    /// text `BoardLabels.pillText(for:)` sized for placement, so it never overflows the placed
+    /// rect. `highlighted` (focused, hovered or selected) turns the text `Theme.accent`, floors
+    /// the scale at 1 so it stays readable however far zoomed out, and skips the
+    /// below-`pillHiddenBelowZoom` hide — the one case a pill may draw larger than its placed
+    /// rect × zoom. A conditional or control arrow's pill text is gold instead, unless
+    /// highlighted. Never drawn for an arrow the placer found no room for — no fallback centre is
+    /// ever forced here, whatever focuses or hovers it.
+    private func drawPill(at center: BoardPoint, arrow: BoardArrow, style: BoardArrowStyle, highlighted: Bool, in context: inout GraphicsContext) {
         guard highlighted || viewport.zoom >= Self.pillHiddenBelowZoom else { return }
         let scale = highlighted ? max(viewport.zoom, 1) : viewport.zoom
         let screenCenter = viewport.toScreen(CGPoint(x: Double(center.x), y: Double(center.y)))
         let textColor = highlighted ? Theme.accent : (style == .conditional || style == .control ? Theme.boardConditional : Theme.textSecondary)
-        let text = context.resolve(Text(label).font(.system(size: 10 * scale)).foregroundColor(textColor))
-        let measured = text.measure(in: CGSize(width: 320 * scale, height: 30 * scale))
+        let font = Font.system(size: 10 * scale)
+        var text = Text(arrow.label).font(font).foregroundColor(textColor)
+        if let bits = arrow.bits {
+            let boldFont = Font.system(size: 10 * scale, weight: .bold)
+            let widthText = Text(arrow.label.isEmpty ? "\(bits)" : "  \(bits)").font(boldFont).foregroundColor(textColor)
+            text = arrow.label.isEmpty ? widthText : text + widthText
+        }
+        let resolved = context.resolve(text)
+        let measured = resolved.measure(in: CGSize(width: 320 * scale, height: 30 * scale))
         let box = CGRect(x: screenCenter.x - measured.width / 2 - 7 * scale, y: screenCenter.y - 9 * scale,
                          width: measured.width + 14 * scale, height: 18 * scale)
         let path = Path(roundedRect: box, cornerRadius: 9 * scale)
         context.fill(path, with: .color(Theme.boardBackground))
         context.stroke(path, with: .color(Color.white.opacity(0.12)), lineWidth: 1)
-        context.draw(text, at: screenCenter)
-    }
-
-    /// Where an arrow's label goes when the layout found it no room: the midpoint of its longest
-    /// segment, canvas points.
-    private func fallbackLabelCenter(_ points: [BoardPoint]) -> BoardPoint? {
-        var longest: (a: BoardPoint, b: BoardPoint, length: Int)?
-        for (a, b) in zip(points, points.dropFirst()) {
-            let length = abs(b.x - a.x) + abs(b.y - a.y)
-            if longest == nil || length > longest!.length { longest = (a, b, length) }
-        }
-        guard let longest else { return nil }
-        return BoardPoint(x: (longest.a.x + longest.b.x) / 2, y: (longest.a.y + longest.b.y) / 2)
+        context.draw(resolved, at: screenCenter)
     }
 
     private func labelPoint(_ points: [CGPoint]) -> CGPoint? {
@@ -776,6 +845,7 @@ struct BoardCanvas: View {
     private func placeViewport() {
         if let saved = sidebarState.boardViewport(for: projectPath) {
             viewport = saved
+            lens = saved.lens
         } else if !board.isEmpty {
             fitAll()
         } else {

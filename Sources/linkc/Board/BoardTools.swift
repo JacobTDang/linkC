@@ -88,6 +88,55 @@ struct BoardToolbar: View {
     }
 }
 
+/// The lens chips at the top left of the canvas: a segmented All / Data / Control, in the
+/// toolbar's own visual style, plus a Focus button — disabled for now, since nothing is pinned
+/// until a later change wires up pinning.
+struct BoardLensChips: View {
+    @Binding var lens: BoardLens
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(BoardLens.allCases, id: \.self) { option in
+                Button { lens = option } label: {
+                    Text(title(for: option))
+                        .font(.system(size: 11))
+                        .foregroundStyle(lens == option ? Theme.accent : Theme.textSecondary)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(lens == option ? Theme.accent.opacity(0.16) : .clear))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(title(for: option))
+            }
+            Rectangle().fill(Theme.textTertiary.opacity(0.25)).frame(width: 1, height: 16).padding(.horizontal, 2)
+            Button(action: {}) {
+                Text("◎ Focus")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(true)
+            .help("Focus — shows only a pinned part or arrow and its neighbours")
+        }
+        .padding(5)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.boardBox.opacity(0.96)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.1), lineWidth: 1))
+        .shadow(color: .black.opacity(0.45), radius: 12, y: 6)
+    }
+
+    private func title(for lens: BoardLens) -> String {
+        switch lens {
+        case .all: return "All"
+        case .data: return "Data"
+        case .control: return "Control"
+        }
+    }
+}
+
 /// The card beside a selected component. Opens on a snapshot of the component and never updates
 /// it from further re-renders while it's open — an agent's change to a field the user hasn't
 /// touched must go on showing what the user typed, not jump underneath it — so Done can commit
