@@ -23,9 +23,14 @@ This builds on Board inspect (hover cards, the docked inspector, lenses), which 
 
 ## 2 · Ghost neighbours
 
-- **Storage:** a detail board holds one **ghost** for each overview neighbour of the part it details. A ghost is a component entry marked `"outside": true`. Its name and kind are copied from the neighbour on the parent board.
-- **Ghosts from arrows into the part** sit in a column at the left edge of the board. **Ghosts from the part's arrows out** sit in a column at the right edge. Each column is ordered by name, lowercased.
-  - Tidy up and the layout keep ghosts in those columns. The user can't drag a ghost.
+- **Storage:** a detail board holds one **ghost** for each overview neighbour of the part it details. A ghost is a component entry marked with its side:
+  - `"outside": "in"` for a neighbour with an arrow into the part (it feeds the part);
+  - `"outside": "out"` for a neighbour the part's arrows reach.
+
+  A neighbour that goes both ways is `"in"`. The ghost's name and kind are copied from the neighbour on the parent board.
+- **Where ghosts sit:** `"in"` ghosts sit in a column to the left of everything else on the board, and `"out"` ghosts in a column to the right. Each column is ordered by name, lowercased, starting at the top of the diagram.
+  - Placing ghosts never moves the board's own parts. Tidy up lays out the parts, then places the ghosts again.
+  - The user can't drag a ghost.
 - **How a ghost draws:**
   - faint, as a transparent fill with a dashed outline;
   - its name, with no sub-line;
@@ -63,9 +68,13 @@ This builds on Board inspect (hover cards, the docked inspector, lenses), which 
 
 - **LinkCKit, pure and tested:**
   - `BoardSlug`: the slug from a path of part names, with the suffix rule.
-  - `BoardGhosts.sync(detail:parentBoard:part:) -> BoardMap?`: the detail map with its ghosts synced (added, marked stale, or un-staled). It returns nil when nothing changed. It also gives the ghosts' layout positions (the left and right columns).
+  - `BoardGhosts.sync(detail:parent:part:) -> BoardMap?`: the detail map with its ghosts synced (added, marked stale, or un-staled) and placed. It returns nil when nothing changed.
+  - `BoardLayout.placedGhosts(_:)`: the ghost columns. `BoardLayout.arranged` lays out the non-ghost parts, then places the ghosts.
+  - `BoardDrill`, the one place detail boards are created and opened. The agent tools use it now, and the app's Go deeper will use it later:
+    - `detail(of:onBoard:workspacePath:)` gives a part's slug, creating its detail board and link when missing;
+    - `open(_:workspacePath:)` loads a detail board with its ghosts synced, and saves when they changed.
   - `BoardCatalog`: every board file of a project (overview, detail files and unlinked ones), with its path and slug, from the directory listing and the `detail` links.
-  - `BoardComponent` gains `detail: String?`, `outside: Bool` and `stale: Bool`. They are encoded only when set, so existing files and diffs don't change.
+  - `BoardComponent` gains `detail: String?`, `outside: BoardGhostSide?` (`in` or `out`) and `stale: Bool`. They are encoded only when set, so existing files and diffs don't change.
   - `BoardMapStore` gains `init(workspacePath:board:)` for a slug. The overview keeps the current initializer and file.
   - `BoardEdit`: the `detail` step, and the ghost refusals.
   - The MCP tools: the `board` parameter and the `boards` list.
