@@ -4,6 +4,8 @@ linkC is a macOS menu-bar app that runs your AI coding agents in one place. Each
 its own terminal inside a glass panel. linkC shows which agents work and which agents need you.
 The agents can also send tasks and messages to each other.
 
+![Four pixel mascots, one for each agent: Claude Code, Codex, Antigravity and Cursor. They go into the linkC panel. Claude gives a task to Antigravity. Codex reaches its usage limit, and its task moves to Cursor. Then the Board shows a card for an arrow](docs/images/linkc.gif)
+
 In this README:
 
 - An **agent** is an AI coding CLI: Claude Code, Codex, Antigravity or Cursor Agent.
@@ -102,6 +104,18 @@ server.
     prompt, state and human.
   - **Hardware**: ALU, MUX, DEMUX, register, RAM, control unit, adder, decoder, clock and bus.
 - An arrow can be plain, conditional, control or bus. A bus arrow can show its width in bits.
+  The label of an arrow shows its width after the label, for example `rs1 data  32`.
+- Move the pointer onto a component or an arrow. After a short time, a card shows its details:
+  - For an arrow: the two ends, the label, and the width or the style.
+  - For a component: its kind, its description, and the arrows in (**IN**) and out (**OUT**).
+- Click a component or an arrow to pin it. The inspector opens at the right side of the Board
+  and shows the same details. **Edit…** in the inspector opens the editor. A double-click also
+  opens the editor.
+- The lenses **All**, **Data** and **Control** make the Board easier to read. **Data** shows the
+  plain and bus arrows at full strength. **Control** shows the control and conditional arrows at
+  full strength. linkC keeps the lens of each Board.
+- **◎ Focus** shows only the pinned item, its neighbors and the arrows between them. Press Esc
+  to leave Focus. Press Esc again to close the inspector.
 - A component can show the logo of its technology, for example PostgreSQL, Redis or Docker.
 - Agents read and edit the Board through the linkC MCP server. After an agent edits the Board,
   linkC arranges the diagram again.
