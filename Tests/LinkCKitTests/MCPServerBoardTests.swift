@@ -284,5 +284,12 @@ final class MCPServerBoardTests: XCTestCase {
             XCTAssertTrue(msg.contains(missingPath), msg)
         }
     }
-}
+    func testStepsSchemaDescriptionDocumentsColumnsAndTheColumnStep() {
+        let text = MCPServer.stepsSchemaDescription
+        XCTAssertTrue(text.contains(#""columns"?"#), text)
+        XCTAssertTrue(text.contains(#""op": "column""#), text)
+        XCTAssertTrue(text.contains(#""drop""#), text)
+        XCTAssertTrue(text.contains("only work on a \"table\" part"), text)
+    }
 
+}

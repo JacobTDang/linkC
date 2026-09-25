@@ -81,7 +81,8 @@ public final class MCPServer: Sendable {
     /// `BoardEdit`'s own decoding.
     static let stepsSchemaDescription = """
         1 to 50 steps, applied in order, all or nothing. One verb per step, naming its fields exactly:
-        add: {"add": name, "kind"?, "tech"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool}
+        add: {"add": name, "kind"?, "tech"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool, "columns"?: [column]}
+        Without columns, add: {"add": name, "kind"?, "tech"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool}
         update: {"update": name, same optional fields, "rename"?: new name}
         remove: {"remove": name}
         connect: {"connect": from, "to": to, "label"?, "style"?: plain|conditional|control|bus, "bits"?: 1-4096 (bus only)}
@@ -92,7 +93,9 @@ public final class MCPServer: Sendable {
         remove_note: {"remove_note": exact text}
         system: {"system": one line}
         detail: {"detail": name}
-        "kind": \(ComponentKind.groupedKindList) — any other kind is kept and drawn as a service. "memory" is the AI agent's checkpointer; "ram" is hardware memory.
+        column: {"op": "column", "table": name, "column": name, "set"?: {column keys except name}, "drop"?: true} — adds the column when it's missing (needs "type"), changes it when present, drops it with "drop": true.
+        a column: {"name", "type", "pk"?: bool, "nullable"?: bool, "unique"?: bool, "default"?, "references"?: "table.column", "status"?: "planned"}. "columns" and the "column" step only work on a "table" part.
+        "kind": \(ComponentKind.groupedKindList) — any other kind is kept and drawn as a service. "memory" is the AI agent's checkpointer; "ram" is hardware memory. "table" is a database's own table, its box sized to fit its columns.
         "planned": true marks something not built yet — linkc_get_board shows it as "status": "planned".
         "tech": a known technology id or alias — \(BoardTech.knownIDs.joined(separator: ", "))
         A new arrow from a router defaults to conditional, from a control unit to control.
@@ -257,7 +260,7 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_edit_board",
-                "description": "Change this project's Board with a list of steps, applied in order, all or nothing. Verbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system, detail. Optional board: \"overview\" (default) or a detail board's slug. Parts marked outside come from the parent board and are read-only here. When you add or change infrastructure (a service, database, cache, queue, host…), reflect it on the Board.",
+                "description": "Change this project's Board with a list of steps, applied in order, all or nothing. Verbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system, detail, column. Optional board: \"overview\" (default) or a detail board's slug. Parts marked outside come from the parent board and are read-only here. When you add or change infrastructure (a service, database, cache, queue, host…), reflect it on the Board.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [

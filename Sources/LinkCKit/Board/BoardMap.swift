@@ -558,6 +558,11 @@ public struct BoardMap: Equatable, Sendable {
         guard let entries = value as? [[String: Any]] else {
             throw LinkCError.parse("\(context) has \"columns\" but it is not a list of objects")
         }
+        return try parsedColumns(entries, context: context)
+    }
+
+    /// Validates an already-unwrapped list of board columns for edit steps.
+    static func parsedColumns(_ entries: [[String: Any]], context: String) throws -> [BoardColumn] {
         let knownKeys: Set<String> = ["name", "type", "pk", "nullable", "unique", "default", "references", "status"]
         var result: [BoardColumn] = []
         var seen: Set<String> = []

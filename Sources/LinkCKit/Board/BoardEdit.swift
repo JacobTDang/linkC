@@ -10,16 +10,42 @@ public struct BoardComponentFields: Equatable, Sendable {
     public var runs: String?        // "" clears
     public var tech: String?        // "" clears
     public var planned: Bool?
+    public var columns: [BoardColumn]?
 
     public init(
         kind: ComponentKind? = nil, does: String? = nil, reachedBy: String? = nil, runs: String? = nil,
-        tech: String? = nil, planned: Bool? = nil
+        tech: String? = nil, planned: Bool? = nil, columns: [BoardColumn]? = nil
     ) {
         self.kind = kind
         self.does = does
         self.reachedBy = reachedBy
         self.runs = runs
         self.tech = tech
+        self.planned = planned
+        self.columns = columns
+    }
+}
+
+/// Editable values carried by a `column` step.
+public struct BoardColumnFields: Equatable, Sendable {
+    public var type: String?
+    public var pk: Bool?
+    public var nullable: Bool?
+    public var unique: Bool?
+    public var defaultValue: String?
+    public var references: String?
+    public var planned: Bool?
+
+    public init(
+        type: String? = nil, pk: Bool? = nil, nullable: Bool? = nil, unique: Bool? = nil,
+        defaultValue: String? = nil, references: String? = nil, planned: Bool? = nil
+    ) {
+        self.type = type
+        self.pk = pk
+        self.nullable = nullable
+        self.unique = unique
+        self.defaultValue = defaultValue
+        self.references = references
         self.planned = planned
     }
 }
@@ -38,6 +64,7 @@ public enum BoardEditStep: Equatable, Sendable {
     case removeNote(String)
     case system(String)
     case detail(String)
+    case column(table: String, column: String, set: BoardColumnFields?, drop: Bool)
 }
 
 /// A step `BoardEdit` would not apply, and why. `apply` is all-or-nothing: the first refusal
@@ -62,8 +89,8 @@ public enum BoardEdit {
     /// The fields each verb accepts besides its own name-bearing key, in the order the tool's
     /// schema documents them — what an unknown-field refusal lists as "takes:".
     private static let allowedFields: [String: [String]] = [
-        "add": ["kind", "tech", "in", "does", "reached_by", "runs", "planned"],
-        "update": ["kind", "tech", "in", "does", "reached_by", "runs", "planned", "rename"],
+        "add": ["kind", "tech", "in", "does", "reached_by", "runs", "planned", "columns"],
+        "update": ["kind", "tech", "in", "does", "reached_by", "runs", "planned", "rename", "columns"],
         "remove": [],
         "connect": ["to", "label", "style", "bits"],
         "disconnect": ["to"],
@@ -75,6 +102,9 @@ public enum BoardEdit {
         "detail": [],
     ]
 
+    private static let columnStepKnownKeys: Set<String> = ["op", "table", "column", "set", "drop"]
+    private static let columnSetKnownKeys: Set<String> = ["type", "pk", "nullable", "unique", "default", "references", "status"]
+
     // MARK: - Decoding
 
     /// Decodes the tool's `steps` argument. Throws `BoardEditRefusal` for a malformed step.
@@ -85,9 +115,29 @@ public enum BoardEdit {
         return try array.enumerated().map { index, raw in try decodeStep(raw, step: index + 1) }
     }
 
+    private static func stringField(_ key: String, _ object: [String: Any], _ step: Int) throws -> String? {
+        guard let value = object[key] else { return nil }
+        guard let text = value as? String else {
+            throw BoardEditRefusal(step: step, reason: "\"\(key)\" must be text")
+        }
+        return text
+    }
+
+    /// Reads a JSON Boolean without accepting numeric `NSNumber` values as Boolean values.
+    private static func boolField(_ key: String, _ object: [String: Any], _ step: Int) throws -> Bool? {
+        guard let value = object[key] else { return nil }
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            throw BoardEditRefusal(step: step, reason: "\"\(key)\" must be true or false")
+        }
+        return number.boolValue
+    }
+
     private static func decodeStep(_ raw: Any, step: Int) throws -> BoardEditStep {
         guard let object = raw as? [String: Any] else {
             throw BoardEditRefusal(step: step, reason: "a step must be an object")
+        }
+        if object["op"] != nil {
+            return try decodeColumnStep(object, step: step)
         }
         let verbsPresent = verbKeys.intersection(object.keys)
         guard verbsPresent.count == 1, let verb = verbsPresent.first else {
@@ -100,20 +150,10 @@ public enum BoardEdit {
         }
 
         func stringField(_ key: String) throws -> String? {
-            guard let value = object[key] else { return nil }
-            guard let text = value as? String else { throw BoardEditRefusal(step: step, reason: "\"\(key)\" must be text") }
-            return text
+            try Self.stringField(key, object, step)
         }
         func boolField(_ key: String) throws -> Bool? {
-            guard let value = object[key] else { return nil }
-            // `JSONSerialization` bridges every number to `NSNumber`, and `NSNumber as? Bool`
-            // bridges any of them — `1`, not just `true` — to `Bool`. A real boolean carries the
-            // `CFBoolean` type; a plain number does not, so it is refused rather than silently
-            // treated as true or false. Matches `BoardMapJSON.isBoolNumber`'s own check.
-            guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
-                throw BoardEditRefusal(step: step, reason: "\"\(key)\" must be true or false")
-            }
-            return number.boolValue
+            try Self.boolField(key, object, step)
         }
         func intField(_ key: String) throws -> Int? {
             guard let value = object[key] else { return nil }
@@ -152,13 +192,24 @@ public enum BoardEdit {
         let planned = try boolField("planned")
         let style = try styleField("style")
         let bits = try intField("bits")
+        var columns: [BoardColumn]?
+        if let rawColumns = object["columns"] {
+            guard let entries = rawColumns as? [[String: Any]] else {
+                throw BoardEditRefusal(step: step, reason: "\"columns\" must be a list of objects")
+            }
+            do {
+                columns = try BoardMap.parsedColumns(entries, context: "\"\(verbValue)\"")
+            } catch let error as LinkCError {
+                throw BoardEditRefusal(step: step, reason: error.localizedDescription)
+            }
+        }
 
         switch verb {
         case "add":
-            let fields = BoardComponentFields(kind: kind.map(ComponentKind.init), does: does, reachedBy: reachedBy, runs: runs, tech: tech, planned: planned)
+            let fields = BoardComponentFields(kind: kind.map(ComponentKind.init), does: does, reachedBy: reachedBy, runs: runs, tech: tech, planned: planned, columns: columns)
             return .add(verbValue, fields, place: inPlace)
         case "update":
-            let fields = BoardComponentFields(kind: kind.map(ComponentKind.init), does: does, reachedBy: reachedBy, runs: runs, tech: tech, planned: planned)
+            let fields = BoardComponentFields(kind: kind.map(ComponentKind.init), does: does, reachedBy: reachedBy, runs: runs, tech: tech, planned: planned, columns: columns)
             return .update(verbValue, fields, place: inPlace, rename: rename)
         case "remove":
             return .remove(verbValue)
@@ -184,6 +235,64 @@ public enum BoardEdit {
         default:
             preconditionFailure("decodeStep: unhandled verb \"\(verb)\"")
         }
+    }
+
+    private static func decodeColumnStep(_ object: [String: Any], step: Int) throws -> BoardEditStep {
+        guard let op = object["op"] as? String, op == "column" else {
+            throw BoardEditRefusal(step: step, reason: "\"op\" must be \"column\"")
+        }
+        for key in object.keys where !columnStepKnownKeys.contains(key) {
+            throw BoardEditRefusal(step: step, reason: "unknown field \"\(key)\" — column takes: table, column, set, drop")
+        }
+        guard let table = try stringField("table", object, step), !trimmed(table).isEmpty else {
+            throw BoardEditRefusal(step: step, reason: "a \"column\" step needs \"table\"")
+        }
+        guard let column = try stringField("column", object, step), !trimmed(column).isEmpty else {
+            throw BoardEditRefusal(step: step, reason: "a \"column\" step needs \"column\"")
+        }
+        let drop = try boolField("drop", object, step) ?? false
+        let rawSet = object["set"]
+        if drop, rawSet != nil {
+            throw BoardEditRefusal(step: step, reason: "a \"column\" step can't set and drop at once")
+        }
+        guard drop || rawSet != nil else {
+            throw BoardEditRefusal(step: step, reason: "a \"column\" step needs \"set\" or \"drop\"")
+        }
+
+        var fields: BoardColumnFields?
+        if let rawSet {
+            guard let setObject = rawSet as? [String: Any] else {
+                throw BoardEditRefusal(step: step, reason: "\"set\" must be an object")
+            }
+            for key in setObject.keys where !columnSetKnownKeys.contains(key) {
+                throw BoardEditRefusal(step: step, reason: "column \"\(column)\" has an unknown key \"\(key)\"")
+            }
+            let type = try stringField("type", setObject, step)
+            let pk = try boolField("pk", setObject, step)
+            let nullable = try boolField("nullable", setObject, step)
+            if pk == true, nullable == true {
+                throw BoardEditRefusal(step: step, reason: "column \"\(column)\" is a primary key, so it can't be nullable")
+            }
+            let unique = try boolField("unique", setObject, step)
+            let defaultValue = try stringField("default", setObject, step)
+            let references = try stringField("references", setObject, step)
+            var planned: Bool?
+            if let status = try stringField("status", setObject, step) {
+                guard status == "planned" else {
+                    throw BoardEditRefusal(step: step, reason: "column \"\(column)\": the only status is \"planned\"")
+                }
+                planned = true
+            }
+            fields = BoardColumnFields(
+                type: type,
+                pk: pk,
+                nullable: nullable,
+                unique: unique,
+                defaultValue: defaultValue,
+                references: references,
+                planned: planned)
+        }
+        return .column(table: trimmed(table), column: trimmed(column), set: fields, drop: drop)
     }
 
     // MARK: - Applying
@@ -231,6 +340,8 @@ public enum BoardEdit {
             return applySystem(text, map: &map)
         case .detail(let rawName):
             return try applyDetail(rawName, number: number, map: &map, detailSlug: detailSlug)
+        case .column(let table, let column, let set, let drop):
+            return try applyColumn(table: table, column: column, set: set, drop: drop, number: number, map: &map)
         }
     }
 
@@ -260,14 +371,19 @@ public enum BoardEdit {
         guard BoardModel.index(of: name, in: map) == nil else {
             throw BoardEditRefusal(step: number, reason: "a component named \"\(name)\" already exists")
         }
+        let kind = fields.kind ?? .service
+        if fields.columns != nil, kind != .table {
+            throw BoardEditRefusal(step: number, reason: "\"columns\" belong to a table; \"\(name)\" is a \(kind.raw)")
+        }
         let component = BoardComponent(
             name: name,
-            kind: fields.kind ?? .service,
+            kind: kind,
             does: fields.does,
             reachedBy: fields.reachedBy,
             runs: fields.runs,
             tech: fields.tech,
-            planned: fields.planned ?? false)
+            planned: fields.planned ?? false,
+            columns: fields.columns ?? [])
         try placeComponent(component, at: place, number: number, map: &map)
         let added = map.components.last!
         return "added \(added.name) (\(bracket(for: added)))" + (added.place != BoardMap.notPlaced ? " in \(added.place)" : "")
@@ -280,13 +396,19 @@ public enum BoardEdit {
         let index = try requireComponent(name, in: map, step: number)
         let oldName = map.components[index].name
         if map.components[index].outside != nil {
-            if fields.kind != nil || rename != nil {
+            if fields.kind != nil || fields.columns != nil || rename != nil {
                 throw BoardEditRefusal(step: number, reason: "\"\(oldName)\" comes from the overview; change it there")
             }
         }
         var component = map.components[index]
 
         if let kind = fields.kind { component.kind = kind }
+        if let columns = fields.columns {
+            guard component.kind == .table else {
+                throw BoardEditRefusal(step: number, reason: "\"columns\" belong to a table; \"\(oldName)\" is a \(component.kind.raw)")
+            }
+            component.columns = columns
+        }
         if let does = fields.does { component.does = does.isEmpty ? nil : does }
         if let reachedBy = fields.reachedBy { component.reachedBy = reachedBy.isEmpty ? nil : reachedBy }
         if let runs = fields.runs { component.runs = runs.isEmpty ? nil : runs }
@@ -321,6 +443,105 @@ public enum BoardEdit {
 
         if let newName, newName != oldName { return "renamed \(oldName) → \(newName)" }
         return "updated \(oldName)"
+    }
+
+    private static func tablesList(_ map: BoardMap) -> String {
+        let names = map.components
+            .filter { $0.kind == .table }
+            .map(\.name)
+            .sorted { $0.lowercased() < $1.lowercased() }
+        return names.isEmpty ? "(none)" : names.joined(separator: ", ")
+    }
+
+    /// Adds, changes, or drops one column on a local table component.
+    private static func applyColumn(
+        table tableName: String,
+        column columnName: String,
+        set fields: BoardColumnFields?,
+        drop: Bool,
+        number: Int,
+        map: inout BoardMap
+    ) throws -> String {
+        guard let index = BoardModel.index(of: tableName, in: map) else {
+            throw BoardEditRefusal(step: number, reason: "no table \"\(tableName)\" — tables: \(tablesList(map))")
+        }
+        var component = map.components[index]
+        guard component.outside == nil else {
+            throw BoardEditRefusal(step: number, reason: "\"\(component.name)\" comes from the overview; change it there")
+        }
+        guard component.kind == .table else {
+            throw BoardEditRefusal(step: number, reason: "\"\(component.name)\" is a \(component.kind.raw), not a table")
+        }
+        let columnIndex = component.columns.firstIndex {
+            $0.name.lowercased() == columnName.lowercased()
+        }
+
+        if drop {
+            guard let columnIndex else {
+                throw BoardEditRefusal(step: number, reason: "table \"\(component.name)\" has no column \"\(columnName)\"")
+            }
+            let droppedName = component.columns[columnIndex].name
+            component.columns.remove(at: columnIndex)
+            map.components[index] = component
+            return "dropped \(component.name).\(droppedName)"
+        }
+
+        guard let fields else {
+            throw BoardEditRefusal(step: number, reason: "a \"column\" step needs \"set\" or \"drop\"")
+        }
+
+        if let columnIndex {
+            var column = component.columns[columnIndex]
+            if let type = fields.type { column.type = type }
+            if let pk = fields.pk { column.pk = pk }
+            if let nullable = fields.nullable { column.nullable = nullable }
+            if let unique = fields.unique { column.unique = unique }
+            if let defaultValue = fields.defaultValue {
+                column.defaultValue = defaultValue.isEmpty ? nil : defaultValue
+            }
+            if let referencesText = fields.references {
+                if referencesText.isEmpty {
+                    column.references = nil
+                } else {
+                    guard let parsed = BoardColumnReference(parsing: referencesText) else {
+                        throw BoardEditRefusal(
+                            step: number,
+                            reason: "column \"\(column.name)\" has \"references\" \"\(referencesText)\" but it is not table.column")
+                    }
+                    column.references = parsed
+                }
+            }
+            if let planned = fields.planned { column.planned = planned }
+            if column.pk { column.nullable = false }
+            component.columns[columnIndex] = column
+            map.components[index] = component
+            return "changed \(component.name).\(column.name)"
+        }
+
+        guard let type = fields.type, !type.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw BoardEditRefusal(step: number, reason: "column \"\(columnName)\" needs \"type\" to be added")
+        }
+        var reference: BoardColumnReference?
+        if let referencesText = fields.references, !referencesText.isEmpty {
+            guard let parsed = BoardColumnReference(parsing: referencesText) else {
+                throw BoardEditRefusal(
+                    step: number,
+                    reason: "column \"\(columnName)\" has \"references\" \"\(referencesText)\" but it is not table.column")
+            }
+            reference = parsed
+        }
+        let newColumn = BoardColumn(
+            name: columnName,
+            type: type,
+            pk: fields.pk ?? false,
+            nullable: fields.nullable ?? true,
+            unique: fields.unique ?? false,
+            defaultValue: (fields.defaultValue?.isEmpty ?? true) ? nil : fields.defaultValue,
+            references: reference,
+            planned: fields.planned ?? false)
+        component.columns.append(newColumn)
+        map.components[index] = component
+        return "added \(component.name).\(newColumn.name)"
     }
 
     /// Places `component` per a step's `in` argument: `nil` drops it to the right of everything;
