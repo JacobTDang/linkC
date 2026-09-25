@@ -898,7 +898,7 @@ public final class AppCoordinator {
                 // A booting TUI is also silent. Promote only once the agent CLI is actually
                 // running, or the relay types the next frame into a process that cannot read it.
                 if currentSession.state == .starting,
-                   ProcessSnooper.detectAgent(inProcessTreeOf: term.processId) != nil {
+                   ProcessSnooper.detectAgent(atOrUnder: term.processId) != nil {
                     store.updateState(id: session.id, to: .ready)
                 }
             }

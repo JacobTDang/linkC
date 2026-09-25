@@ -28,6 +28,18 @@ public struct ProcessSnooper: Sendable {
     }
 
     /// Queries the Darwin kernel for child processes of `ppid` and returns the first detected `AgentKind`.
+    /// The agent a terminal runs, whether the terminal's own process IS the agent (linkC launches
+    /// agent CLIs directly) or the agent runs beneath it (a shell, a wrapper script).
+    public static func detectAgent(atOrUnder pid: pid_t) -> AgentKind? {
+        guard pid > 0 else { return nil }
+        var pathBuffer = [CChar](repeating: 0, count: 4096)
+        if proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count)) > 0 {
+            let path = pathBuffer.withUnsafeBufferPointer { $0.baseAddress.map { String(cString: $0) } ?? "" }
+            if let agent = detectAgent(inPath: path) { return agent }
+        }
+        return detectAgent(inProcessTreeOf: pid)
+    }
+
     public static func detectAgent(inProcessTreeOf ppid: pid_t) -> AgentKind? {
         guard ppid > 0 else { return nil }
 

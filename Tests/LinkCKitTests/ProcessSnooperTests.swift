@@ -144,4 +144,24 @@ final class ProcessSnooperTests: XCTestCase {
     func testCanonicalPathIsNilForAPathThatDoesNotExist() {
         XCTAssertNil(ProcessSnooper.canonicalPath("/no/such/path-\(UUID().uuidString)"))
     }
+
+    func testAnAgentLaunchedDirectlyIsDetectedAsTheProcessItself() throws {
+        // linkC starts agent CLIs directly, so the terminal's own process is the agent and has no
+        // agent below it. A copy of `sleep` named `agy` stands in for the CLI.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-agent-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let binary = folder.appendingPathComponent("agy")
+        try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: binary.path)
+
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = ["30"]
+        try process.run()
+        defer { process.terminate() }
+
+        XCTAssertNil(ProcessSnooper.detectAgent(inProcessTreeOf: process.processIdentifier), "nothing runs beneath it")
+        XCTAssertEqual(ProcessSnooper.detectAgent(atOrUnder: process.processIdentifier), .agy)
+        XCTAssertNil(ProcessSnooper.detectAgent(atOrUnder: pid_t(Int32.max)))
+    }
 }
