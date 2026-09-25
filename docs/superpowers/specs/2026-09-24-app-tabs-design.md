@@ -71,7 +71,7 @@ An unknown key is ignored. A missing or invalid required field is an error that 
 - **LinkCKit, pure and tested:**
   - `LinkCAppManifest`: decodes and validates a manifest, with errors that name the field;
   - `LinkCAppManifest.launch(port:)`: builds the argv (with `{port}` replaced), the environment additions and the page URL.
-- **LinkCKit, lifecycle, tested with a real child process:** `LinkCAppProcess` has these states: `asleep`, `starting`, `running(url)`, `failed(reason, log)` and `exited(status, log)`. It covers:
+- **LinkCKit, lifecycle, tested with a real child process:** `LinkCAppProcess` has these states: `asleep`, `starting`, `running(url)`, `failed(reason)` and `exited(status)`, with the log kept live beside the state. It covers:
   - the free port;
   - the spawn in its own process group;
   - the health poll with a timeout;
