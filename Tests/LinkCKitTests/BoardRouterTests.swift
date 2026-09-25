@@ -344,4 +344,30 @@ final class BoardRouterTests: XCTestCase {
         })
         XCTAssertEqual(routes.count, 1, "stops after the first arrow once cancellation is seen")
     }
+
+    // MARK: - Spread ends
+
+    /// The ALU case from the RISC-V Board: two differently labelled buses into one side.
+    private func twoIntoOneSide() -> BoardMap {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "rf", kind: .register, uses: ["alu": BoardArrow(label: "rs1 data", style: .bus, bits: 32)], at: BoardPoint(x: 0, y: 0)),
+            BoardComponent(name: "fwd", kind: .mux, uses: ["alu": BoardArrow(label: "operand A", style: .bus, bits: 32)], at: BoardPoint(x: 0, y: 300)),
+            BoardComponent(name: "alu", kind: .alu, at: BoardPoint(x: 500, y: 150)),
+        ]
+        return m
+    }
+
+    func testUnbundledArrowsIntoOneSideGetTheirOwnEnds() throws {
+        let routes = BoardRouter.routes(for: twoIntoOneSide())
+        let top = try XCTUnwrap(routes[.init(from: "rf", to: "alu")]?.points.last)
+        let bottom = try XCTUnwrap(routes[.init(from: "fwd", to: "alu")]?.points.last)
+        XCTAssertEqual(top.x, bottom.x, "both land on the ALU's left side")
+        XCTAssertGreaterThanOrEqual(abs(top.y - bottom.y), 12, "they no longer share one point")
+        XCTAssertLessThan(top.y, bottom.y, "ordered by their sources: rf above fwd")
+    }
+
+    func testSpreadEndsStayDeterministic() {
+        XCTAssertEqual(BoardRouter.routes(for: twoIntoOneSide()), BoardRouter.routes(for: twoIntoOneSide()))
+    }
 }

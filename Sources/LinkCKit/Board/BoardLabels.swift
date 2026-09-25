@@ -21,6 +21,18 @@ public enum BoardLabels {
         Int((Double(label.count) * charWidth).rounded()) + horizontalPadding
     }
 
+    /// What an arrow's pill says: its label, then its width after two spaces. A bus with no label
+    /// shows its width alone, and an arrow with neither has no pill.
+    public static func pillText(for arrow: BoardArrow) -> String? {
+        let width = arrow.bits.map(String.init)
+        switch (arrow.label.isEmpty, width) {
+        case (false, let width?): return arrow.label + "  " + width
+        case (false, nil): return arrow.label
+        case (true, let width?): return width
+        case (true, nil): return nil
+        }
+    }
+
     /// Where each labelled arrow's pill goes; an arrow with no room is absent.
     public static func placed(
         routes: [BoardModel.ArrowKey: BoardRoute], labels: [BoardModel.ArrowKey: String], obstacles: [BoardRect]

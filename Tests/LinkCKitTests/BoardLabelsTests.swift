@@ -49,4 +49,20 @@ final class BoardLabelsTests: XCTestCase {
         XCTAssertEqual(BoardLabels.placed(routes: routes, labels: labels(m), obstacles: BoardLabels.obstacles(for: m)),
                        BoardLabels.placed(routes: routes, labels: labels(m), obstacles: BoardLabels.obstacles(for: m)))
     }
+
+    func testThePillCarriesTheWidth() {
+        XCTAssertEqual(BoardLabels.pillText(for: BoardArrow(label: "rs1 data", style: .bus, bits: 32)), "rs1 data  32")
+        XCTAssertEqual(BoardLabels.pillText(for: BoardArrow(label: "", style: .bus, bits: 32)), "32")
+        XCTAssertEqual(BoardLabels.pillText(for: BoardArrow(label: "RegWrite", style: .control)), "RegWrite")
+        XCTAssertNil(BoardLabels.pillText(for: BoardArrow(label: "", style: .plain)))
+    }
+
+    func testAnUnlabelledBusGetsAPlacedPill() throws {
+        var m = BoardMap()
+        m.components = [BoardComponent(name: "a", kind: .register, uses: ["b": BoardArrow(label: "", style: .bus, bits: 32)], at: BoardPoint(x: 0, y: 0)),
+                        BoardComponent(name: "b", kind: .alu, at: BoardPoint(x: 500, y: 0))]
+        let placed = try XCTUnwrap(BoardModel.routesAndLabels(for: m, isCancelled: { false }))
+        let rect = try XCTUnwrap(placed.labelRects[.init(from: "a", to: "b")])
+        XCTAssertEqual(rect.w, BoardLabels.width(of: "32"))
+    }
 }

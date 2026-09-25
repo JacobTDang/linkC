@@ -729,10 +729,14 @@ public final class BoardModel {
     ) -> (routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect])? {
         let routes = BoardRouter.routes(for: map)
         guard !isCancelled() else { return nil }
+        // The placer's text is the arrow's full pill — label and width combined, or width alone
+        // for an unlabelled bus — never the router's own bundling label, which stays `arrow.label`
+        // so bundling is unaffected by what the pill happens to show.
         var labelOf: [ArrowKey: String] = [:]
         for component in map.components {
-            for (target, arrow) in component.uses where !arrow.label.isEmpty {
-                labelOf[ArrowKey(from: component.name, to: target)] = arrow.label
+            for (target, arrow) in component.uses {
+                guard let pill = BoardLabels.pillText(for: arrow) else { continue }
+                labelOf[ArrowKey(from: component.name, to: target)] = pill
             }
         }
         let labelRects = BoardLabels.placed(routes: routes, labels: labelOf, obstacles: BoardLabels.obstacles(for: map))
