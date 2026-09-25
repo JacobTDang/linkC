@@ -105,14 +105,22 @@ public enum TerminalPreview {
             guard !text.hasSuffix("(shift+tab to cycle)") && text != "? for shortcuts" else { continue }
 
             if isPromptRow(text) {
-                let above = recent[(index + 1)...].lazy.map { visibleText($0) }.filter { !$0.isEmpty }
+                let above = Array(recent[(index + 1)...].lazy.map { visibleText($0) }.filter { !$0.isEmpty })
                 if footerSaysWorking {
                     return above.compactMap { spinnerPhrase($0) }.first ?? "Working"
                 }
                 // Codex has no working footer: its status row ("• Working (9s • esc to interrupt)")
-                // sits right above the input box, and is gone once the turn ends.
-                if let status = above.first, status.contains("esc to interrupt)") {
-                    let unbulleted = status.hasPrefix("•") ? String(status.dropFirst()).trimmingCharacters(in: .whitespaces) : status
+                // sits right above the input box, and is gone once the turn ends. Messages queued
+                // mid-turn sit between the two, under a "Messages to be submitted after next tool
+                // call" header, so the status row is then the one above that header.
+                let queueHeader = above.firstIndex { $0.contains("Messages to be submitted after next tool call") }
+                let statusIndex = queueHeader.map { $0 + 1 } ?? 0
+                if statusIndex < above.count, above[statusIndex].contains("esc to interrupt)") {
+                    let status = above[statusIndex]
+                    // The bullet pulses between "•" and "◦".
+                    let unbulleted = status.hasPrefix("•") || status.hasPrefix("◦")
+                        ? String(status.dropFirst()).trimmingCharacters(in: .whitespaces)
+                        : status
                     return spinnerPhrase(unbulleted) ?? "Working"
                 }
                 // Claude with a status line has no working footer either: its spinner row above

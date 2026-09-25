@@ -321,6 +321,12 @@ public final class TerminalSession {
         return TerminalPreview.progressSignature(rows: visibleContentRows())
     }
 
+    /// The last `count` non-blank rows of the visible screen, top to bottom — for a log line that
+    /// has to show what the screen said.
+    public func recentScreenRows(_ count: Int) -> [String] {
+        Array(visibleContentRows().suffix(count))
+    }
+
     /// The visible screen's non-blank rows, top to bottom. Empty when the PTY was never started.
     private func visibleContentRows() -> [String] {
         guard let view = _terminalView else { return [] }

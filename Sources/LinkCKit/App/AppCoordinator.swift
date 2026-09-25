@@ -919,7 +919,12 @@ public final class AppCoordinator {
                 ) {
                     notifications.post(session: updated)
                 }
-                relayTurnEnd(sessionId: session.id, workspacePath: session.cwd)
+                if relayTurnEnd(sessionId: session.id, workspacePath: session.cwd) > 0 {
+                    // A turn read as ended while a task is open is either the agent stopping short or
+                    // the screen read being wrong; the rows it was read from tell which.
+                    NSLog("[linkC relay] %@ read as done with a task open; its last rows:\n%@",
+                          session.agentKind.displayName, term.recentScreenRows(12).joined(separator: "\n"))
+                }
             }
         }
 

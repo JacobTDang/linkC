@@ -348,6 +348,33 @@ final class TerminalPreviewTests: XCTestCase {
         XCTAssertNil(TerminalPreview.liveActivity(from: codexStartupRows), "Codex startup idle prompt must return nil")
     }
 
+    /// Codex shows messages queued mid-turn between its status row and the input box — captured
+    /// from Codex 0.157 in tmux. The turn is still running, so it must still read as working.
+    func testLiveActivityFindsCodexWorkingAboveQueuedMessages() {
+        let rows = [
+            "› Run the shell command: sleep 20 ; then reply with only the word done.",
+            "• Working (9s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close",
+            "• Messages to be submitted after next tool call (press esc to interrupt and send immediately)",
+            "  ↳ [linkC] a note that arrives while you work",
+            "  ↳ [linkC task 5EB4] a second queued note",
+            "› Ask Codex to do anything",
+            "  GPT-5.6-Luna low · ~/Projects/linkC · Run sleep command",
+            "  ← for agents · ? for shortcuts",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+    }
+
+    /// Codex's status bullet pulses between "•" and "◦"; either reads as working.
+    func testLiveActivityFindsCodexWorkingWithAHollowBullet() {
+        let rows = [
+            "◦ Working (1m 46s • esc to interrupt)",
+            "› Ask Codex to do anything",
+            "  GPT-5.6-Sol medium · ~/Projects/linkC · Build phase B1",
+            "  ← for agents · ? for shortcuts",
+        ]
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+    }
+
     func testLiveActivityReturnsNilForClaudeIdleBoxPromptWithPastActivity() {
         let claudeIdleRows = [
             "✻ Sautéing… (12s · esc to interrupt)",
