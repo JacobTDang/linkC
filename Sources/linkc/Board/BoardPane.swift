@@ -7,23 +7,46 @@ import LinkCKit
 struct BoardPane: View {
     let model: AppModel
     let path: String
+
+    var body: some View {
+        let address = model.currentAddress(for: path)
+        BoardPaneContent(model: model, address: address)
+            .id(address)
+    }
+}
+
+private struct BoardPaneContent: View {
+    let model: AppModel
+    let address: BoardAddress
     @State private var board: BoardModel
     @State private var watcher: BoardFileWatcher?
 
-    init(model: AppModel, path: String) {
+    init(model: AppModel, address: BoardAddress) {
         self.model = model
-        self.path = path
-        _board = State(wrappedValue: model.board(for: path))
+        self.address = address
+        do {
+            _board = State(wrappedValue: try model.board(for: address))
+        } catch {
+            let fallback = BoardModel(store: BoardMapStore(workspacePath: address.projectPath, board: address.slug))
+            fallback.liveUpdatesFailed(error.localizedDescription)
+            _board = State(wrappedValue: fallback)
+        }
     }
 
     var body: some View {
-        BoardCanvas(board: board, projectPath: path, sidebarState: model.sidebarState) {
+        BoardCanvas(
+            board: board,
+            projectPath: address.projectPath,
+            address: address,
+            model: model,
+            sidebarState: model.sidebarState
+        ) {
             board.load()
-            board.reconcile(with: model.discoveredThings(in: path))
+            board.reconcile(with: model.discoveredThings(in: address.projectPath))
             startWatching()
         }
         .onChange(of: model.toolServers?.projects) { _, _ in
-            board.reconcile(with: model.discoveredThings(in: path))
+            board.reconcile(with: model.discoveredThings(in: address.projectPath))
         }
         .onDisappear {
             watcher?.stop()

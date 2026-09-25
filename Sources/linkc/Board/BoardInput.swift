@@ -88,6 +88,7 @@ final class BoardInput {
         case 53: key = .escape
         case 51, 117: key = .delete
         case 49: key = .space
+        case 126: key = .up
         default:
             if let digit = digitKeyCodes[event.keyCode] {
                 key = .character(digit)

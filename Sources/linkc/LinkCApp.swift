@@ -616,15 +616,25 @@ final class AppModel {
         return things
     }
 
-    /// One board model per project for the life of the app, so undo and unwritten edits survive
+    /// One board model per board for the life of the app, so undo and unwritten edits survive
     /// switching tabs and projects.
-    @ObservationIgnored private var boards: [String: BoardModel] = [:]
+    @ObservationIgnored private var boards: [BoardAddress: BoardModel] = [:]
+
+    func board(for address: BoardAddress) throws -> BoardModel {
+        if let board = boards[address] { return board }
+        if let slug = address.slug {
+            _ = try BoardDrill.open(slug, workspacePath: address.projectPath)
+        }
+        let board = BoardModel(store: BoardMapStore(workspacePath: address.projectPath, board: address.slug))
+        boards[address] = board
+        return board
+    }
 
     func board(for path: String) -> BoardModel {
-        let key = (path as NSString).standardizingPath
-        if let board = boards[key] { return board }
-        let board = BoardModel(store: BoardMapStore(workspacePath: key))
-        boards[key] = board
+        let address = BoardAddress(projectPath: path, slug: nil)
+        if let board = boards[address] { return board }
+        let board = BoardModel(store: BoardMapStore(workspacePath: address.projectPath))
+        boards[address] = board
         return board
     }
 
@@ -691,6 +701,24 @@ final class AppModel {
         if let boardProject { return ProjectTabs.boardID(boardProject) }
         if let appTab { return appTab.id }
         return selectedId
+    }
+
+    /// The current board of each project: project path -> slug. A missing entry means the overview.
+    var currentBoard: [String: String] = [:]
+
+    func currentAddress(for path: String) -> BoardAddress {
+        let key = ProjectTabs.standardized(path)
+        return BoardAddress(projectPath: key, slug: currentBoard[key])
+    }
+
+    func showBoard(_ address: BoardAddress) {
+        let project = ProjectTabs.standardized(address.projectPath)
+        if let slug = address.slug {
+            currentBoard[project] = slug
+        } else {
+            currentBoard.removeValue(forKey: project)
+        }
+        showBoard(project)
     }
 
     func showBoard(_ path: String) {

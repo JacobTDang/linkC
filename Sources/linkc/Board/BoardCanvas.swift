@@ -8,12 +8,18 @@ import LinkCKit
 struct BoardCanvas: View {
     @Bindable var board: BoardModel
     let projectPath: String
+    let address: BoardAddress
+    let model: AppModel
     let sidebarState: SidebarState
     /// Loads the board; called once when the canvas appears, before the viewport is placed.
     let prepare: () -> Void
 
     static let space = "board"
 
+    private var viewportKey: String { address.viewportKey }
+
+    @State private var catalog: BoardCatalog?
+    @State private var catalogError: String?
     @State private var viewport: BoardViewport = .initial
     @State private var size: CGSize = .zero
     @State private var canvasFrame: CGRect = .zero
@@ -95,6 +101,7 @@ struct BoardCanvas: View {
                     size = geometry.size
                     canvasFrame = geometry.frame(in: .global)
                     prepare()
+                    loadCatalog()
                     placeViewport()
                     wireInput()
                     input.start()
@@ -105,23 +112,35 @@ struct BoardCanvas: View {
                 }
                 .onDisappear {
                     input.stop()
-                    sidebarState.setBoardViewport(viewport, for: projectPath)
+                    sidebarState.setBoardViewport(viewport, for: viewportKey)
                 }
             }
             dockedInspectorOverlay
         }
         .background(Theme.boardBackground)
         .onChange(of: board.outsideChange?.id) { _, _ in outsideChangeArrived() }
-        .onChange(of: viewport.lens) { _, _ in sidebarState.setBoardViewport(viewport, for: projectPath) }
+        .onChange(of: viewport.lens) { _, _ in sidebarState.setBoardViewport(viewport, for: viewportKey) }
         .onChange(of: board.map) { _, _ in unpinIfGone() }
         .onChange(of: hoverCandidate) { _, target in hoverCandidateChanged(target) }
         .onChange(of: focusOn) { _, on in focusToggled(on) }
+    }
+
+    private func loadCatalog() {
+        let projectName = URL(fileURLWithPath: projectPath).lastPathComponent
+        do {
+            catalog = try BoardCatalog.load(workspacePath: projectPath, projectName: projectName)
+            catalogError = nil
+        } catch {
+            catalog = nil
+            catalogError = error.localizedDescription
+        }
     }
 
     /// Lights up what the change touched at full opacity, then — on the next runloop turn, so
     /// SwiftUI has actually rendered that full-opacity frame first — fades it out over 2 seconds.
     /// `glowing` clears itself once the fade completes, unless a newer change has since landed.
     private func outsideChangeArrived() {
+        loadCatalog()
         glowing = board.outsideChange?.elements ?? []
         glowOpacity = 1
         let change = board.outsideChange?.id
@@ -395,6 +414,16 @@ struct BoardCanvas: View {
         case .loaded:
             ZStack {
                 VStack(spacing: 6) {
+                    HStack(spacing: 8) {
+                        BoardNavigator(address: address, catalog: catalog) { target in
+                            board.saveNow()
+                            model.showBoard(target)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 4)
+
                     HStack(alignment: .top) {
                         TextField("What is this project?", text: $systemDraft)
                             .textFieldStyle(.plain)
@@ -439,6 +468,9 @@ struct BoardCanvas: View {
                     if let failure = board.writeFailure {
                         BoardBanner(text: "Couldn't save the map: \(failure)", tone: Theme.contextWarn,
                                     action: ("Retry", { board.saveNow() }))
+                    }
+                    if let catalogError {
+                        BoardBanner(text: "Couldn't read this project's boards: \(catalogError)", tone: Theme.contextWarn)
                     }
                     if let liveUpdatesOff = board.liveUpdatesOff {
                         BoardBanner(text: liveUpdatesOff, tone: Theme.textTertiary)
@@ -989,7 +1021,7 @@ struct BoardCanvas: View {
     // MARK: - Viewport
 
     private func placeViewport() {
-        if let saved = sidebarState.boardViewport(for: projectPath) {
+        if let saved = sidebarState.boardViewport(for: viewportKey) {
             viewport = saved
         } else if !board.isEmpty {
             fitAll()
@@ -1060,7 +1092,11 @@ struct BoardCanvas: View {
         case .frameTool: board.tool = .frame
         case .noteTool: board.tool = .note
         case .textTool: board.tool = .text
-        case .goUp: break
+        case .goUp:
+            if let parent = address.up {
+                board.saveNow()
+                model.showBoard(parent)
+            }
         }
     }
 
