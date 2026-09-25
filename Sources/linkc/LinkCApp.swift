@@ -620,20 +620,11 @@ final class AppModel {
     /// switching tabs and projects.
     @ObservationIgnored private var boards: [BoardAddress: BoardModel] = [:]
 
-    func board(for address: BoardAddress) throws -> BoardModel {
+    /// The model for `address`, made on first use. A detail board's ghosts are synced by its
+    /// pane each time it appears, not here, since SwiftUI can call this for a view many times.
+    func board(for address: BoardAddress) -> BoardModel {
         if let board = boards[address] { return board }
-        if let slug = address.slug {
-            _ = try BoardDrill.open(slug, workspacePath: address.projectPath)
-        }
         let board = BoardModel(store: BoardMapStore(workspacePath: address.projectPath, board: address.slug))
-        boards[address] = board
-        return board
-    }
-
-    func board(for path: String) -> BoardModel {
-        let address = BoardAddress(projectPath: path, slug: nil)
-        if let board = boards[address] { return board }
-        let board = BoardModel(store: BoardMapStore(workspacePath: address.projectPath))
         boards[address] = board
         return board
     }

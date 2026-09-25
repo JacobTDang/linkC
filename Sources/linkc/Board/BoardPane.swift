@@ -20,17 +20,13 @@ private struct BoardPaneContent: View {
     let address: BoardAddress
     @State private var board: BoardModel
     @State private var watcher: BoardFileWatcher?
+    /// Why syncing this detail board's ghosts with the overview failed, for the Board's banner.
+    @State private var openError: String?
 
     init(model: AppModel, address: BoardAddress) {
         self.model = model
         self.address = address
-        do {
-            _board = State(wrappedValue: try model.board(for: address))
-        } catch {
-            let fallback = BoardModel(store: BoardMapStore(workspacePath: address.projectPath, board: address.slug))
-            fallback.liveUpdatesFailed(error.localizedDescription)
-            _board = State(wrappedValue: fallback)
-        }
+        _board = State(wrappedValue: model.board(for: address))
     }
 
     var body: some View {
@@ -39,8 +35,10 @@ private struct BoardPaneContent: View {
             projectPath: address.projectPath,
             address: address,
             model: model,
-            sidebarState: model.sidebarState
+            sidebarState: model.sidebarState,
+            openError: openError
         ) {
+            syncGhosts()
             board.load()
             board.reconcile(with: model.discoveredThings(in: address.projectPath))
             startWatching()
@@ -52,6 +50,19 @@ private struct BoardPaneContent: View {
             watcher?.stop()
             watcher = nil
             board.saveNow()
+        }
+    }
+
+    /// A detail board's ghosts follow the overview, so they're synced (and saved when they
+    /// changed) every time the board appears, before it loads. The overview has none.
+    private func syncGhosts() {
+        guard let slug = address.slug else { return }
+        do {
+            _ = try BoardDrill.open(slug, workspacePath: address.projectPath)
+            openError = nil
+        } catch {
+            NSLog("[linkC] board %@: ghost sync failed — %@", slug, String(describing: error))
+            openError = error.localizedDescription
         }
     }
 

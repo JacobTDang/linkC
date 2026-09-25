@@ -11,6 +11,9 @@ struct BoardCanvas: View {
     let address: BoardAddress
     let model: AppModel
     let sidebarState: SidebarState
+    /// Why this detail board couldn't be synced with the overview when it opened; nil when it
+    /// was, or for the overview.
+    let openError: String?
     /// Loads the board; called once when the canvas appears, before the viewport is placed.
     let prepare: () -> Void
 
@@ -139,6 +142,8 @@ struct BoardCanvas: View {
         .onChange(of: focusOn) { _, on in focusToggled(on) }
     }
 
+    /// Reads every board of the project for the breadcrumb and the Boards menu. A failure shows
+    /// on the banner row, and the navigator falls back to the current board alone.
     private func loadCatalog() {
         let projectName = URL(fileURLWithPath: projectPath).lastPathComponent
         do {
@@ -517,6 +522,9 @@ struct BoardCanvas: View {
                     if let catalogError {
                         BoardBanner(text: "Couldn't read this project's boards: \(catalogError)", tone: Theme.contextWarn)
                     }
+                    if let openError {
+                        BoardBanner(text: "Couldn't sync this board with the overview: \(openError)", tone: Theme.contextWarn)
+                    }
                     if let drillError {
                         BoardBanner(text: "Couldn't open the detail board: \(drillError)", tone: Theme.contextWarn)
                     }
@@ -649,6 +657,8 @@ struct BoardCanvas: View {
         }
     }
 
+    /// ↳ Go deeper: saves this board, opens `partName`'s detail board — creating it and its
+    /// link when it has none — and shows it. A failure shows on the banner row.
     private func goDeeper(into partName: String) {
         board.saveNow()
         do {
