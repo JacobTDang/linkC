@@ -10,6 +10,10 @@ struct SettingsScreen: View {
     @State private var launchAtLogin = false
     @State private var loginItemBusy = false
     @State private var errorText: String?
+    /// A decode error from a folder's own `.linkc/app.json`, surfaced once under the row
+    /// `addApp()` just appended — keyed by folder so the right row seeds its error text from it
+    /// the moment it's created.
+    @State private var addedWithDecodeError: [String: String] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -78,6 +82,33 @@ struct SettingsScreen: View {
                             }
                         }
                     }
+
+                    SectionHeader(title: "APPS").padding(.top, 6)
+                    Text(
+                        "Apps listed here can open in every project, from the + menu. "
+                            + "A project can also ship its own `.linkc/app.json`."
+                    )
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+                    ForEach(model.preferences.linkCApps) { setting in
+                        AppSettingRow(
+                            preferences: model.preferences,
+                            folder: setting.folder,
+                            manifest: setting.manifest,
+                            initialError: addedWithDecodeError[setting.folder],
+                            onRemove: {
+                                model.preferences.linkCApps.removeAll { $0.folder == setting.folder }
+                            }
+                        )
+                    }
+                    HStack {
+                        QuietLink("Add app…") { addApp() }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 2)
 
                     SectionHeader(title: "PANEL").padding(.top, 6)
                     SettingRow(
@@ -154,6 +185,33 @@ struct SettingsScreen: View {
             launchAtLogin = LoginItem.isEnabled  // system truth, whatever happened
         }
     }
+
+    /// Add app…: pick a folder, prefill from its own `.linkc/app.json` when it has one and it
+    /// decodes, prefill with defaults otherwise (showing the decode error under the new row when
+    /// the file exists but is broken), then register the app for every project.
+    private func addApp() {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add"
+        panel.message = "Choose an app's folder"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let folder = url.path
+        let manifestURL = url.appendingPathComponent(LinkCAppManifest.relativePath)
+        let defaultManifest = LinkCAppManifest(name: url.lastPathComponent, start: [], health: "/", path: "/")
+        var manifest = defaultManifest
+        if FileManager.default.fileExists(atPath: manifestURL.path) {
+            do {
+                manifest = try LinkCAppManifest.decode(Data(contentsOf: manifestURL))
+            } catch {
+                addedWithDecodeError[folder] = error.localizedDescription
+            }
+        }
+        model.preferences.linkCApps.append(LinkCAppSetting(folder: folder, manifest: manifest))
+    }
 }
 
 /// One settings row: title + explanatory detail on the left, the control on the right.
@@ -213,5 +271,120 @@ private struct TierModelField: View {
         var edited = preferences.agentModels
         edited.setModel(text, for: agent, tier: tier)
         preferences.agentModels = edited
+    }
+}
+
+/// One Settings app editor: the folder (read-only, middle-truncated), its four manifest fields,
+/// a Remove button, and a red error line when the last commit was rejected. `folder` is the
+/// setting's stable identity — `manifest` and `initialError` only seed the row's local state the
+/// first time it appears; after that, every edit reads and writes `preferences.linkCApps` fresh,
+/// by folder, so a sibling row's commit never clobbers this one.
+private struct AppSettingRow: View {
+    let preferences: AppPreferences
+    let folder: String
+    let onRemove: () -> Void
+
+    @State private var nameText: String
+    @State private var startText: String
+    @State private var healthText: String
+    @State private var pathText: String
+    @State private var errorText: String?
+
+    init(
+        preferences: AppPreferences,
+        folder: String,
+        manifest: LinkCAppManifest,
+        initialError: String?,
+        onRemove: @escaping () -> Void
+    ) {
+        self.preferences = preferences
+        self.folder = folder
+        self.onRemove = onRemove
+        _nameText = State(initialValue: manifest.name)
+        _startText = State(initialValue: CommandLineSplit.join(manifest.start))
+        _healthText = State(initialValue: manifest.health)
+        _pathText = State(initialValue: manifest.path)
+        _errorText = State(initialValue: initialError)
+    }
+
+    /// The manifest as currently stored — read fresh, never the value captured at `init`, so a
+    /// commit always builds on top of whatever the store actually holds.
+    private var storedManifest: LinkCAppManifest? {
+        preferences.linkCApps.first { $0.folder == folder }?.manifest
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text((folder as NSString).abbreviatingWithTildeInPath)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                Spacer(minLength: 8)
+                QuietLink("Remove", size: 11, action: onRemove)
+            }
+            HStack(spacing: 6) {
+                CommitField(placeholder: "Name", text: $nameText, width: 90, onCommit: commit)
+                CommitField(placeholder: "Start command", text: $startText, width: 170, onCommit: commit)
+                CommitField(placeholder: "Health path", text: $healthText, width: 80, onCommit: commit)
+                CommitField(placeholder: "Page path", text: $pathText, width: 80, onCommit: commit)
+            }
+            if let errorText {
+                Text(errorText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.statusError)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func commit() {
+        do {
+            let start = try CommandLineSplit.split(startText)
+            let candidate = try LinkCAppManifest(
+                name: nameText,
+                start: start,
+                health: healthText,
+                path: pathText,
+                env: storedManifest?.env ?? [:]
+            ).validated()
+            var apps = preferences.linkCApps
+            guard let index = apps.firstIndex(where: { $0.folder == folder }) else { return }
+            apps[index] = LinkCAppSetting(folder: folder, manifest: candidate)
+            preferences.linkCApps = apps
+            errorText = nil
+        } catch let error as LinkCError {
+            errorText = error.localizedDescription
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+}
+
+/// One editable field inside an `AppSettingRow`. Commits on submit and on losing focus — never
+/// per keystroke — the same pattern as `TierModelField`, generalized to an external binding so
+/// several fields can share one row's commit.
+private struct CommitField: View {
+    let placeholder: String
+    @Binding var text: String
+    let width: CGFloat
+    let onCommit: () -> Void
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.mini)
+            .frame(width: width)
+            .focused($isFocused)
+            .onSubmit(onCommit)
+            .onChange(of: isFocused) { wasFocused, nowFocused in
+                if wasFocused && !nowFocused { onCommit() }
+            }
     }
 }
