@@ -51,4 +51,19 @@ final class BoardPlacementTests: XCTestCase {
         XCTAssertEqual(map.components.last?.place, BoardMap.notPlaced)
         assertNoOverlaps(map)
     }
+    func testPlacementFindsAFreeSpotForATallTable() throws {
+        var map = BoardMap()
+        map.frames = [BoardFrame(label: "Schema", rect: BoardRect(x: 0, y: 0, w: 400, h: 120))]
+        map.components = [BoardComponent(name: "existing", kind: .service, place: "Schema", at: BoardPoint(x: 8, y: 8))]
+        let table = BoardComponent(name: "accounts", kind: .table, columns: (1...10).map { BoardColumn(name: "c\($0)", type: "int") })
+        XCTAssertTrue(BoardModel.placeComponent(table, inFrame: "Schema", into: &map))
+        let placed = try XCTUnwrap(map.components.last)
+        let placedRect = try XCTUnwrap(BoardGeometry.rect(of: placed))
+        XCTAssertEqual(placedRect.w, 176)
+        XCTAssertEqual(placedRect.h, 264, "the table's own height, not the fixed 84")
+        let existingRect = try XCTUnwrap(BoardGeometry.rect(of: map.components[0]))
+        XCTAssertFalse(placedRect.intersects(existingRect))
+        let frame = try XCTUnwrap(map.frames.first?.rect)
+        XCTAssertTrue(BoardGeometry.interior(of: frame).contains(placedRect), "the frame grew to fit the table's real height")
+    }
 }

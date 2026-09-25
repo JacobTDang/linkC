@@ -4,7 +4,7 @@ extension BoardModel {
     public func rect(of element: Element) -> BoardRect? {
         switch element {
         case .component(let name):
-            return Self.index(of: name, in: map).flatMap { map.components[$0].at }.map(BoardGeometry.rect(ofComponentAt:))
+            return Self.index(of: name, in: map).flatMap { BoardGeometry.rect(of: map.components[$0]) }
         case .frame(let label):
             return map.frames.first { $0.label == label }?.rect
         case .note(let id):
@@ -90,9 +90,10 @@ extension BoardModel {
                 let others = untouchedElements + settledElements
                 switch element {
                 case .component(let name):
-                    guard let index = Self.index(of: name, in: map), let at = map.components[index].at else { continue }
+                    guard let index = Self.index(of: name, in: map), let box = BoardGeometry.rect(of: map.components[index]) else { continue }
+                    let at = box.origin
                     let landed = BoardGeometry.elementDrop(
-                        BoardGeometry.rect(ofComponentAt: at).offsetBy(dx: delta.x, dy: delta.y).snapped,
+                        box.offsetBy(dx: delta.x, dy: delta.y).snapped,
                         otherElements: others, frames: frameRects)
                     map.components[index].at = landed.origin
                     map.components[index].place = BoardGeometry.frame(containing: landed, frames: map.frames)?.label ?? BoardMap.notPlaced
@@ -139,7 +140,7 @@ extension BoardModel {
             guard let index = map.frames.firstIndex(where: { $0.label == label }), let original = map.frames[index].rect else { return false }
             let interior = BoardGeometry.interior(of: original)
             let members = map.components.filter { $0.place == label }
-            let memberRects = members.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
+            let memberRects = members.compactMap(BoardGeometry.rect(of:))
                 + map.notes.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }.filter { interior.contains($0) }
                 + map.texts.map(BoardGeometry.rect(of:)).filter { interior.contains($0) }
             let foreign = Self.elementRects(map, excluding: Set(members.map { .component($0.name) })).filter { !original.contains($0) }
@@ -229,6 +230,7 @@ extension BoardModel {
         // Components: each settles inside its own place's frame, or outside every frame.
         for index in map.components.indices.sorted(by: { map.components[$0].name < map.components[$1].name }) {
             let component = map.components[index]
+            let componentSize = BoardGeometry.size(of: component)
             let frame = map.frames.first { $0.label == component.place }?.rect
             // A place naming no frame is stale — unplaced for positioning, and cleared here so it
             // never again reads as a heading for a frame that is not there.
@@ -236,17 +238,17 @@ extension BoardModel {
                 map.components[index].place = BoardMap.notPlaced
             }
             let others = elementRects(map, excluding: [.component(component.name)])
-            let current = component.at.map(BoardGeometry.rect(ofComponentAt:))
+            let current = BoardGeometry.rect(of: component)
             if let frame {
                 let interior = BoardGeometry.interior(of: frame)
                 if let current, interior.contains(current), !others.contains(where: { $0.intersects(current) }) { continue }
-                let seed = BoardRect(x: interior.x, y: interior.y, w: size.x, h: size.y)
+                let seed = BoardRect(x: interior.x, y: interior.y, w: componentSize.x, h: componentSize.y)
                 let members = map.components.filter { $0.place == component.place && $0.name != component.name }
                 var spot = BoardGeometry.nearestFreeSpot(for: current.map { interior.contains($0) ? $0 : seed } ?? seed,
                                                          avoiding: others, inside: interior)
                 if spot == nil, let frameIndex = map.frames.firstIndex(where: { $0.label == component.place }),
-                   let grown = BoardGeometry.grow(frame, toFit: size,
-                                                  members: members.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) },
+                   let grown = BoardGeometry.grow(frame, toFit: componentSize,
+                                                  members: members.compactMap(BoardGeometry.rect(of:)),
                                                   otherFrames: frameRects(map, excluding: [component.place]),
                                                   foreignElements: elementRects(map, excluding: Set(members.map { .component($0.name) } + [.component(component.name)])).filter { !frame.contains($0) }) {
                     map.frames[frameIndex].rect = grown
@@ -260,7 +262,7 @@ extension BoardModel {
             }
             let frames = frameRects(map, excluding: [])
             if let current, !frames.contains(where: { $0.intersects(current) }), !others.contains(where: { $0.intersects(current) }) { continue }
-            let seed = current ?? BoardRect(x: 0, y: (frames.map(\.maxY).max() ?? 0) + 48, w: size.x, h: size.y)
+            let seed = current ?? BoardRect(x: 0, y: (frames.map(\.maxY).max() ?? 0) + 48, w: componentSize.x, h: componentSize.y)
             map.components[index].at = (BoardGeometry.nearestFreeSpot(for: seed, avoiding: others, outside: frames) ?? seed).origin
         }
 
@@ -285,12 +287,11 @@ extension BoardModel {
         // component-size change, say — moves clear, keeping its frame by containment. This keeps
         // a board written by an older linkC valid without ever touching the file on disk.
         for index in map.components.indices.sorted(by: { map.components[$0].name < map.components[$1].name }) {
-            guard let at = map.components[index].at else { continue }
+            guard let current = BoardGeometry.rect(of: map.components[index]) else { continue }
             let name = map.components[index].name
-            let current = BoardGeometry.rect(ofComponentAt: at)
             let earlier = map.components.indices
                 .filter { map.components[$0].name < name }
-                .compactMap { map.components[$0].at.map(BoardGeometry.rect(ofComponentAt:)) }
+                .compactMap { BoardGeometry.rect(of: map.components[$0]) }
             guard earlier.contains(where: { $0.intersects(current) }) else { continue }
             let landed = BoardGeometry.elementDrop(
                 current, otherElements: elementRects(map, excluding: [.component(name)]), frames: frameRects(map, excluding: []))

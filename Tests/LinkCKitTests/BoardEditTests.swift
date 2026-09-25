@@ -438,5 +438,8 @@ final class BoardEditTests: XCTestCase {
         let refused = refusal([["detail": "A"]], on: map)
         XCTAssertEqual(refused?.description, #"step 1: "A" comes from the overview; go deeper from its own board"#)
     }
+    func testAnAgentCanAddATableKindPartEvenThoughTheAppCannotDrawItYet() throws {
+        let result = try apply([["add": "orders", "kind": "table"]], to: .empty)
+        XCTAssertEqual(result.map.components.first?.kind, .table)
+    }
 }
-

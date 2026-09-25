@@ -456,4 +456,19 @@ final class BoardRouterTests: XCTestCase {
         let route = try XCTUnwrap(routes[.init(from: "s", to: "t1")])
         XCTAssertNotEqual(route.points, [BoardPoint(x: 176, y: 42), BoardPoint(x: 500, y: 42)])
     }
+    func testRouterRoutesAroundATallTablesRealRect() throws {
+        var map = BoardMap()
+        map.components = [
+            BoardComponent(name: "orders", kind: .table, at: BoardPoint(x: 200, y: 0),
+                           columns: (1...10).map { BoardColumn(name: "c\($0)", type: "int") }),
+            BoardComponent(name: "sender", kind: .service, uses: ["receiver": ""], at: BoardPoint(x: 0, y: 158)),
+            BoardComponent(name: "receiver", kind: .service, at: BoardPoint(x: 500, y: 158)),
+        ]
+        let tableRect = try XCTUnwrap(BoardGeometry.rect(of: map.components[0]))
+        XCTAssertEqual(tableRect, BoardRect(x: 200, y: 0, w: 176, h: 264), "the table really is 264 tall, not 84")
+        let route = try XCTUnwrap(BoardRouter.routes(for: map)[BoardModel.ArrowKey(from: "sender", to: "receiver")])
+        for (a, b) in zip(route.points, route.points.dropFirst()) {
+            XCTAssertFalse(crosses(a, b, tableRect), "\(a)->\(b) crosses the table's real rect")
+        }
+    }
 }

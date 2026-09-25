@@ -22,21 +22,18 @@ public enum BoardLayout {
         var components: [BoardComponent]
     }
 
-    /// A cluster's computed size and where each of its components sits, in columns and rows.
+    /// A cluster's computed size and each component's offset from its top-left corner.
     private struct ClusterLayout {
         var width: Int
         var height: Int
-        var positions: [String: (col: Int, row: Int)]
+        var origins: [String: BoardPoint]
     }
 
     public static func placedGhosts(_ map: BoardMap) -> BoardMap {
         var result = map
         let innerRects = result.components
             .filter { $0.outside == nil }
-            .compactMap { comp -> BoardRect? in
-                guard let at = comp.at else { return nil }
-                return BoardGeometry.rect(ofComponentAt: at)
-            }
+            .compactMap(BoardGeometry.rect(of:))
             + result.frames.compactMap(\.rect)
 
         let inner: BoardRect
@@ -55,10 +52,14 @@ public enum BoardLayout {
             .filter { $0.element.outside == .in }
             .sorted { $0.element.name.lowercased() < $1.element.name.lowercased() }
 
-        let inX = inner.minX - BoardGeometry.componentSize.x - 96
-        for (row, item) in inGhosts.enumerated() {
+        let ghostRowGap = 40
+        let inWidth = inGhosts.map { BoardGeometry.size(of: $0.element).x }.max() ?? BoardGeometry.componentSize.x
+        let inX = inner.minX - inWidth - 96
+        var inY = inner.minY
+        for item in inGhosts {
             result.components[item.offset].place = BoardMap.notPlaced
-            result.components[item.offset].at = BoardPoint(x: inX, y: inner.minY + row * 124)
+            result.components[item.offset].at = BoardPoint(x: inX, y: inY)
+            inY += BoardGeometry.size(of: item.element).y + ghostRowGap
         }
 
         let outGhosts = result.components
@@ -67,9 +68,11 @@ public enum BoardLayout {
             .sorted { $0.element.name.lowercased() < $1.element.name.lowercased() }
 
         let outX = inner.maxX + 96
-        for (row, item) in outGhosts.enumerated() {
+        var outY = inner.minY
+        for item in outGhosts {
             result.components[item.offset].place = BoardMap.notPlaced
-            result.components[item.offset].at = BoardPoint(x: outX, y: inner.minY + row * 124)
+            result.components[item.offset].at = BoardPoint(x: outX, y: outY)
+            outY += BoardGeometry.size(of: item.element).y + ghostRowGap
         }
 
         return result
@@ -114,7 +117,7 @@ public enum BoardLayout {
                 let ordered = orderByBarycentre(byRank[r] ?? [], predecessors: predecessors, rects: clusterRects)
                 var y = origin.y
                 for label in ordered {
-                    let size = layouts[label] ?? ClusterLayout(width: 0, height: 0, positions: [:])
+                    let size = layouts[label] ?? ClusterLayout(width: 0, height: 0, origins: [:])
                     let rect = BoardRect(x: x, y: y, w: size.width, h: size.height)
                     clusterRects[label] = rect
                     y = rect.maxY + rowStep
@@ -131,12 +134,9 @@ public enum BoardLayout {
                     result.frames[frameIndex].rect = rect.snapped
                 }
                 for component in cluster.components {
-                    guard let position = layout.positions[component.name],
+                    guard let origin = layout.origins[component.name],
                           let index = result.components.firstIndex(where: { $0.name == component.name }) else { continue }
-                    let at = BoardPoint(
-                        x: rect.x + framePadding + position.col * (BoardGeometry.componentSize.x + columnGapInFrame),
-                        y: rect.y + frameTitleBand + position.row * rowStep)
-                    result.components[index].at = at.snapped
+                    result.components[index].at = BoardPoint(x: rect.x + origin.x, y: rect.y + origin.y).snapped
                 }
             }
         }
@@ -152,7 +152,7 @@ public enum BoardLayout {
         }
 
         // Texts: kept where they are, moved clear only if they now overlap a box, frame or note.
-        let boxes = result.components.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
+        let boxes = result.components.compactMap(BoardGeometry.rect(of:))
             + result.notes.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }
         let frameRects = result.frames.compactMap(\.rect)
         for index in result.texts.indices {
@@ -199,12 +199,37 @@ public enum BoardLayout {
         return clusters
     }
 
-    /// Sizes a cluster and places its components in columns and rows.
+    /// Sizes a cluster using each component's own box while preserving the arrow-based grid.
     private static func clusterLayout(for cluster: Cluster) -> ClusterLayout {
-        let (positions, cols, rows) = columnsAndRows(for: cluster.components)
-        let width = 2 * framePadding + cols * BoardGeometry.componentSize.x + (cols - 1) * columnGapInFrame
-        let height = frameTitleBand + rows * BoardGeometry.componentSize.y + (rows - 1) * (rowStep - BoardGeometry.componentSize.y) + framePadding
-        return ClusterLayout(width: width, height: height, positions: positions)
+        let (positions, cols, _) = columnsAndRows(for: cluster.components)
+        let byName = Dictionary(uniqueKeysWithValues: cluster.components.map { ($0.name, $0) })
+        func size(_ name: String) -> BoardPoint {
+            byName[name].map(BoardGeometry.size(of:)) ?? BoardGeometry.componentSize
+        }
+        var byColumn: [[String]] = Array(repeating: [], count: max(cols, 1))
+        for (name, position) in positions { byColumn[position.col].append(name) }
+        for index in byColumn.indices {
+            byColumn[index].sort { (positions[$0]?.row ?? 0) < (positions[$1]?.row ?? 0) }
+        }
+        let rowGap = rowStep - BoardGeometry.componentSize.y
+        var origins: [String: BoardPoint] = [:]
+        var columnWidths: [Int] = []
+        var columnHeights: [Int] = []
+        var x = framePadding
+        for names in byColumn {
+            let width = names.map { size($0).x }.max() ?? BoardGeometry.componentSize.x
+            var y = frameTitleBand
+            for name in names {
+                origins[name] = BoardPoint(x: x, y: y)
+                y += size(name).y + rowGap
+            }
+            columnHeights.append(names.isEmpty ? BoardGeometry.componentSize.y : y - rowGap - frameTitleBand)
+            columnWidths.append(width)
+            x += width + columnGapInFrame
+        }
+        let width = 2 * framePadding + columnWidths.reduce(0, +) + max(0, columnWidths.count - 1) * columnGapInFrame
+        let height = frameTitleBand + (columnHeights.max() ?? BoardGeometry.componentSize.y) + framePadding
+        return ClusterLayout(width: width, height: height, origins: origins)
     }
 
     /// Column = longest path from an internal source, along the cluster's own arrows. Rows are

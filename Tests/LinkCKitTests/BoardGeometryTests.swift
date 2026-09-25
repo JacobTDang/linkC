@@ -135,4 +135,24 @@ final class BoardGeometryTests: XCTestCase {
         XCTAssertTrue(outside, "spot at \(result!) must be outside grid bounds [0,640)×[0,640)")
         XCTAssertLessThan(elapsed, 0.5, "search should complete in under 500ms, took \(elapsed)s")
     }
+    func testATablesSizeComesFromItsColumns() {
+        XCTAssertEqual(BoardGeometry.size(of: BoardComponent(name: "t", kind: .table)), BoardPoint(x: 176, y: 72))
+        let profiles = BoardComponent(name: "profiles", kind: .table, columns: [
+            BoardColumn(name: "id", type: "uuid", pk: true, references: BoardColumnReference(table: "auth.users", column: "id")),
+            BoardColumn(name: "handle", type: "character varying(40)", nullable: false, unique: true),
+            BoardColumn(name: "status", type: "text"),
+            BoardColumn(name: "avatar_url", type: "text", planned: true),
+        ])
+        XCTAssertEqual(BoardGeometry.size(of: profiles), BoardPoint(x: 272, y: 136))
+        let tall = BoardComponent(name: "wide", kind: .table, columns: (1...10).map { BoardColumn(name: "c\($0)", type: "int") })
+        XCTAssertEqual(BoardGeometry.size(of: tall), BoardPoint(x: 176, y: 264), "the floor wins on width; height grows with rows")
+        XCTAssertEqual(BoardGeometry.size(of: BoardComponent(name: "api", kind: .service)), BoardGeometry.componentSize)
+    }
+
+    func testATablesRectComesFromItsOwnPositionAndSize() {
+        var table = BoardComponent(name: "t", kind: .table, at: BoardPoint(x: 40, y: 40))
+        XCTAssertEqual(BoardGeometry.rect(of: table), BoardRect(x: 40, y: 40, w: 176, h: 72))
+        table.at = nil
+        XCTAssertNil(BoardGeometry.rect(of: table), "not placed yet")
+    }
 }

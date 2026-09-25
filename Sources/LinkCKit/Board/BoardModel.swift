@@ -326,8 +326,9 @@ public final class BoardModel {
         var added: String?
         edit { map in
             let name = Self.uniqueName("new-\(kind.raw)", taken: Set(map.components.map { $0.name.lowercased() }))
+            let probe = BoardComponent(name: name, kind: kind, at: point)
             let rect = BoardGeometry.elementDrop(
-                BoardGeometry.rect(ofComponentAt: point).snapped,
+                BoardGeometry.rect(of: probe)!.snapped,
                 otherElements: Self.elementRects(map, excluding: []), frames: Self.frameRects(map, excluding: []))
             let place = BoardGeometry.frame(containing: rect, frames: map.frames)?.label ?? BoardMap.notPlaced
             map.components.append(BoardComponent(name: name, kind: kind, planned: true, place: place, at: rect.origin))
@@ -391,7 +392,7 @@ public final class BoardModel {
             let label = Self.uniqueName("Frame", taken: Set(map.frames.map { $0.label.lowercased() }).union([BoardMap.notPlaced.lowercased()]), separator: " ")
             map.frames.append(BoardFrame(label: label, rect: rect))
             for index in map.components.indices {
-                if let at = map.components[index].at, interior.contains(BoardGeometry.rect(ofComponentAt: at)) {
+                if let rect = BoardGeometry.rect(of: map.components[index]), interior.contains(rect) {
                     map.components[index].place = label
                 }
             }
@@ -746,7 +747,7 @@ public final class BoardModel {
     nonisolated static func elementRects(_ map: BoardMap, excluding excluded: Set<Element>) -> [BoardRect] {
         var rects: [BoardRect] = []
         for component in map.components where !excluded.contains(.component(component.name)) {
-            if let at = component.at { rects.append(BoardGeometry.rect(ofComponentAt: at)) }
+            if let rect = BoardGeometry.rect(of: component) { rects.append(rect) }
         }
         for note in map.notes where !excluded.contains(.note(note.id)) {
             if let at = note.at { rects.append(BoardGeometry.rect(ofNoteAt: at)) }
@@ -769,7 +770,7 @@ public final class BoardModel {
         var picked: Set<Element> = []
         for component in map.components {
             guard visibleParts?.contains(component.name) ?? true else { continue }
-            guard let at = component.at, BoardGeometry.rect(ofComponentAt: at).intersects(area) else { continue }
+            guard let rect = BoardGeometry.rect(of: component), rect.intersects(area) else { continue }
             picked.insert(.component(component.name))
         }
         for note in map.notes {
@@ -816,14 +817,14 @@ public final class BoardModel {
         guard var frame = map.frames[frameIndex].rect else {
             return false
         }
-        let size = BoardGeometry.componentSize
+        let size = BoardGeometry.size(of: component)
         // Everything already inside the frame is avoided — not just its components. A note or
         // text has no `place`, so membership is geometric: wholly inside the interior.
         let interior = BoardGeometry.interior(of: frame)
         let memberComponents = Set(map.components.filter { $0.place == label }.map(\.name))
         let memberNotes = Set(map.notes.filter { $0.at.map { interior.contains(BoardGeometry.rect(ofNoteAt: $0)) } ?? false }.map(\.id))
         let memberTexts = Set(map.texts.filter { interior.contains(BoardGeometry.rect(of: $0)) }.map(\.id))
-        let members = map.components.filter { memberComponents.contains($0.name) }.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
+        let members = map.components.filter { memberComponents.contains($0.name) }.compactMap(BoardGeometry.rect(of:))
             + map.notes.filter { memberNotes.contains($0.id) }.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }
             + map.texts.filter { memberTexts.contains($0.id) }.map(BoardGeometry.rect(of:))
         let excluded = Set(memberComponents.map { Element.component($0) })
@@ -862,7 +863,7 @@ public final class BoardModel {
     /// `component`, placed to the right of everything on the board, overlapping nothing — filed
     /// under whichever frame its landing spot's centre falls in, or `BoardMap.notPlaced`.
     nonisolated static func placeLoose(_ component: BoardComponent, into map: inout BoardMap) {
-        let size = BoardGeometry.componentSize
+        let size = BoardGeometry.size(of: component)
         let content = elementRects(map, excluding: []) + frameRects(map, excluding: [])
         let seed = BoardRect(x: (content.map(\.maxX).max() ?? 0) + 48, y: 0, w: size.x, h: size.y)
         let landed = BoardGeometry.elementDrop(seed, otherElements: elementRects(map, excluding: []), frames: frameRects(map, excluding: []))

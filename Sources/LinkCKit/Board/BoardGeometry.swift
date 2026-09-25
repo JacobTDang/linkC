@@ -17,6 +17,28 @@ public enum BoardGeometry {
         BoardRect(x: point.x, y: point.y, w: componentSize.x, h: componentSize.y)
     }
 
+    /// A part's box size. Tables grow to fit their longest row and all their columns.
+    public static func size(of component: BoardComponent) -> BoardPoint {
+        guard component.kind == .table else { return componentSize }
+        let longestName = component.columns.map(\.name.count).max() ?? 0
+        let longestType = component.columns.map(\.type.count).max() ?? 0
+        let width = max(componentSize.x, roundUpTo8(24 + 7 * (longestName + longestType) + 24))
+        let height = roundUpTo8(36 + 22 * max(1, component.columns.count) + 8)
+        return BoardPoint(x: width, y: height)
+    }
+
+    /// A component's box at its placed position.
+    public static func rect(of component: BoardComponent) -> BoardRect? {
+        guard let at = component.at else { return nil }
+        let size = size(of: component)
+        return BoardRect(x: at.x, y: at.y, w: size.x, h: size.y)
+    }
+
+    /// Rounds up to the next board-grid multiple.
+    private static func roundUpTo8(_ value: Int) -> Int {
+        ((value + BoardPoint.grid - 1) / BoardPoint.grid) * BoardPoint.grid
+    }
+
     public static func rect(ofNoteAt point: BoardPoint) -> BoardRect {
         BoardRect(x: point.x, y: point.y, w: noteSize.x, h: noteSize.y)
     }

@@ -26,4 +26,11 @@ final class ComponentKindTests: XCTestCase {
             XCTAssertTrue(text.contains(kind.raw), kind.raw)
         }
     }
+
+    func testTableIsAKnownIDButNotYetInAnyGroup() {
+        XCTAssertEqual(ComponentKind.table.raw, "table")
+        XCTAssertFalse(ComponentKind.groups.flatMap(\.kinds).contains(.table), "the app can't draw it yet")
+        XCTAssertFalse(ComponentKind.known.contains(.table))
+        XCTAssertFalse(ComponentKind.table.isKnown)
+    }
 }
