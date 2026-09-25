@@ -117,6 +117,18 @@ server.
 - **◎ Focus** shows only the pinned item, its neighbors and the arrows between them. Press Esc
   to leave Focus. Press Esc again to close the inspector.
 - A component can show the logo of its technology, for example PostgreSQL, Redis or Docker.
+- A component can have its own **detail board**, for the parts inside it. To open it, click
+  **↳ Go deeper** in the inspector or in the context menu of the component. linkC creates the
+  detail board if it does not exist yet. A component with a detail board shows **↳**.
+- linkC keeps each detail board in `system-map.<slug>.json`, next to `system-map.json`. A detail
+  board can have its own detail boards.
+- On a detail board, the neighbors of the component on the parent board show as faint **ghosts**
+  at the left and right edges. Draw arrows between the ghosts and the parts inside. You cannot
+  move or change a ghost. When a neighbor is not connected on the parent board anymore, its ghost
+  shows ⚠. linkC does not delete it.
+- The breadcrumb at the top left shows where you are. Click a part of it, or press ⌘↑, to go up.
+  The **Boards** menu lists all the boards of the project. Each board keeps its own position,
+  zoom and lens.
 - Agents read and edit the Board through the linkC MCP server. After an agent edits the Board,
   linkC arranges the diagram again.
 
@@ -139,7 +151,7 @@ its tools to give work to other agents and to share information.
 | `linkc_broadcast_intent` | Tell the other agents your goal and your files. |
 | `linkc_check_conflicts` | Find out if another agent claims a file. |
 | `linkc_get_project_context` | Show the Board, and the goals and notes of the other agents. |
-| `linkc_get_board`, `linkc_edit_board` | Read or edit the Board. |
+| `linkc_get_board`, `linkc_edit_board` | Read or edit the Board, or a detail board. The `detail` step creates the detail board of a component. |
 | `linkc_get_models`, `linkc_switch_model` | List the models of an agent, or change its model. |
 | `linkc_get_usage_status` | Show the usage that each agent has left. |
 
