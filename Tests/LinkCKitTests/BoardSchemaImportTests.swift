@@ -40,11 +40,15 @@ final class BoardSchemaImportTests: XCTestCase {
         XCTAssertTrue(wishlist.columns.allSatisfy(\.planned))
     }
 
+    /// A column the design adds is marked planned by the next import that doesn't find it, and
+    /// loses planned on the import that does.
     func testAColumnThatReappearsLosesPlanned() throws {
         let firstParsed = try SQLSchema.parse("create table orgs (id bigint primary key);")
         var map = try BoardEdit.apply(BoardSchemaImport.steps(for: firstParsed, into: .empty), to: .empty).map
         map = try apply([["op": "column", "table": "orgs", "column": "name", "set": ["type": "text"]]], to: map).map
-        XCTAssertFalse(try XCTUnwrap(map.components.first?.columns.last).planned)
+        map = try BoardEdit.apply(BoardSchemaImport.steps(for: firstParsed, into: map), to: map).map
+        let designOnly = try XCTUnwrap(map.components.first { $0.name == "orgs" }?.columns.first { $0.name == "name" })
+        XCTAssertTrue(designOnly.planned, "an import that lacks the column marks it planned")
 
         let secondParsed = try SQLSchema.parse("create table orgs (id bigint primary key, name text not null);")
         let applied = try BoardEdit.apply(BoardSchemaImport.steps(for: secondParsed, into: map), to: map).map

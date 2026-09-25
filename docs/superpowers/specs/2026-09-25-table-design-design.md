@@ -43,7 +43,7 @@ Codex builds the LinkCKit half. The app half follows once Board drill-down is in
 
 ## 3 · Editing
 
-- **In the app:** a pinned table's inspector turns its columns into an editable grid. You can add, remove and reorder columns, and set each one's name, type (common Postgres types are suggested), primary key, nullable, unique, default, and reference (picked from the board's tables and columns). A column added to a table that isn't planned is planned, until an import finds it in the database.
+- **In the app:** a pinned table's inspector turns its columns into an editable grid. You can add, remove and reorder columns, and set each one's name, type (common Postgres types are suggested), primary key, nullable, unique, default, and reference (picked from the board's tables and columns). A new column isn't marked planned when it's added; the next import marks every column the database lacks as planned, and one it finds loses planned. The same rule holds for agents.
 - **For agents:** `add` and `update` accept `columns` (the whole list). A new step, `{"op": "column", "table": "<name>", "column": "<name>", …}`, adds, changes (`set`) or drops (`drop: true`) one column. `columns` or a `column` step on a part that isn't a table is refused with the step's number.
 
 ## 4 · Import and export
