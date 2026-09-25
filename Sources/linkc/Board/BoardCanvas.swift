@@ -71,40 +71,51 @@ struct BoardCanvas: View {
     @State private var glowOpacity = 0.0
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                background
-                drawing
-                elements
-                overlays
-                hoverCardOverlay
-                dockedInspectorOverlay
+        // The docked inspector is a sibling here, beside the canvas's own `GeometryReader` —
+        // never inside it — so its 260 pt claims real width from the HStack and the canvas's own
+        // `size`/`canvasFrame` shrink to what's left. That's what makes scrolling over the panel
+        // scroll the panel instead of panning the Board underneath it (`BoardInput` only takes a
+        // scroll whose location falls inside `canvasFrame`), and it's why `fitAll` and the hover
+        // card's clamp — both keyed off `size` — never reach under the panel either. Opening or
+        // closing it only ever changes `size`; `viewport`'s own origin is untouched, so the
+        // canvas never refits around it.
+        HStack(spacing: 0) {
+            GeometryReader { geometry in
+                ZStack(alignment: .topLeading) {
+                    background
+                    drawing
+                    elements
+                    overlays
+                    hoverCardOverlay
+                }
+                .background(WindowReader { input.window = $0 })
+                .coordinateSpace(.named(Self.space))
+                .clipped()
+                .onAppear {
+                    size = geometry.size
+                    canvasFrame = geometry.frame(in: .global)
+                    prepare()
+                    placeViewport()
+                    wireInput()
+                    input.start()
+                }
+                .onChange(of: geometry.size) { _, newSize in
+                    size = newSize
+                    canvasFrame = geometry.frame(in: .global)
+                }
+                .onDisappear {
+                    input.stop()
+                    sidebarState.setBoardViewport(viewport, for: projectPath)
+                }
             }
-            .background(WindowReader { input.window = $0 })
-            .coordinateSpace(.named(Self.space))
-            .clipped()
-            .onAppear {
-                size = geometry.size
-                canvasFrame = geometry.frame(in: .global)
-                prepare()
-                placeViewport()
-                wireInput()
-                input.start()
-            }
-            .onChange(of: geometry.size) { _, newSize in
-                size = newSize
-                canvasFrame = geometry.frame(in: .global)
-            }
-            .onDisappear {
-                input.stop()
-                sidebarState.setBoardViewport(viewport, for: projectPath)
-            }
+            dockedInspectorOverlay
         }
         .background(Theme.boardBackground)
         .onChange(of: board.outsideChange?.id) { _, _ in outsideChangeArrived() }
         .onChange(of: viewport.lens) { _, _ in sidebarState.setBoardViewport(viewport, for: projectPath) }
         .onChange(of: board.map) { _, _ in unpinIfGone() }
         .onChange(of: hoverCandidate) { _, target in hoverCandidateChanged(target) }
+        .onChange(of: focusOn) { _, on in focusToggled(on) }
     }
 
     /// Lights up what the change touched at full opacity, then — on the next runloop turn, so
@@ -492,16 +503,13 @@ struct BoardCanvas: View {
         return CGSize(width: x, height: y)
     }
 
-    /// The docked inspector — a sibling of the zoomed content, at the Board's right edge, so it
-    /// neither pans nor zooms with the canvas beneath it.
+    /// The docked inspector — a sibling of the canvas's own `GeometryReader` in `body`'s `HStack`,
+    /// not an overlay inside it, so it claims real width at the Board's right edge instead of
+    /// covering the canvas: neither pans nor zooms with it, and never sits over it.
     @ViewBuilder
     private var dockedInspectorOverlay: some View {
         if let pinned, let content = inspectionContent(for: pinned) {
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
-                BoardDockedInspector(content: content, edit: editPinned, close: unpin)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            BoardDockedInspector(content: content, edit: editPinned, close: unpin)
         }
     }
 
@@ -524,12 +532,13 @@ struct BoardCanvas: View {
         return nil
     }
 
-    /// Cancels any pending card, and — unless `target` is nil — starts a fresh 150 ms wait before
-    /// showing it. A later call before that wait finishes cancels this one in turn.
+    /// Cancels any pending card, and — unless `target` is nil, or it's already what the docked
+    /// inspector is pinned to — starts a fresh 150 ms wait before showing it. A later call before
+    /// that wait finishes cancels this one in turn.
     private func hoverCandidateChanged(_ target: BoardInspectionTarget?) {
         hoverCardTask?.cancel()
         hoverCard = nil
-        guard let target else { return }
+        guard let target, target != pinned else { return }
         hoverCardTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
@@ -559,6 +568,13 @@ struct BoardCanvas: View {
     private func unpinIfGone() {
         guard let pinned, inspectionContent(for: pinned) == nil else { return }
         unpin()
+    }
+
+    /// The moment Focus turns on, trims the selection to what it keeps visible — a part or arrow
+    /// selected beforehand, now hidden, must never still be there for Delete to reach.
+    private func focusToggled(_ on: Bool) {
+        guard on, let focusVisible else { return }
+        board.selection = focusVisible.trimmed(board.selection)
     }
 
     // MARK: - Drawing
@@ -715,14 +731,15 @@ struct BoardCanvas: View {
     private static var insetCache: [InsetCacheKey: CGFloat] = [:]
 
     /// How far `kind`'s drawn outline sits inside its box on `side`, at `port`'s own height or
-    /// offset — walked from the box edge inward along the side's normal, in 0.5 pt steps up to 40
-    /// pt, until the point lies inside the shape `BoardShape.path(for:)` draws. A side whose
-    /// constant mid-height inset (`BoardShape.insets(for:)`) is already zero draws flush with the
-    /// box at every height for every kind so measured, so it skips the walk and gives 0, as
-    /// before — walking there would land exactly on the outline's own edge, where point
-    /// containment is unreliable. When the walk finds nothing within 40 pt — the constant inset
-    /// itself exceeds that on the mux, demux and adder's slanted sides — the constant is used
-    /// instead, so an arrow still stops at a sensible point rather than reaching into the shape.
+    /// offset — walked from the box edge inward along the side's normal, in 0.5 pt steps across
+    /// the whole side, until the point lies inside the shape `BoardShape.path(for:)` draws. A
+    /// side whose constant mid-height inset (`BoardShape.insets(for:)`) is already zero draws
+    /// flush with the box at every height for every kind so measured, so it skips the walk and
+    /// gives 0, as before — walking there would land exactly on the outline's own edge, where
+    /// point containment is unreliable. When the walk finds nothing along the whole side — the
+    /// constant inset itself exceeds that on the mux, demux and adder's slanted sides — the
+    /// constant is used instead, so an arrow still stops at a sensible point rather than reaching
+    /// into the shape.
     private func heightTrimmedInset(kind: ComponentKind, side: BoardEdgeSide, port: BoardPoint, box: BoardRect) -> CGFloat {
         let constant = BoardShape.insets(for: kind)
         let constantForSide: CGFloat
@@ -740,11 +757,6 @@ struct BoardCanvas: View {
         case .left, .right: offsetFromMid = port.y - (box.minY + Int(h / 2))
         case .top, .bottom: offsetFromMid = port.x - (box.minX + Int(w / 2))
         }
-
-        // The constant insets were measured exactly at the side's midpoint, so they are right
-        // there — and the walk below can land on a vertex that sits on that very line (the
-        // ALU's notch), where `contains` is unreliable.
-        guard offsetFromMid != 0 else { return constantForSide }
 
         let key = InsetCacheKey(kindRaw: kind.raw, side: side, offsetFromMid: offsetFromMid)
         if let cached = Self.insetCache[key] { return cached }
@@ -1017,8 +1029,19 @@ struct BoardCanvas: View {
         switch command {
         case .delete: board.delete(board.selection)
         case .cancel:
-            // Esc leaves Focus first, then closes the docked inspector, and only once neither is
-            // showing does it fall through to the ordinary cancel below.
+            // Esc peels one layer at a time: a live tool or draft cancels first, back to Select —
+            // Focus and the docked inspector are untouched by it. Only once neither remains does
+            // Esc turn Focus off, then close the inspector, and only once none of those apply
+            // does it fall through to clearing the selection.
+            let toolActive = board.tool != .select || inspecting != nil || quickAddAt != nil || arrowDraft != nil || frameDraft != nil
+            if toolActive {
+                board.tool = .select
+                inspecting = nil
+                quickAddAt = nil
+                arrowDraft = nil
+                frameDraft = nil
+                return
+            }
             if focusOn {
                 focusOn = false
                 return
@@ -1028,11 +1051,6 @@ struct BoardCanvas: View {
                 return
             }
             board.selection = []
-            board.tool = .select
-            inspecting = nil
-            quickAddAt = nil
-            arrowDraft = nil
-            frameDraft = nil
         case .undo: board.undo()
         case .redo: board.redo()
         case .fitAll: fitAll()
@@ -1161,16 +1179,9 @@ struct BoardCanvas: View {
         let bottomRight = viewport.toCanvas(CGPoint(x: marquee.maxX, y: marquee.maxY))
         let area = BoardRect(x: Int(topLeft.x), y: Int(topLeft.y),
                              w: Int(bottomRight.x - topLeft.x), h: Int(bottomRight.y - topLeft.y))
-        var picked: Set<BoardModel.Element> = []
-        for component in board.map.components where componentRect(component)?.intersects(area) == true {
-            picked.insert(.component(component.name))
-        }
-        for note in board.map.notes where note.at.map({ BoardGeometry.rect(ofNoteAt: $0).intersects(area) }) == true {
-            picked.insert(.note(note.id))
-        }
-        for text in board.map.texts where BoardGeometry.rect(of: text).intersects(area) {
-            picked.insert(.text(text.id))
-        }
+        // While Focus is on, a marquee drawn over what looks like empty space must never pick a
+        // part it's hiding.
+        let picked = BoardModel.marqueePick(in: area, map: board.map, visibleParts: focusVisible?.parts)
         board.selection = NSEvent.modifierFlags.contains(.shift) ? board.selection.union(picked) : picked
     }
 
@@ -1227,14 +1238,19 @@ struct BoardCanvas: View {
         board.tool = .select
     }
 
-    /// The nearest arrow to `location` (a screen point) within the lens, by the canvas-space hit
-    /// test every caller here shares: a 6 pt screen tolerance, converted to canvas units by the
-    /// current zoom.
+    /// The nearest arrow to `location` (a screen point) within the lens and, while Focus is on,
+    /// within what it keeps visible — by the canvas-space hit test every caller here shares: a
+    /// 6 pt screen tolerance, converted to canvas units by the current zoom. A stale key — one
+    /// `arrowStyle` can no longer resolve, between a delete and the reroute that follows it — is
+    /// never hit; a moment's staleness must never let a gone arrow be hovered or pinned.
     private func arrowAt(_ location: CGPoint) -> BoardModel.ArrowKey? {
         let point = viewport.toCanvas(location)
         return BoardHitTest.arrow(
             atX: Double(point.x), y: Double(point.y), routes: board.routes, tolerance: 6 / viewport.zoom,
-            including: { key in arrowStyle(for: key).map(viewport.lens.includes) ?? true })
+            including: { key in
+                guard let style = arrowStyle(for: key), viewport.lens.includes(style) else { return false }
+                return focusVisible?.arrows.contains(key) ?? true
+            })
     }
 
     /// `key`'s own drawn style, read straight off its source component — `nil` when the key no

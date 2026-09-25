@@ -33,4 +33,19 @@ final class BoardFocusTests: XCTestCase {
         XCTAssertNil(BoardFocus.visible(aroundArrow: .init(from: "A", to: "C"), in: map()))
         XCTAssertNil(BoardFocus.visible(aroundArrow: .init(from: "Z", to: "B"), in: map()))
     }
+
+    /// Turning Focus on must never leave a hidden part or arrow selected — `trimmed` drops
+    /// whatever isn't in `parts`/`arrows`, and leaves a frame, note or text alone since Focus
+    /// never hides those.
+    func testTrimmedDropsWhatFocusHidesAndKeepsEverythingElse() throws {
+        let visible = try XCTUnwrap(BoardFocus.visible(aroundPart: "B", in: map()))
+        let note = UUID()
+        let text = UUID()
+        let selection: Set<BoardModel.Element> = [
+            .component("B"), .component("E"), .arrow(.init(from: "A", to: "B")),
+            .arrow(.init(from: "E", to: "C")), .frame("Group"), .note(note), .text(text),
+        ]
+        let trimmed = visible.trimmed(selection)
+        XCTAssertEqual(trimmed, [.component("B"), .arrow(.init(from: "A", to: "B")), .frame("Group"), .note(note), .text(text)])
+    }
 }

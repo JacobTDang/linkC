@@ -33,3 +33,17 @@ public enum BoardFocus {
         return Visible(parts: [source.name, target], arrows: [key])
     }
 }
+
+extension BoardFocus.Visible {
+    /// `selection` with every part or arrow this visibility hides removed. A frame, note or text
+    /// passes through untouched — Focus never hides those.
+    public func trimmed(_ selection: Set<BoardModel.Element>) -> Set<BoardModel.Element> {
+        selection.filter { element in
+            switch element {
+            case .component(let name): return parts.contains(name)
+            case .arrow(let key): return arrows.contains(key)
+            case .frame, .note, .text: return true
+            }
+        }
+    }
+}
