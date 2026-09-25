@@ -78,6 +78,19 @@ server.
   that folder.
 - A terminal that exits stays in the sidebar with its output until you dismiss it.
 
+### App tabs
+
+- A project can open a local web app in a tab. The app tab shows in the tab strip after the
+  sessions and terminals.
+- To open an app, use the **Apps** section of the **+** menu of the project.
+- linkC starts the app when you open its tab. The app runs until you close the tab or quit linkC.
+  Then linkC stops the app and every process that the app started.
+- linkC never starts an app by itself. After linkC restarts, an app tab shows **Not running**
+  until you click **Start**.
+- If linkC stops unexpectedly, the next launch stops the apps that were still running.
+- If an app cannot start, the tab shows the reason and the last lines of the app output.
+- **Settings > Apps** adds apps that every project can open.
+
 ### The Board
 
 - linkC keeps the Board of a project in `system-map.json`, in the root folder of the project.
@@ -160,6 +173,41 @@ How linkC delivers the work:
 - The **Cloud** section shows your Oracle Cloud instances, your Supabase projects and the
   endpoints that you watch.
 
+## Build an app for linkC
+
+An app for linkC is a local web app. linkC starts its server and shows its page in a tab.
+
+1. Make the user interface of the app a web page that a local HTTP server supplies.
+2. Add the file `.linkc/app.json` to the root folder of the app:
+
+   ```json
+   {
+     "name": "Circuit MCP",
+     "start": ["uv", "run", "python", "run_ui.py", "--port", "{port}"],
+     "health": "/api/status"
+   }
+   ```
+
+| Field | Required | Contents |
+|---|---|---|
+| `name` | Yes | The name of the tab and of the menu item. |
+| `start` | Yes | The command and its arguments. linkC runs the command in the root folder of the app, through your login shell. linkC replaces each `{port}` with a free port. |
+| `health` | Yes | A path that starts with `/`. It returns a 2xx status when the app is ready. |
+| `path` | No | The page that linkC opens. The default is `/`. |
+| `env` | No | Environment variables for the app. |
+
+The server must obey these rules:
+
+- Listen only on `127.0.0.1`, on the port that linkC gives. linkC also sets `LINKC_PORT`.
+- Return a 2xx status from the `health` path within 60 seconds of the start.
+- Stop within 5 seconds of SIGTERM. After 5 seconds, linkC sends SIGKILL to all the processes of
+  the app.
+- Write logs to stdout and stderr.
+- Keep data on disk. linkC stops the app when you close its tab.
+
+Optional: use a dark background. The page URL includes `linkc=1`, so the app can hide its own
+header when it runs in linkC.
+
 ## Requirements
 
 - macOS 14 or later.
@@ -222,6 +270,7 @@ Mac, Gatekeeper blocks the first start. Right-click the app, then click **Open**
 | Folder | Contents |
 |---|---|
 | `Sources/LinkCKit/App` | The coordinator: sessions, the relay that delivers tasks and messages, the watchdog and updates. |
+| `Sources/LinkCKit/Apps` | App tabs: the app manifest, the app catalog, the app process and the record of running apps. |
 | `Sources/LinkCKit/Blackboard` | The shared state of a project: the inbox, tasks, messages, notes and handoffs. |
 | `Sources/LinkCKit/Board` | The Board model: edits, merges, layout, arrow routing, component kinds and logos. |
 | `Sources/LinkCKit/Config` | Integrations: Docker, Oracle Cloud, Supabase, MCP server health, skills and watched endpoints. |
