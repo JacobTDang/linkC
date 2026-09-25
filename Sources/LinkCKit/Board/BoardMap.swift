@@ -123,13 +123,14 @@ public struct BoardComponent: Equatable, Sendable, Identifiable {
     public var place: String
     /// Its box's top-left corner; nil until the board places it.
     public var at: BoardPoint?
+    public var columns: [BoardColumn]
     /// Keys linkC does not know, kept so an edit never drops them.
     var extras: Data?
 
     public init(
         name: String, kind: ComponentKind, does: String? = nil, reachedBy: String? = nil, runs: String? = nil,
         tech: String? = nil, planned: Bool = false, uses: [String: BoardArrow] = [:], legacyUsedBy: [String] = [],
-        place: String = BoardMap.notPlaced, at: BoardPoint? = nil
+        place: String = BoardMap.notPlaced, at: BoardPoint? = nil, columns: [BoardColumn] = []
     ) {
         self.name = name
         self.kind = kind
@@ -142,6 +143,7 @@ public struct BoardComponent: Equatable, Sendable, Identifiable {
         self.legacyUsedBy = legacyUsedBy
         self.place = place
         self.at = at
+        self.columns = columns
         self.extras = nil
     }
 }
@@ -220,13 +222,13 @@ public struct BoardMap: Equatable, Sendable {
     public static let empty = BoardMap()
 
     private static let rootKeys: Set<String> = ["version", "system", "places", "notes", "layout"]
-    private static let componentKeys: Set<String> = ["kind", "does", "reached_by", "runs", "tech", "status", "uses", "used_by"]
+    private static let componentKeys: Set<String> = ["kind", "does", "reached_by", "runs", "tech", "status", "uses", "used_by", "columns"]
     private static let layoutKeys: Set<String> = ["components", "frames", "notes", "texts"]
     private static let textKeys: Set<String> = ["text", "style", "at", "w"]
     /// Every version-1 component key linkC now knows, version-2 fields included: a version-1
     /// component that also carries `does`, `status` or `uses` must read them typed, not verbatim.
     private static let versionOneComponentKeys: Set<String> = [
-        "name", "kind", "does", "reached_by", "runs", "tech", "status", "uses", "used_by", "intended", "at",
+        "name", "kind", "does", "reached_by", "runs", "tech", "status", "uses", "used_by", "intended", "at", "columns",
     ]
     /// Every version-1 root key linkC now knows, version-2 fields included: `system` and `notes`
     /// on a version-1 file read typed, not verbatim.
@@ -305,7 +307,8 @@ public struct BoardMap: Equatable, Sendable {
                     uses: try arrowMap(raw, "uses", context: context) ?? [:],
                     legacyUsedBy: try stringArray(raw, "used_by", context: context) ?? [],
                     place: place,
-                    at: positions[name])
+                    at: positions[name],
+                    columns: try columns(raw, context: context))
                 component.extras = try extras(of: raw, excluding: componentKeys, context: context)
                 map.components.append(component)
             }
@@ -433,6 +436,11 @@ public struct BoardMap: Equatable, Sendable {
             if component.planned { object["status"] = "planned" } else { object.removeValue(forKey: "status") }
             if component.uses.isEmpty { object.removeValue(forKey: "uses") } else { object["uses"] = Self.encodedUses(component.uses) }
             if component.legacyUsedBy.isEmpty { object.removeValue(forKey: "used_by") } else { object["used_by"] = component.legacyUsedBy }
+            if component.columns.isEmpty {
+                object.removeValue(forKey: "columns")
+            } else {
+                object["columns"] = component.columns.map(Self.encodedColumn)
+            }
             places[component.place, default: [:]][component.name] = object
         }
         root["places"] = places
@@ -512,6 +520,66 @@ public struct BoardMap: Equatable, Sendable {
         guard let value = raw[key] else { return nil }
         guard let array = value as? [String] else { throw LinkCError.parse("\(context) has \"\(key)\" but it is not a list of text") }
         return array
+    }
+
+    private static func columns(_ raw: [String: Any], context: String) throws -> [BoardColumn] {
+        guard let value = raw["columns"] else { return [] }
+        guard let entries = value as? [[String: Any]] else {
+            throw LinkCError.parse("\(context) has \"columns\" but it is not a list of objects")
+        }
+        let knownKeys: Set<String> = ["name", "type", "pk", "nullable", "unique", "default", "references", "status"]
+        var result: [BoardColumn] = []
+        var seen: Set<String> = []
+        for entry in entries {
+            guard let name = try string(entry, "name", context: context),
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw LinkCError.parse("\(context) has a column with no \"name\"")
+            }
+            let columnContext = "\(context)'s column \"\(name)\""
+            if let unknown = entry.keys.sorted().first(where: { !knownKeys.contains($0) }) {
+                throw LinkCError.parse("\(context) column \"\(name)\" has an unknown key \"\(unknown)\"")
+            }
+            guard let type = try string(entry, "type", context: columnContext),
+                  !type.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw LinkCError.parse("\(context) column \"\(name)\" has no \"type\"")
+            }
+            guard seen.insert(name.lowercased()).inserted else {
+                throw LinkCError.parse("\(context) names column \"\(name)\" twice")
+            }
+            let pk = try bool(entry, "pk", context: columnContext) ?? false
+            let nullable = try bool(entry, "nullable", context: columnContext) ?? true
+            if pk && entry["nullable"] != nil && nullable {
+                throw LinkCError.parse("\(context) column \"\(name)\" is a primary key, so it can't be nullable")
+            }
+            var reference: BoardColumnReference?
+            if let referenceText = try string(entry, "references", context: columnContext) {
+                guard let parsed = BoardColumnReference(parsing: referenceText) else {
+                    throw LinkCError.parse("\(context) column \"\(name)\" has \"references\" \"\(referenceText)\" but it is not table.column")
+                }
+                reference = parsed
+            }
+            result.append(BoardColumn(
+                name: name,
+                type: type,
+                pk: pk,
+                nullable: nullable,
+                unique: try bool(entry, "unique", context: columnContext) ?? false,
+                defaultValue: try string(entry, "default", context: columnContext),
+                references: reference,
+                planned: try plannedStatus(entry, context: columnContext)))
+        }
+        return result
+    }
+
+    private static func encodedColumn(_ column: BoardColumn) -> [String: Any] {
+        var object: [String: Any] = ["name": column.name, "type": column.type]
+        if column.pk { object["pk"] = true }
+        if !column.nullable && !column.pk { object["nullable"] = false }
+        if column.unique { object["unique"] = true }
+        if let defaultValue = column.defaultValue { object["default"] = defaultValue }
+        if let references = column.references { object["references"] = references.text }
+        if column.planned { object["status"] = "planned" }
+        return object
     }
 
     private static func arrowMap(_ raw: [String: Any], _ key: String, context: String) throws -> [String: BoardArrow]? {
