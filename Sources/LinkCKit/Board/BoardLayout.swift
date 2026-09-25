@@ -29,9 +29,57 @@ public enum BoardLayout {
         var positions: [String: (col: Int, row: Int)]
     }
 
-    public static func arranged(_ map: BoardMap) -> BoardMap {
+    public static func placedGhosts(_ map: BoardMap) -> BoardMap {
         var result = map
-        let clusters = buildClusters(map)
+        let innerRects = result.components
+            .filter { $0.outside == nil }
+            .compactMap { comp -> BoardRect? in
+                guard let at = comp.at else { return nil }
+                return BoardGeometry.rect(ofComponentAt: at)
+            }
+            + result.frames.compactMap(\.rect)
+
+        let inner: BoardRect
+        if let first = innerRects.first {
+            let minX = innerRects.map(\.minX).min() ?? first.minX
+            let minY = innerRects.map(\.minY).min() ?? first.minY
+            let maxX = innerRects.map(\.maxX).max() ?? first.maxX
+            let maxY = innerRects.map(\.maxY).max() ?? first.maxY
+            inner = BoardRect(x: minX, y: minY, w: maxX - minX, h: maxY - minY)
+        } else {
+            inner = BoardRect(x: 0, y: 0, w: 0, h: 0)
+        }
+
+        let inGhosts = result.components
+            .enumerated()
+            .filter { $0.element.outside == .in }
+            .sorted { $0.element.name.lowercased() < $1.element.name.lowercased() }
+
+        let inX = inner.minX - BoardGeometry.componentSize.x - 96
+        for (row, item) in inGhosts.enumerated() {
+            result.components[item.offset].place = BoardMap.notPlaced
+            result.components[item.offset].at = BoardPoint(x: inX, y: inner.minY + row * 124)
+        }
+
+        let outGhosts = result.components
+            .enumerated()
+            .filter { $0.element.outside == .out }
+            .sorted { $0.element.name.lowercased() < $1.element.name.lowercased() }
+
+        let outX = inner.maxX + 96
+        for (row, item) in outGhosts.enumerated() {
+            result.components[item.offset].place = BoardMap.notPlaced
+            result.components[item.offset].at = BoardPoint(x: outX, y: inner.minY + row * 124)
+        }
+
+        return result
+    }
+
+    public static func arranged(_ map: BoardMap) -> BoardMap {
+        var innerMap = map
+        innerMap.components = map.components.filter { $0.outside == nil }
+        var result = innerMap
+        let clusters = buildClusters(innerMap)
 
         var clusterRects: [String?: BoardRect] = [:]
         if !clusters.isEmpty {
@@ -113,7 +161,15 @@ public enum BoardLayout {
             result.texts[index].at = BoardGeometry.elementDrop(rect, otherElements: boxes, frames: frameRects).origin.snapped
         }
 
-        return result
+        let arrangedNonGhosts = Dictionary(uniqueKeysWithValues: result.components.map { ($0.name.lowercased(), $0) })
+        result.components = map.components.map { comp in
+            if comp.outside != nil {
+                return comp
+            } else {
+                return arrangedNonGhosts[comp.name.lowercased()] ?? comp
+            }
+        }
+        return placedGhosts(result)
     }
 
     // MARK: - Clusters

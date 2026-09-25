@@ -487,4 +487,26 @@ final class BoardMapTests: XCTestCase {
         XCTAssertEqual((layout["components"] as? [String: [Int]])?.keys.sorted(), ["api"], "the orphaned position never resurfaces")
         XCTAssertNil((layout["frames"] as? [String: [Int]])?["Ghost frame"], "the orphaned frame rect never resurfaces")
     }
+
+    func testDetailOutsideAndStaleRoundTripAndAreWrittenOnlyWhenSet() throws {
+        let source = Data(#"{"version":2,"places":{"Not placed":{"engine":{"kind":"service","detail":"audio-engine"},"api":{"kind":"service","outside":"in","stale":true},"db":{"kind":"database"}}}}"#.utf8)
+        let map = try BoardMap.decode(source)
+        XCTAssertEqual(map.components.first { $0.name == "engine" }?.detail, "audio-engine")
+        XCTAssertEqual(map.components.first { $0.name == "api" }?.outside, .in)
+        XCTAssertEqual(map.components.first { $0.name == "api" }?.stale, true)
+        let db = try XCTUnwrap(map.components.first { $0.name == "db" })
+        XCTAssertNil(db.detail); XCTAssertNil(db.outside); XCTAssertFalse(db.stale)
+        let text = String(decoding: try map.encoded(), as: UTF8.self)
+        XCTAssertEqual(text.components(separatedBy: "\"detail\"").count - 1, 1)
+        XCTAssertEqual(text.components(separatedBy: "\"outside\"").count - 1, 1)
+        XCTAssertEqual(text.components(separatedBy: "\"stale\"").count - 1, 1)
+        XCTAssertEqual(try BoardMap.decode(try map.encoded()), map)
+    }
+
+    func testAnUnknownGhostSideIsRefused() {
+        let source = Data(#"{"version":2,"places":{"Not placed":{"api":{"kind":"service","outside":"sideways"}}}}"#.utf8)
+        XCTAssertThrowsError(try BoardMap.decode(source)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("\"outside\""))
+        }
+    }
 }

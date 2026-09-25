@@ -91,10 +91,12 @@ public final class MCPServer: Sendable {
         note: {"note": text}
         remove_note: {"remove_note": exact text}
         system: {"system": one line}
+        detail: {"detail": name}
         "kind": \(ComponentKind.groupedKindList) — any other kind is kept and drawn as a service. "memory" is the AI agent's checkpointer; "ram" is hardware memory.
         "planned": true marks something not built yet — linkc_get_board shows it as "status": "planned".
         "tech": a known technology id or alias — \(BoardTech.knownIDs.joined(separator: ", "))
         A new arrow from a router defaults to conditional, from a control unit to control.
+        Parts marked outside come from the parent board and are read-only here.
         """
 
     public init(
@@ -242,18 +244,27 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_get_board",
-                "description": "Read this project's Board — its architecture (system, places, components, notes) as JSON, exactly as `system-map.json` holds it minus layout. Use the exact names it shows with linkc_edit_board.",
+                "description": "Read this project's Board — its architecture (system, places, components, notes) as JSON, exactly as `system-map.json` holds it minus layout. Use the exact names it shows with linkc_edit_board. Optional board: \"overview\" (default) or a detail board's slug. Parts marked outside come from the parent board and are read-only here.",
                 "inputSchema": [
                     "type": "object",
-                    "properties": [:]
+                    "properties": [
+                        "board": [
+                            "type": "string",
+                            "description": "Optional board to read: \"overview\" (default) or a detail board's slug."
+                        ]
+                    ]
                 ]
             ],
             [
                 "name": "linkc_edit_board",
-                "description": "Change this project's Board with a list of steps, applied in order, all or nothing. Verbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system. linkC places everything on the canvas; the user sees it live. When you add or change infrastructure (a service, database, cache, queue, host…), reflect it on the Board.",
+                "description": "Change this project's Board with a list of steps, applied in order, all or nothing. Verbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system, detail. Optional board: \"overview\" (default) or a detail board's slug. Parts marked outside come from the parent board and are read-only here. When you add or change infrastructure (a service, database, cache, queue, host…), reflect it on the Board.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
+                        "board": [
+                            "type": "string",
+                            "description": "Optional board to edit: \"overview\" (default) or a detail board's slug."
+                        ],
                         "steps": [
                             "type": "array",
                             "items": ["type": "object"],
@@ -530,13 +541,48 @@ public final class MCPServer: Sendable {
 
             case "linkc_get_board":
                 do {
-                    guard let loaded = try BoardMapStore(workspacePath: workspaceRoot).load() else {
-                        return toolResultResponse(id: id, text: "This project has no map yet — linkc_edit_board creates one.")
+                    let rawBoard = args["board"] as? String
+                    let slug: String?
+                    if let rawBoard, rawBoard != "overview" {
+                        slug = rawBoard
+                    } else {
+                        slug = nil
                     }
-                    let text = try loaded.map.architectureJSON()
-                        + "\n\nVerbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system. "
+
+                    let projectName = URL(fileURLWithPath: workspaceRoot).lastPathComponent
+                    let catalog = try BoardCatalog.load(workspacePath: workspaceRoot, projectName: projectName)
+
+                    if let slug {
+                        guard BoardSlug.isValid(slug), catalog.entry(for: slug) != nil else {
+                            let known = (["overview"] + catalog.entries.compactMap(\.slug)).joined(separator: ", ")
+                            return toolResultResponse(id: id, text: "unknown board \"\(slug)\" — known boards: \(known)", isError: true)
+                        }
+                    }
+
+                    let map: BoardMap
+                    if let slug {
+                        map = try BoardDrill.open(slug, workspacePath: workspaceRoot, catalog: catalog)
+                    } else {
+                        guard let loaded = try BoardMapStore(workspacePath: workspaceRoot, board: nil).load() else {
+                            return toolResultResponse(id: id, text: "This project has no map yet — linkc_edit_board creates one.")
+                        }
+                        map = loaded.map
+                    }
+
+                    var text = try map.architectureJSON()
+                        + "\n\nVerbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system, detail. "
                         + "Kinds: \(ComponentKind.groupedKindList) (any other kind is kept and drawn as a service). "
-                        + "\"memory\" is the AI agent's checkpointer; \"ram\" is hardware memory."
+                        + "\"memory\" is the AI agent's checkpointer; \"ram\" is hardware memory. "
+                        + "Parts marked outside come from the parent board and are read-only here."
+
+                    text += "\n\nBoards:\n"
+                    for entry in catalog.entries {
+                        let indent = String(repeating: "  ", count: entry.depth)
+                        let slugLabel = entry.slug ?? "overview"
+                        let pathLabel = entry.linked ? entry.path.joined(separator: " › ") : "(unlinked)"
+                        text += "\(indent)\(slugLabel) — \(pathLabel)\n"
+                    }
+
                     return toolResultResponse(id: id, text: text)
                 } catch {
                     return toolResultResponse(id: id, text: BoardReport.sanitized(error.localizedDescription), isError: true)
@@ -544,8 +590,25 @@ public final class MCPServer: Sendable {
 
             case "linkc_edit_board":
                 do {
+                    let rawBoard = args["board"] as? String
+                    let slug: String?
+                    if let rawBoard, rawBoard != "overview" {
+                        slug = rawBoard
+                    } else {
+                        slug = nil
+                    }
+
+                    if let slug {
+                        let projectName = URL(fileURLWithPath: workspaceRoot).lastPathComponent
+                        let catalog = try BoardCatalog.load(workspacePath: workspaceRoot, projectName: projectName)
+                        guard BoardSlug.isValid(slug), catalog.entry(for: slug) != nil else {
+                            let known = (["overview"] + catalog.entries.compactMap(\.slug)).joined(separator: ", ")
+                            return toolResultResponse(id: id, text: "unknown board \"\(slug)\" — known boards: \(known)", isError: true)
+                        }
+                    }
+
                     let steps = try BoardEdit.steps(from: args["steps"])
-                    let lines = try Self.editBoard(store: BoardMapStore(workspacePath: workspaceRoot), steps: steps)
+                    let lines = try Self.editBoard(store: BoardMapStore(workspacePath: workspaceRoot, board: slug), steps: steps)
                     return toolResultResponse(id: id, text: lines.joined(separator: "\n") + "\nBoard updated.")
                 } catch let refusal as BoardEditRefusal {
                     return toolResultResponse(id: id, text: refusal.description, isError: true)
@@ -1205,23 +1268,49 @@ public final class MCPServer: Sendable {
     /// uses to force that race; production never overrides it. Throws `BoardEditRefusal` for a
     /// bad step, or `LinkCError.server` when the file kept changing after the retry.
     static func editBoard(store: BoardMapStore, steps: [BoardEditStep], beforeSave: () throws -> Void = {}) throws -> [String] {
+        let workspacePath = store.fileURL.deletingLastPathComponent().path
+        var takenSlugs = try BoardDrill.takenSlugs(in: workspacePath)
+        let currentBoardSlug = BoardSlug.slug(fromFileName: store.fileURL.lastPathComponent)
+
+        let detailResolver: (String) -> String = { partName in
+            let newSlug = BoardSlug.new(for: partName, under: currentBoardSlug, taken: takenSlugs)
+            takenSlugs.insert(newSlug)
+            return newSlug
+        }
+
         let first = try store.load()
-        let (applied, lines) = try BoardEdit.apply(steps, to: first?.map ?? .empty)
+        let (applied, lines) = try BoardEdit.apply(steps, to: first?.map ?? .empty, detailSlug: detailResolver)
         let map = BoardLayout.arranged(applied)
+        try createDetailFiles(for: steps, map: map, store: store)
         try beforeSave()
         do {
             _ = try store.save(map, expecting: first?.bytes)
             return lines
         } catch BoardMapStoreError.changedOnDisk {
             let second = try store.load()
-            let (retriedApplied, retriedLines) = try BoardEdit.apply(steps, to: second?.map ?? .empty)
+            let (retriedApplied, retriedLines) = try BoardEdit.apply(steps, to: second?.map ?? .empty, detailSlug: detailResolver)
             let retriedMap = BoardLayout.arranged(retriedApplied)
+            try createDetailFiles(for: steps, map: retriedMap, store: store)
             try beforeSave()
             do {
                 _ = try store.save(retriedMap, expecting: second?.bytes)
                 return retriedLines
             } catch BoardMapStoreError.changedOnDisk {
                 throw LinkCError.server("the map kept changing while this edit was saved — try again")
+            }
+        }
+    }
+
+    private static func createDetailFiles(for steps: [BoardEditStep], map: BoardMap, store: BoardMapStore) throws {
+        let workspacePath = store.fileURL.deletingLastPathComponent().path
+        for step in steps {
+            guard case .detail(let name) = step else { continue }
+            guard let part = map.components.first(where: { $0.name.lowercased() == name.lowercased() }),
+                  let slug = part.detail else { continue }
+            do {
+                try BoardDrill.createDetailFileIfMissing(slug: slug, part: part, parent: map, workspacePath: workspacePath)
+            } catch {
+                throw LinkCError.server("could not create detail board \"\(slug)\": \(error.localizedDescription)")
             }
         }
     }

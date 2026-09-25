@@ -62,4 +62,9 @@ final class BoardMapStoreTests: XCTestCase {
         try Data("{ nope".utf8).write(to: store.fileURL)
         XCTAssertThrowsError(try store.load())
     }
+
+    func testADetailBoardLivesBesideTheOverview() {
+        XCTAssertEqual(BoardMapStore(workspacePath: workspace.path, board: "audio-engine").fileURL.lastPathComponent, "system-map.audio-engine.json")
+        XCTAssertEqual(BoardMapStore(workspacePath: workspace.path, board: nil).fileURL.lastPathComponent, "system-map.json")
+    }
 }
