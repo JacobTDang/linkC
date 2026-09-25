@@ -344,6 +344,13 @@ public final class LinkCAppProcess {
             throw LinkCError.process("could not open a socket to find a free port: \(String(cString: strerror(errno)))")
         }
         defer { close(socketFD) }
+        // Match how servers bind (uvicorn and http.server set SO_REUSEADDR): a port that only has
+        // the last run's connections in TIME_WAIT is free for them, so it must count as free here.
+        // A port some socket is still listening on stays busy.
+        var reuse: Int32 = 1
+        guard setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            throw LinkCError.process("could not set SO_REUSEADDR on the port probe: \(String(cString: strerror(errno)))")
+        }
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)

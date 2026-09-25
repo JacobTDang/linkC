@@ -215,4 +215,33 @@ final class LinkCAppProcessTests: XCTestCase {
         guard case .running(let url) = process.state else { return XCTFail("\(process.state)") }
         XCTAssertEqual(url.port, preferred)
     }
+
+    func testAPreferredPortInTimeWaitIsStillUsed() throws {
+        // The previous run's server closed a connection first, so the socket waits in TIME_WAIT on
+        // the port. A server that sets SO_REUSEADDR (uvicorn, http.server) can bind it again.
+        let listener = socket(AF_INET, SOCK_STREAM, 0)
+        var yes: Int32 = 1
+        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        XCTAssertEqual(withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, length) } }, 0)
+        XCTAssertEqual(listen(listener, 1), 0)
+        _ = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(listener, $0, &length) } }
+        let port = Int(UInt16(bigEndian: address.sin_port))
+
+        let client = socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertEqual(withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(client, $0, length) } }, 0)
+        let accepted = accept(listener, nil, nil)
+        XCTAssertGreaterThanOrEqual(accepted, 0)
+        close(accepted) // the server closes first
+        usleep(100_000)
+        close(client)
+        close(listener)
+        usleep(100_000)
+
+        XCTAssertEqual(try LinkCAppProcess.choosePort(preferred: port), port)
+    }
 }
