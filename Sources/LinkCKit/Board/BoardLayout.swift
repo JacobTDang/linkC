@@ -55,7 +55,7 @@ public enum BoardLayout {
             .filter { $0.element.outside == .in }
             .sorted { $0.element.name.lowercased() < $1.element.name.lowercased() }
 
-        let inX = inner.minX - 176 - 96
+        let inX = inner.minX - BoardGeometry.componentSize.x - 96
         for (row, item) in inGhosts.enumerated() {
             result.components[item.offset].place = BoardMap.notPlaced
             result.components[item.offset].at = BoardPoint(x: inX, y: inner.minY + row * 124)

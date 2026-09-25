@@ -105,4 +105,17 @@ final class BoardDrillTests: XCTestCase {
             XCTAssertTrue("\(error)".contains("overview"))
         }
     }
+
+    func testTakenSlugsListingNonexistentWorkspaceFolderThrows() {
+        let missingPath = workspace.appendingPathComponent("does-not-exist-\(UUID().uuidString)").path
+        XCTAssertThrowsError(try BoardDrill.takenSlugs(in: missingPath)) { error in
+            guard let serverError = error as? LinkCError, case .server(let msg) = serverError else {
+                XCTFail("expected LinkCError.server, got \(error)")
+                return
+            }
+            XCTAssertTrue(msg.contains("could not list"), msg)
+            XCTAssertTrue(msg.contains(missingPath), msg)
+        }
+    }
 }
+

@@ -561,7 +561,7 @@ public final class MCPServer: Sendable {
 
                     let map: BoardMap
                     if let slug {
-                        map = try BoardDrill.open(slug, workspacePath: workspaceRoot)
+                        map = try BoardDrill.open(slug, workspacePath: workspaceRoot, catalog: catalog)
                     } else {
                         guard let loaded = try BoardMapStore(workspacePath: workspaceRoot, board: nil).load() else {
                             return toolResultResponse(id: id, text: "This project has no map yet — linkc_edit_board creates one.")
@@ -1269,9 +1269,7 @@ public final class MCPServer: Sendable {
     /// bad step, or `LinkCError.server` when the file kept changing after the retry.
     static func editBoard(store: BoardMapStore, steps: [BoardEditStep], beforeSave: () throws -> Void = {}) throws -> [String] {
         let workspacePath = store.fileURL.deletingLastPathComponent().path
-        let folder = URL(fileURLWithPath: (workspacePath as NSString).standardizingPath, isDirectory: true)
-        let fileNames = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        var takenSlugs = Set(fileNames.compactMap(BoardSlug.slug(fromFileName:)))
+        var takenSlugs = try BoardDrill.takenSlugs(in: workspacePath)
         let currentBoardSlug = BoardSlug.slug(fromFileName: store.fileURL.lastPathComponent)
 
         let detailResolver: (String) -> String = { partName in
@@ -1283,19 +1281,19 @@ public final class MCPServer: Sendable {
         let first = try store.load()
         let (applied, lines) = try BoardEdit.apply(steps, to: first?.map ?? .empty, detailSlug: detailResolver)
         let map = BoardLayout.arranged(applied)
+        try createDetailFiles(for: steps, map: map, store: store)
         try beforeSave()
         do {
             _ = try store.save(map, expecting: first?.bytes)
-            createDetailFiles(for: steps, map: map, store: store)
             return lines
         } catch BoardMapStoreError.changedOnDisk {
             let second = try store.load()
             let (retriedApplied, retriedLines) = try BoardEdit.apply(steps, to: second?.map ?? .empty, detailSlug: detailResolver)
             let retriedMap = BoardLayout.arranged(retriedApplied)
+            try createDetailFiles(for: steps, map: retriedMap, store: store)
             try beforeSave()
             do {
                 _ = try store.save(retriedMap, expecting: second?.bytes)
-                createDetailFiles(for: steps, map: retriedMap, store: store)
                 return retriedLines
             } catch BoardMapStoreError.changedOnDisk {
                 throw LinkCError.server("the map kept changing while this edit was saved — try again")
@@ -1303,13 +1301,17 @@ public final class MCPServer: Sendable {
         }
     }
 
-    private static func createDetailFiles(for steps: [BoardEditStep], map: BoardMap, store: BoardMapStore) {
+    private static func createDetailFiles(for steps: [BoardEditStep], map: BoardMap, store: BoardMapStore) throws {
         let workspacePath = store.fileURL.deletingLastPathComponent().path
         for step in steps {
             guard case .detail(let name) = step else { continue }
             guard let part = map.components.first(where: { $0.name.lowercased() == name.lowercased() }),
                   let slug = part.detail else { continue }
-            try? BoardDrill.createDetailFileIfMissing(slug: slug, part: part, parent: map, workspacePath: workspacePath)
+            do {
+                try BoardDrill.createDetailFileIfMissing(slug: slug, part: part, parent: map, workspacePath: workspacePath)
+            } catch {
+                throw LinkCError.server("could not create detail board \"\(slug)\": \(error.localizedDescription)")
+            }
         }
     }
 

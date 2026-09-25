@@ -431,4 +431,12 @@ final class BoardEditTests: XCTestCase {
         XCTAssertTrue(result.map.components.isEmpty)
         XCTAssertEqual(result.lines, ["removed A"])
     }
+
+    func testDetailOnAGhostIsRefusedWithStepNumber() throws {
+        var map = BoardMap.empty
+        map.components = [BoardComponent(name: "A", kind: .service, outside: .in)]
+        let refused = refusal([["detail": "A"]], on: map)
+        XCTAssertEqual(refused?.description, #"step 1: "A" comes from the overview; go deeper from its own board"#)
+    }
 }
+

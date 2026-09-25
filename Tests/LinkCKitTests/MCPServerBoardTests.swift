@@ -253,4 +253,36 @@ final class MCPServerBoardTests: XCTestCase {
         let engineMap = try XCTUnwrap(try BoardMapStore(workspacePath: tempDir.path, board: "engine").load()?.map)
         XCTAssertTrue(engineMap.components.contains { $0.name == "mixer" })
     }
+
+    func testEditBoardFailsWhenDetailFileCannotBeWrittenAndOverviewHasNoDetail() throws {
+        let s = server()
+        _ = try call(s, "linkc_edit_board", ["steps": [["add": "Engine"]]])
+
+        // Create a directory named system-map.engine.json so writing the detail file fails
+        let engineURL = tempDir.appendingPathComponent("system-map.engine.json")
+        try FileManager.default.createDirectory(at: engineURL, withIntermediateDirectories: true)
+
+        let editResult = try call(s, "linkc_edit_board", ["steps": [["detail": "Engine"]]])
+        XCTAssertTrue(editResult.isError, "Expected edit to fail")
+        XCTAssertTrue(editResult.text.contains("engine"), "Expected error message to name the slug: \(editResult.text)")
+
+        // Overview file has no detail key
+        let onDisk = try XCTUnwrap(try BoardMapStore(workspacePath: tempDir.path).load()?.map)
+        let engineComp = try XCTUnwrap(onDisk.components.first { $0.name == "Engine" })
+        XCTAssertNil(engineComp.detail, "Overview should not have saved a detail link when detail file creation failed")
+    }
+
+    func testEditBoardListingNonexistentWorkspaceFolderThrows() throws {
+        let missingPath = tempDir.appendingPathComponent("nonexistent-\(UUID().uuidString)").path
+        let store = BoardMapStore(workspacePath: missingPath)
+        XCTAssertThrowsError(try MCPServer.editBoard(store: store, steps: [.add("engine", BoardComponentFields(), place: nil)])) { error in
+            guard let serverError = error as? LinkCError, case .server(let msg) = serverError else {
+                XCTFail("expected LinkCError.server, got \(error)")
+                return
+            }
+            XCTAssertTrue(msg.contains("could not list"), msg)
+            XCTAssertTrue(msg.contains(missingPath), msg)
+        }
+    }
 }
+
