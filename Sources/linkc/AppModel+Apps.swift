@@ -44,29 +44,43 @@ extension AppModel {
         case .failure(let error):
             surface(error: error.localizedDescription)
         case .success(let manifest):
-            let process = appProcesses[ref.id] ?? LinkCAppProcess(folder: ref.folder, manifest: manifest)
+            let process = appProcesses[ref.id]
+                ?? LinkCAppProcess(folder: ref.folder, manifest: manifest, ledger: appGroupLedger)
             appProcesses[ref.id] = process
             switch process.state {
             case .starting, .running:
                 return // already on its way: reopening the app just selects its tab
             case .asleep, .failed, .exited:
                 process.manifest = manifest
+                // Drop the cached web view before starting: a restart can coincidentally land on
+                // the very same port, which `AppWebView.updateNSView`'s URL comparison alone
+                // can't tell apart from "unchanged" — losing the cache forces a fresh `WKWebView`
+                // and a fresh load in `makeNSView` instead.
+                appWebViews[ref.id] = nil
                 process.start()
             }
         }
     }
 
+    /// The open app tab for a tab id in the current project — turning a bare id back into its
+    /// full `AppTabRef`, the way both `select` (a click in the strip) and `closeApp` need to.
+    /// Nil when there is no current project or no open app tab matches.
+    func openAppRef(forTab id: String) -> AppTabRef? {
+        guard let project = currentProject,
+              let open = sidebarState.openApps(in: project)
+                  .first(where: { ProjectTabs.appTabID(project: project, folder: $0.folder) == id })
+        else { return nil }
+        return AppTabRef(id: id, project: project, folder: open.folder, name: open.name)
+    }
+
     /// Stops the tab's process (fire-and-forget — quitting is the only path that waits) and
     /// forgets it, then removes the tab from the strip.
     func closeApp(_ tab: ProjectTab) {
-        guard let project = currentProject,
-              let open = sidebarState.openApps(in: project)
-                  .first(where: { ProjectTabs.appTabID(project: project, folder: $0.folder) == tab.id })
-        else { return }
+        guard let open = openAppRef(forTab: tab.id) else { return }
         appProcesses[tab.id]?.stop()
         appProcesses[tab.id] = nil
         appWebViews[tab.id] = nil
-        sidebarState.closeApp(folder: open.folder, in: project)
+        sidebarState.closeApp(folder: open.folder, in: open.project)
         clearAppTab(matching: tab.id)
     }
 }

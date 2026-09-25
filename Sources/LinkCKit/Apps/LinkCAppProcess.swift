@@ -42,7 +42,14 @@ public final class LinkCAppProcess {
         }
 
         public static func loginShell() -> Launcher {
-            Launcher(shell: ShellResolver.loginShell(), login: true)
+            Launcher(shell: posixShell(for: ShellResolver.loginShell()), login: true)
+        }
+
+        /// `exec "$@"` needs a POSIX shell — a fish login shell (its syntax isn't POSIX) would
+        /// fail every start. Returns `shell` itself when it already is one, `/bin/zsh` otherwise.
+        static func posixShell(for shell: String) -> String {
+            let posixShells: Set<String> = ["sh", "bash", "zsh", "ksh", "dash"]
+            return posixShells.contains((shell as NSString).lastPathComponent) ? shell : "/bin/zsh"
         }
 
         func arguments(for argv: [String]) -> [String] {
@@ -69,14 +76,26 @@ public final class LinkCAppProcess {
     /// end early and handing the child SIGPIPE on its next write. Held here for the run's
     /// lifetime; the next `start()` (or dealloc) replaces or drops it.
     @ObservationIgnored private var logHandle: FileHandle?
+    /// Where a spawned group is recorded so a crash or force quit of linkC itself doesn't leave
+    /// it running forever — nil in most tests, the shared production ledger in the app.
+    @ObservationIgnored private let ledger: LinkCAppGroupLedger?
 
     var processGroup: pid_t? { group }
 
-    public init(folder: String, manifest: LinkCAppManifest, launcher: Launcher = .loginShell(), timing: Timing = Timing()) {
+    /// Groups sent SIGTERM whose SIGKILL escalation is still pending (the `Task` scheduled by
+    /// `terminate` hasn't run yet). `stopAll` folds these in too, so a group that outlives the
+    /// `LinkCAppProcess` that started it (its tab already closed) still gets caught at quit.
+    @MainActor private static var stoppingGroups: Set<pid_t> = []
+
+    public init(
+        folder: String, manifest: LinkCAppManifest, launcher: Launcher = .loginShell(), timing: Timing = Timing(),
+        ledger: LinkCAppGroupLedger? = nil
+    ) {
         self.folder = folder
         self.manifest = manifest
         self.launcher = launcher
         self.timing = timing
+        self.ledger = ledger
     }
 
     /// Starts the app when it isn't already starting or running. Every failure lands in `.failed`
@@ -115,6 +134,7 @@ public final class LinkCAppProcess {
         }
         group = pid
         state = .starting
+        ledger?.record(pid)
         logHandle = pipe.fileHandleForReading
         readLog(pipe.fileHandleForReading, run: run)
         reap(pid, run: run)
@@ -125,33 +145,67 @@ public final class LinkCAppProcess {
     /// once, and the state is `.asleep` straight away.
     public func stop() {
         generation += 1
-        if let group { Self.terminate(group: group, name: manifest.name, folder: folder, grace: timing.stopGrace) }
-        group = nil
-        state = .asleep
-    }
-
-    /// Like `stop`, but blocks until the group is gone (at most the grace period, then SIGKILL).
-    /// For quitting linkC, when nothing can wait on a timer.
-    public func stopAndWait() {
-        generation += 1
         if let group {
-            LiveProcessRunner.signalGroup(group, SIGTERM, running: manifest.name, in: URL(fileURLWithPath: folder))
-            let deadline = Date().addingTimeInterval(timing.stopGrace)
-            while Date() < deadline, !(kill(-group, 0) == -1 && errno == ESRCH) { usleep(50_000) }
-            if !(kill(-group, 0) == -1 && errno == ESRCH) {
-                LiveProcessRunner.signalGroup(group, SIGKILL, running: manifest.name, in: URL(fileURLWithPath: folder))
-            }
+            Self.terminate(group: group, name: manifest.name, folder: folder, grace: timing.stopGrace, ledger: ledger)
         }
         group = nil
         state = .asleep
     }
 
-    private static func terminate(group: pid_t, name: String, folder: String, grace: TimeInterval) {
+    /// Stops every process's group, plus any group still escalating from an earlier `stop()`,
+    /// and blocks until all of them are gone (one shared grace period, then SIGKILL to whatever
+    /// remains). For quitting linkC, when nothing can wait on a timer.
+    public static func stopAll(_ processes: [LinkCAppProcess], grace: TimeInterval = 5) {
+        var groups: [pid_t: (name: String, folder: String, ledger: LinkCAppGroupLedger?)] = [:]
+        for process in processes {
+            if let group = process.group {
+                groups[group] = (process.manifest.name, process.folder, process.ledger)
+                process.generation += 1
+                process.group = nil
+                process.state = .asleep
+            }
+        }
+        for group in stoppingGroups where groups[group] == nil {
+            groups[group] = ("app", "", nil)
+        }
+        guard !groups.isEmpty else {
+            stoppingGroups.removeAll()
+            return
+        }
+        func groupIsGone(_ group: pid_t) -> Bool { kill(-group, 0) == -1 && errno == ESRCH }
+        for (group, info) in groups {
+            LiveProcessRunner.signalGroup(group, SIGTERM, running: info.name, in: URL(fileURLWithPath: info.folder))
+        }
+        let deadline = Date().addingTimeInterval(grace)
+        while Date() < deadline, !groups.keys.allSatisfy(groupIsGone) { usleep(50_000) }
+        for (group, info) in groups where !groupIsGone(group) {
+            LiveProcessRunner.signalGroup(group, SIGKILL, running: info.name, in: URL(fileURLWithPath: info.folder))
+        }
+        // SIGKILL cannot be blocked, but a killed process is briefly a zombie until reaped (our
+        // own reaper thread for the leader, launchd for an orphaned child) — give that a moment
+        // so "gone" really means gone by the time this call returns, not a race with the reaper.
+        let reapDeadline = Date().addingTimeInterval(2)
+        while Date() < reapDeadline, !groups.keys.allSatisfy(groupIsGone) { usleep(10_000) }
+        for (group, info) in groups {
+            info.ledger?.forget(group)
+        }
+        stoppingGroups.removeAll()
+    }
+
+    /// SIGTERM now, SIGKILL after `grace` if the group is still alive — scheduled on a `Task` so
+    /// it survives only as long as linkC itself does. `stopAll` is what catches a group whose
+    /// escalation was still pending when linkC quit.
+    private static func terminate(group: pid_t, name: String, folder: String, grace: TimeInterval, ledger: LinkCAppGroupLedger?) {
         let folderURL = URL(fileURLWithPath: folder)
         LiveProcessRunner.signalGroup(group, SIGTERM, running: name, in: folderURL)
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + grace) {
-            guard kill(-group, 0) == 0 else { return } // the whole group has exited
-            LiveProcessRunner.signalGroup(group, SIGKILL, running: name, in: folderURL)
+        stoppingGroups.insert(group)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(grace))
+            if kill(-group, 0) == 0 { // the group is still alive
+                LiveProcessRunner.signalGroup(group, SIGKILL, running: name, in: folderURL)
+            }
+            stoppingGroups.remove(group)
+            ledger?.forget(group)
         }
     }
 
@@ -187,8 +241,11 @@ public final class LinkCAppProcess {
 
     private func leaderExited(_ pid: pid_t, code: Int32, run: Int) {
         guard run == generation else { return }
+        // The leader itself is confirmed gone (we're past its waitpid) — forget it now, rather
+        // than waiting on the cleanup below, which only chases down any stray children.
+        ledger?.forget(pid)
         // The leader is gone. Anything it started must not live on and draw power.
-        Self.terminate(group: pid, name: manifest.name, folder: folder, grace: timing.stopGrace)
+        Self.terminate(group: pid, name: manifest.name, folder: folder, grace: timing.stopGrace, ledger: ledger)
         group = nil
         if !partialLine.isEmpty {
             log.append(partialLine)
@@ -223,10 +280,16 @@ public final class LinkCAppProcess {
                 if Date() >= deadline {
                     guard self.generation == run, self.state == .starting else { return }
                     if let group = self.group {
-                        Self.terminate(group: group, name: self.manifest.name, folder: self.folder, grace: self.timing.stopGrace)
+                        Self.terminate(
+                            group: group, name: self.manifest.name, folder: self.folder, grace: self.timing.stopGrace,
+                            ledger: self.ledger)
                     }
                     self.generation += 1
                     self.group = nil
+                    if !self.partialLine.isEmpty {
+                        self.log.append(self.partialLine)
+                        self.partialLine = ""
+                    }
                     self.state = .failed(reason: "The app did not answer \(health.path) within \(seconds) s.")
                     return
                 }

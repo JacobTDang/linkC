@@ -14,7 +14,7 @@ final class LinkCAppProcessTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        for process in processes { process.stopAndWait() }
+        LinkCAppProcess.stopAll(processes, grace: 1)
         try FileManager.default.removeItem(at: folder)
     }
 
@@ -125,6 +125,53 @@ final class LinkCAppProcessTests: XCTestCase {
         try await waitUntil { process.log.last == "line249" }
         XCTAssertEqual(process.log.count, LinkCAppProcess.logLimit)
         XCTAssertEqual(process.log.first, "line50")
+    }
+
+    func testStopAllKillsAGroupWhoseEscalationIsStillPending() async throws {
+        let process = app(["/bin/sh", "-c", "trap '' TERM; sleep 300"], timing: .init(healthTimeout: 30, stopGrace: 30))
+        process.start()
+        let group = try XCTUnwrap(process.processGroup)
+        try await Task.sleep(for: .milliseconds(300)) // let the trap install before SIGTERM races it
+
+        process.stop()
+        XCTAssertEqual(process.state, .asleep)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(groupIsGone(group), "the escalation (30s grace) has not fired yet")
+
+        LinkCAppProcess.stopAll([], grace: 0.3)
+        try await waitUntil(2) { groupIsGone(group) }
+    }
+
+    func testStopAllUsesOneSharedDeadlineForSeveralApps() async throws {
+        let a = app(["/bin/sh", "-c", "trap '' TERM; sleep 300"], timing: .init(healthTimeout: 30))
+        let b = app(["/bin/sh", "-c", "trap '' TERM; sleep 300"], timing: .init(healthTimeout: 30))
+        a.start()
+        b.start()
+        let groupA = try XCTUnwrap(a.processGroup)
+        let groupB = try XCTUnwrap(b.processGroup)
+        try await Task.sleep(for: .milliseconds(300)) // let the trap install before SIGTERM races it
+
+        let started = Date()
+        LinkCAppProcess.stopAll([a, b], grace: 0.5)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.9, "one shared deadline, not one per app")
+        XCTAssertTrue(groupIsGone(groupA))
+        XCTAssertTrue(groupIsGone(groupB))
+    }
+
+    func testALastLineWithoutANewlineIsKeptWhenAStartTimesOut() async throws {
+        let process = app(["/bin/sh", "-c", "printf 'half a line'; sleep 300"], timing: .init(healthTimeout: 0.5, pollInterval: 0.1))
+        process.start()
+        try await waitUntil { if case .failed = process.state { return true } else { return false } }
+        XCTAssertEqual(process.log.last, "half a line")
+    }
+
+    func testPosixShellFallsBackToZshForANonPosixLoginShell() {
+        XCTAssertEqual(LinkCAppProcess.Launcher.posixShell(for: "/usr/local/bin/fish"), "/bin/zsh")
+        XCTAssertEqual(LinkCAppProcess.Launcher.posixShell(for: "/bin/bash"), "/bin/bash")
+        XCTAssertEqual(LinkCAppProcess.Launcher.posixShell(for: "/bin/sh"), "/bin/sh")
+        XCTAssertEqual(LinkCAppProcess.Launcher.posixShell(for: "/bin/zsh"), "/bin/zsh")
+        XCTAssertEqual(LinkCAppProcess.Launcher.posixShell(for: "/usr/bin/ksh"), "/usr/bin/ksh")
+        XCTAssertEqual(LinkCAppProcess.Launcher.posixShell(for: "/bin/dash"), "/bin/dash")
     }
 
     func testRetryStartsAgainAfterAFailure() async throws {

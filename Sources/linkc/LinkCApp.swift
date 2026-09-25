@@ -216,6 +216,9 @@ final class AppModel {
             let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             let linkCSupport = support.appendingPathComponent("linkC", isDirectory: true)
             self.shells = ShellCoordinator(terminals: terminals, manifestDir: linkCSupport)
+            // A crash or force quit of a previous launch can leave app groups running with
+            // nothing left to stop them — catch those before anything else starts.
+            appGroupLedger.stopLeftovers()
             self.shells?.restoreActiveShells()
             // A filing is dropped only when its terminal is truly dismissed — keep it for a live
             // terminal, and for one still offered back in Earlier, so a terminal that had exited by
@@ -632,6 +635,10 @@ final class AppModel {
     /// Settings. Reads the manifest fresh (on a short TTL) each time it's asked, so an edit to
     /// app.json takes effect without a restart.
     let appCatalog = LinkCAppCatalog()
+    /// Where every app process group linkC starts is recorded, so a crash or force quit of linkC
+    /// itself doesn't leave one running forever — `stopLeftovers()` (called at start-up) is what
+    /// cleans up after a previous run that never got to stop them normally.
+    let appGroupLedger = LinkCAppGroupLedger.applicationSupport
     /// The app tab showing, or nil. Written only by `showApp` and `clearAppTab` below, and by
     /// `showBoard`/`showSelection` — never by a view.
     private(set) var appTab: AppTabRef?
@@ -639,8 +646,9 @@ final class AppModel {
     /// `AppModel+Apps.swift`.
     var appProcesses: [String: LinkCAppProcess] = [:]
     /// Cached `WKWebView`s for running apps, keyed by tab id. Never observed: written only by
-    /// `AppWebView.makeNSView`, which is `@ObservationIgnored` for exactly that reason.
-    @ObservationIgnored var appWebViews: [String: WKWebView] = [:]
+    /// `AppWebView.makeNSView`/`updateNSView`, which are `@ObservationIgnored` for exactly that
+    /// reason.
+    @ObservationIgnored var appWebViews: [String: CachedAppWebView] = [:]
 
     /// The project the tab strip belongs to: the Board's, or the open session's or terminal's folder.
     var currentProject: String? {
@@ -721,11 +729,8 @@ final class AppModel {
         case .agent, .terminal:
             focus(tab.id)
         case .app:
-            guard let project = currentProject,
-                  let open = sidebarState.openApps(in: project)
-                      .first(where: { ProjectTabs.appTabID(project: project, folder: $0.folder) == tab.id })
-            else { return }
-            showApp(AppTabRef(id: tab.id, project: project, folder: open.folder, name: open.name))
+            guard let ref = openAppRef(forTab: tab.id) else { return }
+            showApp(ref)
         }
     }
 
@@ -954,7 +959,7 @@ final class AppModel {
     }
 
     func shutdown() {
-        for process in appProcesses.values { process.stopAndWait() }
+        LinkCAppProcess.stopAll(Array(appProcesses.values))
         appProcesses = [:]
         healthTimer?.invalidate()
         healthTimer = nil

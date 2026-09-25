@@ -37,6 +37,13 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertNil(ProcessSnooper.parentPid(of: -1))
     }
 
+    func testStartTimeOfSelfIsReadableAndNilForAnInvalidPid() {
+        let start = ProcessSnooper.startTime(of: getpid())
+        XCTAssertNotNil(start)
+        XCTAssertGreaterThan(start?.seconds ?? 0, 0)
+        XCTAssertNil(ProcessSnooper.startTime(of: -1))
+    }
+
     func testDetectAgentInAncestorsRespectsDepthAndInvalidPid() {
         XCTAssertNil(ProcessSnooper.detectAgent(inAncestorsOf: -1))
         XCTAssertNil(ProcessSnooper.detectAgent(inAncestorsOf: getpid(), maxDepth: 0))

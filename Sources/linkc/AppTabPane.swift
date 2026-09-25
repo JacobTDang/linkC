@@ -129,6 +129,14 @@ private struct AppLogView: View {
     }
 }
 
+/// A tab's cached web view, plus the URL it was last explicitly told to load — tracked here
+/// rather than read back from `WKWebView.url`, which reflects wherever an in-page link has
+/// since taken the user, not what `AppTabPane` last asked it to show.
+struct CachedAppWebView {
+    let view: WKWebView
+    var loaded: URL
+}
+
 /// The app's page. `makeNSView`/`updateNSView` write only `model.appWebViews`, the
 /// `@ObservationIgnored` cache — never observed state — so the web view survives the tab going
 /// out of view and back, keeping its in-page state alive.
@@ -138,16 +146,22 @@ struct AppWebView: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> WKWebView {
-        if let cached = model.appWebViews[key] { return cached }
+        if let cached = model.appWebViews[key] { return cached.view }
         let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
-        model.appWebViews[key] = webView
+        model.appWebViews[key] = CachedAppWebView(view: webView, loaded: url)
         webView.load(URLRequest(url: url))
         return webView
     }
 
-    /// Reloads only when the app came back on a different port — the same app restarted.
+    /// Reloads only when `url` itself changed since the view's last explicit load. A restart is
+    /// caught upstream instead — `AppModel.startApp` drops the cache entry before starting, so a
+    /// restart on the very same port (the two `url`s would otherwise compare equal) still gets a
+    /// fresh `WKWebView` via `makeNSView`. This only has to tell "the same session, don't
+    /// interrupt in-app navigation" apart from "the URL genuinely changed" — never by reading
+    /// `webView.url`, which following a link changes without this ever having reloaded.
     func updateNSView(_ webView: WKWebView, context: Context) {
-        guard webView.url?.host != url.host || webView.url?.port != url.port else { return }
+        guard model.appWebViews[key]?.loaded != url else { return }
+        model.appWebViews[key]?.loaded = url
         webView.load(URLRequest(url: url))
     }
 }

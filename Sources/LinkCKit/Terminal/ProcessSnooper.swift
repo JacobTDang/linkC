@@ -100,6 +100,19 @@ public struct ProcessSnooper: Sendable {
         return String(cString: resolved)
     }
 
+    /// The process's start time via `proc_pidinfo(PROC_PIDTBSDINFO)` — seconds and microseconds
+    /// since the epoch. Nil for invalid pids or when the kernel refuses. Used to tell a live pid
+    /// from one the system has since reused for an unrelated process: a reused pid has a
+    /// different start time.
+    public static func startTime(of pid: pid_t) -> (seconds: Int64, micros: Int32)? {
+        guard pid > 0 else { return nil }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        let got = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size)
+        guard got == size else { return nil }
+        return (Int64(info.pbi_start_tvsec), Int32(info.pbi_start_tvusec))
+    }
+
     /// The process's current folder via `proc_pidinfo(PROC_PIDVNODEPATHINFO)`, as the kernel
     /// reports it (symlinks resolved, e.g. `/private/tmp`). Nil for invalid pids or when the
     /// kernel refuses (a process that is gone, or one owned by another user).
