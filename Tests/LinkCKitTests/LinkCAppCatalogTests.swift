@@ -53,6 +53,9 @@ final class LinkCAppCatalogTests: XCTestCase {
         XCTAssertEqual(apps.map(\.name), ["broken"], "a manifest that can't be used shows the folder's name")
         guard case .failure(let error) = apps[0].manifest else { return XCTFail("expected a failure") }
         XCTAssertTrue(error.localizedDescription.contains("\"start\""))
+        XCTAssertTrue(
+            error.localizedDescription.hasPrefix("\(broken)/\(LinkCAppManifest.relativePath)"),
+            "prefixed with the file's path so it's clear which app.json is broken: \(error.localizedDescription)")
     }
 
     func testAnInvalidSettingsAppIsListedWithItsReason() {

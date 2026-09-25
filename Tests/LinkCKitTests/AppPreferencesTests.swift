@@ -69,6 +69,16 @@ final class AppPreferencesTests: XCTestCase {
         XCTAssertEqual(reloaded.agentModels.model(for: .codex, tier: .standard), "gpt-7-nova")
     }
 
+    func testAnUnreadableAppsListIsKeptRatherThanLost() {
+        let garbage = Data("not json".utf8)
+        defaults.set(garbage, forKey: "linkCApps")
+
+        let prefs = AppPreferences(defaults: defaults)
+
+        XCTAssertEqual(prefs.linkCApps, [], "starts empty rather than crashing")
+        XCTAssertEqual(defaults.data(forKey: "linkCApps.unreadable"), garbage, "the original bytes are never silently destroyed")
+    }
+
     func testSettingsAppsSurviveAReload() {
         let prefs = AppPreferences(defaults: defaults)
         XCTAssertEqual(prefs.linkCApps, [])

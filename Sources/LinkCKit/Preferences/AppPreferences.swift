@@ -55,6 +55,7 @@ public final class AppPreferences {
         static let hotKey = "hotKeyPreset"
         static let usageFooter = "showsUsageFooter"
         static let linkCApps = "linkCApps"
+        static let linkCAppsUnreadable = "linkCApps.unreadable"
     }
 
     public var hotKeyPreset: HotKeyPreset {
@@ -98,6 +99,10 @@ public final class AppPreferences {
             do {
                 apps = try JSONDecoder().decode([LinkCAppSetting].self, from: data)
             } catch {
+                // The user's list is never silently destroyed: keep the raw bytes under a
+                // separate key before starting empty, so a future fix (or the user) can recover
+                // it — only the log line was here before, and a log line is not a backup.
+                defaults.set(data, forKey: Keys.linkCAppsUnreadable)
                 NSLog("[linkC] the Settings apps are unreadable, starting with none — %@", String(describing: error))
             }
         }

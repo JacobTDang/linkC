@@ -47,6 +47,12 @@ final class LinkCAppManifestTests: XCTestCase {
         XCTAssertTrue(error(#"{"name": "A", "start": ["a"], "health": "/", "env": {"K": 1}}"#).contains("\"env\""))
     }
 
+    /// A field error names only the field — no `app.json:` prefix, since a Settings app (built
+    /// from typed-in strings, not a file) has no `app.json` to blame.
+    func testAFieldErrorHasNoFilePrefix() {
+        XCTAssertEqual(error(#"{"start": ["a"], "health": "/"}"#), "\"name\" must be a string")
+    }
+
     func testLaunchReplacesThePortEverywhereAndSetsLinkCPort() throws {
         let manifest = LinkCAppManifest(
             name: "A", start: ["sh", "-c", "serve --port {port} --url http://127.0.0.1:{port}"],

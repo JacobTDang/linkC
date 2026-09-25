@@ -85,6 +85,9 @@ public struct LinkCAppManifest: Codable, Equatable, Sendable {
     }
 
     static func field(_ name: String, _ problem: String) -> LinkCError {
-        .parse("app.json: \"\(name)\" \(problem)")
+        // No file-path prefix here: a Settings app is built from typed-in strings, not a file —
+        // the catalog is the one place that reads an actual `app.json`, and it prefixes with
+        // that file's path itself.
+        .parse("\"\(name)\" \(problem)")
     }
 }

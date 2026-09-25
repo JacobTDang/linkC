@@ -83,7 +83,9 @@ public final class LinkCAppCatalog {
         do {
             manifest = .success(try LinkCAppManifest.decode(Data(contentsOf: url)))
         } catch let error as LinkCError {
-            manifest = .failure(error)
+            // The manifest's own error names the field, not the file — prefix it here, the one
+            // place that actually reads `app.json` off disk, so it's clear which file is broken.
+            manifest = .failure(.parse("\(url.path): \(error.localizedDescription)"))
         } catch {
             manifest = .failure(.parse("\(url.path) could not be read: \(error.localizedDescription)"))
         }
