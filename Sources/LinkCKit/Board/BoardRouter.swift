@@ -117,7 +117,13 @@ public enum BoardRouter {
             let bundleId = bundleOf[key]
             let selfId = bundleId ?? arrowId(key)
 
-            guard let ends = endAssignments[key] else { continue }
+            guard let ends = endAssignments[key] else {
+                // The pre-pass builds an assignment for every key in `bundleableKeys`, which
+                // comes from this very `arrowKeys` loop — a miss here means the two pre-passes
+                // disagree, a bug, never an expected path.
+                NSLog("[linkC] BoardRouter: spreadEnds produced no assignment for %@ → %@ — this arrow was skipped", key.from, key.to)
+                continue
+            }
             let sourceSide = ends.sourceSide
             let targetSide = ends.targetSide
             let sourcePort = ends.sourcePort
@@ -437,7 +443,12 @@ public enum BoardRouter {
                     point = sidePort(box, groupKey.side)
                 } else {
                     let band = bandHalfWidth(groupKey.side)
-                    let offset = Int((-band + (Double(i) + 0.5) * (2 * band / Double(n))).rounded())
+                    // Ends step across the whole band — `2·band / (n−1)` lands the two outermost
+                    // ends exactly on its edges — but never closer than 12 pt: past that many
+                    // ends, the fixed 12 pt floor pushes the outermost past the band rather than
+                    // crowd them past their own arrowheads.
+                    let step = max(12, 2 * band / Double(n - 1))
+                    let offset = Int((step * (Double(i) - Double(n - 1) / 2)).rounded())
                     switch groupKey.side {
                     case .left: point = BoardPoint(x: box.minX, y: box.center.y + offset)
                     case .right: point = BoardPoint(x: box.maxX, y: box.center.y + offset)
