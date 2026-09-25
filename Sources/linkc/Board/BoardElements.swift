@@ -66,23 +66,43 @@ struct ComponentBox: View {
     /// standard icon row leaves room for.
     private static let noIconKinds: Set<ComponentKind> = [.vectorStore, .memory, .ram]
 
-    private var isMissing: Bool { status == .missing && !component.planned }
+    private var isGhost: Bool { component.outside != nil }
+    private var isMissing: Bool { status == .missing && !component.planned && !isGhost }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             shape
-            BoardShape.accents(for: component.kind)
+            if !isGhost {
+                BoardShape.accents(for: component.kind)
+            }
             content
-                .padding(.leading, inset.leading)
+                .padding(.leading, isGhost ? 14 : inset.leading)
                 .frame(width: Self.width, height: Self.height, alignment: .leading)
-                .offset(y: inset.verticalOffset)
+                .offset(y: isGhost ? 0 : inset.verticalOffset)
         }
         .frame(width: Self.width, height: Self.height)
         .overlay(alignment: .topTrailing) {
-            if status == .present {
-                let dotInset = BoardShape.statusDotInset(for: component.kind)
-                Circle().fill(Theme.statusRunning).frame(width: 6, height: 6)
-                    .padding(.top, 7 + dotInset.top).padding(.trailing, 7 + dotInset.right)
+            let dotInset = BoardShape.statusDotInset(for: component.kind)
+            HStack(spacing: 4) {
+                if component.detail != nil && !isGhost {
+                    Text("↳")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+                if status == .present {
+                    Circle().fill(Theme.statusRunning).frame(width: 6, height: 6)
+                }
+            }
+            .padding(.top, 7 + dotInset.top)
+            .padding(.trailing, 7 + dotInset.right)
+        }
+        .overlay(alignment: .topLeading) {
+            if isGhost && component.stale {
+                Text("⚠")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.contextWarn)
+                    .padding([.top, .leading], 6)
+                    .help("No longer connected on the overview")
             }
         }
         .opacity(isMissing ? 0.5 : 1)
@@ -108,20 +128,27 @@ struct ComponentBox: View {
         }
     }
 
-    private func fillColor(_ solid: Color) -> Color { component.planned ? Color.clear : solid }
+    private func fillColor(_ solid: Color) -> Color { (component.planned || isGhost) ? Color.clear : solid }
     private var strokeStyle: StrokeStyle { StrokeStyle(lineWidth: isSelected ? 1.5 : 1, dash: dash) }
 
     @ViewBuilder
     private var content: some View {
-        switch component.kind {
-        case _ where Self.centeredLabelKinds.contains(component.kind):
-            centeredLabelContent
-        case _ where Self.embeddedNameKinds.contains(component.kind):
-            embeddedNameContent
-        case _ where Self.noIconKinds.contains(component.kind):
-            textStack
-        default:
-            standardContent
+        if isGhost {
+            Text(component.name)
+                .font(.system(size: 13.5, weight: .semibold))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+        } else {
+            switch component.kind {
+            case _ where Self.centeredLabelKinds.contains(component.kind):
+                centeredLabelContent
+            case _ where Self.embeddedNameKinds.contains(component.kind):
+                embeddedNameContent
+            case _ where Self.noIconKinds.contains(component.kind):
+                textStack
+            default:
+                standardContent
+            }
         }
     }
 
@@ -288,7 +315,7 @@ struct ComponentBox: View {
 
     private var strokeColor: Color {
         if isSelected { return Theme.accent }
-        if component.planned { return Theme.textTertiary }
+        if component.planned || isGhost { return Theme.textTertiary }
         return BoardShape.strokeColor(for: component.kind)
     }
 
@@ -296,7 +323,7 @@ struct ComponentBox: View {
     /// the system — unless selected, when the accent outline takes over solid.
     private var dash: [CGFloat] {
         guard !isSelected else { return [] }
-        return (component.planned || component.kind == .external) ? [4, 3] : []
+        return (component.planned || component.kind == .external || isGhost) ? [4, 3] : []
     }
 }
 

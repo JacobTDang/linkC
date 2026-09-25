@@ -49,4 +49,14 @@ final class BoardInspectionTests: XCTestCase {
         XCTAssertNil(BoardInspection.part("Nope", in: map()))
         XCTAssertNil(BoardInspection.arrow(BoardModel.ArrowKey(from: "ALU", to: "Nope"), in: map()))
     }
+
+    func testAGhostPartCarriesItsOutsideSide() throws {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "Decoder", kind: .decoder, outside: .in),
+        ]
+        let part = try XCTUnwrap(BoardInspection.part("Decoder", in: m))
+        XCTAssertEqual(part.outside, .in)
+        XCTAssertTrue(part.isGhost)
+    }
 }

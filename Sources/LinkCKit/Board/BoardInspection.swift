@@ -17,8 +17,21 @@ public enum BoardInspection {
         public let kind: ComponentKind
         public let planned: Bool
         public let does: String?
+        public let outside: BoardGhostSide?
         public let inputs: [Row]
         public let outputs: [Row]
+
+        public var isGhost: Bool { outside != nil }
+
+        public init(name: String, kind: ComponentKind, planned: Bool, does: String?, outside: BoardGhostSide? = nil, inputs: [Row], outputs: [Row]) {
+            self.name = name
+            self.kind = kind
+            self.planned = planned
+            self.does = does
+            self.outside = outside
+            self.inputs = inputs
+            self.outputs = outputs
+        }
     }
 
     public struct Arrow: Equatable, Sendable {
@@ -44,7 +57,7 @@ public enum BoardInspection {
             }
         }
         let order: (Row, Row) -> Bool = { ($0.other.lowercased(), $0.signal) < ($1.other.lowercased(), $1.signal) }
-        return Part(name: part.name, kind: part.kind, planned: part.planned, does: part.does,
+        return Part(name: part.name, kind: part.kind, planned: part.planned, does: part.does, outside: part.outside,
                     inputs: inputs.sorted(by: order), outputs: outputs.sorted(by: order))
     }
 

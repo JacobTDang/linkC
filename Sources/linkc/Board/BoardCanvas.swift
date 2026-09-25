@@ -20,6 +20,20 @@ struct BoardCanvas: View {
 
     @State private var catalog: BoardCatalog?
     @State private var catalogError: String?
+    @State private var drillError: String?
+
+    private var parentTitle: String {
+        if let catalog {
+            let crumbs = BoardNavigation.crumbs(for: address, in: catalog)
+            if crumbs.count >= 2 {
+                return crumbs[crumbs.count - 2].title
+            }
+            if let overviewTitle = catalog.entries.first(where: { $0.slug == nil })?.path.first {
+                return overviewTitle
+            }
+        }
+        return URL(fileURLWithPath: address.projectPath).lastPathComponent
+    }
     @State private var viewport: BoardViewport = .initial
     @State private var size: CGSize = .zero
     @State private var canvasFrame: CGRect = .zero
@@ -251,42 +265,7 @@ struct BoardCanvas: View {
                 componentRect(component)?.intersects(visible) == true && (focusFilter?.parts.contains(component.name) ?? true)
             }) { component in
                 if let at = component.at {
-                    ComponentBox(component: component, status: board.statuses[component.name],
-                                 isSelected: board.selection.contains(.component(component.name)))
-                        .opacity(focusedComponent.map { isConnected(component.name, to: $0) ? 1 : 0.3 } ?? 1)
-                        .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component.name, kind: component.kind) } }
-                        .overlay { glow(.component(component.name), cornerRadius: 10, inset: BoardShape.insets(for: component.kind)) }
-                        .onContinuousHover(coordinateSpace: .named(Self.space)) { phase in
-                            switch phase {
-                            case .active(let location):
-                                hovered = component.name
-                                pointerLocation = location
-                            case .ended:
-                                if hovered == component.name { hovered = nil }
-                            }
-                        }
-                        .popover(isPresented: Binding(get: { inspecting == component.name }, set: { if !$0 { inspecting = nil } }),
-                                 arrowEdge: .trailing) {
-                            ComponentInspector(
-                                component: component,
-                                livesIn: component.place,
-                                uses: component.uses.keys.sorted().map { ($0, component.uses[$0]?.label ?? "") },
-                                commit: { fields, rename in board.updateComponent(component.name, fields: fields, rename: rename) },
-                                currentRefusal: { board.refusal },
-                                close: { inspecting = nil })
-                        }
-                        .offset(x: CGFloat(at.x), y: CGFloat(at.y))
-                        .offset(liveOffset(for: .component(component.name), place: component.place))
-                        .gesture(board.tool == .arrow ? AnyGesture(arrowDrag(from: component.name).map { _ in () })
-                                                      : AnyGesture(elementDrag(.component(component.name)).map { _ in () }))
-                        .onTapGesture(count: 2) {
-                            select(.component(component.name))
-                            inspecting = component.name
-                        }
-                        .onTapGesture {
-                            select(.component(component.name))
-                            pinned = .part(component.name)
-                        }
+                    componentItemView(component, at: at)
                 }
             }
             ForEach(board.map.notes.filter { note in note.at.map { BoardGeometry.rect(ofNoteAt: $0).intersects(visible) } ?? false }) { note in
@@ -398,6 +377,72 @@ struct BoardCanvas: View {
     }
 
     @ViewBuilder
+    private func componentItemView(_ component: BoardComponent, at: BoardPoint) -> some View {
+        let isGhost = component.outside != nil
+        let content = ComponentBox(component: component, status: board.statuses[component.name],
+                                   isSelected: board.selection.contains(.component(component.name)))
+            .opacity(focusedComponent.map { isConnected(component.name, to: $0) ? 1 : 0.3 } ?? 1)
+            .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component.name, kind: component.kind) } }
+            .overlay { glow(.component(component.name), cornerRadius: 10, inset: BoardShape.insets(for: component.kind)) }
+            .onContinuousHover(coordinateSpace: .named(Self.space)) { phase in
+                switch phase {
+                case .active(let location):
+                    hovered = component.name
+                    pointerLocation = location
+                case .ended:
+                    if hovered == component.name { hovered = nil }
+                }
+            }
+            .popover(isPresented: Binding(get: { inspecting == component.name }, set: { if !$0 { inspecting = nil } }),
+                     arrowEdge: .trailing) {
+                ComponentInspector(
+                    component: component,
+                    livesIn: component.place,
+                    uses: component.uses.keys.sorted().map { ($0, component.uses[$0]?.label ?? "") },
+                    commit: { fields, rename in board.updateComponent(component.name, fields: fields, rename: rename) },
+                    currentRefusal: { board.refusal },
+                    close: { inspecting = nil })
+            }
+            .offset(x: CGFloat(at.x), y: CGFloat(at.y))
+            .offset(liveOffset(for: .component(component.name), place: component.place))
+
+        if isGhost {
+            if board.tool == .arrow {
+                content
+                    .gesture(arrowDrag(from: component.name))
+                    .onTapGesture(count: 2) { select(.component(component.name)) }
+                    .onTapGesture {
+                        select(.component(component.name))
+                        pinned = .part(component.name)
+                    }
+            } else {
+                content
+                    .onTapGesture(count: 2) { select(.component(component.name)) }
+                    .onTapGesture {
+                        select(.component(component.name))
+                        pinned = .part(component.name)
+                    }
+            }
+        } else {
+            content
+                .contextMenu {
+                    Button("↳ Go deeper") { goDeeper(into: component.name) }
+                    Button("Edit…") { inspecting = component.name }
+                }
+                .gesture(board.tool == .arrow ? AnyGesture(arrowDrag(from: component.name).map { _ in () })
+                                              : AnyGesture(elementDrag(.component(component.name)).map { _ in () }))
+                .onTapGesture(count: 2) {
+                    select(.component(component.name))
+                    inspecting = component.name
+                }
+                .onTapGesture {
+                    select(.component(component.name))
+                    pinned = .part(component.name)
+                }
+        }
+    }
+
+    @ViewBuilder
     private var overlays: some View {
         switch board.state {
         case .failed(let reason):
@@ -472,6 +517,9 @@ struct BoardCanvas: View {
                     if let catalogError {
                         BoardBanner(text: "Couldn't read this project's boards: \(catalogError)", tone: Theme.contextWarn)
                     }
+                    if let drillError {
+                        BoardBanner(text: "Couldn't open the detail board: \(drillError)", tone: Theme.contextWarn)
+                    }
                     if let liveUpdatesOff = board.liveUpdatesOff {
                         BoardBanner(text: liveUpdatesOff, tone: Theme.textTertiary)
                     }
@@ -518,7 +566,7 @@ struct BoardCanvas: View {
     @ViewBuilder
     private var hoverCardOverlay: some View {
         if let hoverCard, let content = inspectionContent(for: hoverCard) {
-            BoardHoverCard(content: content)
+            BoardHoverCard(content: content, parentTitle: parentTitle)
                 .background(GeometryReader { proxy in
                     Color.clear.onAppear { hoverCardSize = proxy.size }
                         .onChange(of: proxy.size) { _, size in hoverCardSize = size }
@@ -541,7 +589,17 @@ struct BoardCanvas: View {
     @ViewBuilder
     private var dockedInspectorOverlay: some View {
         if let pinned, let content = inspectionContent(for: pinned) {
-            BoardDockedInspector(content: content, edit: editPinned, close: unpin)
+            BoardDockedInspector(
+                content: content,
+                parentTitle: parentTitle,
+                edit: editPinned,
+                goDeeper: {
+                    if case .part(let name) = pinned {
+                        goDeeper(into: name)
+                    }
+                },
+                close: unpin
+            )
         }
     }
 
@@ -583,8 +641,22 @@ struct BoardCanvas: View {
     private func editPinned() {
         guard let pinned else { return }
         switch pinned {
-        case .part(let name): inspecting = name
+        case .part(let name):
+            if board.map.components.first(where: { $0.name == name })?.outside == nil {
+                inspecting = name
+            }
         case .arrow(let key): editingArrow = key
+        }
+    }
+
+    private func goDeeper(into partName: String) {
+        board.saveNow()
+        do {
+            let slug = try BoardDrill.detail(of: partName, onBoard: address.slug, workspacePath: projectPath)
+            drillError = nil
+            model.showBoard(BoardAddress(projectPath: projectPath, slug: slug))
+        } catch {
+            drillError = error.localizedDescription
         }
     }
 

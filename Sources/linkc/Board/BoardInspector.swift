@@ -22,6 +22,7 @@ enum BoardInspectionTarget: Equatable {
 /// docked panel.
 struct BoardInspectionBody: View {
     let content: BoardInspectionContent
+    var parentTitle: String? = nil
 
     var body: some View {
         switch content {
@@ -36,10 +37,17 @@ struct BoardInspectionBody: View {
             Text(part.name)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
-            Text(kindCaption(part))
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(0.3)
-                .foregroundStyle(Theme.textTertiary)
+            if part.isGhost {
+                Text("From the overview · \(parentTitle ?? "overview")")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.3)
+                    .foregroundStyle(Theme.textSecondary)
+            } else {
+                Text(kindCaption(part))
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.3)
+                    .foregroundStyle(Theme.textTertiary)
+            }
             if let does = part.does, !does.isEmpty {
                 Text(does)
                     .font(.system(size: 12))
@@ -130,10 +138,11 @@ struct BoardInspectionBody: View {
 /// mockup's card treatment. Never intercepts the pointer; it's a tooltip, not a control.
 struct BoardHoverCard: View {
     let content: BoardInspectionContent
+    var parentTitle: String? = nil
     static let width: CGFloat = 240
 
     var body: some View {
-        BoardInspectionBody(content: content)
+        BoardInspectionBody(content: content, parentTitle: parentTitle)
             .padding(12)
             .frame(width: Self.width, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.boardCardFill))
@@ -148,7 +157,9 @@ struct BoardHoverCard: View {
 /// never reach the canvas beneath.
 struct BoardDockedInspector: View {
     let content: BoardInspectionContent
+    var parentTitle: String? = nil
     let edit: () -> Void
+    var goDeeper: (() -> Void)? = nil
     let close: () -> Void
     static let width: CGFloat = 260
 
@@ -157,7 +168,7 @@ struct BoardDockedInspector: View {
             header
             Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
             ScrollView {
-                BoardInspectionBody(content: content)
+                BoardInspectionBody(content: content, parentTitle: parentTitle)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -170,12 +181,39 @@ struct BoardDockedInspector: View {
         .contentShape(Rectangle())
     }
 
+    private var isGhostPart: Bool {
+        if case .part(let part) = content {
+            return part.isGhost
+        }
+        return false
+    }
+
+    private var isPart: Bool {
+        if case .part = content { return true }
+        return false
+    }
+
     private var header: some View {
         HStack(spacing: 10) {
-            Button("Edit…", action: edit)
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Theme.accent)
+            if isGhostPart {
+                Button("Edit…") {}
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .disabled(true)
+                    .help("Change it on the overview")
+            } else {
+                Button("Edit…", action: edit)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                if isPart, let goDeeper {
+                    Button("↳ Go deeper", action: goDeeper)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+            }
             Spacer()
             Button(action: close) {
                 Image(systemName: "xmark")
