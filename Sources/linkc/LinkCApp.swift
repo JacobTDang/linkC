@@ -1022,6 +1022,9 @@ final class AppModel {
         } else if boardProject != nil {
             boardProject = nil
             coordinator?.terminals.deselect()
+        } else if appTab != nil {
+            appTab = nil
+            coordinator?.terminals.deselect()
         } else {
             coordinator?.terminals.deselect()
         }

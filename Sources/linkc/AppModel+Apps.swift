@@ -22,24 +22,12 @@ extension AppModel {
     /// Opens (or re-selects) an app tab and starts it. Called from the strip's and the sidebar's
     /// + menus — the only places besides Start/Retry that ever start an app.
     func openApp(_ entry: LinkCAppEntry, in project: String) {
-        let manifest: LinkCAppManifest
-        switch entry.manifest {
-        case .failure(let error):
+        if case .failure(let error) = entry.manifest {
             surface(error: error.localizedDescription)
             return
-        case .success(let value):
-            manifest = value
         }
         sidebarState.openApp(OpenApp(folder: entry.folder, name: entry.name), in: project)
         let id = ProjectTabs.appTabID(project: project, folder: entry.folder)
-        if let process = appProcesses[id] {
-            switch process.state {
-            case .starting, .running: break
-            case .asleep, .failed, .exited: process.manifest = manifest
-            }
-        } else {
-            appProcesses[id] = LinkCAppProcess(folder: entry.folder, manifest: manifest)
-        }
         let ref = AppTabRef(id: id, project: ProjectTabs.standardized(project), folder: entry.folder, name: entry.name)
         showApp(ref)
         startApp(ref)
@@ -56,12 +44,13 @@ extension AppModel {
         case .failure(let error):
             surface(error: error.localizedDescription)
         case .success(let manifest):
-            if let process = appProcesses[ref.id] {
+            let process = appProcesses[ref.id] ?? LinkCAppProcess(folder: ref.folder, manifest: manifest)
+            appProcesses[ref.id] = process
+            switch process.state {
+            case .starting, .running:
+                return // already on its way: reopening the app just selects its tab
+            case .asleep, .failed, .exited:
                 process.manifest = manifest
-                process.start()
-            } else {
-                let process = LinkCAppProcess(folder: ref.folder, manifest: manifest)
-                appProcesses[ref.id] = process
                 process.start()
             }
         }
