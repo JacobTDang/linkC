@@ -69,8 +69,8 @@ public enum BoardRouter {
 
         // Geometry shared by every arrow.
         let componentBox = Dictionary(uniqueKeysWithValues: map.components.compactMap { c -> (String, BoardRect)? in
-            guard let at = c.at else { return nil }
-            return (c.name.lowercased(), BoardGeometry.rect(ofComponentAt: at))
+            guard let rect = BoardGeometry.rect(of: c) else { return nil }
+            return (c.name.lowercased(), rect)
         })
         let noteBoxes = map.notes.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }
 
@@ -87,10 +87,8 @@ public enum BoardRouter {
         for key in arrowKeys {
             guard !isCancelled() else { return results }
             guard let source = byLowercasedName[key.from.lowercased()], let target = byLowercasedName[key.to.lowercased()],
-                  let sourceAt = source.at, let targetAt = target.at
+                  let sourceBox = BoardGeometry.rect(of: source), let targetBox = BoardGeometry.rect(of: target)
             else { continue }
-            let sourceBox = BoardGeometry.rect(ofComponentAt: sourceAt)
-            let targetBox = BoardGeometry.rect(ofComponentAt: targetAt)
 
             let (othersRaw, frameObstacles) = obstaclesFor(
                 map: map, sourceName: source.name, targetName: target.name,
@@ -221,9 +219,8 @@ public enum BoardRouter {
         // bundle's actual slot point, once it knows who else shares that box's side.
         var outAnchors: [String: (side: Side, name: String, mean: BoardPoint)] = [:]
         for (id, keys) in groupedById(bundleOf, prefix: "out:") {
-            guard let source = byLowercasedName[keys[0].from.lowercased()], let at = source.at else { continue }
-            let box = BoardGeometry.rect(ofComponentAt: at)
-            let others = keys.compactMap { byLowercasedName[$0.to.lowercased()]?.at }.map(BoardGeometry.rect(ofComponentAt:))
+            guard let source = byLowercasedName[keys[0].from.lowercased()], let box = BoardGeometry.rect(of: source) else { continue }
+            let others = keys.compactMap { byLowercasedName[$0.to.lowercased()] }.compactMap(BoardGeometry.rect(of:))
             guard !others.isEmpty else { continue }
             let mean = meanCenter(others)
             let side = sides(from: box.center, to: mean).0
@@ -231,9 +228,8 @@ public enum BoardRouter {
         }
         var inAnchors: [String: (side: Side, name: String, mean: BoardPoint)] = [:]
         for (id, keys) in groupedById(bundleOf, prefix: "in:") {
-            guard let target = byLowercasedName[keys[0].to.lowercased()], let at = target.at else { continue }
-            let box = BoardGeometry.rect(ofComponentAt: at)
-            let others = keys.compactMap { byLowercasedName[$0.from.lowercased()]?.at }.map(BoardGeometry.rect(ofComponentAt:))
+            guard let target = byLowercasedName[keys[0].to.lowercased()], let box = BoardGeometry.rect(of: target) else { continue }
+            let others = keys.compactMap { byLowercasedName[$0.from.lowercased()] }.compactMap(BoardGeometry.rect(of:))
             guard !others.isEmpty else { continue }
             let mean = meanCenter(others)
             let side = sides(from: mean, to: box.center).1

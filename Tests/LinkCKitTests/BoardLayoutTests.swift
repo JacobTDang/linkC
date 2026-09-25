@@ -210,4 +210,16 @@ final class BoardLayoutTests: XCTestCase {
         XCTAssertEqual(ghostC.place, BoardMap.notPlaced)
         XCTAssertEqual(ghostD.place, BoardMap.notPlaced)
     }
+    func testBoardLayoutPlacesATallTableWithoutOverlappingItsNeighbour() throws {
+        var map = BoardMap()
+        map.components = [
+            BoardComponent(name: "accounts", kind: .table, columns: (1...10).map { BoardColumn(name: "c\($0)", type: "int") }),
+            BoardComponent(name: "neighbour", kind: .service),
+        ]
+        let arranged = BoardLayout.arranged(map)
+        let big = try XCTUnwrap(BoardGeometry.rect(of: try XCTUnwrap(arranged.components.first { $0.name == "accounts" })))
+        let small = try XCTUnwrap(BoardGeometry.rect(of: try XCTUnwrap(arranged.components.first { $0.name == "neighbour" })))
+        XCTAssertFalse(big.intersects(small), "\(big) overlaps \(small)")
+        XCTAssertEqual(big.h, 264, "the table really used its own height")
+    }
 }

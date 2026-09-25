@@ -95,7 +95,7 @@ final class MCPServerBoardTests: XCTestCase {
         let steps = try XCTUnwrap(properties["steps"] as? [String: Any])
         let description = try XCTUnwrap(steps["description"] as? String)
         for line in [
-            #"add: {"add": name, "kind"?, "tech"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool}"#,
+            #"add: {"add": name, "kind"?, "tech"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool, "columns"?: [column]}"#,
             #"update: {"update": name, same optional fields, "rename"?: new name}"#,
             #"remove: {"remove": name}"#,
             #"connect: {"connect": from, "to": to, "label"?, "style"?: plain|conditional|control|bus, "bits"?: 1-4096 (bus only)}"#,
@@ -284,5 +284,11 @@ final class MCPServerBoardTests: XCTestCase {
             XCTAssertTrue(msg.contains(missingPath), msg)
         }
     }
+    func testStepsSchemaDescriptionDocumentsColumnsAndTheColumnStep() {
+        let text = MCPServer.stepsSchemaDescription
+        XCTAssertTrue(text.contains(#""columns"?"#), text)
+        XCTAssertTrue(text.contains(#""op": "column""#), text)
+        XCTAssertTrue(text.contains(#""drop""#), text)
+        XCTAssertTrue(text.contains("only work on a \"table\" part"), text)
+    }
 }
-

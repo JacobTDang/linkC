@@ -196,7 +196,7 @@ final class BoardEditTests: XCTestCase {
     /// the check is against what this verb takes, not against the whole global set of field keys.
     func testUnknownFieldRefusalCatchesAFieldAnotherVerbTakes() throws {
         XCTAssertEqual(refusal([["add": "redis", "to": "api"]], on: try june())?.description,
-                       #"step 1: unknown field "to" — add takes: kind, tech, in, does, reached_by, runs, planned"#)
+                       #"step 1: unknown field "to" — add takes: kind, tech, in, does, reached_by, runs, planned, columns"#)
         XCTAssertEqual(refusal([["connect": "api", "to": "postgres", "rename": "db"]], on: try june())?.description,
                        #"step 1: unknown field "rename" — connect takes: to, label, style, bits"#)
         XCTAssertEqual(refusal([["remove": "postgres", "in": "Local docker"]], on: try june())?.description,
@@ -205,9 +205,9 @@ final class BoardEditTests: XCTestCase {
 
     func testUnknownFieldRefusalListsTheVerbsAllowedFields() throws {
         XCTAssertEqual(refusal([["add": "x", "name": "y"]], on: .empty)?.description,
-                       #"step 1: unknown field "name" — add takes: kind, tech, in, does, reached_by, runs, planned"#)
+                       #"step 1: unknown field "name" — add takes: kind, tech, in, does, reached_by, runs, planned, columns"#)
         XCTAssertEqual(refusal([["update": "x", "name": "y"]], on: try june())?.description,
-                       #"step 1: unknown field "name" — update takes: kind, tech, in, does, reached_by, runs, planned, rename"#)
+                       #"step 1: unknown field "name" — update takes: kind, tech, in, does, reached_by, runs, planned, rename, columns"#)
         XCTAssertEqual(refusal([["connect": "api", "to": "postgres", "foo": "bar"]], on: try june())?.description,
                        #"step 1: unknown field "foo" — connect takes: to, label, style, bits"#)
         XCTAssertEqual(refusal([["place": "x", "foo": "bar"]], on: .empty)?.description,
@@ -438,5 +438,125 @@ final class BoardEditTests: XCTestCase {
         let refused = refusal([["detail": "A"]], on: map)
         XCTAssertEqual(refused?.description, #"step 1: "A" comes from the overview; go deeper from its own board"#)
     }
-}
+    func testAnAgentCanAddATableKindPartEvenThoughTheAppCannotDrawItYet() throws {
+        let result = try apply([["add": "orders", "kind": "table"]], to: .empty)
+        XCTAssertEqual(result.map.components.first?.kind, .table)
+    }
+    func testStepsSchemaDescriptionDocumentsColumnsAndTheColumnStep() {
+        let text = MCPServer.stepsSchemaDescription
+        XCTAssertTrue(text.contains(#""columns"?"#), text)
+        XCTAssertTrue(text.contains(#""op": "column""#), text)
+        XCTAssertTrue(text.contains(#""drop""#), text)
+        XCTAssertTrue(text.contains("only work on a \"table\" part"), text)
+    }
 
+    // MARK: - "columns" (the whole list) on add / update
+
+    func testAddAcceptsColumnsOnATable() throws {
+        let result = try apply([["add": "orgs", "kind": "table", "columns": [
+            ["name": "id", "type": "bigint", "pk": true],
+            ["name": "name", "type": "text", "nullable": false],
+        ]]], to: .empty)
+        let orgs = try XCTUnwrap(result.map.components.first { $0.name == "orgs" })
+        XCTAssertEqual(orgs.columns, [
+            BoardColumn(name: "id", type: "bigint", pk: true),
+            BoardColumn(name: "name", type: "text", nullable: false),
+        ])
+    }
+
+    func testUpdateReplacesTheWholeColumnsList() throws {
+        let base = try apply([["add": "orgs", "kind": "table", "columns": [["name": "id", "type": "bigint", "pk": true]]]], to: .empty).map
+        let result = try apply([["update": "orgs", "columns": [["name": "slug", "type": "text"]]]], to: base)
+        let orgs = try XCTUnwrap(result.map.components.first { $0.name == "orgs" })
+        XCTAssertEqual(orgs.columns, [BoardColumn(name: "slug", type: "text")])
+    }
+
+    func testColumnsOnANonTablePartIsRefused() throws {
+        XCTAssertEqual(refusal([["add": "api", "columns": [["name": "id", "type": "uuid"]]]], on: .empty)?.description,
+                       #"step 1: "columns" belong to a table; "api" is a service"#)
+        let withApi = try apply([["add": "api"]], to: .empty).map
+        XCTAssertEqual(refusal([["update": "api", "columns": [["name": "id", "type": "uuid"]]]], on: withApi)?.description,
+                       #"step 1: "columns" belong to a table; "api" is a service"#)
+    }
+
+    func testABadColumnInTheWholeListReusesTheBoardMapMessage() throws {
+        XCTAssertEqual(refusal([["add": "orgs", "kind": "table", "columns": [["type": "uuid"]]]], on: .empty)?.description,
+                       #"step 1: "orgs" has a column with no "name""#)
+        XCTAssertEqual(refusal([["add": "orgs", "kind": "table", "columns": [["name": "id", "type": "uuid", "pk": true, "nullable": true]]]], on: .empty)?.description,
+                       #"step 1: "orgs" column "id" is a primary key, so it can't be nullable"#)
+    }
+
+    // MARK: - the "column" step
+
+    func testColumnStepAddsAMissingColumn() throws {
+        let base = try apply([["add": "orgs", "kind": "table"]], to: .empty).map
+        let result = try apply([["op": "column", "table": "orgs", "column": "id", "set": ["type": "bigint", "pk": true]]], to: base)
+        let orgs = try XCTUnwrap(result.map.components.first { $0.name == "orgs" })
+        XCTAssertEqual(orgs.columns, [BoardColumn(name: "id", type: "bigint", pk: true)])
+        XCTAssertEqual(result.lines, ["added orgs.id"])
+    }
+
+    func testColumnStepChangesAnExistingColumn() throws {
+        let base = try apply([["add": "orgs", "kind": "table", "columns": [["name": "name", "type": "text"]]]], to: .empty).map
+        let result = try apply([["op": "column", "table": "orgs", "column": "name", "set": ["unique": true, "nullable": false]]], to: base)
+        let orgs = try XCTUnwrap(result.map.components.first { $0.name == "orgs" })
+        XCTAssertEqual(orgs.columns, [BoardColumn(name: "name", type: "text", nullable: false, unique: true)])
+        XCTAssertEqual(result.lines, ["changed orgs.name"])
+    }
+
+    func testColumnStepDropsAColumn() throws {
+        let base = try apply([["add": "orgs", "kind": "table", "columns": [["name": "id", "type": "bigint"], ["name": "legacy", "type": "text"]]]], to: .empty).map
+        let result = try apply([["op": "column", "table": "orgs", "column": "legacy", "drop": true]], to: base)
+        let orgs = try XCTUnwrap(result.map.components.first { $0.name == "orgs" })
+        XCTAssertEqual(orgs.columns.map(\.name), ["id"])
+        XCTAssertEqual(result.lines, ["dropped orgs.legacy"])
+    }
+
+    func testColumnStepOnAnUnknownTableIsRefused() throws {
+        XCTAssertEqual(refusal([["op": "column", "table": "ghosttable", "column": "id", "drop": true]], on: .empty)?.description,
+                       #"step 1: no table "ghosttable" — tables: (none)"#)
+    }
+
+    func testColumnStepOnAPartThatIsNotATableIsRefused() throws {
+        let base = try apply([["add": "api"]], to: .empty).map
+        XCTAssertEqual(refusal([["op": "column", "table": "api", "column": "id", "drop": true]], on: base)?.description,
+                       #"step 1: "api" is a service, not a table"#)
+    }
+
+    func testColumnStepOnAGhostIsRefused() throws {
+        var map = BoardMap()
+        map.components = [BoardComponent(name: "orgs", kind: .table, columns: [BoardColumn(name: "id", type: "bigint")], outside: .in)]
+        XCTAssertEqual(refusal([["op": "column", "table": "orgs", "column": "id", "drop": true]], on: map)?.description,
+                       #"step 1: "orgs" comes from the overview; change it there"#)
+    }
+
+    func testDroppingAMissingColumnIsRefused() throws {
+        let base = try apply([["add": "orgs", "kind": "table"]], to: .empty).map
+        XCTAssertEqual(refusal([["op": "column", "table": "orgs", "column": "nope", "drop": true]], on: base)?.description,
+                       #"step 1: table "orgs" has no column "nope""#)
+    }
+
+    func testAddingAColumnWithoutATypeIsRefused() throws {
+        let base = try apply([["add": "orgs", "kind": "table"]], to: .empty).map
+        XCTAssertEqual(refusal([["op": "column", "table": "orgs", "column": "id", "set": ["pk": true]]], on: base)?.description,
+                       #"step 1: column "id" needs "type" to be added"#)
+    }
+
+    func testDropWithSetIsRefused() throws {
+        let base = try apply([["add": "orgs", "kind": "table"]], to: .empty).map
+        XCTAssertEqual(refusal([["op": "column", "table": "orgs", "column": "id", "set": ["type": "bigint"], "drop": true]], on: base)?.description,
+                       #"step 1: a "column" step can't set and drop at once"#)
+    }
+
+    func testAMalformedReferenceInAColumnStepIsRefused() throws {
+        let base = try apply([["add": "orgs", "kind": "table"]], to: .empty).map
+        XCTAssertEqual(refusal([["op": "column", "table": "orgs", "column": "org_id", "set": ["type": "bigint", "references": "orgs"]]], on: base)?.description,
+                       #"step 1: column "org_id" has "references" "orgs" but it is not table.column"#)
+    }
+
+    func testColumnStepNeedsSetOrDrop() throws {
+        let base = try apply([["add": "orgs", "kind": "table"]], to: .empty).map
+        XCTAssertEqual(refusal([["op": "column", "table": "orgs", "column": "id"]], on: base)?.description,
+                       #"step 1: a "column" step needs "set" or "drop""#)
+    }
+}

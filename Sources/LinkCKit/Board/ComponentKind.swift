@@ -19,6 +19,11 @@ public struct ComponentKind: Equatable, Hashable, Sendable {
     public static let host = ComponentKind("host")
     public static let external = ComponentKind("external")
 
+    // MARK: - Data
+
+    /// A database table. It remains outside `groups` until the app can draw it.
+    public static let table = ComponentKind("table")
+
     // MARK: - AI agents
 
     public static let agent = ComponentKind("agent")

@@ -93,7 +93,7 @@ public enum BoardLabels {
     public static func obstacles(for map: BoardMap) -> [BoardRect] {
         var result: [BoardRect] = []
         for component in map.components {
-            if let at = component.at { result.append(BoardGeometry.rect(ofComponentAt: at)) }
+            if let rect = BoardGeometry.rect(of: component) { result.append(rect) }
         }
         for note in map.notes {
             if let at = note.at { result.append(BoardGeometry.rect(ofNoteAt: at)) }
