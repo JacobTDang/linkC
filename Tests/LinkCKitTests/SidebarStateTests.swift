@@ -172,4 +172,26 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(state.projectOrder, ["/p/june", "/p/linkc"])
         XCTAssertEqual(state.expandOverrides["/p/june"], false)
     }
+
+    func testOpenAppsAreRememberedPerProjectInOpenOrder() {
+        let state = SidebarState(defaults: defaults)
+        state.openApp(OpenApp(folder: "/p/circuit", name: "Circuit"), in: "/p/circuit")
+        state.openApp(OpenApp(folder: "/tools/notes", name: "Notes"), in: "/p/circuit/")
+        state.openApp(OpenApp(folder: "/p/circuit", name: "Circuit"), in: "/p/circuit")
+        state.openApp(OpenApp(folder: "/tools/notes", name: "Notes"), in: "/p/june")
+
+        let reloaded = SidebarState(defaults: defaults)
+        XCTAssertEqual(reloaded.openApps(in: "/p/circuit").map(\.name), ["Circuit", "Notes"], "one entry per app, in open order")
+        XCTAssertEqual(reloaded.openApps(in: "/p/june").map(\.name), ["Notes"])
+
+        reloaded.closeApp(folder: "/p/circuit/", in: "/p/circuit")
+        XCTAssertEqual(SidebarState(defaults: defaults).openApps(in: "/p/circuit").map(\.name), ["Notes"])
+    }
+
+    func testAStateSavedBeforeAppTabsHasNone() throws {
+        defaults.set(Data(#"{"projectOrder": ["/p/a"], "expandOverrides": {}, "openSections": []}"#.utf8), forKey: "sidebarState")
+        let state = SidebarState(defaults: defaults)
+        XCTAssertEqual(state.projectOrder, ["/p/a"])
+        XCTAssertEqual(state.openApps(in: "/p/a"), [])
+    }
 }

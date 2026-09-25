@@ -77,4 +77,24 @@ final class ProjectTabsTests: XCTestCase {
             titles: [:])
         XCTAssertEqual(tabs.map(\.id), [ProjectTabs.boardID("/p/linkc")])
     }
+
+    func testAppTabsComeLastInOpenOrder() {
+        let tabs = ProjectTabs.tabs(
+            project: "/p/circuit",
+            sessions: [session("a1", "/p/circuit")],
+            shells: [shell("s1", "/p/circuit")],
+            titles: [:],
+            openApps: [OpenApp(folder: "/p/circuit", name: "Circuit MCP"), OpenApp(folder: "/tools/notes/", name: "Notes")])
+        XCTAssertEqual(tabs.map(\.id), [
+            ProjectTabs.boardID("/p/circuit"), "a1", "s1",
+            "app:/p/circuit#/p/circuit", "app:/p/circuit#/tools/notes",
+        ])
+        XCTAssertEqual(tabs[3].kind, .app)
+        XCTAssertEqual(tabs[3].title, "Circuit MCP")
+        XCTAssertFalse(tabs[3].isWorking, "closing an app tab needs no confirmation")
+    }
+
+    func testAnAppTabIDNamesItsProjectAndFolder() {
+        XCTAssertEqual(ProjectTabs.appTabID(project: "/p/x/", folder: "/tools/notes/."), "app:/p/x#/tools/notes")
+    }
 }

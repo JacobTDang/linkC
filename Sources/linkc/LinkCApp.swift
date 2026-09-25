@@ -686,6 +686,8 @@ final class AppModel {
             if let project = currentProject { showBoard(project) }
         case .agent, .terminal:
             focus(tab.id)
+        case .app:
+            return
         }
     }
 
@@ -699,6 +701,7 @@ final class AppModel {
         case .board: return
         case .agent: stop(tab.id)
         case .terminal: stopShell(tab.id)
+        case .app: return
         }
         if let project, currentProject != project { showBoard(project) }
     }

@@ -54,6 +54,7 @@ public final class AppPreferences {
     private enum Keys {
         static let hotKey = "hotKeyPreset"
         static let usageFooter = "showsUsageFooter"
+        static let linkCApps = "linkCApps"
     }
 
     public var hotKeyPreset: HotKeyPreset {
@@ -70,6 +71,18 @@ public final class AppPreferences {
         didSet { modelStore.save(agentModels) }
     }
 
+    /// Apps registered in Settings > APPS, available in every project. JSON in UserDefaults: only
+    /// the app reads them.
+    public var linkCApps: [LinkCAppSetting] {
+        didSet {
+            do {
+                defaults.set(try JSONEncoder().encode(linkCApps), forKey: Keys.linkCApps)
+            } catch {
+                NSLog("[linkC] the Settings apps could not be saved — %@", String(describing: error))
+            }
+        }
+    }
+
     private let defaults: UserDefaults
     private let modelStore: AgentModelStore
 
@@ -80,5 +93,14 @@ public final class AppPreferences {
             .flatMap(HotKeyPreset.init(rawValue:)) ?? .none
         self.showsUsageFooter = defaults.object(forKey: Keys.usageFooter) as? Bool ?? true
         self.agentModels = modelStore.load()
+        var apps: [LinkCAppSetting] = []
+        if let data = defaults.data(forKey: Keys.linkCApps) {
+            do {
+                apps = try JSONDecoder().decode([LinkCAppSetting].self, from: data)
+            } catch {
+                NSLog("[linkC] the Settings apps are unreadable, starting with none — %@", String(describing: error))
+            }
+        }
+        self.linkCApps = apps
     }
 }

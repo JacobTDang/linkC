@@ -17,6 +17,7 @@ public final class SidebarState {
         var openSections: Set<Section> = []
         var boardViewports: [String: BoardViewport]?
         var terminalProjects: [String: String]?
+        var openApps: [String: [OpenApp]]?
     }
 
     static let key = "sidebarState"
@@ -32,6 +33,7 @@ public final class SidebarState {
     @ObservationIgnored private var coralProjects: Set<String> = []
     private var boardViewports: [String: BoardViewport] = [:]
     public private(set) var terminalProjects: [String: String] = [:]
+    private var openAppsByProject: [String: [OpenApp]] = [:]
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults = .standard) {
@@ -49,6 +51,7 @@ public final class SidebarState {
         openSections = stored.openSections
         boardViewports = stored.boardViewports ?? [:]
         terminalProjects = stored.terminalProjects ?? [:]
+        openAppsByProject = stored.openApps ?? [:]
     }
 
     public func file(terminal id: String, under project: String) {
@@ -147,7 +150,7 @@ public final class SidebarState {
     }
 
     private func save() {
-        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections, boardViewports: boardViewports.isEmpty ? nil : boardViewports, terminalProjects: terminalProjects.isEmpty ? nil : terminalProjects)
+        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections, boardViewports: boardViewports.isEmpty ? nil : boardViewports, terminalProjects: terminalProjects.isEmpty ? nil : terminalProjects, openApps: openAppsByProject.isEmpty ? nil : openAppsByProject)
         do {
             defaults.set(try JSONEncoder().encode(stored), forKey: Self.key)
         } catch {
@@ -163,6 +166,29 @@ public final class SidebarState {
     public func setBoardViewport(_ viewport: BoardViewport, for path: String) {
         guard boardViewports[path] != viewport else { return }
         boardViewports[path] = viewport
+        save()
+    }
+
+    /// The app tabs open in this project, in the order they were opened.
+    public func openApps(in project: String) -> [OpenApp] {
+        openAppsByProject[(project as NSString).standardizingPath] ?? []
+    }
+
+    public func openApp(_ app: OpenApp, in project: String) {
+        let key = (project as NSString).standardizingPath
+        var apps = openAppsByProject[key] ?? []
+        guard !apps.contains(where: { $0.folder == app.folder }) else { return }
+        apps.append(app)
+        openAppsByProject[key] = apps
+        save()
+    }
+
+    public func closeApp(folder: String, in project: String) {
+        let key = (project as NSString).standardizingPath
+        let target = (folder as NSString).standardizingPath
+        guard var apps = openAppsByProject[key], apps.contains(where: { $0.folder == target }) else { return }
+        apps.removeAll { $0.folder == target }
+        openAppsByProject[key] = apps.isEmpty ? nil : apps
         save()
     }
 }

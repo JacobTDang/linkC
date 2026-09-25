@@ -68,4 +68,12 @@ final class AppPreferencesTests: XCTestCase {
         let reloaded = AppPreferences(defaults: defaults, modelStore: store)
         XCTAssertEqual(reloaded.agentModels.model(for: .codex, tier: .standard), "gpt-7-nova")
     }
+
+    func testSettingsAppsSurviveAReload() {
+        let prefs = AppPreferences(defaults: defaults)
+        XCTAssertEqual(prefs.linkCApps, [])
+        let notes = LinkCAppSetting(folder: "/tools/notes", manifest: LinkCAppManifest(name: "Notes", start: ["uv", "run", "serve", "{port}"], health: "/ok"))
+        prefs.linkCApps = [notes]
+        XCTAssertEqual(AppPreferences(defaults: defaults).linkCApps, [notes])
+    }
 }

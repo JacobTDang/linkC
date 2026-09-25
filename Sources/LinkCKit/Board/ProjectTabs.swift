@@ -1,11 +1,12 @@
 import Foundation
 
-/// One tab in a project's strip: its Board, one of its agent sessions, or one of its terminals.
+/// One tab in a project's strip: its Board, one of its agent sessions, one of its terminals, or an app.
 public struct ProjectTab: Equatable, Sendable, Identifiable {
     public enum Kind: Equatable, Sendable {
         case board
         case agent(AgentKind)
         case terminal
+        case app
     }
 
     public let id: String
@@ -34,12 +35,15 @@ public enum ProjectTabs {
         "board:" + standardized(path)
     }
 
-    /// The Board, then the project's agent sessions, then its terminals — each in the order they
-    /// were opened. `titles` holds live session titles, which win over the stored ones. `activities`
+    public static func appTabID(project: String, folder: String) -> String {
+        "app:" + standardized(project) + "#" + standardized(folder)
+    }
+
+    /// The Board, then the project's agent sessions, then its terminals, then its open apps — each in the order they were opened. `titles` holds live session titles, which win over the stored ones. `activities`
     /// holds each working or permission-waiting session's current action, keyed by session id.
     public static func tabs(
         project path: String, sessions: [Session], shells: [ShellRow], filed: [String: String] = [:], titles: [String: String],
-        activities: [String: String] = [:]
+        activities: [String: String] = [:], openApps: [OpenApp] = []
     ) -> [ProjectTab] {
         let folder = standardized(path)
         var tabs = [ProjectTab(id: boardID(folder), kind: .board, title: "Board", isWorking: false)]
@@ -54,6 +58,9 @@ public enum ProjectTabs {
             if TerminalFiling.project(forTerminal: shell.id, cwd: shell.cwd, filed: filed, projects: [folder]) == folder {
                 tabs.append(ProjectTab(id: shell.id, kind: .terminal, title: shell.title, isWorking: false))
             }
+        }
+        for app in openApps {
+            tabs.append(ProjectTab(id: appTabID(project: folder, folder: app.folder), kind: .app, title: app.name, isWorking: false))
         }
         return tabs
     }

@@ -136,6 +136,8 @@ private struct TabChip: View {
                 AgentLogoView(agent: kind)
             case .terminal:
                 Image(systemName: "terminal").font(.system(size: 9))
+            case .app:
+                Image(systemName: "globe").font(.system(size: 9))
             }
             if let activity = tab.activity {
                 ActivityLabel(text: activity.text, isWorking: activity.isWorking, size: 11.5)
