@@ -82,7 +82,6 @@ public final class MCPServer: Sendable {
     static let stepsSchemaDescription = """
         1 to 50 steps, applied in order, all or nothing. One verb per step, naming its fields exactly:
         add: {"add": name, "kind"?, "tech"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool, "columns"?: [column]}
-        Without columns, add: {"add": name, "kind"?, "tech"?, "in"?: place, "does"?, "reached_by"?, "runs"?, "planned"?: bool}
         update: {"update": name, same optional fields, "rename"?: new name}
         remove: {"remove": name}
         connect: {"connect": from, "to": to, "label"?, "style"?: plain|conditional|control|bus, "bits"?: 1-4096 (bus only)}

@@ -26,7 +26,9 @@ public struct BoardComponentFields: Equatable, Sendable {
     }
 }
 
-/// Editable values carried by a `column` step.
+/// What a `column` step sets on one column, using the board file's column keys. nil leaves a
+/// field as it is on a change; on an add, `type` is required and every other nil takes the
+/// column's default (not a key, nullable, not unique, no default, no reference, not planned).
 public struct BoardColumnFields: Equatable, Sendable {
     public var type: String?
     public var pk: Bool?

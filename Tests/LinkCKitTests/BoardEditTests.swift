@@ -559,6 +559,4 @@ final class BoardEditTests: XCTestCase {
         XCTAssertEqual(refusal([["op": "column", "table": "orgs", "column": "id"]], on: base)?.description,
                        #"step 1: a "column" step needs "set" or "drop""#)
     }
-
-
 }
