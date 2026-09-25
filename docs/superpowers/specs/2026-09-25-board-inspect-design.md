@@ -13,7 +13,7 @@ He chose **inspect + calmer lines + lenses** as the first slice (routing trunks 
 
 ## 1 · Hover
 
-- **Hovering an arrow or a part** for about 150 ms lights its path in the accent colour and dims everything else to about 22 %. A **hover card** appears near the pointer. Moving away clears both. Hover never changes the map or the selection.
+- **Hovering an arrow or a part** lights its path in the accent colour at once and dims everything else, as the Board already does. After about 150 ms, a **hover card** appears near the pointer. Moving away clears both. Hover never changes the map or the selection.
 - **The hit-test** takes the arrow whose drawn route passes within 6 pt (screen) of the pointer, preferring the nearest. It falls back to the part under the pointer. An arrow wins over a part only within 6 pt of its line.
 - **An arrow's card:**
   - the endpoints, *From → To*;
@@ -29,7 +29,7 @@ He chose **inspect + calmer lines + lenses** as the first slice (routing trunks 
 
 - **Clicking** an arrow or a part pins it. The highlight stays, and a docked **inspector** opens at the right edge of the Board pane. It is about 260 pt wide, shows the same content as the hover card, and never covers the canvas.
 - **Clicking** another arrow or part switches the inspector. Clicking empty canvas, pressing Esc, or ✕ closes it.
-- **What it replaces:** today's click-to-focus, which highlights without showing details. The existing behaviours tied to selection (dragging, editing a label, deleting) stay as they are.
+- **What it replaces:** today, a single click on a part opens its edit popover (`ComponentInspector`). Now a single click pins the part and shows the inspector. Editing moves to an **Edit…** button in the inspector, which opens the same popover, and to a double-click on the part (a double-click already edits an arrow). Dragging, marquee selection, shift-click and delete are unchanged.
 - **While something is pinned,** hover still shows cards for other items, but the pinned highlight stays.
 
 ## 3 · Lenses and focus
@@ -62,7 +62,8 @@ Chips at the top left of the Board canvas:
 ## 6 · Spread ends
 
 In `BoardRouter`, unbundled arrows that attach to the same side of the same part get separate attach points on that side.
-- **Spacing:** the points are spaced evenly, with at least 12 pt between them and 8 pt from each corner.
+- **Spacing:** the points are spaced evenly within a band around the side's midpoint (±16 pt on a left or right side, ±48 pt on a top or bottom side), at least 12 pt apart where the band allows. A side with one end keeps it at the midpoint, as today.
+- **Trimming to the outline:** the canvas trims each arrow end to the part's drawn outline at that end's own height or offset, not with the one mid-height inset per side used today. It steps inward from the attach point along the arrow's last segment until the point is inside the kind's shape, and caches the result by kind, side and offset. This keeps arrowheads on the outline of notched and slanted shapes: the ALU's notched left side, and trapezoids and ellipses.
 - **Order:** the points are ordered by the position of each arrow's other end along that side's axis, so the arrows don't cross near the part.
 - **Bundles are unchanged:** arrows that share a label still share one trunk and one anchor. A bundle counts as one arrow when spreading.
 - **Determinism:** the same map always gives the same routes, with ties broken by the arrow key, as today.
