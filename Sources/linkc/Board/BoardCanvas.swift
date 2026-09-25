@@ -615,6 +615,11 @@ struct BoardCanvas: View {
         case .top, .bottom: offsetFromMid = port.x - (box.minX + Int(w / 2))
         }
 
+        // The constant insets were measured exactly at the side's midpoint, so they are right
+        // there — and the walk below can land on a vertex that sits on that very line (the
+        // ALU's notch), where `contains` is unreliable.
+        guard offsetFromMid != 0 else { return constantForSide }
+
         let key = InsetCacheKey(kindRaw: kind.raw, side: side, offsetFromMid: offsetFromMid)
         if let cached = Self.insetCache[key] { return cached }
 
@@ -629,7 +634,10 @@ struct BoardCanvas: View {
         let path = BoardShape.path(for: kind)
         var distance: CGFloat = 0
         var found = constantForSide
-        while distance <= 40 {
+        // A shape can sit most of the way across its box (a mux's slanted side, the adder's
+        // circle), so the walk may cross the whole box before giving up.
+        let limit = (side == .left || side == .right) ? w : h
+        while distance <= limit {
             let point = CGPoint(x: localStart.x + direction.x * distance, y: localStart.y + direction.y * distance)
             if path.contains(point) { found = distance; break }
             distance += 0.5
