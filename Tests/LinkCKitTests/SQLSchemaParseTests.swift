@@ -194,6 +194,50 @@ final class SQLSchemaParseTests: XCTestCase {
         XCTAssertEqual(SQLSchema.quotedIfNeeded("_x1"), "_x1")
     }
 
+    func testAlterTableAddWithoutColumnAddsAColumn() throws {
+        let parsed = try SQLSchema.parse("create table t (id int);\nalter table t add email text not null;")
+        XCTAssertEqual(parsed.tables.first?.columns, [
+            BoardColumn(name: "id", type: "int"),
+            BoardColumn(name: "email", type: "text", nullable: false),
+        ])
+        XCTAssertEqual(parsed.skipped, [])
+    }
+
+    func testAlterColumnDefaultAndNullabilityActionsDoNotConsumeEachOther() throws {
+        let sql = "create table t (id int, a text default 'x', b text not null);\n"
+            + "alter table t alter column a drop default, alter a set not null, alter column b drop not null;"
+        let parsed = try SQLSchema.parse(sql)
+        XCTAssertEqual(parsed.tables.first?.columns, [
+            BoardColumn(name: "id", type: "int"),
+            BoardColumn(name: "a", type: "text", nullable: false),
+            BoardColumn(name: "b", type: "text"),
+        ])
+        XCTAssertEqual(parsed.skipped, [])
+    }
+
+    func testMalformedAndUnrecognisedAlterInputIsNeverSilent() throws {
+        let parsed = try SQLSchema.parse("create table t (id int, note text not null mystery option);\nalter table t add 5, alter 6;")
+        XCTAssertEqual(parsed.notModelled, [.init(line: 1, text: "MYSTERY on t.note")])
+        XCTAssertEqual(parsed.skipped, [
+            .init(line: 2, text: "ALTER TABLE t ADD"),
+            .init(line: 2, text: "ALTER TABLE t ALTER"),
+        ])
+
+        for sql in [
+            "create table t (a int, foreign key (a));",
+            "create table t (a int, foreign key (a) references);",
+        ] {
+            XCTAssertThrowsError(try SQLSchema.parse(sql), sql) { error in
+                XCTAssertTrue("\(error)".contains("line 1"), "\(error)")
+                XCTAssertTrue("\(error)".contains("table t has a foreign key that names no table"), "\(error)")
+            }
+        }
+    }
+
+    func testIdentifierRulesAreASCIIOnly() {
+        XCTAssertEqual(SQLSchema.quotedIfNeeded("é"), "\"é\"")
+    }
+
     func testUnreadableSQLIsRefusedNamingItsLine() {
         let cases: [(String, [String])] = [
             ("create table broken (\n  id int,\n  ,\n  name text\n);", ["line 3", "table broken has an empty column entry"]),
@@ -216,4 +260,3 @@ final class SQLSchemaParseTests: XCTestCase {
         }
     }
 }
-

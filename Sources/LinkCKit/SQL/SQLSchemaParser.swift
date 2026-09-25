@@ -67,27 +67,41 @@ struct SQLSchemaParser {
     private mutating func alterAction(_ tokens: [SQLToken], table: String) throws {
         var c = Cursor(tokens); let line = tokens[0].line
         if c.take("ADD") {
-            if c.take("COLUMN") || c.peek("IF") {
-                var ifNot = false; if c.take("IF") { _ = c.take("NOT"); _ = c.take("EXISTS"); ifNot = true }
-                guard let name = c.columnName() else { return }
-                if column(table, name) != nil { if ifNot { return }; throw LinkCError.parse("line \(line): table \(table) already has column \(name)") }
-                try parseColumn(name: name, remaining: Array(c.tokens[c.index...]), table: table, line: line, append: true); return
-            }
             if c.take("CONSTRAINT") { _ = c.columnName() }
             if let first = c.current, ["PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "EXCLUDE"].contains(first.keyword ?? "") {
                 try constraint(Array(c.tokens[c.index...]), table: table); return
             }
+            _ = c.take("COLUMN")
+            var ifNot = false
+            if c.take("IF") { _ = c.take("NOT"); _ = c.take("EXISTS"); ifNot = true }
+            guard let name = c.columnName() else {
+                skipped.append(.init(line: line, text: "ALTER TABLE \(table) ADD"))
+                return
+            }
+            if column(table, name) != nil {
+                if ifNot { return }
+                throw LinkCError.parse("line \(line): table \(table) already has column \(name)")
+            }
+            try parseColumn(name: name, remaining: Array(c.tokens[c.index...]), table: table, line: line, append: true)
+            return
         }
         if c.take("ALTER") {
-            _ = c.take("COLUMN"); guard let name = c.columnName() else { return }; try requireColumn(table, name, line)
-            if c.take("SET"), c.take("DEFAULT") {
+            _ = c.take("COLUMN")
+            guard let name = c.columnName() else {
+                skipped.append(.init(line: line, text: "ALTER TABLE \(table) ALTER"))
+                return
+            }
+            try requireColumn(table, name, line)
+            if c.matches("SET", "DEFAULT") {
+                _ = c.take("SET")
+                _ = c.take("DEFAULT")
                 let expression = render(Array(c.tokens[c.index...]))
                 update(table, name) { $0.defaultValue = expression == "null" ? nil : expression }
                 return
             }
-            if c.take("DROP"), c.take("DEFAULT") { update(table, name) { $0.defaultValue = nil }; return }
-            if c.take("SET"), c.take("NOT"), c.take("NULL") { update(table, name) { $0.nullable = false }; return }
-            if c.take("DROP"), c.take("NOT"), c.take("NULL") { update(table, name) { if !$0.pk { $0.nullable = true } }; return }
+            if c.matches("DROP", "DEFAULT") { update(table, name) { $0.defaultValue = nil }; return }
+            if c.matches("SET", "NOT", "NULL") { update(table, name) { $0.nullable = false }; return }
+            if c.matches("DROP", "NOT", "NULL") { update(table, name) { if !$0.pk { $0.nullable = true } }; return }
         }
         skipped.append(.init(line: line, text: "ALTER TABLE \(table) \(tokens.first?.keyword ?? tokens.first!.text.uppercased())"))
     }
@@ -126,7 +140,10 @@ struct SQLSchemaParser {
                 let end = boundaryIndex(Array(c.tokens[c.index...]), keywords: keywords) ?? c.tokens.count - c.index; c.index += end; continue
             }
             if c.take("COLLATE") { _ = c.name(); continue }
-            c.index += 1
+            let unknown = c.current!
+            let text = unknown.keyword ?? unknown.text.uppercased()
+            notModelled.append(.init(line: unknown.line, text: "\(text) on \(table).\(name)"))
+            break
         }
         if append { updateTable(table) { $0.columns.append(value) } }
     }
@@ -139,13 +156,21 @@ struct SQLSchemaParser {
         if c.take("FOREIGN") {
             _ = c.take("KEY"); let names = c.nameList(); for name in names { try requireColumn(table, name, line) }
             if names.count != 1 { notModelled.append(.init(line: line, text: "FOREIGN KEY (\(names.joined(separator: ", "))) on \(table)")); return }
-            guard c.take("REFERENCES") else { return }; var value = column(table, names[0])!; try reference(&c, table: table, column: names[0], line: c.previousLine, into: &value); update(table, names[0]) { $0.references = value.references }; return
+            guard c.take("REFERENCES") else {
+                throw LinkCError.parse("line \(line): table \(table) has a foreign key that names no table")
+            }
+            var value = column(table, names[0])!
+            try reference(&c, table: table, column: names[0], line: c.previousLine, into: &value)
+            update(table, names[0]) { $0.references = value.references }
+            return
         }
         if let kind = c.current?.keyword, ["CHECK", "EXCLUDE", "LIKE"].contains(kind) { notModelled.append(.init(line: line, text: "\(kind) on \(table)")) }
     }
 
     private mutating func reference(_ c: inout Cursor, table: String, column: String, line: Int, into value: inout BoardColumn) throws {
-        guard let target = c.name() else { return }
+        guard let target = c.name() else {
+            throw LinkCError.parse("line \(line): table \(table) has a foreign key that names no table")
+        }
         if c.peekSymbol("(") { let names = c.nameList(); if let name = names.first { value.references = .init(table: target, column: name) } }
         else { pending.append(.init(table: table, column: column, target: target, line: line)) }
         while !c.done {
@@ -195,6 +220,10 @@ private struct Cursor {
     init(_ tokens:[SQLToken]){self.tokens=tokens}
     var done:Bool{index>=tokens.count}; var current:SQLToken?{done ? nil:tokens[index]}
     func peek(_ k:String)->Bool{current?.keyword==k}; func peekSymbol(_ s:String)->Bool{current?.text==s}
+    func matches(_ keywords: String...) -> Bool {
+        guard index + keywords.count <= tokens.count else { return false }
+        return zip(tokens[index..<index + keywords.count], keywords).allSatisfy { $0.keyword == $1 }
+    }
     mutating func take(_ k:String)->Bool{guard peek(k) else{return false};previousLine=tokens[index].line;index+=1;return true}
     mutating func takeSymbol(_ s:String)->Bool{guard peekSymbol(s) else{return false};previousLine=tokens[index].line;index+=1;return true}
     mutating func columnName()->String?{guard let t=current,t.kind == .word || t.kind == .quotedName else{return nil};index+=1;return t.kind == .word ? t.value.lowercased():t.value}

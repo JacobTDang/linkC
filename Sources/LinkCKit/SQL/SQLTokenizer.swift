@@ -27,8 +27,8 @@ struct SQLTokenizer {
             if c == "\"" { result.append(try quotedName(line: startLine)); continue }
             if c == "'" || ((c == "E" || c == "e") && peek(1) == "'") { result.append(try string(line: startLine, escaped: c != "'")); continue }
             if c == "$", let delimiter = dollarDelimiter() { result.append(try dollar(line: startLine, delimiter: delimiter)); continue }
-            if c.isLetter || c == "_" { result.append(scan(kind: .word, line: startLine) { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "$" }); continue }
-            if c.isNumber { result.append(number(line: startLine)); continue }
+            if c.isASCIILetter || c == "_" { result.append(scan(kind: .word, line: startLine) { $0.isASCIILetter || $0.isASCIIDigit || $0 == "_" || $0 == "$" }); continue }
+            if c.isASCIIDigit { result.append(number(line: startLine)); continue }
             if c == ":", peek(1) == ":" { index += 2; result.append(.init(kind: .symbol, text: "::", value: "::", line: startLine)); continue }
             if "(),;.[]".contains(c) { index += 1; result.append(.init(kind: .symbol, text: String(c), value: String(c), line: startLine)); continue }
             if "+-*/<>=~!@#%^&|`?".contains(c) {
@@ -73,8 +73,8 @@ struct SQLTokenizer {
     private func dollarDelimiter() -> String? {
         var j = index + 1
         if j < chars.count, chars[j] == "$" { return "$$" }
-        guard j < chars.count, chars[j].isLetter || chars[j] == "_" else { return nil }
-        j += 1; while j < chars.count, chars[j].isLetter || chars[j].isNumber || chars[j] == "_" { j += 1 }
+        guard j < chars.count, chars[j].isASCIILetter || chars[j] == "_" else { return nil }
+        j += 1; while j < chars.count, chars[j].isASCIILetter || chars[j].isASCIIDigit || chars[j] == "_" { j += 1 }
         guard j < chars.count, chars[j] == "$" else { return nil }
         return String(chars[index...j])
     }
@@ -89,11 +89,11 @@ struct SQLTokenizer {
         throw LinkCError.parse("line \(startLine): a quoted string never ends")
     }
     private mutating func number(line startLine: Int) -> SQLToken {
-        let start = index; while index < chars.count, chars[index].isNumber { index += 1 }
-        if index < chars.count, chars[index] == ".", peek(1)?.isNumber == true { index += 1; while index < chars.count, chars[index].isNumber { index += 1 } }
+        let start = index; while index < chars.count, chars[index].isASCIIDigit { index += 1 }
+        if index < chars.count, chars[index] == ".", peek(1)?.isASCIIDigit == true { index += 1; while index < chars.count, chars[index].isASCIIDigit { index += 1 } }
         if index < chars.count, chars[index] == "e" || chars[index] == "E" {
             let save = index; index += 1; if index < chars.count, chars[index] == "+" || chars[index] == "-" { index += 1 }
-            let digits = index; while index < chars.count, chars[index].isNumber { index += 1 }; if digits == index { index = save }
+            let digits = index; while index < chars.count, chars[index].isASCIIDigit { index += 1 }; if digits == index { index = save }
         }
         let text = String(chars[start..<index]); return .init(kind: .number, text: text, value: text, line: startLine)
     }
@@ -106,4 +106,9 @@ struct SQLTokenizer {
         }
         throw LinkCError.parse("line \(startLine): a comment never ends")
     }
+}
+
+private extension Character {
+    var isASCIILetter: Bool { ("A"..."Z").contains(self) || ("a"..."z").contains(self) }
+    var isASCIIDigit: Bool { ("0"..."9").contains(self) }
 }
