@@ -42,6 +42,20 @@ struct BoardCanvas: View {
     @State private var hovered: String?
     /// An arrow under the pointer, while the pointer moves over empty canvas.
     @State private var hoveredArrow: BoardModel.ArrowKey?
+    /// The pointer's last known position, in `Self.space` screen points — where the hover card
+    /// is offset from.
+    @State private var pointerLocation: CGPoint = .zero
+    /// What has been continuously hovered for 150 ms, so its card is showing.
+    @State private var hoverCard: BoardInspectionTarget?
+    @State private var hoverCardTask: Task<Void, Never>?
+    /// The measured size of the last-drawn hover card, so it can be clamped inside the canvas.
+    @State private var hoverCardSize: CGSize = .zero
+    /// The part or arrow a single click last pinned — shown in the docked inspector until it's
+    /// unpinned. Not saved.
+    @State private var pinned: BoardInspectionTarget?
+    /// Whether Focus is on — hides everything outside `BoardFocus.visible(...)` for `pinned`.
+    /// Not saved; turns off whenever `pinned` is cleared.
+    @State private var focusOn = false
     /// An arrow being drawn: the component it leaves and the pointer, in screen points.
     @State private var arrowDraft: (from: String, to: CGPoint)?
     /// A frame being drawn, in screen points.
@@ -63,6 +77,8 @@ struct BoardCanvas: View {
                 drawing
                 elements
                 overlays
+                hoverCardOverlay
+                dockedInspectorOverlay
             }
             .background(WindowReader { input.window = $0 })
             .coordinateSpace(.named(Self.space))
@@ -87,6 +103,7 @@ struct BoardCanvas: View {
         .background(Theme.boardBackground)
         .onChange(of: board.outsideChange?.id) { _, _ in outsideChangeArrived() }
         .onChange(of: viewport.lens) { _, _ in sidebarState.setBoardViewport(viewport, for: projectPath) }
+        .onChange(of: hoverCandidate) { _, target in hoverCandidateChanged(target) }
     }
 
     /// Lights up what the change touched at full opacity, then — on the next runloop turn, so
@@ -129,8 +146,9 @@ struct BoardCanvas: View {
                 }
                 switch phase {
                 case .active(let location):
-                    let found = arrow(near: location, tolerance: 5)
+                    let found = arrowAt(location)
                     if hoveredArrow != found { hoveredArrow = found }
+                    pointerLocation = location
                 case .ended:
                     if hoveredArrow != nil { hoveredArrow = nil }
                 }
@@ -151,6 +169,17 @@ struct BoardCanvas: View {
         if board.map.components.first(where: { $0.name == focus })?.uses.keys.contains(name) == true { return true }
         if board.map.components.first(where: { $0.name == name })?.uses.keys.contains(focus) == true { return true }
         return false
+    }
+
+    /// What Focus keeps visible while it's on: the pinned part or arrow, its direct neighbours and
+    /// the arrows between them — `nil` when Focus is off or nothing is pinned, meaning everything
+    /// draws as usual.
+    private var focusVisible: BoardFocus.Visible? {
+        guard focusOn, let pinned else { return nil }
+        switch pinned {
+        case .part(let name): return BoardFocus.visible(aroundPart: name, in: board.map)
+        case .arrow(let key): return BoardFocus.visible(aroundArrow: key, in: board.map)
+        }
     }
 
     private var drawing: some View {
@@ -181,20 +210,29 @@ struct BoardCanvas: View {
 
     private var elements: some View {
         let visible = visibleCanvasRect()
+        let focusFilter = focusVisible
         return ZStack(alignment: .topLeading) {
             ForEach(board.map.frames.filter { frameRect($0)?.intersects(visible) == true }) { frame in
                 frameHandles(frame)
                 frameGlow(frame)
             }
-            ForEach(board.map.components.filter { componentRect($0)?.intersects(visible) == true }) { component in
+            ForEach(board.map.components.filter { component in
+                componentRect(component)?.intersects(visible) == true && (focusFilter?.parts.contains(component.name) ?? true)
+            }) { component in
                 if let at = component.at {
                     ComponentBox(component: component, status: board.statuses[component.name],
                                  isSelected: board.selection.contains(.component(component.name)))
                         .opacity(focusedComponent.map { isConnected(component.name, to: $0) ? 1 : 0.3 } ?? 1)
                         .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component.name, kind: component.kind) } }
                         .overlay { glow(.component(component.name), cornerRadius: 10, inset: BoardShape.insets(for: component.kind)) }
-                        .onHover { inside in
-                            if inside { hovered = component.name } else if hovered == component.name { hovered = nil }
+                        .onContinuousHover(coordinateSpace: .named(Self.space)) { phase in
+                            switch phase {
+                            case .active(let location):
+                                hovered = component.name
+                                pointerLocation = location
+                            case .ended:
+                                if hovered == component.name { hovered = nil }
+                            }
                         }
                         .popover(isPresented: Binding(get: { inspecting == component.name }, set: { if !$0 { inspecting = nil } }),
                                  arrowEdge: .trailing) {
@@ -210,9 +248,13 @@ struct BoardCanvas: View {
                         .offset(liveOffset(for: .component(component.name), place: component.place))
                         .gesture(board.tool == .arrow ? AnyGesture(arrowDrag(from: component.name).map { _ in () })
                                                       : AnyGesture(elementDrag(.component(component.name)).map { _ in () }))
+                        .onTapGesture(count: 2) {
+                            select(.component(component.name))
+                            inspecting = component.name
+                        }
                         .onTapGesture {
                             select(.component(component.name))
-                            if !NSEvent.modifierFlags.contains(.shift) { inspecting = component.name }
+                            pinned = .part(component.name)
                         }
                 }
             }
@@ -374,7 +416,7 @@ struct BoardCanvas: View {
                     }
                     .padding(.horizontal, 14)
                     HStack {
-                        BoardLensChips(lens: $viewport.lens)
+                        BoardLensChips(lens: $viewport.lens, focusOn: $focusOn, canFocus: pinned != nil)
                         Spacer()
                     }
                     .padding(.horizontal, 14)
@@ -425,6 +467,90 @@ struct BoardCanvas: View {
                 if !systemFocused { systemDraft = system ?? "" }
             }
         }
+    }
+
+    /// The hover card, offset 14 pt from the pointer and clamped inside the canvas so it never
+    /// runs off the edge.
+    @ViewBuilder
+    private var hoverCardOverlay: some View {
+        if let hoverCard, let content = inspectionContent(for: hoverCard) {
+            BoardHoverCard(content: content)
+                .background(GeometryReader { proxy in
+                    Color.clear.onAppear { hoverCardSize = proxy.size }
+                        .onChange(of: proxy.size) { _, size in hoverCardSize = size }
+                })
+                .offset(clampedHoverCardOrigin())
+        }
+    }
+
+    /// Where the hover card's top-left corner lands: 14 pt past the pointer on both axes, pulled
+    /// back so the whole card — at its last measured size — stays inside the canvas.
+    private func clampedHoverCardOrigin() -> CGSize {
+        let x = min(max(pointerLocation.x + 14, 4), max(4, size.width - hoverCardSize.width - 4))
+        let y = min(max(pointerLocation.y + 14, 4), max(4, size.height - hoverCardSize.height - 4))
+        return CGSize(width: x, height: y)
+    }
+
+    /// The docked inspector — a sibling of the zoomed content, at the Board's right edge, so it
+    /// neither pans nor zooms with the canvas beneath it.
+    @ViewBuilder
+    private var dockedInspectorOverlay: some View {
+        if let pinned, let content = inspectionContent(for: pinned) {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                BoardDockedInspector(content: content, edit: editPinned, close: unpin)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+        }
+    }
+
+    // MARK: - Inspection
+
+    /// `target`, read from the map right now — `nil` once its part or arrow no longer exists.
+    private func inspectionContent(for target: BoardInspectionTarget) -> BoardInspectionContent? {
+        switch target {
+        case .part(let name): return BoardInspection.part(name, in: board.map).map(BoardInspectionContent.part)
+        case .arrow(let key): return BoardInspection.arrow(key, in: board.map).map(BoardInspectionContent.arrow)
+        }
+    }
+
+    /// What the pointer is over right now, gated to the Select tool and no drag in progress — the
+    /// hover card's own 150 ms timer keys off this changing.
+    private var hoverCandidate: BoardInspectionTarget? {
+        guard board.tool == .select, dragging.isEmpty else { return nil }
+        if let hoveredArrow { return .arrow(hoveredArrow) }
+        if let hovered { return .part(hovered) }
+        return nil
+    }
+
+    /// Cancels any pending card, and — unless `target` is nil — starts a fresh 150 ms wait before
+    /// showing it. A later call before that wait finishes cancels this one in turn.
+    private func hoverCandidateChanged(_ target: BoardInspectionTarget?) {
+        hoverCardTask?.cancel()
+        hoverCard = nil
+        guard let target else { return }
+        hoverCardTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            hoverCard = target
+        }
+    }
+
+    /// Opens the pinned item's editor: `ComponentInspector` for a part, `ArrowEditor` for an
+    /// arrow — the docked inspector's own Edit….
+    private func editPinned() {
+        guard let pinned else { return }
+        switch pinned {
+        case .part(let name): inspecting = name
+        case .arrow(let key): editingArrow = key
+        }
+    }
+
+    /// Clears the pin and closes the docked inspector. Focus always goes with it — it has nothing
+    /// left to focus around once nothing is pinned.
+    private func unpin() {
+        pinned = nil
+        focusOn = false
     }
 
     // MARK: - Drawing
@@ -486,10 +612,12 @@ struct BoardCanvas: View {
     /// width. Focus and hover still override every style with the accent.
     private func drawArrows(in context: inout GraphicsContext) {
         let focus = focusedComponent
+        let focusFilter = focusVisible
         var drawnBundlePills: Set<String> = []
         for component in board.map.components {
             for (target, arrow) in component.uses {
                 let key = BoardModel.ArrowKey(from: component.name, to: target)
+                guard focusFilter?.arrows.contains(key) ?? true else { continue }
                 guard let draw = arrowDraw(for: key) else { continue }
                 let canvasPoints = draw.isPreview ? draw.points : extendedEndpoints(draw.points, from: key.from, to: key.to)
                 let screen = canvasPoints.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
@@ -881,6 +1009,16 @@ struct BoardCanvas: View {
         switch command {
         case .delete: board.delete(board.selection)
         case .cancel:
+            // Esc leaves Focus first, then closes the docked inspector, and only once neither is
+            // showing does it fall through to the ordinary cancel below.
+            if focusOn {
+                focusOn = false
+                return
+            }
+            if pinned != nil {
+                unpin()
+                return
+            }
             board.selection = []
             board.tool = .select
             inspecting = nil
@@ -1028,8 +1166,8 @@ struct BoardCanvas: View {
         board.selection = NSEvent.modifierFlags.contains(.shift) ? board.selection.union(picked) : picked
     }
 
-    /// A tap on empty canvas places what the tool makes, or — with Select — selects the arrow
-    /// under it, or clears the selection.
+    /// A tap on empty canvas places what the tool makes, or — with Select — pins and selects the
+    /// arrow under it, or clears the selection and closes the docked inspector.
     private func backgroundTapped(at location: CGPoint) {
         let point = viewport.toCanvas(location)
         switch board.tool {
@@ -1039,13 +1177,19 @@ struct BoardCanvas: View {
         case .frame: place(.frame, at: point)
         case .arrow: board.selection = []
         case .select:
-            if let arrow = arrow(near: location) { select(.arrow(arrow)) } else { board.selection = [] }
+            if let arrow = arrowAt(location) {
+                select(.arrow(arrow))
+                pinned = .arrow(arrow)
+            } else {
+                board.selection = []
+                unpin()
+            }
         }
     }
 
     private func backgroundDoubleTapped(at location: CGPoint) {
         guard board.tool == .select else { return }
-        if let arrow = arrow(near: location) {
+        if let arrow = arrowAt(location) {
             board.selection = [.arrow(arrow)]
             editingArrow = arrow
         } else {
@@ -1075,23 +1219,20 @@ struct BoardCanvas: View {
         board.tool = .select
     }
 
-    /// The arrow within `tolerance` screen points of `location`, if any.
-    func arrow(near location: CGPoint, tolerance: CGFloat = 6) -> BoardModel.ArrowKey? {
-        for (key, route) in board.routes {
-            let screen = route.points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
-            for (a, b) in zip(screen, screen.dropFirst()) where distance(from: location, toSegment: a, b) < tolerance {
-                return key
-            }
-        }
-        return nil
+    /// The nearest arrow to `location` (a screen point) within the lens, by the canvas-space hit
+    /// test every caller here shares: a 6 pt screen tolerance, converted to canvas units by the
+    /// current zoom.
+    private func arrowAt(_ location: CGPoint) -> BoardModel.ArrowKey? {
+        let point = viewport.toCanvas(location)
+        return BoardHitTest.arrow(
+            atX: Double(point.x), y: Double(point.y), routes: board.routes, tolerance: 6 / viewport.zoom,
+            including: { key in arrowStyle(for: key).map(viewport.lens.includes) ?? true })
     }
 
-    private func distance(from p: CGPoint, toSegment a: CGPoint, _ b: CGPoint) -> CGFloat {
-        let dx = b.x - a.x, dy = b.y - a.y
-        let lengthSquared = dx * dx + dy * dy
-        guard lengthSquared > 0 else { return hypot(p.x - a.x, p.y - a.y) }
-        let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared))
-        return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+    /// `key`'s own drawn style, read straight off its source component — `nil` when the key no
+    /// longer names a real arrow.
+    private func arrowStyle(for key: BoardModel.ArrowKey) -> BoardArrowStyle? {
+        board.map.components.first { $0.name == key.from }?.uses[key.to]?.style
     }
 }
 

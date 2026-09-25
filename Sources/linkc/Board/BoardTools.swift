@@ -89,10 +89,11 @@ struct BoardToolbar: View {
 }
 
 /// The lens chips at the top left of the canvas: a segmented All / Data / Control, in the
-/// toolbar's own visual style, plus a Focus button — disabled for now, since nothing is pinned
-/// until a later change wires up pinning.
+/// toolbar's own visual style, plus a Focus button — enabled only while something is pinned.
 struct BoardLensChips: View {
     @Binding var lens: BoardLens
+    @Binding var focusOn: Bool
+    let canFocus: Bool
 
     var body: some View {
         HStack(spacing: 2) {
@@ -110,16 +111,17 @@ struct BoardLensChips: View {
                 .help(title(for: option))
             }
             Rectangle().fill(Theme.textTertiary.opacity(0.25)).frame(width: 1, height: 16).padding(.horizontal, 2)
-            Button(action: {}) {
+            Button { focusOn.toggle() } label: {
                 Text("◎ Focus")
                     .font(.system(size: 11))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(focusOn ? Theme.accent : Theme.textSecondary)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(focusOn ? Theme.accent.opacity(0.16) : .clear))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(true)
+            .disabled(!canFocus)
             .help("Focus — shows only a pinned part or arrow and its neighbours")
         }
         .padding(5)
