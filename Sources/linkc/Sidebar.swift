@@ -272,7 +272,10 @@ private struct ProjectsSection: View {
                 ProjectRow(project: project, model: model) { onInspect(project.path) }
                 if project.isExpanded {
                     ForEach(project.sessions) { row in
-                        SessionRow(row: row, isSelected: row.id == model.selectedId && model.boardProject == nil, model: model)
+                        SessionRow(
+                            row: row,
+                            isSelected: row.id == model.selectedId && model.boardProject == nil && model.appTab == nil,
+                            model: model)
                     }
                     ForEach(project.terminals) { row in
                         ShellSidebarRow(row: row, isSelected: row.id == model.selectedId, model: model, indent: 18)

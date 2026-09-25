@@ -98,8 +98,10 @@ struct SettingsScreen: View {
                             folder: setting.folder,
                             manifest: setting.manifest,
                             initialError: addedWithDecodeError[setting.folder],
+                            onCommitted: { addedWithDecodeError[setting.folder] = nil },
                             onRemove: {
                                 model.preferences.linkCApps.removeAll { $0.folder == setting.folder }
+                                addedWithDecodeError[setting.folder] = nil
                             }
                         )
                     }
@@ -199,7 +201,11 @@ struct SettingsScreen: View {
         panel.message = "Choose an app's folder"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        let folder = url.path
+        let folder = (url.path as NSString).standardizingPath
+        guard !model.preferences.linkCApps.contains(where: { ($0.folder as NSString).standardizingPath == folder }) else {
+            errorText = "Already registered."
+            return
+        }
         let manifestURL = url.appendingPathComponent(LinkCAppManifest.relativePath)
         let defaultManifest = LinkCAppManifest(name: url.lastPathComponent, start: [], health: "/", path: "/")
         var manifest = defaultManifest
@@ -282,6 +288,7 @@ private struct TierModelField: View {
 private struct AppSettingRow: View {
     let preferences: AppPreferences
     let folder: String
+    let onCommitted: () -> Void
     let onRemove: () -> Void
 
     @State private var nameText: String
@@ -295,10 +302,12 @@ private struct AppSettingRow: View {
         folder: String,
         manifest: LinkCAppManifest,
         initialError: String?,
+        onCommitted: @escaping () -> Void,
         onRemove: @escaping () -> Void
     ) {
         self.preferences = preferences
         self.folder = folder
+        self.onCommitted = onCommitted
         self.onRemove = onRemove
         _nameText = State(initialValue: manifest.name)
         _startText = State(initialValue: CommandLineSplit.join(manifest.start))
@@ -357,6 +366,7 @@ private struct AppSettingRow: View {
             apps[index] = LinkCAppSetting(folder: folder, manifest: candidate)
             preferences.linkCApps = apps
             errorText = nil
+            onCommitted()
         } catch let error as LinkCError {
             errorText = error.localizedDescription
         } catch {
