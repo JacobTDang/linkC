@@ -167,4 +167,47 @@ final class BoardLayoutTests: XCTestCase {
         let a = BoardGeometry.rect(ofComponentAt: fixed.components[0].at!), b = BoardGeometry.rect(ofComponentAt: fixed.components[1].at!)
         XCTAssertFalse(a.intersects(b))
     }
+
+    func testArrangedKeepsGhostsInLeftAndRightColumnsInNameOrder() {
+        var map = BoardMap()
+        map.components = [
+            BoardComponent(name: "Decoder", kind: .service),
+            BoardComponent(name: "Parser", kind: .service),
+            BoardComponent(name: "B", kind: .service, outside: .in),
+            BoardComponent(name: "A", kind: .service, outside: .in),
+            BoardComponent(name: "D", kind: .database, outside: .out),
+            BoardComponent(name: "C", kind: .database, outside: .out),
+        ]
+        let arranged = BoardLayout.arranged(map)
+        let innerBoxes = arranged.components.filter { $0.outside == nil }.compactMap { $0.at.map(BoardGeometry.rect(ofComponentAt:)) }
+        let minInnerX = innerBoxes.map(\.minX).min()!
+        let maxInnerX = innerBoxes.map(\.maxX).max()!
+
+        let ghostA = arranged.components.first { $0.name == "A" }!
+        let ghostB = arranged.components.first { $0.name == "B" }!
+        let ghostC = arranged.components.first { $0.name == "C" }!
+        let ghostD = arranged.components.first { $0.name == "D" }!
+
+        // .in ghosts are left of every inner part
+        XCTAssertTrue(ghostA.at!.x + BoardGeometry.componentSize.x < minInnerX)
+        XCTAssertTrue(ghostB.at!.x + BoardGeometry.componentSize.x < minInnerX)
+        // Same column for .in ghosts
+        XCTAssertEqual(ghostA.at!.x, ghostB.at!.x)
+        // Ordered by name lowercased
+        XCTAssertTrue(ghostA.at!.y < ghostB.at!.y)
+
+        // .out ghosts are right of every inner part
+        XCTAssertTrue(ghostC.at!.x > maxInnerX)
+        XCTAssertTrue(ghostD.at!.x > maxInnerX)
+        // Same column for .out ghosts
+        XCTAssertEqual(ghostC.at!.x, ghostD.at!.x)
+        // Ordered by name lowercased
+        XCTAssertTrue(ghostC.at!.y < ghostD.at!.y)
+
+        // Ghost places are Not placed
+        XCTAssertEqual(ghostA.place, BoardMap.notPlaced)
+        XCTAssertEqual(ghostB.place, BoardMap.notPlaced)
+        XCTAssertEqual(ghostC.place, BoardMap.notPlaced)
+        XCTAssertEqual(ghostD.place, BoardMap.notPlaced)
+    }
 }
