@@ -31,14 +31,14 @@ public struct BoardViewport: Equatable, Sendable {
 
     /// Content follows the fingers: a drag of `dx` screen points moves the canvas by `dx / zoom`.
     public func panned(byScreenDX dx: Double, dy: Double) -> BoardViewport {
-        BoardViewport(originX: originX - dx / zoom, originY: originY - dy / zoom, zoom: zoom)
+        BoardViewport(originX: originX - dx / zoom, originY: originY - dy / zoom, zoom: zoom, lens: lens)
     }
 
     /// Zoom by `factor`, keeping the canvas point under `pointer` fixed.
     public func zoomed(by factor: Double, aroundScreen pointer: CGPoint) -> BoardViewport {
         let anchor = toCanvas(pointer)
         let zoom = min(Self.maxZoom, max(Self.minZoom, zoom * factor))
-        return BoardViewport(originX: anchor.x - pointer.x / zoom, originY: anchor.y - pointer.y / zoom, zoom: zoom)
+        return BoardViewport(originX: anchor.x - pointer.x / zoom, originY: anchor.y - pointer.y / zoom, zoom: zoom, lens: lens)
     }
 
     public func visibleRect(width: Double, height: Double) -> BoardRect {
@@ -47,15 +47,15 @@ public struct BoardViewport: Equatable, Sendable {
     }
 
     /// The viewport that shows all of `bounds` with `margin` screen points around it, never
-    /// zoomed in past 100%.
-    public static func fitting(_ bounds: BoardRect, width: Double, height: Double, margin: Double = 48) -> BoardViewport {
+    /// zoomed in past 100%, looking through `lens`.
+    public static func fitting(_ bounds: BoardRect, width: Double, height: Double, margin: Double = 48, lens: BoardLens = .all) -> BoardViewport {
         let usableWidth = max(1, width - 2 * margin)
         let usableHeight = max(1, height - 2 * margin)
         let zoom = min(1.0, min(usableWidth / Double(max(1, bounds.w)), usableHeight / Double(max(1, bounds.h))))
         let clamped = min(maxZoom, max(minZoom, zoom))
         let centreX = Double(bounds.x) + Double(bounds.w) / 2
         let centreY = Double(bounds.y) + Double(bounds.h) / 2
-        return BoardViewport(originX: centreX - width / (2 * clamped), originY: centreY - height / (2 * clamped), zoom: clamped)
+        return BoardViewport(originX: centreX - width / (2 * clamped), originY: centreY - height / (2 * clamped), zoom: clamped, lens: lens)
     }
 }
 

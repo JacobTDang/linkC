@@ -7,6 +7,8 @@ public enum BoardLabels {
     public static let height = 18
 
     private static let charWidth = 5.8
+    /// A digit's width: a bus's width draws in bold, whose digits run about 7 pt at 10 pt.
+    private static let digitWidth = 7.0
     private static let horizontalPadding = 14
     /// How much longer than the pill a horizontal segment must be to be a candidate at all.
     private static let horizontalSlack = 8
@@ -15,10 +17,11 @@ public enum BoardLabels {
     private static let verticalMinLength = 30
     private static let verticalStep = 8
 
-    /// The pill's width for a label: 10 pt text estimated at 5.8 pt per character, plus 14 pt of
-    /// padding.
+    /// The pill's width for a label: 10 pt text estimated at 5.8 pt per character and 7 pt per
+    /// digit, plus 14 pt of padding.
     public static func width(of label: String) -> Int {
-        Int((Double(label.count) * charWidth).rounded()) + horizontalPadding
+        let text = label.reduce(0.0) { $0 + ($1.isASCII && $1.isNumber ? digitWidth : charWidth) }
+        return Int(text.rounded()) + horizontalPadding
     }
 
     /// What an arrow's pill says: its label, then its width after two spaces. A bus with no label

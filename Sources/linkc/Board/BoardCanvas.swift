@@ -15,11 +15,6 @@ struct BoardCanvas: View {
     static let space = "board"
 
     @State private var viewport: BoardViewport = .initial
-    /// Which arrow styles draw at full strength — loaded from and saved with the Board viewport,
-    /// the same way pan and zoom persist. Kept apart from `viewport` itself because `panned` and
-    /// `zoomed` always build a fresh `BoardViewport` at `.all`, dropping whatever lens was set;
-    /// `viewportToSave` folds this back in at the point the value is actually persisted.
-    @State private var lens: BoardLens = .all
     @State private var size: CGSize = .zero
     @State private var canvasFrame: CGRect = .zero
     /// Screen offset of the elements being dragged, until they are dropped.
@@ -86,17 +81,12 @@ struct BoardCanvas: View {
             }
             .onDisappear {
                 input.stop()
-                sidebarState.setBoardViewport(viewportToSave, for: projectPath)
+                sidebarState.setBoardViewport(viewport, for: projectPath)
             }
         }
         .background(Theme.boardBackground)
         .onChange(of: board.outsideChange?.id) { _, _ in outsideChangeArrived() }
-        .onChange(of: lens) { _, _ in sidebarState.setBoardViewport(viewportToSave, for: projectPath) }
-    }
-
-    /// `viewport` with `lens` folded back in for persistence — see `lens`'s own doc.
-    private var viewportToSave: BoardViewport {
-        BoardViewport(originX: viewport.originX, originY: viewport.originY, zoom: viewport.zoom, lens: lens)
+        .onChange(of: viewport.lens) { _, _ in sidebarState.setBoardViewport(viewport, for: projectPath) }
     }
 
     /// Lights up what the change touched at full opacity, then — on the next runloop turn, so
@@ -384,7 +374,7 @@ struct BoardCanvas: View {
                     }
                     .padding(.horizontal, 14)
                     HStack {
-                        BoardLensChips(lens: $lens)
+                        BoardLensChips(lens: $viewport.lens)
                         Spacer()
                     }
                     .padding(.horizontal, 14)
@@ -507,7 +497,7 @@ struct BoardCanvas: View {
                 let isHovered = hoveredArrow == key
                 let highlighted = touchesFocus || isHovered || board.selection.contains(.arrow(key))
                 let dimmed = focus != nil && !touchesFocus && !isHovered
-                let inLens = lens.includes(arrow.style)
+                let inLens = viewport.lens.includes(arrow.style)
                 let colour = arrowColor(style: arrow.style, highlighted: highlighted).opacity(!inLens ? 0.1 : (dimmed ? 0.12 : 1))
                 let lineWidth: CGFloat = arrow.style == .bus ? 2.6 : (highlighted ? 1.8 : 1.3)
                 let headScale: CGFloat = arrow.style == .bus ? lineWidth / 1.3 : 1
@@ -853,7 +843,6 @@ struct BoardCanvas: View {
     private func placeViewport() {
         if let saved = sidebarState.boardViewport(for: projectPath) {
             viewport = saved
-            lens = saved.lens
         } else if !board.isEmpty {
             fitAll()
         } else {
@@ -863,7 +852,7 @@ struct BoardCanvas: View {
 
     private func fitAll() {
         guard let bounds = board.contentBounds else { return }
-        viewport = BoardViewport.fitting(bounds, width: Double(size.width), height: Double(size.height))
+        viewport = BoardViewport.fitting(bounds, width: Double(size.width), height: Double(size.height), lens: viewport.lens)
     }
 
     private func wireInput() {

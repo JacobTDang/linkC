@@ -43,4 +43,12 @@ final class BoardViewportTests: XCTestCase {
         XCTAssertTrue(visible.contains(content), "\(visible)")
         XCTAssertLessThanOrEqual(viewport.zoom, 1.0)
     }
+
+    /// A lens is a way of looking, not a place: panning, zooming and fitting keep it.
+    func testPanZoomAndFitKeepTheLens() {
+        let viewport = BoardViewport(originX: 0, originY: 0, zoom: 1, lens: .control)
+        XCTAssertEqual(viewport.panned(byScreenDX: 20, dy: 10).lens, .control)
+        XCTAssertEqual(viewport.zoomed(by: 1.5, aroundScreen: CGPoint(x: 10, y: 10)).lens, .control)
+        XCTAssertEqual(BoardViewport.fitting(BoardRect(x: 0, y: 0, w: 100, h: 100), width: 400, height: 300, lens: .data).lens, .data)
+    }
 }

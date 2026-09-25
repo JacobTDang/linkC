@@ -65,4 +65,11 @@ final class BoardLabelsTests: XCTestCase {
         let rect = try XCTUnwrap(placed.labelRects[.init(from: "a", to: "b")])
         XCTAssertEqual(rect.w, BoardLabels.width(of: "32"))
     }
+
+    /// A width alone draws in bold, whose digits run about 7 pt each at 10 pt: "64" measures
+    /// 13.9 pt, so its pill needs at least 28 pt with the 14 pt of padding.
+    func testABoldWidthGetsRoomForItsDigits() {
+        XCTAssertGreaterThanOrEqual(BoardLabels.width(of: "64"), 28)
+        XCTAssertGreaterThanOrEqual(BoardLabels.width(of: "128"), 33)
+    }
 }
