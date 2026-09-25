@@ -33,7 +33,8 @@ struct PanelView: View {
                                         .frame(width: 1)
                                     RightPane(model: model, showsBack: false)
                                 }
-                            } else if model.selectedId != nil || model.activeScreen != nil || model.boardProject != nil {
+                            } else if model.selectedId != nil || model.activeScreen != nil || model.boardProject != nil
+                                || model.appTab != nil {
                                 RightPane(model: model, showsBack: true)
                                     .transition(.opacity)
                             } else {
@@ -66,11 +67,12 @@ struct PanelView: View {
 
 /// One Equatable discriminator for the pane-swap animation.
 private enum Pane: Equatable {
-    case terminal, board(String), screen(PanelScreen), launcher
+    case terminal, board(String), app(String), screen(PanelScreen), launcher
 
     @MainActor init(_ model: AppModel) {
         if let screen = model.activeScreen { self = .screen(screen) }
         else if let board = model.boardProject { self = .board(board) }
+        else if let app = model.appTab { self = .app(app.id) }
         else if model.selectedId != nil { self = .terminal }
         else { self = .launcher }
     }
@@ -106,6 +108,9 @@ private struct RightPane: View {
                     if let board = model.boardProject {
                         BoardPane(model: model, path: board)
                             .id(board)
+                    } else if let app = model.appTab {
+                        AppTabPane(model: model, app: app)
+                            .id(app.id)
                     } else {
                         TerminalPane(model: model, onBack: nil)
                     }
@@ -569,7 +574,7 @@ struct ErrorBar: View {
 /// The one prominent action: a flat accent capsule, like any prominent button on the
 /// system. The colour is the emphasis — a gradient, an inner highlight and a glow on top
 /// of it are three more ways to say the same thing.
-private struct PrimaryButtonStyle: ButtonStyle {
+struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 13, weight: .semibold))

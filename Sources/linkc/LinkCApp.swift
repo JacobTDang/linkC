@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WebKit
 import LinkCKit
 
 @main
@@ -627,9 +628,24 @@ final class AppModel {
     /// The project whose Board is showing, or nil when a terminal — or nothing — is.
     private(set) var boardProject: String?
 
+    /// The apps each project can open: its own `.linkc/app.json`, then the ones registered in
+    /// Settings. Reads the manifest fresh (on a short TTL) each time it's asked, so an edit to
+    /// app.json takes effect without a restart.
+    let appCatalog = LinkCAppCatalog()
+    /// The app tab showing, or nil. Written only by `showApp` and `clearAppTab` below, and by
+    /// `showBoard`/`showSelection` — never by a view.
+    private(set) var appTab: AppTabRef?
+    /// Each open app tab's live process, keyed by the tab id — created and torn down by
+    /// `AppModel+Apps.swift`.
+    var appProcesses: [String: LinkCAppProcess] = [:]
+    /// Cached `WKWebView`s for running apps, keyed by tab id. Never observed: written only by
+    /// `AppWebView.makeNSView`, which is `@ObservationIgnored` for exactly that reason.
+    @ObservationIgnored var appWebViews: [String: WKWebView] = [:]
+
     /// The project the tab strip belongs to: the Board's, or the open session's or terminal's folder.
     var currentProject: String? {
         if let boardProject { return boardProject }
+        if let appTab { return appTab.project }
         guard let id = selectedId else { return nil }
         if let session = sessions.first(where: { $0.id == id }) { return ProjectTabs.standardized(session.cwd) }
         if let shell = shellRows.first(where: { $0.id == id }) {
@@ -650,7 +666,7 @@ final class AppModel {
         }
         return ProjectTabs.tabs(
             project: project, sessions: sessions, shells: shellRows, filed: sidebarState.terminalProjects, titles: sessionTitles,
-            activities: activities)
+            activities: activities, openApps: sidebarState.openApps(in: project))
     }
 
     /// Whether the current project has a session mid-turn — computed directly, without building
@@ -662,21 +678,39 @@ final class AppModel {
         return sessions.contains { $0.state == .working && ProjectTabs.standardized($0.cwd) == project }
     }
 
-    /// The tab showing: the project's Board, or the selected session or terminal.
+    /// The tab showing: the project's Board, an app tab, or the selected session or terminal.
     var selectedTabID: String? {
         if let boardProject { return ProjectTabs.boardID(boardProject) }
+        if let appTab { return appTab.id }
         return selectedId
     }
 
     func showBoard(_ path: String) {
         boardProject = ProjectTabs.standardized(path)
+        appTab = nil
         activeScreen = nil
     }
 
-    /// A session or terminal was just selected — show it. Clears both what could cover it: an
-    /// open screen, and another project's Board (else the new one opens hidden underneath it).
+    /// Shows an app tab: picked from the strip's + menu, or a restored tab the user selected.
+    /// Never starts it — starting only ever happens from a menu pick or a Start/Retry button.
+    func showApp(_ ref: AppTabRef) {
+        appTab = ref
+        boardProject = nil
+        activeScreen = nil
+    }
+
+    /// `closeApp` (AppModel+Apps.swift) can't write `appTab` itself — its setter is private to
+    /// this file — so it calls here to clear it when the tab it just closed was the one showing.
+    func clearAppTab(matching id: String) {
+        if appTab?.id == id { appTab = nil }
+    }
+
+    /// A session or terminal was just selected — show it. Clears everything that could cover it:
+    /// an open screen, another project's Board, or an open app tab (else the new one opens
+    /// hidden underneath it).
     private func showSelection() {
         boardProject = nil
+        appTab = nil
         activeScreen = nil
     }
 
@@ -687,7 +721,11 @@ final class AppModel {
         case .agent, .terminal:
             focus(tab.id)
         case .app:
-            return
+            guard let project = currentProject,
+                  let open = sidebarState.openApps(in: project)
+                      .first(where: { ProjectTabs.appTabID(project: project, folder: $0.folder) == tab.id })
+            else { return }
+            showApp(AppTabRef(id: tab.id, project: project, folder: open.folder, name: open.name))
         }
     }
 
@@ -701,7 +739,7 @@ final class AppModel {
         case .board: return
         case .agent: stop(tab.id)
         case .terminal: stopShell(tab.id)
-        case .app: return
+        case .app: closeApp(tab)
         }
         if let project, currentProject != project { showBoard(project) }
     }
@@ -916,6 +954,8 @@ final class AppModel {
     }
 
     func shutdown() {
+        for process in appProcesses.values { process.stopAndWait() }
+        appProcesses = [:]
         healthTimer?.invalidate()
         healthTimer = nil
         shellSweepTask?.cancel()

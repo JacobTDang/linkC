@@ -308,6 +308,7 @@ private struct ProjectRow: View {
                         }
                         Divider()
                         Button("New terminal") { model.newTerminal(in: project.path) }
+                        AppsMenuSection(model: model, project: project.path)
                     } label: {
                         RowGlyph(systemName: "plus")
                     }

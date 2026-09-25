@@ -62,6 +62,9 @@ struct ProjectTabStrip: View {
                     Button("New terminal") {
                         if let project = model.currentProject { model.newTerminal(in: project) }
                     }
+                    if let project = model.currentProject {
+                        AppsMenuSection(model: model, project: project)
+                    }
                 } label: {
                     RowGlyph(systemName: "plus")
                 }
@@ -112,6 +115,27 @@ struct ProjectTabStrip: View {
         case .next, .previous:
             if let tab = ProjectTabs.cycle(from: model.selectedTabID, in: tabs, backwards: command == .previous) {
                 model.select(tab)
+            }
+        }
+    }
+}
+
+/// The Apps section shared by the strip's + menu and the sidebar's project + menu: one item per
+/// app the project can open, each starting it; a manifest that doesn't validate shows its reason
+/// disabled, rather than hiding the app. Nothing shows when the project has no apps.
+@MainActor @ViewBuilder
+func AppsMenuSection(model: AppModel, project: String) -> some View {
+    let apps = model.apps(in: project)
+    if !apps.isEmpty {
+        Divider()
+        Section("Apps") {
+            ForEach(apps) { entry in
+                switch entry.manifest {
+                case .success:
+                    Button(entry.name) { model.openApp(entry, in: project) }
+                case .failure(let error):
+                    Button("\(entry.name) — \(error.localizedDescription)") {}.disabled(true)
+                }
             }
         }
     }
