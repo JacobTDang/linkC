@@ -136,7 +136,7 @@ public struct LiveProcessRunner: ProcessRunner {
     ) throws -> ProcessResult {
         let stdout = Pipe()
         let stderr = Pipe()
-        let pid = try spawn(
+        let pid = try spawnGroupLeader(
             executable: executable, args: args, cwd: cwd,
             stdout: stdout.fileHandleForWriting.fileDescriptor,
             stderr: stderr.fileHandleForWriting.fileDescriptor
@@ -196,9 +196,12 @@ public struct LiveProcessRunner: ProcessRunner {
     }
 
     /// Starts `executable` as the leader of a new process group (pgid = its pid). Like
-    /// `Process`, the child inherits stdin and the environment, starts with default signal
-    /// handling and an empty signal mask, and receives no other open descriptors.
-    private static func spawn(executable: String, args: [String], cwd: URL?, stdout: Int32, stderr: Int32) throws -> pid_t {
+    /// `Process`, the child inherits stdin and the environment (plus `environment`, when given),
+    /// starts with default signal handling and an empty signal mask, and receives no other open
+    /// descriptors.
+    static func spawnGroupLeader(
+        executable: String, args: [String], cwd: URL?, environment: [String: String]? = nil, stdout: Int32, stderr: Int32
+    ) throws -> pid_t {
         func require(_ result: Int32, _ call: String) throws {
             guard result == 0 else {
                 throw LinkCError.process("\(call) failed for \(executable): \(String(cString: strerror(result)))")
@@ -231,7 +234,16 @@ public struct LiveProcessRunner: ProcessRunner {
         let argv = ([executable] + args).map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) } }
         var pid: pid_t = 0
-        let started = posix_spawn(&pid, executable, &actions, &attributes, argv, environ)
+        let started: Int32
+        if let environment {
+            var merged = ProcessInfo.processInfo.environment
+            merged.merge(environment) { _, added in added }
+            let envp = merged.map { strdup("\($0.key)=\($0.value)") } + [nil]
+            defer { envp.forEach { free($0) } }
+            started = posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
+        } else {
+            started = posix_spawn(&pid, executable, &actions, &attributes, argv, environ)
+        }
         guard started == 0 else {
             let place = cwd.map { " in \($0.path)" } ?? ""
             throw LinkCError.process("could not start \(executable)\(place): \(String(cString: strerror(started)))")
@@ -261,7 +273,7 @@ public struct LiveProcessRunner: ProcessRunner {
         signalGroup(group, SIGKILL, running: executable, in: cwd)
     }
 
-    private static func signalGroup(_ group: pid_t, _ signal: Int32, running executable: String, in cwd: URL?) {
+    static func signalGroup(_ group: pid_t, _ signal: Int32, running executable: String, in cwd: URL?) {
         guard kill(-group, signal) == -1 else { return }
         let error = errno
         guard error != ESRCH else { return } // the group has already exited
