@@ -55,6 +55,12 @@ struct ComponentBox: View {
     private static let width = CGFloat(BoardGeometry.componentSize.x)
     private static let height = CGFloat(BoardGeometry.componentSize.y)
 
+    /// The box's actual drawn width and height: `BoardGeometry.size(of:)` for a table, which grows
+    /// to fit its columns; `Self.width`/`Self.height` (the fixed 176×84) for every other kind,
+    /// unchanged. A ghost table uses this too — sized like a real one, drawn like a ghost.
+    private var boxWidth: CGFloat { component.kind == .table ? CGFloat(BoardGeometry.size(of: component).x) : Self.width }
+    private var boxHeight: CGFloat { component.kind == .table ? CGFloat(BoardGeometry.size(of: component).y) : Self.height }
+
     /// Kinds whose name is set inside the shape, centred, with a second centred line — the
     /// mockup draws these with `anchor="middle"` on both lines, unlike every left-aligned card.
     private static let centeredLabelKinds: Set<ComponentKind> = [.router, .register, .control]
@@ -78,10 +84,10 @@ struct ComponentBox: View {
             }
             content
                 .padding(.leading, isGhost ? 14 : inset.leading)
-                .frame(width: Self.width, height: Self.height, alignment: .leading)
+                .frame(width: boxWidth, height: boxHeight, alignment: .leading)
                 .offset(y: isGhost ? 0 : inset.verticalOffset)
         }
-        .frame(width: Self.width, height: Self.height)
+        .frame(width: boxWidth, height: boxHeight)
         .overlay(alignment: .topTrailing) {
             let dotInset = BoardShape.statusDotInset(for: component.kind)
             HStack(spacing: 4) {
@@ -123,6 +129,13 @@ struct ComponentBox: View {
             BoardShape.cylinderBody.stroke(strokeColor, style: strokeStyle)
             BoardShape.cylinderRim.fill(fillColor(Theme.boardCylinderRim))
             BoardShape.cylinderRim.stroke(strokeColor, style: strokeStyle)
+        case .table:
+            // A plain rounded rect, sized to `boxWidth`/`boxHeight` by SwiftUI's own `Shape`
+            // sizing (unlike `BoardShape.path(for:)`, whose paths are plotted in the fixed
+            // 176×84 space and can't stretch) — never `BoardShape.path(for: .table)`, which this
+            // case exists specifically so nothing ever calls.
+            RoundedRectangle(cornerRadius: 8).fill(fillColor(Theme.boardBox))
+            RoundedRectangle(cornerRadius: 8).stroke(strokeColor, style: strokeStyle)
         default:
             BoardShape.path(for: component.kind).fill(fillColor(BoardShape.fillColor(for: component.kind)))
             BoardShape.path(for: component.kind).stroke(strokeColor, style: strokeStyle)
@@ -147,6 +160,8 @@ struct ComponentBox: View {
                 embeddedNameContent
             case _ where Self.noIconKinds.contains(component.kind):
                 textStack
+            case .table:
+                tableRowsContent
             default:
                 standardContent
             }
@@ -160,6 +175,57 @@ struct ComponentBox: View {
             icon
             nameAndSubLine(nameColor: Theme.textPrimary)
         }
+    }
+
+    /// A table's own content: a header with its name, then one row per column, at exactly the
+    /// rows `BoardGeometry.rowCenterY(ofColumnAt:in:)` implies for this same box — a 36 pt header,
+    /// then 22 pt per row, hairline separators between them. Never reached for a ghost table (see
+    /// `content`'s `if isGhost` branch above, unchanged).
+    private var tableRowsContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(component.name)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .frame(width: boxWidth, height: 36, alignment: .leading)
+                .overlay(alignment: .bottom) { Rectangle().fill(Theme.boardBoxStroke).frame(height: 1) }
+            ForEach(Array(component.columns.enumerated()), id: \.offset) { index, column in
+                tableRow(column)
+                    .overlay(alignment: .bottom) {
+                        if index < component.columns.count - 1 {
+                            Rectangle().fill(Theme.boardBoxStroke).frame(height: 1)
+                        }
+                    }
+            }
+        }
+    }
+
+    /// One column's row: a key mark (a filled key for a primary key, a link for a foreign key, the
+    /// same glyph at zero opacity — "a blank of the same width" — for neither), the name, and the
+    /// type right-aligned and dimmed. A nullable column draws its whole row at 60% opacity; a
+    /// planned column's name draws in `Theme.textTertiary` instead of `Theme.textPrimary` — the
+    /// same faint colour a planned part's own outline already switches to (`strokeColor`, above).
+    private func tableRow(_ column: BoardColumn) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: column.pk ? "key.fill" : "link")
+                .font(.system(size: 9))
+                .foregroundStyle(Theme.textTertiary)
+                .frame(width: 11, alignment: .center)
+                .opacity(column.pk || column.references != nil ? 1 : 0)
+            Text(column.name)
+                .font(.system(size: 11.5))
+                .foregroundStyle(column.planned ? Theme.textTertiary : Theme.textPrimary)
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            Text(column.type)
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.textTertiary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(width: boxWidth, height: 22, alignment: .leading)
+        .opacity(column.nullable ? 0.6 : 1)
     }
 
     /// The same name-and-sub-line column, without a leading icon — a vector store's dot grid and
@@ -310,6 +376,7 @@ struct ComponentBox: View {
         case .ram: return (36, -2)
         case _ where Self.centeredLabelKinds.contains(component.kind): return (0, 0)
         case _ where Self.embeddedNameKinds.contains(component.kind): return (0, 0)
+        case .table: return (0, 0)
         default: return (14, 0)
         }
     }
@@ -468,6 +535,7 @@ enum BoardShape {
     static func insets(for kind: ComponentKind) -> (left: CGFloat, right: CGFloat, top: CGFloat, bottom: CGFloat) {
         switch kind {
         case .database, .cache, .vectorStore, .memory: return (0, 0, 0, 0)
+        case .table: return (0, 0, 0, 0)
         case .queue: return (0, 0, 12, 12)
         case .storage: return (8, 8, 8, 8)
         case .host: return (0, 0, 0, 0)
