@@ -82,4 +82,32 @@ public struct BoardColumn: Equatable, Sendable {
             }
         }
     }
+
+    /// The first "column_N" name (N starting at 1) not already used by `existing`, ignoring case —
+    /// what the app's "+ Add column" names a freshly appended column.
+    public static func nextColumnName(avoiding existing: [BoardColumn]) -> String {
+        let used = Set(existing.map { $0.name.lowercased() })
+        var number = 1
+        while used.contains("column_\(number)") {
+            number += 1
+        }
+        return "column_\(number)"
+    }
+
+    /// Every other table's columns in `map`, as "table.column", sorted by (table, column) both
+    /// lowercased — what the app's references `Menu` lists after "None".
+    public static func referenceOptions(in map: BoardMap, excludingTable table: String) -> [String] {
+        map.components
+            .filter { $0.kind == .table && $0.name.lowercased() != table.lowercased() }
+            .flatMap { component in
+                component.columns.map {
+                    BoardColumnReference(table: component.name, column: $0.name)
+                }
+            }
+            .sorted {
+                ($0.table.lowercased(), $0.column.lowercased()) <
+                    ($1.table.lowercased(), $1.column.lowercased())
+            }
+            .map(\.text)
+    }
 }

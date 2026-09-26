@@ -1,10 +1,30 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import LinkCKit
+
+/// The Schema menu's last outcome, shown on the Board's banner row (`BoardCanvas.overlays`) until
+/// the next Schema action replaces or clears it.
+struct BoardSchemaOutcome: Equatable {
+    enum Tone { case info, success, error }
+    let text: String
+    let tone: Tone
+
+    var color: Color {
+        switch tone {
+        case .info: return Theme.textTertiary
+        case .success: return Theme.statusRunning
+        case .error: return Theme.contextWarn
+        }
+    }
+}
 
 /// The floating toolbar at the bottom of the canvas.
 struct BoardToolbar: View {
     @Bindable var board: BoardModel
     @Binding var lastKind: ComponentKind
+    let projectPath: String
+    @Binding var schemaOutcome: BoardSchemaOutcome?
 
     var body: some View {
         HStack(spacing: 2) {
@@ -36,6 +56,8 @@ struct BoardToolbar: View {
             toolButton(.text, glyph: "textformat", title: "Text", key: "T")
             Rectangle().fill(Theme.textTertiary.opacity(0.25)).frame(width: 1, height: 16).padding(.horizontal, 2)
             tidyUpButton
+            Rectangle().fill(Theme.textTertiary.opacity(0.25)).frame(width: 1, height: 16).padding(.horizontal, 2)
+            schemaMenu
         }
         .padding(5)
         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.boardBox.opacity(0.96)))
@@ -64,6 +86,96 @@ struct BoardToolbar: View {
         .buttonStyle(.plain)
         .disabled(board.isLocked || board.isEmpty)
         .help("Tidy up — rearrange the whole map by flow")
+    }
+
+    private var hasTables: Bool { board.map.components.contains { $0.kind == .table } }
+
+    /// Import SQL file… and Import from Supabase are always enabled — a board with no tables yet
+    /// is exactly what an import is for. Copy SQL and Export SQL… need at least one `table` part —
+    /// same membership `exportSchemaSQL()`/`SQLSchema.tables(in:)` already export from, ghosts
+    /// included, so this never disagrees with what a Copy or Export would actually produce.
+    private var schemaMenu: some View {
+        Menu("Schema") {
+            Button("Import SQL file…", action: importSQLFile)
+            Button("Import from Supabase", action: importFromSupabase)
+            Divider()
+            Button("Copy SQL", action: copySQL).disabled(!hasTables)
+            Button("Export SQL…", action: exportSQL).disabled(!hasTables)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .font(.system(size: 11))
+        .foregroundStyle(Theme.textSecondary)
+    }
+
+    private func importSQLFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        if let sqlType = UTType(filenameExtension: "sql") { panel.allowedContentTypes = [sqlType] }
+        panel.prompt = "Import"
+        panel.message = "Choose a .sql file"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let sql = try String(contentsOf: url, encoding: .utf8)
+            let parsed = try SQLSchema.parse(sql)
+            let summary = try board.importSchema(parsed)
+            schemaOutcome = BoardSchemaOutcome(text: importedText(summary, parsed), tone: .success)
+        } catch {
+            schemaOutcome = BoardSchemaOutcome(text: "Couldn't import: \(boardEditErrorText(error))", tone: .error)
+        }
+    }
+
+    private func importFromSupabase() {
+        schemaOutcome = BoardSchemaOutcome(text: "Reading the Supabase schema…", tone: .info)
+        Task {
+            do {
+                let sql = try await SupabaseSchemaDump.run(projectPath: projectPath, runner: LiveProcessRunner())
+                let parsed = try SQLSchema.parse(sql)
+                let summary = try board.importSchema(parsed)
+                schemaOutcome = BoardSchemaOutcome(text: importedText(summary, parsed), tone: .success)
+            } catch {
+                schemaOutcome = BoardSchemaOutcome(text: "Couldn't import: \(boardEditErrorText(error))", tone: .error)
+            }
+        }
+    }
+
+    /// "Imported N tables: A added, U updated, P marked planned. S statements skipped, M clauses
+    /// not modelled." — N is the total tables the import actually touched (added + updated +
+    /// marked planned), not `parsed.tables.count`, so it always equals the sum the sentence itself
+    /// then breaks down.
+    private func importedText(_ summary: BoardSchemaImport.Summary, _ parsed: SQLSchema.Parsed) -> String {
+        let total = summary.added + summary.updated + summary.markedPlanned
+        return "Imported \(total) tables: \(summary.added) added, \(summary.updated) updated, "
+            + "\(summary.markedPlanned) marked planned. \(parsed.skipped.count) statements skipped, "
+            + "\(parsed.notModelled.count) clauses not modelled."
+    }
+
+    /// Silent on success, like every other copy button in this app (`MCPServersScreen`'s target
+    /// copy) — only a failure earns a banner. Clears any stale outcome still showing from an
+    /// earlier action, so a leftover error doesn't linger next to a copy that just worked.
+    private func copySQL() {
+        let sql = board.exportSchemaSQL()
+        guard NSPasteboard.general.setString(sql, forType: .string) else {
+            schemaOutcome = BoardSchemaOutcome(text: "Couldn't export: the system clipboard refused the text", tone: .error)
+            return
+        }
+        schemaOutcome = nil
+    }
+
+    /// Silent on success, same as `copySQL()`; a cancelled panel is not a failure and shows nothing.
+    private func exportSQL() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "schema.sql"
+        if let sqlType = UTType(filenameExtension: "sql") { panel.allowedContentTypes = [sqlType] }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try board.exportSchemaSQL().write(to: url, atomically: true, encoding: .utf8)
+            schemaOutcome = nil
+        } catch {
+            schemaOutcome = BoardSchemaOutcome(text: "Couldn't export: \(error.localizedDescription)", tone: .error)
+        }
     }
 
     private func toolButton(_ tool: BoardModel.Tool, glyph: String, title: String, key: String) -> some View {

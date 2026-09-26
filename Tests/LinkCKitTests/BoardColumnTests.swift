@@ -95,4 +95,37 @@ final class BoardColumnTests: XCTestCase {
             }
         }
     }
+
+    func testNextColumnNameStartsAtOne() {
+        XCTAssertEqual(BoardColumn.nextColumnName(avoiding: []), "column_1")
+    }
+
+    func testNextColumnNameSkipsUsedNamesIgnoringCase() {
+        let existing = [
+            BoardColumn(name: "column_1", type: "text"),
+            BoardColumn(name: "COLUMN_2", type: "text"),
+            BoardColumn(name: "id", type: "uuid"),
+        ]
+        XCTAssertEqual(BoardColumn.nextColumnName(avoiding: existing), "column_3")
+    }
+
+    func testReferenceOptionsListsOtherTablesColumnsSortedByTableThenColumn() {
+        var map = BoardMap()
+        map.components = [
+            BoardComponent(name: "Orders", kind: .table, columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "total", type: "numeric"),
+            ]),
+            BoardComponent(name: "accounts", kind: .table, columns: [BoardColumn(name: "id", type: "uuid", pk: true)]),
+            BoardComponent(name: "svc", kind: .service),
+        ]
+        XCTAssertEqual(BoardColumn.referenceOptions(in: map, excludingTable: "Orders"), ["accounts.id"])
+        XCTAssertEqual(BoardColumn.referenceOptions(in: map, excludingTable: "accounts"), ["Orders.id", "Orders.total"])
+    }
+
+    func testReferenceOptionsExcludesTheNamedTableCaseInsensitively() {
+        var map = BoardMap()
+        map.components = [BoardComponent(name: "Orders", kind: .table, columns: [BoardColumn(name: "id", type: "uuid", pk: true)])]
+        XCTAssertEqual(BoardColumn.referenceOptions(in: map, excludingTable: "orders"), [])
+    }
 }

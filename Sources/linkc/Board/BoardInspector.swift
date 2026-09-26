@@ -1,6 +1,17 @@
 import SwiftUI
 import LinkCKit
 
+/// `error`'s own useful message, including refusals that do not conform to `LocalizedError`.
+func boardEditErrorText(_ error: Error) -> String {
+    if let refusal = error as? BoardEditRefusal {
+        return refusal.reason
+    }
+    if let linkCError = error as? LinkCError {
+        return linkCError.localizedDescription
+    }
+    return error.localizedDescription
+}
+
 /// What a hover card or the docked inspector is showing: a part or an arrow, read once from the
 /// map through `BoardInspection` — never the map itself, so this view never reaches back into
 /// model state.
@@ -161,6 +172,8 @@ struct BoardDockedInspector: View {
     let edit: () -> Void
     var goDeeper: (() -> Void)? = nil
     let close: () -> Void
+    /// The pinned table's editable columns, or nil for every other inspected item.
+    var columns: BoardColumnsGridInput? = nil
     static let width: CGFloat = 260
 
     var body: some View {
@@ -168,9 +181,14 @@ struct BoardDockedInspector: View {
             header
             Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
             ScrollView {
-                BoardInspectionBody(content: content, parentTitle: parentTitle)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 12) {
+                    BoardInspectionBody(content: content, parentTitle: parentTitle)
+                    if let columns {
+                        BoardColumnsGrid(input: columns).id(columns.tableName)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .frame(width: Self.width)
@@ -224,5 +242,243 @@ struct BoardDockedInspector: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+}
+
+/// The table data and commit closure handed from the docked inspector to its columns grid.
+struct BoardColumnsGridInput {
+    let tableName: String
+    let columns: [BoardColumn]
+    let referenceOptions: [String]
+    let commit: ([BoardColumn]) throws -> Void
+}
+
+/// A pinned table's editable columns, with every accepted change committed as one board edit.
+struct BoardColumnsGrid: View {
+    let input: BoardColumnsGridInput
+
+    @State private var rows: [BoardColumn]
+    @State private var refusal: String?
+
+    init(input: BoardColumnsGridInput) {
+        self.input = input
+        _rows = State(wrappedValue: input.columns)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("COLUMNS")
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Theme.textTertiary)
+            ForEach(rows.indices, id: \.self) { index in
+                BoardColumnRow(
+                    column: rows[index],
+                    referenceOptions: input.referenceOptions,
+                    isFirst: index == 0,
+                    isLast: index == rows.count - 1,
+                    commit: { commitRow(at: index, to: $0) },
+                    moveUp: { move(index, by: -1) },
+                    moveDown: { move(index, by: 1) },
+                    delete: { removeRow(at: index) })
+            }
+            Button("+ Add column", action: addRow)
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.accent)
+            if let refusal {
+                Text(refusal)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.contextWarn)
+            }
+        }
+    }
+
+    private func commitRow(at index: Int, to column: BoardColumn) -> Bool {
+        var proposed = rows
+        proposed[index] = column
+        return attemptCommit(proposed)
+    }
+
+    private func move(_ index: Int, by delta: Int) {
+        var proposed = rows
+        proposed.swapAt(index, index + delta)
+        attemptCommit(proposed)
+    }
+
+    private func removeRow(at index: Int) {
+        var proposed = rows
+        proposed.remove(at: index)
+        attemptCommit(proposed)
+    }
+
+    private func addRow() {
+        let name = BoardColumn.nextColumnName(avoiding: rows)
+        attemptCommit(rows + [BoardColumn(name: name, type: "text")])
+    }
+
+    @discardableResult
+    private func attemptCommit(_ proposed: [BoardColumn]) -> Bool {
+        do {
+            try input.commit(proposed)
+            rows = proposed
+            refusal = nil
+            return true
+        } catch {
+            refusal = boardEditErrorText(error)
+            return false
+        }
+    }
+}
+
+/// One editable table-column row, including constraints, references, ordering, and deletion.
+private struct BoardColumnRow: View {
+    let column: BoardColumn
+    let referenceOptions: [String]
+    let isFirst: Bool
+    let isLast: Bool
+    let commit: (BoardColumn) -> Bool
+    let moveUp: () -> Void
+    let moveDown: () -> Void
+    let delete: () -> Void
+
+    private static let commonTypes = [
+        "uuid", "text", "bigint", "integer", "boolean", "timestamptz", "jsonb", "numeric", "date", "varchar(255)",
+    ]
+
+    @State private var draft: BoardColumn
+
+    init(
+        column: BoardColumn,
+        referenceOptions: [String],
+        isFirst: Bool,
+        isLast: Bool,
+        commit: @escaping (BoardColumn) -> Bool,
+        moveUp: @escaping () -> Void,
+        moveDown: @escaping () -> Void,
+        delete: @escaping () -> Void
+    ) {
+        self.column = column
+        self.referenceOptions = referenceOptions
+        self.isFirst = isFirst
+        self.isLast = isLast
+        self.commit = commit
+        self.moveUp = moveUp
+        self.moveDown = moveDown
+        self.delete = delete
+        _draft = State(wrappedValue: column)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                TextField("name", text: $draft.name).onSubmit(submit)
+                typeField
+                reorderAndDelete
+            }
+            HStack(spacing: 6) {
+                toggle("PK", isOn: draft.pk, set: setPK)
+                toggle("NN", isOn: !draft.nullable, set: setNotNull).disabled(draft.pk)
+                toggle("UQ", isOn: draft.unique) {
+                    draft.unique = $0
+                    submit()
+                }
+                referencesMenu
+            }
+            TextField(
+                "default",
+                text: Binding(
+                    get: { draft.defaultValue ?? "" },
+                    set: { draft.defaultValue = $0.isEmpty ? nil : $0 }))
+                .onSubmit(submit)
+        }
+        .font(.system(size: 11))
+        .textFieldStyle(.roundedBorder)
+        .padding(.vertical, 4)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
+        }
+    }
+
+    private var typeField: some View {
+        HStack(spacing: 2) {
+            TextField("type", text: $draft.type).onSubmit(submit)
+            Menu {
+                ForEach(Self.commonTypes, id: \.self) { type in
+                    Button(type) {
+                        draft.type = type
+                        submit()
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down").font(.system(size: 8))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+    }
+
+    private var referencesMenu: some View {
+        Menu {
+            Button("None") {
+                draft.references = nil
+                submit()
+            }
+            ForEach(referenceOptions, id: \.self) { option in
+                Button(option) {
+                    draft.references = BoardColumnReference(parsing: option)
+                    submit()
+                }
+            }
+        } label: {
+            Text(draft.references?.text ?? "None")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    private var reorderAndDelete: some View {
+        HStack(spacing: 2) {
+            Button(action: moveUp) { Image(systemName: "chevron.up") }.disabled(isFirst)
+            Button(action: moveDown) { Image(systemName: "chevron.down") }.disabled(isLast)
+            Button(action: delete) { Image(systemName: "xmark") }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 9))
+        .foregroundStyle(Theme.textTertiary)
+    }
+
+    private func toggle(_ title: String, isOn: Bool, set: @escaping (Bool) -> Void) -> some View {
+        Button {
+            set(!isOn)
+        } label: {
+            Text(title)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(isOn ? Theme.accent : Theme.textTertiary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(isOn ? Theme.accent.opacity(0.16) : .clear))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func setPK(_ value: Bool) {
+        draft.pk = value
+        if value {
+            draft.nullable = false
+        }
+        submit()
+    }
+
+    private func setNotNull(_ value: Bool) {
+        draft.nullable = !value
+        submit()
+    }
+
+    private func submit() {
+        if !commit(draft) {
+            draft = column
+        }
     }
 }
