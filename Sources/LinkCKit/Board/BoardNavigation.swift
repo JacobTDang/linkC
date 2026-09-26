@@ -6,7 +6,7 @@ public struct BoardAddress: Hashable, Sendable {
     public let slug: String?
 
     public init(projectPath: String, slug: String?) {
-        self.projectPath = (projectPath as NSString).standardizingPath
+        self.projectPath = ProjectPath.canonical(projectPath)
         self.slug = slug
     }
 
@@ -92,7 +92,7 @@ public enum BoardNavigation {
     /// - then, when any exist, an "Unlinked" header row (address nil, indent 0) followed by
     ///   each unlinked entry, titled by its slug and indented by 1.
     public static func menuRows(for catalog: BoardCatalog, projectPath: String) -> [MenuRow] {
-        let standardizedPath = (projectPath as NSString).standardizingPath
+        let standardizedPath = ProjectPath.canonical(projectPath)
         var rows: [MenuRow] = []
 
         let linkedEntries = catalog.entries.filter(\.linked)

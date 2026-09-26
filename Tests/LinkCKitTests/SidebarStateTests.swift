@@ -194,4 +194,136 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(state.projectOrder, ["/p/a"])
         XCTAssertEqual(state.openApps(in: "/p/a"), [])
     }
+
+    func testSavedDataKeyedByTwoSpellingsLoadsAsOneKeyWithFirstOccurrencesOrderAndOverrides() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("linkc-sidebar-canonical-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let realFolder = tempDir.appendingPathComponent("Proj")
+        try FileManager.default.createDirectory(at: realFolder, withIntermediateDirectories: true)
+
+        let symlink = tempDir.appendingPathComponent("link_to_proj")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: realFolder)
+
+        let path1 = symlink.path
+        let path2 = realFolder.path
+        let canonical = ProjectPath.canonical(realFolder.path)
+
+        let json = """
+        {
+            "projectOrder": ["\(path1)", "\(path2)"],
+            "expandOverrides": {"\(path1)": false, "\(path2)": true},
+            "openSections": [],
+            "boardViewports": {
+                "\(path1)": {"originX": 10, "originY": 20, "zoom": 1.0, "lens": "all"},
+                "\(path2)": {"originX": 30, "originY": 40, "zoom": 2.0, "lens": "all"}
+            }
+        }
+        """
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        let state = SidebarState(defaults: defaults)
+
+        XCTAssertEqual(state.projectOrder, [canonical])
+        XCTAssertEqual(state.expandOverrides, [canonical: false])
+        XCTAssertEqual(state.boardViewport(for: path1)?.originX, 10)
+        XCTAssertEqual(state.boardViewport(for: path2)?.originX, 10)
+    }
+
+    func testMergedSidebarStateIsSavedBackToUserDefaults() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-merge-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let realFolder = tempDir.appendingPathComponent("Proj")
+        try FileManager.default.createDirectory(at: realFolder, withIntermediateDirectories: true)
+
+        let symlink = tempDir.appendingPathComponent("link_to_proj")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: realFolder)
+
+        let path1 = symlink.path
+        let path2 = realFolder.path
+
+        let json = """
+        {
+            "projectOrder": ["\(path1)", "\(path2)"],
+            "expandOverrides": {"\(path1)": false, "\(path2)": true},
+            "openSections": []
+        }
+        """
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        _ = SidebarState(defaults: defaults)
+
+        guard let savedData = defaults.data(forKey: SidebarState.key),
+              let jsonDict = try JSONSerialization.jsonObject(with: savedData) as? [String: Any] else {
+            XCTFail("No saved data found in defaults")
+            return
+        }
+
+        let overrides = jsonDict["expandOverrides"] as? [String: Any]
+        XCTAssertEqual(overrides?.count, 1)
+        let order = jsonDict["projectOrder"] as? [String]
+        XCTAssertEqual(order?.count, 1)
+    }
+
+    func testDeterministicMergeDetailViewportsAndOpenApps() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-det-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let realFolder = tempDir.appendingPathComponent("Proj")
+        try FileManager.default.createDirectory(at: realFolder, withIntermediateDirectories: true)
+
+        let linkA = tempDir.appendingPathComponent("a_link")
+        let linkB = tempDir.appendingPathComponent("b_link")
+        try FileManager.default.createSymbolicLink(at: linkA, withDestinationURL: realFolder)
+        try FileManager.default.createSymbolicLink(at: linkB, withDestinationURL: realFolder)
+
+        let canonical = ProjectPath.canonical(realFolder.path)
+        let pathA = linkA.path
+        let pathB = linkB.path
+        XCTAssertTrue(pathA < pathB)
+
+        // Case 1: When one raw key equals canonical, its value survives
+        let json1 = """
+        {
+            "projectOrder": [],
+            "expandOverrides": {},
+            "openSections": [],
+            "boardViewports": {
+                "\(pathA)#engine": {"originX": 100, "originY": 0, "zoom": 1.0, "lens": "all"},
+                "\(canonical)#engine": {"originX": 200, "originY": 0, "zoom": 1.0, "lens": "all"}
+            },
+            "openApps": {
+                "\(pathA)": [{"folder": "/sub/a", "name": "A"}],
+                "\(canonical)": [{"folder": "/sub/canon", "name": "Canon"}]
+            }
+        }
+        """
+        defaults.set(Data(json1.utf8), forKey: SidebarState.key)
+        let state1 = SidebarState(defaults: defaults)
+        XCTAssertEqual(state1.boardViewport(for: "\(canonical)#engine")?.originX, 200)
+        XCTAssertEqual(state1.openApps(in: canonical).first?.name, "Canon")
+
+        // Case 2: When neither raw key equals canonical, the one whose raw key sorts first survives
+        let json2 = """
+        {
+            "projectOrder": [],
+            "expandOverrides": {},
+            "openSections": [],
+            "boardViewports": {
+                "\(pathB)#engine": {"originX": 300, "originY": 0, "zoom": 1.0, "lens": "all"},
+                "\(pathA)#engine": {"originX": 400, "originY": 0, "zoom": 1.0, "lens": "all"}
+            },
+            "openApps": {
+                "\(pathB)": [{"folder": "/sub/b", "name": "B"}],
+                "\(pathA)": [{"folder": "/sub/a", "name": "A"}]
+            }
+        }
+        """
+        defaults.set(Data(json2.utf8), forKey: SidebarState.key)
+        let state2 = SidebarState(defaults: defaults)
+        XCTAssertEqual(state2.boardViewport(for: "\(canonical)#engine")?.originX, 400)
+        XCTAssertEqual(state2.openApps(in: canonical).first?.name, "A")
+    }
 }

@@ -105,7 +105,7 @@ extension AppModel {
         let now = Date()
         attention.retain(only: Set(sessions.map(\.id)))
         markOnScreenSeen(at: now)
-        let filedPaths = Set(sidebarState.terminalProjects.values.map { ($0 as NSString).standardizingPath }).sorted()
+        let filedPaths = Set(sidebarState.terminalProjects.values.map { ProjectPath.canonical($0) }).sorted()
         sidebarState.noteProjects(ProjectGroup.group(sessions: sessions).map(\.workspacePath) + filedPaths)
         let selectedProject: String?
         if let session = sessions.first(where: { $0.id == selectedId }) {
@@ -131,7 +131,7 @@ extension AppModel {
 
     /// Checks if a session's agent has an active rate limit recorded in the inbox.
     func agentLimit(for session: Session) -> AgentLimitStatus? {
-        let norm = (session.cwd as NSString).standardizingPath
+        let norm = session.cwd
         guard let inbox = inbox(for: norm) else { return nil }
         let now = Date()
         if let limit = inbox.agentLimits.first(where: { $0.agent == session.agentKind }),
@@ -145,7 +145,7 @@ extension AppModel {
     /// is capped in more than one, the furthest-out cooldown wins: that is when it can work again.
     var agentLimits: [AgentKind: AgentLimitStatus] {
         var latest: [AgentKind: AgentLimitStatus] = [:]
-        for path in Set(sessions.map { ($0.cwd as NSString).standardizingPath }) {
+        for path in Set(sessions.map(\.cwd)) {
             for limit in inbox(for: path)?.agentLimits ?? [] {
                 if let existing = latest[limit.agent], existing.cooldownExpiresAt >= limit.cooldownExpiresAt {
                     continue

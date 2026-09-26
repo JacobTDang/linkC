@@ -282,7 +282,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let r = try XCTUnwrap(relaunched.restorables.first)
         XCTAssertEqual(r.linkcId, session.id)
         XCTAssertEqual(r.claudeSessionId, "cabc")
-        XCTAssertEqual(r.cwd, cwd.path)
+        XCTAssertEqual(r.cwd, ProjectPath.canonical(cwd.path))
         XCTAssertNotNil(r.endedAt, "a stopped session must carry an endedAt")
 
         relaunched.dismiss(r)
@@ -312,7 +312,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         defer { coordinator.stopSession(live.id) }
 
         XCTAssertNotEqual(live.id, "OLD", "restore must create a fresh live session, not reuse the old id")
-        XCTAssertEqual(live.cwd, cwd.path)
+        XCTAssertEqual(live.cwd, ProjectPath.canonical(cwd.path))
         XCTAssertNotNil(coordinator.store.session(id: live.id), "the restored session must be live in the store")
         XCTAssertTrue(coordinator.restorables.isEmpty, "the restorable must be consumed by restoring it")
     }
@@ -723,12 +723,12 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let s1 = coordinator.store.session(id: "ACT1")
         XCTAssertNotNil(s1)
         XCTAssertEqual(s1?.agentKind, .claude)
-        XCTAssertEqual(s1?.cwd, cwd1.path)
+        XCTAssertEqual(s1?.cwd, ProjectPath.canonical(cwd1.path))
 
         let s2 = coordinator.store.session(id: "ACT2")
         XCTAssertNotNil(s2)
         XCTAssertEqual(s2?.agentKind, .shell)
-        XCTAssertEqual(s2?.cwd, cwd2.path)
+        XCTAssertEqual(s2?.cwd, ProjectPath.canonical(cwd2.path))
 
         // Live revived sessions remain wasActiveOnQuit == true and endedAt nil while live
         XCTAssertEqual(coordinator.manifest.entries.first(where: { $0.linkcId == "ACT1" })?.wasActiveOnQuit, true)

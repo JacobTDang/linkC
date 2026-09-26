@@ -37,7 +37,7 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
     ) {
         self.linkcId = linkcId
         self.claudeSessionId = claudeSessionId
-        self.cwd = cwd
+        self.cwd = ProjectPath.canonical(cwd)
         self.title = title
         self.agentKind = agentKind
         self.wasActiveOnQuit = wasActiveOnQuit
@@ -60,7 +60,7 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         linkcId = try container.decode(String.self, forKey: .linkcId)
         claudeSessionId = try container.decodeIfPresent(String.self, forKey: .claudeSessionId)
-        cwd = try container.decode(String.self, forKey: .cwd)
+        cwd = ProjectPath.canonical(try container.decode(String.self, forKey: .cwd))
         title = try container.decode(String.self, forKey: .title)
         agentKind = try container.decodeIfPresent(AgentKind.self, forKey: .agentKind) ?? .claude
         wasActiveOnQuit = try container.decodeIfPresent(Bool.self, forKey: .wasActiveOnQuit) ?? false

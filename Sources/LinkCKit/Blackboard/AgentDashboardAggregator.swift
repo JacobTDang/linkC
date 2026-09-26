@@ -7,7 +7,7 @@ public struct AgentDashboardAggregator: Sendable {
         workspacePath: String,
         liveSessions: [(id: String, agent: AgentKind, status: String, activity: String?, recentOutput: String)]
     ) -> ProjectDashboardData {
-        let norm = (workspacePath as NSString).standardizingPath
+        let norm = ProjectPath.canonical(workspacePath)
         let title = (norm as NSString).lastPathComponent
 
         let inboxStore = InboxStore(workspaceRoot: norm)
@@ -269,11 +269,11 @@ public struct AgentDashboardAggregator: Sendable {
         var allItems: [AgentActivityItem] = []
         var allDossiers: [AgentContributionDossier] = []
 
-        let uniqueWorkspaces = Array(Set(workspaces.map { ($0 as NSString).standardizingPath })).sorted()
+        let uniqueWorkspaces = Array(Set(workspaces.map { ProjectPath.canonical($0) })).sorted()
 
         for norm in uniqueWorkspaces {
             let matchingSessions = liveSessions
-                .filter { ($0.workspace as NSString).standardizingPath == norm }
+                .filter { ProjectPath.canonical($0.workspace) == norm }
                 .map { ($0.id, $0.agent, $0.status, $0.activity, $0.recentOutput) }
             let projData = aggregateProject(workspacePath: norm, liveSessions: matchingSessions)
             allItems.append(contentsOf: projData.activityItems)

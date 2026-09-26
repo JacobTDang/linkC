@@ -37,7 +37,7 @@ extension AppCoordinator {
     /// the next tick — but once one phase hits a contended lock, the others almost certainly would
     /// too (it's the same file), so the tick stops rather than paying the wait four times over.
     public func processPendingMessages(workspacePath: String) {
-        let norm = (workspacePath as NSString).standardizingPath
+        let norm = ProjectPath.canonical(workspacePath)
         let inboxStore = InboxStore(workspaceRoot: norm)
         guard !expireTasks(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
@@ -111,6 +111,7 @@ extension AppCoordinator {
     @discardableResult
     func expireTasks(workspacePath: String, inboxStore: InboxStore) -> Bool {
         guard workspaceExists(workspacePath) else { return false }
+        let norm = ProjectPath.canonical(workspacePath)
         let open: [TaskRecord]
         do {
             open = try inboxStore.openTasks(timeout: Self.relayLockTimeout)
@@ -124,7 +125,8 @@ extension AppCoordinator {
 
         for task in open {
             // A run in flight is not a stale task. Its own timeout bounds it.
-            if verificationsInFlight[workspacePath] == task.id { continue }
+            let inFlightId = verificationsInFlight[norm] ?? verificationsInFlight[workspacePath]
+            if inFlightId == task.id { continue }
             switch task.state {
             case .gating:
                 if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
@@ -144,7 +146,7 @@ extension AppCoordinator {
                     // owns that checkout — for a different task, since this one's own run would
                     // have hit the `continue` above. "undelivered for 60m" would be untrue for a
                     // task that sat behind a held checkout rather than one nobody could deliver.
-                    let reason = verificationsInFlight[workspacePath] != nil
+                    let reason = (verificationsInFlight[norm] != nil || verificationsInFlight[workspacePath] != nil)
                         ? "undelivered for 60m — held back by a verification in this workspace"
                         : "undelivered for 60m"
                     do {
@@ -220,9 +222,10 @@ extension AppCoordinator {
     @discardableResult
     func dispatchTasks(workspacePath: String, inboxStore: InboxStore) -> Bool {
         guard workspaceExists(workspacePath) else { return false }
+        let norm = ProjectPath.canonical(workspacePath)
         // A verification owns this checkout until it finishes: injecting a brief now would let a
         // worker edit the tree the verdict is about to be measured against.
-        guard verificationsInFlight[workspacePath] == nil else { return false }
+        guard verificationsInFlight[norm] == nil && verificationsInFlight[workspacePath] == nil else { return false }
         let queued: [TaskRecord]
         do {
             queued = try inboxStore.openTasks(timeout: Self.relayLockTimeout).filter { $0.state == .queued }
@@ -236,7 +239,7 @@ extension AppCoordinator {
         var loggedInjectionWait = false
         for task in queued {
             let candidates = store.sessions.filter {
-                ($0.cwd as NSString).standardizingPath == workspacePath && $0.agentKind == task.toAgent
+                $0.cwd == norm && $0.agentKind == task.toAgent
                     && $0.state != .ended && $0.id != task.fromSessionId
                     // A tiered task runs only on a session pinned to that tier. A row written
                     // before tiers has none, and keeps the pre-tier rule: any session of its kind.
@@ -330,6 +333,7 @@ extension AppCoordinator {
     @discardableResult
     func dispatchMessages(workspacePath: String, inboxStore: InboxStore) -> Bool {
         guard workspaceExists(workspacePath) else { return false }
+        let norm = ProjectPath.canonical(workspacePath)
         let pending: [PendingMessage]
         do {
             pending = try inboxStore.fetchPending(timeout: Self.relayLockTimeout)
@@ -345,7 +349,7 @@ extension AppCoordinator {
         // legacy `.task` message row — needs to wait for that; a completion line, a cancel
         // notice, a peer note, or a model switch never touches the tree and must still reach
         // whoever is waiting on it while a run is in flight.
-        let verificationInFlight = verificationsInFlight[workspacePath] != nil
+        let verificationInFlight = verificationsInFlight[norm] != nil || verificationsInFlight[workspacePath] != nil
 
         var groups: [String: (session: Session, messages: [PendingMessage])] = [:]
         var sessionOrder: [String] = []
@@ -385,13 +389,13 @@ extension AppCoordinator {
                     // workspace's notice into that project's terminal.
                     target = store.sessions.first {
                         $0.id == delegatorId && $0.state != .ended
-                            && ($0.cwd as NSString).standardizingPath == workspacePath
+                            && $0.cwd == norm
                     }
                 }
             }
             if target == nil {
                 target = store.sessions.first {
-                    ($0.cwd as NSString).standardizingPath == workspacePath && $0.agentKind == message.toAgent && $0.state != .ended
+                    $0.cwd == norm && $0.agentKind == message.toAgent && $0.state != .ended
                 }
             }
             if target == nil {
@@ -537,13 +541,14 @@ extension AppCoordinator {
             }
         }
 
-        guard verificationsInFlight[workspacePath] == nil,
+        let norm = ProjectPath.canonical(workspacePath)
+        guard verificationsInFlight[norm] == nil,
               verificationsInFlight.count < Self.maxConcurrentVerifications,
               let (next, run) = runnable.min(by: { $0.task.createdAt < $1.task.createdAt }) else { return false }
 
-        verificationsInFlight[workspacePath] = next.id
+        verificationsInFlight[norm] = next.id
         let verifier = self.verifier
-        let workspace = URL(fileURLWithPath: workspacePath)
+        let workspace = URL(fileURLWithPath: norm)
         Task { [weak self] in
             let verdict: Verdict
             switch run {
@@ -552,7 +557,7 @@ extension AppCoordinator {
             case .verify(let verification, let sha):
                 verdict = await verifier.verify(verification, sha: sha, in: workspace)
             }
-            self?.finishVerification(of: next, verdict: verdict, workspacePath: workspacePath)
+            self?.finishVerification(of: next, verdict: verdict, workspacePath: norm)
         }
         return false
     }
@@ -564,12 +569,13 @@ extension AppCoordinator {
     /// Records the verdict and sends the delegator its one line. A task that ended while its run
     /// was in flight rejects the transition; the verdict is logged and dropped.
     func finishVerification(of task: TaskRecord, verdict: Verdict, workspacePath: String) {
-        defer { verificationsInFlight.removeValue(forKey: workspacePath) }
-        guard workspaceExists(workspacePath) else {
+        let norm = ProjectPath.canonical(workspacePath)
+        defer { verificationsInFlight.removeValue(forKey: norm) }
+        guard workspaceExists(norm) else {
             NSLog("[linkC relay] finishVerification: task %@ workspace is gone; verdict dropped", task.shortId)
             return
         }
-        let inboxStore = InboxStore(workspaceRoot: workspacePath)
+        let inboxStore = InboxStore(workspaceRoot: norm)
         do {
             if task.state == .gating {
                 try inboxStore.resolveGate(taskId: task.id, verdict: verdict)
@@ -595,7 +601,7 @@ extension AppCoordinator {
     @discardableResult
     public func relayTurnEnd(sessionId: String, workspacePath: String) -> Int {
         guard let session = store.session(id: sessionId), session.agentKind != .shell else { return 0 }
-        let norm = (workspacePath as NSString).standardizingPath
+        let norm = ProjectPath.canonical(workspacePath)
         let inboxStore = InboxStore(workspaceRoot: norm)
         let open: [TaskRecord]
         do {
@@ -638,7 +644,7 @@ extension AppCoordinator {
         if let explicit = explicit?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
             return explicit
         }
-        let norm = (workspacePath as NSString).standardizingPath
+        let norm = ProjectPath.canonical(workspacePath)
         do {
             if let newest = try InboxStore(workspaceRoot: norm).openTasks().last {
                 return newest.prompt
@@ -670,7 +676,7 @@ extension AppCoordinator {
         // still holds the limit text, so re-processing it every tick would loop forever.
         guard session.state != .error else { return false }
 
-        let norm = (session.cwd as NSString).standardizingPath
+        let norm = session.cwd
         let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
         // Everything linkC has typed into this session is excluded: a brief or notice can quote a
         // limit phrase, and the CLI echoing that back is not the agent hitting a limit. Suppressed
@@ -746,8 +752,8 @@ extension AppCoordinator {
             candidates = candidates.filter { resolvedModel(for: $0, tier: tier) != nil }
         }
         candidates.sort { a, b in
-            let aActive = store.sessions.contains { ($0.cwd as NSString).standardizingPath == norm && $0.agentKind == a && $0.state != .ended }
-            let bActive = store.sessions.contains { ($0.cwd as NSString).standardizingPath == norm && $0.agentKind == b && $0.state != .ended }
+            let aActive = store.sessions.contains { $0.cwd == norm && $0.agentKind == a && $0.state != .ended }
+            let bActive = store.sessions.contains { $0.cwd == norm && $0.agentKind == b && $0.state != .ended }
             return aActive && !bActive
         }
 

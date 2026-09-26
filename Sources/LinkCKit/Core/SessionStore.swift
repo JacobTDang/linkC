@@ -67,7 +67,8 @@ public final class SessionStore {
     public func create(cwd: String, title: String, id: String = UUID().uuidString, agentKind: AgentKind = .claude,
                        model: String? = nil, modelTier: ModelTier? = nil,
                        claudeSessionId: String? = nil, isWorker: Bool = false) -> Session {
-        let s = Session(id: id, cwd: cwd, title: title, claudeSessionId: claudeSessionId, agentKind: agentKind,
+        let canonicalCwd = ProjectPath.canonical(cwd)
+        let s = Session(id: id, cwd: canonicalCwd, title: title, claudeSessionId: claudeSessionId, agentKind: agentKind,
                         model: model, modelTier: modelTier, isWorker: isWorker)
         sessions.append(s)
         return s

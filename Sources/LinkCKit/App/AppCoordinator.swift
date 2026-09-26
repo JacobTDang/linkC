@@ -457,13 +457,11 @@ public final class AppCoordinator {
         in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil, tier: ModelTier? = nil,
         asWorker: Bool = false
     ) throws -> Session {
-        let norm = (workspacePath as NSString).standardizingPath
+        let norm = ProjectPath.canonical(workspacePath)
         let existingSession = store.sessions.last { session in
-            let sessionNorm = (session.cwd as NSString).standardizingPath
-            return sessionNorm == norm && session.state != .ended
+            return session.cwd == norm && session.state != .ended
         } ?? store.sessions.last { session in
-            let sessionNorm = (session.cwd as NSString).standardizingPath
-            return sessionNorm == norm
+            return session.cwd == norm
         }
 
         let sourceAgent = existingSession?.agentKind
@@ -703,7 +701,7 @@ public final class AppCoordinator {
     /// sessions do not depend on it.
     private func workersHoldingOpenTasks(_ entries: [RestorableSession]) -> Set<String> {
         var holding: Set<String> = []
-        let folders = Set(entries.filter(\.isWorker).map { ($0.cwd as NSString).standardizingPath })
+        let folders = Set(entries.filter(\.isWorker).map { ProjectPath.canonical($0.cwd) })
         for folder in folders where workspaceExists(folder) {
             do {
                 holding.formUnion(try InboxStore(workspaceRoot: folder).openTasks().compactMap(\.assigneeSessionId))
@@ -730,11 +728,11 @@ public final class AppCoordinator {
         // pass, or one a relaunch already brought back onto this entry's id/folder); the card
         // stays and the user can restore it individually later.
         let resumesById = targetAgent == .claude && !(r.claudeSessionId ?? "").isEmpty
-        let folder = (r.cwd as NSString).standardizingPath
+        let folder = ProjectPath.canonical(r.cwd)
         if store.sessions.contains(where: { live in
             resumesById
                 ? live.claudeSessionId == r.claudeSessionId
-                : live.agentKind == targetAgent && (live.cwd as NSString).standardizingPath == folder
+                : live.agentKind == targetAgent && live.cwd == folder
         }) {
             throw LinkCError.process(
                 "a \(targetAgent.displayName) conversation is already open in \(r.title) — restore this one after it ends, or dismiss it"
@@ -819,11 +817,11 @@ public final class AppCoordinator {
     public func sampleAgentStates() {
         var activePaths: Set<String> = []
         for session in store.sessions where session.state != .ended {
-            activePaths.insert((session.cwd as NSString).standardizingPath)
+            activePaths.insert(session.cwd)
             guard let term = terminals.session(id: session.id) else { continue }
 
             if session.agentKind != .shell, term.processId > 0 {
-                try? BlackboardStore(workspaceRoot: (session.cwd as NSString).standardizingPath)
+                try? BlackboardStore(workspaceRoot: session.cwd)
                     .heartbeat(agentKind: session.agentKind, pid: term.processId, timeout: 0.5)
             }
 
@@ -844,7 +842,7 @@ public final class AppCoordinator {
             // for every agent kind, including Claude, whose own state otherwise comes from hook
             // events that never touch this mark.
             if let current = store.session(id: session.id), current.state == .error {
-                let norm = (session.cwd as NSString).standardizingPath
+                let norm = session.cwd
                 do {
                     if try InboxStore(workspaceRoot: norm).isAgentLimited(agent: session.agentKind) == nil {
                         store.updateState(id: session.id, to: .ready)
@@ -947,12 +945,12 @@ public final class AppCoordinator {
         var agentsByPath: [String: Set<AgentKind>] = [:]
 
         for session in store.sessions where session.state != .ended {
-            let norm = (session.cwd as NSString).standardizingPath
+            let norm = session.cwd
             agentsByPath[norm, default: []].insert(session.agentKind)
         }
 
         for (path, agents) in additionalAgents {
-            let norm = (path as NSString).standardizingPath
+            let norm = ProjectPath.canonical(path)
             for a in agents {
                 agentsByPath[norm, default: []].insert(a)
             }
@@ -996,8 +994,8 @@ public final class AppCoordinator {
     // MARK: - Agent Dashboard Integration
 
     public func fetchProjectDashboard(workspacePath: String) -> ProjectDashboardData {
-        let norm = (workspacePath as NSString).standardizingPath
-        let sessions = store.sessions.filter { ($0.cwd as NSString).standardizingPath == norm }.map { s in
+        let norm = ProjectPath.canonical(workspacePath)
+        let sessions = store.sessions.filter { $0.cwd == norm }.map { s in
             let term = terminals.session(id: s.id)
             let act = term?.liveActivityLine()
             let out = term?.recentOutput(lines: 15) ?? ""
@@ -1007,8 +1005,8 @@ public final class AppCoordinator {
     }
 
     public func fetchProjectDashboardAsync(workspacePath: String) async -> ProjectDashboardData {
-        let norm = (workspacePath as NSString).standardizingPath
-        let sessions = store.sessions.filter { ($0.cwd as NSString).standardizingPath == norm }.map { s in
+        let norm = ProjectPath.canonical(workspacePath)
+        let sessions = store.sessions.filter { $0.cwd == norm }.map { s in
             let term = terminals.session(id: s.id)
             let act = term?.liveActivityLine()
             let out = term?.recentOutput(lines: 15) ?? ""
@@ -1021,7 +1019,7 @@ public final class AppCoordinator {
     }
 
     public func fetchGlobalDashboard() -> GlobalDashboardData {
-        let workspaces = Array(Set(store.sessions.map { ($0.cwd as NSString).standardizingPath }))
+        let workspaces = Array(Set(store.sessions.map(\.cwd)))
         let sessions = store.sessions.map { s in
             let term = terminals.session(id: s.id)
             let act = term?.liveActivityLine()
@@ -1032,7 +1030,7 @@ public final class AppCoordinator {
     }
 
     public func fetchGlobalDashboardAsync() async -> GlobalDashboardData {
-        let workspaces = Array(Set(store.sessions.map { ($0.cwd as NSString).standardizingPath }))
+        let workspaces = Array(Set(store.sessions.map(\.cwd)))
         let sessions = store.sessions.map { s in
             let term = terminals.session(id: s.id)
             let act = term?.liveActivityLine()
@@ -1058,9 +1056,9 @@ public final class AppCoordinator {
             let allowed = AgentModelCatalog.models(for: agent).map { $0.id }.joined(separator: ", ")
             throw LinkCError.process("'\(modelName)' is not an allowed free or subscription-tier model for \(agent.displayName). Allowed models: \(allowed)")
         }
-        let norm = (workspacePath as NSString).standardizingPath
+        let norm = ProjectPath.canonical(workspacePath)
         guard let session = store.sessions.first(where: {
-            ($0.cwd as NSString).standardizingPath == norm && $0.agentKind == agent && $0.state != .ended
+            $0.cwd == norm && $0.agentKind == agent && $0.state != .ended
         }) else {
             throw LinkCError.process("No active session found for \(agent.displayName) in \(workspacePath).")
         }

@@ -75,7 +75,7 @@ public struct RelaunchPlan: Equatable, Sendable {
     }
 
     private static func folder(_ entry: RestorableSession) -> String {
-        (entry.cwd as NSString).standardizingPath
+        ProjectPath.canonical(entry.cwd)
     }
 
     private static func resumesClaudeById(_ entry: RestorableSession) -> Bool {
