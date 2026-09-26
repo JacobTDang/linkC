@@ -155,4 +155,11 @@ final class BoardGeometryTests: XCTestCase {
         table.at = nil
         XCTAssertNil(BoardGeometry.rect(of: table), "not placed yet")
     }
+
+    func testRowCenterYMatchesTheSizeFormula() {
+        let rect = BoardRect(x: 0, y: 100, w: 176, h: 88)
+        XCTAssertEqual(BoardGeometry.rowCenterY(ofColumnAt: 0, in: rect), 147)
+        XCTAssertEqual(BoardGeometry.rowCenterY(ofColumnAt: 1, in: rect), 169)
+        XCTAssertEqual(BoardGeometry.rowCenterY(ofColumnAt: 3, in: rect), 213)
+    }
 }

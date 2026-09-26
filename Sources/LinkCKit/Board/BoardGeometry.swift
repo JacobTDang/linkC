@@ -34,6 +34,13 @@ public enum BoardGeometry {
         return BoardRect(x: at.x, y: at.y, w: size.x, h: size.y)
     }
 
+    /// The vertical centre of one column's row inside a table's box: 36 for the header, 22 per
+    /// row, landing on the row's own centre (half of 22). Matches `size(of:)`'s own formula
+    /// exactly, so a column's drawn row and its foreign-key port always line up.
+    public static func rowCenterY(ofColumnAt index: Int, in rect: BoardRect) -> Int {
+        rect.y + 36 + 22 * index + 11
+    }
+
     /// Rounds up to the next board-grid multiple.
     private static func roundUpTo8(_ value: Int) -> Int {
         ((value + BoardPoint.grid - 1) / BoardPoint.grid) * BoardPoint.grid

@@ -471,4 +471,148 @@ final class BoardRouterTests: XCTestCase {
             XCTAssertFalse(crosses(a, b, tableRect), "\(a)->\(b) crosses the table's real rect")
         }
     }
+
+    // MARK: - Foreign keys
+
+    func testForeignKeyPortsSitAtExactRowCentresOnTheFacingSides() throws {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "orders", kind: .table, at: BoardPoint(x: 0, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "cust_id", type: "bigint", references: BoardColumnReference(table: "customers", column: "id")),
+            ]),
+            BoardComponent(name: "customers", kind: .table, at: BoardPoint(x: 400, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+            ]),
+        ]
+        let ordersBox = try XCTUnwrap(BoardGeometry.rect(of: m.components[0]))
+        let customersBox = try XCTUnwrap(BoardGeometry.rect(of: m.components[1]))
+        XCTAssertEqual(ordersBox, BoardRect(x: 0, y: 0, w: 176, h: 88))
+        XCTAssertEqual(customersBox, BoardRect(x: 400, y: 0, w: 176, h: 72))
+
+        let key = BoardForeignKey(table: "orders", column: "cust_id", refTable: "customers", refColumn: "id")
+        let route = try XCTUnwrap(BoardRouter.foreignKeyRoutes(for: m)[key])
+        XCTAssertEqual(route.points.first, BoardPoint(x: 176, y: 69), "orders' right side, the cust_id row")
+        XCTAssertEqual(route.points.last, BoardPoint(x: 400, y: 47), "customers' left side, the id row")
+        for (a, b) in zip(route.points, route.points.dropFirst()) {
+            XCTAssertTrue(a.x == b.x || a.y == b.y, "orthogonal")
+        }
+        XCTAssertNil(BoardRouter.foreignKeyStubs(for: m)[key], "resolved: a route, not a stub")
+    }
+
+    func testForeignKeyRouteBendsAroundABoxBetweenTheTables() throws {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "orders", kind: .table, at: BoardPoint(x: 0, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "cust_id", type: "bigint", references: BoardColumnReference(table: "customers", column: "id")),
+            ]),
+            BoardComponent(name: "customers", kind: .table, at: BoardPoint(x: 400, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+            ]),
+            BoardComponent(name: "wall", kind: .service, at: BoardPoint(x: 200, y: 0)),
+        ]
+        let wallBox = try XCTUnwrap(BoardGeometry.rect(of: m.components[2]))
+        XCTAssertEqual(wallBox, BoardRect(x: 200, y: 0, w: 176, h: 84), "spans both rows' y (47 and 69), blocking a direct line")
+
+        let key = BoardForeignKey(table: "orders", column: "cust_id", refTable: "customers", refColumn: "id")
+        let route = try XCTUnwrap(BoardRouter.foreignKeyRoutes(for: m)[key])
+        XCTAssertEqual(route.points.first, BoardPoint(x: 176, y: 69))
+        XCTAssertEqual(route.points.last, BoardPoint(x: 400, y: 47))
+        for (a, b) in zip(route.points, route.points.dropFirst()) {
+            XCTAssertFalse(crosses(a, b, wallBox), "\(a)->\(b) crosses the wall")
+        }
+    }
+
+    func testForeignKeySelfReferenceLoopsOutTheRightSide() throws {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "categories", kind: .table, at: BoardPoint(x: 0, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "parent_id", type: "uuid", references: BoardColumnReference(table: "categories", column: "id")),
+            ]),
+        ]
+        let box = try XCTUnwrap(BoardGeometry.rect(of: m.components[0]))
+        XCTAssertEqual(box, BoardRect(x: 0, y: 0, w: 176, h: 88))
+        let fromY = BoardGeometry.rowCenterY(ofColumnAt: 1, in: box)
+        let toY = BoardGeometry.rowCenterY(ofColumnAt: 0, in: box)
+
+        let key = BoardForeignKey(table: "categories", column: "parent_id", refTable: "categories", refColumn: "id")
+        let route = try XCTUnwrap(BoardRouter.foreignKeyRoutes(for: m)[key])
+        XCTAssertEqual(route.points, [
+            BoardPoint(x: box.maxX, y: fromY),
+            BoardPoint(x: box.maxX + 24, y: fromY),
+            BoardPoint(x: box.maxX + 24, y: toY),
+            BoardPoint(x: box.maxX, y: toY),
+        ])
+        XCTAssertTrue(route.points.allSatisfy { $0.x >= box.maxX }, "never crosses back into the table")
+        XCTAssertNil(BoardRouter.foreignKeyStubs(for: m)[key])
+    }
+
+    func testAMissingReferencedTableGivesAStubAndNoRoute() throws {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "orders", kind: .table, at: BoardPoint(x: 0, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "cust_id", type: "bigint", references: BoardColumnReference(table: "customers", column: "id")),
+            ]),
+        ]
+        let box = try XCTUnwrap(BoardGeometry.rect(of: m.components[0]))
+        let key = BoardForeignKey(table: "orders", column: "cust_id", refTable: "customers", refColumn: "id")
+
+        XCTAssertNil(BoardRouter.foreignKeyRoutes(for: m)[key], "customers isn't on the board")
+        let stub = try XCTUnwrap(BoardRouter.foreignKeyStubs(for: m)[key])
+        let y = BoardGeometry.rowCenterY(ofColumnAt: 1, in: box)
+        XCTAssertEqual(stub.from, BoardPoint(x: box.maxX, y: y))
+        XCTAssertEqual(stub.to, BoardPoint(x: box.maxX + 40, y: y))
+    }
+
+    func testAPresentTableWithAMissingReferencedColumnAlsoGivesAStub() throws {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "orders", kind: .table, at: BoardPoint(x: 0, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "cust_id", type: "bigint", references: BoardColumnReference(table: "customers", column: "ghost_id")),
+            ]),
+            BoardComponent(name: "customers", kind: .table, at: BoardPoint(x: 400, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+            ]),
+        ]
+        let key = BoardForeignKey(table: "orders", column: "cust_id", refTable: "customers", refColumn: "ghost_id")
+        XCTAssertNil(BoardRouter.foreignKeyRoutes(for: m)[key])
+        XCTAssertNotNil(BoardRouter.foreignKeyStubs(for: m)[key])
+    }
+
+    /// An unplaced part (no `at` yet) counts the same as one that isn't on the board at all: there
+    /// is no row to point a route at, so this is a stub too, never a dangling, undrawn key.
+    func testAnUnplacedReferencedTableAlsoGivesAStub() throws {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "orders", kind: .table, at: BoardPoint(x: 0, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "cust_id", type: "bigint", references: BoardColumnReference(table: "customers", column: "id")),
+            ]),
+            BoardComponent(name: "customers", kind: .table, columns: [BoardColumn(name: "id", type: "uuid", pk: true)]),
+        ]
+        let key = BoardForeignKey(table: "orders", column: "cust_id", refTable: "customers", refColumn: "id")
+        XCTAssertNil(BoardRouter.foreignKeyRoutes(for: m)[key])
+        XCTAssertNotNil(BoardRouter.foreignKeyStubs(for: m)[key])
+    }
+
+    func testForeignKeyRoutesAndStubsAreDeterministic() throws {
+        let decoded = try BoardMap.decode(Data(#"""
+        { "version": 2, "places": { "Not placed": {
+          "orders": {"kind":"table","columns":[
+            {"name":"id","type":"uuid","pk":true},
+            {"name":"cust_id","type":"bigint","references":"customers.id"}
+          ]},
+          "customers": {"kind":"table","columns":[{"name":"id","type":"uuid","pk":true}]}
+        } } }
+        """#.utf8))
+        let arranged = BoardLayout.arranged(decoded)
+        XCTAssertEqual(BoardRouter.foreignKeyRoutes(for: arranged), BoardRouter.foreignKeyRoutes(for: arranged))
+        let firstStubs = BoardRouter.foreignKeyStubs(for: arranged).mapValues { [$0.from, $0.to] }
+        let secondStubs = BoardRouter.foreignKeyStubs(for: arranged).mapValues { [$0.from, $0.to] }
+        XCTAssertEqual(firstStubs, secondStubs)
+    }
 }

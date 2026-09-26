@@ -730,6 +730,38 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.map.components.first { $0.name == api }?.uses[db], "reads entries")
     }
 
+    func testForeignKeyRoutesArePublishedAlongsideOrdinaryRoutes() async throws {
+        let board = fresh()
+        board.map.components = [
+            BoardComponent(name: "orders", kind: .table, at: BoardPoint(x: 0, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "cust_id", type: "bigint", references: BoardColumnReference(table: "customers", column: "id")),
+            ]),
+            BoardComponent(name: "customers", kind: .table, at: BoardPoint(x: 400, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+            ]),
+        ]
+        await board.recomputeRoutes().value
+        let key = BoardForeignKey(table: "orders", column: "cust_id", refTable: "customers", refColumn: "id")
+        XCTAssertEqual(board.foreignKeyRoutes[key], BoardRouter.foreignKeyRoutes(for: board.map)[key])
+        XCTAssertNotNil(board.foreignKeyRoutes[key])
+        XCTAssertTrue(board.foreignKeyStubs.isEmpty)
+    }
+
+    func testForeignKeyStubsArePublishedForAMissingReference() async throws {
+        let board = fresh()
+        board.map.components = [
+            BoardComponent(name: "orders", kind: .table, at: BoardPoint(x: 0, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "cust_id", type: "bigint", references: BoardColumnReference(table: "customers", column: "id")),
+            ]),
+        ]
+        await board.recomputeRoutes().value
+        let key = BoardForeignKey(table: "orders", column: "cust_id", refTable: "customers", refColumn: "id")
+        XCTAssertTrue(board.foreignKeyRoutes.isEmpty)
+        XCTAssertNotNil(board.foreignKeyStubs[key])
+    }
+
     func testAddArrowAppliesTheDefaultRuleAndSetArrowIsOneUndoStep() throws {
         let board = fresh()
         let r = try XCTUnwrap(board.addComponent(kind: .router, at: BoardPoint(x: 0, y: 0)))
@@ -1090,5 +1122,169 @@ final class BoardModelTests: XCTestCase {
         board.redo()
         board.tidyUp()
         XCTAssertEqual(board.canRedo, false)
+    }
+
+    // MARK: - Schema (tables)
+
+    func testImportSchemaAddsANewTableAsOneUndoStep() throws {
+        let board = fresh()
+        let parsed = try SQLSchema.parse("create table orgs (id bigint primary key, name text not null);")
+        XCTAssertFalse(board.canUndo)
+        let summary = try board.importSchema(parsed)
+        XCTAssertEqual(summary, BoardSchemaImport.Summary(added: 1, updated: 0, markedPlanned: 0, skipped: 0, notModelled: 0))
+        let orgs = try XCTUnwrap(board.map.components.first { $0.name == "orgs" })
+        XCTAssertEqual(orgs.kind, .table)
+        XCTAssertEqual(orgs.columns, parsed.tables[0].columns)
+        XCTAssertTrue(board.canUndo)
+        board.undo()
+        XCTAssertTrue(board.map.components.isEmpty)
+    }
+
+    func testImportSchemaUpdatesAnExistingTableAndKeepsDesignOnlyColumnsPlanned() throws {
+        let board = fresh()
+        _ = try board.importSchema(try SQLSchema.parse("create table orgs (id bigint primary key);"))
+        try board.setColumns(of: "orgs", to: [
+            BoardColumn(name: "id", type: "bigint", pk: true),
+            BoardColumn(name: "notes", type: "text"),
+        ])
+
+        let secondParsed = try SQLSchema.parse("create table orgs (id bigint primary key, name text not null);")
+        let summary = try board.importSchema(secondParsed)
+        XCTAssertEqual(summary, BoardSchemaImport.Summary(added: 0, updated: 1, markedPlanned: 0, skipped: 0, notModelled: 0))
+
+        let orgs = try XCTUnwrap(board.map.components.first { $0.name == "orgs" })
+        XCTAssertFalse(orgs.planned)
+        XCTAssertEqual(orgs.columns.map(\.name), ["id", "name", "notes"])
+        XCTAssertFalse(orgs.columns[1].planned, "the database column")
+        XCTAssertTrue(orgs.columns[2].planned, "the design-only column")
+    }
+
+    func testImportSchemaMarksADesignOnlyTablePlanned() throws {
+        let board = fresh()
+        let wishlist = try XCTUnwrap(board.addComponent(kind: .table, at: BoardPoint(x: 400, y: 0)))
+        try board.setColumns(of: wishlist, to: [BoardColumn(name: "id", type: "uuid")])
+
+        let summary = try board.importSchema(try SQLSchema.parse("create table orgs (id bigint primary key);"))
+        XCTAssertEqual(summary, BoardSchemaImport.Summary(added: 1, updated: 0, markedPlanned: 1, skipped: 0, notModelled: 0))
+
+        let wishlistAfter = try XCTUnwrap(board.map.components.first { $0.name == wishlist })
+        XCTAssertTrue(wishlistAfter.planned)
+        XCTAssertTrue(wishlistAfter.columns.allSatisfy(\.planned))
+    }
+
+    func testImportSchemaSummarySkippedAndNotModelledComeFromTheParser() throws {
+        let board = fresh()
+        let parsed = try SQLSchema.parse("""
+        create table orgs (id bigint primary key, name text, check (name <> ''));
+        create index orgs_name_idx on orgs (name);
+        """)
+        let summary = try board.importSchema(parsed)
+        XCTAssertEqual(summary.skipped, 1)
+        XCTAssertEqual(summary.notModelled, 1)
+    }
+
+    func testImportSchemaWithNothingToReconcileIsNotAnEdit() throws {
+        let board = fresh()
+        XCTAssertFalse(board.canUndo)
+        let summary = try board.importSchema(SQLSchema.Parsed(tables: [], skipped: [], notModelled: []))
+        XCTAssertEqual(summary, BoardSchemaImport.Summary(added: 0, updated: 0, markedPlanned: 0, skipped: 0, notModelled: 0))
+        XCTAssertFalse(board.canUndo, "nothing changed, so nothing to undo")
+    }
+
+    func testExportSchemaSQLMatchesSQLSchemaCreateStatements() throws {
+        let board = fresh()
+        _ = try board.importSchema(try SQLSchema.parse("create table orgs (id bigint primary key, name text not null);"))
+        XCTAssertEqual(board.exportSchemaSQL(), SQLSchema.createStatements(for: SQLSchema.tables(in: board.map)))
+        XCTAssertTrue(board.exportSchemaSQL().contains("CREATE TABLE"))
+    }
+
+    func testExportSchemaSQLOnAnEmptyBoardIsEmpty() {
+        XCTAssertEqual(fresh().exportSchemaSQL(), "")
+    }
+
+    func testSetColumnsReplacesTheWholeListAsOneUndoStepEachTime() throws {
+        let board = fresh()
+        let name = try XCTUnwrap(board.addComponent(kind: .table, at: BoardPoint(x: 0, y: 0)))
+        try board.setColumns(of: name, to: [BoardColumn(name: "id", type: "uuid", pk: true)])
+        XCTAssertEqual(board.map.components.first?.columns, [BoardColumn(name: "id", type: "uuid", pk: true)])
+
+        try board.setColumns(of: name, to: [BoardColumn(name: "slug", type: "text")])
+        XCTAssertEqual(board.map.components.first?.columns, [BoardColumn(name: "slug", type: "text")])
+
+        board.undo()
+        XCTAssertEqual(board.map.components.first?.columns, [BoardColumn(name: "id", type: "uuid", pk: true)])
+        board.undo()
+        XCTAssertEqual(board.map.components.first?.columns, [])
+    }
+
+    func testSetColumnsRefusesANonTablePartAndLeavesNoUndoStepOfItsOwn() throws {
+        let board = fresh()
+        let name = try XCTUnwrap(board.addComponent(kind: .service, at: BoardPoint(x: 0, y: 0)))
+        XCTAssertThrowsError(try board.setColumns(of: name, to: [BoardColumn(name: "id", type: "uuid")])) { error in
+            XCTAssertEqual((error as? BoardEditRefusal)?.reason, "\"columns\" belong to a table; \"\(name)\" is a service")
+        }
+        XCTAssertEqual(board.refusal, "\"columns\" belong to a table; \"\(name)\" is a service")
+        board.undo()
+        XCTAssertTrue(board.map.components.isEmpty, "the refused setColumns left no undo step of its own")
+    }
+
+    func testSetColumnsRefusesAGhost() throws {
+        let board = fresh()
+        board.map.components = [BoardComponent(name: "orgs", kind: .table, at: BoardPoint(x: 0, y: 0), outside: .in)]
+        XCTAssertThrowsError(try board.setColumns(of: "orgs", to: [BoardColumn(name: "id", type: "uuid")])) { error in
+            XCTAssertEqual((error as? BoardEditRefusal)?.reason, "\"orgs\" comes from the overview; change it there")
+        }
+    }
+
+    func testSetColumnsRefusesADuplicateColumnName() throws {
+        let board = fresh()
+        let name = try XCTUnwrap(board.addComponent(kind: .table, at: BoardPoint(x: 0, y: 0)))
+        XCTAssertThrowsError(try board.setColumns(of: name, to: [
+            BoardColumn(name: "id", type: "uuid"),
+            BoardColumn(name: "ID", type: "bigint"),
+        ])) { error in
+            XCTAssertEqual((error as? BoardEditRefusal)?.reason, "\"\(name)\" names column \"ID\" twice")
+        }
+        XCTAssertEqual(board.refusal, "\"\(name)\" names column \"ID\" twice")
+        XCTAssertEqual(board.map.components.first?.columns, [], "nothing changed")
+    }
+
+    func testSetColumnsRefusesABlankColumnNameAndChangesNothing() throws {
+        let board = fresh()
+        let name = try XCTUnwrap(board.addComponent(kind: .table, at: BoardPoint(x: 0, y: 0)))
+        let before = board.map
+
+        XCTAssertThrowsError(try board.setColumns(of: name, to: [BoardColumn(name: "  ", type: "uuid")])) { error in
+            XCTAssertEqual((error as? BoardEditRefusal)?.reason, "\"\(name)\" has a column with no \"name\"")
+        }
+        XCTAssertEqual(board.map, before)
+    }
+
+    func testSetColumnsRefusesABlankColumnTypeAndChangesNothing() throws {
+        let board = fresh()
+        let name = try XCTUnwrap(board.addComponent(kind: .table, at: BoardPoint(x: 0, y: 0)))
+        let before = board.map
+
+        XCTAssertThrowsError(try board.setColumns(of: name, to: [BoardColumn(name: "id", type: "  ")])) { error in
+            XCTAssertEqual((error as? BoardEditRefusal)?.reason, "\"\(name)\" column \"id\" has no \"type\"")
+        }
+        XCTAssertEqual(board.map, before)
+    }
+
+    func testSetColumnsRefusesABlankReferencePartAndChangesNothing() throws {
+        let board = fresh()
+        let name = try XCTUnwrap(board.addComponent(kind: .table, at: BoardPoint(x: 0, y: 0)))
+        let before = board.map
+        let reference = BoardColumnReference(table: "", column: "id")
+
+        XCTAssertThrowsError(
+            try board.setColumns(
+                of: name,
+                to: [BoardColumn(name: "org_id", type: "uuid", references: reference)])) { error in
+            XCTAssertEqual(
+                (error as? BoardEditRefusal)?.reason,
+                "\"\(name)\" column \"org_id\" has \"references\" \".id\" but it is not table.column")
+        }
+        XCTAssertEqual(board.map, before)
     }
 }

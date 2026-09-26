@@ -565,23 +565,19 @@ public struct BoardMap: Equatable, Sendable {
     static func parsedColumns(_ entries: [[String: Any]], context: String) throws -> [BoardColumn] {
         let knownKeys: Set<String> = ["name", "type", "pk", "nullable", "unique", "default", "references", "status"]
         var result: [BoardColumn] = []
-        var seen: Set<String> = []
         for entry in entries {
-            guard let name = try string(entry, "name", context: context),
-                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw LinkCError.parse("\(context) has a column with no \"name\"")
-            }
+            let name = try string(entry, "name", context: context) ?? ""
+            try BoardColumn.validate(
+                [BoardColumn(name: name, type: "validation-placeholder")],
+                context: context)
             let columnContext = "\(context)'s column \"\(name)\""
             if let unknown = entry.keys.sorted().first(where: { !knownKeys.contains($0) }) {
                 throw LinkCError.parse("\(context) column \"\(name)\" has an unknown key \"\(unknown)\"")
             }
-            guard let type = try string(entry, "type", context: columnContext),
-                  !type.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw LinkCError.parse("\(context) column \"\(name)\" has no \"type\"")
-            }
-            guard seen.insert(name.lowercased()).inserted else {
-                throw LinkCError.parse("\(context) names column \"\(name)\" twice")
-            }
+            let type = try string(entry, "type", context: columnContext) ?? ""
+            try BoardColumn.validate(
+                result + [BoardColumn(name: name, type: type)],
+                context: context)
             let pk = try bool(entry, "pk", context: columnContext) ?? false
             let nullable = try bool(entry, "nullable", context: columnContext) ?? true
             if pk && entry["nullable"] != nil && nullable {
@@ -603,6 +599,7 @@ public struct BoardMap: Equatable, Sendable {
                 defaultValue: try string(entry, "default", context: columnContext),
                 references: reference,
                 planned: try plannedStatus(entry, context: columnContext)))
+            try BoardColumn.validate(result, context: context)
         }
         return result
     }

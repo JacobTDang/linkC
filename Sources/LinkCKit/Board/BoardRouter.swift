@@ -164,6 +164,135 @@ public enum BoardRouter {
         return results
     }
 
+    // MARK: - Foreign keys
+
+    /// Every foreign key's own route — a key whose table and referenced table are both on the
+    /// board and placed. Ports are fixed (one row's centre, on the side facing the other table),
+    /// never negotiated with siblings the way an ordinary `uses` arrow's `spreadEnds` does, so
+    /// each foreign key gets the router's ordinary path search (`aStar`, the same obstacles, the
+    /// same margins) run once with its own two fixed ends — no new router. A self-reference never
+    /// reaches the path search at all: it always draws its own fixed loop off the table's right
+    /// side. A key this doesn't resolve a route for is exactly the key `foreignKeyStubs` draws a
+    /// stub for instead — the two partition `BoardForeignKey.all(in:)` for a placed source table.
+    public static func foreignKeyRoutes(for map: BoardMap) -> [BoardForeignKey: BoardRoute] {
+        let byLowercasedName = placedByLowercasedName(map)
+        guard !byLowercasedName.isEmpty else { return [:] }
+        let componentBox = placedBoxByLowercasedName(map)
+        let noteBoxes = map.notes.compactMap { $0.at.map(BoardGeometry.rect(ofNoteAt:)) }
+
+        var results: [BoardForeignKey: BoardRoute] = [:]
+        for key in BoardForeignKey.all(in: map) {
+            guard let source = byLowercasedName[key.table.lowercased()], let sourceBox = componentBox[key.table.lowercased()],
+                  let columnIndex = source.columns.firstIndex(where: { $0.name.lowercased() == key.column.lowercased() }),
+                  let (target, refIndex) = resolvedReference(key, in: byLowercasedName)
+            else { continue }
+            let targetBox = componentBox[target.name.lowercased()]!
+
+            if key.table.lowercased() == key.refTable.lowercased() {
+                results[key] = BoardRoute(points: foreignKeySelfLoop(sourceBox, from: columnIndex, to: refIndex), bundle: nil)
+                continue
+            }
+
+            let sourceSide = horizontalSide(from: sourceBox.center, to: targetBox.center)
+            let targetSide = horizontalSide(from: targetBox.center, to: sourceBox.center)
+            let sourcePort = foreignKeyPort(sourceBox, sourceSide, rowIndex: columnIndex)
+            let targetPort = foreignKeyPort(targetBox, targetSide, rowIndex: refIndex)
+
+            let (othersRaw, frameObstacles) = obstaclesFor(
+                map: map, sourceName: source.name, targetName: target.name, sourceBox: sourceBox, targetBox: targetBox,
+                componentBox: componentBox, noteBoxes: noteBoxes)
+            let rawObstacles = othersRaw + [sourceBox, targetBox]
+            let marginObstacles = rawObstacles.map { inflate($0, by: clearance) }
+            let sourceStub = stub(sourcePort, sourceSide, avoiding: othersRaw)
+            let targetStub = stub(targetPort, targetSide, avoiding: othersRaw)
+            let fkId = "fk:\(key.table.lowercased()).\(key.column.lowercased())"
+            let path = aStar(
+                from: sourceStub, to: targetStub, rawObstacles: rawObstacles, marginObstacles: marginObstacles,
+                frames: frameObstacles, avoid: [], selfId: fkId) ?? lastResort()
+            results[key] = BoardRoute(points: simplify([sourcePort] + path + [targetPort]), bundle: nil)
+        }
+        return results
+    }
+
+    /// A 40 pt horizontal stub off the right side of the foreign-key row, for a key whose
+    /// referenced table or column isn't on the board (or isn't placed) — the app labels it with
+    /// the reference's own text. Never produced for a key `foreignKeyRoutes` already drew a real
+    /// route for.
+    public static func foreignKeyStubs(for map: BoardMap) -> [BoardForeignKey: (from: BoardPoint, to: BoardPoint)] {
+        let byLowercasedName = placedByLowercasedName(map)
+        let componentBox = placedBoxByLowercasedName(map)
+        var results: [BoardForeignKey: (from: BoardPoint, to: BoardPoint)] = [:]
+        for key in BoardForeignKey.all(in: map) {
+            guard let source = byLowercasedName[key.table.lowercased()], let sourceBox = componentBox[key.table.lowercased()],
+                  let columnIndex = source.columns.firstIndex(where: { $0.name.lowercased() == key.column.lowercased() })
+            else { continue }
+            guard resolvedReference(key, in: byLowercasedName) == nil else { continue }
+            let from = BoardPoint(x: sourceBox.maxX, y: BoardGeometry.rowCenterY(ofColumnAt: columnIndex, in: sourceBox))
+            results[key] = (from: from, to: BoardPoint(x: from.x + 40, y: from.y))
+        }
+        return results
+    }
+
+    /// Same shape as the inline dictionary `routes(for:)` builds for itself at its own top — kept
+    /// as a separate, reusable helper here rather than rewiring `routes(for:)` to share it, so
+    /// this task touches nothing about how ordinary arrows already route.
+    private static func placedByLowercasedName(_ map: BoardMap) -> [String: BoardComponent] {
+        Dictionary(uniqueKeysWithValues: map.components.compactMap { c -> (String, BoardComponent)? in
+            guard c.at != nil else { return nil }
+            return (c.name.lowercased(), c)
+        })
+    }
+
+    private static func placedBoxByLowercasedName(_ map: BoardMap) -> [String: BoardRect] {
+        Dictionary(uniqueKeysWithValues: map.components.compactMap { c -> (String, BoardRect)? in
+            guard let rect = BoardGeometry.rect(of: c) else { return nil }
+            return (c.name.lowercased(), rect)
+        })
+    }
+
+    /// `key`'s referenced table and column, when both are on the board and placed —
+    /// `byLowercasedName` is already placed-only, so this never resolves an unplaced part.
+    /// Resolved means `foreignKeyRoutes` draws a route for `key`; unresolved means
+    /// `foreignKeyStubs` draws a stub instead.
+    private static func resolvedReference(
+        _ key: BoardForeignKey, in byLowercasedName: [String: BoardComponent]
+    ) -> (target: BoardComponent, columnIndex: Int)? {
+        guard let target = byLowercasedName[key.refTable.lowercased()],
+              let index = target.columns.firstIndex(where: { $0.name.lowercased() == key.refColumn.lowercased() })
+        else { return nil }
+        return (target, index)
+    }
+
+    /// Always left or right — a foreign-key port never faces top or bottom, whatever the two
+    /// boxes' relative position, since a row is a horizontal band at one fixed y. A tied x-centre
+    /// resolves to `.right` on both ends; a self-reference never reaches this function at all.
+    private static func horizontalSide(from source: BoardPoint, to target: BoardPoint) -> Side {
+        target.x >= source.x ? .right : .left
+    }
+
+    private static func foreignKeyPort(_ box: BoardRect, _ side: Side, rowIndex: Int) -> BoardPoint {
+        BoardPoint(x: side == .left ? box.minX : box.maxX, y: BoardGeometry.rowCenterY(ofColumnAt: rowIndex, in: box))
+    }
+
+    /// A self-reference's own fixed loop: out the FK row on the table's right side, 24 pt further
+    /// right, then back in at the referenced row — never through the path search, since both ends
+    /// are always on the very box a self-reference never actually leaves. Two points, not four,
+    /// when the two rows coincide — still a visible loop, never a zero-length one collapsed onto a
+    /// single point off the box.
+    private static func foreignKeySelfLoop(_ box: BoardRect, from rowIndex: Int, to refRowIndex: Int) -> [BoardPoint] {
+        let rightX = box.maxX
+        let outX = rightX + 24
+        let fromY = BoardGeometry.rowCenterY(ofColumnAt: rowIndex, in: box)
+        let toY = BoardGeometry.rowCenterY(ofColumnAt: refRowIndex, in: box)
+        guard fromY != toY else { return [BoardPoint(x: rightX, y: fromY), BoardPoint(x: outX, y: fromY)] }
+        return [
+            BoardPoint(x: rightX, y: fromY),
+            BoardPoint(x: outX, y: fromY),
+            BoardPoint(x: outX, y: toY),
+            BoardPoint(x: rightX, y: toY),
+        ]
+    }
+
     // MARK: - Ordering
 
     private static func orderKey(_ a: BoardModel.ArrowKey, _ b: BoardModel.ArrowKey) -> Bool {

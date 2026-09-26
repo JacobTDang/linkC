@@ -67,4 +67,35 @@ final class BoardSchemaImportTests: XCTestCase {
         XCTAssertEqual(Set(applied.map.components.map(\.name)), ["orgs", "users"])
         XCTAssertEqual(applied.lines.count, 2)
     }
+
+    func testPlanCountsANewlyAddedTable() throws {
+        let parsed = try SQLSchema.parse("create table orgs (id bigint primary key);")
+        let (_, summary) = BoardSchemaImport.plan(for: parsed, into: .empty)
+        XCTAssertEqual(summary, BoardSchemaImport.Summary(added: 1, updated: 0, markedPlanned: 0, skipped: 0, notModelled: 0))
+    }
+
+    func testPlanCountsUpdatedAndMarkedPlannedAndStepsMatchesPlan() throws {
+        let parsed = try SQLSchema.parse("create table orgs (id bigint primary key);")
+        var map = try BoardEdit.apply(BoardSchemaImport.steps(for: parsed, into: .empty), to: .empty).map
+        map = try apply([
+            ["op": "column", "table": "orgs", "column": "notes", "set": ["type": "text"]],
+            ["add": "wishlist", "kind": "table", "columns": [["name": "id", "type": "uuid"]]],
+        ], to: map).map
+
+        let (steps, summary) = BoardSchemaImport.plan(for: parsed, into: map)
+        XCTAssertEqual(summary, BoardSchemaImport.Summary(added: 0, updated: 1, markedPlanned: 1, skipped: 0, notModelled: 0))
+        XCTAssertEqual(steps, BoardSchemaImport.steps(for: parsed, into: map), "steps(for:into:) is exactly plan(for:into:).steps")
+    }
+
+    func testPlanCarriesTheParsersOwnSkippedAndNotModelledCounts() throws {
+        let parsed = try SQLSchema.parse("""
+        create table orgs (id bigint primary key, name text, check (name <> ''));
+        create index orgs_name_idx on orgs (name);
+        """)
+        XCTAssertEqual(parsed.notModelled.count, 1)
+        XCTAssertEqual(parsed.skipped.count, 1)
+        let (_, summary) = BoardSchemaImport.plan(for: parsed, into: .empty)
+        XCTAssertEqual(summary.skipped, 1)
+        XCTAssertEqual(summary.notModelled, 1)
+    }
 }
