@@ -238,6 +238,7 @@ struct BoardCanvas: View {
             drawGrid(in: &context, size: canvasSize)
             drawFrames(in: &context)
             drawArrows(in: &context)
+            drawForeignKeys(in: &context)
             if let marquee {
                 let path = Path(roundedRect: marquee, cornerRadius: 3)
                 context.fill(path, with: .color(Theme.accent.opacity(0.08)))
@@ -814,6 +815,44 @@ struct BoardCanvas: View {
                 if let bundleId { drawnBundlePills.insert(bundleId) }
                 drawPill(at: rect.center, arrow: arrow, style: arrow.style, highlighted: highlighted, in: &context)
             }
+        }
+    }
+
+    /// Foreign-key lines between table rows: `board.foreignKeyRoutes`' real routes, each a 1.2 pt
+    /// line in `Theme.textSecondary` at 70% with a small filled arrowhead at the referenced end
+    /// (`route.points.last`) and a 3 pt dot at the foreign-key end (`route.points.first` — always
+    /// the source in a route `BoardRouter.foreignKeyRoutes` built, self-references included), plus
+    /// `board.foreignKeyStubs` for a key whose reference isn't resolved on the board, the same line
+    /// style with "→ <refTable>.<refColumn>" in 10 pt secondary text at the stub's far end. Data,
+    /// like a plain arrow: hidden outright under the Control lens (they're never control flow), and
+    /// — while Focus is on — drawn only when Focus keeps the key's own table visible; a resolved
+    /// route additionally needs the referenced table visible too, since a stub's referenced table
+    /// is by definition not even on the board for Focus to ever keep visible.
+    private func drawForeignKeys(in context: inout GraphicsContext) {
+        guard viewport.lens != .control else { return }
+        let focusFilter = focusVisible
+        let color = Theme.textSecondary.opacity(0.7)
+        for (key, route) in board.foreignKeyRoutes {
+            guard focusFilter?.parts.contains(key.table) ?? true, focusFilter?.parts.contains(key.refTable) ?? true else { continue }
+            let screen = route.points.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
+            context.stroke(roundedArrowPath(screen), with: .color(color), style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+            if let head = arrowHead(screen, scale: 0.7) {
+                context.fill(head, with: .color(color))
+            }
+            if let from = screen.first {
+                context.fill(Path(ellipseIn: CGRect(x: from.x - 1.5, y: from.y - 1.5, width: 3, height: 3)), with: .color(color))
+            }
+        }
+        for (key, stub) in board.foreignKeyStubs {
+            guard focusFilter?.parts.contains(key.table) ?? true else { continue }
+            let from = viewport.toScreen(CGPoint(x: Double(stub.from.x), y: Double(stub.from.y)))
+            let to = viewport.toScreen(CGPoint(x: Double(stub.to.x), y: Double(stub.to.y)))
+            var path = Path()
+            path.move(to: from)
+            path.addLine(to: to)
+            context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
+            let text = Text("→ \(key.refTable).\(key.refColumn)").font(.system(size: 10)).foregroundColor(Theme.textSecondary)
+            context.draw(context.resolve(text), at: CGPoint(x: to.x + 4, y: to.y), anchor: .leading)
         }
     }
 
