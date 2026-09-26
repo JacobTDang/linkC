@@ -679,7 +679,9 @@ public final class BoardModel {
     }
 
     /// Replaces one table's whole column list, as one undo step — the app's column-grid save.
-    /// Refuses, with a reason: a duplicate name (case-insensitive) in `columns` itself; and, from
+    /// Refuses, with a reason, before anything changes: whatever the board file itself would
+    /// refuse (`BoardColumn.validate` — a blank name or type, a duplicate name ignoring case, a
+    /// reference with a blank table or column); and, from
     /// applying an ordinary `update … columns` step, a part that isn't a table or that comes from
     /// the overview (a ghost) — `BoardEdit`'s own refusals, reused rather than re-implemented, so
     /// the reasons read exactly as they would to an agent.
