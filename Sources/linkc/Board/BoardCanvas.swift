@@ -388,7 +388,7 @@ struct BoardCanvas: View {
         let content = ComponentBox(component: component, status: board.statuses[component.name],
                                    isSelected: board.selection.contains(.component(component.name)))
             .opacity(focusedComponent.map { isConnected(component.name, to: $0) ? 1 : 0.3 } ?? 1)
-            .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component.name, kind: component.kind) } }
+            .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component) } }
             .overlay { glow(.component(component.name), cornerRadius: 10, inset: BoardShape.insets(for: component.kind)) }
             .onContinuousHover(coordinateSpace: .named(Self.space)) { phase in
                 switch phase {
@@ -1110,7 +1110,7 @@ struct BoardCanvas: View {
     }
 
     private func componentRect(_ component: BoardComponent) -> BoardRect? {
-        component.at.map(BoardGeometry.rect(ofComponentAt:))
+        BoardGeometry.rect(of: component)
     }
 
     private func frameRect(_ frame: BoardFrame) -> BoardRect? {
@@ -1258,10 +1258,12 @@ struct BoardCanvas: View {
     }
 
     /// The four side handles on a hovered component, on the kind's drawn outline rather than the
-    /// box behind it; dragging one draws an arrow.
-    private func handles(for name: String, kind: ComponentKind) -> some View {
-        let size = BoardGeometry.componentSize
-        let inset = BoardShape.insets(for: kind)
+    /// box behind it; dragging one draws an arrow. Sized to the component's own box —
+    /// `BoardGeometry.size(of:)`, a table's grown box included, not the fixed 176×84 every other
+    /// kind still uses.
+    private func handles(for component: BoardComponent) -> some View {
+        let size = BoardGeometry.size(of: component)
+        let inset = BoardShape.insets(for: component.kind)
         let points = [CGPoint(x: CGFloat(size.x) / 2, y: inset.top), CGPoint(x: CGFloat(size.x) - inset.right, y: CGFloat(size.y) / 2),
                       CGPoint(x: CGFloat(size.x) / 2, y: CGFloat(size.y) - inset.bottom), CGPoint(x: inset.left, y: CGFloat(size.y) / 2)]
         return ZStack(alignment: .topLeading) {
@@ -1271,7 +1273,7 @@ struct BoardCanvas: View {
                     .overlay(Circle().strokeBorder(Theme.accent, lineWidth: 1.5))
                     .frame(width: 10, height: 10)
                     .position(points[index])
-                    .gesture(arrowDrag(from: name))
+                    .gesture(arrowDrag(from: component.name))
             }
         }
         .frame(width: CGFloat(size.x), height: CGFloat(size.y))
