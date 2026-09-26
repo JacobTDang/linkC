@@ -653,6 +653,53 @@ public final class BoardModel {
         }
     }
 
+    // MARK: - Schema (tables)
+
+    /// Reconciles a parsed SQL schema with the board's own tables, as one undo step —
+    /// `BoardEdit`'s own `add`/`update` steps (`BoardSchemaImport.plan(for:into:)`, which
+    /// `steps(for:into:)` is defined in terms of), the same transformation an agent's `columns`
+    /// edit already goes through, so a table-name clash or any other refusal `BoardEdit.apply`
+    /// would give an agent is given here too. Nothing is written to disk directly: the change
+    /// lands in `map` exactly as any other edit does, and the model's own scheduled write picks
+    /// it up. A schema with nothing to reconcile against this board changes nothing and leaves no
+    /// undo step, exactly as `tidyUp()` does when the map is already arranged.
+    @discardableResult
+    public func importSchema(_ parsed: SQLSchema.Parsed) throws -> BoardSchemaImport.Summary {
+        let (steps, summary) = BoardSchemaImport.plan(for: parsed, into: map)
+        try editOrThrow { current in
+            current = try BoardEdit.apply(steps, to: current).map
+        }
+        return summary
+    }
+
+    /// The current board's tables as CREATE TABLE SQL, in foreign-key order. Pure: nothing is
+    /// edited, nothing is written.
+    public func exportSchemaSQL() -> String {
+        SQLSchema.createStatements(for: SQLSchema.tables(in: map))
+    }
+
+    /// Replaces one table's whole column list, as one undo step — the app's column-grid save.
+    /// Refuses, with a reason: a duplicate name (case-insensitive) in `columns` itself; and, from
+    /// applying an ordinary `update … columns` step, a part that isn't a table or that comes from
+    /// the overview (a ghost) — `BoardEdit`'s own refusals, reused rather than re-implemented, so
+    /// the reasons read exactly as they would to an agent.
+    public func setColumns(of table: String, to columns: [BoardColumn]) throws {
+        let step = BoardEditStep.update(table, BoardComponentFields(columns: columns), place: nil, rename: nil)
+        try editOrThrow { current in
+            var seen: Set<String> = []
+            for column in columns {
+                guard seen.insert(column.name.lowercased()).inserted else {
+                    throw BoardEditRefusal(step: 0, reason: "\"\(table)\" names column \"\(column.name)\" twice")
+                }
+            }
+            do {
+                current = try BoardEdit.apply([step], to: current).map
+            } catch let refusal as BoardEditRefusal {
+                throw BoardEditRefusal(step: 0, reason: refusal.reason)
+            }
+        }
+    }
+
     // MARK: - Hooks the spatial edits share
 
     var canEdit: Bool {
@@ -676,6 +723,32 @@ public final class BoardModel {
         map = next
         refusal = nil
         afterMapChange()
+    }
+
+    /// Like `edit(_:)`, but `change` may throw instead of returning `false` — nothing is applied
+    /// and no undo step is recorded when it does, exactly as when `edit(_:)`'s own closure returns
+    /// `false` (including while the board is locked, when `edit(_:)` never even calls `change` —
+    /// a caller that must react differently while locked checks `isLocked` itself). The thrown
+    /// error's message becomes `refusal` too, so the board's refusal banner keeps working for a
+    /// throwing edit exactly as for every other one, and the error is also rethrown so a caller
+    /// with its own place to show it (an import summary, a column-grid save) doesn't have to poll
+    /// `refusal` instead.
+    func editOrThrow(_ change: (inout BoardMap) throws -> Void) throws {
+        var thrown: Error?
+        edit { current in
+            let before = current
+            do {
+                try change(&current)
+            } catch {
+                thrown = error
+                return false
+            }
+            return current != before
+        }
+        if let thrown {
+            refusal = message(for: thrown)
+            throw thrown
+        }
     }
 
     /// Records why an edit was refused; returns false so the edit changes nothing.
