@@ -7,7 +7,7 @@ final class ComponentKindTests: XCTestCase {
         XCTAssertEqual(grouped.count, Set(grouped).count)
         XCTAssertEqual(Set(grouped), Set(ComponentKind.known))
         XCTAssertEqual(ComponentKind.groups.map(\.title), ["System", "AI agents", "Hardware"])
-        XCTAssertEqual(ComponentKind.groups.map(\.kinds.count), [7, 12, 10])
+        XCTAssertEqual(ComponentKind.groups.map(\.kinds.count), [8, 12, 10])
     }
 
     func testNewKindsAreKnownAndKeepTheirIDs() {
@@ -19,7 +19,7 @@ final class ComponentKindTests: XCTestCase {
 
     func testGroupedKindListNamesEachGroupWithItsKinds() {
         let text = ComponentKind.groupedKindList
-        XCTAssertTrue(text.hasPrefix("System: database, cache, queue, storage, service, host, external; "), text)
+        XCTAssertTrue(text.hasPrefix("System: database, table, cache, queue, storage, service, host, external; "), text)
         XCTAssertTrue(text.contains("AI agents: agent, model, tool, mcp, router, start, end, vector-store, memory, prompt, state, human"), text)
         XCTAssertTrue(text.contains("Hardware: alu, mux, demux, register, ram, control, adder, decoder, clock, bus"), text)
         for kind in ComponentKind.known {
@@ -27,10 +27,10 @@ final class ComponentKindTests: XCTestCase {
         }
     }
 
-    func testTableIsAKnownIDButNotYetInAnyGroup() {
+    func testTableIsInTheSystemGroupRightAfterDatabase() {
         XCTAssertEqual(ComponentKind.table.raw, "table")
-        XCTAssertFalse(ComponentKind.groups.flatMap(\.kinds).contains(.table), "the app can't draw it yet")
-        XCTAssertFalse(ComponentKind.known.contains(.table))
-        XCTAssertFalse(ComponentKind.table.isKnown)
+        XCTAssertEqual(ComponentKind.groups[0].kinds, [.database, .table, .cache, .queue, .storage, .service, .host, .external])
+        XCTAssertTrue(ComponentKind.known.contains(.table))
+        XCTAssertTrue(ComponentKind.table.isKnown)
     }
 }

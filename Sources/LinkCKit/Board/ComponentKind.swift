@@ -12,17 +12,15 @@ public struct ComponentKind: Equatable, Hashable, Sendable {
     // MARK: - System
 
     public static let database = ComponentKind("database")
+    /// A database table, drawn as a header plus one row per column (`ComponentBox`, in the app
+    /// target) rather than the plain card every other System kind gets.
+    public static let table = ComponentKind("table")
     public static let cache = ComponentKind("cache")
     public static let queue = ComponentKind("queue")
     public static let storage = ComponentKind("storage")
     public static let service = ComponentKind("service")
     public static let host = ComponentKind("host")
     public static let external = ComponentKind("external")
-
-    // MARK: - Data
-
-    /// A database table. It remains outside `groups` until the app can draw it.
-    public static let table = ComponentKind("table")
 
     // MARK: - AI agents
 
@@ -59,7 +57,7 @@ public struct ComponentKind: Equatable, Hashable, Sendable {
     }
 
     public static let groups: [Group] = [
-        Group(title: "System", kinds: [.database, .cache, .queue, .storage, .service, .host, .external]),
+        Group(title: "System", kinds: [.database, .table, .cache, .queue, .storage, .service, .host, .external]),
         Group(
             title: "AI agents",
             kinds: [.agent, .model, .tool, .mcp, .router, .start, .end, .vectorStore, .memory, .prompt, .state, .human]),

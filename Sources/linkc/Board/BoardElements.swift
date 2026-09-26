@@ -9,6 +9,7 @@ extension ComponentKind {
     var glyph: String {
         switch self {
         case .database: return "cylinder.split.1x2"
+        case .table: return "tablecells"
         case .cache: return "bolt.horizontal"
         case .queue: return "tray.full"
         case .storage: return "externaldrive"

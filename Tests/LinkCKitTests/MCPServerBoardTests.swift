@@ -110,7 +110,7 @@ final class MCPServerBoardTests: XCTestCase {
         }
         XCTAssertTrue(description.contains("\"planned\": true"), description)
         XCTAssertTrue(description.contains("\"status\": \"planned\""), description)
-        XCTAssertTrue(description.contains("System: database, cache, queue, storage, service, host, external"), description)
+        XCTAssertTrue(description.contains("System: database, table, cache, queue, storage, service, host, external"), description)
         XCTAssertTrue(description.contains("kept and drawn as a service"), description)
     }
 
