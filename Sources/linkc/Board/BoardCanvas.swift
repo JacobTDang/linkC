@@ -632,9 +632,28 @@ struct BoardCanvas: View {
                         goDeeper(into: name)
                     }
                 },
-                close: unpin
+                close: unpin,
+                columns: columnsGridInput(for: pinned)
             )
         }
+    }
+
+    /// The editable grid input for a pinned local table, or nil for any other inspection target.
+    private func columnsGridInput(for target: BoardInspectionTarget) -> BoardColumnsGridInput? {
+        guard case .part(let name) = target,
+              let table = board.map.components.first(where: { $0.name == name }),
+              table.kind == .table,
+              table.outside == nil
+        else {
+            return nil
+        }
+        return BoardColumnsGridInput(
+            tableName: table.name,
+            columns: table.columns,
+            referenceOptions: BoardColumn.referenceOptions(in: board.map, excludingTable: table.name),
+            commit: { columns in
+                try board.setColumns(of: table.name, to: columns)
+            })
     }
 
     // MARK: - Inspection
