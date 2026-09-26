@@ -57,6 +57,13 @@ public final class BoardModel {
     public private(set) var routes: [ArrowKey: BoardRoute] = [:]
     /// Where each labelled arrow's pill goes; kept in step with `routes`, the same recompute.
     public private(set) var labelRects: [ArrowKey: BoardRect] = [:]
+    /// One route per foreign key whose table and referenced table are both on the board and
+    /// placed; kept in step with `routes`, the same recompute.
+    public private(set) var foreignKeyRoutes: [BoardForeignKey: BoardRoute] = [:]
+    /// A 40 pt stub for a foreign key whose referenced table or column isn't on the board (or
+    /// isn't placed). `foreignKeyRoutes` and this partition every key `BoardForeignKey.all(in:)`
+    /// lists for a placed source table — see `BoardRouter.foreignKeyRoutes`/`foreignKeyStubs`.
+    public private(set) var foreignKeyStubs: [BoardForeignKey: (from: BoardPoint, to: BoardPoint)] = [:]
     public var selection: Set<Element> = []
     public var tool: Tool = .select
     /// The last edit linkC would not make, and why. Cleared by the next edit that lands.
@@ -89,7 +96,10 @@ public final class BoardModel {
     /// The detached task doing the current recompute's work, cancelled the moment a newer one
     /// starts — a superseded recompute stops rather than racing to a result that would be
     /// dropped anyway. Internal, not private, so a test can capture and assert on the handle.
-    @ObservationIgnored var routingTask: Task<(routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect])?, Never>?
+    @ObservationIgnored var routingTask: Task<(
+        routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect],
+        foreignKeyRoutes: [BoardForeignKey: BoardRoute], foreignKeyStubs: [BoardForeignKey: (from: BoardPoint, to: BoardPoint)]
+    )?, Never>?
     @ObservationIgnored private var hasUnwrittenEdits = false
     /// Whether `read()` has ever run — `load()`'s very first call has no "before" map worth
     /// taking a real change on disk against, so it always reads in full regardless of state.
@@ -715,19 +725,25 @@ public final class BoardModel {
             guard let self, self.routingGeneration == scheduled else { return }
             self.routes = result.routes
             self.labelRects = result.labelRects
+            self.foreignKeyRoutes = result.foreignKeyRoutes
+            self.foreignKeyStubs = result.foreignKeyStubs
         }
     }
 
     /// The pure computation `recomputeRoutes()` runs off the main actor: every arrow's route, then
-    /// every labelled arrow's pill, from the same routes. Routing is the pricier of the two
-    /// (measured at 7–43 ms; labelling at 0.3 ms) and checks `isCancelled` itself, between arrows;
-    /// `isCancelled` is checked again once routing returns, before the labelling pass, in case
-    /// cancellation lands in the gap between them — cheap insurance either way against doing work
-    /// for a result about to be dropped. Internal, not private, and `isCancelled` is injectable,
-    /// so a test can drive it deterministically instead of racing real `Task` cancellation.
+    /// every labelled arrow's pill, then every foreign key's own route or stub — all from the same
+    /// map. Routing is the pricier of the phases (measured at 7–43 ms; labelling at 0.3 ms) and
+    /// checks `isCancelled` itself, between arrows; `isCancelled` is checked again once routing
+    /// returns, before the labelling pass, and a third time before the foreign-key pass, in case
+    /// cancellation lands in one of the gaps — cheap insurance either way against doing work for a
+    /// result about to be dropped. Internal, not private, and `isCancelled` is injectable, so a
+    /// test can drive it deterministically instead of racing real `Task` cancellation.
     nonisolated static func routesAndLabels(
         for map: BoardMap, isCancelled: () -> Bool = { Task.isCancelled }
-    ) -> (routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect])? {
+    ) -> (
+        routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect],
+        foreignKeyRoutes: [BoardForeignKey: BoardRoute], foreignKeyStubs: [BoardForeignKey: (from: BoardPoint, to: BoardPoint)]
+    )? {
         let routes = BoardRouter.routes(for: map)
         guard !isCancelled() else { return nil }
         // The placer's text is the arrow's full pill — label and width combined, or width alone
@@ -741,7 +757,8 @@ public final class BoardModel {
             }
         }
         let labelRects = BoardLabels.placed(routes: routes, labels: labelOf, obstacles: BoardLabels.obstacles(for: map))
-        return (routes, labelRects)
+        guard !isCancelled() else { return nil }
+        return (routes, labelRects, BoardRouter.foreignKeyRoutes(for: map), BoardRouter.foreignKeyStubs(for: map))
     }
 
     nonisolated static func elementRects(_ map: BoardMap, excluding excluded: Set<Element>) -> [BoardRect] {

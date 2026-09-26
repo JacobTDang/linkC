@@ -730,6 +730,38 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.map.components.first { $0.name == api }?.uses[db], "reads entries")
     }
 
+    func testForeignKeyRoutesArePublishedAlongsideOrdinaryRoutes() async throws {
+        let board = fresh()
+        board.map.components = [
+            BoardComponent(name: "orders", kind: .table, at: BoardPoint(x: 0, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "cust_id", type: "bigint", references: BoardColumnReference(table: "customers", column: "id")),
+            ]),
+            BoardComponent(name: "customers", kind: .table, at: BoardPoint(x: 400, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+            ]),
+        ]
+        await board.recomputeRoutes().value
+        let key = BoardForeignKey(table: "orders", column: "cust_id", refTable: "customers", refColumn: "id")
+        XCTAssertEqual(board.foreignKeyRoutes[key], BoardRouter.foreignKeyRoutes(for: board.map)[key])
+        XCTAssertNotNil(board.foreignKeyRoutes[key])
+        XCTAssertTrue(board.foreignKeyStubs.isEmpty)
+    }
+
+    func testForeignKeyStubsArePublishedForAMissingReference() async throws {
+        let board = fresh()
+        board.map.components = [
+            BoardComponent(name: "orders", kind: .table, at: BoardPoint(x: 0, y: 0), columns: [
+                BoardColumn(name: "id", type: "uuid", pk: true),
+                BoardColumn(name: "cust_id", type: "bigint", references: BoardColumnReference(table: "customers", column: "id")),
+            ]),
+        ]
+        await board.recomputeRoutes().value
+        let key = BoardForeignKey(table: "orders", column: "cust_id", refTable: "customers", refColumn: "id")
+        XCTAssertTrue(board.foreignKeyRoutes.isEmpty)
+        XCTAssertNotNil(board.foreignKeyStubs[key])
+    }
+
     func testAddArrowAppliesTheDefaultRuleAndSetArrowIsOneUndoStep() throws {
         let board = fresh()
         let r = try XCTUnwrap(board.addComponent(kind: .router, at: BoardPoint(x: 0, y: 0)))
