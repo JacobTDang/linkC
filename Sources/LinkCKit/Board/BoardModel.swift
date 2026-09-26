@@ -686,11 +686,10 @@ public final class BoardModel {
     public func setColumns(of table: String, to columns: [BoardColumn]) throws {
         let step = BoardEditStep.update(table, BoardComponentFields(columns: columns), place: nil, rename: nil)
         try editOrThrow { current in
-            var seen: Set<String> = []
-            for column in columns {
-                guard seen.insert(column.name.lowercased()).inserted else {
-                    throw BoardEditRefusal(step: 0, reason: "\"\(table)\" names column \"\(column.name)\" twice")
-                }
+            do {
+                try BoardColumn.validate(columns, context: "\"\(table)\"")
+            } catch let error as LinkCError {
+                throw BoardEditRefusal(step: 0, reason: error.errorDescription ?? "\(error)")
             }
             do {
                 current = try BoardEdit.apply([step], to: current).map

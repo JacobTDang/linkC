@@ -8,9 +8,9 @@ public enum SupabaseSchemaDump {
     /// How long `supabase db dump` gets before it's killed — a cold or large project can take a
     /// while to answer, but a stalled dump must not hang the app forever.
     private static let timeout: TimeInterval = 120
-    private static let command = "supabase db dump --schema-only"
+    private static let command = "supabase db dump"
 
-    /// Runs `supabase db dump --schema-only` in `projectPath` and returns stdout. A nonzero exit
+    /// Runs `supabase db dump` in `projectPath` and returns stdout. A nonzero exit
     /// throws `LinkCError.process` with the last 5 lines of stderr (this is also what a missing
     /// `supabase` CLI looks like: the shell's own "command not found" on stderr, exit 127); a
     /// timeout throws `LinkCError.process` naming the timeout.

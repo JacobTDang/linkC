@@ -10,7 +10,7 @@ final class SupabaseSchemaDumpTests: XCTestCase {
         XCTAssertEqual(output, "CREATE TABLE orgs ();\n")
         XCTAssertEqual(runner.calls, [
             CommandStub.Call(
-                executable: ShellResolver.loginShell(), args: ["-l", "-c", "supabase db dump --schema-only"],
+                executable: ShellResolver.loginShell(), args: ["-l", "-c", "supabase db dump"],
                 cwd: URL(fileURLWithPath: projectPath), timeout: 120),
         ])
     }
@@ -46,7 +46,7 @@ final class SupabaseSchemaDumpTests: XCTestCase {
             _ = try await SupabaseSchemaDump.run(projectPath: projectPath, runner: runner)
             XCTFail("expected a throw")
         } catch let error as LinkCError {
-            XCTAssertEqual(error.errorDescription, "supabase db dump --schema-only exited with status 2")
+            XCTAssertEqual(error.errorDescription, "supabase db dump exited with status 2")
         } catch {
             XCTFail("unexpected error: \(error)")
         }
@@ -58,7 +58,7 @@ final class SupabaseSchemaDumpTests: XCTestCase {
             _ = try await SupabaseSchemaDump.run(projectPath: projectPath, runner: runner)
             XCTFail("expected a throw")
         } catch let error as LinkCError {
-            XCTAssertEqual(error.errorDescription, "supabase db dump --schema-only timed out after 120s")
+            XCTAssertEqual(error.errorDescription, "supabase db dump timed out after 120s")
         } catch {
             XCTFail("unexpected error: \(error)")
         }

@@ -1248,4 +1248,43 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(board.refusal, "\"\(name)\" names column \"ID\" twice")
         XCTAssertEqual(board.map.components.first?.columns, [], "nothing changed")
     }
+
+    func testSetColumnsRefusesABlankColumnNameAndChangesNothing() throws {
+        let board = fresh()
+        let name = try XCTUnwrap(board.addComponent(kind: .table, at: BoardPoint(x: 0, y: 0)))
+        let before = board.map
+
+        XCTAssertThrowsError(try board.setColumns(of: name, to: [BoardColumn(name: "  ", type: "uuid")])) { error in
+            XCTAssertEqual((error as? BoardEditRefusal)?.reason, "\"\(name)\" has a column with no \"name\"")
+        }
+        XCTAssertEqual(board.map, before)
+    }
+
+    func testSetColumnsRefusesABlankColumnTypeAndChangesNothing() throws {
+        let board = fresh()
+        let name = try XCTUnwrap(board.addComponent(kind: .table, at: BoardPoint(x: 0, y: 0)))
+        let before = board.map
+
+        XCTAssertThrowsError(try board.setColumns(of: name, to: [BoardColumn(name: "id", type: "  ")])) { error in
+            XCTAssertEqual((error as? BoardEditRefusal)?.reason, "\"\(name)\" column \"id\" has no \"type\"")
+        }
+        XCTAssertEqual(board.map, before)
+    }
+
+    func testSetColumnsRefusesABlankReferencePartAndChangesNothing() throws {
+        let board = fresh()
+        let name = try XCTUnwrap(board.addComponent(kind: .table, at: BoardPoint(x: 0, y: 0)))
+        let before = board.map
+        let reference = BoardColumnReference(table: "", column: "id")
+
+        XCTAssertThrowsError(
+            try board.setColumns(
+                of: name,
+                to: [BoardColumn(name: "org_id", type: "uuid", references: reference)])) { error in
+            XCTAssertEqual(
+                (error as? BoardEditRefusal)?.reason,
+                "\"\(name)\" column \"org_id\" has \"references\" \".id\" but it is not table.column")
+        }
+        XCTAssertEqual(board.map, before)
+    }
 }

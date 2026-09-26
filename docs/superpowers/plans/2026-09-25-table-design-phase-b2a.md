@@ -1018,18 +1018,16 @@ closing brace and before the existing `// MARK: - Hooks the spatial edits share`
     }
 
     /// Replaces one table's whole column list, as one undo step — the app's column-grid save.
-    /// Refuses, with a reason: a duplicate name (case-insensitive) in `columns` itself; and, from
-    /// applying an ordinary `update … columns` step, a part that isn't a table or that comes from
-    /// the overview (a ghost) — `BoardEdit`'s own refusals, reused rather than re-implemented, so
-    /// the reasons read exactly as they would to an agent.
+    /// Refuses with the board-file decoder's reason for a blank name or type, a duplicate name,
+    /// or a reference with a blank table or column. Applying the ordinary `update … columns`
+    /// step also refuses a part that isn't a table or that comes from the overview (a ghost).
     public func setColumns(of table: String, to columns: [BoardColumn]) throws {
         let step = BoardEditStep.update(table, BoardComponentFields(columns: columns), place: nil, rename: nil)
         try editOrThrow { current in
-            var seen: Set<String> = []
-            for column in columns {
-                guard seen.insert(column.name.lowercased()).inserted else {
-                    throw BoardEditRefusal(step: 0, reason: "\"\(table)\" names column \"\(column.name)\" twice")
-                }
+            do {
+                try BoardColumn.validate(columns, context: "\"\(table)\"")
+            } catch let error as LinkCError {
+                throw BoardEditRefusal(step: 0, reason: error.errorDescription ?? "\(error)")
             }
             do {
                 current = try BoardEdit.apply([step], to: current).map
@@ -1198,8 +1196,9 @@ part of a numbered list of steps.
 **Consumes:** `ProcessRunner`/`ProcessRunnerError`/`ProcessResult` (`Sources/LinkCKit/Config/ProcessRunner.swift`),
 `ShellResolver.loginShell()` (`Sources/LinkCKit/Terminal/ShellResolver.swift`), `LinkCError.process`.
 
-**Design note, read before implementing:** the design spec says linkC runs `supabase db dump
---schema-only` "through your login shell." The real precedent for that exact mechanism in this
+**Design note, read before implementing:** linkC runs `supabase db dump` "through your login
+shell." Schema output is the command's default; `--data-only` is its opposite switch, and the
+installed CLI has no `--schema-only` flag. The real precedent for that exact mechanism in this
 codebase is `VerificationRunner.execute(_:in:)`
 (`Sources/LinkCKit/Verification/VerificationRunner.swift`): `runner.runCapturing(shell, args: ["-l",
 "-c", command], cwd:, timeout:)`, with `shell` from `ShellResolver.loginShell()`, tested by
@@ -1226,9 +1225,9 @@ public enum SupabaseSchemaDump {
     /// How long `supabase db dump` gets before it's killed — a cold or large project can take a
     /// while to answer, but a stalled dump must not hang the app forever.
     private static let timeout: TimeInterval = 120
-    private static let command = "supabase db dump --schema-only"
+    private static let command = "supabase db dump"
 
-    /// Runs `supabase db dump --schema-only` in `projectPath` and returns stdout. A nonzero exit
+    /// Runs `supabase db dump` in `projectPath` and returns stdout. A nonzero exit
     /// throws `LinkCError.process` with the last 5 lines of stderr (this is also what a missing
     /// `supabase` CLI looks like: the shell's own "command not found" on stderr, exit 127); a
     /// timeout throws `LinkCError.process` naming the timeout.
@@ -1279,7 +1278,7 @@ final class SupabaseSchemaDumpTests: XCTestCase {
         XCTAssertEqual(output, "CREATE TABLE orgs ();\n")
         XCTAssertEqual(runner.calls, [
             CommandStub.Call(
-                executable: ShellResolver.loginShell(), args: ["-l", "-c", "supabase db dump --schema-only"],
+                executable: ShellResolver.loginShell(), args: ["-l", "-c", "supabase db dump"],
                 cwd: URL(fileURLWithPath: projectPath), timeout: 120),
         ])
     }
@@ -1311,7 +1310,7 @@ final class SupabaseSchemaDumpTests: XCTestCase {
             _ = try await SupabaseSchemaDump.run(projectPath: projectPath, runner: runner)
             XCTFail("expected a throw")
         } catch let error as LinkCError {
-            XCTAssertEqual(error.errorDescription, "supabase db dump --schema-only exited with status 2")
+            XCTAssertEqual(error.errorDescription, "supabase db dump exited with status 2")
         }
     }
 
@@ -1321,7 +1320,7 @@ final class SupabaseSchemaDumpTests: XCTestCase {
             _ = try await SupabaseSchemaDump.run(projectPath: projectPath, runner: runner)
             XCTFail("expected a throw")
         } catch let error as LinkCError {
-            XCTAssertEqual(error.errorDescription, "supabase db dump --schema-only timed out after 120s")
+            XCTAssertEqual(error.errorDescription, "supabase db dump timed out after 120s")
         }
     }
 }

@@ -1,3 +1,5 @@
+import Foundation
+
 /// The table and column named by a SQL foreign-key reference.
 public struct BoardColumnReference: Equatable, Hashable, Sendable {
     /// The referenced table, including a non-public schema when present.
@@ -55,5 +57,29 @@ public struct BoardColumn: Equatable, Sendable {
         self.defaultValue = defaultValue
         self.references = references
         self.planned = planned
+    }
+
+    /// Validates the structural rules shared by board-file columns and typed column edits.
+    public static func validate(_ columns: [BoardColumn], context: String) throws {
+        var seen: Set<String> = []
+        for column in columns {
+            guard !column.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw LinkCError.parse("\(context) has a column with no \"name\"")
+            }
+            guard !column.type.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw LinkCError.parse("\(context) column \"\(column.name)\" has no \"type\"")
+            }
+            guard seen.insert(column.name.lowercased()).inserted else {
+                throw LinkCError.parse("\(context) names column \"\(column.name)\" twice")
+            }
+            if let reference = column.references {
+                let tableIsBlank = reference.table.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let columnIsBlank = reference.column.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                guard !tableIsBlank, !columnIsBlank else {
+                    throw LinkCError.parse(
+                        "\(context) column \"\(column.name)\" has \"references\" \"\(reference.text)\" but it is not table.column")
+                }
+            }
+        }
     }
 }
