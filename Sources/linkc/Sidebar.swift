@@ -504,7 +504,7 @@ private struct ShellSidebarRow: View {
             // otherwise the terminal stays under `filed` by folder, and the menu item would
             // visibly do nothing.
             if let filed = model.sidebarState.terminalProjects[row.id],
-               filed != (row.cwd as NSString).standardizingPath {
+               filed != ProjectPath.canonical(row.cwd) {
                 let name = URL(fileURLWithPath: filed).lastPathComponent
                 Button("Move out of \(name)") {
                     model.sidebarState.unfile(terminal: row.id)

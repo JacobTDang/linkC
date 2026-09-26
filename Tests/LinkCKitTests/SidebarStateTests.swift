@@ -194,4 +194,39 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(state.projectOrder, ["/p/a"])
         XCTAssertEqual(state.openApps(in: "/p/a"), [])
     }
+
+    func testSavedDataKeyedByTwoSpellingsLoadsAsOneKeyWithFirstOccurrencesOrderAndOverrides() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("linkc-sidebar-canonical-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let realFolder = tempDir.appendingPathComponent("Proj")
+        try FileManager.default.createDirectory(at: realFolder, withIntermediateDirectories: true)
+
+        let symlink = tempDir.appendingPathComponent("link_to_proj")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: realFolder)
+
+        let path1 = symlink.path
+        let path2 = realFolder.path
+        let canonical = ProjectPath.canonical(realFolder.path)
+
+        let json = """
+        {
+            "projectOrder": ["\(path1)", "\(path2)"],
+            "expandOverrides": {"\(path1)": false, "\(path2)": true},
+            "openSections": [],
+            "boardViewports": {
+                "\(path1)": {"originX": 10, "originY": 20, "zoom": 1.0, "lens": "all"},
+                "\(path2)": {"originX": 30, "originY": 40, "zoom": 2.0, "lens": "all"}
+            }
+        }
+        """
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        let state = SidebarState(defaults: defaults)
+
+        XCTAssertEqual(state.projectOrder, [canonical])
+        XCTAssertEqual(state.expandOverrides, [canonical: false])
+        XCTAssertEqual(state.boardViewport(for: path1)?.originX, 10)
+        XCTAssertEqual(state.boardViewport(for: path2)?.originX, 10)
+    }
 }

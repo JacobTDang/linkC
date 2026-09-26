@@ -6,9 +6,9 @@ public enum TerminalFiling {
     /// parent project. Paths compare standardized, as the rest of the sidebar compares them.
     public static func project(forTerminal id: String, cwd: String, filed: [String: String], projects: Set<String>) -> String? {
         if let explicit = filed[id] {
-            return (explicit as NSString).standardizingPath
+            return ProjectPath.canonical(explicit)
         }
-        let standardizedCwd = (cwd as NSString).standardizingPath
-        return projects.map { ($0 as NSString).standardizingPath }.first { $0 == standardizedCwd }
+        let canonicalCwd = ProjectPath.canonical(cwd)
+        return projects.map { ProjectPath.canonical($0) }.first { $0 == canonicalCwd }
     }
 }

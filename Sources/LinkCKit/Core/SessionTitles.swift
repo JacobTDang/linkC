@@ -19,7 +19,7 @@ public enum SessionTitles {
             } else if let task = heldTask(session) {
                 titles[session.id] = taskTitle(task)
             } else {
-                let key = (session.cwd as NSString).standardizingPath + "|" + session.agentKind.rawValue
+                let key = ProjectPath.canonical(session.cwd) + "|" + session.agentKind.rawValue
                 let n = (untitledCount[key] ?? 0) + 1
                 untitledCount[key] = n
                 titles[session.id] = n == 1 ? session.agentKind.shortName : "\(session.agentKind.shortName) \(n)"

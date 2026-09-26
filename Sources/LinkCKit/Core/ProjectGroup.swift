@@ -26,26 +26,26 @@ public struct ProjectGroup: Sendable, Identifiable, Equatable {
         title: String? = nil,
         sessions: [Session] = []
     ) {
-        let standardized = (workspacePath as NSString).standardizingPath
-        self.workspacePath = standardized
+        let canonical = ProjectPath.canonical(workspacePath)
+        self.workspacePath = canonical
         if let title, !title.isEmpty {
             self.title = title
         } else if let firstTitle = sessions.first?.title, !firstTitle.isEmpty {
             self.title = firstTitle
         } else {
-            let base = URL(fileURLWithPath: standardized).lastPathComponent
-            self.title = (base.isEmpty || base == "/") ? (standardized.isEmpty ? "Workspace" : standardized) : base
+            let base = URL(fileURLWithPath: canonical).lastPathComponent
+            self.title = (base.isEmpty || base == "/") ? (canonical.isEmpty ? "Workspace" : canonical) : base
         }
         self.sessions = sessions
     }
 
-    /// Aggregates sessions by standardized cwd preserving encounter order.
+    /// Aggregates sessions by canonical cwd preserving encounter order.
     public static func group(sessions: [Session]) -> [ProjectGroup] {
         var groups: [ProjectGroup] = []
         var indexByPath: [String: Int] = [:]
 
         for session in sessions {
-            let path = (session.cwd as NSString).standardizingPath
+            let path = ProjectPath.canonical(session.cwd)
             if let idx = indexByPath[path] {
                 groups[idx].sessions.append(session)
             } else {

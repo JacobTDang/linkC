@@ -168,7 +168,7 @@ final class AppModel {
         let global = await coordinator.fetchGlobalDashboardAsync()
         self.globalDashboardData = global
         if let ws = workspacePath {
-            let norm = (ws as NSString).standardizingPath
+            let norm = ProjectPath.canonical(ws)
             let project = await coordinator.fetchProjectDashboardAsync(workspacePath: norm)
             self.projectDashboardData[norm] = project
         }
@@ -227,7 +227,7 @@ final class AppModel {
             sidebarState.pruneTerminals(keeping: keptTerminals)
             startShellSweep()
             // Forget remembered folders with no live session, no Earlier entry, and no filing.
-            let standardized: (String) -> String = { ($0 as NSString).standardizingPath }
+            let standardized: (String) -> String = { ProjectPath.canonical($0) }
             var inUse = Set(sessions.map { standardized($0.cwd) })
             inUse.formUnion(restorables.map { standardized($0.cwd) })
             inUse = SidebarState.inUseProjects(sessionPaths: inUse, filed: sidebarState.terminalProjects)
@@ -487,14 +487,14 @@ final class AppModel {
     var swarms: [ProjectSwarm] { coordinator?.swarms ?? [] }
 
     func swarm(for cwd: String) -> ProjectSwarm? {
-        let norm = (cwd as NSString).standardizingPath
-        return swarms.first { ($0.workspacePath as NSString).standardizingPath == norm }
+        let norm = ProjectPath.canonical(cwd)
+        return swarms.first { ProjectPath.canonical($0.workspacePath) == norm }
     }
 
     /// Loads the inbox for a workspace root with a 1-second in-memory throttle
     /// to avoid redundant synchronous disk reads during SwiftUI view body evaluations.
     func inbox(for workspacePath: String) -> Inbox? {
-        let norm = (workspacePath as NSString).standardizingPath
+        let norm = ProjectPath.canonical(workspacePath)
         let now = Date()
         if let last = lastInboxFetch[norm], now.timeIntervalSince(last) < 1.0 {
             return cachedInboxes[norm]
@@ -523,10 +523,10 @@ final class AppModel {
     func refreshCachedInboxes() {
         var paths = Set<String>()
         for s in sessions {
-            paths.insert((s.cwd as NSString).standardizingPath)
+            paths.insert(ProjectPath.canonical(s.cwd))
         }
         for r in shellRows {
-            paths.insert((r.cwd as NSString).standardizingPath)
+            paths.insert(ProjectPath.canonical(r.cwd))
         }
         let now = Date()
         for norm in paths {
@@ -589,13 +589,13 @@ final class AppModel {
     /// stack linkC already knows for it. Nothing here runs a process — it reads what the tool
     /// server service last found.
     func discoveredThings(in workspacePath: String) -> [DiscoveredThing] {
-        let folder = (workspacePath as NSString).standardizingPath
+        let folder = ProjectPath.canonical(workspacePath)
         var things: [DiscoveredThing] = []
         var seen: Set<String> = []
 
         for project in toolServers?.projects ?? [] {
             guard let dir = project.workingDir,
-                  (dir as NSString).standardizingPath == folder else { continue }
+                  ProjectPath.canonical(dir) == folder else { continue }
             for container in project.containers where container.state == .running {
                 let name = container.composeService ?? container.name
                 guard seen.insert(name.lowercased()).inserted else { continue }
@@ -606,7 +606,7 @@ final class AppModel {
         }
 
         for stack in toolServers?.knownStacks.stacks ?? []
-        where (stack.workingDir as NSString).standardizingPath == folder {
+        where ProjectPath.canonical(stack.workingDir) == folder {
             for service in stack.services {
                 guard seen.insert(service.lowercased()).inserted else { continue }
                 things.append(DiscoveredThing(

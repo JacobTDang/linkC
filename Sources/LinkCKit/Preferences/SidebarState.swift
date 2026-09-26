@@ -36,6 +36,15 @@ public final class SidebarState {
     private var openAppsByProject: [String: [OpenApp]] = [:]
     private let defaults: UserDefaults
 
+    private static func canonicalViewportKey(_ key: String) -> String {
+        if let hashIdx = key.firstIndex(of: "#") {
+            let p = String(key[..<hashIdx])
+            let slug = String(key[key.index(after: hashIdx)...])
+            return "\(ProjectPath.canonical(p))#\(slug)"
+        }
+        return ProjectPath.canonical(key)
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         var stored = Stored()
@@ -46,18 +55,74 @@ public final class SidebarState {
                 NSLog("[linkC] sidebar state is unreadable, starting fresh — %@", String(describing: error))
             }
         }
-        projectOrder = stored.projectOrder
-        expandOverrides = stored.expandOverrides
+
+        var canonicalOrder: [String] = []
+        var seenOrder: Set<String> = []
+        for path in stored.projectOrder {
+            let canonical = ProjectPath.canonical(path)
+            if seenOrder.insert(canonical).inserted {
+                canonicalOrder.append(canonical)
+            }
+        }
+        projectOrder = canonicalOrder
+
+        var canonicalOverrides: [String: Bool] = [:]
+        for path in stored.projectOrder {
+            let canonical = ProjectPath.canonical(path)
+            if canonicalOverrides[canonical] == nil, let val = stored.expandOverrides[path] {
+                canonicalOverrides[canonical] = val
+            }
+        }
+        for (path, val) in stored.expandOverrides {
+            let canonical = ProjectPath.canonical(path)
+            if canonicalOverrides[canonical] == nil {
+                canonicalOverrides[canonical] = val
+            }
+        }
+        expandOverrides = canonicalOverrides
+
         openSections = stored.openSections
-        boardViewports = stored.boardViewports ?? [:]
-        terminalProjects = stored.terminalProjects ?? [:]
-        openAppsByProject = stored.openApps ?? [:]
+
+        var canonicalViewports: [String: BoardViewport] = [:]
+        let rawViewports = stored.boardViewports ?? [:]
+        for path in stored.projectOrder {
+            let canonical = ProjectPath.canonical(path)
+            if canonicalViewports[canonical] == nil, let vp = rawViewports[path] {
+                canonicalViewports[canonical] = vp
+            }
+        }
+        for (key, vp) in rawViewports {
+            let canonicalKey = Self.canonicalViewportKey(key)
+            if canonicalViewports[canonicalKey] == nil {
+                canonicalViewports[canonicalKey] = vp
+            }
+        }
+        boardViewports = canonicalViewports
+
+        var canonicalTerminals: [String: String] = [:]
+        for (termId, proj) in (stored.terminalProjects ?? [:]) {
+            canonicalTerminals[termId] = ProjectPath.canonical(proj)
+        }
+        terminalProjects = canonicalTerminals
+
+        var canonicalApps: [String: [OpenApp]] = [:]
+        for (proj, apps) in (stored.openApps ?? [:]) {
+            let canonicalProj = ProjectPath.canonical(proj)
+            var current = canonicalApps[canonicalProj] ?? []
+            for app in apps {
+                if !current.contains(where: { $0.folder == app.folder }) {
+                    current.append(app)
+                }
+            }
+            canonicalApps[canonicalProj] = current
+        }
+        openAppsByProject = canonicalApps
     }
 
     public func file(terminal id: String, under project: String) {
-        let standardized = (project as NSString).standardizingPath
-        guard terminalProjects[id] != standardized else { return }
-        terminalProjects[id] = standardized
+        let canonical = ProjectPath.canonical(project)
+        guard terminalProjects[id] != canonical else { return }
+        terminalProjects[id] = canonical
         save()
     }
 
@@ -77,8 +142,11 @@ public final class SidebarState {
     /// Append any project not seen before; everyone else keeps their place.
     public func noteProjects(_ paths: [String]) {
         var order = projectOrder
-        for path in paths where !order.contains(path) {
-            order.append(path)
+        for path in paths {
+            let canonical = ProjectPath.canonical(path)
+            if !order.contains(canonical) {
+                order.append(canonical)
+            }
         }
         guard order != projectOrder else { return }
         projectOrder = order
@@ -89,14 +157,20 @@ public final class SidebarState {
     /// filed project's folder, standardized — a filing is kept, and so is its order slot and its
     /// collapse state, until the terminal it names is truly dismissed, not merely un-live at start.
     public static func inUseProjects(sessionPaths: Set<String>, filed: [String: String]) -> Set<String> {
-        sessionPaths.union(filed.values.map { ($0 as NSString).standardizingPath })
+        let canonicalSessions = Set(sessionPaths.map { ProjectPath.canonical($0) })
+        let canonicalFiled = Set(filed.values.map { ProjectPath.canonical($0) })
+        return canonicalSessions.union(canonicalFiled)
     }
 
     /// Forget folders that no longer have a live session or an Earlier entry. Run once at launch.
     public func prune(keeping paths: Set<String>) {
-        let order = projectOrder.filter { paths.contains($0) }
-        let overrides = expandOverrides.filter { paths.contains($0.key) }
-        let viewports = boardViewports.filter { paths.contains($0.key) }
+        let canonicalPaths = Set(paths.map { ProjectPath.canonical($0) })
+        let order = projectOrder.filter { canonicalPaths.contains($0) }
+        let overrides = expandOverrides.filter { canonicalPaths.contains($0.key) }
+        let viewports = boardViewports.filter { key, _ in
+            let project = key.split(separator: "#").first.map(String.init) ?? key
+            return canonicalPaths.contains(project)
+        }
         guard order != projectOrder || overrides != expandOverrides || viewports != boardViewports else { return }
         projectOrder = order
         expandOverrides = overrides
@@ -105,16 +179,18 @@ public final class SidebarState {
     }
 
     public func setExpanded(_ path: String, _ expanded: Bool) {
-        guard expandOverrides[path] != expanded else { return }
-        expandOverrides[path] = expanded
+        let canonical = ProjectPath.canonical(path)
+        guard expandOverrides[canonical] != expanded else { return }
+        expandOverrides[canonical] = expanded
         save()
     }
 
     /// A project that just turned coral expands, overriding a manual collapse. One that stays
     /// coral is left alone, so collapsing it by hand sticks until it next turns coral.
     public func noteCoral(_ paths: Set<String>) {
-        let newlyCoral = paths.subtracting(coralProjects)
-        coralProjects = paths
+        let canonicalPaths = Set(paths.map { ProjectPath.canonical($0) })
+        let newlyCoral = canonicalPaths.subtracting(coralProjects)
+        coralProjects = canonicalPaths
         var changed = false
         for path in newlyCoral where expandOverrides[path] != true {
             expandOverrides[path] = true
@@ -127,12 +203,13 @@ public final class SidebarState {
     /// open after the agent on screen closes — and a collapse the user makes afterwards sticks
     /// until they leave and come back.
     public func noteSelectedProject(_ path: String?) {
-        guard path != selectedProject else { return }
-        selectedProject = path
+        let canonical = path.map { ProjectPath.canonical($0) }
+        guard canonical != selectedProject else { return }
+        selectedProject = canonical
         // Mark it open rather than clearing its override: cleared, the project would stay open
         // only while it held the selection, and closing the agent on screen would snap it shut.
-        guard let path, expandOverrides[path] != true else { return }
-        expandOverrides[path] = true
+        guard let canonical, expandOverrides[canonical] != true else { return }
+        expandOverrides[canonical] = true
         save()
     }
 
@@ -160,22 +237,23 @@ public final class SidebarState {
 
     /// Where this project's Board was last looked at. Personal, kept on this Mac only.
     public func boardViewport(for path: String) -> BoardViewport? {
-        boardViewports[path]
+        boardViewports[Self.canonicalViewportKey(path)]
     }
 
     public func setBoardViewport(_ viewport: BoardViewport, for path: String) {
-        guard boardViewports[path] != viewport else { return }
-        boardViewports[path] = viewport
+        let canonicalKey = Self.canonicalViewportKey(path)
+        guard boardViewports[canonicalKey] != viewport else { return }
+        boardViewports[canonicalKey] = viewport
         save()
     }
 
     /// The app tabs open in this project, in the order they were opened.
     public func openApps(in project: String) -> [OpenApp] {
-        openAppsByProject[(project as NSString).standardizingPath] ?? []
+        openAppsByProject[ProjectPath.canonical(project)] ?? []
     }
 
     public func openApp(_ app: OpenApp, in project: String) {
-        let key = (project as NSString).standardizingPath
+        let key = ProjectPath.canonical(project)
         var apps = openAppsByProject[key] ?? []
         guard !apps.contains(where: { $0.folder == app.folder }) else { return }
         apps.append(app)
@@ -184,7 +262,7 @@ public final class SidebarState {
     }
 
     public func closeApp(folder: String, in project: String) {
-        let key = (project as NSString).standardizingPath
+        let key = ProjectPath.canonical(project)
         let target = (folder as NSString).standardizingPath
         guard var apps = openAppsByProject[key], apps.contains(where: { $0.folder == target }) else { return }
         apps.removeAll { $0.folder == target }

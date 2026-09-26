@@ -105,4 +105,26 @@ final class ProjectGroupTests: XCTestCase {
         XCTAssertEqual(g1, g2)
         XCTAssertNotEqual(g1, g3)
     }
+
+    func testSessionsWithSymlinksAndCaseDifferencesFormOneProjectGroup() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("linkc-group-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let realFolder = tempDir.appendingPathComponent("Proj")
+        try FileManager.default.createDirectory(at: realFolder, withIntermediateDirectories: true)
+
+        let symlink = tempDir.appendingPathComponent("link_to_proj")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: realFolder)
+
+        let lower = tempDir.appendingPathComponent("proj").path
+
+        let s1 = Session(id: "s1", cwd: realFolder.path, title: "Dir One")
+        let s2 = Session(id: "s2", cwd: symlink.path, title: "Dir Two")
+        let s3 = Session(id: "s3", cwd: lower, title: "Dir Three")
+
+        let groups = ProjectGroup.group(sessions: [s1, s2, s3])
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups[0].sessions, [s1, s2, s3])
+    }
 }

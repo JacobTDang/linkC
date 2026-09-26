@@ -28,7 +28,7 @@ public struct ProjectTab: Equatable, Sendable, Identifiable {
 /// A project's tabs and how keys move between them. Pure: sessions and terminals come in as values.
 public enum ProjectTabs {
     public static func standardized(_ path: String) -> String {
-        (path as NSString).standardizingPath
+        ProjectPath.canonical(path)
     }
 
     public static func boardID(_ path: String) -> String {
