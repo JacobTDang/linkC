@@ -129,6 +129,18 @@ server.
 - The breadcrumb at the top left shows where you are. Click a part of it, or press ⌘↑, to go up.
   The **Boards** menu lists all the boards of the project. Each board keeps its own position,
   zoom and lens.
+- A **table** component shows the columns of a database table: the name, a key mark (a key for a
+  primary key, a link for a foreign key) and the type of each column. A line goes from each
+  foreign-key column to the column it references. Pin a table to edit its columns in the
+  inspector. Each change is one undo step.
+- The **Schema** menu of the Board imports and exports Postgres SQL:
+  - **Import SQL file…** reads `CREATE TABLE` and `ALTER TABLE` statements. linkC adds and
+    updates the tables. A table or a column that is only on the Board stays, marked planned.
+    linkC deletes nothing, and it reports the statements that it skipped.
+  - **Import from Supabase** runs `supabase db dump` in the project folder through your login
+    shell. linkC does not keep database credentials.
+  - **Copy SQL** and **Export SQL…** write `CREATE TABLE` statements in foreign-key order. linkC
+    never runs SQL against a database.
 - Agents read and edit the Board through the linkC MCP server. After an agent edits the Board,
   linkC arranges the diagram again.
 
@@ -151,7 +163,7 @@ its tools to give work to other agents and to share information.
 | `linkc_broadcast_intent` | Tell the other agents your goal and your files. |
 | `linkc_check_conflicts` | Find out if another agent claims a file. |
 | `linkc_get_project_context` | Show the Board, and the goals and notes of the other agents. |
-| `linkc_get_board`, `linkc_edit_board` | Read or edit the Board, or a detail board. The `detail` step creates the detail board of a component. |
+| `linkc_get_board`, `linkc_edit_board` | Read or edit the Board, or a detail board. The `detail` step creates the detail board of a component. The `column` step adds, changes or removes a column of a table. |
 | `linkc_get_models`, `linkc_switch_model` | List the models of an agent, or change its model. |
 | `linkc_get_usage_status` | Show the usage that each agent has left. |
 
