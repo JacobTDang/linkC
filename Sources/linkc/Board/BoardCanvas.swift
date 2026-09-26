@@ -24,6 +24,9 @@ struct BoardCanvas: View {
     @State private var catalog: BoardCatalog?
     @State private var catalogError: String?
     @State private var drillError: String?
+    /// The Schema menu's last outcome — success or failure — shown on the banner row until the
+    /// next Schema action replaces or clears it.
+    @State private var schemaOutcome: BoardSchemaOutcome?
 
     private var parentTitle: String {
         if let catalog {
@@ -557,11 +560,14 @@ struct BoardCanvas: View {
                     if let liveUpdatesOff = board.liveUpdatesOff {
                         BoardBanner(text: liveUpdatesOff, tone: Theme.textTertiary)
                     }
+                    if let schemaOutcome {
+                        BoardBanner(text: schemaOutcome.text, tone: schemaOutcome.color)
+                    }
                     Spacer()
                     if let refusal = board.refusal {
                         Text(refusal).font(.system(size: 11)).foregroundStyle(Theme.accent)
                     }
-                    BoardToolbar(board: board, lastKind: $lastKind)
+                    BoardToolbar(board: board, lastKind: $lastKind, projectPath: projectPath, schemaOutcome: $schemaOutcome)
                         .padding(.bottom, 12)
                 }
                 .padding(.top, 10)
