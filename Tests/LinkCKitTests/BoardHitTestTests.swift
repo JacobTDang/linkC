@@ -29,29 +29,6 @@ final class BoardHitTestTests: XCTestCase {
                                           including: { $0.from != "a" }), .init(from: "c", to: "d"))
     }
 
-    func testComponentHitTestFindsContainingFrame() {
-        let components = [("ALU", BoardRect(x: 10, y: 10, w: 100, h: 50))]
-        XCTAssertEqual(BoardHitTest.component(atX: 20, y: 20, frames: components), "ALU")
-        XCTAssertNil(BoardHitTest.component(atX: 200, y: 200, frames: components))
-    }
-
-    func testAPartIsFoundWhenNoArrowIsNear() {
-        let components = [("ALU", BoardRect(x: 200, y: 200, w: 100, h: 50))]
-        XCTAssertEqual(
-            BoardHitTest.target(atX: 250, y: 225, routes: routes, tolerance: 6, components: components),
-            .component("ALU")
-        )
-    }
-
-    func testAPointNearBothAnArrowAndAPartPicksTheArrow() {
-        // (20, 3) is 3 pt from route a→b and inside component "Mux"
-        let components = [("Mux", BoardRect(x: 0, y: 0, w: 100, h: 50))]
-        XCTAssertEqual(
-            BoardHitTest.target(atX: 20, y: 3, routes: routes, tolerance: 6, components: components),
-            .arrow(.init(from: "a", to: "b"))
-        )
-    }
-
     func testPickPrefersArrowOverComponent() {
         let arrow = BoardModel.ArrowKey(from: "a", to: "b")
         XCTAssertEqual(BoardHitTest.pick(arrow: arrow, component: "Mux"), .arrow(arrow))

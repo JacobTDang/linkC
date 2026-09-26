@@ -399,11 +399,11 @@ struct BoardCanvas: View {
                         hovered = nil
                         if hoveredArrow != key { hoveredArrow = key }
                     case .component(let name):
-                        hoveredArrow = nil
-                        hovered = name
+                        if hoveredArrow != nil { hoveredArrow = nil }
+                        if hovered != name { hovered = name }
                     case nil:
-                        hovered = nil
-                        hoveredArrow = nil
+                        if hovered != nil { hovered = nil }
+                        if hoveredArrow != nil { hoveredArrow = nil }
                     }
                     pointerLocation = location
                 case .ended:
