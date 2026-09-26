@@ -26,4 +26,38 @@ public enum BoardHitTest {
         let px = ax + t * dx, py = ay + t * dy
         return ((x - px) * (x - px) + (y - py) * (y - py)).squareRoot()
     }
+
+    public enum Target: Equatable, Sendable {
+        case arrow(BoardModel.ArrowKey)
+        case component(String)
+    }
+
+    /// The component whose frame contains `(x, y)`, checked in order.
+    public static func component(
+        atX x: Double, y: Double, frames: [(name: String, rect: BoardRect)]
+    ) -> String? {
+        frames.first { _, rect in
+            x >= Double(rect.minX) && x <= Double(rect.maxX)
+                && y >= Double(rect.minY) && y <= Double(rect.maxY)
+        }?.name
+    }
+
+    /// Picks between an arrow hit and a component: an arrow within tolerance wins over a part.
+    public static func pick(arrow: BoardModel.ArrowKey?, component: String?) -> Target? {
+        if let arrow { return .arrow(arrow) }
+        if let component { return .component(component) }
+        return nil
+    }
+
+    /// The nearest arrow within tolerance, falling back to the component whose frame contains
+    /// the point.
+    public static func target(
+        atX x: Double, y: Double, routes: [BoardModel.ArrowKey: BoardRoute], tolerance: Double,
+        components: [(name: String, rect: BoardRect)] = [],
+        including include: (BoardModel.ArrowKey) -> Bool = { _ in true }
+    ) -> Target? {
+        let arrowHit = arrow(atX: x, y: y, routes: routes, tolerance: tolerance, including: include)
+        let componentHit = component(atX: x, y: y, frames: components)
+        return pick(arrow: arrowHit, component: componentHit)
+    }
 }

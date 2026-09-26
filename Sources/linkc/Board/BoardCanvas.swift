@@ -198,6 +198,7 @@ struct BoardCanvas: View {
                 case .active(let location):
                     let found = arrowAt(location)
                     if hoveredArrow != found { hoveredArrow = found }
+                    if found != nil, hovered != nil { hovered = nil }
                     pointerLocation = location
                 case .ended:
                     if hoveredArrow != nil { hoveredArrow = nil }
@@ -392,10 +393,22 @@ struct BoardCanvas: View {
             .onContinuousHover(coordinateSpace: .named(Self.space)) { phase in
                 switch phase {
                 case .active(let location):
-                    hovered = component.name
+                    let arrowHit = (dragging.isEmpty && board.tool == .select) ? arrowAt(location) : nil
+                    switch BoardHitTest.pick(arrow: arrowHit, component: component.name) {
+                    case .arrow(let key):
+                        hovered = nil
+                        if hoveredArrow != key { hoveredArrow = key }
+                    case .component(let name):
+                        hoveredArrow = nil
+                        hovered = name
+                    case nil:
+                        hovered = nil
+                        hoveredArrow = nil
+                    }
                     pointerLocation = location
                 case .ended:
                     if hovered == component.name { hovered = nil }
+                    if hoveredArrow != nil { hoveredArrow = nil }
                 }
             }
             .popover(isPresented: Binding(get: { inspecting == component.name }, set: { if !$0 { inspecting = nil } }),
@@ -416,16 +429,14 @@ struct BoardCanvas: View {
                 content
                     .gesture(arrowDrag(from: component.name))
                     .onTapGesture(count: 2) { select(.component(component.name)) }
-                    .onTapGesture {
-                        select(.component(component.name))
-                        pinned = .part(component.name)
+                    .onTapGesture(count: 1, coordinateSpace: .named(Self.space)) { location in
+                        componentTapped(component.name, at: location)
                     }
             } else {
                 content
                     .onTapGesture(count: 2) { select(.component(component.name)) }
-                    .onTapGesture {
-                        select(.component(component.name))
-                        pinned = .part(component.name)
+                    .onTapGesture(count: 1, coordinateSpace: .named(Self.space)) { location in
+                        componentTapped(component.name, at: location)
                     }
             }
         } else {
@@ -440,10 +451,25 @@ struct BoardCanvas: View {
                     select(.component(component.name))
                     inspecting = component.name
                 }
-                .onTapGesture {
-                    select(.component(component.name))
-                    pinned = .part(component.name)
+                .onTapGesture(count: 1, coordinateSpace: .named(Self.space)) { location in
+                    componentTapped(component.name, at: location)
                 }
+        }
+    }
+
+    /// Single click on a component: pins the arrow when within 6 pt of its drawn line, else
+    /// pins and selects the component.
+    private func componentTapped(_ componentName: String, at location: CGPoint) {
+        let arrowHit = board.tool == .select ? arrowAt(location) : nil
+        switch BoardHitTest.pick(arrow: arrowHit, component: componentName) {
+        case .arrow(let key):
+            select(.arrow(key))
+            pinned = .arrow(key)
+        case .component(let name):
+            select(.component(name))
+            pinned = .part(name)
+        case nil:
+            break
         }
     }
 
@@ -756,8 +782,7 @@ struct BoardCanvas: View {
             for (target, arrow) in component.uses {
                 let key = BoardModel.ArrowKey(from: component.name, to: target)
                 guard focusFilter?.arrows.contains(key) ?? true else { continue }
-                guard let draw = arrowDraw(for: key) else { continue }
-                let canvasPoints = draw.isPreview ? draw.points : extendedEndpoints(draw.points, from: key.from, to: key.to)
+                guard let draw = arrowDraw(for: key), let canvasPoints = drawnPolyline(for: key) else { continue }
                 let screen = canvasPoints.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
                 let touchesFocus = focus != nil && (key.from == focus || key.to == focus)
                 let isHovered = hoveredArrow == key
@@ -920,6 +945,13 @@ struct BoardCanvas: View {
             return ArrowDraw(points: points, isPreview: false)
         }
         return ArrowDraw(points: [from.center, to.center], isPreview: true)
+    }
+
+    /// The polyline points actually drawn for `key`: the routed points with their ends extended
+    /// to the shaped component outlines (or the straight drag preview line if dragging).
+    private func drawnPolyline(for key: BoardModel.ArrowKey) -> [BoardPoint]? {
+        guard let draw = arrowDraw(for: key) else { return nil }
+        return draw.isPreview ? draw.points : extendedEndpoints(draw.points, from: key.from, to: key.to)
     }
 
     /// A routed arrow's corners round off by 7 pt; a straight (2-point) arrow, routed or a drag
@@ -1357,15 +1389,27 @@ struct BoardCanvas: View {
         board.tool = .select
     }
 
+    /// Every arrow's route with points matching what is actually drawn on canvas
+    /// (endpoints extended into component shape outlines, or drag preview lines).
+    private var drawnRoutes: [BoardModel.ArrowKey: BoardRoute] {
+        var routes: [BoardModel.ArrowKey: BoardRoute] = [:]
+        for (key, route) in board.routes {
+            let points = drawnPolyline(for: key) ?? route.points
+            routes[key] = BoardRoute(points: points, bundle: route.bundle)
+        }
+        return routes
+    }
+
     /// The nearest arrow to `location` (a screen point) within the lens and, while Focus is on,
     /// within what it keeps visible — by the canvas-space hit test every caller here shares: a
-    /// 6 pt screen tolerance, converted to canvas units by the current zoom. A stale key — one
-    /// `arrowStyle` can no longer resolve, between a delete and the reroute that follows it — is
-    /// never hit; a moment's staleness must never let a gone arrow be hovered or pinned.
+    /// 6 pt screen tolerance, converted to canvas units by the current zoom, against the arrow's
+    /// drawn polyline. A stale key — one `arrowStyle` can no longer resolve, between a delete and
+    /// the reroute that follows it — is never hit; a moment's staleness must never let a gone arrow
+    /// be hovered or pinned.
     private func arrowAt(_ location: CGPoint) -> BoardModel.ArrowKey? {
         let point = viewport.toCanvas(location)
         return BoardHitTest.arrow(
-            atX: Double(point.x), y: Double(point.y), routes: board.routes, tolerance: 6 / viewport.zoom,
+            atX: Double(point.x), y: Double(point.y), routes: drawnRoutes, tolerance: 6 / viewport.zoom,
             including: { key in
                 guard let style = arrowStyle(for: key), viewport.lens.includes(style) else { return false }
                 return focusVisible?.arrows.contains(key) ?? true

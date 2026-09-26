@@ -6,6 +6,11 @@ public struct BoardRoute: Equatable, Sendable {
     public var points: [BoardPoint]
     /// "out:<source>|<label>" or "in:<target>|<label>" when this route shares a port with others.
     public var bundle: String?
+
+    public init(points: [BoardPoint], bundle: String? = nil) {
+        self.points = points
+        self.bundle = bundle
+    }
 }
 
 /// Routes every arrow between positioned components around every box and every foreign frame in
