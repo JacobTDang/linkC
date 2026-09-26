@@ -72,7 +72,7 @@ public enum SidebarModel {
         var seenPaths: Set<String> = []
 
         for input in inputs {
-            let path = ProjectPath.canonical(input.session.cwd)
+            let path = input.session.cwd
             if seenPaths.insert(path).inserted {
                 projectPathsList.append(path)
             }
@@ -101,7 +101,7 @@ public enum SidebarModel {
 
         let projectsList = sorted.map { path -> SidebarProject in
             let group = groupMap[path]
-            let rows = inputs.filter { ProjectPath.canonical($0.session.cwd) == path }
+            let rows = inputs.filter { $0.session.cwd == path }
             let terms = projectTerminals[path] ?? []
             let holdsSelection = rows.contains { $0.session.id == selectedId } || terms.contains { $0.id == selectedId }
             let name = group?.title ?? URL(fileURLWithPath: path).lastPathComponent

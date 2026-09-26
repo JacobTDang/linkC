@@ -22,7 +22,7 @@ final class AppCoordinatorDashboardTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let projectData = coordinator.fetchProjectDashboard(workspacePath: tempDir.path)
-        XCTAssertEqual(projectData.workspacePath, (tempDir.path as NSString).standardizingPath)
+        XCTAssertEqual(projectData.workspacePath, ProjectPath.canonical(tempDir.path))
 
         let globalData = coordinator.fetchGlobalDashboard()
         XCTAssertNotNil(globalData)
@@ -55,7 +55,7 @@ final class AppCoordinatorDashboardTests: XCTestCase {
         coordinator.store.updateState(id: session.id, to: .working)
 
         let projectData = coordinator.fetchProjectDashboard(workspacePath: tempDir.path)
-        XCTAssertEqual(projectData.workspacePath, (tempDir.path as NSString).standardizingPath)
+        XCTAssertEqual(projectData.workspacePath, ProjectPath.canonical(tempDir.path))
         XCTAssertFalse(projectData.dossiers.isEmpty)
         let claudeDossier = projectData.dossiers.first { $0.agent == .claude }
         XCTAssertNotNil(claudeDossier)
@@ -120,7 +120,7 @@ final class AppCoordinatorDashboardTests: XCTestCase {
         coordinator.store.updateState(id: session.id, to: .working)
 
         let projectData = await coordinator.fetchProjectDashboardAsync(workspacePath: tempDir.path)
-        XCTAssertEqual(projectData.workspacePath, (tempDir.path as NSString).standardizingPath)
+        XCTAssertEqual(projectData.workspacePath, ProjectPath.canonical(tempDir.path))
         XCTAssertFalse(projectData.dossiers.isEmpty)
         XCTAssertEqual(projectData.dossiers.first?.agent, .claude)
 

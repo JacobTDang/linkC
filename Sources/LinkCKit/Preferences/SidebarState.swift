@@ -45,6 +45,29 @@ public final class SidebarState {
         return ProjectPath.canonical(key)
     }
 
+    /// Merges entries of `raw` by canonicalizing each key with `canonicalize`. When multiple raw
+    /// keys collapse to one canonical key, keeps the value whose raw key already equals the
+    /// canonical key; otherwise, the one whose raw key sorts first (plain string order).
+    private static func mergeCanonical<T>(
+        _ raw: [String: T],
+        canonicalize: (String) -> String
+    ) -> [String: T] {
+        var grouped: [String: [(rawKey: String, value: T)]] = [:]
+        for (rawKey, value) in raw {
+            let canonical = canonicalize(rawKey)
+            grouped[canonical, default: []].append((rawKey, value))
+        }
+        var result: [String: T] = [:]
+        for (canonical, candidates) in grouped {
+            if let exact = candidates.first(where: { $0.rawKey == canonical }) {
+                result[canonical] = exact.value
+            } else if let best = candidates.min(by: { $0.rawKey < $1.rawKey }) {
+                result[canonical] = best.value
+            }
+        }
+        return result
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         var stored = Stored()
@@ -91,8 +114,9 @@ public final class SidebarState {
                 canonicalViewports[canonical] = vp
             }
         }
-        for (key, vp) in rawViewports {
-            let canonicalKey = Self.canonicalViewportKey(key)
+        let remainingViewports = rawViewports.filter { canonicalViewports[Self.canonicalViewportKey($0.key)] == nil }
+        let mergedDetail = Self.mergeCanonical(remainingViewports, canonicalize: Self.canonicalViewportKey)
+        for (canonicalKey, vp) in mergedDetail {
             if canonicalViewports[canonicalKey] == nil {
                 canonicalViewports[canonicalKey] = vp
             }
@@ -105,18 +129,16 @@ public final class SidebarState {
         }
         terminalProjects = canonicalTerminals
 
-        var canonicalApps: [String: [OpenApp]] = [:]
-        for (proj, apps) in (stored.openApps ?? [:]) {
-            let canonicalProj = ProjectPath.canonical(proj)
-            var current = canonicalApps[canonicalProj] ?? []
-            for app in apps {
-                if !current.contains(where: { $0.folder == app.folder }) {
-                    current.append(app)
-                }
-            }
-            canonicalApps[canonicalProj] = current
+        openAppsByProject = Self.mergeCanonical(stored.openApps ?? [:], canonicalize: ProjectPath.canonical)
+
+        let changed = stored.projectOrder != projectOrder
+            || stored.expandOverrides != expandOverrides
+            || (stored.boardViewports ?? [:]) != boardViewports
+            || (stored.terminalProjects ?? [:]) != terminalProjects
+            || (stored.openApps ?? [:]) != openAppsByProject
+        if changed {
+            save()
         }
-        openAppsByProject = canonicalApps
     }
 
     public func file(terminal id: String, under project: String) {

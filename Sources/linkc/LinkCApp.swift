@@ -488,7 +488,7 @@ final class AppModel {
 
     func swarm(for cwd: String) -> ProjectSwarm? {
         let norm = ProjectPath.canonical(cwd)
-        return swarms.first { ProjectPath.canonical($0.workspacePath) == norm }
+        return swarms.first { $0.workspacePath == norm }
     }
 
     /// Loads the inbox for a workspace root with a 1-second in-memory throttle
@@ -523,7 +523,7 @@ final class AppModel {
     func refreshCachedInboxes() {
         var paths = Set<String>()
         for s in sessions {
-            paths.insert(ProjectPath.canonical(s.cwd))
+            paths.insert(s.cwd)
         }
         for r in shellRows {
             paths.insert(ProjectPath.canonical(r.cwd))

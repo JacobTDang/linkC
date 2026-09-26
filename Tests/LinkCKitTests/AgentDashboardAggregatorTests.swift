@@ -18,8 +18,8 @@ final class AgentDashboardAggregatorTests: XCTestCase {
     func testAggregateEmptyWorkspaceReturnsCleanDefaults() {
         let aggregator = AgentDashboardAggregator()
         let data = aggregator.aggregateProject(workspacePath: tempDir.path, liveSessions: [])
-
-        XCTAssertEqual(data.workspacePath, (tempDir.path as NSString).standardizingPath)
+ 
+        XCTAssertEqual(data.workspacePath, ProjectPath.canonical(tempDir.path))
         XCTAssertTrue(data.activityItems.isEmpty)
         XCTAssertTrue(data.dossiers.isEmpty)
         XCTAssertTrue(data.sharedNotes.isEmpty)

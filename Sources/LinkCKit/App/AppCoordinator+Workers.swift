@@ -10,8 +10,9 @@ extension AppCoordinator {
     func reapIdleWorkers(workspacePath: String, inboxStore: InboxStore) -> Bool {
         // Like every relay phase: a store read would recreate a deleted workspace on disk.
         guard workspaceExists(workspacePath) else { return false }
+        let norm = ProjectPath.canonical(workspacePath)
         let workers = store.sessions.filter {
-            $0.isWorker && ($0.cwd as NSString).standardizingPath == workspacePath
+            $0.isWorker && $0.cwd == norm
         }
         guard !workers.isEmpty else { return false }
         let assignees: Set<String>
