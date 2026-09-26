@@ -84,7 +84,10 @@ struct ComponentBox: View {
             }
             content
                 .padding(.leading, isGhost ? 14 : inset.leading)
-                .frame(width: boxWidth, height: boxHeight, alignment: .leading)
+                // A table's header and rows start flush at the top, exactly where
+                // `BoardGeometry.rowCenterY` puts them, so foreign-key lines meet their rows; the
+                // box is taller than its rows by the size formula's rounding and padding.
+                .frame(width: boxWidth, height: boxHeight, alignment: isTableBox ? .topLeading : .leading)
                 .offset(y: isGhost ? 0 : inset.verticalOffset)
         }
         .frame(width: boxWidth, height: boxHeight)
@@ -181,6 +184,11 @@ struct ComponentBox: View {
     /// rows `BoardGeometry.rowCenterY(ofColumnAt:in:)` implies for this same box — a 36 pt header,
     /// then 22 pt per row, hairline separators between them. Never reached for a ghost table (see
     /// `content`'s `if isGhost` branch above, unchanged).
+    /// A table drawn as its header and rows — not a ghost, which keeps the name-only ghost look.
+    private var isTableBox: Bool {
+        component.kind == .table && !isGhost
+    }
+
     private var tableRowsContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(component.name)

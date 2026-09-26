@@ -271,9 +271,11 @@ struct BoardColumnsGrid: View {
                 .font(.system(size: 9, weight: .semibold))
                 .tracking(0.5)
                 .foregroundStyle(Theme.textTertiary)
-            ForEach(rows.indices, id: \.self) { index in
+            // Keyed by name, which the board keeps unique: a row's draft moves with its column
+            // through a reorder or delete instead of staying at a position.
+            ForEach(Array(rows.enumerated()), id: \.element.name) { index, column in
                 BoardColumnRow(
-                    column: rows[index],
+                    column: column,
                     referenceOptions: input.referenceOptions,
                     isFirst: index == 0,
                     isLast: index == rows.count - 1,
@@ -291,6 +293,12 @@ struct BoardColumnsGrid: View {
                     .font(.system(size: 10.5))
                     .foregroundStyle(Theme.contextWarn)
             }
+        }
+        // An undo, an agent's edit or an import changes the columns from outside; the grid shows
+        // them, so its next commit never writes back what was there before.
+        .onChange(of: input.columns) { _, columns in
+            rows = columns
+            refusal = nil
         }
     }
 
@@ -397,6 +405,10 @@ private struct BoardColumnRow: View {
         .padding(.vertical, 4)
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
+        }
+        // The same column changed from outside (an undo, say): the draft shows the new value.
+        .onChange(of: column) { _, updated in
+            draft = updated
         }
     }
 
