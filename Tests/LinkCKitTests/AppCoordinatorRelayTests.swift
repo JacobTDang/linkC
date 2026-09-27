@@ -1337,6 +1337,35 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(sink.deliveries.contains { $0.title == "linkC: Codex Rate Limited" && $0.body.contains("429 Too Many Requests") })
     }
 
+    /// The reroute notice must name the fallback from the live, user-editable model settings —
+    /// not `AgentModelCatalog`'s hardcoded list, which is stale seed data (it still names models
+    /// no provider serves any more).
+    @MainActor
+    func testRerouteNoticeNamesTheLiveFallbackModelNotTheStaleCatalog() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var models = AgentModelSettings.seeded
+        models.setModel("codex-custom-light", for: .codex, tier: .light)
+        let coordinator = makeCoordinator(models: models)
+        defer { coordinator.shutdown() }
+
+        let codexSession = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: codexSession.id, to: .finished)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Optimize database indices", files: ["schema.sql"])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: codexSession.id)
+
+        coordinator.terminals.sendInput(sessionId: codexSession.id, text: "429 Too Many Requests\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: codexSession.id)?.recentOutput(lines: 10).contains("429 Too Many Requests") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: codexSession.id))
+        let notice = try XCTUnwrap(inbox.load().messages.first { $0.kind == .notice && $0.fromAgent == .codex && $0.toAgent == .claude })
+        XCTAssertTrue(notice.prompt.contains("codex-custom-light"), notice.prompt)
+        XCTAssertFalse(notice.prompt.contains("GPT-4o"), "must not fall back to the stale hardcoded catalog")
+    }
+
     /// Test 11b: A rerouted session is never re-processed on the next tick — the limit text is
     /// still in its buffer, but the source is `.error`, so no second hop+1 task and no second notice.
     @MainActor
@@ -1950,6 +1979,45 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(try lines(inbox, task).isEmpty, "a dropped verdict sends nothing")
     }
 
+    /// `AppCoordinator` is @MainActor; `finishVerification` used to record the verdict with
+    /// `InboxStore`'s default 5s timeout, which would block the whole UI on a contended lock the
+    /// same way every other relay call already avoids.
+    @MainActor
+    func testFinishVerificationDoesNotBlockTheMainActorOnAContendedLock() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier())
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox)
+
+        let lockPath = tempDir.appendingPathComponent(".linkc/.inbox.lock").path
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        XCTAssertGreaterThan(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        defer { flock(fd, LOCK_UN); close(fd) }
+
+        let start = Date()
+        coordinator.finishVerification(of: task, verdict: .fixture(passed: true, sha: sha40, exit: 0), workspacePath: ws)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 1.5, "a contended lock must not block the main actor for anywhere near the store's default 5s timeout")
+    }
+
+    /// A verifier that reports a pass with no sha must not render an empty one silently — that
+    /// would claim a commit that doesn't exist.
+    @MainActor
+    func testAPassedVerdictWithNoShaRendersExplicitlyRatherThanSilently() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier())
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox)
+
+        coordinator.finishVerification(of: task, verdict: .fixture(passed: true, sha: nil, exit: 0), workspacePath: ws)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .done)
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] done — verified (no sha)"])
+    }
+
     @MainActor
     func testDeliveryFrameNamesBranchCommandAndProtectedTests() {
         let verified = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "Make check pass", verification: verification())
@@ -1959,7 +2027,11 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(frame.contains("linkc_complete_task(\"\(verified.id)\", status, summary, sha)"))
 
         let plain = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "Plain")
-        XCTAssertFalse(AppCoordinator.deliveryFrame(for: plain).contains("Work on branch"))
+        let plainFrame = AppCoordinator.deliveryFrame(for: plain)
+        XCTAssertFalse(plainFrame.contains("Work on branch"))
+        XCTAssertTrue(plainFrame.contains("linkc_complete_task(\"\(plain.id)\", status, summary)"),
+                       "an unverified task must not ask for a sha a non-git worker may have no way to give")
+        XCTAssertFalse(plainFrame.contains(", status, summary, sha)"))
     }
 
     /// The copy made for a new agent keeps its verification and the gate it already passed. It

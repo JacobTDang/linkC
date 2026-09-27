@@ -120,7 +120,11 @@ extension AppCoordinator {
             lines.append("Work on branch \(v.branch). linkC verifies by running `\(v.command)` at the sha you report. Do not modify: \(v.testPaths.joined(separator: ", ")).")
             lines.append("")
         }
-        lines.append("When you begin, call linkc_start_task(\"\(task.id)\"). When finished, commit your work and call linkc_complete_task(\"\(task.id)\", status, summary, sha). Do not paste this brief into any reply.")
+        // A worker with no verification (no branch, nothing linkC will run) is very often not
+        // working in a git checkout at all — asking it for a sha it may have no way to give is
+        // demanding proof of something that was never required.
+        let completionArgs = task.verification != nil ? "status, summary, sha" : "status, summary"
+        lines.append("When you begin, call linkc_start_task(\"\(task.id)\"). When finished, commit your work and call linkc_complete_task(\"\(task.id)\", \(completionArgs)). Do not paste this brief into any reply.")
         return lines.joined(separator: "\n")
     }
 
@@ -675,15 +679,28 @@ extension AppCoordinator {
         let inboxStore = InboxStore(workspaceRoot: norm)
         do {
             if task.state == .gating {
-                try inboxStore.resolveGate(taskId: task.id, verdict: verdict)
+                // `AppCoordinator` is @MainActor: the store's default 5s timeout would block the
+                // whole UI on a contended lock, the same reason every other relay call already
+                // passes this shorter budget.
+                try inboxStore.resolveGate(taskId: task.id, verdict: verdict, timeout: Self.relayLockTimeout)
                 if !verdict.passed {
                     try echo("cancelled — \(verdict.reason ?? "gate failed")", for: task, inboxStore: inboxStore)
                 }
             } else {
-                try inboxStore.adjudicate(taskId: task.id, verdict: verdict)
-                let line = verdict.passed
-                    ? "done — verified at \(VerificationRunner.short(verdict.sha ?? ""))"
-                    : "failed — \(verdict.reason ?? "verification failed")"
+                try inboxStore.adjudicate(taskId: task.id, verdict: verdict, timeout: Self.relayLockTimeout)
+                let line: String
+                if verdict.passed {
+                    if let sha = verdict.sha {
+                        line = "done — verified at \(VerificationRunner.short(sha))"
+                    } else {
+                        // Only a verifier that passes without ever reporting a sha reaches this —
+                        // rendering "" would silently claim a commit that doesn't exist.
+                        NSLog("[linkC relay] finishVerification: task %@ passed with no sha", task.shortId)
+                        line = "done — verified (no sha)"
+                    }
+                } else {
+                    line = "failed — \(verdict.reason ?? "verification failed")"
+                }
                 try echo(line, for: task, inboxStore: inboxStore)
             }
         } catch {
@@ -843,7 +860,12 @@ extension AppCoordinator {
         // that finished under us.
         let tellDelegator: () -> Void = {
             guard let currentTask, currentTask.fromAgent != session.agentKind else { return }
-            let fallback = AgentModelCatalog.fallbackModels(for: session.agentKind).first?.displayName ?? "fallback"
+            // The live, user-editable model settings — not `AgentModelCatalog`, whose hardcoded
+            // list goes stale the moment a provider renames or retires a model (it still listed
+            // "Claude 3.5 Sonnet" and "GPT-4o" long after those model ids stopped resolving).
+            // `.light` is each agent's cheapest configured tier — the same one a real reroute
+            // would actually fall back to.
+            let fallback = self.resolvedModel(for: session.agentKind, tier: .light) ?? "fallback"
             do {
                 _ = try inboxStore.enqueue(
                     from: session.agentKind, to: currentTask.fromAgent, kind: .notice, taskId: currentTask.id,
