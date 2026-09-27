@@ -148,8 +148,8 @@ public enum BoardRouter {
                 // so the stub itself is never inside anything solid, only possibly its margin.
                 // (Never this arrow's own boxes — a stub pushes outward, away from its own box,
                 // so it can never land back inside it.)
-                let sourceStub = stub(sourcePort, sourceSide, avoiding: othersRaw)
-                let targetStub = stub(targetPort, targetSide, avoiding: othersRaw)
+                let sourceStub = stub(sourcePort, sourceSide, avoiding: othersRaw + [targetBox])
+                let targetStub = stub(targetPort, targetSide, avoiding: othersRaw + [sourceBox])
                 let path = aStar(
                     from: sourceStub, to: targetStub, rawObstacles: rawObstacles, marginObstacles: marginObstacles,
                     frames: frameObstacles, avoid: routedSegments, selfId: selfId) ?? lastResort()
@@ -205,8 +205,8 @@ public enum BoardRouter {
                 componentBox: componentBox, noteBoxes: noteBoxes)
             let rawObstacles = othersRaw + [sourceBox, targetBox]
             let marginObstacles = rawObstacles.map { inflate($0, by: clearance) }
-            let sourceStub = stub(sourcePort, sourceSide, avoiding: othersRaw)
-            let targetStub = stub(targetPort, targetSide, avoiding: othersRaw)
+            let sourceStub = stub(sourcePort, sourceSide, avoiding: othersRaw + [targetBox])
+            let targetStub = stub(targetPort, targetSide, avoiding: othersRaw + [sourceBox])
             let fkId = "fk:\(key.table.lowercased()).\(key.column.lowercased())"
             let path = aStar(
                 from: sourceStub, to: targetStub, rawObstacles: rawObstacles, marginObstacles: marginObstacles,
@@ -677,7 +677,8 @@ public enum BoardRouter {
                 return nil
             }
             let a = BoardPoint(x: sourceX, y: y), b = BoardPoint(x: targetX, y: y)
-            guard !obstacles.contains(where: { BoardGeometry.segmentIntersects(a, b, $0) }) else { return nil }
+            guard !obstacles.contains(where: { BoardGeometry.segmentIntersects(a, b, $0) }),
+                  !segmentTouchesSeam(a, b, obstacles: obstacles) else { return nil }
             return [a, b]
         case (.bottom, .top), (.top, .bottom):
             let lo = max(sourceBox.minX, targetBox.minX), hi = min(sourceBox.maxX, targetBox.maxX)
@@ -695,11 +696,46 @@ public enum BoardRouter {
                 return nil
             }
             let a = BoardPoint(x: x, y: sourceY), b = BoardPoint(x: x, y: targetY)
-            guard !obstacles.contains(where: { BoardGeometry.segmentIntersects(a, b, $0) }) else { return nil }
+            guard !obstacles.contains(where: { BoardGeometry.segmentIntersects(a, b, $0) }),
+                  !segmentTouchesSeam(a, b, obstacles: obstacles) else { return nil }
             return [a, b]
         default:
             return nil
         }
+    }
+
+    /// Whether an orthogonal segment runs along the shared boundary between two touching boxes.
+    private static func segmentTouchesSeam(_ a: BoardPoint, _ b: BoardPoint, obstacles: [BoardRect]) -> Bool {
+        guard obstacles.count >= 2 else { return false }
+        let isHoriz = a.y == b.y
+        let isVert = a.x == b.x
+        guard isHoriz || isVert else { return false }
+        for i in 0..<obstacles.count {
+            let o1 = obstacles[i]
+            for j in (i + 1)..<obstacles.count {
+                let o2 = obstacles[j]
+                if isHoriz {
+                    let seamY = (o1.maxY == o2.minY) ? o1.maxY : ((o2.maxY == o1.minY) ? o2.maxY : nil)
+                    if let seamY, a.y == seamY {
+                        let xLo = max(o1.minX, o2.minX), xHi = min(o1.maxX, o2.maxX)
+                        let segLo = min(a.x, b.x), segHi = max(a.x, b.x)
+                        if xLo < xHi && segLo < xHi && segHi > xLo {
+                            return true
+                        }
+                    }
+                } else if isVert {
+                    let seamX = (o1.maxX == o2.minX) ? o1.maxX : ((o2.maxX == o1.minX) ? o2.maxX : nil)
+                    if let seamX, a.x == seamX {
+                        let yLo = max(o1.minY, o2.minY), yHi = min(o1.maxY, o2.maxY)
+                        let segLo = min(a.y, b.y), segHi = max(a.y, b.y)
+                        if yLo < yHi && segLo < yHi && segHi > yLo {
+                            return true
+                        }
+                    }
+                }
+            }
+        }
+        return false
     }
 
     // MARK: - Obstacles
@@ -850,6 +886,44 @@ public enum BoardRouter {
             guard yLo <= yHi else { continue }
             for ix in xLo...xHi {
                 for iy in yLo...yHi { blocked[ix][iy] = true }
+            }
+        }
+        if rawObstacles.count >= 2 {
+            for i in 0..<rawObstacles.count {
+                let o1 = rawObstacles[i]
+                for j in (i + 1)..<rawObstacles.count {
+                    let o2 = rawObstacles[j]
+                    let seamY = (o1.maxY == o2.minY) ? o1.maxY : ((o2.maxY == o1.minY) ? o2.maxY : nil)
+                    if let seamY, let iy = ys.firstIndex(of: seamY) {
+                        let xLo = max(o1.minX, o2.minX), xHi = min(o1.maxX, o2.maxX)
+                        if xLo < xHi {
+                            let ixLo = lowerBound(xs, strictlyGreaterThan: xLo)
+                            let ixHi = upperBound(xs, strictlyLessThan: xHi)
+                            if ixLo <= ixHi {
+                                for ix in ixLo...ixHi {
+                                    if (xs[ix] != start.x || seamY != start.y) && (xs[ix] != goal.x || seamY != goal.y) {
+                                        blocked[ix][iy] = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let seamX = (o1.maxX == o2.minX) ? o1.maxX : ((o2.maxX == o1.minX) ? o2.maxX : nil)
+                    if let seamX, let ix = xs.firstIndex(of: seamX) {
+                        let yLo = max(o1.minY, o2.minY), yHi = min(o1.maxY, o2.maxY)
+                        if yLo < yHi {
+                            let iyLo = lowerBound(ys, strictlyGreaterThan: yLo)
+                            let iyHi = upperBound(ys, strictlyLessThan: yHi)
+                            if iyLo <= iyHi {
+                                for iy in iyLo...iyHi {
+                                    if (seamX != start.x || ys[iy] != start.y) && (seamX != goal.x || ys[iy] != goal.y) {
+                                        blocked[ix][iy] = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         guard !blocked[sx][sy], !blocked[gx][gy] else { return nil }
