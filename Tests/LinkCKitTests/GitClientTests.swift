@@ -45,16 +45,19 @@ final class GitClientTests: XCTestCase {
         }
     }
 
-    func testStatusIgnoresLinkcAndIgnoredFilesButNotUntrackedOrEdited() throws {
+    func testStatusIgnoresLinkcAndIgnoredFilesAndUntrackedButNotEdited() throws {
         XCTAssertTrue(try git.isClean(in: repo))
         try write("x", ".linkc/inbox.json")
         try write("y", "build/out")
         XCTAssertTrue(try git.isClean(in: repo), "linkC's own state and ignored files are not changes")
+        // D18a: only TRACKED changes make the tree unclean — an untracked, un-ignored file is
+        // surfaced separately (untrackedFiles), never a failure on its own.
         try write("z", "untracked.txt")
-        XCTAssertFalse(try git.isClean(in: repo), "an untracked file changes the build")
+        XCTAssertTrue(try git.isClean(in: repo), "an untracked file does not fail the clean-tree check")
+        XCTAssertEqual(try git.untrackedFiles(in: repo), ["untracked.txt"])
         try FileManager.default.removeItem(at: repo.appendingPathComponent("untracked.txt"))
         try write("edited\n", "Tests/Sub/X.swift")
-        XCTAssertFalse(try git.isClean(in: repo))
+        XCTAssertFalse(try git.isClean(in: repo), "a tracked edit still makes the tree unclean")
         XCTAssertEqual(try git.modifiedFiles(in: repo), ["Tests/Sub/X.swift"])
     }
 
@@ -95,6 +98,19 @@ final class GitClientTests: XCTestCase {
     func testMissingGitFailsLoud() {
         XCTAssertThrowsError(try GitClient(gitPath: nil).headSha(in: repo)) {
             XCTAssertTrue($0.localizedDescription.contains("git not found"), $0.localizedDescription)
+        }
+    }
+
+    /// D17: a raw `ProcessRunnerError.timedOut` has no `LocalizedError` conformance — it must
+    /// never escape `GitClient` as-is, or it renders as an opaque "error 0." in verdicts and MCP
+    /// output. `GitClient` wraps it into a descriptive `LinkCError.process`.
+    func testGitTimeoutBecomesADescriptiveError() throws {
+        let script = repo.appendingPathComponent("slow-git.sh")
+        try "#!/bin/sh\nsleep 5\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let slowGit = GitClient(timeout: 1.2, gitPath: script.path)
+        XCTAssertThrowsError(try slowGit.headSha(in: repo)) { error in
+            XCTAssertEqual(error.localizedDescription, "git rev-parse timed out after 1s")
         }
     }
 }
