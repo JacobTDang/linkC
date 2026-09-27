@@ -647,7 +647,7 @@ public final class MCPServer: Sendable {
                         return toolResultResponse(id: id, text: errorMsg, isError: true)
                     }
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
                 let files = args["files"] as? [String] ?? []
@@ -714,7 +714,7 @@ public final class MCPServer: Sendable {
                                                      prompt: prompt, files: files,
                                                      force: force, verification: verification)
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
                 let successText = verification.map {
@@ -767,7 +767,7 @@ public final class MCPServer: Sendable {
                     let pending = try inboxStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote, body: messageText)
                     return toolResultResponse(id: id, text: "Message queued for \(toAgent.displayName) (ID: \(pending.id)). linkC will deliver it when idle.")
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
             case "linkc_get_inbox":
@@ -775,7 +775,7 @@ public final class MCPServer: Sendable {
                 do {
                     inbox = try inboxStore.load()
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
                 let now = Date()
                 var text = "# linkC Message Inbox\n\n"
@@ -860,14 +860,14 @@ public final class MCPServer: Sendable {
                         let result = try modelSwitcher(agent, cleanModel)
                         return toolResultResponse(id: id, text: result)
                     } catch {
-                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                        return errorResult(id: id, error)
                     }
                 } else {
                     let cmd = AgentModelCatalog.interactiveSwitchCommand(model: cleanModel, for: agent)
                     do {
                         _ = try inboxStore.enqueue(from: agent, to: agent, kind: .command, body: cmd)
                     } catch {
-                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                        return errorResult(id: id, error)
                     }
                     return toolResultResponse(id: id, text: "Model switch requested: enqueued '\(cmd)' for \(agent.displayName). linkC will inject it via terminal PTY.")
                 }
@@ -895,7 +895,7 @@ public final class MCPServer: Sendable {
                     do {
                         limit = try inboxStore.isAgentLimited(agent: agent)
                     } catch {
-                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                        return errorResult(id: id, error)
                     }
                     if let limit {
                         let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
@@ -923,7 +923,7 @@ public final class MCPServer: Sendable {
                 do {
                     inbox = try inboxStore.load()
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
                 let now = Date()
                 var text = "# Agent Usage\n\n"
@@ -964,7 +964,7 @@ public final class MCPServer: Sendable {
                     let updated = try inboxStore.task(id: task.id) ?? task
                     return toolResultResponse(id: id, text: "Started: \(taskLine(updated))")
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
             case "linkc_complete_task":
@@ -1006,7 +1006,7 @@ public final class MCPServer: Sendable {
                     }
                     return toolResultResponse(id: id, text: text)
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
             case "linkc_cancel_task":
@@ -1032,7 +1032,7 @@ public final class MCPServer: Sendable {
                     }
                     return toolResultResponse(id: id, text: successText)
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
             case "linkc_get_task":
@@ -1040,7 +1040,7 @@ public final class MCPServer: Sendable {
                     let task = try requireTask(args)
                     return toolResultResponse(id: id, text: taskMarkdown(task))
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
             case "linkc_my_tasks":
@@ -1053,7 +1053,7 @@ public final class MCPServer: Sendable {
                     assigned = try inboxStore.openTasks(for: caller.agent).filter { callerMayAct(on: $0) }
                     delegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
                 var text = "# Open tasks for \(caller.agent.displayName)\n\n## Assigned to you (\(assigned.count))\n"
                 text += assigned.isEmpty ? "_None._\n" : assigned.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
@@ -1315,6 +1315,14 @@ public final class MCPServer: Sendable {
                 throw LinkCError.server("could not create detail board \"\(slug)\": \(error.localizedDescription)")
             }
         }
+    }
+
+    /// The catch every tool handler in this file reaches for once it has nothing more specific
+    /// to say: the thrown error's own description, reported as an `isError` tool result. Pulled
+    /// out because this exact three-line `catch` block was pasted at every site with no sharper
+    /// message for its own failure — one helper, one output shape, no copies to drift apart.
+    private func errorResult(id: Any?, _ error: Error) -> Data? {
+        toolResultResponse(id: id, text: error.localizedDescription, isError: true)
     }
 
     private func toolResultResponse(id: Any?, text: String, isError: Bool = false) -> Data? {
