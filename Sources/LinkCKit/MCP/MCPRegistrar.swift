@@ -116,16 +116,20 @@ public struct MCPRegistrar: Sendable {
         return home.appendingPathComponent(".local/bin/linkc-mcp")
     }
 
-    /// Runs one client's registration, catching a failure rather than propagating it: each
-    /// client's config lives in its own file, and one being unwritable (permissions, a full
-    /// disk, a directory turned into a file by hand) must not stop the others from being
-    /// registered. That must not mean silent, though — `rename` now actually throws on failure,
-    /// so it is logged here rather than dropped, and `registerAll` itself keeps going.
-    private static func attemptRegistration(_ label: String, _ body: () throws -> Void) {
+    /// Runs one client's registration, turning a thrown failure into a labeled description
+    /// instead of propagating it immediately: each client's config lives in its own file, and
+    /// one being unwritable (permissions, a full disk, a directory turned into a file by hand)
+    /// must not stop the others from being attempted. The failure is still logged here, and
+    /// also handed back so `registerAll` can name it in what it throws once every client has
+    /// had its turn.
+    private static func attemptRegistration(_ label: String, _ body: () throws -> Void) -> String? {
         do {
             try body()
+            return nil
         } catch {
-            NSLog("[linkC mcp] registerAll: %@ — %@", label, String(describing: error))
+            let description = String(describing: error)
+            NSLog("[linkC mcp] registerAll: %@ — %@", label, description)
+            return "\(label): \(description)"
         }
     }
 
@@ -133,59 +137,65 @@ public struct MCPRegistrar: Sendable {
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         binaryPath: String = defaultBinaryPath()
     ) throws {
+        var failures: [String] = []
+
         // Claude Code: ~/.claude.json (root) and ~/.claude/claude.json (dir)
-        attemptRegistration("~/.claude.json") {
+        if let f = attemptRegistration("~/.claude.json", {
             try registerServer(
                 configFile: home.appendingPathComponent(".claude.json"),
                 binaryPath: binaryPath,
                 env: ["LINKC_AGENT": "claude"]
             )
-        }
-        attemptRegistration("~/.claude/claude.json") {
+        }) { failures.append(f) }
+        if let f = attemptRegistration("~/.claude/claude.json", {
             try registerServer(
                 configFile: home.appendingPathComponent(".claude/claude.json"),
                 binaryPath: binaryPath,
                 env: ["LINKC_AGENT": "claude"]
             )
-        }
+        }) { failures.append(f) }
         // Cursor: ~/.cursor/mcp.json
-        attemptRegistration("~/.cursor/mcp.json") {
+        if let f = attemptRegistration("~/.cursor/mcp.json", {
             try registerServer(
                 configFile: home.appendingPathComponent(".cursor/mcp.json"),
                 binaryPath: binaryPath,
                 env: ["LINKC_AGENT": "cursor"]
             )
-        }
+        }) { failures.append(f) }
         // Antigravity: ~/.gemini/config/mcp_config.json (global) and ~/.gemini/antigravity-cli/mcp.json
         let agyConfigDir = ["." + "g" + "e" + "m" + "i" + "n" + "i"].joined()
-        attemptRegistration("~/\(agyConfigDir)/config/mcp_config.json") {
+        if let f = attemptRegistration("~/\(agyConfigDir)/config/mcp_config.json", {
             try registerServer(
                 configFile: home.appendingPathComponent("\(agyConfigDir)/config/mcp_config.json"),
                 binaryPath: binaryPath,
                 env: ["LINKC_AGENT": "agy"]
             )
-        }
-        attemptRegistration("~/\(agyConfigDir)/antigravity-cli/mcp.json") {
+        }) { failures.append(f) }
+        if let f = attemptRegistration("~/\(agyConfigDir)/antigravity-cli/mcp.json", {
             try registerServer(
                 configFile: home.appendingPathComponent("\(agyConfigDir)/antigravity-cli/mcp.json"),
                 binaryPath: binaryPath,
                 env: ["LINKC_AGENT": "agy"]
             )
-        }
+        }) { failures.append(f) }
         // Codex: ~/.codex/config.toml (primary) and ~/.codex/mcp.json (legacy)
-        attemptRegistration("~/.codex/config.toml") {
+        if let f = attemptRegistration("~/.codex/config.toml", {
             try registerTomlServer(
                 configFile: home.appendingPathComponent(".codex/config.toml"),
                 binaryPath: binaryPath,
                 env: ["LINKC_AGENT": "codex"]
             )
-        }
-        attemptRegistration("~/.codex/mcp.json") {
+        }) { failures.append(f) }
+        if let f = attemptRegistration("~/.codex/mcp.json", {
             try registerServer(
                 configFile: home.appendingPathComponent(".codex/mcp.json"),
                 binaryPath: binaryPath,
                 env: ["LINKC_AGENT": "codex"]
             )
+        }) { failures.append(f) }
+
+        guard failures.isEmpty else {
+            throw LinkCError.server("failed to register with: \(failures.joined(separator: "; "))")
         }
     }
 }
