@@ -228,6 +228,38 @@ final class DirectoryTrustManagerTests: XCTestCase {
         XCTAssertEqual(config["hasTrustDialogAccepted"] as? Bool, true)
     }
 
+    /// Without a lock around the read-modify-write, two concurrent callers can both read the
+    /// same starting JSON, each add their own workspace, and the second write to land clobbers
+    /// the first — silently dropping a trusted directory. Matches
+    /// `InboxStoreTests.testConcurrentFlockPreventsCorruption`'s shape.
+    func testConcurrentPreApproveTrustNeverDropsAWorkspace() throws {
+        let jsonURL = tempDir.appendingPathComponent(".claude.json")
+        let writeCount = 30
+        let group = DispatchGroup()
+        let queue = DispatchQueue(label: "test.concurrent.directory-trust", attributes: .concurrent)
+
+        for i in 0..<writeCount {
+            group.enter()
+            queue.async {
+                do {
+                    try DirectoryTrustManager.preApproveTrust(
+                        workspacePath: "/Users/developer/projects/concurrent-\(i)", claudeJsonURL: jsonURL)
+                } catch {
+                    XCTFail("Concurrent preApproveTrust \(i) failed: \(error)")
+                }
+                group.leave()
+            }
+        }
+
+        let result = group.wait(timeout: .now() + 10)
+        XCTAssertEqual(result, .success, "Concurrent writes did not complete in time")
+
+        let data = try Data(contentsOf: jsonURL)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let trusted = try XCTUnwrap(json["trustedDirectories"] as? [String])
+        XCTAssertEqual(trusted.count, writeCount, "every concurrent write must be preserved without corruption")
+    }
+
     func testWorkspacePathNormalization() throws {
         let jsonURL = tempDir.appendingPathComponent(".claude.json")
         let pathWithTrailingSlash = "/Users/developer/projects/demo/"
