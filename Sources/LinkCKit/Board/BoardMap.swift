@@ -732,7 +732,7 @@ public struct BoardMap: Equatable, Sendable {
             guard let style = BoardTextStyle(rawValue: styleName) else {
                 throw LinkCError.parse("\(itemContext) has style \"\(styleName)\"; styles are title and label")
             }
-            let width = try int(entry, "w", context: itemContext) ?? 0
+            let width = BoardModel.roundedUpToGrid(try int(entry, "w", context: itemContext) ?? 0)
             var boardText = BoardText(text: text, style: style, at: at, width: width)
             boardText.extras = try extras(of: entry, excluding: textKeys, context: itemContext)
             return boardText
