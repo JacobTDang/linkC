@@ -828,20 +828,15 @@ struct BoardCanvas: View {
         let focus = focusedComponent
         let focusFilter = focusVisible
         var drawnBundlePills: Set<String> = []
-        var bundleArrows: [String: [BoardArrow]] = [:]
-        for component in board.map.components {
-            for (target, arrow) in component.uses {
-                let k = BoardModel.ArrowKey(from: component.name, to: target)
-                if let bundle = board.routes[k]?.bundle {
-                    bundleArrows[bundle, default: []].append(arrow)
-                }
-            }
-        }
+        let bundleArrows = board.bundleArrows
+        let componentsByName = Dictionary(uniqueKeysWithValues: board.map.components.map { ($0.name, $0) })
         for component in board.map.components {
             for (target, arrow) in component.uses {
                 let key = BoardModel.ArrowKey(from: component.name, to: target)
                 guard focusFilter?.arrows.contains(key) ?? true else { continue }
-                guard let draw = arrowDraw(for: key), let canvasPoints = drawnPolyline(for: key) else { continue }
+                guard let draw = arrowDraw(for: key, componentsByName: componentsByName),
+                      let canvasPoints = drawnPolyline(for: key, draw: draw, componentsByName: componentsByName)
+                else { continue }
                 let screen = canvasPoints.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
                 let isPinned = pinned == .arrow(key)
                 let touchesFocus = focus != nil && (key.from == focus || key.to == focus)
@@ -927,14 +922,21 @@ struct BoardCanvas: View {
     /// `points` with the first and last segment's endpoint moved from the box edge to the kind's
     /// actual drawn outline on that side — so an arrow visibly touches the shape, not the fixed
     /// 176×84 box behind it.
-    private func extendedEndpoints(_ points: [BoardPoint], from sourceName: String, to targetName: String) -> [BoardPoint] {
+    private func extendedEndpoints(
+        _ points: [BoardPoint],
+        from sourceName: String,
+        to targetName: String,
+        componentsByName: [String: BoardComponent]? = nil
+    ) -> [BoardPoint] {
         guard points.count >= 2 else { return points }
         var points = points
-        if let source = board.map.components.first(where: { $0.name == sourceName }), let rect = componentRect(source) {
+        let source = componentsByName?[sourceName] ?? board.map.components.first(where: { $0.name == sourceName })
+        if let source, let rect = componentRect(source) {
             points[0] = insetEndpoint(points[0], box: rect, kind: source.kind)
         }
         let last = points.count - 1
-        if let target = board.map.components.first(where: { $0.name == targetName }), let rect = componentRect(target) {
+        let target = componentsByName?[targetName] ?? board.map.components.first(where: { $0.name == targetName })
+        if let target, let rect = componentRect(target) {
             points[last] = insetEndpoint(points[last], box: rect, kind: target.kind)
         }
         return points
@@ -1025,20 +1027,24 @@ struct BoardCanvas: View {
     /// An arrow's route, or — while its source or target is being dragged — a straight line
     /// between their live centres. The router never runs during a drag; the model re-routes on
     /// release.
-    private func arrowDraw(for key: BoardModel.ArrowKey) -> ArrowDraw? {
+    private func arrowDraw(for key: BoardModel.ArrowKey, componentsByName: [String: BoardComponent]? = nil) -> ArrowDraw? {
         guard !dragging.isEmpty else {
             guard let points = board.routes[key]?.points else { return nil }
             return ArrowDraw(points: points, isPreview: false)
         }
+        let lookup = componentsByName ?? Dictionary(uniqueKeysWithValues: board.map.components.map { ($0.name, $0) })
         func liveRect(_ name: String) -> BoardRect? {
-            guard let component = board.map.components.first(where: { $0.name == name }), let rect = componentRect(component) else { return nil }
+            guard let component = lookup[name], let rect = componentRect(component) else { return nil }
             let offset = liveOffset(for: .component(name), place: component.place)
             return rect.offsetBy(dx: Int(offset.width), dy: Int(offset.height))
         }
         guard let from = liveRect(key.from), let to = liveRect(key.to) else { return nil }
+        let fromPlace = lookup[key.from]?.place
+        let toPlace = lookup[key.to]?.place
         let moved = liveOffset(for: .component(key.from), place: nil) != .zero
             || liveOffset(for: .component(key.to), place: nil) != .zero
-            || board.map.components.contains { ($0.name == key.from || $0.name == key.to) && dragging.contains(.frame($0.place)) }
+            || (fromPlace != nil && dragging.contains(.frame(fromPlace!)))
+            || (toPlace != nil && dragging.contains(.frame(toPlace!)))
         guard moved else {
             guard let points = board.routes[key]?.points else { return nil }
             return ArrowDraw(points: points, isPreview: false)
@@ -1048,9 +1054,13 @@ struct BoardCanvas: View {
 
     /// The polyline points actually drawn for `key`: the routed points with their ends extended
     /// to the shaped component outlines (or the straight drag preview line if dragging).
-    private func drawnPolyline(for key: BoardModel.ArrowKey) -> [BoardPoint]? {
-        guard let draw = arrowDraw(for: key) else { return nil }
-        return draw.isPreview ? draw.points : extendedEndpoints(draw.points, from: key.from, to: key.to)
+    private func drawnPolyline(
+        for key: BoardModel.ArrowKey,
+        draw: ArrowDraw? = nil,
+        componentsByName: [String: BoardComponent]? = nil
+    ) -> [BoardPoint]? {
+        guard let draw = draw ?? arrowDraw(for: key, componentsByName: componentsByName) else { return nil }
+        return draw.isPreview ? draw.points : extendedEndpoints(draw.points, from: key.from, to: key.to, componentsByName: componentsByName)
     }
 
     /// A routed arrow's corners round off by 7 pt; a straight (2-point) arrow, routed or a drag
@@ -1497,8 +1507,9 @@ struct BoardCanvas: View {
     /// (endpoints extended into component shape outlines, or drag preview lines).
     private var drawnRoutes: [BoardModel.ArrowKey: BoardRoute] {
         var routes: [BoardModel.ArrowKey: BoardRoute] = [:]
+        let componentsByName = Dictionary(uniqueKeysWithValues: board.map.components.map { ($0.name, $0) })
         for (key, route) in board.routes {
-            let points = drawnPolyline(for: key) ?? route.points
+            let points = drawnPolyline(for: key, componentsByName: componentsByName) ?? route.points
             routes[key] = BoardRoute(points: points, bundle: route.bundle)
         }
         return routes

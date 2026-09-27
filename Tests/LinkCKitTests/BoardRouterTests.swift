@@ -617,4 +617,66 @@ final class BoardRouterTests: XCTestCase {
         let secondStubs = BoardRouter.foreignKeyStubs(for: arranged).mapValues { [$0.from, $0.to] }
         XCTAssertEqual(firstStubs, secondStubs)
     }
+
+    func testSpreadBandClampsToDrawnWidthForNarrowShapes() throws {
+        var map = BoardMap()
+        map.components = [
+            BoardComponent(name: "s1", kind: .service, uses: ["add": ""], at: BoardPoint(x: 100, y: 0)),
+            BoardComponent(name: "s2", kind: .service, uses: ["add": ""], at: BoardPoint(x: 200, y: 0)),
+            BoardComponent(name: "s3", kind: .service, uses: ["add": ""], at: BoardPoint(x: 300, y: 0)),
+            BoardComponent(name: "add", kind: .adder, at: BoardPoint(x: 200, y: 200)),
+        ]
+        let routes = BoardRouter.routes(for: map)
+        let adderBox = try XCTUnwrap(BoardGeometry.rect(of: map.components[3]))
+        // Adder drawn width is 52 (half-width 26) centred at 288: [262, 314]
+        let drawnHalfWidth = 26
+        let minX = adderBox.center.x - drawnHalfWidth
+        let maxX = adderBox.center.x + drawnHalfWidth
+
+        for name in ["s1", "s2", "s3"] {
+            let route = try XCTUnwrap(routes[BoardModel.ArrowKey(from: name, to: "add")])
+            let targetPort = try XCTUnwrap(route.points.last)
+            XCTAssertGreaterThanOrEqual(targetPort.x, minX, "\(name) target port x (\(targetPort.x)) should not overshoot adder left edge (\(minX))")
+            XCTAssertLessThanOrEqual(targetPort.x, maxX, "\(name) target port x (\(targetPort.x)) should not overshoot adder right edge (\(maxX))")
+        }
+    }
+
+    func testBundledArrowDoesNotEnterTargetBoxWhenBoxesAreUnderClearanceApart() throws {
+        var map = BoardMap()
+        // Two boxes 8 pt apart (clearance is 12 pt), offset vertically so straightCase is impossible
+        map.components = [
+            BoardComponent(name: "a", kind: .service, uses: ["b": "bundle", "c": "bundle"], at: BoardPoint(x: 0, y: 0)),
+            BoardComponent(name: "b", kind: .service, at: BoardPoint(x: 184, y: 20)),
+            BoardComponent(name: "c", kind: .service, at: BoardPoint(x: 184, y: 200)),
+        ]
+        let routes = BoardRouter.routes(for: map)
+        let route = try XCTUnwrap(routes[BoardModel.ArrowKey(from: "a", to: "b")])
+        let targetBox = try XCTUnwrap(BoardGeometry.rect(of: map.components[1]))
+        let sourceBox = try XCTUnwrap(BoardGeometry.rect(of: map.components[0]))
+        for (p1, p2) in zip(route.points, route.points.dropFirst()) {
+            XCTAssertTrue(p1.x == p2.x || p1.y == p2.y, "Segment \(p1) -> \(p2) must be orthogonal")
+            XCTAssertFalse(crosses(p1, p2, targetBox), "Segment \(p1) -> \(p2) enters target box")
+            XCTAssertFalse(crosses(p1, p2, sourceBox), "Segment \(p1) -> \(p2) enters source box")
+        }
+    }
+
+    func testTouchingBoxesWithZeroGapDoNotAllowArrowsAlongSeam() throws {
+        var map = BoardMap()
+        map.components = [
+            BoardComponent(name: "s", kind: .service, uses: ["t": ""], at: BoardPoint(x: 0, y: 42)),
+            BoardComponent(name: "w1", kind: .service, at: BoardPoint(x: 200, y: 0)),
+            BoardComponent(name: "w2", kind: .service, at: BoardPoint(x: 200, y: 84)),
+            BoardComponent(name: "t", kind: .service, at: BoardPoint(x: 500, y: 42)),
+        ]
+        let routes = BoardRouter.routes(for: map)
+        let route = try XCTUnwrap(routes[BoardModel.ArrowKey(from: "s", to: "t")])
+        // w1 (y: 0..84) and w2 (y: 84..168) touch along y = 84 from x: 200 to 376.
+        // An arrow must not route along the seam y = 84 through the solid wall of touching boxes.
+        for (p1, p2) in zip(route.points, route.points.dropFirst()) {
+            if p1.y == 84 && p2.y == 84 {
+                let minX = min(p1.x, p2.x), maxX = max(p1.x, p2.x)
+                XCTAssertFalse(minX < 376 && maxX > 200, "Segment \(p1) -> \(p2) slides along the seam of touching boxes")
+            }
+        }
+    }
 }

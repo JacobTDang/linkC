@@ -55,6 +55,8 @@ public final class BoardModel {
     public private(set) var statuses: [String: ComponentStatus] = [:]
     public private(set) var suggestions: [MapSuggestion] = []
     public private(set) var routes: [ArrowKey: BoardRoute] = [:]
+    /// Every bundle's arrows, grouped by bundle id; kept in step with `routes`, the same recompute.
+    public private(set) var bundleArrows: [String: [BoardArrow]] = [:]
     /// Where each labelled arrow's pill goes; kept in step with `routes`, the same recompute.
     public private(set) var labelRects: [ArrowKey: BoardRect] = [:]
     /// One route per foreign key whose table and referenced table are both on the board and
@@ -98,6 +100,7 @@ public final class BoardModel {
     /// dropped anyway. Internal, not private, so a test can capture and assert on the handle.
     @ObservationIgnored var routingTask: Task<(
         routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect],
+        bundleArrows: [String: [BoardArrow]],
         foreignKeyRoutes: [BoardForeignKey: BoardRoute], foreignKeyStubs: [BoardForeignKey: (from: BoardPoint, to: BoardPoint)]
     )?, Never>?
     @ObservationIgnored private var hasUnwrittenEdits = false
@@ -799,6 +802,7 @@ public final class BoardModel {
             guard let self, self.routingGeneration == scheduled else { return }
             self.routes = result.routes
             self.labelRects = result.labelRects
+            self.bundleArrows = result.bundleArrows
             self.foreignKeyRoutes = result.foreignKeyRoutes
             self.foreignKeyStubs = result.foreignKeyStubs
         }
@@ -816,6 +820,7 @@ public final class BoardModel {
         for map: BoardMap, isCancelled: () -> Bool = { Task.isCancelled }
     ) -> (
         routes: [ArrowKey: BoardRoute], labelRects: [ArrowKey: BoardRect],
+        bundleArrows: [String: [BoardArrow]],
         foreignKeyRoutes: [BoardForeignKey: BoardRoute], foreignKeyStubs: [BoardForeignKey: (from: BoardPoint, to: BoardPoint)]
     )? {
         let routes = BoardRouter.routes(for: map)
@@ -848,7 +853,7 @@ public final class BoardModel {
         }
         let labelRects = BoardLabels.placed(routes: routes, labels: labelOf, obstacles: BoardLabels.obstacles(for: map))
         guard !isCancelled() else { return nil }
-        return (routes, labelRects, BoardRouter.foreignKeyRoutes(for: map), BoardRouter.foreignKeyStubs(for: map))
+        return (routes, labelRects, arrowsByBundle, BoardRouter.foreignKeyRoutes(for: map), BoardRouter.foreignKeyStubs(for: map))
     }
 
     nonisolated static func elementRects(_ map: BoardMap, excluding excluded: Set<Element>) -> [BoardRect] {

@@ -509,4 +509,15 @@ final class BoardMapTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("\"outside\""))
         }
     }
+
+    func testHandEditedTextWidthRoundsUpToGrid() throws {
+        let json = Data("""
+        { "version": 2, "places": {},
+          "layout": { "texts": [ { "text": "Note", "at": [16, 16], "w": 50 } ] } }
+        """.utf8)
+        let map = try BoardMap.decode(json)
+        XCTAssertEqual(map.texts.first?.width, 56)
+    }
 }
+
+

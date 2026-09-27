@@ -67,4 +67,20 @@ final class BoardMapStoreTests: XCTestCase {
         XCTAssertEqual(BoardMapStore(workspacePath: workspace.path, board: "audio-engine").fileURL.lastPathComponent, "system-map.audio-engine.json")
         XCTAssertEqual(BoardMapStore(workspacePath: workspace.path, board: nil).fileURL.lastPathComponent, "system-map.json")
     }
+
+    func testSavingUnchangedBytesSkipsWritingToDisk() throws {
+        let store = BoardMapStore(workspacePath: workspace.path)
+        let first = try store.save(.empty, expecting: nil)
+
+        let pastDate = Date(timeIntervalSince1970: 1_000_000)
+        try FileManager.default.setAttributes([.modificationDate: pastDate], ofItemAtPath: store.fileURL.path)
+
+        let savedAgain = try store.save(.empty, expecting: first)
+        XCTAssertEqual(savedAgain, first)
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: store.fileURL.path)
+        let mtime = attributes[.modificationDate] as? Date
+        XCTAssertEqual(mtime, pastDate, "a no-op save must skip rewriting the file on disk")
+    }
 }
+

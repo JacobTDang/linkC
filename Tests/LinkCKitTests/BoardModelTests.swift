@@ -842,6 +842,19 @@ final class BoardModelTests: XCTestCase {
         XCTAssertFalse(notCancelled.labelRects.isEmpty)
     }
 
+    func testRoutesAndLabelsExposesBundleArrows() throws {
+        var m = BoardMap()
+        m.components = [
+            BoardComponent(name: "api", kind: .service, uses: ["db": "data", "cache": "data"], at: BoardPoint(x: 0, y: 0)),
+            BoardComponent(name: "db", kind: .database, at: BoardPoint(x: 400, y: 0)),
+            BoardComponent(name: "cache", kind: .cache, at: BoardPoint(x: 400, y: 200)),
+        ]
+        let result = try XCTUnwrap(BoardModel.routesAndLabels(for: m, isCancelled: { false }))
+        XCTAssertEqual(result.bundleArrows.count, 1)
+        let arrows = try XCTUnwrap(result.bundleArrows.values.first)
+        XCTAssertEqual(arrows.count, 2)
+    }
+
     /// A second arrow to the same component spelled in another case is still the same arrow —
     /// not a second entry under a different key.
     func testAddArrowDuplicateCheckIsCaseInsensitiveAndKeepsTheRealSpelling() throws {
