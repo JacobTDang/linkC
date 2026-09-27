@@ -124,9 +124,10 @@ final class BoardGeometryTests: XCTestCase {
         }
 
         let needle = box(320, 320)  // Middle of the obstacle grid; free spot must be ~20 rings away
-        let start = Date()
-        let result = BoardGeometry.nearestFreeSpot(for: needle, avoiding: obstacles)
-        let elapsed = Date().timeIntervalSince(start)
+        var result: BoardRect?
+        let elapsed = ThreadCPUTime.elapsed {
+            result = BoardGeometry.nearestFreeSpot(for: needle, avoiding: obstacles)
+        }
 
         XCTAssertNotNil(result, "should find a spot")
         XCTAssertTrue(obstacles.allSatisfy { !$0.intersects(result!) }, "spot should overlap no obstacles")

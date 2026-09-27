@@ -229,9 +229,10 @@ final class BoardRouterTests: XCTestCase {
         for i in 0..<200 where i != 110 {
             m.components.append(BoardComponent(name: "s\(i)", kind: .service, uses: ["hub": ""], at: BoardPoint(x: (i % 20) * 312, y: (i / 20) * 132)))
         }
-        let start = Date()
-        let routes = BoardRouter.routes(for: m)
-        let elapsed = Date().timeIntervalSince(start)
+        var routes: [BoardModel.ArrowKey: BoardRoute] = [:]
+        let elapsed = ThreadCPUTime.elapsed {
+            routes = BoardRouter.routes(for: m)
+        }
         XCTAssertEqual(routes.count, 199)
         XCTAssertLessThan(elapsed, 1.5, "debug-build guard; report the measured time")
     }
