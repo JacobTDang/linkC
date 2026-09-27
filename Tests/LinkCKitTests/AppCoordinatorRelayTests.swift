@@ -2592,6 +2592,76 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertFalse(injected, "a failed mark must never inject the message")
     }
 
+    /// The per-group loop `break`s (not `continue`s) on a non-timeout mark failure, so a message
+    /// after the failing one stays queued and untouched rather than jumping ahead of it out of
+    /// order. `testAFailedMarkNeverInjectsTheMessage` above enqueues only one message, so `break`
+    /// and `continue` are behaviorally identical there and the distinction goes untested — this
+    /// needs a THIRD message behind the failing one: only then does `continue` visibly differ (it
+    /// would mark and inject that third message, skipping the still-queued second one) from the
+    /// correct `break` (the third message is never even attempted). The injected failure targets
+    /// only the second message's id, isolating it from the others without a whole-file `flock`.
+    @MainActor
+    func testAFailedMarkOnAMiddleMessageNeverLetsALaterOneSkipAheadOfIt() async throws {
+        let ws = tempDir.path
+        let seed = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        let first = try seed.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "first should land")
+        let second = try seed.enqueue(from: .cursor, to: .codex, kind: .peerNote, body: "second should never land")
+        let third = try seed.enqueue(from: .agy, to: .codex, kind: .peerNote, body: "third must not skip ahead")
+
+        let injected = InboxStore(workspaceRoot: ws, failureInjector: { id in
+            id == second.id ? LinkCError.server("injected failure for the second message") : nil
+        })
+
+        coordinator.dispatchMessages(workspacePath: ws, inboxStore: injected)
+
+        let loaded = try seed.load().messages
+        XCTAssertEqual(loaded.first { $0.id == first.id }?.status, .delivered, "the message ahead of the failure must still be marked")
+        XCTAssertEqual(loaded.first { $0.id == second.id }?.status, .queued, "the failing mark itself must stay queued")
+        XCTAssertEqual(loaded.first { $0.id == third.id }?.status, .queued,
+                       "a message behind a failed mark must not skip ahead of it and deliver out of order")
+
+        let output = coordinator.terminals.session(id: session.id)?.recentOutput(lines: 40) ?? ""
+        XCTAssertFalse(output.contains("third must not skip ahead"),
+                       "the third message must never be injected ahead of the still-queued second one")
+    }
+
+    /// A contended lock on the delegator lookup (`inboxStore.task(id:)`, resolving which session
+    /// delegated the task a notice is about) must end the tick — falling through would hand the
+    /// notice to a different session of the same kind, a real misroute, not merely a late one.
+    /// The existing coverage of this call's error handling flocks the WHOLE inbox file, so
+    /// `expireTasks` (the first phase) already times out and the delegator lookup is never
+    /// reached; the injectable failure hook isolates this one call instead.
+    @MainActor
+    func testDispatchMessagesEndsTheTickRatherThanMisroutingWhenTheDelegatorLookupHitsALockTimeout() throws {
+        let ws = tempDir.path
+        let seed = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        // If the lock-timeout branch didn't stop the tick right there, this is the session a
+        // misrouted notice would fall through to — any other `.claude` session in the workspace.
+        let fallback = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new)
+        coordinator.store.updateState(id: fallback.id, to: .ready)
+
+        let task = try seed.createTask(from: .claude, to: .codex, prompt: "brief", files: [])
+        let notice = try seed.enqueue(from: .codex, to: .claude, kind: .completion, taskId: task.id, body: "done")
+
+        let injected = InboxStore(workspaceRoot: ws, failureInjector: { id in
+            id == task.id ? LinkCError.server("Timed out acquiring inbox lock after 0.5s at \(ws)/.linkc/.inbox.lock") : nil
+        })
+
+        let stopped = coordinator.dispatchMessages(workspacePath: ws, inboxStore: injected)
+
+        XCTAssertTrue(stopped, "a lock-timeout on the delegator lookup must end the tick rather than fall through")
+        XCTAssertEqual(try seed.load().messages.first { $0.id == notice.id }?.status, .queued,
+                       "the notice must stay queued for the next tick, not be routed to a fallback session")
+    }
+
     /// Mark-before-inject means the mark's own disk I/O and lock wait sit inside the window
     /// between reading the target session and calling `sendInput` — a child that dies in that
     /// window would otherwise get its message marked `.delivered` and then silently dropped by

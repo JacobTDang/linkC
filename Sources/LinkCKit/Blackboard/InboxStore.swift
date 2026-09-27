@@ -30,8 +30,21 @@ final class LoggedFailureTracker: Sendable {
 public final class InboxStore: Sendable {
     public let workspaceRoot: String
 
+    /// Test-only fault injection, keyed by the id a call is about — a task id for `task(id:)`,
+    /// a message id for `markMessageDelivered(id:)`. When it returns non-nil for that id, the
+    /// call throws it instead of touching disk. Lets a test isolate exactly one store call from
+    /// every other phase in the same relay tick, which a whole-file `flock` cannot do — that
+    /// blocks every phase, not just the one under test.
+    private let failureInjector: (@Sendable (String) -> Error?)?
+
     public init(workspaceRoot: String) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
+        self.failureInjector = nil
+    }
+
+    init(workspaceRoot: String, failureInjector: @escaping @Sendable (String) -> Error?) {
+        self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
+        self.failureInjector = failureInjector
     }
 
     private var linkcDirectory: URL {
@@ -269,6 +282,7 @@ public final class InboxStore: Sendable {
 
     /// Marks a message as delivered and stamps `deliveredAt`.
     public func markMessageDelivered(id: String, timeout: TimeInterval = 5.0) throws {
+        if let error = failureInjector?(id) { throw error }
         try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             guard let index = inbox.messages.firstIndex(where: { $0.id == id }) else {
@@ -405,7 +419,8 @@ public final class InboxStore: Sendable {
     }
 
     public func task(id: String, timeout: TimeInterval = 5.0) throws -> TaskRecord? {
-        try withFileLock(timeout: timeout) {
+        if let error = failureInjector?(id) { throw error }
+        return try withFileLock(timeout: timeout) {
             try loadUnlocked().tasks.first { $0.id == id }
         }
     }
