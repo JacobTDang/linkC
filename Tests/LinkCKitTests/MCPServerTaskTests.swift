@@ -217,6 +217,14 @@ final class MCPServerTaskTests: XCTestCase {
     /// that walk so this test can count invocations without reading real processes; this is the
     /// only place in the suite that ever touches the cache, so the result does not depend on test
     /// execution order.
+    /// `walk`'s default closure fails fast (see its doc comment) when read under XCTest without
+    /// an injected `sessionResolver` — but a trap can't be asserted against in-process, so this
+    /// proves the detection it relies on instead: running inside this very test suite must read
+    /// as "under XCTest" every time, not just when some other test happens to have linked it.
+    func testAncestorSessionCacheDetectsRunningUnderXCTest() {
+        XCTAssertTrue(AncestorSessionCache.isRunningUnderXCTest)
+    }
+
     func testDefaultSessionResolverWalksTheAncestryAtMostOnce() throws {
         final class Counter: @unchecked Sendable {
             private let lock = NSLock()

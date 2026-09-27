@@ -13,6 +13,12 @@ public struct MCPCaller: Sendable {
 /// `MCPServer`'s *default* `sessionResolver` goes through this cache — a resolver a caller
 /// injects (every test, and any future caller that wants a fresh read) bypasses it entirely.
 public enum AncestorSessionCache {
+    /// True when the XCTest framework is loaded into this process — true for both `swift test`
+    /// and an Xcode test run (either links it in), false for `linkc`/`linkc-mcp` running for
+    /// real. Independent of Xcode-only environment variables, and a var (not the check inlined
+    /// into `walk`) purely so a test can assert the detection itself works.
+    static var isRunningUnderXCTest: Bool { NSClassFromString("XCTestCase") != nil }
+
     /// The real walk. `value`'s `static let` memoizes whatever this returns the first time it is
     /// read, via Swift's thread-safe one-time static initialization — no hand-rolled locking
     /// needed for that part. `walk` itself is `nonisolated(unsafe)` only because a mutable global
@@ -22,8 +28,24 @@ public enum AncestorSessionCache {
     /// reaches it despite `internal`, so it need not be `public` itself. `value` is `public`
     /// because `MCPServer.init` is public and its default `sessionResolver` argument reads it
     /// directly, which Swift requires to be at least as visible as the initializer.
+    ///
+    /// The still-default `walk` (one a test never replaced) fails fast under XCTest instead of
+    /// silently returning the real ancestor session: a test that forgot to inject
+    /// `sessionResolver: { nil }` (or reassign `walk` first) would otherwise read whatever
+    /// process happens to be running the test binary's ancestry, a flaky, unasserted hazard this
+    /// doc already warned about.
     nonisolated(unsafe) static var walk: @Sendable () -> String? = {
-        ProcessSnooper.sessionId(inAncestorsOf: getpid())
+        #if DEBUG
+        if AncestorSessionCache.isRunningUnderXCTest {
+            fatalError(
+                "AncestorSessionCache.value was read for real under XCTest — a test forgot to " +
+                "inject sessionResolver: { nil } to MCPServer.init (or reassign " +
+                "AncestorSessionCache.walk before first use), and would otherwise read the real " +
+                "ancestor session of the test-runner process."
+            )
+        }
+        #endif
+        return ProcessSnooper.sessionId(inAncestorsOf: getpid())
     }
     public static let value: String? = walk()
 }
