@@ -83,4 +83,11 @@ extension AppModel {
         sidebarState.closeApp(folder: open.folder, in: open.project)
         clearAppTab(matching: tab.id)
     }
+
+    /// Stops an in-flight start (or a running app), the pane's Cancel button — the tab itself
+    /// stays open, back at `.asleep` so Start can run again. `closeApp` is what also forgets
+    /// the tab.
+    func stopApp(_ ref: AppTabRef) {
+        appProcesses[ref.id]?.stop()
+    }
 }

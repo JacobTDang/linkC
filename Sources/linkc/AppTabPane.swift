@@ -18,7 +18,7 @@ struct AppTabPane: View {
         case .asleep:
             AppAsleepView(name: app.name) { model.startApp(app) }
         case .starting:
-            AppStartingView(name: app.name)
+            AppStartingView(name: app.name) { model.stopApp(app) }
         case .running(let url):
             AppWebView(model: model, key: app.id, url: url)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
@@ -58,9 +58,11 @@ private struct AppAsleepView: View {
     }
 }
 
-/// The health poll is under way — no progress figure, just that it's happening.
+/// The health poll is under way — no progress figure, just that it's happening, plus a way out
+/// if it's taking too long.
 private struct AppStartingView: View {
     let name: String
+    let cancel: () -> Void
 
     var body: some View {
         VStack(spacing: 10) {
@@ -69,6 +71,10 @@ private struct AppStartingView: View {
             Text("Starting \(name)…")
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.textSecondary)
+            Button("Cancel", action: cancel)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .padding(.top, 2)
         }
     }
 }
