@@ -142,6 +142,7 @@ struct BoardCanvas: View {
         .onChange(of: viewport.lens) { _, _ in sidebarState.setBoardViewport(viewport, for: viewportKey) }
         .onChange(of: board.map) { _, _ in unpinIfGone() }
         .onChange(of: hoverCandidate) { _, target in hoverCandidateChanged(target) }
+        .onChange(of: hoverCard) { _, target in if target == nil { hoverCardSize = .zero } }
         .onChange(of: focusOn) { _, on in focusToggled(on) }
     }
 
@@ -209,10 +210,11 @@ struct BoardCanvas: View {
             }
     }
 
-    /// The hovered component, or else the one selected component — what a focus dims everything
-    /// else around. View state only; nothing here writes to the model.
+    /// The hovered component, the pinned part, or else the one selected component — what a focus
+    /// dims everything else around. View state only; nothing here writes to the model.
     private var focusedComponent: String? {
         if let hovered { return hovered }
+        if case let .part(name)? = pinned { return name }
         if board.selection.count == 1, case let .component(name)? = board.selection.first { return name }
         return nil
     }
@@ -389,9 +391,12 @@ struct BoardCanvas: View {
     @ViewBuilder
     private func componentItemView(_ component: BoardComponent, at: BoardPoint) -> some View {
         let isGhost = component.outside != nil
+        let isPinned = pinned == .part(component.name)
+        let isSelected = isPinned || board.selection.contains(.component(component.name))
+        let opacity: Double = isPinned ? 1 : (focusedComponent.map { isConnected(component.name, to: $0) ? 1.0 : 0.3 } ?? 1.0)
         let content = ComponentBox(component: component, status: board.statuses[component.name],
-                                   isSelected: board.selection.contains(.component(component.name)))
-            .opacity(focusedComponent.map { isConnected(component.name, to: $0) ? 1 : 0.3 } ?? 1)
+                                   isSelected: isSelected)
+            .opacity(opacity)
             .overlay { if hovered == component.name && board.tool == .select && dragging.isEmpty { handles(for: component) } }
             .overlay { glow(.component(component.name), cornerRadius: 10, inset: BoardShape.insets(for: component.kind)) }
             .onContinuousHover(coordinateSpace: .named(Self.space)) { phase in
@@ -447,13 +452,13 @@ struct BoardCanvas: View {
             content
                 .contextMenu {
                     Button("↳ Go deeper") { goDeeper(into: component.name) }
-                    Button("Edit…") { inspecting = component.name }
+                    Button("Edit…") { editComponent(component.name) }
                 }
                 .gesture(board.tool == .arrow ? AnyGesture(arrowDrag(from: component.name).map { _ in () })
                                               : AnyGesture(elementDrag(.component(component.name)).map { _ in () }))
                 .onTapGesture(count: 2) {
                     select(.component(component.name))
-                    inspecting = component.name
+                    editComponent(component.name)
                 }
                 .onTapGesture(count: 1, coordinateSpace: .named(Self.space)) { location in
                     componentTapped(component.name, at: location)
@@ -607,12 +612,14 @@ struct BoardCanvas: View {
     @ViewBuilder
     private var hoverCardOverlay: some View {
         if let hoverCard, let content = inspectionContent(for: hoverCard) {
+            let isMeasured = hoverCardSize.width > 0 && hoverCardSize.height > 0
             BoardHoverCard(content: content, parentTitle: parentTitle)
                 .background(GeometryReader { proxy in
                     Color.clear.onAppear { hoverCardSize = proxy.size }
                         .onChange(of: proxy.size) { _, size in hoverCardSize = size }
                 })
                 .offset(clampedHoverCardOrigin())
+                .opacity(isMeasured ? 1 : 0)
         }
     }
 
@@ -688,12 +695,29 @@ struct BoardCanvas: View {
     private func hoverCandidateChanged(_ target: BoardInspectionTarget?) {
         hoverCardTask?.cancel()
         hoverCard = nil
+        hoverCardSize = .zero
         guard let target, target != pinned else { return }
         hoverCardTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
             hoverCard = target
         }
+    }
+
+    /// Opens the component inspector for `name`, panning the viewport to centre the component
+    /// first if its rect isn't fully visible on screen.
+    private func editComponent(_ name: String) {
+        if let component = board.map.components.first(where: { $0.name == name }),
+           let rect = componentRect(component) {
+            let visible = viewport.visibleRect(width: Double(size.width), height: Double(size.height))
+            if !visible.contains(rect) {
+                let centreX = Double(rect.center.x)
+                let centreY = Double(rect.center.y)
+                viewport.originX = centreX - Double(size.width) / (2 * viewport.zoom)
+                viewport.originY = centreY - Double(size.height) / (2 * viewport.zoom)
+            }
+        }
+        inspecting = name
     }
 
     /// Opens the pinned item's editor: `ComponentInspector` for a part, `ArrowEditor` for an
@@ -703,7 +727,7 @@ struct BoardCanvas: View {
         switch pinned {
         case .part(let name):
             if board.map.components.first(where: { $0.name == name })?.outside == nil {
-                inspecting = name
+                editComponent(name)
             }
         case .arrow(let key): editingArrow = key
         }
@@ -804,16 +828,26 @@ struct BoardCanvas: View {
         let focus = focusedComponent
         let focusFilter = focusVisible
         var drawnBundlePills: Set<String> = []
+        var bundleArrows: [String: [BoardArrow]] = [:]
+        for component in board.map.components {
+            for (target, arrow) in component.uses {
+                let k = BoardModel.ArrowKey(from: component.name, to: target)
+                if let bundle = board.routes[k]?.bundle {
+                    bundleArrows[bundle, default: []].append(arrow)
+                }
+            }
+        }
         for component in board.map.components {
             for (target, arrow) in component.uses {
                 let key = BoardModel.ArrowKey(from: component.name, to: target)
                 guard focusFilter?.arrows.contains(key) ?? true else { continue }
                 guard let draw = arrowDraw(for: key), let canvasPoints = drawnPolyline(for: key) else { continue }
                 let screen = canvasPoints.map { viewport.toScreen(CGPoint(x: Double($0.x), y: Double($0.y))) }
+                let isPinned = pinned == .arrow(key)
                 let touchesFocus = focus != nil && (key.from == focus || key.to == focus)
                 let isHovered = hoveredArrow == key
-                let highlighted = touchesFocus || isHovered || board.selection.contains(.arrow(key))
-                let dimmed = focus != nil && !touchesFocus && !isHovered
+                let highlighted = isPinned || touchesFocus || isHovered || board.selection.contains(.arrow(key))
+                let dimmed = !isPinned && focus != nil && !touchesFocus && !isHovered
                 let inLens = viewport.lens.includes(arrow.style)
                 let colour = arrowColor(style: arrow.style, highlighted: highlighted).opacity(!inLens ? 0.1 : (dimmed ? 0.12 : 1))
                 let lineWidth: CGFloat = arrow.style == .bus ? 2.6 : (highlighted ? 1.8 : 1.3)
@@ -834,11 +868,12 @@ struct BoardCanvas: View {
                     drawBusMark(at: mark, highlighted: highlighted, dimmed: dimmed, in: &context)
                 }
                 guard inLens, !isMoving(key.from), !isMoving(key.to), let rect = board.labelRects[key] else { continue }
-                if focus != nil, !touchesFocus, !isHovered { continue }
+                if focus != nil, !touchesFocus, !isHovered, !isPinned { continue }
                 let bundleId = board.routes[key]?.bundle
                 if let bundleId, drawnBundlePills.contains(bundleId) { continue }
                 if let bundleId { drawnBundlePills.insert(bundleId) }
-                drawPill(at: rect.center, arrow: arrow, style: arrow.style, highlighted: highlighted, in: &context)
+                let widthText = bundleId.flatMap { bundleArrows[$0] }.flatMap(BoardLabels.bundleWidths) ?? arrow.bits.map(String.init)
+                drawPill(at: rect.center, arrow: arrow, widthText: widthText, style: arrow.style, highlighted: highlighted, in: &context)
             }
         }
     }
@@ -1137,17 +1172,20 @@ struct BoardCanvas: View {
     /// rect × zoom. A conditional or control arrow's pill text is gold instead, unless
     /// highlighted. Never drawn for an arrow the placer found no room for — no fallback centre is
     /// ever forced here, whatever focuses or hovers it.
-    private func drawPill(at center: BoardPoint, arrow: BoardArrow, style: BoardArrowStyle, highlighted: Bool, in context: inout GraphicsContext) {
+    private func drawPill(
+        at center: BoardPoint, arrow: BoardArrow, widthText: String?, style: BoardArrowStyle, highlighted: Bool,
+        in context: inout GraphicsContext
+    ) {
         guard highlighted || viewport.zoom >= Self.pillHiddenBelowZoom else { return }
         let scale = highlighted ? max(viewport.zoom, 1) : viewport.zoom
         let screenCenter = viewport.toScreen(CGPoint(x: Double(center.x), y: Double(center.y)))
         let textColor = highlighted ? Theme.accent : (style == .conditional || style == .control ? Theme.boardConditional : Theme.textSecondary)
         let font = Font.system(size: 10 * scale)
         var text = Text(arrow.label).font(font).foregroundColor(textColor)
-        if let bits = arrow.bits {
+        if let widthText {
             let boldFont = Font.system(size: 10 * scale, weight: .bold)
-            let widthText = Text(arrow.label.isEmpty ? "\(bits)" : "  \(bits)").font(boldFont).foregroundColor(textColor)
-            text = arrow.label.isEmpty ? widthText : text + widthText
+            let formatted = Text(arrow.label.isEmpty ? widthText : "  \(widthText)").font(boldFont).foregroundColor(textColor)
+            text = arrow.label.isEmpty ? formatted : text + formatted
         }
         let resolved = context.resolve(text)
         let measured = resolved.measure(in: CGSize(width: 320 * scale, height: 30 * scale))

@@ -57,6 +57,35 @@ final class BoardLabelsTests: XCTestCase {
         XCTAssertNil(BoardLabels.pillText(for: BoardArrow(label: "", style: .plain)))
     }
 
+    func testABundleWithDifferentWidthsShowsEveryWidth() {
+        let mixed = [
+            BoardArrow(label: "rs1 data", style: .bus, bits: 32),
+            BoardArrow(label: "rs1 data", style: .bus, bits: 8),
+            BoardArrow(label: "rs1 data", style: .bus, bits: 32),
+        ]
+        XCTAssertEqual(BoardLabels.pillText(forBundle: mixed), "rs1 data  8/32")
+
+        let single = [
+            BoardArrow(label: "rs1 data", style: .bus, bits: 32),
+            BoardArrow(label: "rs1 data", style: .bus, bits: 32),
+        ]
+        XCTAssertEqual(BoardLabels.pillText(forBundle: single), "rs1 data  32")
+
+        let noWidths = [
+            BoardArrow(label: "RegWrite", style: .control),
+            BoardArrow(label: "RegWrite", style: .control),
+        ]
+        XCTAssertEqual(BoardLabels.pillText(forBundle: noWidths), "RegWrite")
+
+        let unlabelled = [
+            BoardArrow(label: "", style: .bus, bits: 8),
+            BoardArrow(label: "", style: .bus, bits: 32),
+        ]
+        XCTAssertEqual(BoardLabels.pillText(forBundle: unlabelled), "8/32")
+
+        XCTAssertNil(BoardLabels.pillText(forBundle: []))
+    }
+
     func testAnUnlabelledBusGetsAPlacedPill() throws {
         var m = BoardMap()
         m.components = [BoardComponent(name: "a", kind: .register, uses: ["b": BoardArrow(label: "", style: .bus, bits: 32)], at: BoardPoint(x: 0, y: 0)),
@@ -64,6 +93,20 @@ final class BoardLabelsTests: XCTestCase {
         let placed = try XCTUnwrap(BoardModel.routesAndLabels(for: m, isCancelled: { false }))
         let rect = try XCTUnwrap(placed.labelRects[.init(from: "a", to: "b")])
         XCTAssertEqual(rect.w, BoardLabels.width(of: "32"))
+    }
+
+    func testABundleWithDifferentWidthsSizesItsPillForEveryWidth() throws {
+        var m = try arranged()
+        if let idx = m.components.firstIndex(where: { $0.name == "hub" }) {
+            m.components[idx].uses["w1"] = BoardArrow(label: "hosts", style: .bus, bits: 8)
+            m.components[idx].uses["w2"] = BoardArrow(label: "hosts", style: .bus, bits: 32)
+            m.components[idx].uses["w3"] = BoardArrow(label: "hosts", style: .bus, bits: 16)
+        }
+        let placed = try XCTUnwrap(BoardModel.routesAndLabels(for: m, isCancelled: { false }))
+        let hubKeys = placed.labelRects.keys.filter { $0.from == "hub" }
+        XCTAssertEqual(hubKeys.count, 1)
+        let rect = try XCTUnwrap(placed.labelRects[hubKeys[0]])
+        XCTAssertEqual(rect.w, BoardLabels.width(of: "hosts  8/16/32"))
     }
 
     /// A width alone draws in bold, whose digits run about 7 pt each at 10 pt: "64" measures

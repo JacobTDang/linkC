@@ -823,11 +823,27 @@ public final class BoardModel {
         // The placer's text is the arrow's full pill — label and width combined, or width alone
         // for an unlabelled bus — never the router's own bundling label, which stays `arrow.label`
         // so bundling is unaffected by what the pill happens to show.
+        var arrowsByBundle: [String: [BoardArrow]] = [:]
+        for component in map.components {
+            for (target, arrow) in component.uses {
+                let key = ArrowKey(from: component.name, to: target)
+                if let bundle = routes[key]?.bundle {
+                    arrowsByBundle[bundle, default: []].append(arrow)
+                }
+            }
+        }
         var labelOf: [ArrowKey: String] = [:]
         for component in map.components {
             for (target, arrow) in component.uses {
-                guard let pill = BoardLabels.pillText(for: arrow) else { continue }
-                labelOf[ArrowKey(from: component.name, to: target)] = pill
+                let key = ArrowKey(from: component.name, to: target)
+                let pill: String?
+                if let bundle = routes[key]?.bundle, let bundleArrows = arrowsByBundle[bundle] {
+                    pill = BoardLabels.pillText(forBundle: bundleArrows)
+                } else {
+                    pill = BoardLabels.pillText(for: arrow)
+                }
+                guard let pill else { continue }
+                labelOf[key] = pill
             }
         }
         let labelRects = BoardLabels.placed(routes: routes, labels: labelOf, obstacles: BoardLabels.obstacles(for: map))

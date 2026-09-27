@@ -36,6 +36,28 @@ public enum BoardLabels {
         }
     }
 
+    /// Distinct bus widths of `arrows`, sorted ascending and joined with "/". Nil when no arrow
+    /// has bits.
+    public static func bundleWidths(for arrows: [BoardArrow]) -> String? {
+        let widths = Array(Set(arrows.compactMap(\.bits))).sorted()
+        return widths.isEmpty ? nil : widths.map(String.init).joined(separator: "/")
+    }
+
+    /// What a bundle's pill says: the shared label, then distinct widths sorted ascending and
+    /// joined with "/" after two spaces. A single width shows as today; no widths shows just the
+    /// label.
+    public static func pillText(forBundle arrows: [BoardArrow]) -> String? {
+        guard let first = arrows.first else { return nil }
+        let label = arrows.first(where: { !$0.label.isEmpty })?.label ?? first.label
+        let width = bundleWidths(for: arrows)
+        switch (label.isEmpty, width) {
+        case (false, let width?): return label + "  " + width
+        case (false, nil): return label
+        case (true, let width?): return width
+        case (true, nil): return nil
+        }
+    }
+
     /// Where each labelled arrow's pill goes; an arrow with no room is absent.
     public static func placed(
         routes: [BoardModel.ArrowKey: BoardRoute], labels: [BoardModel.ArrowKey: String], obstacles: [BoardRect]
