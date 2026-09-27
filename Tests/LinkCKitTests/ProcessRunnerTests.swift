@@ -91,6 +91,24 @@ final class ProcessRunnerStderrTests: XCTestCase {
         }
     }
 
+    /// D26b: dropping every "Warning:"-prefixed line is a blanket match, not a precise one —
+    /// if the CLI's warning was its ONLY word on the matter, dropping it must not leave the
+    /// caller with nothing to show.
+    func testAWarningIsKeptWhenItIsTheOnlyStderrLine() async {
+        let runner = LiveProcessRunner()
+        do {
+            _ = try await runner.run(
+                "/bin/sh", args: ["-c", "echo 'Warning: only this line' >&2; exit 1"],
+                cwd: nil, timeout: 10
+            )
+            XCTFail("a nonzero exit must throw")
+        } catch {
+            let message = error.localizedDescription
+            let reason = message.components(separatedBy: " (/bin/sh").first ?? message
+            XCTAssertEqual(reason, "Warning: only this line", "the sole line must survive — dropping it leaves nothing")
+        }
+    }
+
     func testStdoutIsUnaffectedByStderrNoise() async throws {
         let runner = LiveProcessRunner()
         let output = try await runner.run(
@@ -181,6 +199,20 @@ final class ProcessRunnerCapturingTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? ProcessRunnerError, .timedOut(seconds: 1))
         }
+    }
+
+    /// D26b: `env` merges INTO the child's inherited environment — a caller can set one
+    /// variable (say, to suppress a CLI's own advisory banner at the source) without losing
+    /// PATH, HOME, and everything else the process would otherwise inherit.
+    func testEnvMergesWithTheInheritedEnvironment() async throws {
+        let result = try await LiveProcessRunner().runCapturing(
+            "/bin/sh", args: ["-c", "printf '%s|%s' \"$LINKC_TEST_VAR\" \"$HOME\""],
+            cwd: nil, env: ["LINKC_TEST_VAR": "hello"], timeout: 5
+        )
+        XCTAssertEqual(result.status, 0)
+        let parts = result.stdout.split(separator: "|", maxSplits: 1).map(String.init)
+        XCTAssertEqual(parts.first, "hello")
+        XCTAssertEqual(parts.last, ProcessInfo.processInfo.environment["HOME"], "inherited vars must survive the merge")
     }
 
     func testSyncCoreRunsInTheWorkingDirectory() throws {

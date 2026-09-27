@@ -30,16 +30,32 @@ public protocol ProcessRunner: Sendable {
     /// Runs to completion and returns the exit status as data. Throws only when the process
     /// cannot start, or `ProcessRunnerError.timedOut`.
     func runCapturing(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> ProcessResult
+    /// Same as above, with `env` merged into the child's inherited environment (D26b) — e.g. to
+    /// suppress a CLI's own advisory banner at the source instead of filtering it out of
+    /// captured stderr afterward. A protocol requirement can't carry a default argument value,
+    /// so this is a second requirement with a default IMPLEMENTATION below (not a default
+    /// PARAMETER): a conformer that only implements the plain overload gets that default, which
+    /// ignores `env` and forwards to it — no existing conformer needs to change.
+    func runCapturing(_ executable: String, args: [String], cwd: URL?, env: [String: String], timeout: TimeInterval) async throws -> ProcessResult
 }
 
 extension ProcessRunner {
+    public func runCapturing(_ executable: String, args: [String], cwd: URL?, env: [String: String], timeout: TimeInterval) async throws -> ProcessResult {
+        try await runCapturing(executable, args: args, cwd: cwd, timeout: timeout)
+    }
+
     /// stdout of a command that must succeed. A non-zero status throws `LinkCError.process`
     /// carrying the CLI's own stderr reason; a timeout throws `LinkCError.process` too.
     public func run(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> String {
+        try await run(executable, args: args, cwd: cwd, env: [:], timeout: timeout)
+    }
+
+    /// Same as above, with `env` merged into the child's inherited environment (D26b).
+    public func run(_ executable: String, args: [String], cwd: URL?, env: [String: String], timeout: TimeInterval) async throws -> String {
         let command = "\(executable) \(args.joined(separator: " "))"
         let result: ProcessResult
         do {
-            result = try await runCapturing(executable, args: args, cwd: cwd, timeout: timeout)
+            result = try await runCapturing(executable, args: args, cwd: cwd, env: env, timeout: timeout)
         } catch ProcessRunnerError.timedOut(let seconds) {
             throw LinkCError.process("\(command) timed out after \(seconds)s")
         }
@@ -103,8 +119,9 @@ public struct LiveProcessRunner: ProcessRunner {
     static let terminationGrace: TimeInterval = 2
 
     /// The actionable part of stderr. CLIs prepend advisory banners (the `oci` key-
-    /// permissions warning fires on every call) and put the real reason LAST, so the cap
-    /// keeps the tail — capping the head would drop exactly the line worth reading.
+    /// permissions warning fires on every call — though D26b now asks `oci` to suppress that
+    /// one at the source) and put the real reason LAST, so the cap keeps the tail — capping the
+    /// head would drop exactly the line worth reading.
     static func meaningfulStderr(_ data: Data) -> String {
         // Decode the tail; a multi-byte character split by the cut is dropped by the
         // lossy conversion rather than failing the whole decode.
@@ -114,16 +131,37 @@ public struct LiveProcessRunner: ProcessRunner {
         let lines = text
             .split(separator: "\n", omittingEmptySubsequences: true)
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("Warning:") }
-        return lines.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+        // Advisory banners are dropped ONLY when something else survives to explain the
+        // failure (D26b) — a blanket "Warning:" match must never leave a caller with nothing
+        // when that banner was the CLI's only word on the matter.
+        let withoutBanners = lines.filter { !$0.hasPrefix("Warning:") }
+        let kept = withoutBanners.isEmpty ? lines : withoutBanners
+        return kept.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public init() {}
 
+    /// `runCapturingSync` blocks its calling thread for the whole subprocess (its drain queue
+    /// does the actual waiting, but this frame sits on a semaphore the entire time) — `Task
+    /// .detached` used to run that on a Swift-concurrency cooperative-pool thread, tying it up
+    /// for as long as the child runs (D19a). A plain `DispatchQueue` thread, bridged back with a
+    /// checked continuation, keeps the blocking work off that pool entirely.
     public func runCapturing(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> ProcessResult {
-        try await Task.detached(priority: .userInitiated) {
-            try Self.runCapturingSync(executable: executable, args: args, cwd: cwd, timeout: timeout)
-        }.value
+        try await runCapturing(executable, args: args, cwd: cwd, env: [:], timeout: timeout)
+    }
+
+    public func runCapturing(_ executable: String, args: [String], cwd: URL?, env: [String: String], timeout: TimeInterval) async throws -> ProcessResult {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try Self.runCapturingSync(executable: executable, args: args, cwd: cwd, env: env, timeout: timeout)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     /// Synchronous core, public for callers outside an async context (`GitClient`, the MCP
@@ -131,13 +169,14 @@ public struct LiveProcessRunner: ProcessRunner {
     /// pipe holds ~64KB, so a chatty child that fills it while nobody reads would block forever
     /// and burn the timeout. stderr is captured because CLIs say WHY they failed there. The
     /// child leads its own process group, so a timeout stops everything the command started.
+    /// `env` is merged into the child's inherited environment (D26b); empty means "inherit only".
     public static func runCapturingSync(
-        executable: String, args: [String], cwd: URL?, timeout: TimeInterval
+        executable: String, args: [String], cwd: URL?, env: [String: String] = [:], timeout: TimeInterval
     ) throws -> ProcessResult {
         let stdout = Pipe()
         let stderr = Pipe()
         let pid = try spawnGroupLeader(
-            executable: executable, args: args, cwd: cwd,
+            executable: executable, args: args, cwd: cwd, environment: env.isEmpty ? nil : env,
             stdout: stdout.fileHandleForWriting.fileDescriptor,
             stderr: stderr.fileHandleForWriting.fileDescriptor
         )
