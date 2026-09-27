@@ -46,6 +46,56 @@ final class AgentModelStoreTests: XCTestCase {
                        "a file we could not read is never replaced under the user")
     }
 
+    func testASavedFileKeepsAnUnknownTopLevelKeyFromANewerBuild() throws {
+        let store = AgentModelStore(directory: dir)
+        let newerBuildJSON = """
+        {"models":{"codex":{"light":"gpt-5.6-luna","standard":"gpt-5.6-sol","deep":"gpt-6-astra"}},
+         "defaultTiers":{"codex":"standard"},
+         "futureField":"futureValue"}
+        """
+        try newerBuildJSON.write(toFile: store.path, atomically: true, encoding: .utf8)
+
+        var settings = store.load()
+        settings.setModel("gpt-7-nova", for: .codex, tier: .deep)
+        guard case .success = store.save(settings) else {
+            return XCTFail("expected the save to succeed")
+        }
+
+        let raw = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: URL(fileURLWithPath: store.path))) as? [String: Any]
+        XCTAssertEqual(raw?["futureField"] as? String, "futureValue",
+                       "an unknown key from a newer build survives a save")
+        XCTAssertEqual(AgentModelStore(directory: dir).load().model(for: .codex, tier: .deep), "gpt-7-nova")
+    }
+
+    func testAFileMissingAnOptionalFieldLoadsWithItsDefault() throws {
+        let store = AgentModelStore(directory: dir)
+        // "deep" is deliberately NOT the seeded value, so a wholesale fallback to `.seeded`
+        // (the bug this guards against) is distinguishable from correctly keeping "models" and
+        // only defaulting the missing "defaultTiers".
+        let json = """
+        {"models":{"codex":{"light":"gpt-5.6-luna","standard":"gpt-5.6-sol","deep":"gpt-9-testonly"}}}
+        """
+        try json.write(toFile: store.path, atomically: true, encoding: .utf8)
+
+        let settings = store.load()
+        XCTAssertEqual(settings.model(for: .codex, tier: .deep), "gpt-9-testonly",
+                       "the field that IS present still loads, rather than falling back to seeded entirely")
+        XCTAssertEqual(settings.defaultTier(for: .codex), .standard,
+                       "the missing \"defaultTiers\" field takes its default")
+    }
+
+    func testAnUnreadableFileRefusesTheSaveWithTheExactMessage() throws {
+        let store = AgentModelStore(directory: dir)
+        try "{ not json".write(toFile: store.path, atomically: true, encoding: .utf8)
+
+        guard case .failure(let refusal) = store.save(AgentModelSettings.seeded) else {
+            return XCTFail("expected the save to be refused")
+        }
+        XCTAssertTrue(refusal.description.hasPrefix("models.json can't be read: "), refusal.description)
+        XCTAssertTrue(refusal.description.hasSuffix(". Fix or move the file."), refusal.description)
+    }
+
     func testAFileWithNoReadPermissionIsNeitherMisreadNorOverwritten() throws {
         guard getuid() != 0 else {
             throw XCTSkip("root ignores POSIX read permissions, so this cannot be exercised as root")
