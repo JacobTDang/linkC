@@ -9,6 +9,9 @@ final class ScriptedGit: GitInspecting, @unchecked Sendable {
     var ancestor = true
     var changed: [String] = []
     var error: Error?
+    /// The `paths` argument of every `changedFiles` call, in order — lets a test assert what
+    /// was protected, not just whether the check passed.
+    private(set) var changedFilesCalls: [[String]] = []
 
     init(heads: [String], statuses: [String] = [""]) {
         self.heads = heads
@@ -24,7 +27,10 @@ final class ScriptedGit: GitInspecting, @unchecked Sendable {
     }
     func resolveCommit(_ rev: String, in workspace: URL) throws -> String { rev }
     func isAncestor(_ ancestor: String, of descendant: String, in workspace: URL) throws -> Bool { self.ancestor }
-    func changedFiles(_ paths: [String], from: String, to: String, in workspace: URL) throws -> [String] { changed }
+    func changedFiles(_ paths: [String], from: String, to: String, in workspace: URL) throws -> [String] {
+        lock.withLock { changedFilesCalls.append(paths) }
+        return changed
+    }
     func fileExists(_ path: String, at rev: String, in workspace: URL) throws -> Bool { true }
 }
 
@@ -100,8 +106,17 @@ final class VerificationRunnerTests: XCTestCase {
         let wrongHead = await runner(ScriptedGit(heads: [head]), command).gate(verification, in: workspace)
         XCTAssertEqual(wrongHead.reason, "gate failed: HEAD is ccccccc, expected base bbbbbbb")
         XCTAssertTrue(command.calls.isEmpty, "nothing runs on the wrong commit")
-        let dirty = await runner(ScriptedGit(heads: [base], statuses: ["?? stray.swift"]), exits(1)).gate(verification, in: workspace)
+        let dirty = await runner(ScriptedGit(heads: [base], statuses: [" M edited.swift"]), exits(1)).gate(verification, in: workspace)
         XCTAssertEqual(dirty.reason, "gate failed: working tree is not clean")
+    }
+
+    /// D18a: only TRACKED changes fail the clean-tree check — an untracked, un-ignored file is
+    /// listed in the verdict as a warning instead, and the gate still runs and can still pass.
+    func testGateWarnsAboutUntrackedFilesWithoutFailing() async {
+        let git = ScriptedGit(heads: [base], statuses: ["?? stray.swift"])
+        let verdict = await runner(git, exits(1)).gate(verification, in: workspace)
+        XCTAssertTrue(verdict.passed, "an untracked file must not fail the gate")
+        XCTAssertEqual(verdict.reason, "left untracked: stray.swift")
     }
 
     func testGateRejectsAWorkspaceThatChangedDuringTheRun() async {
@@ -177,6 +192,35 @@ final class VerificationRunnerTests: XCTestCase {
     func testVerifyRejectsAWorkspaceThatChangedDuringTheRun() async {
         let verdict = await runner(ScriptedGit(heads: [head, base]), exits(0)).verify(verification, sha: head, in: workspace)
         XCTAssertEqual(verdict.reason, "workspace changed during verification")
+    }
+
+    /// D18a: applies identically on the verify path — an untracked file warns, never fails.
+    func testVerifyWarnsAboutUntrackedFilesWithoutFailing() async {
+        let git = ScriptedGit(heads: [head], statuses: ["?? stray.swift"])
+        let verdict = await runner(git, exits(0)).verify(verification, sha: head, in: workspace)
+        XCTAssertTrue(verdict.passed)
+        XCTAssertEqual(verdict.reason, "left untracked: stray.swift")
+    }
+
+    /// D18c: `Package.swift` and any `*.xcodeproj/project.pbxproj` are protected automatically
+    /// alongside `test_paths` — a worker cannot drop a protected test by editing the harness
+    /// that runs it instead of the file itself.
+    func testVerifyProtectsTheHarnessAlongsideTestPaths() async {
+        let git = ScriptedGit(heads: [head])
+        _ = await runner(git, exits(0)).verify(verification, sha: head, in: workspace)
+        XCTAssertEqual(
+            git.changedFilesCalls.first,
+            ["T.swift", "Package.swift", "*.xcodeproj/project.pbxproj"]
+        )
+    }
+
+    func testVerifyRejectsAChangedHarnessFile() async {
+        let git = ScriptedGit(heads: [head])
+        git.changed = ["Package.swift"]
+        let command = exits(0)
+        let verdict = await runner(git, command).verify(verification, sha: head, in: workspace)
+        XCTAssertEqual(verdict.reason, "test files modified: Package.swift")
+        XCTAssertTrue(command.calls.isEmpty, "a changed harness file must block the run just like a changed test")
     }
 
     func testVerifyTimeout() async {
