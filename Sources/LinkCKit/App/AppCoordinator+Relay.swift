@@ -28,6 +28,14 @@ extension AppCoordinator {
     /// shadowing here would make the constant harder to spot; `defaultDeliverySettle` is the
     /// value, `deliverySettle` is whatever's actually in effect.
     public static let defaultDeliverySettle: TimeInterval = 2
+    /// How long `dispatchTasks` will wait for an idle candidate session to negotiate bracketed
+    /// paste before giving up on it. A CLI that never enables bracketed paste (an unsupported
+    /// agent binary, a broken TERM) used to sit silently logging "waiting" every tick until the
+    /// generic 60-minute `queuedTaskExpiry` finally caught it, with no reason more specific than
+    /// "undelivered for 60m". Two minutes is generous next to the real negotiation window
+    /// (`defaultDeliverySettle`'s doc: true readiness lands within ~2s) — anything still waiting
+    /// this long genuinely never will.
+    static let pasteNegotiationTimeout: TimeInterval = 2 * 60
 
     /// One relay tick for `workspacePath`: expire, start verification, then deliver only if no
     /// run holds this checkout. A verification owns HEAD and the tree while it runs.
@@ -39,6 +47,13 @@ extension AppCoordinator {
     public func processPendingMessages(workspacePath: String) {
         let norm = ProjectPath.canonical(workspacePath)
         let inboxStore = InboxStore(workspaceRoot: norm)
+        pollPasteReadiness(workspacePath: norm)
+        guard !settleResolvableTasks(workspacePath: norm, inboxStore: inboxStore) else {
+            return logRelayLockContention(workspacePath: norm)
+        }
+        // Ahead of expiry, so a task that could be settled this very tick (a worker's own report,
+        // a gate with nothing to gate) is settled with its real reason rather than expired with a
+        // generic "lease lapsed" one, just because its lease or budget happened to run out first.
         guard !expireTasks(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
         }
@@ -68,6 +83,19 @@ extension AppCoordinator {
     func isRelayLockTimeout(_ error: Error) -> Bool {
         guard let linkCError = error as? LinkCError, case .server(let message) = linkCError else { return false }
         return message.contains("Timed out acquiring inbox lock")
+    }
+
+    /// Touches `acceptsPaste` once per tick for every live session in this workspace, whether or
+    /// not a task or message is currently pending for it. `TerminalSession.pasteReadySince` is
+    /// set lazily on the first *read* of `acceptsPaste` (see its doc) — `dispatchTasks` used to be
+    /// the only caller, gated behind a queued task existing, so a session that finished
+    /// negotiating long before any work ever arrived paid the full settle margin all over again
+    /// the moment work finally showed up, because the clock only started at that later read. No
+    /// store I/O here — reads terminal state already held in memory.
+    private func pollPasteReadiness(workspacePath: String) {
+        for session in store.sessions where session.cwd == workspacePath && session.state != .ended {
+            _ = terminals.session(id: session.id)?.acceptsPaste
+        }
     }
 
     /// Logs once that this tick ended early because the inbox lock was still held by another
@@ -141,7 +169,10 @@ extension AppCoordinator {
                     }
                 }
             case .queued:
-                if now.timeIntervalSince(task.createdAt) > Self.queuedTaskExpiry {
+                // `queuedAt` is when the task actually entered `.queued` — creation for one with
+                // no gate, or the moment its gate passed for one that started `.gating`. Falls
+                // back to `createdAt` only for a row written before this field existed.
+                if now.timeIntervalSince(task.queuedAt ?? task.createdAt) > Self.queuedTaskExpiry {
                     // dispatchTasks never even looks at a workspace's queue while a verification
                     // owns that checkout — for a different task, since this one's own run would
                     // have hit the `continue` above. "undelivered for 60m" would be untrue for a
@@ -307,6 +338,23 @@ extension AppCoordinator {
                       let readySince = terminal.pasteReadySince else { return false }
                 return now().timeIntervalSince(readySince) >= deliverySettle
             }) else {
+                // An idle session that has sat this long without ever negotiating bracketed paste
+                // never will — a CLI that doesn't support it, or a broken TERM. Waiting out the
+                // generic 60-minute queued expiry would bury the real reason behind "undelivered
+                // for 60m"; fail this task now, with the reason that actually explains it, and
+                // stop retrying it every tick.
+                if now().timeIntervalSince(task.createdAt) > Self.pasteNegotiationTimeout {
+                    let reason = "\(task.toAgent.displayName) never accepted pasted input"
+                    do {
+                        try inboxStore.expireTaskAndNotify(
+                            taskId: task.id, reason: reason, notifyBody: "expired — \(reason)", timeout: Self.relayLockTimeout
+                        )
+                    } catch {
+                        if isRelayLockTimeout(error) { return true }
+                        NSLog("[linkC relay] dispatchTasks: task %@ paste-negotiation timeout — %@", task.shortId, String(describing: error))
+                    }
+                    continue
+                }
                 NSLog("[linkC relay] dispatchTasks: task %@ has an idle session but none has settled after negotiating bracketed paste yet — waiting", task.shortId)
                 continue
             }
@@ -319,9 +367,29 @@ extension AppCoordinator {
                 continue
             }
             let frame = Self.deliveryFrame(for: task)
-            terminals.sendInput(sessionId: session.id, text: frame)
-            recordInjection(sessionId: session.id, text: frame)
-            store.updateState(id: session.id, to: .working)
+            // The mark above is a real disk write — under lock contention it can take up to
+            // `Self.relayLockTimeout` — so the terminal confirmed live and settled just above can
+            // still have gone stale (child exited, session torn down) by the time the text
+            // actually goes in. `sendInput` reports that rather than failing silently: a task
+            // left `.delivered` with nothing ever typed would sit invisibly stuck, since nothing
+            // else moves it until its 4h lease lapses. Fail it loud and immediately instead —
+            // `.delivered → .failed` is always a legal transition, so the delegator is told now,
+            // with the real reason, rather than after a very long silence.
+            if terminals.sendInput(sessionId: session.id, text: frame) {
+                recordInjection(sessionId: session.id, text: frame)
+                store.updateState(id: session.id, to: .working)
+            } else {
+                let reason = "delivery marked done but the text never reached \(task.toAgent.displayName)'s terminal"
+                NSLog("[linkC relay] dispatchTasks: task %@ — %@", task.shortId, reason)
+                do {
+                    try inboxStore.failTaskAndNotify(
+                        taskId: task.id, reason: reason, notifyBody: "failed — \(reason)", timeout: Self.relayLockTimeout
+                    )
+                } catch {
+                    if isRelayLockTimeout(error) { return true }
+                    NSLog("[linkC relay] dispatchTasks: task %@ fail-after-lost-delivery — %@", task.shortId, String(describing: error))
+                }
+            }
         }
         return false
     }
@@ -488,22 +556,24 @@ extension AppCoordinator {
 
     // MARK: - Verification
 
-    /// Settles what needs no run (reports, and a gating task with nothing to gate), then starts
-    /// at most one verification run for this workspace, and at most `maxConcurrentVerifications`
-    /// overall. Never blocks the main actor: the run awaits the verifier off the main actor and
-    /// hops back to record the verdict.
-    /// Returns `true` when the phase ended early because the inbox lock was still contended after
+    /// Settles gating/reported tasks that need no verification run (a gate with no verification,
+    /// a reported failure, a report missing its required sha, or an unverified report), and
+    /// collects the rest — the ones that DO need a run — into `runnable`. Shared by
+    /// `settleResolvableTasks`, an early pass `processPendingMessages` runs ahead of
+    /// `expireTasks`, and `launchVerifications` itself, which reuses it to actually start a run.
+    /// Returns `stopped: true` when the inbox lock was still contended after
     /// `Self.relayLockTimeout` — the caller stops the tick there rather than logging per call.
-    @discardableResult
-    func launchVerifications(workspacePath: String, inboxStore: InboxStore) -> Bool {
-        guard workspaceExists(workspacePath) else { return false }
+    private func resolveGatingAndReportedTasks(
+        workspacePath: String, inboxStore: InboxStore
+    ) -> (stopped: Bool, runnable: [(task: TaskRecord, run: VerificationRun)]) {
+        guard workspaceExists(workspacePath) else { return (false, []) }
         let open: [TaskRecord]
         do {
             open = try inboxStore.openTasks(timeout: Self.relayLockTimeout)
         } catch {
-            if isRelayLockTimeout(error) { return true }
+            if isRelayLockTimeout(error) { return (true, []) }
             NSLog("[linkC relay] launchVerifications: open tasks — %@", String(describing: error))
-            return false
+            return (false, [])
         }
 
         // Each task's run is decided where the task is classified, below: gating decides gate
@@ -536,15 +606,42 @@ extension AppCoordinator {
                     try inboxStore.acceptUnverifiedAndNotify(taskId: task.id, notifyBody: line, timeout: Self.relayLockTimeout)
                 }
             } catch {
-                if isRelayLockTimeout(error) { return true }
+                if isRelayLockTimeout(error) { return (true, runnable) }
                 NSLog("[linkC relay] launchVerifications: task %@ settle — %@", task.shortId, String(describing: error))
             }
         }
+        return (false, runnable)
+    }
+
+    /// Settles every gating/reported task that needs no verification run — nothing else. Run
+    /// ahead of `expireTasks`: without this, a task whose 4h lease (or 60m gate/queue budget)
+    /// happened to lapse in exactly the tick that would have settled it got expired instead, with
+    /// a generic "lease lapsed" reason burying the worker's own report. Tasks that genuinely need
+    /// a run are left for `launchVerifications`, whose own in-flight guard in `expireTasks`
+    /// already protects a run actually started this tick.
+    /// Returns `true` when the phase ended early because the inbox lock was still contended after
+    /// `Self.relayLockTimeout`.
+    @discardableResult
+    func settleResolvableTasks(workspacePath: String, inboxStore: InboxStore) -> Bool {
+        resolveGatingAndReportedTasks(workspacePath: workspacePath, inboxStore: inboxStore).stopped
+    }
+
+    /// Settles what needs no run (reports, and a gating task with nothing to gate), then starts
+    /// at most one verification run for this workspace, and at most `maxConcurrentVerifications`
+    /// overall. Never blocks the main actor: the run awaits the verifier off the main actor and
+    /// hops back to record the verdict.
+    /// Returns `true` when the phase ended early because the inbox lock was still contended after
+    /// `Self.relayLockTimeout` — the caller stops the tick there rather than logging per call.
+    @discardableResult
+    func launchVerifications(workspacePath: String, inboxStore: InboxStore) -> Bool {
+        guard workspaceExists(workspacePath) else { return false }
+        let resolved = resolveGatingAndReportedTasks(workspacePath: workspacePath, inboxStore: inboxStore)
+        if resolved.stopped { return true }
 
         let norm = ProjectPath.canonical(workspacePath)
         guard verificationsInFlight[norm] == nil,
               verificationsInFlight.count < Self.maxConcurrentVerifications,
-              let (next, run) = runnable.min(by: { $0.task.createdAt < $1.task.createdAt }) else { return false }
+              let (next, run) = resolved.runnable.min(by: { $0.task.createdAt < $1.task.createdAt }) else { return false }
 
         verificationsInFlight[norm] = next.id
         let verifier = self.verifier

@@ -70,8 +70,18 @@ public final class TerminalSessionManager {
         }
     }
 
-    /// Injects input into the terminal session matching `sessionId`, if found.
-    public func sendInput(sessionId: String, text: String) {
-        session(id: sessionId)?.sendInput(text)
+    /// Injects input into the terminal session matching `sessionId`, if found. Returns `false`
+    /// (and logs) when there is no such session — a missing or already-torn-down terminal — or
+    /// when the session itself reports the send did not go through (`TerminalSession.sendInput`).
+    /// A caller that marks delivery state on the strength of this call must not ignore that
+    /// signal: `session(id:)?.sendInput(text)` used to swallow a missing session entirely, with
+    /// no trace anywhere that the text never reached anything.
+    @discardableResult
+    public func sendInput(sessionId: String, text: String) -> Bool {
+        guard let session = session(id: sessionId) else {
+            NSLog("linkC: sendInput found no terminal for session %@ — input dropped", sessionId)
+            return false
+        }
+        return session.sendInput(text)
     }
 }

@@ -675,6 +675,83 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(injected, "Expected the framed task once the settle margin elapsed")
     }
 
+    /// `pasteReadySince` used to be set lazily on `dispatchTasks`' own first read of
+    /// `acceptsPaste` — the only caller, gated behind a queued task existing. A session that
+    /// finished negotiating long before any task ever arrived paid the settle margin all over
+    /// again once work finally showed up, because the clock only started at that later read. A
+    /// tick with nothing queued at all must still capture readiness.
+    @MainActor
+    func testPasteReadinessIsCapturedOnAnIdleTickBeforeAnyTaskExists() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(deliverySettle: AppCoordinator.defaultDeliverySettle, now: clock.now)
+        defer { coordinator.shutdown() }
+
+        let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: assignee.id, to: .ready)
+
+        // Wait for the mock agent to really negotiate bracketed paste WITHOUT going through
+        // `acceptsPaste` — reading that property is itself what sets `pasteReadySince`, and this
+        // test must prove the relay's own tick captures readiness, not the act of checking for it.
+        let negotiated = try await waitUntil {
+            coordinator.terminals.session(id: assignee.id)?.terminalView.getTerminal().bracketedPasteMode ?? false
+        }
+        XCTAssertTrue(negotiated, "mock agent never negotiated bracketed paste")
+
+        // A tick runs now, with nothing queued at all — the exact case that used to leave
+        // `pasteReadySince` untouched.
+        clock.set(Date())
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertNotNil(coordinator.terminals.session(id: assignee.id)?.pasteReadySince,
+                        "a live tick must capture paste readiness even with nothing queued")
+
+        // Move the clock well past the settle margin, then queue a task on the very next tick —
+        // the settle clock already started on the earlier idle tick, so delivery is immediate.
+        clock.set(Date().addingTimeInterval(AppCoordinator.defaultDeliverySettle + 1))
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "settle guard", files: [])
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered,
+                       "the settle margin already elapsed since the session became ready, before any task existed")
+    }
+
+    /// A CLI that never enables bracketed paste (an unsupported agent binary, a broken TERM)
+    /// used to spin silently, logging "waiting" every tick, until the generic 60-minute queued
+    /// expiry finally caught it with no reason more specific than "undelivered for 60m". It must
+    /// instead fail fast, with the real reason, well before that.
+    @MainActor
+    func testATaskWhoseAssigneeNeverNegotiatesPasteFailsFastWithTheRealReason() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        // Unlike the shared mock agent, this one never sends the bracketed-paste enable sequence.
+        let script = tempDir.appendingPathComponent("never_pastes.sh")
+        try "#!/bin/sh\nstty -echo 2>/dev/null\nexec /bin/cat\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let coordinator = makeCoordinator(agentPathResolver: { _ in script.path })
+        defer { coordinator.shutdown() }
+
+        let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: assignee.id, to: .ready)
+
+        // Back-dated well past the 2-minute paste-negotiation budget — no real sleep needed.
+        let task = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "will never paste",
+                              createdAt: Date().addingTimeInterval(-3 * 60))
+        var seeded = try inbox.load()
+        seeded.tasks.append(task)
+        try inbox.saveRaw(seeded)
+
+        coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
+
+        let final = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(final.state, .expired)
+        XCTAssertEqual(final.cancelReason, "\(AgentKind.codex.displayName) never accepted pasted input")
+        let notice = try XCTUnwrap(inbox.load().messages.first { $0.taskId == task.id && $0.kind == .completion })
+        XCTAssertTrue(notice.prompt.contains("never accepted pasted input"), notice.prompt)
+    }
+
     /// Test 2d: Legacy v1 `.task` rows are still dispatched once.
     @MainActor
     func testLegacyV1TaskMessageIsStillDispatched() async throws {
@@ -1750,6 +1827,32 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .gating, "an in-flight gate is not stale")
     }
 
+    /// The queued-expiry clock must start when a task actually enters `.queued`, not at
+    /// `createdAt` — a task that spent most of an hour `.gating` used to have that time count
+    /// against its delivery window too, expiring it the instant its gate passed.
+    @MainActor
+    func testAQueuedTaskIsNotExpiredUsingTimeItSpentGating() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "long gate", files: [], verification: verification())
+        var raw = try inbox.load()
+        let idx = try XCTUnwrap(raw.tasks.firstIndex { $0.id == task.id })
+        raw.tasks[idx] = raw.tasks[idx].with(createdAt: Date().addingTimeInterval(-65 * 60))
+        try inbox.saveRaw(raw)
+
+        // The gate passes now — the task enters `.queued` this instant, 65 minutes after it was
+        // created but with none of that time actually spent queued.
+        try inbox.resolveGate(taskId: task.id, verdict: .fixture(passed: true, sha: base40, exit: 1))
+
+        coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued,
+                       "a task must not be expired using time it spent gating, before it ever queued")
+    }
+
     @MainActor
     func testReportedTaskSurvivesAssigneeExitButNotItsLease() throws {
         let ws = tempDir.path
@@ -1769,6 +1872,31 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .expired)
         XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] expired — lease lapsed before verification"])
+    }
+
+    /// A worker's own failure report must settle the task with that reason, even when the lease
+    /// happened to lapse before the tick got around to it — `expireTasks` on its own would call
+    /// this "lease lapsed before verification" instead (see the previous test), discarding the
+    /// real reason. A full tick must settle what it can before expiring anything.
+    @MainActor
+    func testAFullTickSettlesAReportBeforeALapsedLeaseCanExpireIt() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier())
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox, status: "failed") // its session "worker" does not exist
+
+        var raw = try inbox.load()
+        let idx = try XCTUnwrap(raw.tasks.firstIndex { $0.id == task.id })
+        raw.tasks[idx].leaseExpiresAt = Date().addingTimeInterval(-1)
+        try inbox.saveRaw(raw)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        let final = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(final.state, .failed, "the worker's own report must settle it, not a lapsed lease")
+        XCTAssertEqual(final.verdict?.reason, "worker reported failure")
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] failed — worker reported failure"])
     }
 
     @MainActor
@@ -2762,7 +2890,7 @@ private extension TaskRecord {
         TaskRecord(
             id: id, fromAgent: fromAgent, fromSessionId: fromSessionId, tier: tier, toAgent: toAgent,
             assigneeSessionId: assigneeSessionId, prompt: prompt, files: files, state: state, hop: hop,
-            createdAt: createdAt, deliveredAt: deliveredAt, startedAt: startedAt, finishedAt: finishedAt,
+            createdAt: createdAt, queuedAt: queuedAt, deliveredAt: deliveredAt, startedAt: startedAt, finishedAt: finishedAt,
             leaseExpiresAt: leaseExpiresAt, report: report, cancelReason: cancelReason,
             unreportedTurnEndNotified: unreportedTurnEndNotified, verification: verification, gate: gate,
             verdict: verdict
