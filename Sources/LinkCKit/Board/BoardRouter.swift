@@ -82,8 +82,10 @@ public enum BoardRouter {
         // 3. Spread ends: which side, and which port on it, every non-self arrow's two ends use —
         // decided once, up front, so unbundled ends sharing a side of the same box spread across a
         // band instead of all landing on the exact same midpoint.
+        let componentKind = Dictionary(uniqueKeysWithValues: map.components.map { ($0.name.lowercased(), $0.kind) })
         let endAssignments = spreadEnds(
-            keys: bundleableKeys, bundleOf: bundleOf, outAnchors: outAnchors, inAnchors: inAnchors, componentBox: componentBox)
+            keys: bundleableKeys, bundleOf: bundleOf, outAnchors: outAnchors, inAnchors: inAnchors,
+            componentBox: componentBox, componentKind: componentKind)
 
         var routedSegments: [(a: BoardPoint, b: BoardPoint, id: String)] = []
         var obstaclesByArrow: [BoardModel.ArrowKey: [BoardRect]] = [:]
@@ -449,14 +451,29 @@ public enum BoardRouter {
 
     // MARK: - Spread ends
 
+    /// Drawn width of a component kind's shape, or the full component width if uninset.
+    public static func drawnWidth(for kind: ComponentKind) -> Int {
+        switch kind {
+        case .adder: return 52
+        case .clock: return 60
+        case .mux, .demux: return 52
+        case .decoder: return 76
+        case .alu: return 82
+        default: return BoardGeometry.componentSize.x
+        }
+    }
+
     /// Half the width of the band, around a side's own midpoint, that its ends spread across: 16
     /// pt on a left or right side, 48 on a top or bottom one — wide enough on the short sides
     /// without the offset ever reaching past a component's own corner (half-height 42, half-width
-    /// 88).
-    private static func bandHalfWidth(_ side: Side) -> Double {
+    /// 88), clamped to the shape's drawn width for narrow shapes (adder, clock, mux, etc.).
+    private static func bandHalfWidth(_ side: Side, kind: ComponentKind? = nil) -> Double {
         switch side {
         case .left, .right: return 16
-        case .top, .bottom: return 48
+        case .top, .bottom:
+            let defaultBand: Double = 48
+            guard let kind else { return defaultBand }
+            return min(defaultBand, Double(drawnWidth(for: kind)) / 2)
         }
     }
 
@@ -501,7 +518,8 @@ public enum BoardRouter {
     private static func spreadEnds(
         keys: [BoardModel.ArrowKey], bundleOf: [BoardModel.ArrowKey: String],
         outAnchors: [String: (side: Side, name: String, mean: BoardPoint)],
-        inAnchors: [String: (side: Side, name: String, mean: BoardPoint)], componentBox: [String: BoardRect]
+        inAnchors: [String: (side: Side, name: String, mean: BoardPoint)],
+        componentBox: [String: BoardRect], componentKind: [String: ComponentKind]
     ) -> [BoardModel.ArrowKey: EndAssignment] {
         struct KeySides { let sourceSide: Side; let sourceBundle: String?; let targetSide: Side; let targetBundle: String?; let forced: Bool }
 
@@ -572,7 +590,7 @@ public enum BoardRouter {
                 if n == 1 {
                     point = sidePort(box, groupKey.side)
                 } else {
-                    let band = bandHalfWidth(groupKey.side)
+                    let band = bandHalfWidth(groupKey.side, kind: componentKind[groupKey.name])
                     // An even split of the band, centred on the side's midpoint — widened to the
                     // 12 pt minimum where the band allows it, so arrowheads never touch, and
                     // otherwise as close to the middle as that minimum lets them be.

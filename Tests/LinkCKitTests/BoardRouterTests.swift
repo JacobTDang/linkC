@@ -615,4 +615,27 @@ final class BoardRouterTests: XCTestCase {
         let secondStubs = BoardRouter.foreignKeyStubs(for: arranged).mapValues { [$0.from, $0.to] }
         XCTAssertEqual(firstStubs, secondStubs)
     }
+
+    func testSpreadBandClampsToDrawnWidthForNarrowShapes() throws {
+        var map = BoardMap()
+        map.components = [
+            BoardComponent(name: "s1", kind: .service, uses: ["add": ""], at: BoardPoint(x: 100, y: 0)),
+            BoardComponent(name: "s2", kind: .service, uses: ["add": ""], at: BoardPoint(x: 200, y: 0)),
+            BoardComponent(name: "s3", kind: .service, uses: ["add": ""], at: BoardPoint(x: 300, y: 0)),
+            BoardComponent(name: "add", kind: .adder, at: BoardPoint(x: 200, y: 200)),
+        ]
+        let routes = BoardRouter.routes(for: map)
+        let adderBox = try XCTUnwrap(BoardGeometry.rect(of: map.components[3]))
+        // Adder drawn width is 52 (half-width 26) centred at 288: [262, 314]
+        let drawnHalfWidth = 26
+        let minX = adderBox.center.x - drawnHalfWidth
+        let maxX = adderBox.center.x + drawnHalfWidth
+
+        for name in ["s1", "s2", "s3"] {
+            let route = try XCTUnwrap(routes[BoardModel.ArrowKey(from: name, to: "add")])
+            let targetPort = try XCTUnwrap(route.points.last)
+            XCTAssertGreaterThanOrEqual(targetPort.x, minX, "\(name) target port x (\(targetPort.x)) should not overshoot adder left edge (\(minX))")
+            XCTAssertLessThanOrEqual(targetPort.x, maxX, "\(name) target port x (\(targetPort.x)) should not overshoot adder right edge (\(maxX))")
+        }
+    }
 }
