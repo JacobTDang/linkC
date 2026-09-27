@@ -2111,14 +2111,6 @@ final class AppCoordinatorRelayTests: XCTestCase {
         return repo
     }
 
-    private func mcp(_ server: MCPServer, _ name: String, _ args: [String: Any]) throws -> (text: String, isError: Bool) {
-        let request: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["name": name, "arguments": args]]
-        let response = try XCTUnwrap(server.handleMessage(try JSONSerialization.data(withJSONObject: request)))
-        let result = (try JSONSerialization.jsonObject(with: response) as? [String: Any])?["result"] as? [String: Any]
-        let text = ((result?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
-        return (text, result?["isError"] as? Bool ?? false)
-    }
-
     /// Delegates a verified task through MCP, waits for the real gate to queue it, and delivers it.
     @MainActor
     private func delegateAndGate(_ repo: URL, _ coordinator: AppCoordinator) async throws -> TaskRecord {
@@ -2126,7 +2118,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let delegator = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "claude"],
                                    ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
         let base = try runGit(["rev-parse", "HEAD"], in: repo)
-        let delegated = try mcp(delegator, "linkc_delegate_task", [
+        let delegated = try mcpCall(delegator, "linkc_delegate_task", [
             "to": "codex", "prompt": "Make check.sh pass", "tier": "deep",
             "verify": ["branch": "task/x", "base_sha": base, "command": "./check.sh", "test_paths": ["check.sh"], "timeout_seconds": 60]
         ])
@@ -2149,7 +2141,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let sha = try runGit(["rev-parse", "HEAD"], in: repo)
         let worker = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "codex"],
                                 ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
-        let reported = try mcp(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "worker change", "sha": sha])
+        let reported = try mcpCall(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "worker change", "sha": sha])
         XCTAssertFalse(reported.isError, reported.text)
         return sha
     }
@@ -2586,9 +2578,12 @@ final class AppCoordinatorRelayTests: XCTestCase {
         // The mock agent's echo is asynchronous (pty write → `cat` → SwiftTerm parse), so absence
         // must be confirmed by polling rather than reading the buffer once: an injection that
         // hasn't landed yet would otherwise look indistinguishable from one that never happens.
-        let injected = try await waitUntil {
+        // Proving an absence means this predicate is always false, so every run pays the full
+        // budget — a purpose-tuned 400ms here instead of the default 2s `waitUntil` budget other
+        // callers use to wait for something that (usually) actually happens.
+        let injected = try await waitUntil({
             coordinator.terminals.session(id: session.id)?.recentOutput(lines: 40).contains("should never land") ?? false
-        }
+        }, iterations: 20)
         XCTAssertFalse(injected, "a failed mark must never inject the message")
     }
 

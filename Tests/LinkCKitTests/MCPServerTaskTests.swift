@@ -43,20 +43,10 @@ final class MCPServerTaskTests: XCTestCase {
                   ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
     }
 
-    private func call(_ server: MCPServer, _ name: String, _ args: [String: Any] = [:]) throws -> (text: String, isError: Bool) {
-        let req: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["name": name, "arguments": args]]
-        let data = try JSONSerialization.data(withJSONObject: req)
-        let res = try XCTUnwrap(server.handleMessage(data))
-        let json = try JSONSerialization.jsonObject(with: res) as? [String: Any]
-        let result = json?["result"] as? [String: Any]
-        let text = ((result?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
-        return (text, result?["isError"] as? Bool ?? false)
-    }
-
     func testStartTaskMovesDeliveredToStarted() throws {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
-        let res = try call(server(as: .codex), "linkc_start_task", ["task_id": task.id])
+        let res = try mcpCall(server(as: .codex), "linkc_start_task", ["task_id": task.id])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .started)
         XCTAssertTrue(res.text.contains(task.shortId))
@@ -64,7 +54,7 @@ final class MCPServerTaskTests: XCTestCase {
 
     func testStartTaskOnQueuedTaskIsAnError() throws {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
-        let res = try call(server(as: .codex), "linkc_start_task", ["task_id": task.id])
+        let res = try mcpCall(server(as: .codex), "linkc_start_task", ["task_id": task.id])
         XCTAssertTrue(res.isError)
         XCTAssertTrue(res.text.contains("queued"))
     }
@@ -73,7 +63,7 @@ final class MCPServerTaskTests: XCTestCase {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
 
-        let res = try call(server(as: .agy), "linkc_start_task", ["task_id": task.id])
+        let res = try mcpCall(server(as: .agy), "linkc_start_task", ["task_id": task.id])
 
         XCTAssertTrue(res.isError)
         XCTAssertTrue(res.text.contains("assigned to Codex"))
@@ -84,7 +74,7 @@ final class MCPServerTaskTests: XCTestCase {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
         let srv = server(as: .codex)
-        let res = try call(srv, "linkc_complete_task", [
+        let res = try mcpCall(srv, "linkc_complete_task", [
             "task_id": task.id, "status": "done", "summary": "Implemented and tested.",
             "commits": ["abc1234"], "tests": ["accepted and ignored"]
         ])
@@ -101,7 +91,7 @@ final class MCPServerTaskTests: XCTestCase {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
 
-        let res = try call(server(as: .agy), "linkc_complete_task", [
+        let res = try mcpCall(server(as: .agy), "linkc_complete_task", [
             "task_id": task.id,
             "status": "done",
             "summary": "Implemented."
@@ -117,16 +107,16 @@ final class MCPServerTaskTests: XCTestCase {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
         let srv = server(as: .codex)
-        XCTAssertTrue(try call(srv, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": ""]).isError)
-        XCTAssertTrue(try call(srv, "linkc_complete_task", ["task_id": task.id, "status": "maybe", "summary": "x"]).isError)
-        XCTAssertTrue(try call(srv, "linkc_complete_task", ["task_id": "nope", "status": "done", "summary": "x"]).isError)
+        XCTAssertTrue(try mcpCall(srv, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": ""]).isError)
+        XCTAssertTrue(try mcpCall(srv, "linkc_complete_task", ["task_id": task.id, "status": "maybe", "summary": "x"]).isError)
+        XCTAssertTrue(try mcpCall(srv, "linkc_complete_task", ["task_id": "nope", "status": "done", "summary": "x"]).isError)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
     }
 
     func testCancelTaskByDelegatorInjectsOneLineToAssignee() throws {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
-        let res = try call(server(as: .claude), "linkc_cancel_task", ["task_id": task.id, "reason": "scope changed"])
+        let res = try mcpCall(server(as: .claude), "linkc_cancel_task", ["task_id": task.id, "reason": "scope changed"])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled)
         let msg = try XCTUnwrap(inbox.load().messages.first)
@@ -137,9 +127,9 @@ final class MCPServerTaskTests: XCTestCase {
 
     func testCancelQueuedTaskIsSilentAndThirdPartyNeedsForce() throws {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
-        let denied = try call(server(as: .cursor), "linkc_cancel_task", ["task_id": task.id])
+        let denied = try mcpCall(server(as: .cursor), "linkc_cancel_task", ["task_id": task.id])
         XCTAssertTrue(denied.isError)
-        let forced = try call(server(as: .cursor), "linkc_cancel_task", ["task_id": task.id, "force": true])
+        let forced = try mcpCall(server(as: .cursor), "linkc_cancel_task", ["task_id": task.id, "force": true])
         XCTAssertFalse(forced.isError, forced.text)
         XCTAssertTrue(try inbox.load().messages.isEmpty, "queued cancel must not inject anything")
     }
@@ -152,7 +142,7 @@ final class MCPServerTaskTests: XCTestCase {
                                 environment: ["LINKC_AGENT": "codex", "LINKC_SESSION": "session-B"],
                                 ancestorResolver: { _ in nil }, modelSettings: { .seeded }, sessionResolver: { nil },
                                 usageReaders: [:])
-        let refused = try call(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "I did it"])
+        let refused = try mcpCall(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "I did it"])
         XCTAssertTrue(refused.isError, refused.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "a sibling may not settle another session's task")
 
@@ -160,7 +150,7 @@ final class MCPServerTaskTests: XCTestCase {
                                  environment: ["LINKC_AGENT": "codex", "LINKC_SESSION": "session-A"],
                                  ancestorResolver: { _ in nil }, modelSettings: { .seeded }, sessionResolver: { nil },
                                  usageReaders: [:])
-        let ok = try call(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
+        let ok = try mcpCall(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
         XCTAssertFalse(ok.isError, ok.text)
     }
 
@@ -168,7 +158,7 @@ final class MCPServerTaskTests: XCTestCase {
         // A queued task has no assignee yet, and a session-less caller (an agent started outside
         // linkC) must not be locked out of its own kind's work.
         let task = try inbox.createTask(from: .claude, to: .codex, tier: .standard, prompt: "Build", files: [])
-        let res = try call(server(as: .codex, models: .seeded), "linkc_cancel_task", ["task_id": task.id, "reason": "not needed"])
+        let res = try mcpCall(server(as: .codex, models: .seeded), "linkc_cancel_task", ["task_id": task.id, "reason": "not needed"])
         XCTAssertFalse(res.isError, res.text)
     }
 
@@ -186,7 +176,7 @@ final class MCPServerTaskTests: XCTestCase {
                                 environment: ["LINKC_AGENT": "codex"],
                                 ancestorResolver: { _ in nil }, sessionResolver: { "session-B" },
                                 usageReaders: [:])
-        let refused = try call(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "nope"])
+        let refused = try mcpCall(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "nope"])
         XCTAssertTrue(refused.isError, refused.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "a sibling recovered via the resolver still may not settle another session's task")
 
@@ -194,7 +184,7 @@ final class MCPServerTaskTests: XCTestCase {
                                  environment: ["LINKC_AGENT": "codex"],
                                  ancestorResolver: { _ in nil }, sessionResolver: { "session-A" },
                                  usageReaders: [:])
-        let ok = try call(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
+        let ok = try mcpCall(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
         XCTAssertFalse(ok.isError, ok.text)
     }
 
@@ -205,7 +195,7 @@ final class MCPServerTaskTests: XCTestCase {
                             environment: ["LINKC_AGENT": "claude"],
                             ancestorResolver: { _ in nil }, modelSettings: { .seeded },
                             sessionResolver: { "session-Z" }, usageReaders: [:])
-        let res = try call(srv, "linkc_delegate_task", ["to": "agy", "prompt": "Rename a file"])
+        let res = try mcpCall(srv, "linkc_delegate_task", ["to": "agy", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
         let task = try XCTUnwrap(inbox.openTasks().first)
         XCTAssertEqual(task.fromSessionId, "session-Z")
@@ -246,11 +236,11 @@ final class MCPServerTaskTests: XCTestCase {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "session-A")
 
-        let refused = try call(server(as: .codex, session: "session-B"), "linkc_start_task", ["task_id": task.id])
+        let refused = try mcpCall(server(as: .codex, session: "session-B"), "linkc_start_task", ["task_id": task.id])
         XCTAssertTrue(refused.isError, refused.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
 
-        let ok = try call(server(as: .codex, session: "session-A"), "linkc_start_task", ["task_id": task.id])
+        let ok = try mcpCall(server(as: .codex, session: "session-A"), "linkc_start_task", ["task_id": task.id])
         XCTAssertFalse(ok.isError, ok.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .started)
     }
@@ -261,14 +251,14 @@ final class MCPServerTaskTests: XCTestCase {
         // A sibling session of the assignee's kind, without the assignee's session, is refused.
         let assignedTask = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         try inbox.markTaskDelivered(taskId: assignedTask.id, sessionId: "session-A")
-        let siblingRefused = try call(server(as: .codex, session: "session-B"), "linkc_cancel_task", ["task_id": assignedTask.id])
+        let siblingRefused = try mcpCall(server(as: .codex, session: "session-B"), "linkc_cancel_task", ["task_id": assignedTask.id])
         XCTAssertTrue(siblingRefused.isError, siblingRefused.text)
         XCTAssertEqual(try inbox.task(id: assignedTask.id)?.state, .delivered)
 
         // The assignee can cancel its own task.
         let ownTask = try inbox.createTask(from: .claude, to: .codex, prompt: "Build 2", files: [])
         try inbox.markTaskDelivered(taskId: ownTask.id, sessionId: "session-A")
-        let ownCancel = try call(server(as: .codex, session: "session-A"), "linkc_cancel_task", ["task_id": ownTask.id])
+        let ownCancel = try mcpCall(server(as: .codex, session: "session-A"), "linkc_cancel_task", ["task_id": ownTask.id])
         XCTAssertFalse(ownCancel.isError, ownCancel.text)
         XCTAssertEqual(try inbox.task(id: ownTask.id)?.state, .cancelled)
 
@@ -276,14 +266,14 @@ final class MCPServerTaskTests: XCTestCase {
         // unconditional and does not consult callerMayAct at all.
         let delegated = try inbox.createTask(from: .claude, to: .codex, prompt: "Build 3", files: [])
         try inbox.markTaskDelivered(taskId: delegated.id, sessionId: "session-A")
-        let delegatorCancel = try call(server(as: .claude), "linkc_cancel_task", ["task_id": delegated.id])
+        let delegatorCancel = try mcpCall(server(as: .claude), "linkc_cancel_task", ["task_id": delegated.id])
         XCTAssertFalse(delegatorCancel.isError, delegatorCancel.text)
         XCTAssertEqual(try inbox.task(id: delegated.id)?.state, .cancelled)
 
         // force overrides a sibling that is neither the assignee nor the delegator.
         let forced = try inbox.createTask(from: .claude, to: .codex, prompt: "Build 4", files: [])
         try inbox.markTaskDelivered(taskId: forced.id, sessionId: "session-A")
-        let forceCancel = try call(server(as: .codex, session: "session-B"), "linkc_cancel_task", ["task_id": forced.id, "force": true])
+        let forceCancel = try mcpCall(server(as: .codex, session: "session-B"), "linkc_cancel_task", ["task_id": forced.id, "force": true])
         XCTAssertFalse(forceCancel.isError, forceCancel.text)
         XCTAssertEqual(try inbox.task(id: forced.id)?.state, .cancelled)
     }
@@ -296,7 +286,7 @@ final class MCPServerTaskTests: XCTestCase {
         let unassigned = try inbox.createTask(from: .claude, to: .codex, prompt: "Unassigned task", files: [])
         let delegatedByMe = try inbox.createTask(from: .codex, to: .cursor, prompt: "Delegated by me", files: [])
 
-        let list = try call(server(as: .codex, session: "session-B"), "linkc_my_tasks")
+        let list = try mcpCall(server(as: .codex, session: "session-B"), "linkc_my_tasks")
 
         XCTAssertFalse(list.text.contains(assignedToSibling.shortId), "a sibling's assigned task must not be listed: \(list.text)")
         XCTAssertTrue(list.text.contains(unassigned.shortId), "an unassigned task stays visible: \(list.text)")
@@ -308,13 +298,13 @@ final class MCPServerTaskTests: XCTestCase {
         let delegated = try inbox.createTask(from: .codex, to: .cursor, prompt: "I delegated this", files: [])
         _ = try inbox.createTask(from: .claude, to: .agy, prompt: "Unrelated", files: [])
 
-        let get = try call(server(as: .codex), "linkc_get_task", ["task_id": mine.id])
+        let get = try mcpCall(server(as: .codex), "linkc_get_task", ["task_id": mine.id])
         XCTAssertFalse(get.isError)
         XCTAssertTrue(get.text.contains("Assigned to me"))
         XCTAssertTrue(get.text.contains("A.swift"))
         XCTAssertTrue(get.text.contains("queued"))
 
-        let list = try call(server(as: .codex), "linkc_my_tasks")
+        let list = try mcpCall(server(as: .codex), "linkc_my_tasks")
         XCTAssertTrue(list.text.contains(mine.shortId))
         XCTAssertTrue(list.text.contains(delegated.shortId))
         XCTAssertFalse(list.text.contains("Unrelated"))
@@ -338,7 +328,7 @@ final class MCPServerTaskTests: XCTestCase {
 
     func testDelegateWithVerifyCreatesAGatingTaskAtTheFullBase() throws {
         let base = try repoWithTests()
-        let res = try call(server(as: .claude), "linkc_delegate_task",
+        let res = try mcpCall(server(as: .claude), "linkc_delegate_task",
                            ["to": "codex", "prompt": "Make check pass", "verify": verify(base: String(base.prefix(7))), "tier": "deep"])
         XCTAssertFalse(res.isError, res.text)
         let task = try XCTUnwrap(inbox.load().tasks.first)
@@ -351,11 +341,11 @@ final class MCPServerTaskTests: XCTestCase {
     func testDelegateWithVerifyRejectsBadReferences() throws {
         let base = try repoWithTests()
         let srv = server(as: .claude)
-        let badBase = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "A", "verify": verify(base: "deadbeef")])
+        let badBase = try mcpCall(srv, "linkc_delegate_task", ["to": "codex", "prompt": "A", "verify": verify(base: "deadbeef")])
         XCTAssertTrue(badBase.isError)
         XCTAssertTrue(badBase.text.contains("verify.base_sha"), badBase.text)
 
-        let missingPath = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "B", "verify": verify(base: base, paths: ["nope.sh"])])
+        let missingPath = try mcpCall(srv, "linkc_delegate_task", ["to": "codex", "prompt": "B", "verify": verify(base: base, paths: ["nope.sh"])])
         XCTAssertTrue(missingPath.isError)
         XCTAssertTrue(missingPath.text.contains("'nope.sh' does not exist at \(base.prefix(7))"), missingPath.text)
 
@@ -363,7 +353,7 @@ final class MCPServerTaskTests: XCTestCase {
         try "x\n".write(to: tempDir.appendingPathComponent("extra.txt"), atomically: true, encoding: .utf8)
         try runGit(["add", "extra.txt"], in: tempDir)
         try runGit(["commit", "-q", "-m", "moved"], in: tempDir)
-        let movedBranch = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "C", "verify": verify(base: base, branch: "other")])
+        let movedBranch = try mcpCall(srv, "linkc_delegate_task", ["to": "codex", "prompt": "C", "verify": verify(base: base, branch: "other")])
         XCTAssertTrue(movedBranch.isError)
         XCTAssertTrue(movedBranch.text.contains("not base \(base.prefix(7))"), movedBranch.text)
 
@@ -372,16 +362,16 @@ final class MCPServerTaskTests: XCTestCase {
 
     func testVerifiedCompleteNeedsTheShaOfARealCommit() throws {
         let base = try repoWithTests()
-        _ = try call(server(as: .claude), "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass", "verify": verify(base: base), "tier": "deep"])
+        _ = try mcpCall(server(as: .claude), "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass", "verify": verify(base: base), "tier": "deep"])
         let task = try XCTUnwrap(inbox.load().tasks.first)
         try inbox.resolveGate(taskId: task.id, verdict: Verdict(passed: true, sha: base, exitStatus: 1, reason: nil, stdoutTail: "", stderrTail: ""))
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
         let worker = server(as: .codex)
 
-        let noSha = try call(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "added marker"])
+        let noSha = try mcpCall(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "added marker"])
         XCTAssertTrue(noSha.isError)
         XCTAssertEqual(noSha.text, InboxError.shaRequired.localizedDescription)
-        let bogus = try call(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "added marker", "sha": "deadbeef"])
+        let bogus = try mcpCall(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "added marker", "sha": "deadbeef"])
         XCTAssertTrue(bogus.isError)
         XCTAssertTrue(bogus.text.hasPrefix("Error: sha:"), bogus.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
@@ -390,7 +380,7 @@ final class MCPServerTaskTests: XCTestCase {
         try runGit(["add", "marker.txt"], in: tempDir)
         try runGit(["commit", "-q", "-m", "fix"], in: tempDir)
         let sha = try runGit(["rev-parse", "HEAD"], in: tempDir)
-        let reported = try call(worker, "linkc_complete_task",
+        let reported = try mcpCall(worker, "linkc_complete_task",
                                 ["task_id": task.id, "status": "done", "summary": "added marker", "sha": String(sha.prefix(7))])
         XCTAssertFalse(reported.isError, reported.text)
         XCTAssertEqual(reported.text, "Reported. linkC is verifying at \(sha.prefix(7)).")
@@ -402,7 +392,7 @@ final class MCPServerTaskTests: XCTestCase {
     func testCompleteTaskEnforcesTheSummaryLimit() throws {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
-        let res = try call(server(as: .codex), "linkc_complete_task",
+        let res = try mcpCall(server(as: .codex), "linkc_complete_task",
                            ["task_id": task.id, "status": "done", "summary": String(repeating: "a", count: 1_001)])
         XCTAssertTrue(res.isError)
         XCTAssertTrue(res.text.contains("the limit is 1,000"), res.text)
@@ -416,7 +406,7 @@ final class MCPServerTaskTests: XCTestCase {
         try inbox.resolveGate(taskId: task.id, verdict: Verdict(passed: false, sha: base, exitStatus: 0,
                                                                 reason: "tests already pass at bbbbbbb; brief refused",
                                                                 stdoutTail: "GATE_STDOUT_MARKER", stderrTail: ""))
-        let res = try call(server(as: .claude), "linkc_get_task", ["task_id": task.id])
+        let res = try mcpCall(server(as: .claude), "linkc_get_task", ["task_id": task.id])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertTrue(res.text.contains("## Verification"))
         XCTAssertTrue(res.text.contains("`./check.sh`"))
@@ -431,11 +421,11 @@ final class MCPServerTaskTests: XCTestCase {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build by short id", files: [])
         let delegator = server(as: .claude)
 
-        let get = try call(delegator, "linkc_get_task", ["task_id": task.shortId.lowercased()])
+        let get = try mcpCall(delegator, "linkc_get_task", ["task_id": task.shortId.lowercased()])
         XCTAssertFalse(get.isError, get.text)
         XCTAssertTrue(get.text.contains("Build by short id"), get.text)
 
-        let cancel = try call(delegator, "linkc_cancel_task", ["task_id": task.shortId])
+        let cancel = try mcpCall(delegator, "linkc_cancel_task", ["task_id": task.shortId])
         XCTAssertFalse(cancel.isError, cancel.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled)
     }
@@ -448,11 +438,11 @@ final class MCPServerTaskTests: XCTestCase {
         ]))
         let delegator = server(as: .claude)
 
-        let short = try call(delegator, "linkc_get_task", ["task_id": "ABCDEF1"])
+        let short = try mcpCall(delegator, "linkc_get_task", ["task_id": "ABCDEF1"])
         XCTAssertTrue(short.isError)
         XCTAssertEqual(short.text, InboxError.taskNotFound("ABCDEF1").localizedDescription)
 
-        let ambiguous = try call(delegator, "linkc_cancel_task", ["task_id": "abcdef12"])
+        let ambiguous = try mcpCall(delegator, "linkc_cancel_task", ["task_id": "abcdef12"])
         XCTAssertTrue(ambiguous.isError)
         XCTAssertTrue(ambiguous.text.contains(one) && ambiguous.text.contains(two), ambiguous.text)
         XCTAssertEqual(try inbox.load().tasks.map(\.state), [.queued, .queued], "an ambiguous id cancels nothing")
@@ -461,7 +451,7 @@ final class MCPServerTaskTests: XCTestCase {
     // MARK: - Malformed verify
 
     func testDelegateRejectsAVerifyThatIsNotAnObject() throws {
-        let res = try call(server(as: .claude), "linkc_delegate_task",
+        let res = try mcpCall(server(as: .claude), "linkc_delegate_task",
                            ["to": "codex", "prompt": "Make check pass", "verify": #"{"branch": "task/x"}"#])
         XCTAssertTrue(res.isError)
         XCTAssertTrue(res.text.contains("verify must be an object"), res.text)
@@ -474,7 +464,7 @@ final class MCPServerTaskTests: XCTestCase {
         for bad: Any in ["600", 600.5, true] {
             var v = verify(base: base)
             v["timeout_seconds"] = bad
-            let res = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass", "verify": v])
+            let res = try mcpCall(srv, "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass", "verify": v])
             XCTAssertTrue(res.isError, "\(bad): \(res.text)")
             XCTAssertTrue(res.text.contains("timeout_seconds"), res.text)
         }
@@ -483,7 +473,7 @@ final class MCPServerTaskTests: XCTestCase {
 
     /// JSON null is how some clients send an optional argument they did not set.
     func testDelegateTreatsANullVerifyAsAbsent() throws {
-        let res = try call(server(as: .claude), "linkc_delegate_task", ["to": "codex", "prompt": "Plain", "verify": NSNull(), "tier": "deep"])
+        let res = try mcpCall(server(as: .claude), "linkc_delegate_task", ["to": "codex", "prompt": "Plain", "verify": NSNull(), "tier": "deep"])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertEqual(try inbox.load().tasks.first?.state, .queued)
     }
@@ -500,32 +490,32 @@ final class MCPServerTaskTests: XCTestCase {
 
         let srv = server(as: .claude)
 
-        let delegate = try call(srv, "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass"])
+        let delegate = try mcpCall(srv, "linkc_delegate_task", ["to": "codex", "prompt": "Make check pass"])
         XCTAssertTrue(delegate.isError, delegate.text)
         XCTAssertTrue(delegate.text.contains("could not be decoded"), delegate.text)
 
-        let send = try call(srv, "linkc_send_message", ["to": "codex", "message": "hi"])
+        let send = try mcpCall(srv, "linkc_send_message", ["to": "codex", "message": "hi"])
         XCTAssertTrue(send.isError, send.text)
         XCTAssertTrue(send.text.contains("could not be decoded"), send.text)
 
-        let getInbox = try call(srv, "linkc_get_inbox")
+        let getInbox = try mcpCall(srv, "linkc_get_inbox")
         XCTAssertTrue(getInbox.isError, getInbox.text)
         XCTAssertTrue(getInbox.text.contains("could not be decoded"), getInbox.text)
 
-        let myTasks = try call(srv, "linkc_my_tasks")
+        let myTasks = try mcpCall(srv, "linkc_my_tasks")
         XCTAssertTrue(myTasks.isError, myTasks.text)
         XCTAssertTrue(myTasks.text.contains("could not be decoded"), myTasks.text)
 
         // No modelSwitcher, so linkc_switch_model takes the enqueue path.
-        let switchModel = try call(srv, "linkc_switch_model", ["model": "sonnet"])
+        let switchModel = try mcpCall(srv, "linkc_switch_model", ["model": "sonnet"])
         XCTAssertTrue(switchModel.isError, switchModel.text)
         XCTAssertTrue(switchModel.text.contains("could not be decoded"), switchModel.text)
 
-        let getModels = try call(srv, "linkc_get_models")
+        let getModels = try mcpCall(srv, "linkc_get_models")
         XCTAssertTrue(getModels.isError, getModels.text)
         XCTAssertTrue(getModels.text.contains("could not be decoded"), getModels.text)
 
-        let usageStatus = try call(srv, "linkc_get_usage_status")
+        let usageStatus = try mcpCall(srv, "linkc_get_usage_status")
         XCTAssertTrue(usageStatus.isError, usageStatus.text)
         XCTAssertTrue(usageStatus.text.contains("could not be decoded"), usageStatus.text)
     }
@@ -535,7 +525,7 @@ final class MCPServerTaskTests: XCTestCase {
     func testDelegateAppliesTheAgentDefaultTierWhenNoneIsGiven() throws {
         // agy, not codex: codex's own default tier ("standard") has no model configured in the
         // seed, so it would refuse here regardless of this mechanism — see the refusal test below.
-        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
                            ["to": "agy", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
         let task = try XCTUnwrap(inbox.openTasks().first)
@@ -543,14 +533,14 @@ final class MCPServerTaskTests: XCTestCase {
     }
 
     func testDelegateRecordsAnExplicitTier() throws {
-        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
                            ["to": "agy", "prompt": "Rename a file", "tier": "light"])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertEqual(try XCTUnwrap(inbox.openTasks().first).tier, .light)
     }
 
     func testDelegateRefusesAnUnknownTier() throws {
-        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
                            ["to": "codex", "prompt": "Rename a file", "tier": "cheapest"])
         XCTAssertTrue(res.isError)
         XCTAssertTrue(res.text.contains("tier must be light, standard or deep"), res.text)
@@ -558,7 +548,7 @@ final class MCPServerTaskTests: XCTestCase {
     }
 
     func testANonStringTierIsRefusedRatherThanIgnored() throws {
-        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
                            ["to": "codex", "prompt": "Rename a file", "tier": 3])
         XCTAssertTrue(res.isError)
         XCTAssertTrue(res.text.contains("tier must be light, standard or deep"), res.text)
@@ -568,7 +558,7 @@ final class MCPServerTaskTests: XCTestCase {
     /// resolve to the agent's default tier exactly like an omitted `tier`, not be refused.
     func testAnEmptyStringTierIsTreatedAsAbsent() throws {
         // agy, not codex: see testDelegateAppliesTheAgentDefaultTierWhenNoneIsGiven above.
-        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
                            ["to": "agy", "prompt": "Rename a file", "tier": ""])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertEqual(try XCTUnwrap(inbox.openTasks().first).tier, .standard)
@@ -577,7 +567,7 @@ final class MCPServerTaskTests: XCTestCase {
     func testDelegateRefusesATierWithNoModelConfigured() throws {
         var models = AgentModelSettings.seeded
         models.setModel("", for: .codex, tier: .light)
-        let res = try call(server(as: .claude, models: models), "linkc_delegate_task",
+        let res = try mcpCall(server(as: .claude, models: models), "linkc_delegate_task",
                            ["to": "codex", "prompt": "Rename a file", "tier": "light"])
         XCTAssertTrue(res.isError)
         XCTAssertTrue(res.text.contains("no model configured for codex tier light — set it in linkC settings"), res.text)
@@ -585,7 +575,7 @@ final class MCPServerTaskTests: XCTestCase {
     }
 
     func testDelegateRefusesATieredTaskForCursor() throws {
-        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
                            ["to": "cursor", "prompt": "Rename a file", "tier": "light"])
         XCTAssertTrue(res.isError)
         XCTAssertTrue(res.text.contains("cursor cannot be pinned to a model"), res.text)
@@ -593,7 +583,7 @@ final class MCPServerTaskTests: XCTestCase {
     }
 
     func testDelegateToCursorWithNoTierStillWorks() throws {
-        let res = try call(server(as: .claude, models: .seeded), "linkc_delegate_task",
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
                            ["to": "cursor", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
         let task = try XCTUnwrap(inbox.openTasks().first)
@@ -603,7 +593,7 @@ final class MCPServerTaskTests: XCTestCase {
     func testGetModelsReportsTheConfiguredMapping() throws {
         var models = AgentModelSettings.seeded
         models.setModel("gpt-7-nova", for: .codex, tier: .deep)
-        let res = try call(server(as: .claude, models: models), "linkc_get_models", ["agent": "codex"])
+        let res = try mcpCall(server(as: .claude, models: models), "linkc_get_models", ["agent": "codex"])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertTrue(res.text.contains("gpt-7-nova"), res.text)
         XCTAssertTrue(res.text.contains("deep"), res.text)
@@ -615,7 +605,7 @@ final class MCPServerTaskTests: XCTestCase {
         let hot = AgentUsage(agent: .codex,
                              windows: [UsageWindow(label: "5h", usedPercent: 86, tokens: nil, resetsAt: Date().addingTimeInterval(3600))],
                              planType: nil, observedAt: Date(), unavailableReason: nil)
-        let res = try call(server(as: .claude, models: .seeded, readers: [.codex: { hot }]),
+        let res = try mcpCall(server(as: .claude, models: .seeded, readers: [.codex: { hot }]),
                            "linkc_delegate_task", ["to": "codex", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertTrue(res.text.contains("86%"), res.text)
@@ -631,7 +621,7 @@ final class MCPServerTaskTests: XCTestCase {
                                      windows: [UsageWindow(label: "5h", usedPercent: 95, tokens: nil,
                                                             resetsAt: Date().addingTimeInterval(-600))],
                                      planType: nil, observedAt: Date(), unavailableReason: nil)
-        let res = try call(server(as: .claude, models: .seeded, readers: [.codex: { staleWindow }]),
+        let res = try mcpCall(server(as: .claude, models: .seeded, readers: [.codex: { staleWindow }]),
                            "linkc_delegate_task", ["to": "codex", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
         XCTAssertFalse(res.text.contains("%"), "a window whose reset already passed must never warn: \(res.text)")
@@ -641,7 +631,7 @@ final class MCPServerTaskTests: XCTestCase {
         let calm = AgentUsage(agent: .codex,
                               windows: [UsageWindow(label: "5h", usedPercent: 12, tokens: nil, resetsAt: nil)],
                               planType: nil, observedAt: Date(), unavailableReason: nil)
-        let res = try call(server(as: .claude, models: .seeded, readers: [.codex: { calm }]),
+        let res = try mcpCall(server(as: .claude, models: .seeded, readers: [.codex: { calm }]),
                            "linkc_delegate_task", ["to": "codex", "prompt": "Rename a file"])
         XCTAssertFalse(res.text.contains("%"), "no usage line under the threshold: \(res.text)")
     }
@@ -657,7 +647,7 @@ final class MCPServerTaskTests: XCTestCase {
         let neverWarns = AgentUsage(agent: .claude,
                                     windows: [UsageWindow(label: "5h", usedPercent: nil, tokens: 999, resetsAt: nil)],
                                     planType: nil, observedAt: Date(), unavailableReason: nil)
-        let res = try call(
+        let res = try mcpCall(
             server(as: .codex, models: .seeded, readers: [.claude: {
                 flag.markCalled()
                 return neverWarns
@@ -675,7 +665,7 @@ final class MCPServerTaskTests: XCTestCase {
         let hot = AgentUsage(agent: .claude,
                              windows: [UsageWindow(label: "5h", usedPercent: 92, tokens: nil, resetsAt: nil)],
                              planType: nil, observedAt: Date(), unavailableReason: nil)
-        let res = try call(
+        let res = try mcpCall(
             server(as: .codex, models: .seeded, readers: [.claude: { hot }], warnCapableAgents: [.claude]),
             "linkc_delegate_task", ["to": "claude", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
@@ -696,7 +686,7 @@ final class MCPServerTaskTests: XCTestCase {
         let hot = AgentUsage(agent: .codex,
                              windows: [UsageWindow(label: "5h", usedPercent: 91, tokens: nil, resetsAt: nil)],
                              planType: nil, observedAt: Date(), unavailableReason: nil)
-        let res = try call(
+        let res = try mcpCall(
             server(as: .claude, models: .seeded, readers: [.codex: { hot }]),
             "linkc_delegate_task", ["to": "codex", "prompt": "Rename a file", "files": ["A.swift"]])
 
