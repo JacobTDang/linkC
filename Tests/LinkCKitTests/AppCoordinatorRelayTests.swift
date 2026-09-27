@@ -635,6 +635,35 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(injected, "Expected the framed task after it was marked delivered")
     }
 
+    /// `TerminalSessionManager.sendInput` used to be `session(id:)?.sendInput(text)` — a missing
+    /// session (a terminal already torn down, or never created) silently returned `Void` with no
+    /// trace anywhere that the text was dropped. It must now report the failure, both to the
+    /// caller and in the log, so `dispatchTasks` (and anything else that marks delivery state on
+    /// the strength of this call) can tell a lost delivery from a real one.
+    @MainActor
+    func testSendInputToAMissingSessionReportsFailureRatherThanSilentlyDroppingIt() {
+        let manager = TerminalSessionManager()
+        XCTAssertFalse(manager.sendInput(sessionId: "no-such-session", text: "hello"),
+                       "a missing terminal must be reported, not silently swallowed")
+    }
+
+    /// A session that was never started (no live child) must report a failed send, and the
+    /// manager must propagate that rather than assume success once a `TerminalSession` object
+    /// exists. `dispatchTasks` relies on exactly this signal: it marks a task delivered before
+    /// the terminal write (`markTaskDelivered`'s own disk I/O sits in between, a real window a
+    /// dying child can land in — the same shape of race `terminate()`'s own doc admits can never
+    /// be fully closed), and now fails the task immediately when the send comes back `false`
+    /// instead of leaving it silently `.delivered` with nothing ever typed.
+    @MainActor
+    func testSendInputReportsFailureForASessionThatWasNeverStarted() {
+        let ws = tempDir.path
+        let manager = TerminalSessionManager()
+        let terminal = manager.makeSession(id: "never-started", cwd: ws, title: "t", agentKind: .codex)
+        XCTAssertFalse(terminal.sendInput("hello"), "an unstarted session must report the send did not go through")
+        XCTAssertFalse(manager.sendInput(sessionId: "never-started", text: "hello"),
+                       "the manager must propagate the session's own failure to send")
+    }
+
     /// The settle margin must be provable, not just trivially satisfied by the zero used
     /// everywhere else in this file: with a real 2s threshold and a clock the test controls,
     /// delivery is withheld the instant paste negotiates and only happens once the clock reads
