@@ -278,6 +278,24 @@ public final class InboxStore: Sendable {
         }
     }
 
+    /// Pushes a LIVE limit's expiry later — never shorter, and never for an agent with no live
+    /// limit at all (nothing to extend). Used once a more accurate expiry becomes known (a real
+    /// usage-window reset, or a banner's own stated time) than whatever `recordLimit` first
+    /// stored; that first record must still win when it happens to be the later of the two.
+    public func extendLimit(agent: AgentKind, until: Date, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            let now = Date()
+            guard let index = inbox.agentLimits.firstIndex(where: { $0.agent == agent }) else { return }
+            let live = inbox.agentLimits[index]
+            guard live.cooldownExpiresAt > now else { return } // nothing live to extend
+            guard until > live.cooldownExpiresAt else { return } // never shorten
+            inbox.agentLimits[index] = AgentLimitStatus(agent: live.agent, reason: live.reason, limitedAt: live.limitedAt, cooldownExpiresAt: until)
+            inbox.updatedAt = now
+            try saveUnlocked(inbox)
+        }
+    }
+
     /// Returns the active limit status for an agent kind if cooldown has not expired; returns nil otherwise.
     public func isAgentLimited(agent: AgentKind, timeout: TimeInterval = 5.0) throws -> AgentLimitStatus? {
         try withFileLock(timeout: timeout) {

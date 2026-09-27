@@ -5,15 +5,21 @@ public struct LimitMatch: Sendable, Equatable, Codable {
     public let agent: AgentKind
     public let matchedPattern: String
     public let cooldown: TimeInterval
+    /// The banner's own text: the line the limit phrase is on, and the line after it — where a
+    /// "try again at 3:05 PM" sits. Only this is read for when the limit clears, never the rest
+    /// of the screen, which can hold unrelated times (Claude Code's "done 12:02 PM").
+    public let bannerText: String
 
     public init(
         agent: AgentKind,
         matchedPattern: String,
-        cooldown: TimeInterval = LimitDetector.defaultCooldown
+        cooldown: TimeInterval = LimitDetector.defaultCooldown,
+        bannerText: String = ""
     ) {
         self.agent = agent
         self.matchedPattern = matchedPattern
         self.cooldown = cooldown
+        self.bannerText = bannerText
     }
 
     /// Converts this match into an `AgentLimitStatus` model for storage in the inbox bus.
@@ -193,6 +199,21 @@ public struct LimitDetector: Sendable {
         return result
     }
 
+    /// The line holding `matchRange` and the line after it, trimmed of surrounding whitespace.
+    private static func bannerLines(around matchRange: NSRange, in text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        var offset = 0
+        for (index, line) in lines.enumerated() {
+            let length = (line as NSString).length
+            if matchRange.location < offset + length + 1 {
+                let banner = lines[index...min(index + 1, lines.count - 1)]
+                return banner.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")
+            }
+            offset += length + 1
+        }
+        return ""
+    }
+
     /// Inspects terminal output text for known rate limit or quota ceiling signatures of `agent`.
     /// Returns a `LimitMatch` if detected, or `nil` otherwise. Pass everything linkC has typed into
     /// that terminal as `ignoringInjected`: only the agent's own output can report its limit.
@@ -211,11 +232,12 @@ public struct LimitDetector: Sendable {
 
         let range = NSRange(cleanText.startIndex..<cleanText.endIndex, in: cleanText)
         for rule in agentRules {
-            if rule.regex.firstMatch(in: cleanText, options: [], range: range) != nil {
+            if let found = rule.regex.firstMatch(in: cleanText, options: [], range: range) {
                 return LimitMatch(
                     agent: agent,
                     matchedPattern: rule.canonicalPattern,
-                    cooldown: rule.cooldown ?? defaultCooldown
+                    cooldown: rule.cooldown ?? defaultCooldown,
+                    bannerText: bannerLines(around: found.range, in: cleanText)
                 )
             }
         }

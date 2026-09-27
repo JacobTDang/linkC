@@ -67,6 +67,15 @@ public final class AppCoordinator {
     public var claudeUsage: AgentUsage? {
         ClaudeRateLimits.usage(reading: claudeRateLimits, userOwnsStatusLine: claudeStatusLineIsUsers)
     }
+    /// How to read what each agent has left, keyed by agent kind — the same closures the MCP
+    /// server's usage-status tool calls (`MCPServer.defaultUsageReaders()`). Read from
+    /// `checkLimitsAndReroute` (a different file in this module, hence no access modifier —
+    /// matches `lastSpawnFailure` above) to rest a rerouted session until the agent's real reset
+    /// instead of a fixed cooldown. Empty by default: every test builds the coordinator through
+    /// the designated initializer directly, and none of them wants a limit's cooldown silently
+    /// swayed by whatever is sitting in this machine's real `~/.codex` or `~/.claude` right now.
+    /// Only the production initializer wires the real readers.
+    let usageReaders: [AgentKind: MCPServer.UsageReader]
     /// True when the user is currently watching a given session id — panel open, linkC
     /// active, and that tab selected. Injected because it depends on UI-layer state the
     /// coordinator can't see. Invoked on the main actor.
@@ -116,6 +125,14 @@ public final class AppCoordinator {
     /// Notices already reported to the user as undeliverable, by message id. Also in memory: a
     /// notice still stuck after a relaunch is worth one more mention.
     var undeliveredNoticesReported: Set<String> = []
+    /// Recent-output signature captured the moment a limit was last recorded for a session, keyed
+    /// by session id. A later detection whose recent output hashes the same is the identical old
+    /// banner still sitting in the scrollback after a cooldown expired and `sampleAgentStates`
+    /// returned the session to `.ready` — recording a fresh limit from it would re-arm the
+    /// cooldown forever from output that never changed. Only output that actually changed (a
+    /// different signature) can count as a new limit. Cleared by `cleanup`. In-process only, like
+    /// `screenSignature()` above — see its own doc comment.
+    var limitSignatures: [String: String] = [:]
 
     /// When `sessionId`'s screen last changed; nil if it has never been sampled.
     func screenUnchangedSince(_ sessionId: String) -> Date? { screenSignatures[sessionId]?.since }
@@ -162,6 +179,7 @@ public final class AppCoordinator {
         userHome: URL? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
+        usageReaders: [AgentKind: MCPServer.UsageReader] = [:],
         deliverySettle: TimeInterval = AppCoordinator.defaultDeliverySettle,
         injectionGap: TimeInterval = AppCoordinator.injectionGap,
         turnEndQuietPeriod: TimeInterval = 5.0,
@@ -180,6 +198,7 @@ public final class AppCoordinator {
         self.userHome = userHome
         self.verifier = verifier
         self.modelSettings = modelSettings
+        self.usageReaders = usageReaders
         self.injectionGap = injectionGap
         self.deliverySettle = deliverySettle
         self.turnEndDebounce = TurnEndDebounce(quietPeriod: turnEndQuietPeriod)
@@ -211,6 +230,7 @@ public final class AppCoordinator {
             manifestDir: linkCDir,
             userHome: FileManager.default.homeDirectoryForCurrentUser,
             modelSettings: modelSettings,
+            usageReaders: MCPServer.defaultUsageReaders(),
             isWatching: isWatching
         )
     }
@@ -435,6 +455,7 @@ public final class AppCoordinator {
         usageTracker?.unbind(sessionId: sessionId)
         injectedText.removeValue(forKey: sessionId)
         lastInjectionAt.removeValue(forKey: sessionId)
+        limitSignatures.removeValue(forKey: sessionId)
         if wasWorker {
             // A worker was linkC's, not the user's: its report is in the task record, so it
             // leaves nothing under Earlier.

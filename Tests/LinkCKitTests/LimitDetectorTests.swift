@@ -410,4 +410,18 @@ final class LimitDetectorTests: XCTestCase {
             )
         }
     }
+
+    /// Only the banner's own lines say when a limit clears: a finished turn's "done 12:02 PM"
+    /// higher up the screen must never be read as the retry time.
+    func testTheBannerTextIsTheMatchedLineAndTheNextOnly() throws {
+        let output = """
+        ✻ Worked for 4m 34s · done 12:02 PM
+        some ordinary output
+        You've reached your usage limit.
+        Try again at 3:05 PM.
+        ❯
+        """
+        let match = try XCTUnwrap(LimitDetector.detectLimit(inOutput: output, agent: .codex))
+        XCTAssertEqual(match.bannerText, "You've reached your usage limit.\nTry again at 3:05 PM.")
+    }
 }

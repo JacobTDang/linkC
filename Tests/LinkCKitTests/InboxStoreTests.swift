@@ -171,6 +171,41 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertTrue(status.cooldownExpiresAt > Date().addingTimeInterval(800), "an expired cooldown may be replaced with a fresh one")
     }
 
+    /// `extendLimit` is the only-ever-later counterpart to `recordLimit`: once a more accurate
+    /// expiry becomes known (a real usage-window reset, or a banner's own stated time), a live
+    /// limit should rest until THAT time even though `recordLimit` already created it with a
+    /// shorter, fixed cooldown.
+    func testExtendLimitPushesALiveLimitLater() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        try store.recordLimit(agent: .codex, reason: "usage limit", cooldown: 60)
+        let laterExpiry = Date().addingTimeInterval(3600)
+
+        try store.extendLimit(agent: .codex, until: laterExpiry)
+
+        let status = try XCTUnwrap(try store.isAgentLimited(agent: .codex))
+        XCTAssertEqual(status.cooldownExpiresAt.timeIntervalSince1970, laterExpiry.timeIntervalSince1970, accuracy: 1.0)
+    }
+
+    /// The other half of "only ever later": a shorter proposed expiry must never shorten a live
+    /// limit — otherwise a stale or lower-confidence reading could cut a real cooldown short.
+    func testExtendLimitNeverShortensALiveLimit() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        var inbox = try store.load()
+        let farExpiry = Date().addingTimeInterval(3600)
+        inbox.agentLimits.append(AgentLimitStatus(
+            agent: .codex, reason: "usage limit", limitedAt: Date(), cooldownExpiresAt: farExpiry
+        ))
+        try store.saveRaw(inbox)
+
+        try store.extendLimit(agent: .codex, until: Date().addingTimeInterval(60))
+
+        let status = try XCTUnwrap(try store.isAgentLimited(agent: .codex))
+        XCTAssertEqual(
+            status.cooldownExpiresAt.timeIntervalSince1970, farExpiry.timeIntervalSince1970, accuracy: 1.0,
+            "a shorter proposed expiry must never shorten a live limit"
+        )
+    }
+
     /// A crash between the temp write and its rename leaves `.linkc/inbox.tmp.<uuid>` behind
     /// forever unless something sweeps it. Every successful save does, but only for a sibling
     /// old enough to actually be orphaned — a temp file mid-write by a concurrent process must
