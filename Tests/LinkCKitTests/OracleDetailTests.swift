@@ -121,6 +121,8 @@ final class ScriptedRunner: ProcessRunner, @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [Call] = []
     private var answers: [String: Result<String, Error>]
+    /// The `env` of the most recent call — lets a test assert what was passed (D26b).
+    private(set) var lastEnv: [String: String] = [:]
 
     var calls: [Call] { lock.withLock { recorded } }
 
@@ -133,7 +135,14 @@ final class ScriptedRunner: ProcessRunner, @unchecked Sendable {
     }
 
     func runCapturing(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> ProcessResult {
-        lock.withLock { recorded.append(Call(executable: executable, args: args)) }
+        try await runCapturing(executable, args: args, cwd: cwd, env: [:], timeout: timeout)
+    }
+
+    func runCapturing(_ executable: String, args: [String], cwd: URL?, env: [String: String], timeout: TimeInterval) async throws -> ProcessResult {
+        lock.withLock {
+            recorded.append(Call(executable: executable, args: args))
+            lastEnv = env
+        }
         let snapshot = lock.withLock { answers }
         for (token, answer) in snapshot where args.contains(token) {
             return ProcessResult(status: 0, stdout: try answer.get(), stderr: "")
@@ -328,5 +337,54 @@ final class OracleDetailServiceTests: XCTestCase {
         await service.loadDetail(for: "ocid1.instance.oc1..aaa")
         XCTAssertNotNil(service.lastError, "a successful drill-in must not wipe it")
         XCTAssertNil(service.detailError)
+    }
+
+    /// D26a: the audit summary carries WHEN it was fetched, so a stale one carried forward
+    /// after a failed refetch doesn't silently look current.
+    func testAuditSummaryCarriesAFetchTimestampThatOnlyMovesOnSuccess() async throws {
+        let runner = ScriptedRunner(answers: [
+            "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
+            "summarize-metrics-data": .success("[]"),
+            "event": .success(#"{"data": [{"data": {"identity": {"principal-name": "Jacob Dang"}}}]}"#),
+        ])
+        let service = OracleService(ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner)
+
+        let before = Date()
+        await service.loadDetail(for: "aaa")
+        let firstFetchedAt = try XCTUnwrap(service.detail(for: "aaa")?.audit?.fetchedAt)
+        XCTAssertGreaterThanOrEqual(firstFetchedAt, before)
+
+        // The next fetch FAILS — the stale summary, and its ORIGINAL timestamp, carry forward.
+        runner.setAnswer("event", .failure(LinkCError.process("rate limited")))
+        await service.loadDetail(for: "aaa", force: true)
+        XCTAssertEqual(service.detail(for: "aaa")?.audit?.fetchedAt, firstFetchedAt,
+                       "a failed fetch must not silently look fresh")
+
+        // A later successful fetch DOES move it forward.
+        runner.setAnswer("event", .success(#"{"data": []}"#))
+        await service.loadDetail(for: "aaa", force: true)
+        let secondFetchedAt = try XCTUnwrap(service.detail(for: "aaa")?.audit?.fetchedAt)
+        XCTAssertGreaterThanOrEqual(secondFetchedAt, firstFetchedAt)
+    }
+
+    /// D26b: `oci` prints its "config/key file permissions are too open" advisory on every
+    /// call — suppress it at the source via its own documented env var, rather than relying
+    /// solely on `meaningfulStderr`'s blanket "Warning:" filter.
+    func testOciCallsSuppressTheFilePermissionsWarningAtTheSource() async {
+        let runner = ScriptedRunner(answers: [
+            "list-vnics": .success(#"[{"public-ip": "1.2.3.4"}]"#),
+            "summarize-metrics-data": .success("[]"),
+            "event": .success(#"{"data": []}"#),
+        ])
+        let service = OracleService(ociPath: "/fake/oci", hasConfig: true, region: "r", tenancy: "t", runner: runner)
+        await service.loadDetail(for: "aaa")
+        XCTAssertEqual(runner.lastEnv["OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING"], "True")
+    }
+
+    func testRefreshSuppressesTheFilePermissionsWarningAtTheSource() async {
+        let runner = ScriptedRunner(answers: ["structured-search": .success("[]")])
+        let service = OracleService(ociPath: "/fake/oci", hasConfig: true, region: "r", runner: runner)
+        await service.refresh()
+        XCTAssertEqual(runner.lastEnv["OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING"], "True")
     }
 }
