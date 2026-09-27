@@ -11,8 +11,8 @@ final class SidebarStateTests: XCTestCase {
         defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
     }
 
-    override func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+    override func tearDownWithError() throws {
+        try destroyUserDefaultsSuite(defaults, named: suiteName)
     }
 
     func testAFreshStateIsEmptyWithEverySectionClosed() {
