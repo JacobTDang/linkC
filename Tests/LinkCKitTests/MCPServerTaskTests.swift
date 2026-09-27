@@ -425,6 +425,23 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.text.contains("GATE_STDOUT_MARKER"))
     }
 
+    func testGetTaskShowsShaAndBaseShaTruncatedToSevenCharacters() throws {
+        let base = "1234567890abcdef1234567890abcdef12345678"
+        let reportSha = "abcdef1234567890abcdef1234567890abcdef12"
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Make check pass", files: [],
+                                        verification: Verification(branch: "task/x", baseSha: base, command: "./check.sh", testPaths: ["check.sh"]))
+        try inbox.resolveGate(taskId: task.id, verdict: Verdict(passed: true, sha: base, exitStatus: 1, reason: nil, stdoutTail: "", stderrTail: ""))
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
+        try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "added marker", sha: reportSha))
+
+        let res = try call(server(as: .claude), "linkc_get_task", ["task_id": task.id])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("**Sha:** \(String(reportSha.prefix(7)))\n"), res.text)
+        XCTAssertTrue(res.text.contains("**Base:** \(String(base.prefix(7)))\n"), res.text)
+        XCTAssertFalse(res.text.contains("**Sha:** \(reportSha)"), "the report sha line must be truncated to 7 chars: \(res.text)")
+        XCTAssertFalse(res.text.contains("**Base:** \(base)"), "the base sha line must be truncated to 7 chars: \(res.text)")
+    }
+
     // MARK: - Task ids by prefix
 
     func testGetAndCancelTaskAcceptTheEightCharacterIdShownToTheDelegator() throws {

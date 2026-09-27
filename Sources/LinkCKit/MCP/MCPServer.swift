@@ -1090,11 +1090,11 @@ public final class MCPServer: Sendable {
         text += "\n## Brief\n\(t.prompt)\n"
         if let r = t.report {
             text += "\n## Report (\(r.status))\n\(r.summary)\n"
-            if let sha = r.sha { text += "\n**Sha:** \(sha)\n" }
+            if let sha = r.sha { text += "\n**Sha:** \(VerificationRunner.short(sha))\n" }
             if !r.commits.isEmpty { text += "\n**Commits:** \(r.commits.joined(separator: ", "))\n" }
         }
         if let v = t.verification {
-            text += "\n## Verification\n- **Branch:** \(v.branch)\n- **Base:** \(v.baseSha)\n- **Command:** `\(v.command)`\n"
+            text += "\n## Verification\n- **Branch:** \(v.branch)\n- **Base:** \(VerificationRunner.short(v.baseSha))\n- **Command:** `\(v.command)`\n"
             text += "- **Protected tests:** \(v.testPaths.joined(separator: ", "))\n- **Timeout:** \(v.timeoutSeconds)s\n"
         }
         if let gate = t.gate { text += "\n## Gate\n" + verdictMarkdown(gate) }
