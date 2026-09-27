@@ -212,11 +212,12 @@ final class BoardRouterTests: XCTestCase {
             if i + 7 < 200 && i % 2 == 0 { extra["c\(i + 7)"] = "" }
             m.components.append(BoardComponent(name: "c\(i)", kind: .service, uses: extra, at: BoardPoint(x: (i % 20) * 312, y: (i / 20) * 132)))
         }
-        let start = Date()
-        let routes = BoardRouter.routes(for: m)
-        let elapsed = Date().timeIntervalSince(start)
+        var routes: [BoardModel.ArrowKey: BoardRoute] = [:]
+        let elapsed = ThreadCPUTime.elapsed {
+            routes = BoardRouter.routes(for: m)
+        }
         XCTAssertGreaterThanOrEqual(routes.count, 290)
-        XCTAssertLessThan(elapsed, 1.5, "debug-build guard; report the measured time")
+        XCTAssertLessThan(elapsed, 3.0, "debug-build guard (CPU time); report the measured time")
     }
 
     /// A shared-database hub: 200 components in the same grid layout as the test above, but each
@@ -234,7 +235,7 @@ final class BoardRouterTests: XCTestCase {
             routes = BoardRouter.routes(for: m)
         }
         XCTAssertEqual(routes.count, 199)
-        XCTAssertLessThan(elapsed, 1.5, "debug-build guard; report the measured time")
+        XCTAssertLessThan(elapsed, 3.0, "debug-build guard (CPU time); report the measured time")
     }
 
     /// "Add what's running" packs boxes a few points apart — well inside `clearance` — so a

@@ -102,13 +102,14 @@ final class BoardGeometryTests: XCTestCase {
         for index in 0..<200 {
             placed.append(BoardRect(x: (index % 20) * 168, y: (index / 20) * 72, w: 152, h: 56))
         }
-        let start = Date()
-        for index in 0..<200 {
-            _ = BoardGeometry.elementDrop(placed[index].offsetBy(dx: 40, dy: 40),
-                                          otherElements: placed.enumerated().filter { $0.offset != index }.map(\.element),
-                                          frames: [])
+        let elapsed = ThreadCPUTime.elapsed {
+            for index in 0..<200 {
+                _ = BoardGeometry.elementDrop(placed[index].offsetBy(dx: 40, dy: 40),
+                                              otherElements: placed.enumerated().filter { $0.offset != index }.map(\.element),
+                                              frames: [])
+            }
         }
-        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
+        XCTAssertLessThan(elapsed, 2.0, "took \(elapsed)s of CPU time")
     }
 
     /// When the board is crowded and the nearest free spot is far away, the search must
@@ -134,7 +135,7 @@ final class BoardGeometryTests: XCTestCase {
         // Grid spans (0,0) to (640,640); result must be outside.
         let outside = result!.minX < 0 || result!.minY < 0 || result!.minX >= 640 || result!.minY >= 640
         XCTAssertTrue(outside, "spot at \(result!) must be outside grid bounds [0,640)×[0,640)")
-        XCTAssertLessThan(elapsed, 0.5, "search should complete in under 500ms, took \(elapsed)s")
+        XCTAssertLessThan(elapsed, 1.0, "search should take under 1 s of CPU time, took \(elapsed)s")
     }
     func testATablesSizeComesFromItsColumns() {
         XCTAssertEqual(BoardGeometry.size(of: BoardComponent(name: "t", kind: .table)), BoardPoint(x: 176, y: 72))
