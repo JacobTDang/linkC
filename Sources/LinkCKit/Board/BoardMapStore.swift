@@ -38,6 +38,7 @@ public struct BoardMapStore: Sendable {
     public func save(_ map: BoardMap, expecting expected: Data?) throws -> Data {
         guard try currentBytes() == expected else { throw BoardMapStoreError.changedOnDisk }
         let data = try map.encoded()
+        guard data != expected else { return data }
         do {
             try data.write(to: fileURL, options: .atomic)
         } catch {
