@@ -1,5 +1,28 @@
 import Foundation
 import Darwin
+import os
+
+/// Dedupes a repeated NSLog by (path, mtime) so a persistently-corrupt state file logs once per
+/// change instead of once per read — `InboxStore` and `BlackboardStore` are both constructed
+/// fresh for nearly every call, and the relay reads `inbox.json` from several phases every tick
+/// (~1s), so an unguarded log would otherwise fire many times a second for the same file. Shared
+/// process-wide via `shared`, not per-instance, since a fresh store instance remembers nothing.
+final class LoggedFailureTracker: Sendable {
+    static let shared = LoggedFailureTracker()
+
+    private let seen = OSAllocatedUnfairLock<[String: Date?]>(initialState: [:])
+
+    /// True the first time `path` is seen, or when `mtime` differs from what was last logged for
+    /// it (a later save — even one that again fails to decode — has a different mtime and earns
+    /// its own log). False for a repeat of the same (path, mtime) pair.
+    func shouldLog(path: String, mtime: Date?) -> Bool {
+        seen.withLock { cache in
+            if let existing = cache[path], existing == mtime { return false }
+            cache[path] = mtime
+            return true
+        }
+    }
+}
 
 /// Thread-safe and process-safe storage manager for `<workspaceRoot>/.linkc/inbox.json`.
 /// Employs Darwin `flock(fd, LOCK_EX)` advisory locking and atomic temporary file replacement,
@@ -96,6 +119,11 @@ public final class InboxStore: Sendable {
         do {
             return try decoder.decode(Inbox.self, from: data)
         } catch {
+            let mtime = (try? FileManager.default.attributesOfItem(atPath: inboxURL.path))?[.modificationDate] as? Date
+            if LoggedFailureTracker.shared.shouldLog(path: inboxURL.path, mtime: mtime) {
+                NSLog("linkC: inbox.json at %@ could not be decoded — %@; leaving it untouched. It may have been written by a newer linkC.",
+                      inboxURL.path, String(describing: error))
+            }
             throw LinkCError.server(
                 "inbox.json at \(inboxURL.path) could not be decoded (\(error)); leaving it untouched. It may have been written by a newer linkC."
             )
@@ -120,7 +148,12 @@ public final class InboxStore: Sendable {
             // a delegator never learns its task finished. If queued rows alone exceed the cap,
             // keep them all — the cap is cosmetic and must never cost undelivered work.
             let queued = prunedInbox.messages.filter { $0.status != .delivered }
-            let delivered = prunedInbox.messages.filter { $0.status == .delivered }
+            // Ascending by createdAt BEFORE the slice: `.suffix` keeps whatever currently sits at
+            // the end of the array, which is only "the newest" when the array happens to already
+            // be in time order. Nothing upstream guarantees that (a clock skew, or messages
+            // merged from more than one write), so sort first or the wrong (older) delivered rows
+            // can be the ones kept.
+            let delivered = prunedInbox.messages.filter { $0.status == .delivered }.sorted { $0.createdAt < $1.createdAt }
             let room = max(0, 100 - queued.count)
             prunedInbox.messages = (delivered.suffix(room) + queued).sorted { $0.createdAt < $1.createdAt }
         }
@@ -205,7 +238,7 @@ public final class InboxStore: Sendable {
             let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
             if let existing = inbox.messages.first(where: {
                 $0.contentHash == hash && $0.fromAgent == from && $0.toAgent == to && $0.createdAt >= dedupeCutoff
-                    && $0.status != .delivered
+                    && $0.status == .queued
             }) {
                 return existing
             }
@@ -464,7 +497,9 @@ public final class InboxStore: Sendable {
             return next
         }, mutate: { task in
             task.gate = verdict
-            if !verdict.passed {
+            if verdict.passed {
+                task.queuedAt = Date()
+            } else {
                 task.cancelReason = verdict.reason
                 task.finishedAt = Date()
             }
@@ -550,7 +585,9 @@ public final class InboxStore: Sendable {
             return next
         }, mutate: { task in
             task.gate = verdict
-            if !verdict.passed {
+            if verdict.passed {
+                task.queuedAt = Date()
+            } else {
                 task.cancelReason = verdict.reason
                 task.finishedAt = Date()
             }
@@ -626,7 +663,7 @@ public final class InboxStore: Sendable {
         let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
         let alreadyQueued = inbox.messages.contains {
             $0.contentHash == hash && $0.fromAgent == task.toAgent && $0.toAgent == task.fromAgent
-                && $0.createdAt >= dedupeCutoff && $0.status != .delivered
+                && $0.createdAt >= dedupeCutoff && $0.status == .queued
         }
         guard !alreadyQueued else { return }
         inbox.messages.append(PendingMessage(
