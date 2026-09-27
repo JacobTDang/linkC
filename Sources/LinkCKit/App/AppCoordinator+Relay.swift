@@ -711,7 +711,7 @@ extension AppCoordinator {
         // recomputed against a later `now`, which would always look "later" than an already-live
         // cooldown that is actually ticking down. See `LimitCooldown.hasConfidentSignal`.
         let hasConfidentExpiry = LimitCooldown.hasConfidentSignal(
-            bannerText: recentOutput, usage: usage, now: tickNow, calendar: .current
+            bannerText: match.bannerText, usage: usage, now: tickNow, calendar: .current
         )
         do {
             try inboxStore.recordLimit(agent: session.agentKind, reason: match.matchedPattern, cooldown: match.cooldown)
@@ -721,7 +721,7 @@ extension AppCoordinator {
                 // it out further to the more accurate expiry below, and only ever later, never
                 // shorter.
                 let expiry = LimitCooldown.expiry(
-                    bannerText: recentOutput, usage: usage, now: tickNow, calendar: .current, fallback: match.cooldown
+                    bannerText: match.bannerText, usage: usage, now: tickNow, calendar: .current, fallback: match.cooldown
                 )
                 try inboxStore.extendLimit(agent: session.agentKind, until: expiry)
             }
