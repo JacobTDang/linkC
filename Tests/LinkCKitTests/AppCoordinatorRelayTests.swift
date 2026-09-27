@@ -2188,6 +2188,61 @@ final class AppCoordinatorRelayTests: XCTestCase {
         )
     }
 
+    /// Bug: a stale banner must not re-arm a limit forever. Codex's own "usage limit" banner can
+    /// still sit in the last 50 lines of an idle terminal long after its real window reset. Once
+    /// the cooldown clears and `sampleAgentStates` returns the session to `.ready`, the very same
+    /// banner is still there — recording a fresh limit from it would lock the agent out again
+    /// immediately, forever. Only output that actually changed (the agent printed something new)
+    /// may count as a new limit.
+    @MainActor
+    func testAStaleLimitBannerIsIgnoredOnceItsCooldownEndsButNewOutputCountsAgain() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: session.id, to: .working)
+
+        coordinator.terminals.sendInput(sessionId: session.id, text: "You've reached your usage limit.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 50).contains("usage limit") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        // A session whose output holds a limit banner records a limit once.
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id))
+        XCTAssertNotNil(try inbox.isAgentLimited(agent: .claude))
+
+        // Force the cooldown to have already ended and let the session recover the way
+        // `sampleAgentStates` does on its own — same technique as
+        // `testASessionClearsErrorOnceItsCooldownEndsWithoutAFocusClick`.
+        var seeded = try inbox.load()
+        let idx = try XCTUnwrap(seeded.agentLimits.firstIndex { $0.agent == .claude })
+        let live = seeded.agentLimits[idx]
+        seeded.agentLimits[idx] = AgentLimitStatus(
+            agent: live.agent, reason: live.reason, limitedAt: live.limitedAt,
+            cooldownExpiresAt: Date().addingTimeInterval(-1)
+        )
+        try inbox.saveRaw(seeded)
+        coordinator.sampleAgentStates()
+        XCTAssertNotEqual(coordinator.store.session(id: session.id)?.state, .error, "the session recovers once its cooldown ends")
+
+        // After that limit expires, with the output unchanged, no new limit is recorded: the
+        // exact same banner is still the last thing this session ever printed.
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: session.id), "a stale banner must not re-arm a limit")
+        XCTAssertNil(try inbox.isAgentLimited(agent: .claude), "no fresh limit may come from output that has not changed")
+
+        // When new output with a banner appears, it counts again.
+        coordinator.terminals.sendInput(sessionId: session.id, text: "You've reached your usage limit again.\n")
+        let newOutputReady = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 50).contains("usage limit again") ?? false
+        }
+        XCTAssertTrue(newOutputReady)
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id), "new output with a banner counts as a fresh limit")
+        XCTAssertNotNil(try inbox.isAgentLimited(agent: .claude))
+    }
+
     /// codex has no `light` model configured here and cursor never can be pinned — only agy is
     /// a real candidate. `supportedPeers` still lists codex before agy, so a fix that just picks
     /// the first installed, unlimited peer (ignoring tier capability) would wrongly choose codex;

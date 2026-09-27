@@ -690,9 +690,41 @@ extension AppCoordinator {
             ignoringInjected: recentlyInjectedTexts(sessionId: sessionId)
         ) else { return false }
 
+        // A stale banner must not re-arm a limit forever: once a cooldown expires and the session
+        // returns to `.ready`, the exact same old banner can still sit in the last 50 lines of an
+        // idle terminal. Signature the recent output this match came from; a later detection with
+        // the SAME signature for this session is that identical old banner, not new evidence — no
+        // record, no reroute. Only output that actually changed (the agent printed something
+        // since) can count as a fresh hit.
+        let outputSignature = String(recentOutput.hashValue)
+        guard limitSignatures[sessionId] != outputSignature else { return false }
+        limitSignatures[sessionId] = outputSignature
+
         let inboxStore = InboxStore(workspaceRoot: norm)
+        // The agent's current usage, if any — Claude's freshest number is the live status-line
+        // reading; every other agent goes through its own registered reader (empty/production —
+        // see `usageReaders`'s doc comment).
+        let usage: AgentUsage? = session.agentKind == .claude ? claudeUsage : usageReaders[session.agentKind]?()
+        let tickNow = now()
+        // Whether there is real evidence to rest on (a usage window's own reset, or a time the
+        // banner itself states) — not merely `checkLimitsAndReroute`'s fixed fallback duration
+        // recomputed against a later `now`, which would always look "later" than an already-live
+        // cooldown that is actually ticking down. See `LimitCooldown.hasConfidentSignal`.
+        let hasConfidentExpiry = LimitCooldown.hasConfidentSignal(
+            bannerText: recentOutput, usage: usage, now: tickNow, calendar: .current
+        )
         do {
             try inboxStore.recordLimit(agent: session.agentKind, reason: match.matchedPattern, cooldown: match.cooldown)
+            if hasConfidentExpiry {
+                // recordLimit only ever creates the record with the fixed cooldown (or keeps a
+                // still-live one exactly as it was); extendLimit is the only thing allowed to push
+                // it out further to the more accurate expiry below, and only ever later, never
+                // shorter.
+                let expiry = LimitCooldown.expiry(
+                    bannerText: recentOutput, usage: usage, now: tickNow, calendar: .current, fallback: match.cooldown
+                )
+                try inboxStore.extendLimit(agent: session.agentKind, until: expiry)
+            }
         } catch {
             NSLog("[linkC relay] checkLimitsAndReroute: record limit — %@", String(describing: error))
         }
