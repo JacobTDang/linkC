@@ -828,15 +828,7 @@ struct BoardCanvas: View {
         let focus = focusedComponent
         let focusFilter = focusVisible
         var drawnBundlePills: Set<String> = []
-        var bundleArrows: [String: [BoardArrow]] = [:]
-        for component in board.map.components {
-            for (target, arrow) in component.uses {
-                let k = BoardModel.ArrowKey(from: component.name, to: target)
-                if let bundle = board.routes[k]?.bundle {
-                    bundleArrows[bundle, default: []].append(arrow)
-                }
-            }
-        }
+        let bundleArrows = board.bundleArrows
         for component in board.map.components {
             for (target, arrow) in component.uses {
                 let key = BoardModel.ArrowKey(from: component.name, to: target)
