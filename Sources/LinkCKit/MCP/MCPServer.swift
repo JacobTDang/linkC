@@ -50,6 +50,82 @@ public enum AncestorSessionCache {
     public static let value: String? = walk()
 }
 
+/// Wraps a usage reader so its real read never runs on the caller's thread: the first call
+/// kicks off a background read and returns "not read yet" immediately, and every call after
+/// that returns whatever the most recent background read produced while triggering another one
+/// to keep the cache fresh. `linkc-mcp` serves one request at a time on stdin, so a slow reader
+/// on this path (Claude's transcript scan, ~1.3s against a large `~/.claude/projects`) would
+/// otherwise stall every other tool call behind it.
+final class BackgroundRefreshedUsageReader: @unchecked Sendable {
+    private let agent: AgentKind
+    private let read: @Sendable () -> AgentUsage
+    private let lock = NSLock()
+    private var cached: AgentUsage?
+    private var refreshing = false
+
+    init(agent: AgentKind, read: @escaping @Sendable () -> AgentUsage) {
+        self.agent = agent
+        self.read = read
+    }
+
+    func callAsFunction() -> AgentUsage {
+        lock.lock()
+        let current = cached
+        let alreadyRefreshing = refreshing
+        if !alreadyRefreshing { refreshing = true }
+        lock.unlock()
+
+        if !alreadyRefreshing {
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self else { return }
+                let fresh = self.read()
+                self.lock.lock()
+                self.cached = fresh
+                self.refreshing = false
+                self.lock.unlock()
+            }
+        }
+
+        return current ?? .unavailable(agent, reason: "usage not read yet — check again shortly")
+    }
+}
+
+/// Wraps a usage reader so a burst of calls within `ttl` seconds of each other only pays for one
+/// real read — used for Codex, whose reader stats its whole sessions directory on every call
+/// (a rapid string of delegations to the same agent must not each repeat that scan).
+final class TTLCachedUsageReader: @unchecked Sendable {
+    private let agent: AgentKind
+    private let read: @Sendable () -> AgentUsage
+    private let ttl: TimeInterval
+    private let now: @Sendable () -> Date
+    private let lock = NSLock()
+    private var cached: (value: AgentUsage, at: Date)?
+
+    init(agent: AgentKind, ttl: TimeInterval = 5, now: @escaping @Sendable () -> Date = Date.init,
+         read: @escaping @Sendable () -> AgentUsage) {
+        self.agent = agent
+        self.ttl = ttl
+        self.now = now
+        self.read = read
+    }
+
+    func callAsFunction() -> AgentUsage {
+        lock.lock()
+        let current = now()
+        if let cached, current.timeIntervalSince(cached.at) < ttl {
+            lock.unlock()
+            return cached.value
+        }
+        lock.unlock()
+
+        let fresh = read()
+        lock.lock()
+        cached = (fresh, current)
+        lock.unlock()
+        return fresh
+    }
+}
+
 /// Pure-Swift Model Context Protocol (MCP) server speaking JSON-RPC 2.0.
 public final class MCPServer: Sendable {
     public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String) throws -> String
@@ -151,25 +227,37 @@ public final class MCPServer: Sendable {
     /// none, so they report why rather than guessing. Building this only constructs the reader
     /// values (cheap URL arithmetic); the home directory itself is touched solely when a
     /// reader's `read()` actually runs.
+    ///
+    /// Codex's reader is wrapped in a few-seconds cache — a rapid string of delegations must not
+    /// each pay its full directory scan. Claude's reads the same status-line `rate_limits`
+    /// cache the sidebar's own reading is fed from (`ClaudeRateLimits.usageReader`), falling
+    /// back to the slower transcript scan only when no status line has ever been seen; that
+    /// fallback is itself wrapped so its ~1.3s read never runs on the synchronous stdio path —
+    /// see `BackgroundRefreshedUsageReader`.
     public static func defaultUsageReaders() -> [AgentKind: UsageReader] {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let codex = CodexUsageReader(sessionsDirectory: home.appendingPathComponent(".codex/sessions"))
-        let claude = ClaudeUsageReader(projectsDirectory: home.appendingPathComponent(".claude/projects"))
+        let codexReader = CodexUsageReader(sessionsDirectory: home.appendingPathComponent(".codex/sessions"))
+        let codex = TTLCachedUsageReader(agent: .codex, read: { codexReader.read() })
+        let transcriptReader = ClaudeUsageReader(projectsDirectory: home.appendingPathComponent(".claude/projects"))
+        let transcript = BackgroundRefreshedUsageReader(agent: .claude, read: { transcriptReader.read() })
+        let claude = ClaudeRateLimits.usageReader(
+            cacheURL: HookServer.defaultStatusLineCacheURL(), fallback: transcript.callAsFunction)
         return [
-            .codex: { codex.read() },
-            .claude: { claude.read() },
+            .codex: codex.callAsFunction,
+            .claude: claude,
             .agy: { .unavailable(.agy, reason: "agy writes no local session records") },
             .cursor: { .unavailable(.cursor, reason: "cursor writes no local session records") }
         ]
     }
 
-    /// Agents whose reader in `defaultUsageReaders()` can warn a delegation: only the Codex
-    /// reader's windows ever carry a `usedPercent`. The transcript usage reader's windows never
-    /// do (Anthropic publishes no per-plan limit), so it is left out here rather than excluded by
-    /// checking `toAgent == .claude` in the handler — that identity check would stay wrong
-    /// forever if a percentage-reporting source were later registered for `.claude`. `agy` and
-    /// `cursor` are absent from `defaultUsageReaders()` entirely and so cannot warn regardless.
-    public static let defaultWarnCapableAgents: Set<AgentKind> = [.codex]
+    /// Agents whose reader in `defaultUsageReaders()` can warn a delegation: Codex's windows
+    /// always carry a `usedPercent`; Claude's now can too, when its reader found a cached status
+    /// line (its transcript fallback never does — Anthropic publishes no per-plan limit for that
+    /// source). Declared as data rather than checking `toAgent`'s identity in the handler, so
+    /// whether a reader can ever warn is decided once, here, next to where readers are
+    /// registered. `agy` and `cursor` are absent from `defaultUsageReaders()` entirely and so
+    /// cannot warn regardless.
+    public static let defaultWarnCapableAgents: Set<AgentKind> = [.codex, .claude]
 
     /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified).
     func resolveCaller(_ args: [String: Any]) -> MCPCaller {

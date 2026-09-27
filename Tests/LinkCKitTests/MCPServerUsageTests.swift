@@ -103,4 +103,104 @@ final class MCPServerUsageTests: XCTestCase {
         XCTAssertTrue(res.text.contains("reset since this reading"), res.text)
         XCTAssertFalse(res.text.contains("resets "), "a past reset must never be shown as a future one: \(res.text)")
     }
+
+    // MARK: - BackgroundRefreshedUsageReader (D22a: never block the stdio loop)
+
+    func testBackgroundRefreshedUsageReaderNeverBlocksOnTheRealRead() throws {
+        let real = AgentUsage(agent: .claude,
+                              windows: [UsageWindow(label: "5h", usedPercent: 42, tokens: nil, resetsAt: nil)],
+                              planType: nil, observedAt: Date(), unavailableReason: nil)
+        let reader = BackgroundRefreshedUsageReader(agent: .claude) {
+            usleep(200_000) // stand-in for ClaudeUsageReader's ~1.3s transcript scan
+            return real
+        }
+
+        let start = Date()
+        let first = reader()
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 0.05, "the first call must return immediately, not block on the real read")
+        XCTAssertEqual(first.unavailableReason, "usage not read yet — check again shortly")
+
+        let deadline = Date().addingTimeInterval(2)
+        var second = reader()
+        while second.windows.isEmpty && Date() < deadline {
+            usleep(20_000)
+            second = reader()
+        }
+        XCTAssertEqual(second, real, "once the background read completes, later calls must surface it")
+    }
+
+    // MARK: - TTLCachedUsageReader (D22b-2: a burst of delegations pays for one read)
+
+    /// Lock-protected mutable state shared with a `@Sendable` reader closure — plain `var`
+    /// captures fail Swift 6's strict-concurrency check, matching `EventBox`/`ReadingBox` in
+    /// `HooksTests.swift`.
+    private final class Clock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var callCount = 0
+        private var current: Date
+        init(_ start: Date) { current = start }
+        var calls: Int { lock.withLock { callCount } }
+        func advance(by seconds: TimeInterval) { lock.withLock { current = current.addingTimeInterval(seconds) } }
+        func now() -> Date { lock.withLock { current } }
+        func recordCall() -> Int { lock.withLock { callCount += 1; return callCount } }
+    }
+
+    func testTTLCachedUsageReaderReusesAReadWithinItsTTLThenRefreshesAfter() throws {
+        let clock = Clock(Date())
+        let reader = TTLCachedUsageReader(agent: .codex, ttl: 5, now: clock.now) {
+            let n = clock.recordCall()
+            return AgentUsage(agent: .codex,
+                              windows: [UsageWindow(label: "5h", usedPercent: Double(n), tokens: nil, resetsAt: nil)],
+                              planType: nil, observedAt: clock.now(), unavailableReason: nil)
+        }
+
+        let first = reader()
+        XCTAssertEqual(clock.calls, 1)
+        XCTAssertEqual(first.windows.first?.usedPercent, 1)
+
+        clock.advance(by: 2) // still inside the 5s TTL
+        let second = reader()
+        XCTAssertEqual(clock.calls, 1, "a call inside the TTL must not repeat the real read")
+        XCTAssertEqual(second.windows.first?.usedPercent, 1)
+
+        clock.advance(by: 4) // 6s since the first read, past the 5s TTL
+        let third = reader()
+        XCTAssertEqual(clock.calls, 2, "a call past the TTL must read again")
+        XCTAssertEqual(third.windows.first?.usedPercent, 2)
+    }
+
+    // MARK: - ClaudeRateLimits.usageReader (D22b-1: one Claude usage source everywhere)
+
+    private let rateLimitsBody = Data(
+        #"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#.utf8)
+
+    func testUsageReaderPrefersTheCachedStatusLineOverTheFallback() throws {
+        let cacheFile = tempDir.appendingPathComponent("status-line.json")
+        try rateLimitsBody.write(to: cacheFile)
+        let fallbackCalled = Clock(Date())
+        let reader = ClaudeRateLimits.usageReader(cacheURL: cacheFile, fallback: {
+            _ = fallbackCalled.recordCall()
+            return AgentUsage.unavailable(.claude, reason: "should never be called")
+        })
+
+        let usage = reader()
+
+        XCTAssertEqual(fallbackCalled.calls, 0, "a cached status line must win over the fallback")
+        XCTAssertEqual(usage.windows.map(\.usedPercent), [66, 92])
+    }
+
+    func testUsageReaderFallsBackAndLabelsTheWindowsWhenNoStatusLineWasEverCached() throws {
+        let neverWritten = tempDir.appendingPathComponent("never-written.json")
+        let transcript = AgentUsage(agent: .claude,
+                                    windows: [UsageWindow(label: "7d", usedPercent: nil, tokens: 443_000_000, resetsAt: nil)],
+                                    planType: nil, observedAt: Date(), unavailableReason: nil)
+        let reader = ClaudeRateLimits.usageReader(cacheURL: neverWritten, fallback: { transcript })
+
+        let usage = reader()
+
+        XCTAssertEqual(usage.windows.first?.tokens, 443_000_000)
+        XCTAssertTrue(usage.windows.first?.label.contains("no status line seen yet") ?? false, "\(usage.windows)")
+    }
 }

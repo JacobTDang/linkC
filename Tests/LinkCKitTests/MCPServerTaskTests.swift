@@ -671,25 +671,20 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertFalse(res.text.contains("%"), "no usage line under the threshold: \(res.text)")
     }
 
-    func testADelegationToClaudeNeverConsultsTheTranscriptReader() throws {
-        final class CallFlag: @unchecked Sendable {
-            private let lock = NSLock()
-            private var flagged = false
-            var wasCalled: Bool { lock.withLock { flagged } }
-            func markCalled() { lock.withLock { flagged = true } }
-        }
-        let flag = CallFlag()
-        let neverWarns = AgentUsage(agent: .claude,
-                                    windows: [UsageWindow(label: "5h", usedPercent: nil, tokens: 999, resetsAt: nil)],
-                                    planType: nil, observedAt: Date(), unavailableReason: nil)
+    /// `.claude` is warn-capable by default now (D22b-1 unified its usage source with the
+    /// sidebar's status-line reading, which does carry a real `usedPercent`), so its reader is
+    /// consulted like any other — but a transcript-shaped reading (token counts, never
+    /// `usedPercent`, the shape `ClaudeUsageReader`'s fallback produces) still can never drive a
+    /// warning: `windowNeedingWarning` requires `usedPercent` to be present.
+    func testADelegationToClaudeWithATranscriptShapedReadingNeverWarns() throws {
+        let transcriptShaped = AgentUsage(agent: .claude,
+                                          windows: [UsageWindow(label: "5h", usedPercent: nil, tokens: 999, resetsAt: nil)],
+                                          planType: nil, observedAt: Date(), unavailableReason: nil)
         let res = try call(
-            server(as: .codex, models: .seeded, readers: [.claude: {
-                flag.markCalled()
-                return neverWarns
-            }]),
+            server(as: .codex, models: .seeded, readers: [.claude: { transcriptShaped }]),
             "linkc_delegate_task", ["to": "claude", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
-        XCTAssertFalse(flag.wasCalled, "the transcript usage reader can never warn; the delegate path must not call it")
+        XCTAssertFalse(res.text.contains("%"), "a token-only reading must never warn: \(res.text)")
     }
 
     /// Which readers can warn must be data (`warnCapableAgents`), not an identity check on
