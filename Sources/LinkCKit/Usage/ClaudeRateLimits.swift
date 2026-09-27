@@ -44,6 +44,45 @@ public enum ClaudeRateLimits {
         return userOwnsStatusLine ? .unavailable(.claude, reason: ownStatusLineReason) : nil
     }
 
+    /// The newest status-line body `HookServer` cached to disk, decoded with the file's own
+    /// mtime as `receivedAt` — the same figure the sidebar shows, read here by a process (like
+    /// `linkc-mcp`) with no access to the in-process `onStatusLine` callback that produced it.
+    /// nil when nothing has ever been cached (the ordinary case before a session's first reply,
+    /// never logged), or when the cache exists but fails to decode (logged: a stale format must
+    /// leave a trace, not read as "never cached" forever).
+    public static func cachedReading(at url: URL) -> AgentUsage? {
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let mtime = attributes[.modificationDate] as? Date
+        else { return nil }
+        do {
+            return try decode(data, receivedAt: mtime)
+        } catch {
+            NSLog("[linkC] the cached status line at %@ could not be read — %@", url.path, String(describing: error))
+            return nil
+        }
+    }
+
+    /// What `MCPServer.defaultUsageReaders()` wires up for Claude: the cached status-line
+    /// reading when one exists — the same source the sidebar shows — falling back to
+    /// `fallback` (the transcript-based reader) only when no status line has ever been cached.
+    /// Every fallback window's label is marked so its token count is never mistaken for the
+    /// status line's percentage — a structurally different figure from a different source.
+    public static func usageReader(cacheURL: URL, fallback: @escaping @Sendable () -> AgentUsage) -> @Sendable () -> AgentUsage {
+        {
+            if let cached = cachedReading(at: cacheURL) { return cached }
+            let transcript = fallback()
+            guard !transcript.windows.isEmpty else { return transcript }
+            let labeled = transcript.windows.map { window in
+                UsageWindow(label: "\(window.label), no status line seen yet", usedPercent: window.usedPercent,
+                            tokens: window.tokens, resetsAt: window.resetsAt,
+                            tokensAreLowerBound: window.tokensAreLowerBound)
+            }
+            return AgentUsage(agent: transcript.agent, windows: labeled, planType: transcript.planType,
+                              observedAt: transcript.observedAt, unavailableReason: transcript.unavailableReason)
+        }
+    }
+
     private struct Payload: Decodable {
         let rateLimits: Limits?
 

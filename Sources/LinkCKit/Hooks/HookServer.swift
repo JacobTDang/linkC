@@ -55,13 +55,29 @@ public final class HookServer: @unchecked Sendable {
         set { stateLock.lock(); _requiredToken = newValue; stateLock.unlock() }
     }
 
+    /// Where the newest Claude status-line body this process has seen is cached to disk, so
+    /// `linkc-mcp` — a separate process per workspace, with no access to this server's
+    /// in-memory `onStatusLine` callback — can read the same `rate_limits` figures the sidebar
+    /// shows instead of a structurally different (and much slower) transcript scan. Defaulted
+    /// to linkC's own Application Support folder, the same one the production `AppCoordinator`
+    /// already uses; overridable so a test never touches the real one.
+    private let statusLineCacheURL: URL
+
     /// - Parameter maxRequestBytes: hard cap on the total header+body bytes buffered for a
     ///   single request. A connection that exceeds it (or declares a larger `Content-Length`)
     ///   is dropped, bounding memory against a buggy/hostile local client.
-    public init(port: UInt16, maxRequestBytes: Int = 1 << 20) {
+    public init(port: UInt16, maxRequestBytes: Int = 1 << 20, statusLineCacheURL: URL? = nil) {
         self.requestedPort = port
         self._resolvedPort = port
         self.maxRequestBytes = maxRequestBytes
+        self.statusLineCacheURL = statusLineCacheURL ?? Self.defaultStatusLineCacheURL()
+    }
+
+    /// `~/Library/Application Support/linkC/claude-status-line.json` — matches the folder
+    /// `AppCoordinator`'s production initializer already writes its own state under.
+    public static func defaultStatusLineCacheURL() -> URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return support.appendingPathComponent("linkC/claude-status-line.json", isDirectory: false)
     }
 
     /// The bound port. Equal to the requested port, except when constructed with `0`
@@ -229,9 +245,27 @@ public final class HookServer: @unchecked Sendable {
         do {
             if let reading = try ClaudeRateLimits.decode(body, receivedAt: Date()) {
                 onStatusLine?(reading)
+                cacheStatusLineBody(body)
             }
         } catch {
             NSLog("[linkC] a status line report could not be read — %@", String(describing: error))
+        }
+    }
+
+    /// Persists the raw body so `ClaudeRateLimits.cachedReading(at:)` can decode the same
+    /// reading later from another process, using the file's own mtime as `receivedAt` — never
+    /// blocks the hook response on this, and a write failure is logged, not thrown: the
+    /// in-process `onStatusLine` callback already fired regardless.
+    private func cacheStatusLineBody(_ body: Data) {
+        let url = statusLineCacheURL
+        let parent = url.deletingLastPathComponent()
+        do {
+            if !FileManager.default.fileExists(atPath: parent.path) {
+                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            }
+            try body.write(to: url, options: .atomic)
+        } catch {
+            NSLog("[linkC] could not cache the status line reading at %@ — %@", url.path, String(describing: error))
         }
     }
 

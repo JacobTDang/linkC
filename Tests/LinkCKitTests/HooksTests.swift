@@ -478,6 +478,42 @@ final class HookServerTests: XCTestCase {
         XCTAssertTrue(events.all.isEmpty, "a status line report is not a session event")
     }
 
+    /// The other half of `ClaudeUsageStatusLineReader`'s job (in `LinkCKitTests/MCPServerUsageTests.swift`):
+    /// a decoded reading is also cached to disk, raw, so `linkc-mcp` — a separate process with no
+    /// access to `onStatusLine` — can read the same figure the sidebar shows.
+    func testATokenedStatusLineIsCachedToDiskForTheSeparateMCPProcessToRead() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-status-line-cache-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let server = HookServer(port: 0, statusLineCacheURL: cacheURL)
+        server.requiredToken = "tok"
+        try server.start()
+        defer { server.stop() }
+
+        _ = try await postStatusLine(port: server.port, token: "tok", body: rateLimitsBody)
+
+        let cached = try Data(contentsOf: cacheURL)
+        XCTAssertEqual(cached, Data(rateLimitsBody.utf8))
+    }
+
+    /// A body that decodes to nothing useful (no `rate_limits`) must not overwrite a previously
+    /// cached reading with an empty one — only a body that actually carries limits is cached.
+    func testAStatusLineWithoutRateLimitsDoesNotOverwriteTheCache() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-status-line-cache-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let server = HookServer(port: 0, statusLineCacheURL: cacheURL)
+        server.requiredToken = "tok"
+        try server.start()
+        defer { server.stop() }
+
+        _ = try await postStatusLine(port: server.port, token: "tok", body: rateLimitsBody)
+        _ = try await postStatusLine(port: server.port, token: "tok", body: #"{"session_id":"c1"}"#)
+
+        let cached = try Data(contentsOf: cacheURL)
+        XCTAssertEqual(cached, Data(rateLimitsBody.utf8), "a windowless body must not clobber the last real reading")
+    }
+
     func testAStatusLineWithTheWrongTokenDeliversNothing() async throws {
         let server = HookServer(port: 0)
         server.requiredToken = "tok"

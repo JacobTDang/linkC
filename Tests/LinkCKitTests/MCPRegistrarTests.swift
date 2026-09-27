@@ -191,6 +191,25 @@ final class MCPRegistrarTests: XCTestCase {
         }
     }
 
+    /// One client's config being unwritable must not just get logged — `registerAll` must
+    /// surface it, naming which client failed, so `linkc-mcp --install` can exit non-zero
+    /// instead of claiming success. Occupies `~/.claude.json` with a directory so its
+    /// `rename(2)` deterministically fails with EISDIR, the same trick
+    /// `testRegisterServerThrowsWhenTheRenameDestinationCannotBeReplaced` uses, while every
+    /// other client's real path is left free to succeed.
+    func testRegisterAllThrowsNamingEveryClientWhoseConfigFailed() throws {
+        try FileManager.default.createDirectory(
+            at: tempDir.appendingPathComponent(".claude.json"), withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp")) { error in
+            XCTAssertTrue("\(error)".contains("~/.claude.json"), "\(error)")
+        }
+
+        // Every other client still got its config written despite the one failure.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent(".cursor/mcp.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent(".codex/config.toml").path))
+    }
+
     func testRegisterAllSetsAgentIdentityPerClient() throws {
         try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp")
         func env(_ rel: String) throws -> [String: String]? {

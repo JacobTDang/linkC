@@ -13,6 +13,12 @@ public struct MCPCaller: Sendable {
 /// `MCPServer`'s *default* `sessionResolver` goes through this cache — a resolver a caller
 /// injects (every test, and any future caller that wants a fresh read) bypasses it entirely.
 public enum AncestorSessionCache {
+    /// True when the XCTest framework is loaded into this process — true for both `swift test`
+    /// and an Xcode test run (either links it in), false for `linkc`/`linkc-mcp` running for
+    /// real. Independent of Xcode-only environment variables, and a var (not the check inlined
+    /// into `walk`) purely so a test can assert the detection itself works.
+    static var isRunningUnderXCTest: Bool { NSClassFromString("XCTestCase") != nil }
+
     /// The real walk. `value`'s `static let` memoizes whatever this returns the first time it is
     /// read, via Swift's thread-safe one-time static initialization — no hand-rolled locking
     /// needed for that part. `walk` itself is `nonisolated(unsafe)` only because a mutable global
@@ -22,10 +28,102 @@ public enum AncestorSessionCache {
     /// reaches it despite `internal`, so it need not be `public` itself. `value` is `public`
     /// because `MCPServer.init` is public and its default `sessionResolver` argument reads it
     /// directly, which Swift requires to be at least as visible as the initializer.
+    ///
+    /// The still-default `walk` (one a test never replaced) fails fast under XCTest instead of
+    /// silently returning the real ancestor session: a test that forgot to inject
+    /// `sessionResolver: { nil }` (or reassign `walk` first) would otherwise read whatever
+    /// process happens to be running the test binary's ancestry, a flaky, unasserted hazard this
+    /// doc already warned about.
     nonisolated(unsafe) static var walk: @Sendable () -> String? = {
-        ProcessSnooper.sessionId(inAncestorsOf: getpid())
+        #if DEBUG
+        if AncestorSessionCache.isRunningUnderXCTest {
+            fatalError(
+                "AncestorSessionCache.value was read for real under XCTest — a test forgot to " +
+                "inject sessionResolver: { nil } to MCPServer.init (or reassign " +
+                "AncestorSessionCache.walk before first use), and would otherwise read the real " +
+                "ancestor session of the test-runner process."
+            )
+        }
+        #endif
+        return ProcessSnooper.sessionId(inAncestorsOf: getpid())
     }
     public static let value: String? = walk()
+}
+
+/// Wraps a usage reader so its real read never runs on the caller's thread: the first call
+/// kicks off a background read and returns "not read yet" immediately, and every call after
+/// that returns whatever the most recent background read produced while triggering another one
+/// to keep the cache fresh. `linkc-mcp` serves one request at a time on stdin, so a slow reader
+/// on this path (Claude's transcript scan, ~1.3s against a large `~/.claude/projects`) would
+/// otherwise stall every other tool call behind it.
+final class BackgroundRefreshedUsageReader: @unchecked Sendable {
+    private let agent: AgentKind
+    private let read: @Sendable () -> AgentUsage
+    private let lock = NSLock()
+    private var cached: AgentUsage?
+    private var refreshing = false
+
+    init(agent: AgentKind, read: @escaping @Sendable () -> AgentUsage) {
+        self.agent = agent
+        self.read = read
+    }
+
+    func callAsFunction() -> AgentUsage {
+        lock.lock()
+        let current = cached
+        let alreadyRefreshing = refreshing
+        if !alreadyRefreshing { refreshing = true }
+        lock.unlock()
+
+        if !alreadyRefreshing {
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self else { return }
+                let fresh = self.read()
+                self.lock.lock()
+                self.cached = fresh
+                self.refreshing = false
+                self.lock.unlock()
+            }
+        }
+
+        return current ?? .unavailable(agent, reason: "usage not read yet — check again shortly")
+    }
+}
+
+/// Wraps a usage reader so a burst of calls within `ttl` seconds of each other only pays for one
+/// real read — used for Codex, whose reader stats its whole sessions directory on every call
+/// (a rapid string of delegations to the same agent must not each repeat that scan).
+final class TTLCachedUsageReader: @unchecked Sendable {
+    private let agent: AgentKind
+    private let read: @Sendable () -> AgentUsage
+    private let ttl: TimeInterval
+    private let now: @Sendable () -> Date
+    private let lock = NSLock()
+    private var cached: (value: AgentUsage, at: Date)?
+
+    init(agent: AgentKind, ttl: TimeInterval = 5, now: @escaping @Sendable () -> Date = Date.init,
+         read: @escaping @Sendable () -> AgentUsage) {
+        self.agent = agent
+        self.ttl = ttl
+        self.now = now
+        self.read = read
+    }
+
+    func callAsFunction() -> AgentUsage {
+        lock.lock()
+        let current = now()
+        if let cached, current.timeIntervalSince(cached.at) < ttl {
+            lock.unlock()
+            return cached.value
+        }
+        lock.unlock()
+
+        let fresh = read()
+        lock.lock()
+        cached = (fresh, current)
+        lock.unlock()
+        return fresh
+    }
 }
 
 /// Pure-Swift Model Context Protocol (MCP) server speaking JSON-RPC 2.0.
@@ -129,25 +227,37 @@ public final class MCPServer: Sendable {
     /// none, so they report why rather than guessing. Building this only constructs the reader
     /// values (cheap URL arithmetic); the home directory itself is touched solely when a
     /// reader's `read()` actually runs.
+    ///
+    /// Codex's reader is wrapped in a few-seconds cache — a rapid string of delegations must not
+    /// each pay its full directory scan. Claude's reads the same status-line `rate_limits`
+    /// cache the sidebar's own reading is fed from (`ClaudeRateLimits.usageReader`), falling
+    /// back to the slower transcript scan only when no status line has ever been seen; that
+    /// fallback is itself wrapped so its ~1.3s read never runs on the synchronous stdio path —
+    /// see `BackgroundRefreshedUsageReader`.
     public static func defaultUsageReaders() -> [AgentKind: UsageReader] {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let codex = CodexUsageReader(sessionsDirectory: home.appendingPathComponent(".codex/sessions"))
-        let claude = ClaudeUsageReader(projectsDirectory: home.appendingPathComponent(".claude/projects"))
+        let codexReader = CodexUsageReader(sessionsDirectory: home.appendingPathComponent(".codex/sessions"))
+        let codex = TTLCachedUsageReader(agent: .codex, read: { codexReader.read() })
+        let transcriptReader = ClaudeUsageReader(projectsDirectory: home.appendingPathComponent(".claude/projects"))
+        let transcript = BackgroundRefreshedUsageReader(agent: .claude, read: { transcriptReader.read() })
+        let claude = ClaudeRateLimits.usageReader(
+            cacheURL: HookServer.defaultStatusLineCacheURL(), fallback: transcript.callAsFunction)
         return [
-            .codex: { codex.read() },
-            .claude: { claude.read() },
+            .codex: codex.callAsFunction,
+            .claude: claude,
             .agy: { .unavailable(.agy, reason: "agy writes no local session records") },
             .cursor: { .unavailable(.cursor, reason: "cursor writes no local session records") }
         ]
     }
 
-    /// Agents whose reader in `defaultUsageReaders()` can warn a delegation: only the Codex
-    /// reader's windows ever carry a `usedPercent`. The transcript usage reader's windows never
-    /// do (Anthropic publishes no per-plan limit), so it is left out here rather than excluded by
-    /// checking `toAgent == .claude` in the handler — that identity check would stay wrong
-    /// forever if a percentage-reporting source were later registered for `.claude`. `agy` and
-    /// `cursor` are absent from `defaultUsageReaders()` entirely and so cannot warn regardless.
-    public static let defaultWarnCapableAgents: Set<AgentKind> = [.codex]
+    /// Agents whose reader in `defaultUsageReaders()` can warn a delegation: Codex's windows
+    /// always carry a `usedPercent`; Claude's now can too, when its reader found a cached status
+    /// line (its transcript fallback never does — Anthropic publishes no per-plan limit for that
+    /// source). Declared as data rather than checking `toAgent`'s identity in the handler, so
+    /// whether a reader can ever warn is decided once, here, next to where readers are
+    /// registered. `agy` and `cursor` are absent from `defaultUsageReaders()` entirely and so
+    /// cannot warn regardless.
+    public static let defaultWarnCapableAgents: Set<AgentKind> = [.codex, .claude]
 
     /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified).
     func resolveCaller(_ args: [String: Any]) -> MCPCaller {
@@ -647,7 +757,7 @@ public final class MCPServer: Sendable {
                         return toolResultResponse(id: id, text: errorMsg, isError: true)
                     }
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
                 let files = args["files"] as? [String] ?? []
@@ -714,7 +824,7 @@ public final class MCPServer: Sendable {
                                                      prompt: prompt, files: files,
                                                      force: force, verification: verification)
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
                 let successText = verification.map {
@@ -767,7 +877,7 @@ public final class MCPServer: Sendable {
                     let pending = try inboxStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote, body: messageText)
                     return toolResultResponse(id: id, text: "Message queued for \(toAgent.displayName) (ID: \(pending.id)). linkC will deliver it when idle.")
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
             case "linkc_get_inbox":
@@ -775,7 +885,7 @@ public final class MCPServer: Sendable {
                 do {
                     inbox = try inboxStore.load()
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
                 let now = Date()
                 var text = "# linkC Message Inbox\n\n"
@@ -860,14 +970,14 @@ public final class MCPServer: Sendable {
                         let result = try modelSwitcher(agent, cleanModel)
                         return toolResultResponse(id: id, text: result)
                     } catch {
-                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                        return errorResult(id: id, error)
                     }
                 } else {
                     let cmd = AgentModelCatalog.interactiveSwitchCommand(model: cleanModel, for: agent)
                     do {
                         _ = try inboxStore.enqueue(from: agent, to: agent, kind: .command, body: cmd)
                     } catch {
-                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                        return errorResult(id: id, error)
                     }
                     return toolResultResponse(id: id, text: "Model switch requested: enqueued '\(cmd)' for \(agent.displayName). linkC will inject it via terminal PTY.")
                 }
@@ -895,7 +1005,7 @@ public final class MCPServer: Sendable {
                     do {
                         limit = try inboxStore.isAgentLimited(agent: agent)
                     } catch {
-                        return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                        return errorResult(id: id, error)
                     }
                     if let limit {
                         let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
@@ -923,7 +1033,7 @@ public final class MCPServer: Sendable {
                 do {
                     inbox = try inboxStore.load()
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
                 let now = Date()
                 var text = "# Agent Usage\n\n"
@@ -964,7 +1074,7 @@ public final class MCPServer: Sendable {
                     let updated = try inboxStore.task(id: task.id) ?? task
                     return toolResultResponse(id: id, text: "Started: \(taskLine(updated))")
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
             case "linkc_complete_task":
@@ -1006,7 +1116,7 @@ public final class MCPServer: Sendable {
                     }
                     return toolResultResponse(id: id, text: text)
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
             case "linkc_cancel_task":
@@ -1032,7 +1142,7 @@ public final class MCPServer: Sendable {
                     }
                     return toolResultResponse(id: id, text: successText)
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
             case "linkc_get_task":
@@ -1040,7 +1150,7 @@ public final class MCPServer: Sendable {
                     let task = try requireTask(args)
                     return toolResultResponse(id: id, text: taskMarkdown(task))
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
 
             case "linkc_my_tasks":
@@ -1053,7 +1163,7 @@ public final class MCPServer: Sendable {
                     assigned = try inboxStore.openTasks(for: caller.agent).filter { callerMayAct(on: $0) }
                     delegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
                 } catch {
-                    return toolResultResponse(id: id, text: error.localizedDescription, isError: true)
+                    return errorResult(id: id, error)
                 }
                 var text = "# Open tasks for \(caller.agent.displayName)\n\n## Assigned to you (\(assigned.count))\n"
                 text += assigned.isEmpty ? "_None._\n" : assigned.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
@@ -1090,11 +1200,11 @@ public final class MCPServer: Sendable {
         text += "\n## Brief\n\(t.prompt)\n"
         if let r = t.report {
             text += "\n## Report (\(r.status))\n\(r.summary)\n"
-            if let sha = r.sha { text += "\n**Sha:** \(sha)\n" }
+            if let sha = r.sha { text += "\n**Sha:** \(VerificationRunner.short(sha))\n" }
             if !r.commits.isEmpty { text += "\n**Commits:** \(r.commits.joined(separator: ", "))\n" }
         }
         if let v = t.verification {
-            text += "\n## Verification\n- **Branch:** \(v.branch)\n- **Base:** \(v.baseSha)\n- **Command:** `\(v.command)`\n"
+            text += "\n## Verification\n- **Branch:** \(v.branch)\n- **Base:** \(VerificationRunner.short(v.baseSha))\n- **Command:** `\(v.command)`\n"
             text += "- **Protected tests:** \(v.testPaths.joined(separator: ", "))\n- **Timeout:** \(v.timeoutSeconds)s\n"
         }
         if let gate = t.gate { text += "\n## Gate\n" + verdictMarkdown(gate) }
@@ -1315,6 +1425,14 @@ public final class MCPServer: Sendable {
                 throw LinkCError.server("could not create detail board \"\(slug)\": \(error.localizedDescription)")
             }
         }
+    }
+
+    /// The catch every tool handler in this file reaches for once it has nothing more specific
+    /// to say: the thrown error's own description, reported as an `isError` tool result. Pulled
+    /// out because this exact three-line `catch` block was pasted at every site with no sharper
+    /// message for its own failure — one helper, one output shape, no copies to drift apart.
+    private func errorResult(id: Any?, _ error: Error) -> Data? {
+        toolResultResponse(id: id, text: error.localizedDescription, isError: true)
     }
 
     private func toolResultResponse(id: Any?, text: String, isError: Bool = false) -> Data? {

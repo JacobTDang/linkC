@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Pre-seeds directory trust in `~/.claude.json` so CLI sessions never block on
 /// interactive directory trust dialogs.
@@ -7,40 +8,37 @@ public enum DirectoryTrustManager: Sendable {
         let fileURL = claudeJsonURL ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
         let norm = (workspacePath as NSString).standardizingPath
 
-        var root: [String: Any]
-        if FileManager.default.fileExists(atPath: fileURL.path),
-           let data = try? Data(contentsOf: fileURL),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            root = json
-        } else {
-            root = [
-                "projects": [String: Any](),
-                "trustedDirectories": [String]()
-            ]
-        }
-
-        var projects = root["projects"] as? [String: Any] ?? [:]
-        var projectConfig = projects[norm] as? [String: Any] ?? [:]
-        projectConfig["hasTrustDialogAccepted"] = true
-        projects[norm] = projectConfig
-        root["projects"] = projects
-
-        if var trusted = root["trustedDirectories"] as? [String] {
-            if !trusted.contains(norm) {
-                trusted.append(norm)
+        try withFileLock(around: fileURL) {
+            var root: [String: Any]
+            if FileManager.default.fileExists(atPath: fileURL.path),
+               let data = try? Data(contentsOf: fileURL),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                root = json
+            } else {
+                root = [
+                    "projects": [String: Any](),
+                    "trustedDirectories": [String]()
+                ]
             }
-            root["trustedDirectories"] = trusted
-        } else {
-            root["trustedDirectories"] = [norm]
-        }
 
-        let parentDir = fileURL.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: parentDir.path) {
-            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
-        }
+            var projects = root["projects"] as? [String: Any] ?? [:]
+            var projectConfig = projects[norm] as? [String: Any] ?? [:]
+            projectConfig["hasTrustDialogAccepted"] = true
+            projects[norm] = projectConfig
+            root["projects"] = projects
 
-        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: fileURL, options: .atomic)
+            if var trusted = root["trustedDirectories"] as? [String] {
+                if !trusted.contains(norm) {
+                    trusted.append(norm)
+                }
+                root["trustedDirectories"] = trusted
+            } else {
+                root["trustedDirectories"] = [norm]
+            }
+
+            let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: fileURL, options: .atomic)
+        }
     }
 
     /// Pre-seeds Codex's folder trust — `[projects."<path>"] trust_level = "trusted"` in
@@ -54,23 +52,25 @@ public enum DirectoryTrustManager: Sendable {
         let escaped = norm.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let header = "[projects.\"\(escaped)\"]"
 
-        var content = ""
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            content = try String(contentsOf: fileURL, encoding: .utf8)
-        }
-        // A real table header for this folder, in any spelling TOML treats as the same table: either
-        // quote style, spaces inside the brackets, a trailing comment. Appending a second one would
-        // not just fail to help — TOML rejects a table defined twice, breaking the whole file.
-        let listed = content.split(separator: "\n", omittingEmptySubsequences: false)
-            .contains { codexProjectsHeaderPath(in: String($0)) == norm }
-        guard !listed else { return }
+        try withFileLock(around: fileURL) {
+            var content = ""
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                content = try String(contentsOf: fileURL, encoding: .utf8)
+            }
+            // A real table header for this folder, in any spelling TOML treats as the same table: either
+            // quote style, spaces inside the brackets, a trailing comment. Appending a second one would
+            // not just fail to help — TOML rejects a table defined twice, breaking the whole file.
+            let listed = content.split(separator: "\n", omittingEmptySubsequences: false)
+                .contains { codexProjectsHeaderPath(in: String($0)) == norm }
+            guard !listed else { return }
 
-        if !content.isEmpty {
-            if !content.hasSuffix("\n") { content += "\n" }
-            content += "\n"
+            if !content.isEmpty {
+                if !content.hasSuffix("\n") { content += "\n" }
+                content += "\n"
+            }
+            content += "\(header)\ntrust_level = \"trusted\"\n"
+            try write(Data(content.utf8), to: fileURL)
         }
-        content += "\(header)\ntrust_level = \"trusted\"\n"
-        try write(Data(content.utf8), to: fileURL)
     }
 
     /// Pre-seeds Antigravity's folder trust — `trustedWorkspaces` in
@@ -83,30 +83,32 @@ public enum DirectoryTrustManager: Sendable {
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/antigravity-cli/settings.json")
         let norm = (workspacePath as NSString).standardizingPath
 
-        var root: [String: Any] = [:]
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            let data = try Data(contentsOf: fileURL)
-            if !String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    throw LinkCError.parse("\(fileURL.path) is not a JSON object")
+        try withFileLock(around: fileURL) {
+            var root: [String: Any] = [:]
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                let data = try Data(contentsOf: fileURL)
+                if !String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        throw LinkCError.parse("\(fileURL.path) is not a JSON object")
+                    }
+                    root = object
                 }
-                root = object
             }
-        }
 
-        var trusted: [String] = []
-        if let existing = root["trustedWorkspaces"] {
-            // Anything but a list of paths is not ours to reshape: replacing it would drop every
-            // folder the user already trusted.
-            guard let paths = existing as? [String] else {
-                throw LinkCError.parse("\(fileURL.path): trustedWorkspaces is not a list of paths")
+            var trusted: [String] = []
+            if let existing = root["trustedWorkspaces"] {
+                // Anything but a list of paths is not ours to reshape: replacing it would drop every
+                // folder the user already trusted.
+                guard let paths = existing as? [String] else {
+                    throw LinkCError.parse("\(fileURL.path): trustedWorkspaces is not a list of paths")
+                }
+                trusted = paths
             }
-            trusted = paths
+            guard !trusted.contains(norm) else { return }
+            trusted.append(norm)
+            root["trustedWorkspaces"] = trusted
+            try write(try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]), to: fileURL)
         }
-        guard !trusted.contains(norm) else { return }
-        trusted.append(norm)
-        root["trustedWorkspaces"] = trusted
-        try write(try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]), to: fileURL)
     }
 
     /// `[projects."<path>"]` or `[projects.'<path>']`, with optional spaces and a trailing comment.
@@ -133,5 +135,42 @@ public enum DirectoryTrustManager: Sendable {
             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         }
         try data.write(to: url, options: .atomic)
+    }
+
+    /// Acquires an exclusive advisory lock on a sibling `.lock` file next to `path`, runs `body`,
+    /// and releases it — the same `flock`-and-atomic-replace pattern `InboxStore`/`BlackboardStore`
+    /// use, so a read-modify-write against `path` from two callers at once (two linkC launches, or
+    /// two agents' pre-approve calls landing together) can never interleave and drop one side's
+    /// write. Polls non-blocking for up to `timeout` seconds rather than blocking indefinitely,
+    /// matching those stores' default.
+    private static func withFileLock<T>(around path: URL, timeout: TimeInterval = 5.0, _ body: () throws -> T) throws -> T {
+        let parent = path.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: parent.path) {
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        }
+        let lockURL = parent.appendingPathComponent(".\(path.lastPathComponent).lock")
+        let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else {
+            throw LinkCError.server("Failed to open lock file at \(lockURL.path)")
+        }
+        defer {
+            flock(fd, LOCK_UN)
+            close(fd)
+        }
+
+        let start = Date()
+        while true {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 { break }
+            let err = errno
+            guard err == EWOULDBLOCK || err == EAGAIN else {
+                throw LinkCError.server("Failed to acquire flock on \(lockURL.path): errno \(err)")
+            }
+            if Date().timeIntervalSince(start) >= timeout {
+                throw LinkCError.server("Timed out acquiring lock after \(timeout)s at \(lockURL.path)")
+            }
+            usleep(5_000) // 5ms sleep between attempts
+        }
+
+        return try body()
     }
 }

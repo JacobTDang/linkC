@@ -217,6 +217,14 @@ final class MCPServerTaskTests: XCTestCase {
     /// that walk so this test can count invocations without reading real processes; this is the
     /// only place in the suite that ever touches the cache, so the result does not depend on test
     /// execution order.
+    /// `walk`'s default closure fails fast (see its doc comment) when read under XCTest without
+    /// an injected `sessionResolver` — but a trap can't be asserted against in-process, so this
+    /// proves the detection it relies on instead: running inside this very test suite must read
+    /// as "under XCTest" every time, not just when some other test happens to have linked it.
+    func testAncestorSessionCacheDetectsRunningUnderXCTest() {
+        XCTAssertTrue(AncestorSessionCache.isRunningUnderXCTest)
+    }
+
     func testDefaultSessionResolverWalksTheAncestryAtMostOnce() throws {
         final class Counter: @unchecked Sendable {
             private let lock = NSLock()
@@ -423,6 +431,23 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.text.contains("## Gate"))
         XCTAssertTrue(res.text.contains("tests already pass at bbbbbbb; brief refused"))
         XCTAssertTrue(res.text.contains("GATE_STDOUT_MARKER"))
+    }
+
+    func testGetTaskShowsShaAndBaseShaTruncatedToSevenCharacters() throws {
+        let base = "1234567890abcdef1234567890abcdef12345678"
+        let reportSha = "abcdef1234567890abcdef1234567890abcdef12"
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Make check pass", files: [],
+                                        verification: Verification(branch: "task/x", baseSha: base, command: "./check.sh", testPaths: ["check.sh"]))
+        try inbox.resolveGate(taskId: task.id, verdict: Verdict(passed: true, sha: base, exitStatus: 1, reason: nil, stdoutTail: "", stderrTail: ""))
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
+        try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "added marker", sha: reportSha))
+
+        let res = try call(server(as: .claude), "linkc_get_task", ["task_id": task.id])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("**Sha:** \(String(reportSha.prefix(7)))\n"), res.text)
+        XCTAssertTrue(res.text.contains("**Base:** \(String(base.prefix(7)))\n"), res.text)
+        XCTAssertFalse(res.text.contains("**Sha:** \(reportSha)"), "the report sha line must be truncated to 7 chars: \(res.text)")
+        XCTAssertFalse(res.text.contains("**Base:** \(base)"), "the base sha line must be truncated to 7 chars: \(res.text)")
     }
 
     // MARK: - Task ids by prefix
@@ -646,25 +671,20 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertFalse(res.text.contains("%"), "no usage line under the threshold: \(res.text)")
     }
 
-    func testADelegationToClaudeNeverConsultsTheTranscriptReader() throws {
-        final class CallFlag: @unchecked Sendable {
-            private let lock = NSLock()
-            private var flagged = false
-            var wasCalled: Bool { lock.withLock { flagged } }
-            func markCalled() { lock.withLock { flagged = true } }
-        }
-        let flag = CallFlag()
-        let neverWarns = AgentUsage(agent: .claude,
-                                    windows: [UsageWindow(label: "5h", usedPercent: nil, tokens: 999, resetsAt: nil)],
-                                    planType: nil, observedAt: Date(), unavailableReason: nil)
+    /// `.claude` is warn-capable by default now (D22b-1 unified its usage source with the
+    /// sidebar's status-line reading, which does carry a real `usedPercent`), so its reader is
+    /// consulted like any other — but a transcript-shaped reading (token counts, never
+    /// `usedPercent`, the shape `ClaudeUsageReader`'s fallback produces) still can never drive a
+    /// warning: `windowNeedingWarning` requires `usedPercent` to be present.
+    func testADelegationToClaudeWithATranscriptShapedReadingNeverWarns() throws {
+        let transcriptShaped = AgentUsage(agent: .claude,
+                                          windows: [UsageWindow(label: "5h", usedPercent: nil, tokens: 999, resetsAt: nil)],
+                                          planType: nil, observedAt: Date(), unavailableReason: nil)
         let res = try call(
-            server(as: .codex, models: .seeded, readers: [.claude: {
-                flag.markCalled()
-                return neverWarns
-            }]),
+            server(as: .codex, models: .seeded, readers: [.claude: { transcriptShaped }]),
             "linkc_delegate_task", ["to": "claude", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
-        XCTAssertFalse(flag.wasCalled, "the transcript usage reader can never warn; the delegate path must not call it")
+        XCTAssertFalse(res.text.contains("%"), "a token-only reading must never warn: \(res.text)")
     }
 
     /// Which readers can warn must be data (`warnCapableAgents`), not an identity check on
