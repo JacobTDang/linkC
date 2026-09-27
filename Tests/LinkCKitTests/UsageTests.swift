@@ -205,6 +205,25 @@ final class TranscriptTailReaderTests: XCTestCase {
         XCTAssertEqual(TranscriptTailReader().readNewLines(at: dir.appendingPathComponent("no.jsonl").path), [])
     }
 
+    /// One reader watches several transcripts at once (one per live session) — each path's
+    /// offset must advance on its own, never shared or confused with another's.
+    func testTwoFilesThatBothFitTrackOffsetsIndependently() throws {
+        let pathA = try write("a1\na2\n", to: "a.jsonl")
+        let pathB = try write("b1\n", to: "b.jsonl")
+        let reader = TranscriptTailReader()
+
+        XCTAssertEqual(reader.readNewLines(at: pathA), ["a1", "a2"])
+        XCTAssertEqual(reader.readNewLines(at: pathB), ["b1"])
+        // Both already fully read: neither path's offset leaked into the other's.
+        XCTAssertEqual(reader.readNewLines(at: pathA), [])
+        XCTAssertEqual(reader.readNewLines(at: pathB), [])
+
+        try append("a3\n", to: pathA)
+        // Appending to A alone must not surface anything from B, and B must not re-surface a3.
+        XCTAssertEqual(reader.readNewLines(at: pathB), [])
+        XCTAssertEqual(reader.readNewLines(at: pathA), ["a3"])
+    }
+
     /// A capped first read seeks to a raw byte offset with no notion of character boundaries.
     /// Padding with two-byte "é" characters up to a provably-odd byte offset forces the cut
     /// to land on a UTF-8 continuation byte, so the buffer can only decode once that byte is
