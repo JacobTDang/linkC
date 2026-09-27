@@ -110,7 +110,7 @@ The active-limits section stays, since a recorded cooldown is real and useful. T
 When `linkc_delegate_task` succeeds and the target's usage is readable and past `AgentUsage.warnThreshold` in any window, one line is appended to the result:
 
 ```
-Task 4F21A0C3 created. Codex is at 86% of its 5h window, resets 14:04.
+Task 4F21A0C3 created. Codex is at 86% of its 5h window, resets 14:04 (in 2h 10m).
 ```
 
 Rules: the delegation still happens; the warning never replaces a refusal; an unreadable or stale-beyond-an-hour reading produces no warning rather than a misleading one; and reading usage must never fail a delegation — a reader that throws is logged and the delegation proceeds unannotated.
