@@ -1,153 +1,107 @@
 # linkC
 
-linkC is a macOS menu-bar app that runs your AI coding agents in one place. Each agent runs in
-its own terminal inside a glass panel. linkC shows which agents work and which agents need you.
-The agents can also send tasks and messages to each other.
+linkC is a macOS menu-bar app for running AI coding agents side by side. It runs Claude Code,
+Codex, Antigravity and Cursor Agent in one panel, shows at a glance which ones are working and
+which need you, and lets them hand tasks and messages to each other.
 
 ![Four pixel mascots, one for each agent: Claude Code, Codex, Antigravity and Cursor. They go into the linkC panel. Claude gives a task to Antigravity. Codex reaches its usage limit, and its task moves to Cursor. Then the Board shows a card for an arrow](docs/images/linkc.gif)
 
-In this README:
+A few terms used throughout this README:
 
-- An **agent** is an AI coding CLI: Claude Code, Codex, Antigravity or Cursor Agent.
-- A **session** is one agent that runs in a linkC terminal.
-- A **terminal** is a plain shell, for example for a dev server.
-- A **project** is the folder where sessions and terminals run.
-
-**The Board.** Each project has a Board: a diagram of the system that you and your agents make
-together.
-
-![The Board, showing linkC's architecture as components, frames and labeled arrows, next to the project sidebar](docs/images/board.png)
-
-**A session.** An agent session in its terminal. The sidebar groups the sessions by project and
-shows the usage at the bottom.
-
-![A Claude Code session in its terminal, next to the project sidebar](docs/images/session.png)
-
-**MCP servers.** The MCP servers that your agents use, with the connection status of each
-server.
-
-![The MCP Servers screen, with global and project MCP servers and their status](docs/images/mcp-servers.png)
-
-## Supported agents
-
-| Agent | Command | How linkC knows the session state |
-|---|---|---|
-| Claude Code | `claude` | Claude Code hooks send each event to a local HTTP server in linkC. |
-| Codex | `codex` | linkC reads the terminal screen one time each second. |
-| Antigravity | `agy` | linkC reads the terminal screen one time each second. |
-| Cursor Agent | `cursor` | linkC reads the terminal screen one time each second. |
+- **Agent** — an AI coding CLI: Claude Code, Codex, Antigravity or Cursor Agent.
+- **Session** — one agent running in a linkC terminal.
+- **Terminal** — a plain shell, for a dev server or anything else.
+- **Project** — the folder a session or terminal runs in.
 
 ## Features
 
-### The panel
+### The panel and sessions
 
-- linkC has no Dock icon. Click the menu-bar icon to open the panel.
-- The panel opens in the top-right corner of the display where you used it last.
-- To open the panel from the keyboard, select a shortcut in **Settings > Shortcut**. The
-  options are ⌥ Space, ⌃⌥ Space, ⇧⌘ L and ⌥⌘ C.
-- Drag the top of the panel to move it. Drag an edge or a corner to change its size.
-- The sidebar has these sections: **Projects**, **Terminals**, **Servers**, **Cloud**, **Usage**
-  and **Earlier**.
+linkC has no Dock icon — click the menu-bar icon to open it. The panel opens in the top-right
+corner of whichever display you last used it on, and you can drag its top edge to move it or a
+corner to resize it. To open it from the keyboard, pick a shortcut in **Settings > Shortcut**:
+⌥ Space, ⌃⌥ Space, ⇧⌘ L or ⌥⌘ C.
 
-### Projects and sessions
+The sidebar groups sessions and terminals by project, with sections for **Projects**,
+**Terminals**, **Servers**, **Cloud**, **Usage** and **Earlier**. Start an agent from a project's
+**+** menu — **New session**, **Continue last** and **Resume…** all read the agent's own history,
+so they find sessions you started outside linkC too. Sessions and terminals that end move to
+**Earlier**; click one to start it again. Quitting linkC asks first if anything is still running,
+and quitting stops it.
 
-- The sidebar groups the sessions and terminals of each project.
-- Each project has a tab strip: the Board first, then one tab for each session and terminal.
-  Press ⌘1 for the Board. Press ⌘2 to ⌘9 for the other tabs.
-- To start an agent in a project, use the **+** menu of the project.
-- **New session**, **Continue last** and **Resume…** use the history of each agent. Thus, they
-  also find sessions that you started outside linkC.
-- The **Earlier** section keeps the sessions and terminals that ended. Click one to start it
-  again.
-- When you quit linkC, it asks first if sessions or terminals still run. Quitting stops them.
+![A Claude Code session in its terminal, next to the project sidebar](docs/images/session.png)
 
-### Terminals
+### Projects and terminals
 
-- A terminal runs your login shell in a folder. To open a terminal in a project, use
-  **New terminal** in the **+** menu of the project.
-- To file a terminal under a project, drag the terminal onto the project.
-- To remove a terminal from its project, drag it onto the **Terminals** label. You can also use
-  **Move out of** in its context menu.
-- A plain terminal shows the name of its current folder. After `cd Sources`, its name is
-  `Sources`. The home folder shows as `~`.
-- A terminal that is not filed shows under the project whose folder is its current folder. Thus,
-  when you `cd` into a different project, the terminal moves to that project. A subfolder of a
-  project is not part of that project.
-- A filed terminal stays in its project when you `cd`. All other terminals show in the
-  **Terminals** section.
-- A terminal that runs a command, for example `docker logs`, keeps its name and its folder.
-- linkC saves the current folder of each terminal. A terminal that you start again opens in
-  that folder.
-- A terminal that exits stays in the sidebar with its output until you dismiss it.
+Each project has a tab strip: the Board first, then a tab per session and terminal (⌘1 for the
+Board, ⌘2–⌘9 for the rest). Open a plain terminal with **New terminal** in the **+** menu.
 
-### App tabs
-
-- A project can open a local web app in a tab. The app tab shows in the tab strip after the
-  sessions and terminals.
-- To open an app, use the **Apps** section of the **+** menu of the project.
-- linkC starts the app when you open its tab. The app runs until you close the tab or quit linkC.
-  Then linkC stops the app and every process that the app started.
-- linkC never starts an app by itself. After linkC restarts, an app tab shows **Not running**
-  until you click **Start**.
-- If linkC stops unexpectedly, the next launch stops the apps that were still running.
-- If an app cannot start, the tab shows the reason and the last lines of the app output.
-- **Settings > Apps** adds apps that every project can open.
+A terminal takes its name from its current folder — `~` at home, `Sources` after `cd Sources` —
+unless it's running a command like `docker logs`, in which case it keeps that name. An unfiled
+terminal follows your `cd`s: it shows under whatever project owns its current folder (a
+subfolder doesn't count), and moves if you `cd` elsewhere. Drag a terminal onto a project to file
+it there permanently — a filed terminal stays put regardless of where you `cd`. Drag it onto the
+**Terminals** label, or use **Move out of** in its context menu, to unfile it. linkC remembers
+each terminal's folder, so restarting one reopens it there. A terminal that exits stays in the
+sidebar, output and all, until you dismiss it.
 
 ### The Board
 
-- linkC keeps the Board of a project in `system-map.json`, in the root folder of the project.
-- The tools are **Select** (V), **Component**, **Arrow** (A), **Frame** (F), **Note** (N) and
-  **Text** (T). **Tidy up** arranges the full diagram by its flow.
-- There are three groups of component kinds:
-  - **System**: database, cache, queue, storage, service, host and external.
-  - **AI agents**: agent, model, tool, MCP server, router, start, end, vector store, memory,
-    prompt, state and human.
-  - **Hardware**: ALU, MUX, DEMUX, register, RAM, control unit, adder, decoder, clock and bus.
-- An arrow can be plain, conditional, control or bus. A bus arrow can show its width in bits.
-  The label of an arrow shows its width after the label, for example `rs1 data  32`.
-- Move the pointer onto a component or an arrow. After a short time, a card shows its details:
-  - For an arrow: the two ends, the label, and the width or the style.
-  - For a component: its kind, its description, and the arrows in (**IN**) and out (**OUT**).
-- Click a component or an arrow to pin it. The inspector opens at the right side of the Board
-  and shows the same details. **Edit…** in the inspector opens the editor. A double-click also
-  opens the editor.
-- The lenses **All**, **Data** and **Control** make the Board easier to read. **Data** shows the
-  plain and bus arrows at full strength. **Control** shows the control and conditional arrows at
-  full strength. linkC keeps the lens of each Board.
-- **◎ Focus** shows only the pinned item, its neighbors and the arrows between them. Press Esc
-  to leave Focus. Press Esc again to close the inspector.
-- A component can show the logo of its technology, for example PostgreSQL, Redis or Docker.
-- A component can have its own **detail board**, for the parts inside it. To open it, click
-  **↳ Go deeper** in the inspector or in the context menu of the component. linkC creates the
-  detail board if it does not exist yet. A component with a detail board shows **↳**.
-- linkC keeps each detail board in `system-map.<slug>.json`, next to `system-map.json`. A detail
-  board can have its own detail boards.
-- On a detail board, the neighbors of the component on the parent board show as faint **ghosts**
-  at the left and right edges. Draw arrows between the ghosts and the parts inside. You cannot
-  move or change a ghost. When a neighbor is not connected on the parent board anymore, its ghost
-  shows ⚠. linkC does not delete it.
-- The breadcrumb at the top left shows where you are. Click a part of it, or press ⌘↑, to go up.
-  The **Boards** menu lists all the boards of the project. Each board keeps its own position,
-  zoom and lens.
-- A **table** component shows the columns of a database table: the name, a key mark (a key for a
-  primary key, a link for a foreign key) and the type of each column. A line goes from each
-  foreign-key column to the column it references. Pin a table to edit its columns in the
-  inspector. Each change is one undo step.
-- The **Schema** menu of the Board imports and exports Postgres SQL:
-  - **Import SQL file…** reads `CREATE TABLE` and `ALTER TABLE` statements. linkC adds and
-    updates the tables. A table or a column that is only on the Board stays, marked planned.
-    linkC deletes nothing, and it reports the statements that it skipped.
-  - **Import from Supabase** runs `supabase db dump` in the project folder through your login
-    shell. linkC does not keep database credentials.
-  - **Copy SQL** and **Export SQL…** write `CREATE TABLE` statements in foreign-key order. linkC
-    never runs SQL against a database.
-- Agents read and edit the Board through the linkC MCP server. After an agent edits the Board,
-  linkC arranges the diagram again.
+Each project has a Board: a diagram of the system that you and your agents build together, kept
+in `system-map.json` at the project root.
+
+![The Board, showing linkC's architecture as components, frames and labeled arrows, next to the project sidebar](docs/images/board.png)
+
+The tools are **Select** (V), **Component**, **Arrow** (A), **Frame** (F), **Note** (N) and
+**Text** (T), plus **Tidy up** to lay out the whole diagram again along its flow. Components come in
+three groups:
+
+- **System** — database, table, cache, queue, storage, service, host, external.
+- **AI agents** — agent, model, tool, MCP server, router, start, end, vector store, memory,
+  prompt, state, human.
+- **Hardware** — ALU, MUX, DEMUX, register, RAM, control unit, adder, decoder, clock, bus.
+
+Arrows can be plain, conditional, control or bus; a bus arrow can carry a bit width, shown after
+its label (`rs1 data  32`). Hover a component or arrow for a details card — an arrow's two ends,
+label and width or style; a component's kind, description, and its inbound (**IN**) and outbound
+(**OUT**) arrows. Click to pin it instead: the inspector opens on the right with the same
+details, and **Edit…** (or a double-click) opens the editor.
+
+Three lenses make dense boards easier to read: **All**, **Data** (plain and bus arrows at full
+strength) and **Control** (control and conditional arrows at full strength) — linkC remembers
+each Board's lens. **◎ Focus** narrows the view to the pinned item, its neighbors, and the arrows
+between them; Esc leaves Focus, Esc again closes the inspector. A component can carry the logo of
+its technology — PostgreSQL, Redis, Docker, and others.
+
+Any component can have its own **detail board** for what's inside it: click **↳ Go deeper** in
+the inspector or context menu, and linkC creates one if it doesn't exist yet (marked with **↳**
+once it does). Detail boards live in `system-map.<slug>.json` next to `system-map.json`, and can
+nest further. On a detail board, the parent component's neighbors appear as faint **ghosts** at
+the edges — you can draw arrows to them but not move or edit them, and a ghost gets a ⚠ (never a
+deletion) if its parent-board connection disappears. The breadcrumb at top left shows where you
+are; click a segment, or press ⌘↑, to go up. The **Boards** menu lists every board in the
+project, each with its own remembered position, zoom and lens.
+
+A **table** component renders a database table's columns, with a key mark for primary and
+foreign keys and a line from each foreign key to what it references. Pin a table to edit its
+columns in the inspector — each edit is one undo step. The **Schema** menu imports and exports
+Postgres SQL:
+
+- **Import SQL file…** reads `CREATE TABLE` and `ALTER TABLE` statements and updates the Board.
+  Tables or columns that only exist on the Board are kept and marked planned; nothing is ever
+  deleted, and skipped statements are reported.
+- **Import from Supabase** runs `supabase db dump` in the project folder, through your login
+  shell — linkC never holds database credentials.
+- **Copy SQL** and **Export SQL…** write `CREATE TABLE` statements in foreign-key order. linkC
+  never runs SQL against a database.
+
+Agents read and edit the Board through the linkC MCP server; linkC lays out the diagram again
+after each edit.
 
 ### Agents that work together
 
-linkC includes an MCP server, `linkc-mcp`, with the name `linkc-multiplier`. Each agent can use
-its tools to give work to other agents and to share information.
+linkC ships an MCP server, `linkc-mcp`, registered as `linkc-multiplier`. Its tools let agents
+hand off work and share context with each other:
 
 | Tool | Purpose |
 |---|---|
@@ -163,60 +117,129 @@ its tools to give work to other agents and to share information.
 | `linkc_broadcast_intent` | Tell the other agents your goal and your files. |
 | `linkc_check_conflicts` | Find out if another agent claims a file. |
 | `linkc_get_project_context` | Show the Board, and the goals and notes of the other agents. |
-| `linkc_get_board`, `linkc_edit_board` | Read or edit the Board, or a detail board. The `detail` step creates the detail board of a component. The `column` step adds, changes or removes a column of a table. |
-| `linkc_get_models`, `linkc_switch_model` | List the models of an agent, or change its model. |
-| `linkc_get_usage_status` | Show the usage that each agent has left. |
+| `linkc_get_board`, `linkc_edit_board` | Read or edit the Board, or a detail board. The `detail` step creates a component's detail board; the `column` step adds, changes or removes a table column. |
+| `linkc_get_models`, `linkc_switch_model` | List an agent's models, or change one. |
+| `linkc_get_usage_status` | Show the usage each agent has left. |
 
-How linkC delivers the work:
+linkC delivers tasks and messages by typing them into the receiving agent's terminal — every
+message queued for one agent goes in as a single paste. A task can carry a model tier (light,
+standard or deep), configured per agent in **Settings > Models**. A verified task also carries a
+test command: linkC runs it itself, and the work only counts as done if the tests fail before it
+and pass after.
 
-- linkC types each task and message into the terminal of the agent that receives it. All the
-  messages for one agent go in one paste.
-- A task can have a model tier: light, standard or deep. Set the model for each tier in
-  **Settings > Models**.
-- A verified task includes a test command. linkC runs the tests itself. The tests must fail
-  before the work and pass after it.
-- When an agent reaches its usage limit, linkC moves its task to another available agent. linkC
-  never sends the task back to the agent that gave it.
-- A task can stop: no start after 10 minutes, a question to you for 5 minutes, or no screen
-  change for 15 minutes. Then linkC tells you and the agent that gave the task.
+When an agent hits its usage limit, its current task moves to another available agent — never
+back to the one that gave it — and the limited agent rests until it actually recovers. linkC
+prefers real evidence over a guess: an already-known reset time from the agent's own usage
+window, or a time the limit message itself states ("try again at 3:05 PM", "in 2h 10m"), and
+only falls back to a fixed cooldown when neither is available. Separately, linkC watches for a
+task that stalls: no start after 10 minutes, a question left unanswered for 5 minutes, or no
+screen change for 15 minutes. When one of those trips, linkC tells both you and the agent that
+handed off the task.
 
 ### Usage and limits
 
-- The **Usage** section shows how much each agent has left, for example in its 5-hour and 7-day
-  windows.
-- linkC reads the Claude Code usage from the local transcripts in `~/.claude/projects`. It reads
-  the Codex usage from the session files in `~/.codex/sessions`.
-- linkC does not send usage data over the network.
-- Cursor Agent and Antigravity keep no local usage records. For these agents, linkC shows a
-  limit only when the limit message appears in the terminal.
+The **Usage** section shows what each agent has left, including its 5-hour and 7-day windows
+where the agent reports one. linkC reads Claude Code's 5-hour and 7-day limits from the status line it adds to each Claude
+Code session, and Codex usage from session files under `~/.codex/sessions` — none of it leaves
+your machine. Cursor Agent and Antigravity don't keep local usage records, so linkC can
+only show a limit for them once the limit message actually appears in the terminal.
+
+### App tabs
+
+A project can open a local web app as a tab, added from the **Apps** section of its **+** menu;
+it appears in the tab strip after sessions and terminals. linkC starts the app's server when you
+open the tab and stops it — along with every process it spawned — when you close the tab or quit
+linkC. It never starts an app on its own: after a restart, an app tab reads **Not running** until
+you click **Start**, and if linkC stopped unexpectedly, the next launch stops whatever apps were
+still running. A tab that fails to start shows the reason and the app's last output lines.
+**Settings > Apps** adds apps available to every project.
 
 ### Notifications
 
-- The menu-bar icon turns coral when a session is done or needs your input.
-- linkC sends a macOS notification only when you do not watch that session. You watch a
-  session when the panel is open, linkC is active, and the tab of that session is selected.
-- Click a notification to open its session.
+The menu-bar icon turns coral when a session is done or needs input. linkC sends a macOS
+notification only for a session you're not already watching — meaning the panel is open, linkC
+is active, and that session's tab is selected. Click a notification to jump to its session.
 
 ### Other screens
 
-- **Activity**: a timeline of agent events, and a summary for each agent.
-- **Skills**: the skills that are installed for your agents.
-- **MCP servers**: the global and project MCP servers of your agents, with their connection
-  status.
-- **Tool servers**: your Docker containers and Compose projects. Start, stop or restart them,
-  and open their logs in a terminal.
-- **Settings**: launch at login, the keyboard shortcut, the models for each tier, the usage
-  footer and the watched endpoints.
-- The **Servers** section shows your running Docker servers.
-- The **Cloud** section shows your Oracle Cloud instances, your Supabase projects and the
-  endpoints that you watch.
+- **Activity** — a timeline of agent events, with a summary per agent.
+- **Skills** — the skills installed for your agents.
+- **MCP servers** — your agents' global and project MCP servers, with connection status.
+
+  ![The MCP Servers screen, with global and project MCP servers and their status](docs/images/mcp-servers.png)
+
+- **Tool servers** — your Docker containers and Compose projects: start, stop, restart, and open
+  their logs in a terminal.
+- **Settings** — launch at login, the keyboard shortcut, per-tier models, the usage footer, and
+  watched endpoints.
+- **Servers** (sidebar) — your running Docker servers.
+- **Cloud** (sidebar) — your Oracle Cloud instances, Supabase projects, and watched endpoints.
+
+## Supported agents
+
+| Agent | Command | How linkC knows the session state |
+|---|---|---|
+| Claude Code | `claude` | Hooks push each event to a local HTTP server inside linkC. |
+| Codex | `codex` | linkC reads the terminal screen once a second. |
+| Antigravity | `agy` | linkC reads the terminal screen once a second. |
+| Cursor Agent | `cursor` | linkC reads the terminal screen once a second. |
+
+## Requirements
+
+- macOS 14 or later.
+- Claude Code, with `claude` on your PATH — linkC won't start without it.
+- Optional: Codex (`codex`), Antigravity (`agy`) and Cursor Agent (`cursor`). linkC can only
+  start an agent whose command is installed.
+- Optional: Docker for the **Servers** section, and the `oci` CLI for Oracle Cloud.
+
+## Install and run
+
+1. Render the app icon — once, and again whenever you change it:
+
+   ```sh
+   ./scripts/make-icon.sh
+   ```
+
+2. Quit linkC if it's running, then build and install it:
+
+   ```sh
+   ./build-app.sh --install
+   ```
+
+3. Start it:
+
+   ```sh
+   open /Applications/linkC.app
+   ```
+
+4. Register the MCP server with your agents, once:
+
+   ```sh
+   ~/.local/bin/linkc-mcp --install
+   ```
+
+   This adds `linkc-multiplier` to the MCP configuration of Claude Code, Codex, Antigravity and
+   Cursor Agent.
+
+5. Allow the notification permission when macOS asks for it.
+
+### Updating a running copy
+
+Run `./build-app.sh` without `--install` to build `dist.noindex/linkC.app` only. Once that build
+is newer than the running app, the sidebar footer shows an update button — click it to install
+and restart linkC, then restart your sessions from **Earlier**.
+
+### Signing
+
+The app carries an ad-hoc signature, so `open` works on the Mac that built it. On any other Mac,
+Gatekeeper blocks the first launch — right-click the app and choose **Open** instead.
 
 ## Build an app for linkC
 
-An app for linkC is a local web app. linkC starts its server and shows its page in a tab.
+An app for linkC is any local web app: linkC starts its server and shows its page in a tab.
 
-1. Make the user interface of the app a web page that a local HTTP server supplies.
-2. Add the file `.linkc/app.json` to the root folder of the app:
+1. Serve the app's UI as a web page from a local HTTP server.
+2. Add `.linkc/app.json` to the app's root folder:
 
    ```json
    {
@@ -228,35 +251,26 @@ An app for linkC is a local web app. linkC starts its server and shows its page 
 
 | Field | Required | Contents |
 |---|---|---|
-| `name` | Yes | The name of the tab and of the menu item. |
-| `start` | Yes | The command and its arguments. linkC runs the command in the root folder of the app, through your login shell. linkC replaces each `{port}` with a free port. |
-| `health` | Yes | A path that starts with `/`. It returns a 2xx status when the app is ready. |
-| `path` | No | The page that linkC opens. The default is `/`. |
+| `name` | Yes | The tab and menu-item name. |
+| `start` | Yes | The command and arguments, run in the app's root folder through your login shell. linkC replaces each `{port}` with a free port. |
+| `health` | Yes | A path starting with `/` that returns 2xx once the app is ready. |
+| `path` | No | The page linkC opens. Defaults to `/`. |
 | `env` | No | Environment variables for the app. |
-| `port` | No | A preferred port, from 1024 to 65535. linkC uses it when it is free. Then the page keeps the same origin, and its local storage, from one start to the next. |
+| `port` | No | A preferred port, 1024–65535, used when free — this keeps the page on the same origin, and its local storage, across restarts. |
 
-The server must obey these rules:
+The server itself must:
 
-- Listen only on `127.0.0.1`, on the port that linkC gives. linkC also sets `LINKC_PORT`.
-- Return a 2xx status from the `health` path within 60 seconds of the start.
-- Stop within 5 seconds of SIGTERM. After 5 seconds, linkC sends SIGKILL to all the processes of
-  the app.
+- Listen only on `127.0.0.1`, on the port linkC gives it (also passed as `LINKC_PORT`).
+- Return 2xx from `health` within 60 seconds of starting.
+- Stop within 5 seconds of SIGTERM — after that, linkC SIGKILLs every process the app started.
 - Write logs to stdout and stderr.
-- Keep data on disk. linkC stops the app when you close its tab.
+- Keep its data on disk; linkC stops the app whenever you close its tab.
 
-linkC keeps its own data in the `.linkc` folder of a project. If your repository ignores `.linkc/`,
-change that rule to `.linkc/*` and add the rule `!.linkc/app.json`.
+linkC keeps its own data in the project's `.linkc` folder. If your repo ignores `.linkc/`, narrow
+that to `.linkc/*` and add `!.linkc/app.json`.
 
-Optional: use a dark background. The page URL includes `linkc=1`, so the app can hide its own
-header when it runs in linkC.
-
-## Requirements
-
-- macOS 14 or later.
-- Claude Code, with `claude` on your PATH. linkC does not start without it.
-- Optional: Codex (`codex`), Antigravity (`agy`) and Cursor Agent (`cursor`). linkC can start
-  an agent only when its command is installed.
-- Optional: Docker for the **Servers** section, and the `oci` CLI for Oracle Cloud.
+Optional: the page URL includes `linkc=1`, so an app can hide its own header when running inside
+linkC and use a dark background instead.
 
 ## Build and test
 
@@ -264,48 +278,6 @@ header when it runs in linkC.
 swift build   # compile
 swift test    # run the unit and integration tests
 ```
-
-## Install and run
-
-1. Render the app icon. Do this one time, and again after you change the icon:
-
-   ```sh
-   ./scripts/make-icon.sh
-   ```
-
-2. Quit linkC if it runs. Then build the app and install it in `/Applications`:
-
-   ```sh
-   ./build-app.sh --install
-   ```
-
-3. Start linkC:
-
-   ```sh
-   open /Applications/linkC.app
-   ```
-
-4. Register the MCP server with your agents. Do this one time:
-
-   ```sh
-   ~/.local/bin/linkc-mcp --install
-   ```
-
-   This step adds `linkc-multiplier` to the MCP configuration of Claude Code, Codex, Antigravity
-   and Cursor Agent.
-
-5. When macOS asks for notification permission, allow it.
-
-### Update a running copy
-
-Run `./build-app.sh` without `--install` to build `dist.noindex/linkC.app` only. When that
-build is newer than the running app, the sidebar footer shows an update button. Click it to
-install the new build. linkC restarts. Restart your sessions from the **Earlier** section.
-
-### Signing
-
-The app has an ad-hoc signature. On the Mac that built it, `open` starts it. On a different
-Mac, Gatekeeper blocks the first start. Right-click the app, then click **Open**.
 
 ## Source layout
 
