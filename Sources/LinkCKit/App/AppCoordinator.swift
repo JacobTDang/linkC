@@ -122,9 +122,11 @@ public final class AppCoordinator {
     /// "gone quiet" clock. In memory only, so the clock restarts after a relaunch. Stored here
     /// rather than in the watchdog extension because extensions cannot hold stored properties.
     private var screenSignatures: [String: (signature: String, since: Date)] = [:]
-    /// Notices already reported to the user as undeliverable, by message id. Also in memory: a
-    /// notice still stuck after a relaunch is worth one more mention.
-    var undeliveredNoticesReported: Set<String> = []
+    /// Notices already reported to the user as undeliverable, by message id, keyed by workspace.
+    /// Also in memory: a notice still stuck after a relaunch is worth one more mention. Pruned by
+    /// `dispatchMessages` to the ids still `.queued` in that workspace's inbox, so a notice that
+    /// is later delivered or expires is forgotten rather than tracked for the app's whole lifetime.
+    var undeliveredNoticesReported: [String: Set<String>] = [:]
     /// Recent-output signature captured the moment a limit was last recorded for a session, keyed
     /// by session id. A later detection whose recent output hashes the same is the identical old
     /// banner still sitting in the scrollback after a cooldown expired and `sampleAgentStates`

@@ -98,11 +98,11 @@ extension AppCoordinator {
 
     /// Tells the user once that a message cannot reach its agent — blocked on a prompt, busy past
     /// the threshold, or no session of that kind alive. Task briefs are excluded: they spawn.
-    func noteUndeliveredNotice(_ message: PendingMessage) {
+    func noteUndeliveredNotice(_ message: PendingMessage, workspacePath: String) {
         guard message.kind != .task,
               now().timeIntervalSince(message.createdAt) > Self.noticeCannotLandThreshold,
-              !undeliveredNoticesReported.contains(message.id) else { return }
-        undeliveredNoticesReported.insert(message.id)
+              !(undeliveredNoticesReported[workspacePath]?.contains(message.id) ?? false) else { return }
+        undeliveredNoticesReported[workspacePath, default: []].insert(message.id)
         notifications.post(
             title: "linkC: \(message.toAgent.displayName) has not seen a notice",
             body: "A message has been waiting 5m — no \(message.toAgent.displayName) session is free to take it."
