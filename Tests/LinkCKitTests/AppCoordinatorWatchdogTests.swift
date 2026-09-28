@@ -267,6 +267,33 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         XCTAssertFalse(otherTerm.recentOutput(lines: 20).contains(task.shortId), "another session of the same kind must not")
     }
 
+    /// A worker session in `.error` stopped on an API error or on a usage limit no peer could take
+    /// over. Either way the task makes no progress until someone steps in or the limit clears, so
+    /// unlike the other stuck reasons it is reported the very next tick rather than after a
+    /// threshold — and the notice names both causes, since `.error` alone can't tell them apart.
+    @MainActor
+    func testATaskOnAnErroredSessionIsReportedImmediately() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        let errored = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Refactor", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: errored.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        coordinator.store.updateState(id: errored.id, to: .error)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertNotNil(try inbox.task(id: task.id)?.stuckNotifiedAt)
+        let notice = try inbox.load().messages.first { $0.prompt.contains(task.shortId) }
+        XCTAssertTrue(notice?.prompt.contains("an error or a usage limit") ?? false, "must name both causes, not just say stuck")
+        XCTAssertEqual(sink.deliveries.filter { $0.body.contains("an error or a usage limit") }.count, 1)
+    }
+
     @MainActor
     func testAnUndeliverableNoticeSpawnsNothingAndWarnsTheUserOnce() async throws {
         let ws = tempDir.path
@@ -286,5 +313,45 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         coordinator.processPendingMessages(workspacePath: ws)
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertEqual(sink.deliveries.filter { $0.body.contains("waiting") }.count, 1, "told once, not every tick")
+    }
+
+    /// `undeliveredNoticesReported` used to be insert-only: once a notice waited long enough to be
+    /// reported, its id sat there forever, even long after the notice itself was delivered — a
+    /// slow, permanent leak over the app's lifetime. It must evict the moment the notice is no
+    /// longer queued, so a workspace with a healthy inbox tracks nothing at all.
+    @MainActor
+    func testAnUndeliverableNoticeIsForgottenOnceItFinallyDelivers() async throws {
+        let ws = tempDir.path
+        let norm = ProjectPath.canonical(ws)
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+        let message = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: "ABCD1234", body: "Task ABCD1234 looks stuck")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        clock.advance(6 * 60)
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(sink.deliveries.filter { $0.body.contains("waiting") }.count, 1)
+        XCTAssertTrue(coordinator.undeliveredNoticesReported[norm]?.contains(message.id) ?? false,
+                      "the notice must be tracked while it is still stuck")
+
+        let claude = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: claude.id, to: .ready)
+        let term = try XCTUnwrap(coordinator.terminals.session(id: claude.id))
+        let running = try await waitUntil { term.isRunning }
+        XCTAssertTrue(running, "the mock agent never started")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.load().messages.first { $0.id == message.id }?.status, .delivered,
+                       "sanity check: the notice must actually have been delivered by this point")
+
+        // The prune reflects the inbox as of the start of a tick, so delivery during this tick is
+        // evicted on the next one — same one-tick lag every lock-contention retry in this file
+        // already accepts.
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertFalse(coordinator.undeliveredNoticesReported[norm]?.contains(message.id) ?? false,
+                       "a delivered notice must be evicted, not remembered forever")
     }
 }

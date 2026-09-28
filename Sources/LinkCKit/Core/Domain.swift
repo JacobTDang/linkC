@@ -5,6 +5,11 @@ public enum LinkCError: Error, Sendable, Equatable {
     case parse(String)
     case process(String)
     case server(String)
+    /// A store gave up waiting for its own advisory file lock (an inbox, a blackboard, ...). A
+    /// contended lock is not a real failure — the row it would have touched just waits for the
+    /// next retry — so callers match on this typed case rather than sniffing a `.server`
+    /// message for wording like "timed out acquiring ... lock".
+    case lockTimeout(String)
 }
 
 extension LinkCError: LocalizedError {
@@ -12,7 +17,7 @@ extension LinkCError: LocalizedError {
     /// collapses every error to a generic Foundation string and the detail is lost.
     public var errorDescription: String? {
         switch self {
-        case .parse(let message), .process(let message), .server(let message):
+        case .parse(let message), .process(let message), .server(let message), .lockTimeout(let message):
             return message
         }
     }

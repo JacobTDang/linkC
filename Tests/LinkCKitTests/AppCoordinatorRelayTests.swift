@@ -2625,6 +2625,20 @@ final class AppCoordinatorRelayTests: XCTestCase {
                        "the third message must never be injected ahead of the still-queued second one")
     }
 
+    /// `isRelayLockTimeout` used to string-match "Timed out acquiring inbox lock" inside any
+    /// `.server` error's message; it now keys on the typed `.lockTimeout` case instead, so a
+    /// `.server` error that merely happens to repeat that wording is no longer mistaken for a
+    /// real lock timeout, and a real one is recognized regardless of its message text.
+    @MainActor
+    func testIsRelayLockTimeoutKeysOnTheTypedErrorNotItsMessageText() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        XCTAssertTrue(coordinator.isRelayLockTimeout(LinkCError.lockTimeout("anything at all")))
+        XCTAssertFalse(coordinator.isRelayLockTimeout(
+            LinkCError.server("Timed out acquiring inbox lock after 0.5s at /tmp/.linkc/.inbox.lock")
+        ))
+    }
+
     /// A contended lock on the delegator lookup (`inboxStore.task(id:)`, resolving which session
     /// delegated the task a notice is about) must end the tick — falling through would hand the
     /// notice to a different session of the same kind, a real misroute, not merely a late one.
@@ -2647,7 +2661,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let notice = try seed.enqueue(from: .codex, to: .claude, kind: .completion, taskId: task.id, body: "done")
 
         let injected = InboxStore(workspaceRoot: ws, failureInjector: { id in
-            id == task.id ? LinkCError.server("Timed out acquiring inbox lock after 0.5s at \(ws)/.linkc/.inbox.lock") : nil
+            id == task.id ? LinkCError.lockTimeout("Timed out acquiring inbox lock after 0.5s at \(ws)/.linkc/.inbox.lock") : nil
         })
 
         let stopped = coordinator.dispatchMessages(workspacePath: ws, inboxStore: injected)

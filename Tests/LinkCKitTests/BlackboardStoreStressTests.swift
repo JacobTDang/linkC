@@ -111,8 +111,8 @@ final class BlackboardStoreStressTests: XCTestCase {
         // Attempting to read or write with a short timeout should throw a timeout error
         let start = Date()
         XCTAssertThrowsError(try store.load(timeout: 0.15)) { error in
-            guard let linkcErr = error as? LinkCError else {
-                XCTFail("Expected LinkCError, got \(error)")
+            guard let linkcErr = error as? LinkCError, case .lockTimeout = linkcErr else {
+                XCTFail("Expected LinkCError.lockTimeout, got \(error)")
                 return
             }
             XCTAssertTrue(linkcErr.errorDescription?.contains("Timed out acquiring blackboard lock") ?? false)

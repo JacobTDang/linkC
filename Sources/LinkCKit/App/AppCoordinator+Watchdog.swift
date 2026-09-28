@@ -18,16 +18,23 @@ extension AppCoordinator {
         case neverStarted = "delivered 10m ago and never started"
         case waitingOnUser = "its worker has been waiting on a prompt for 5m"
         case goneQuiet = "its worker's screen has not changed for 15m"
+        case workerErrored = "its worker stopped on an error or a usage limit"
     }
 
     /// The reason `task` looks stuck at `date`, or nil while it is still moving. A long quiet test
-    /// run is indistinguishable from a hang from outside; the action is only a notice.
+    /// run is indistinguishable from a hang from outside, so those two wait out a threshold. A
+    /// worker in `.error` stopped on an API error or on a usage limit no peer could take over;
+    /// the task makes no progress until someone steps in or the limit clears, so that one is
+    /// reported the very next tick.
     func stuckReason(for task: TaskRecord, at date: Date) -> StuckReason? {
         if task.state == .delivered, let deliveredAt = task.deliveredAt,
            date.timeIntervalSince(deliveredAt) > Self.neverStartedThreshold {
             return .neverStarted
         }
         guard let sessionId = task.assigneeSessionId, let session = store.session(id: sessionId) else { return nil }
+        if session.state == .error {
+            return .workerErrored
+        }
         if session.state == .waitingPermission,
            date.timeIntervalSince(session.stateChangedAt) > Self.waitingOnUserThreshold {
             return .waitingOnUser
@@ -92,11 +99,11 @@ extension AppCoordinator {
 
     /// Tells the user once that a message cannot reach its agent — blocked on a prompt, busy past
     /// the threshold, or no session of that kind alive. Task briefs are excluded: they spawn.
-    func noteUndeliveredNotice(_ message: PendingMessage) {
+    func noteUndeliveredNotice(_ message: PendingMessage, workspacePath: String) {
         guard message.kind != .task,
               now().timeIntervalSince(message.createdAt) > Self.noticeCannotLandThreshold,
-              !undeliveredNoticesReported.contains(message.id) else { return }
-        undeliveredNoticesReported.insert(message.id)
+              !(undeliveredNoticesReported[workspacePath]?.contains(message.id) ?? false) else { return }
+        undeliveredNoticesReported[workspacePath, default: []].insert(message.id)
         notifications.post(
             title: "linkC: \(message.toAgent.displayName) has not seen a notice",
             body: "A message has been waiting 5m — no \(message.toAgent.displayName) session is free to take it."

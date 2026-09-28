@@ -104,7 +104,7 @@ public final class InboxStore: Sendable {
                 let err = errno
                 if err == EWOULDBLOCK || err == EAGAIN {
                     if Date().timeIntervalSince(start) >= timeout {
-                        throw LinkCError.server("Timed out acquiring inbox lock after \(timeout)s at \(lockURL.path)")
+                        throw LinkCError.lockTimeout("Timed out acquiring inbox lock after \(timeout)s at \(lockURL.path)")
                     }
                     usleep(5_000) // 5ms sleep between attempts
                 } else {

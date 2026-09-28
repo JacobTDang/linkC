@@ -77,12 +77,11 @@ extension AppCoordinator {
 
     /// True when `error` is the store's own lock-acquisition timeout rather than a real failure
     /// (a corrupt `inbox.json`, a missing row, an illegal transition, ...). `InboxStore` throws
-    /// `LinkCError.server` for all of these and carries no dedicated case for this one, so the
-    /// message text is what distinguishes it — matching the same pattern already used to identify
-    /// a `BlackboardStore` lock timeout.
+    /// the typed `LinkCError.lockTimeout` case for this alone, so this checks the case, never the
+    /// message text.
     func isRelayLockTimeout(_ error: Error) -> Bool {
-        guard let linkCError = error as? LinkCError, case .server(let message) = linkCError else { return false }
-        return message.contains("Timed out acquiring inbox lock")
+        guard let linkCError = error as? LinkCError, case .lockTimeout = linkCError else { return false }
+        return true
     }
 
     /// Touches `acceptsPaste` once per tick for every live session in this workspace, whether or
@@ -414,6 +413,15 @@ extension AppCoordinator {
             NSLog("[linkC relay] dispatchMessages: fetch pending — %@", String(describing: error))
             return false
         }
+        // A notice stays marked "already told to the user" only while it is still queued here —
+        // once it is delivered (below) or expires (a separate phase), evict it so a long-running
+        // app does not keep one entry per notice ever seen stuck for its whole lifetime.
+        let stillQueued = Set(pending.map(\.id))
+        undeliveredNoticesReported[norm]?.formIntersection(stillQueued)
+        if undeliveredNoticesReported[norm]?.isEmpty == true {
+            undeliveredNoticesReported.removeValue(forKey: norm)
+        }
+
         guard !pending.isEmpty else { return false }
 
         // A verification owns this checkout until it finishes: injecting a brief now would let a
@@ -475,7 +483,7 @@ extension AppCoordinator {
                 // completion line, a stuck notice, a peer note, a command — waits for a session to
                 // exist instead, and the user is told when it has waited too long.
                 guard message.kind == .task else {
-                    noteUndeliveredNotice(message)
+                    noteUndeliveredNotice(message, workspacePath: norm)
                     continue
                 }
                 let goal: String? = message.kind == .task ? message.prompt : nil
@@ -489,7 +497,7 @@ extension AppCoordinator {
                 continue
             }
             guard let session = target, isIdle(session.state) else {
-                noteUndeliveredNotice(message)
+                noteUndeliveredNotice(message, workspacePath: norm)
                 continue
             }
 

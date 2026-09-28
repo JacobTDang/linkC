@@ -122,9 +122,11 @@ public final class AppCoordinator {
     /// "gone quiet" clock. In memory only, so the clock restarts after a relaunch. Stored here
     /// rather than in the watchdog extension because extensions cannot hold stored properties.
     private var screenSignatures: [String: (signature: String, since: Date)] = [:]
-    /// Notices already reported to the user as undeliverable, by message id. Also in memory: a
-    /// notice still stuck after a relaunch is worth one more mention.
-    var undeliveredNoticesReported: Set<String> = []
+    /// Notices already reported to the user as undeliverable, by message id, keyed by workspace.
+    /// Also in memory: a notice still stuck after a relaunch is worth one more mention. Pruned by
+    /// `dispatchMessages` to the ids still `.queued` in that workspace's inbox, so a notice that
+    /// is later delivered or expires is forgotten rather than tracked for the app's whole lifetime.
+    var undeliveredNoticesReported: [String: Set<String>] = [:]
     /// Recent-output signature captured the moment a limit was last recorded for a session, keyed
     /// by session id. A later detection whose recent output hashes the same is the identical old
     /// banner still sitting in the scrollback after a cooldown expired and `sampleAgentStates`
@@ -961,8 +963,11 @@ public final class AppCoordinator {
 
     // MARK: - Swarm & Collision Tracking
 
-    /// Computes active multi-agent project swarms and inspects file collisions.
-    public func sampleSwarms(additionalAgents: [String: [AgentKind]] = [:]) {
+    /// Computes active multi-agent project swarms and inspects file collisions. Each candidate
+    /// workspace's blackboard is a flock-guarded file read, so the read runs off the main actor;
+    /// `swarms` is only reassigned when the result actually changed, since this is called once a
+    /// second regardless of whether anything moved.
+    public func sampleSwarms(additionalAgents: [String: [AgentKind]] = [:]) async {
         var agentsByPath: [String: Set<AgentKind>] = [:]
 
         for session in store.sessions where session.state != .ended {
@@ -977,8 +982,24 @@ public final class AppCoordinator {
             }
         }
 
+        let candidates = agentsByPath.filter { $0.value.count >= 2 }
+        let newSwarms = await Task.detached(priority: .utility) {
+            Self.computeSwarms(candidates)
+        }.value
+
+        if newSwarms != swarms {
+            swarms = newSwarms
+        }
+    }
+
+    /// The off-main-actor half of `sampleSwarms`: reads each candidate workspace's blackboard and
+    /// turns claimed-file overlaps into `CollisionWarning`s. `nonisolated` and static so it can run
+    /// inside `Task.detached` without hopping back to the main actor for every file read; the
+    /// result is sorted by workspace path (and each swarm's agents by raw value) so two samples of
+    /// unchanged state compare equal regardless of dictionary/set iteration order.
+    private nonisolated static func computeSwarms(_ candidates: [String: Set<AgentKind>]) -> [ProjectSwarm] {
         var newSwarms: [ProjectSwarm] = []
-        for (path, agents) in agentsByPath where agents.count >= 2 {
+        for (path, agents) in candidates {
             let store = BlackboardStore(workspaceRoot: path)
             var allCollisions: [CollisionWarning] = []
             if let board = try? store.load() {
@@ -1004,12 +1025,12 @@ public final class AppCoordinator {
             newSwarms.append(
                 ProjectSwarm(
                     workspacePath: path,
-                    activeAgents: Array(agents),
+                    activeAgents: agents.sorted { $0.rawValue < $1.rawValue },
                     collisions: allCollisions
                 )
             )
         }
-        self.swarms = newSwarms
+        return newSwarms.sorted { $0.workspacePath < $1.workspacePath }
     }
 
     // MARK: - Agent Dashboard Integration
