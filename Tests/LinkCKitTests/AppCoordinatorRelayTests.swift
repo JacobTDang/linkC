@@ -635,6 +635,35 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(injected, "Expected the framed task after it was marked delivered")
     }
 
+    /// `TerminalSessionManager.sendInput` used to be `session(id:)?.sendInput(text)` — a missing
+    /// session (a terminal already torn down, or never created) silently returned `Void` with no
+    /// trace anywhere that the text was dropped. It must now report the failure, both to the
+    /// caller and in the log, so `dispatchTasks` (and anything else that marks delivery state on
+    /// the strength of this call) can tell a lost delivery from a real one.
+    @MainActor
+    func testSendInputToAMissingSessionReportsFailureRatherThanSilentlyDroppingIt() {
+        let manager = TerminalSessionManager()
+        XCTAssertFalse(manager.sendInput(sessionId: "no-such-session", text: "hello"),
+                       "a missing terminal must be reported, not silently swallowed")
+    }
+
+    /// A session that was never started (no live child) must report a failed send, and the
+    /// manager must propagate that rather than assume success once a `TerminalSession` object
+    /// exists. `dispatchTasks` relies on exactly this signal: it marks a task delivered before
+    /// the terminal write (`markTaskDelivered`'s own disk I/O sits in between, a real window a
+    /// dying child can land in — the same shape of race `terminate()`'s own doc admits can never
+    /// be fully closed), and now fails the task immediately when the send comes back `false`
+    /// instead of leaving it silently `.delivered` with nothing ever typed.
+    @MainActor
+    func testSendInputReportsFailureForASessionThatWasNeverStarted() {
+        let ws = tempDir.path
+        let manager = TerminalSessionManager()
+        let terminal = manager.makeSession(id: "never-started", cwd: ws, title: "t", agentKind: .codex)
+        XCTAssertFalse(terminal.sendInput("hello"), "an unstarted session must report the send did not go through")
+        XCTAssertFalse(manager.sendInput(sessionId: "never-started", text: "hello"),
+                       "the manager must propagate the session's own failure to send")
+    }
+
     /// The settle margin must be provable, not just trivially satisfied by the zero used
     /// everywhere else in this file: with a real 2s threshold and a clock the test controls,
     /// delivery is withheld the instant paste negotiates and only happens once the clock reads
@@ -673,6 +702,83 @@ final class AppCoordinatorRelayTests: XCTestCase {
                 .contains("[linkC task \(task.shortId)") ?? false
         }
         XCTAssertTrue(injected, "Expected the framed task once the settle margin elapsed")
+    }
+
+    /// `pasteReadySince` used to be set lazily on `dispatchTasks`' own first read of
+    /// `acceptsPaste` — the only caller, gated behind a queued task existing. A session that
+    /// finished negotiating long before any task ever arrived paid the settle margin all over
+    /// again once work finally showed up, because the clock only started at that later read. A
+    /// tick with nothing queued at all must still capture readiness.
+    @MainActor
+    func testPasteReadinessIsCapturedOnAnIdleTickBeforeAnyTaskExists() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(deliverySettle: AppCoordinator.defaultDeliverySettle, now: clock.now)
+        defer { coordinator.shutdown() }
+
+        let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: assignee.id, to: .ready)
+
+        // Wait for the mock agent to really negotiate bracketed paste WITHOUT going through
+        // `acceptsPaste` — reading that property is itself what sets `pasteReadySince`, and this
+        // test must prove the relay's own tick captures readiness, not the act of checking for it.
+        let negotiated = try await waitUntil {
+            coordinator.terminals.session(id: assignee.id)?.terminalView.getTerminal().bracketedPasteMode ?? false
+        }
+        XCTAssertTrue(negotiated, "mock agent never negotiated bracketed paste")
+
+        // A tick runs now, with nothing queued at all — the exact case that used to leave
+        // `pasteReadySince` untouched.
+        clock.set(Date())
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertNotNil(coordinator.terminals.session(id: assignee.id)?.pasteReadySince,
+                        "a live tick must capture paste readiness even with nothing queued")
+
+        // Move the clock well past the settle margin, then queue a task on the very next tick —
+        // the settle clock already started on the earlier idle tick, so delivery is immediate.
+        clock.set(Date().addingTimeInterval(AppCoordinator.defaultDeliverySettle + 1))
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "settle guard", files: [])
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered,
+                       "the settle margin already elapsed since the session became ready, before any task existed")
+    }
+
+    /// A CLI that never enables bracketed paste (an unsupported agent binary, a broken TERM)
+    /// used to spin silently, logging "waiting" every tick, until the generic 60-minute queued
+    /// expiry finally caught it with no reason more specific than "undelivered for 60m". It must
+    /// instead fail fast, with the real reason, well before that.
+    @MainActor
+    func testATaskWhoseAssigneeNeverNegotiatesPasteFailsFastWithTheRealReason() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        // Unlike the shared mock agent, this one never sends the bracketed-paste enable sequence.
+        let script = tempDir.appendingPathComponent("never_pastes.sh")
+        try "#!/bin/sh\nstty -echo 2>/dev/null\nexec /bin/cat\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let coordinator = makeCoordinator(agentPathResolver: { _ in script.path })
+        defer { coordinator.shutdown() }
+
+        let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: assignee.id, to: .ready)
+
+        // Back-dated well past the 2-minute paste-negotiation budget — no real sleep needed.
+        let task = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "will never paste",
+                              createdAt: Date().addingTimeInterval(-3 * 60))
+        var seeded = try inbox.load()
+        seeded.tasks.append(task)
+        try inbox.saveRaw(seeded)
+
+        coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
+
+        let final = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(final.state, .expired)
+        XCTAssertEqual(final.cancelReason, "\(AgentKind.codex.displayName) never accepted pasted input")
+        let notice = try XCTUnwrap(inbox.load().messages.first { $0.taskId == task.id && $0.kind == .completion })
+        XCTAssertTrue(notice.prompt.contains("never accepted pasted input"), notice.prompt)
     }
 
     /// Test 2d: Legacy v1 `.task` rows are still dispatched once.
@@ -1231,6 +1337,35 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(sink.deliveries.contains { $0.title == "linkC: Codex Rate Limited" && $0.body.contains("429 Too Many Requests") })
     }
 
+    /// The reroute notice must name the fallback from the live, user-editable model settings —
+    /// not `AgentModelCatalog`'s hardcoded list, which is stale seed data (it still names models
+    /// no provider serves any more).
+    @MainActor
+    func testRerouteNoticeNamesTheLiveFallbackModelNotTheStaleCatalog() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var models = AgentModelSettings.seeded
+        models.setModel("codex-custom-light", for: .codex, tier: .light)
+        let coordinator = makeCoordinator(models: models)
+        defer { coordinator.shutdown() }
+
+        let codexSession = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: codexSession.id, to: .finished)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Optimize database indices", files: ["schema.sql"])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: codexSession.id)
+
+        coordinator.terminals.sendInput(sessionId: codexSession.id, text: "429 Too Many Requests\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: codexSession.id)?.recentOutput(lines: 10).contains("429 Too Many Requests") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: codexSession.id))
+        let notice = try XCTUnwrap(inbox.load().messages.first { $0.kind == .notice && $0.fromAgent == .codex && $0.toAgent == .claude })
+        XCTAssertTrue(notice.prompt.contains("codex-custom-light"), notice.prompt)
+        XCTAssertFalse(notice.prompt.contains("GPT-4o"), "must not fall back to the stale hardcoded catalog")
+    }
+
     /// Test 11b: A rerouted session is never re-processed on the next tick — the limit text is
     /// still in its buffer, but the source is `.error`, so no second hop+1 task and no second notice.
     @MainActor
@@ -1750,6 +1885,32 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .gating, "an in-flight gate is not stale")
     }
 
+    /// The queued-expiry clock must start when a task actually enters `.queued`, not at
+    /// `createdAt` — a task that spent most of an hour `.gating` used to have that time count
+    /// against its delivery window too, expiring it the instant its gate passed.
+    @MainActor
+    func testAQueuedTaskIsNotExpiredUsingTimeItSpentGating() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "long gate", files: [], verification: verification())
+        var raw = try inbox.load()
+        let idx = try XCTUnwrap(raw.tasks.firstIndex { $0.id == task.id })
+        raw.tasks[idx] = raw.tasks[idx].with(createdAt: Date().addingTimeInterval(-65 * 60))
+        try inbox.saveRaw(raw)
+
+        // The gate passes now — the task enters `.queued` this instant, 65 minutes after it was
+        // created but with none of that time actually spent queued.
+        try inbox.resolveGate(taskId: task.id, verdict: .fixture(passed: true, sha: base40, exit: 1))
+
+        coordinator.expireTasks(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued,
+                       "a task must not be expired using time it spent gating, before it ever queued")
+    }
+
     @MainActor
     func testReportedTaskSurvivesAssigneeExitButNotItsLease() throws {
         let ws = tempDir.path
@@ -1769,6 +1930,31 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .expired)
         XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] expired — lease lapsed before verification"])
+    }
+
+    /// A worker's own failure report must settle the task with that reason, even when the lease
+    /// happened to lapse before the tick got around to it — `expireTasks` on its own would call
+    /// this "lease lapsed before verification" instead (see the previous test), discarding the
+    /// real reason. A full tick must settle what it can before expiring anything.
+    @MainActor
+    func testAFullTickSettlesAReportBeforeALapsedLeaseCanExpireIt() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier())
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox, status: "failed") // its session "worker" does not exist
+
+        var raw = try inbox.load()
+        let idx = try XCTUnwrap(raw.tasks.firstIndex { $0.id == task.id })
+        raw.tasks[idx].leaseExpiresAt = Date().addingTimeInterval(-1)
+        try inbox.saveRaw(raw)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        let final = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(final.state, .failed, "the worker's own report must settle it, not a lapsed lease")
+        XCTAssertEqual(final.verdict?.reason, "worker reported failure")
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] failed — worker reported failure"])
     }
 
     @MainActor
@@ -1793,6 +1979,45 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(try lines(inbox, task).isEmpty, "a dropped verdict sends nothing")
     }
 
+    /// `AppCoordinator` is @MainActor; `finishVerification` used to record the verdict with
+    /// `InboxStore`'s default 5s timeout, which would block the whole UI on a contended lock the
+    /// same way every other relay call already avoids.
+    @MainActor
+    func testFinishVerificationDoesNotBlockTheMainActorOnAContendedLock() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier())
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox)
+
+        let lockPath = tempDir.appendingPathComponent(".linkc/.inbox.lock").path
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        XCTAssertGreaterThan(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        defer { flock(fd, LOCK_UN); close(fd) }
+
+        let start = Date()
+        coordinator.finishVerification(of: task, verdict: .fixture(passed: true, sha: sha40, exit: 0), workspacePath: ws)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 1.5, "a contended lock must not block the main actor for anywhere near the store's default 5s timeout")
+    }
+
+    /// A verifier that reports a pass with no sha must not render an empty one silently — that
+    /// would claim a commit that doesn't exist.
+    @MainActor
+    func testAPassedVerdictWithNoShaRendersExplicitlyRatherThanSilently() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(verifier: ScriptedVerifier())
+        defer { coordinator.shutdown() }
+        let task = try reportedVerifiedTask(inbox)
+
+        coordinator.finishVerification(of: task, verdict: .fixture(passed: true, sha: nil, exit: 0), workspacePath: ws)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .done)
+        XCTAssertEqual(try lines(inbox, task), ["[linkC task \(task.shortId)] done — verified (no sha)"])
+    }
+
     @MainActor
     func testDeliveryFrameNamesBranchCommandAndProtectedTests() {
         let verified = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "Make check pass", verification: verification())
@@ -1802,7 +2027,11 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(frame.contains("linkc_complete_task(\"\(verified.id)\", status, summary, sha)"))
 
         let plain = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "Plain")
-        XCTAssertFalse(AppCoordinator.deliveryFrame(for: plain).contains("Work on branch"))
+        let plainFrame = AppCoordinator.deliveryFrame(for: plain)
+        XCTAssertFalse(plainFrame.contains("Work on branch"))
+        XCTAssertTrue(plainFrame.contains("linkc_complete_task(\"\(plain.id)\", status, summary)"),
+                       "an unverified task must not ask for a sha a non-git worker may have no way to give")
+        XCTAssertFalse(plainFrame.contains(", status, summary, sha)"))
     }
 
     /// The copy made for a new agent keeps its verification and the gate it already passed. It
@@ -1882,14 +2111,6 @@ final class AppCoordinatorRelayTests: XCTestCase {
         return repo
     }
 
-    private func mcp(_ server: MCPServer, _ name: String, _ args: [String: Any]) throws -> (text: String, isError: Bool) {
-        let request: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["name": name, "arguments": args]]
-        let response = try XCTUnwrap(server.handleMessage(try JSONSerialization.data(withJSONObject: request)))
-        let result = (try JSONSerialization.jsonObject(with: response) as? [String: Any])?["result"] as? [String: Any]
-        let text = ((result?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
-        return (text, result?["isError"] as? Bool ?? false)
-    }
-
     /// Delegates a verified task through MCP, waits for the real gate to queue it, and delivers it.
     @MainActor
     private func delegateAndGate(_ repo: URL, _ coordinator: AppCoordinator) async throws -> TaskRecord {
@@ -1897,7 +2118,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let delegator = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "claude"],
                                    ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
         let base = try runGit(["rev-parse", "HEAD"], in: repo)
-        let delegated = try mcp(delegator, "linkc_delegate_task", [
+        let delegated = try mcpCall(delegator, "linkc_delegate_task", [
             "to": "codex", "prompt": "Make check.sh pass", "tier": "deep",
             "verify": ["branch": "task/x", "base_sha": base, "command": "./check.sh", "test_paths": ["check.sh"], "timeout_seconds": 60]
         ])
@@ -1920,7 +2141,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let sha = try runGit(["rev-parse", "HEAD"], in: repo)
         let worker = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "codex"],
                                 ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
-        let reported = try mcp(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "worker change", "sha": sha])
+        let reported = try mcpCall(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "worker change", "sha": sha])
         XCTAssertFalse(reported.isError, reported.text)
         return sha
     }
@@ -2357,10 +2578,83 @@ final class AppCoordinatorRelayTests: XCTestCase {
         // The mock agent's echo is asynchronous (pty write → `cat` → SwiftTerm parse), so absence
         // must be confirmed by polling rather than reading the buffer once: an injection that
         // hasn't landed yet would otherwise look indistinguishable from one that never happens.
-        let injected = try await waitUntil {
+        // Proving an absence means this predicate is always false, so every run pays the full
+        // budget — a purpose-tuned 400ms here instead of the default 2s `waitUntil` budget other
+        // callers use to wait for something that (usually) actually happens.
+        let injected = try await waitUntil({
             coordinator.terminals.session(id: session.id)?.recentOutput(lines: 40).contains("should never land") ?? false
-        }
+        }, iterations: 20)
         XCTAssertFalse(injected, "a failed mark must never inject the message")
+    }
+
+    /// The per-group loop `break`s (not `continue`s) on a non-timeout mark failure, so a message
+    /// after the failing one stays queued and untouched rather than jumping ahead of it out of
+    /// order. `testAFailedMarkNeverInjectsTheMessage` above enqueues only one message, so `break`
+    /// and `continue` are behaviorally identical there and the distinction goes untested — this
+    /// needs a THIRD message behind the failing one: only then does `continue` visibly differ (it
+    /// would mark and inject that third message, skipping the still-queued second one) from the
+    /// correct `break` (the third message is never even attempted). The injected failure targets
+    /// only the second message's id, isolating it from the others without a whole-file `flock`.
+    @MainActor
+    func testAFailedMarkOnAMiddleMessageNeverLetsALaterOneSkipAheadOfIt() async throws {
+        let ws = tempDir.path
+        let seed = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .codex, mode: .new)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        let first = try seed.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "first should land")
+        let second = try seed.enqueue(from: .cursor, to: .codex, kind: .peerNote, body: "second should never land")
+        let third = try seed.enqueue(from: .agy, to: .codex, kind: .peerNote, body: "third must not skip ahead")
+
+        let injected = InboxStore(workspaceRoot: ws, failureInjector: { id in
+            id == second.id ? LinkCError.server("injected failure for the second message") : nil
+        })
+
+        coordinator.dispatchMessages(workspacePath: ws, inboxStore: injected)
+
+        let loaded = try seed.load().messages
+        XCTAssertEqual(loaded.first { $0.id == first.id }?.status, .delivered, "the message ahead of the failure must still be marked")
+        XCTAssertEqual(loaded.first { $0.id == second.id }?.status, .queued, "the failing mark itself must stay queued")
+        XCTAssertEqual(loaded.first { $0.id == third.id }?.status, .queued,
+                       "a message behind a failed mark must not skip ahead of it and deliver out of order")
+
+        let output = coordinator.terminals.session(id: session.id)?.recentOutput(lines: 40) ?? ""
+        XCTAssertFalse(output.contains("third must not skip ahead"),
+                       "the third message must never be injected ahead of the still-queued second one")
+    }
+
+    /// A contended lock on the delegator lookup (`inboxStore.task(id:)`, resolving which session
+    /// delegated the task a notice is about) must end the tick — falling through would hand the
+    /// notice to a different session of the same kind, a real misroute, not merely a late one.
+    /// The existing coverage of this call's error handling flocks the WHOLE inbox file, so
+    /// `expireTasks` (the first phase) already times out and the delegator lookup is never
+    /// reached; the injectable failure hook isolates this one call instead.
+    @MainActor
+    func testDispatchMessagesEndsTheTickRatherThanMisroutingWhenTheDelegatorLookupHitsALockTimeout() throws {
+        let ws = tempDir.path
+        let seed = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        // If the lock-timeout branch didn't stop the tick right there, this is the session a
+        // misrouted notice would fall through to — any other `.claude` session in the workspace.
+        let fallback = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new)
+        coordinator.store.updateState(id: fallback.id, to: .ready)
+
+        let task = try seed.createTask(from: .claude, to: .codex, prompt: "brief", files: [])
+        let notice = try seed.enqueue(from: .codex, to: .claude, kind: .completion, taskId: task.id, body: "done")
+
+        let injected = InboxStore(workspaceRoot: ws, failureInjector: { id in
+            id == task.id ? LinkCError.server("Timed out acquiring inbox lock after 0.5s at \(ws)/.linkc/.inbox.lock") : nil
+        })
+
+        let stopped = coordinator.dispatchMessages(workspacePath: ws, inboxStore: injected)
+
+        XCTAssertTrue(stopped, "a lock-timeout on the delegator lookup must end the tick rather than fall through")
+        XCTAssertEqual(try seed.load().messages.first { $0.id == notice.id }?.status, .queued,
+                       "the notice must stay queued for the next tick, not be routed to a fallback session")
     }
 
     /// Mark-before-inject means the mark's own disk I/O and lock wait sit inside the window
@@ -2762,7 +3056,7 @@ private extension TaskRecord {
         TaskRecord(
             id: id, fromAgent: fromAgent, fromSessionId: fromSessionId, tier: tier, toAgent: toAgent,
             assigneeSessionId: assigneeSessionId, prompt: prompt, files: files, state: state, hop: hop,
-            createdAt: createdAt, deliveredAt: deliveredAt, startedAt: startedAt, finishedAt: finishedAt,
+            createdAt: createdAt, queuedAt: queuedAt, deliveredAt: deliveredAt, startedAt: startedAt, finishedAt: finishedAt,
             leaseExpiresAt: leaseExpiresAt, report: report, cancelReason: cancelReason,
             unreportedTurnEndNotified: unreportedTurnEndNotified, verification: verification, gate: gate,
             verdict: verdict

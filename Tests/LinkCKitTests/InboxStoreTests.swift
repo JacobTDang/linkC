@@ -171,6 +171,19 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertTrue(status.cooldownExpiresAt > Date().addingTimeInterval(800), "an expired cooldown may be replaced with a fresh one")
     }
 
+    /// `recordLimit` keys solely by agent, so a second detection while the first cooldown is
+    /// still live must not overwrite its reason — only the timing, already covered above, was
+    /// tested; the reason itself never had a dedicated case. The earlier reason must win.
+    func testRecordLimitKeepsTheFirstReasonWhileALiveCooldownIsStillLive() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+
+        try store.recordLimit(agent: .claude, reason: "reason A", cooldown: 900)
+        try store.recordLimit(agent: .claude, reason: "reason B", cooldown: 900)
+
+        let status = try XCTUnwrap(try store.isAgentLimited(agent: .claude))
+        XCTAssertEqual(status.reason, "reason A", "the earlier reason must win while the cooldown is still live")
+    }
+
     /// `extendLimit` is the only-ever-later counterpart to `recordLimit`: once a more accurate
     /// expiry becomes known (a real usage-window reset, or a banner's own stated time), a live
     /// limit should rest until THAT time even though `recordLimit` already created it with a
@@ -229,6 +242,26 @@ final class InboxStoreTests: XCTestCase {
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path), "a temp file crash-orphaned over an hour ago must be swept")
         XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.path), "a fresh temp file must survive the sweep")
+    }
+
+    /// `saveUnlocked` writes into a fresh temp file and `rename`s it over `inbox.json`; that
+    /// rename can fail on its own even when the temp write succeeds (a permissions change on the
+    /// directory mid-write, a destination the OS refuses to replace). `saveRaw` skips the load
+    /// half entirely, so pre-placing a directory at the exact `inbox.json` path isolates the
+    /// rename step: the write succeeds, and only `rename(2)` — a regular file onto a directory —
+    /// fails with EISDIR.
+    func testASaveWhoseRenameFailsThrowsRatherThanSilentlyDroppingTheWrite() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let linkcDir = tempDir.appendingPathComponent(".linkc")
+        let inboxPath = linkcDir.appendingPathComponent("inbox.json")
+        try FileManager.default.createDirectory(at: inboxPath, withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(try store.saveRaw(Inbox(workspacePath: tempDir.path))) { error in
+            guard case LinkCError.server(let message)? = error as? LinkCError else {
+                return XCTFail("expected LinkCError.server, got \(error)")
+            }
+            XCTAssertTrue(message.contains("Failed to rename"), message)
+        }
     }
 
     // MARK: - An inbox this build cannot decode
@@ -473,6 +506,32 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertTrue(saved.allSatisfy { $0.status == .queued })
     }
 
+    /// `.suffix(room)` only keeps "the newest" delivered rows when the array is already ascending
+    /// by `createdAt` — nothing upstream guaranteed that. Appending 105 delivered rows in
+    /// descending time order (the opposite of normal chronological appends) reproduces the case
+    /// where a plain `.suffix(100)` would keep the 100 OLDEST rows and drop the 5 newest instead.
+    func testTheMessageCapKeepsTheNewestDeliveredRowsRegardlessOfArrayOrder() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        var inbox = Inbox(workspacePath: tempDir.path)
+        let base = Date()
+        for i in 0..<105 {
+            inbox.messages.append(PendingMessage(
+                id: "row-\(i)", fromAgent: .claude, toAgent: .codex, prompt: "result \(i)", status: .delivered,
+                createdAt: base.addingTimeInterval(Double(104 - i)), deliveredAt: Date(), kind: .completion
+            ))
+        }
+        try store.saveRaw(inbox)
+
+        let saved = try store.load().messages
+        XCTAssertEqual(saved.count, 100)
+        for i in 0..<100 {
+            XCTAssertTrue(saved.contains { $0.id == "row-\(i)" }, "row-\(i) is among the 100 newest and must survive")
+        }
+        for i in 100..<105 {
+            XCTAssertFalse(saved.contains { $0.id == "row-\(i)" }, "row-\(i) is among the 5 oldest and must be dropped")
+        }
+    }
+
     func testKindAwareEnqueueComposesFrames() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
         let completion = try store.enqueue(from: .codex, to: .claude, kind: .completion, taskId: "abcdef12-3456", body: "done by Codex — shipped")
@@ -555,17 +614,20 @@ final class InboxStoreTests: XCTestCase {
 
         var original = rlimit()
         XCTAssertEqual(getrlimit(RLIMIT_FSIZE, &original), 0)
+        // Whatever SIGXFSZ was set to before this test touched it — never assumed to be
+        // SIG_DFL, which a parent test runner (or a future test) may have already changed.
+        var previousHandler: (@convention(c) (Int32) -> Void)?
         defer {
             var restore = original
             _ = setrlimit(RLIMIT_FSIZE, &restore)
-            signal(SIGXFSZ, SIG_DFL)
+            signal(SIGXFSZ, previousHandler)
         }
         // 200 bytes of headroom clears the lone `finishedAt` flip with room to spare, but a new
         // completion message's row is easily several times that, so only a save carrying it
         // crosses the cap.
         var capped = rlimit(rlim_cur: sizeBefore + 200, rlim_max: original.rlim_max)
         XCTAssertEqual(setrlimit(RLIMIT_FSIZE, &capped), 0)
-        signal(SIGXFSZ, SIG_IGN)
+        previousHandler = signal(SIGXFSZ, SIG_IGN)
 
         XCTAssertThrowsError(
             try store.acceptUnverifiedAndNotify(taskId: task.id, notifyBody: "done (unverified)"),
@@ -574,7 +636,7 @@ final class InboxStoreTests: XCTestCase {
 
         var restore = original
         XCTAssertEqual(setrlimit(RLIMIT_FSIZE, &restore), 0)
-        signal(SIGXFSZ, SIG_DFL)
+        signal(SIGXFSZ, previousHandler)
 
         let reloaded = try XCTUnwrap(store.task(id: task.id))
         XCTAssertEqual(reloaded.state, .reported,
@@ -651,5 +713,22 @@ final class InboxStoreTests: XCTestCase {
             XCTAssertEqual($0 as? InboxError, .taskNotFound("no-such-task"))
         }
         XCTAssertEqual(try store.load().messages.count, 1, "a failed notifyStuck must not append a message")
+    }
+
+    // MARK: - Decode-failure log dedup
+
+    /// Backs the once-per-(path, mtime) log guard `InboxStore` and `BlackboardStore` both use for
+    /// an undecodable state file: without it, every relay phase (or heartbeat) that reads a
+    /// persistently-corrupt file logs its own copy of the same line, every ~1s tick.
+    func testLoggedFailureTrackerLogsOnceThenOnlyOnAGenuineChange() {
+        let tracker = LoggedFailureTracker()
+        let t1 = Date(timeIntervalSince1970: 1_000)
+        let t2 = Date(timeIntervalSince1970: 2_000)
+
+        XCTAssertTrue(tracker.shouldLog(path: "/a/inbox.json", mtime: t1), "the first sighting must log")
+        XCTAssertFalse(tracker.shouldLog(path: "/a/inbox.json", mtime: t1), "the same (path, mtime) must not log again")
+        XCTAssertFalse(tracker.shouldLog(path: "/a/inbox.json", mtime: t1), "still the same — still no log")
+        XCTAssertTrue(tracker.shouldLog(path: "/a/inbox.json", mtime: t2), "a new mtime is a real change — logs again")
+        XCTAssertTrue(tracker.shouldLog(path: "/b/inbox.json", mtime: t1), "a different path is tracked independently")
     }
 }

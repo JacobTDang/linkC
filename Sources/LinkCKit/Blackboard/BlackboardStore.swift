@@ -96,8 +96,13 @@ public final class BlackboardStore: Sendable {
             // Never substitute an empty board. Every mutation here is load-modify-save, and the
             // app heartbeats once a second per session: returning empty would overwrite the file
             // and lose every shared note in it. A missing file is legitimately empty (handled
-            // above); an unreadable one is a problem the caller must see.
-            NSLog("linkC: blackboard.json at %@ is unreadable — %@", blackboardURL.path, String(describing: error))
+            // above); an unreadable one is a problem the caller must see. Logged at most once per
+            // (path, mtime) — unguarded, this fired on every heartbeat, every session, once a
+            // second, for as long as the file stayed corrupt.
+            let mtime = (try? fm.attributesOfItem(atPath: blackboardURL.path))?[.modificationDate] as? Date
+            if LoggedFailureTracker.shared.shouldLog(path: blackboardURL.path, mtime: mtime) {
+                NSLog("linkC: blackboard.json at %@ is unreadable — %@", blackboardURL.path, String(describing: error))
+            }
             throw error
         }
     }

@@ -136,6 +136,15 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     public var state: TaskState
     public let hop: Int
     public let createdAt: Date
+    /// When the task actually entered `.queued` — creation time for a task with no gate, or the
+    /// moment its gate passed for one that started `.gating`. `expireTasks`'s 60-minute queued
+    /// budget measures from here, not `createdAt`: a task that spent most of an hour gating
+    /// (waiting for a run to start, or for the run itself) used to have that time count against
+    /// its delivery window too, expiring it the instant it became deliverable. Optional for the
+    /// same reason as `tier`: `loadUnlocked` throws on a decode error, so a required field would
+    /// make every task row written before this existed unreadable and take the inbox with it. A
+    /// task still `.gating` has no value here yet.
+    public var queuedAt: Date?
     public var deliveredAt: Date?
     public var startedAt: Date?
     public var finishedAt: Date?
@@ -166,6 +175,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         state: TaskState = .queued,
         hop: Int = 0,
         createdAt: Date = Date(),
+        queuedAt: Date? = nil,
         deliveredAt: Date? = nil,
         startedAt: Date? = nil,
         finishedAt: Date? = nil,
@@ -189,6 +199,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.state = state
         self.hop = hop
         self.createdAt = createdAt
+        self.queuedAt = queuedAt ?? (state == .queued ? createdAt : nil)
         self.deliveredAt = deliveredAt
         self.startedAt = startedAt
         self.finishedAt = finishedAt

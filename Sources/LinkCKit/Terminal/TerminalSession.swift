@@ -229,14 +229,21 @@ public final class TerminalSession {
     /// Sends text input to the running child process via the terminal PTY and submits it.
     /// Logs dropped input if the child process is not alive. Queued behind whatever this session
     /// is already sending — see `runningPlan` — so two calls can never interleave.
-    public func sendInput(_ text: String) {
+    ///
+    /// Returns whether the child was alive and the plan was actually queued to it — `false` when
+    /// the child had already exited by the time this call ran. A caller that marks delivery
+    /// state on the strength of a send must check this rather than treat the call as
+    /// fire-and-forget: it is the only synchronous signal that the residual liveness window (see
+    /// `liveness`'s doc) landed on the wrong side.
+    @discardableResult
+    public func sendInput(_ text: String) -> Bool {
         guard liveness.withLock({ $0 }) else {
             // The residual window between a liveness check upstream and this call can never be
             // closed completely (see `liveness`'s doc). Log rather than drop silently, so a
             // message a caller believes was delivered — or thinks it sent — leaves a trace here
             // when it wasn't shown.
             NSLog("linkC: session %@ dropped input — child process is not running", id)
-            return
+            return false
         }
         let plan = Self.inputPlan(for: text, negotiatedPaste: terminalView.getTerminal().bracketedPasteMode)
         if case .text(let raw) = plan.first, raw.contains("\n") {
@@ -247,6 +254,7 @@ public final class TerminalSession {
             await previous?.value
             await self.executeInputPlan(plan)
         }
+        return true
     }
 
     /// Runs `steps` in order. A `.wait` suspends via `Task.sleep` before the plan continues;
