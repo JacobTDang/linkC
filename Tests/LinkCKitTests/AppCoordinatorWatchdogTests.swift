@@ -267,6 +267,32 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         XCTAssertFalse(otherTerm.recentOutput(lines: 20).contains(task.shortId), "another session of the same kind must not")
     }
 
+    /// A task whose worker session ended on an API error can never resume on its own — unlike the
+    /// other stuck reasons, there is nothing to wait out, so it is reported the very next tick
+    /// rather than after a threshold.
+    @MainActor
+    func testATaskOnAnErroredSessionIsReportedImmediately() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        let errored = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Refactor", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: errored.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        coordinator.store.updateState(id: errored.id, to: .error)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertNotNil(try inbox.task(id: task.id)?.stuckNotifiedAt)
+        let notice = try inbox.load().messages.first { $0.prompt.contains(task.shortId) }
+        XCTAssertTrue(notice?.prompt.contains("API error") ?? false, "must name the error, not just say stuck")
+        XCTAssertEqual(sink.deliveries.filter { $0.body.contains("API error") }.count, 1)
+    }
+
     @MainActor
     func testAnUndeliverableNoticeSpawnsNothingAndWarnsTheUserOnce() async throws {
         let ws = tempDir.path

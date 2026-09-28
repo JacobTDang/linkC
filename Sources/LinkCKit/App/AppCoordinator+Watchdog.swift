@@ -18,16 +18,22 @@ extension AppCoordinator {
         case neverStarted = "delivered 10m ago and never started"
         case waitingOnUser = "its worker has been waiting on a prompt for 5m"
         case goneQuiet = "its worker's screen has not changed for 15m"
+        case workerErrored = "its worker's turn ended on an API error"
     }
 
     /// The reason `task` looks stuck at `date`, or nil while it is still moving. A long quiet test
-    /// run is indistinguishable from a hang from outside; the action is only a notice.
+    /// run is indistinguishable from a hang from outside, so those two wait out a threshold; a
+    /// worker whose session already ended in `.error` has nothing left to wait out — it cannot
+    /// resume on its own — so that one is reported the very next tick.
     func stuckReason(for task: TaskRecord, at date: Date) -> StuckReason? {
         if task.state == .delivered, let deliveredAt = task.deliveredAt,
            date.timeIntervalSince(deliveredAt) > Self.neverStartedThreshold {
             return .neverStarted
         }
         guard let sessionId = task.assigneeSessionId, let session = store.session(id: sessionId) else { return nil }
+        if session.state == .error {
+            return .workerErrored
+        }
         if session.state == .waitingPermission,
            date.timeIntervalSince(session.stateChangedAt) > Self.waitingOnUserThreshold {
             return .waitingOnUser
