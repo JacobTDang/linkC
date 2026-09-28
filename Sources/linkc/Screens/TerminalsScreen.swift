@@ -172,11 +172,19 @@ struct TerminalCard: View {
 /// A remembered shell on the Terminals screen: the card shape of its live siblings, dimmed
 /// and preview-less (there's no output yet), with Relaunch as its one action.
 struct RememberedTerminalCard: View {
-    let shell: RestorableShell
-    let onRestore: () -> Void
-    let onDismiss: () -> Void
+    let actions: RestorableShellActions
 
     @State private var hovering = false
+
+    init(shell: RestorableShell, onRestore: @escaping () -> Void, onDismiss: @escaping () -> Void) {
+        self.actions = RestorableShellActions(shell: shell, onRestore: onRestore, onDismiss: onDismiss)
+    }
+
+    init(shell: RestorableShell, model: AppModel) {
+        self.actions = RestorableShellActions(shell: shell, model: model)
+    }
+
+    private var shell: RestorableShell { actions.shell }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -199,7 +207,7 @@ struct RememberedTerminalCard: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
-            Button(action: onRestore) {
+            Button(action: actions.restore) {
                 Text("Relaunch")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Theme.accent)
@@ -207,8 +215,8 @@ struct RememberedTerminalCard: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(shell.command.map { "Re-run: \($0)" } ?? "Open a fresh shell in this folder")
-            Button(action: onDismiss) {
+            .help(actions.restoreHelp)
+            Button(action: actions.forget) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(Theme.textTertiary)
@@ -217,7 +225,7 @@ struct RememberedTerminalCard: View {
             }
             .buttonStyle(.plain)
             .opacity(hovering ? 1 : 0)
-            .help("Forget this terminal")
+            .help(actions.forgetHelp)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

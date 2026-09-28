@@ -582,25 +582,57 @@ private struct EarlierSessionRow: View {
     }
 }
 
+/// Shared actions and help text for a restorable shell, used across the Terminals screen and sidebar.
+@MainActor
+struct RestorableShellActions {
+    let shell: RestorableShell
+    let restore: () -> Void
+    let forget: () -> Void
+
+    init(shell: RestorableShell, model: AppModel) {
+        self.shell = shell
+        self.restore = { model.restoreShell(shell) }
+        self.forget = { model.forgetShell(shell) }
+    }
+
+    init(shell: RestorableShell, onRestore: @escaping () -> Void, onDismiss: @escaping () -> Void) {
+        self.shell = shell
+        self.restore = onRestore
+        self.forget = onDismiss
+    }
+
+    var restoreHelp: String {
+        shell.command.map { "Re-run: \($0)" } ?? "Open a fresh shell in this folder"
+    }
+
+    var forgetHelp: String {
+        "Forget this terminal"
+    }
+}
+
 private struct EarlierShellRow: View {
     let shell: RestorableShell
     let model: AppModel
+
+    private var actions: RestorableShellActions {
+        RestorableShellActions(shell: shell, model: model)
+    }
 
     var body: some View {
         SidebarRow(
             title: shell.title,
             titleColor: Theme.textSecondary,
-            help: shell.command.map { "Re-run: \($0)" } ?? "Open a fresh shell in this folder",
-            action: { model.restoreShell(shell) }
+            help: actions.restoreHelp,
+            action: actions.restore
         ) {
             Image(systemName: "terminal")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textTertiary)
         } trailing: { hovering in
             if hovering {
-                Button { model.forgetShell(shell) } label: { RowGlyph(systemName: "xmark") }
+                Button(action: actions.forget) { RowGlyph(systemName: "xmark") }
                     .buttonStyle(.plain)
-                    .help("Forget this terminal")
+                    .help(actions.forgetHelp)
             }
         }
     }
