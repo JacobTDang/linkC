@@ -334,7 +334,7 @@ final class AppModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled else { break }
-                self?.sampleShells()
+                await self?.sampleShells()
                 self?.sampleSidebar()
             }
         }
@@ -535,7 +535,7 @@ final class AppModel {
         }
     }
 
-    func sampleShells() {
+    func sampleShells() async {
         shells?.sampleDirectories()
         shells?.sampleAgents()
         var shellAgents: [String: [AgentKind]] = [:]
@@ -550,7 +550,7 @@ final class AppModel {
                 shellAgents[key, default: []].append(agent)
             }
         }
-        coordinator?.sampleSwarms(additionalAgents: shellAgents)
+        await coordinator?.sampleSwarms(additionalAgents: shellAgents)
         refreshCachedInboxes()
     }
 
