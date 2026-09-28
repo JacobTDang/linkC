@@ -267,9 +267,10 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         XCTAssertFalse(otherTerm.recentOutput(lines: 20).contains(task.shortId), "another session of the same kind must not")
     }
 
-    /// A task whose worker session ended on an API error can never resume on its own — unlike the
-    /// other stuck reasons, there is nothing to wait out, so it is reported the very next tick
-    /// rather than after a threshold.
+    /// A worker session in `.error` stopped on an API error or on a usage limit no peer could take
+    /// over. Either way the task makes no progress until someone steps in or the limit clears, so
+    /// unlike the other stuck reasons it is reported the very next tick rather than after a
+    /// threshold — and the notice names both causes, since `.error` alone can't tell them apart.
     @MainActor
     func testATaskOnAnErroredSessionIsReportedImmediately() async throws {
         let ws = tempDir.path
@@ -289,8 +290,8 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
 
         XCTAssertNotNil(try inbox.task(id: task.id)?.stuckNotifiedAt)
         let notice = try inbox.load().messages.first { $0.prompt.contains(task.shortId) }
-        XCTAssertTrue(notice?.prompt.contains("API error") ?? false, "must name the error, not just say stuck")
-        XCTAssertEqual(sink.deliveries.filter { $0.body.contains("API error") }.count, 1)
+        XCTAssertTrue(notice?.prompt.contains("an error or a usage limit") ?? false, "must name both causes, not just say stuck")
+        XCTAssertEqual(sink.deliveries.filter { $0.body.contains("an error or a usage limit") }.count, 1)
     }
 
     @MainActor
