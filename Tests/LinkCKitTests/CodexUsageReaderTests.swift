@@ -12,6 +12,7 @@ final class CodexUsageReaderTests: XCTestCase {
 
     private func write(_ name: String, _ lines: [String], modified: Date) throws {
         let url = dir.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
     }
@@ -133,5 +134,23 @@ final class CodexUsageReaderTests: XCTestCase {
         let usage = CodexUsageReader(sessionsDirectory: dir).read()
         XCTAssertNil(usage.unavailableReason)
         XCTAssertEqual(usage.windows.first?.usedPercent, 23.0)
+    }
+
+    func testScanIsLimitedToNewestDayFoldersAndIgnoresOlderDayFolders() throws {
+        let oldRecord = record.replacingOccurrences(of: "\"used_percent\":23.0", with: "\"used_percent\":10.0")
+        let newRecord = record.replacingOccurrences(of: "\"used_percent\":23.0", with: "\"used_percent\":77.0")
+
+        // An older day folder has a file with a newer mtime (e.g. touched or future clock).
+        // If the entire tree were enumerated and statted, this old file would be picked.
+        try write("2026/08/01/rollout-old.jsonl", [oldRecord], modified: Date().addingTimeInterval(3600))
+
+        // Newer day folder with normal mtime.
+        for i in 1...5 {
+            try write("2026/09/26/rollout-\(i).jsonl", [newRecord], modified: Date().addingTimeInterval(Double(-i)))
+        }
+
+        let usage = CodexUsageReader(sessionsDirectory: dir).read()
+        XCTAssertNil(usage.unavailableReason)
+        XCTAssertEqual(usage.windows.first?.usedPercent, 77.0)
     }
 }
