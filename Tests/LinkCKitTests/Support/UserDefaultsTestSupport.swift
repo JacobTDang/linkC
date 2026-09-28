@@ -1,14 +1,21 @@
 import Foundation
 
-/// Fully destroys an injectable `UserDefaults` suite created for a test: clears the domain,
-/// flushes it through cfprefsd, then deletes the backing plist. `removePersistentDomain`
-/// alone leaves that file behind — without this, every test that makes its own suite (prefs,
-/// sidebar state, …) leaks one `~/Library/Preferences/<suite>.plist` into the real machine.
-func destroyUserDefaultsSuite(_ defaults: UserDefaults, named suiteName: String) throws {
-    defaults.removePersistentDomain(forName: suiteName)
-    defaults.synchronize()
-    let plistURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Preferences/\(suiteName).plist")
-    guard FileManager.default.fileExists(atPath: plistURL.path) else { return }
-    try FileManager.default.removeItem(at: plistURL)
+/// A `UserDefaults` for tests that keeps every value in memory and never writes to cfprefsd.
+/// The daemon writes a suite's plist about 30 s after the test process exits, whatever tearDown
+/// does, so any test suite that reached it leaked a `~/Library/Preferences/<suite>.plist`.
+/// Covers the calls linkC's stores make.
+final class InMemoryUserDefaults: UserDefaults {
+    let suite = "linkc-test-\(UUID().uuidString)"
+    private var values: [String: Any] = [:]
+
+    init() {
+        super.init(suiteName: suite)!
+    }
+
+    override func object(forKey defaultName: String) -> Any? { values[defaultName] }
+    override func data(forKey defaultName: String) -> Data? { values[defaultName] as? Data }
+    override func string(forKey defaultName: String) -> String? { values[defaultName] as? String }
+    override func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+    override func set(_ value: Bool, forKey defaultName: String) { values[defaultName] = value }
+    override func removeObject(forKey defaultName: String) { values[defaultName] = nil }
 }

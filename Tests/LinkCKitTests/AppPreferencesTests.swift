@@ -6,16 +6,10 @@ import XCTest
 @MainActor
 final class AppPreferencesTests: XCTestCase {
 
-    nonisolated(unsafe) private var suiteName: String!
     nonisolated(unsafe) private var defaults: UserDefaults!
 
-    override func setUpWithError() throws {
-        suiteName = "linkc-prefs-test-\(UUID().uuidString)"
-        defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-    }
-
-    override func tearDownWithError() throws {
-        try destroyUserDefaultsSuite(defaults, named: suiteName)
+    override func setUp() {
+        defaults = InMemoryUserDefaults()
     }
 
     func testDocumentedDefaults() {
