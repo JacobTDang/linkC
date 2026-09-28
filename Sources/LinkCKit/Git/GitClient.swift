@@ -15,8 +15,39 @@ public protocol GitInspecting: Sendable {
 }
 
 extension GitInspecting {
+    /// One `git status --porcelain` call, split into tracked-change lines and untracked
+    /// (un-ignored) paths — porcelain excludes ignored paths by default, so every `"??"` line
+    /// is exactly that.
+    private func parsedStatus(in workspace: URL) throws -> (tracked: [Substring], untracked: [String]) {
+        var tracked: [Substring] = []
+        var untracked: [String] = []
+        for line in try statusPorcelain(in: workspace).split(separator: "\n") {
+            if line.hasPrefix("??") {
+                untracked.append(String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces))
+            } else {
+                tracked.append(line)
+            }
+        }
+        return (tracked, untracked)
+    }
+
+    /// True when no TRACKED file differs from HEAD/the index (D18a). An untracked, un-ignored
+    /// file does not count; see `untrackedFiles`.
     public func isClean(in workspace: URL) throws -> Bool {
-        try statusPorcelain(in: workspace).isEmpty
+        try parsedStatus(in: workspace).tracked.isEmpty
+    }
+
+    /// Untracked, un-ignored paths — never a clean-tree failure on their own (D18a); callers
+    /// surface them as a warning instead.
+    public func untrackedFiles(in workspace: URL) throws -> [String] {
+        try parsedStatus(in: workspace).untracked
+    }
+
+    /// `isClean` and `untrackedFiles` from a single `git status --porcelain` call, for a caller
+    /// that wants both without asking git twice.
+    public func cleanStatus(in workspace: URL) throws -> (clean: Bool, untracked: [String]) {
+        let status = try parsedStatus(in: workspace)
+        return (status.tracked.isEmpty, status.untracked)
     }
 
     /// Paths named by `git status --porcelain`; for a rename, the new path.
@@ -102,7 +133,13 @@ public struct GitClient: GitInspecting {
         guard let gitPath else {
             throw LinkCError.process("git not found (looked in \(Self.candidatePaths.joined(separator: ", ")))")
         }
-        return try LiveProcessRunner.runCapturingSync(executable: gitPath, args: args, cwd: workspace, timeout: timeout)
+        do {
+            return try LiveProcessRunner.runCapturingSync(executable: gitPath, args: args, cwd: workspace, timeout: timeout)
+        } catch ProcessRunnerError.timedOut(let seconds) {
+            // A bare `ProcessRunnerError` has no `LocalizedError` conformance — left to escape,
+            // it renders as an opaque "error 0." in verdicts and MCP output (D17).
+            throw LinkCError.process("git \(args.first ?? "") timed out after \(seconds)s")
+        }
     }
 
     /// stdout of a git command that must exit 0, minus trailing newlines. Leading spaces are

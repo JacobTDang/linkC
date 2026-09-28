@@ -155,7 +155,7 @@ public final class OracleService {
                     "--query", OracleInstances.cliQuery,
                     "--output", "json",
                 ],
-                cwd: nil, timeout: Self.listTimeout
+                cwd: nil, env: Self.suppressPermissionWarningEnv, timeout: Self.listTimeout
             )
             if let parsed = OracleInstances.parse(output) {
                 instances = parsed
@@ -196,7 +196,7 @@ public final class OracleService {
                     ociPath,
                     args: ["compute", "instance", "list-vnics", "--instance-id", id,
                            "--query", OracleVnics.cliQuery, "--output", "json"],
-                    cwd: nil, timeout: Self.listTimeout
+                    cwd: nil, env: Self.suppressPermissionWarningEnv, timeout: Self.listTimeout
                 )
             } catch {
                 return nil
@@ -216,7 +216,7 @@ public final class OracleService {
                                    "--namespace", "oci_computeagent",
                                    "--query-text", OracleMetrics.healthQueryText(metric),
                                    "--query", OracleMetrics.healthQuery, "--output", "json"],
-                            cwd: nil, timeout: Self.listTimeout
+                            cwd: nil, env: Self.suppressPermissionWarningEnv, timeout: Self.listTimeout
                         )
                         return (metric, output)
                     }
@@ -243,7 +243,7 @@ public final class OracleService {
                            "--start-time", formatter.string(from: start),
                            "--end-time", formatter.string(from: end),
                            "--output", "json"],
-                    cwd: nil, timeout: Self.listTimeout
+                    cwd: nil, env: Self.suppressPermissionWarningEnv, timeout: Self.listTimeout
                 )
             } catch {
                 return nil
@@ -286,14 +286,15 @@ public final class OracleService {
         // The audit summary is account-wide, so it applies to every row equally.
         var auditSummary: OracleAuditSummary?
         if let output = await auditOutput {
+            let fetchedAt = Date()
             // First successful fetch teaches us who normally touches this account; only
             // names appearing AFTER that baseline count as unfamiliar.
-            let observed = OracleAudit.summarize(output, knownPrincipals: [])
+            let observed = OracleAudit.summarize(output, knownPrincipals: [], fetchedAt: fetchedAt)
             if learnedPrincipals == nil, let observed {
                 learnedPrincipals = Set(observed.humanPrincipals)
             }
             let baseline = knownPrincipals.union(learnedPrincipals ?? [])
-            auditSummary = OracleAudit.summarize(output, knownPrincipals: baseline)
+            auditSummary = OracleAudit.summarize(output, knownPrincipals: baseline, fetchedAt: fetchedAt)
             if auditSummary == nil { failures.append("audit unreadable") }
         } else if tenancy != nil {
             failures.append("audit unavailable")
@@ -349,6 +350,11 @@ public final class OracleService {
     }
 
     private static let listTimeout: TimeInterval = 30
+    /// The oci CLI's own documented env var to suppress its "config/key file permissions are
+    /// too open" advisory — every call gets it, since every call would otherwise print the
+    /// banner (D26b). Suppressing it at the source is narrower and more reliable than
+    /// filtering any stderr line that happens to start with "Warning:" after the fact.
+    private static let suppressPermissionWarningEnv = ["OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING": "True"]
 }
 
 /// What a drill-in shows for one instance. Fields degrade independently — a metrics
@@ -397,13 +403,16 @@ public struct OracleAuditSummary: Equatable, Sendable {
     public let eventCount: Int
     public let humanPrincipals: [String]
     public let hasUnknownPrincipal: Bool
+    /// When this summary was fetched (D26a). A summary kept from a failed refetch keeps its
+    /// ORIGINAL `fetchedAt` — never silently bumped to look current.
+    public let fetchedAt: Date
 }
 
 public enum OracleAudit {
     /// `oci audit event list` emits MULTIPLE concatenated JSON documents (one per page) —
     /// verified against the live CLI, where a plain decode fails with "Extra data". Each
     /// document is decoded in turn and their events concatenated.
-    public static func summarize(_ output: String, knownPrincipals: Set<String> = []) -> OracleAuditSummary? {
+    public static func summarize(_ output: String, knownPrincipals: Set<String> = [], fetchedAt: Date = Date()) -> OracleAuditSummary? {
         let documents = splitDocuments(output)
         guard !documents.isEmpty else { return nil }
         var count = 0
@@ -425,7 +434,7 @@ public enum OracleAudit {
         }
         let unknown = knownPrincipals.isEmpty ? false : !people.subtracting(knownPrincipals).isEmpty
         return OracleAuditSummary(
-            eventCount: count, humanPrincipals: people.sorted(), hasUnknownPrincipal: unknown
+            eventCount: count, humanPrincipals: people.sorted(), hasUnknownPrincipal: unknown, fetchedAt: fetchedAt
         )
     }
 
