@@ -144,21 +144,47 @@ extension AppModel {
     /// Every agent's most recent live cap across the workspaces that have a session. When an agent
     /// is capped in more than one, the furthest-out cooldown wins: that is when it can work again.
     var agentLimits: [AgentKind: AgentLimitStatus] {
-        var latest: [AgentKind: AgentLimitStatus] = [:]
-        for path in Set(sessions.map(\.cwd)) {
-            for limit in inbox(for: path)?.agentLimits ?? [] {
-                if let existing = latest[limit.agent], existing.cooldownExpiresAt >= limit.cooldownExpiresAt {
-                    continue
-                }
-                latest[limit.agent] = limit
-            }
+        AgentLimitsCache.limits(for: Set(sessions.map(\.cwd))) { [weak self] path in
+            self?.inbox(for: path)
         }
-        return latest
     }
 
     /// The sidebar's Usage section: a row per agent that reports something, the rest listed with
     /// the reason they do not.
     func usageRows(now: Date = Date()) -> UsageRows.Result {
         UsageRows.build(claude: coordinator?.claudeUsage, codex: codexUsage, limits: agentLimits, now: now)
+    }
+}
+
+/// In-memory cache for workspace agent limits to prevent repetitive synchronous disk reads
+/// on the main actor when `TimelineView` evaluates `usageRows` every 30s.
+@MainActor
+enum AgentLimitsCache {
+    private static var cached: [AgentKind: AgentLimitStatus] = [:]
+    private static var lastFetched: Date = .distantPast
+    private static var lastPaths: Set<String> = []
+    private static let ttl: TimeInterval = 60.0
+
+    static func limits(
+        for paths: Set<String>,
+        now: Date = Date(),
+        fetchInbox: (String) -> Inbox?
+    ) -> [AgentKind: AgentLimitStatus] {
+        if paths == lastPaths, now.timeIntervalSince(lastFetched) < ttl {
+            return cached
+        }
+        var latest: [AgentKind: AgentLimitStatus] = [:]
+        for path in paths {
+            for limit in fetchInbox(path)?.agentLimits ?? [] {
+                if let existing = latest[limit.agent], existing.cooldownExpiresAt >= limit.cooldownExpiresAt {
+                    continue
+                }
+                latest[limit.agent] = limit
+            }
+        }
+        cached = latest
+        lastFetched = now
+        lastPaths = paths
+        return latest
     }
 }

@@ -10,6 +10,9 @@ public struct CodexUsageReader: Sendable {
     /// Codex's limits are account-wide, so only the newest few sessions need checking —
     /// whichever wrote most recently carries the authoritative snapshot.
     private static let maxFilesToCheck = 5
+    /// Sessions are organized in day folders (`YYYY/MM/DD`). Limiting the traversal
+    /// to the newest day folders avoids stat'ing thousands of historical session files.
+    private static let maxDayDirectoriesToCheck = 5
     /// Only the trailing slice of a rollout is read: the rate-limit record is emitted on
     /// every turn, so it's always near the end of an active or recently-active file.
     private static let tailCapBytes = 64 * 1024
@@ -49,21 +52,86 @@ public struct CodexUsageReader: Sendable {
     // MARK: - File discovery
 
     private func rolloutFiles() -> [(url: URL, modified: Date)] {
-        guard let enumerator = FileManager.default.enumerator(
-            at: sessionsDirectory, includingPropertiesForKeys: [.contentModificationDateKey]
-        ) else { return [] }
-
+        let directories = recentDayDirectories()
         var results: [(URL, Date)] = []
-        for case let url as URL in enumerator {
-            guard url.lastPathComponent.hasPrefix("rollout-"), url.pathExtension == "jsonl" else { continue }
-            guard let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-                .contentModificationDate else { continue }
-            results.append((url, modified))
+
+        for dir in directories {
+            guard let entries = try? FileManager.default.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+
+            for url in entries {
+                guard url.lastPathComponent.hasPrefix("rollout-"), url.pathExtension == "jsonl" else { continue }
+                guard let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate else { continue }
+                results.append((url, modified))
+            }
         }
+
         return results
             .sorted { $0.1 > $1.1 }
             .prefix(Self.maxFilesToCheck)
             .map { (url: $0.0, modified: $0.1) }
+    }
+
+    /// Discovers candidate day directories containing rollout files, newest first.
+    /// Traverses the directory hierarchy (standard `sessions/YYYY/MM/DD/`, flat, or single-level)
+    /// in reverse chronological order and bounds the scan so older folders are never examined.
+    private func recentDayDirectories() -> [URL] {
+        var dayDirs: [URL] = []
+        var totalRollouts = 0
+        collectDayDirectories(at: sessionsDirectory, into: &dayDirs, totalRollouts: &totalRollouts)
+        return dayDirs
+    }
+
+    private func collectDayDirectories(at directory: URL, into dayDirs: inout [URL], totalRollouts: inout Int) {
+        guard dayDirs.count < Self.maxDayDirectoriesToCheck,
+              totalRollouts < Self.maxFilesToCheck
+        else { return }
+
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        let directRolloutCount = entries.lazy.filter {
+            $0.lastPathComponent.hasPrefix("rollout-") && $0.pathExtension == "jsonl"
+        }.count
+
+        if directRolloutCount > 0 {
+            dayDirs.append(directory)
+            totalRollouts += directRolloutCount
+            return
+        }
+
+        let subdirectories = entries.compactMap { url -> (url: URL, modDate: Date?)? in
+            guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]),
+                  values.isDirectory == true
+            else { return nil }
+            return (url, values.contentModificationDate)
+        }.sorted { a, b in
+            let aName = a.url.lastPathComponent
+            let bName = b.url.lastPathComponent
+            let aIsDate = aName.allSatisfy { $0.isNumber || $0 == "-" }
+            let bIsDate = bName.allSatisfy { $0.isNumber || $0 == "-" }
+            if aIsDate && bIsDate {
+                return aName > bName
+            }
+            if let aDate = a.modDate, let bDate = b.modDate, aDate != bDate {
+                return aDate > bDate
+            }
+            return aName > bName
+        }
+
+        for sub in subdirectories {
+            collectDayDirectories(at: sub.url, into: &dayDirs, totalRollouts: &totalRollouts)
+            if dayDirs.count >= Self.maxDayDirectoriesToCheck || totalRollouts >= Self.maxFilesToCheck {
+                break
+            }
+        }
     }
 
     // MARK: - Scanning one file

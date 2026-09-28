@@ -1,6 +1,23 @@
 import SwiftUI
 import AppKit
+import CoreTransferable
+import UniformTypeIdentifiers
 import LinkCKit
+
+extension UTType {
+    static let linkcTerminal = UTType(exportedAs: "com.linkc.terminal", conformingTo: .data)
+}
+
+/// A transferable drag payload representing a live linkC terminal being filed in the sidebar.
+/// Using a dedicated UTType prevents project rows and the Terminals section header from
+/// highlighting when hovering arbitrary text drags.
+struct LinkCTerminalDrag: Transferable, Codable, Equatable, Sendable {
+    let id: String
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .linkcTerminal)
+    }
+}
 
 /// The Codex-style sidebar: brand row, navigation, then Projects (sessions nested under each),
 /// Terminals, Servers, Cloud, Earlier, and a pinned footer. Plain rows, no cards.
@@ -344,7 +361,7 @@ private struct ProjectRow: View {
                     .stroke(Theme.accent, lineWidth: 1)
             }
         }
-        .dropDestination(for: String.self) { items, _ in
+        .dropDestination(for: LinkCTerminalDrag.self) { items, _ in
             guard let id = droppedTerminalID(items, model: model) else { return false }
             model.sidebarState.file(terminal: id, under: project.path)
             return true
@@ -418,12 +435,12 @@ private struct SessionRow: View {
 // MARK: - Terminals
 
 /// The live terminal a sidebar drop carries, or nil — logged — when the payload is anything else.
-@MainActor private func droppedTerminalID(_ items: [String], model: AppModel) -> String? {
-    guard let item = items.first, item.hasPrefix("linkc-terminal:") else {
-        NSLog("[linkC] drag ignored: unknown payload %@", String(describing: items))
+@MainActor private func droppedTerminalID(_ items: [LinkCTerminalDrag], model: AppModel) -> String? {
+    guard let item = items.first else {
+        NSLog("[linkC] drag ignored: empty payload")
         return nil
     }
-    let id = String(item.dropFirst("linkc-terminal:".count))
+    let id = item.id
     guard model.shellRows.contains(where: { $0.id == id }) else {
         NSLog("[linkC] drag ignored: no live terminal with id %@", id)
         return nil
@@ -440,7 +457,7 @@ private struct TerminalsSidebarSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             SectionLabel(title: "Terminals")
-                .dropDestination(for: String.self) { items, _ in
+                .dropDestination(for: LinkCTerminalDrag.self) { items, _ in
                     guard let id = droppedTerminalID(items, model: model) else { return false }
                     model.sidebarState.unfile(terminal: id)
                     return true
@@ -498,7 +515,7 @@ private struct ShellSidebarRow: View {
                 Circle().fill(dotColor).frame(width: 6, height: 6)
             }
         }
-        .draggable("linkc-terminal:\(row.id)")
+        .draggable(LinkCTerminalDrag(id: row.id))
         .contextMenu {
             // Unfiling only does something when the folder rule wouldn't refile it right back:
             // otherwise the terminal stays under `filed` by folder, and the menu item would
@@ -582,25 +599,57 @@ private struct EarlierSessionRow: View {
     }
 }
 
+/// Shared actions and help text for a restorable shell, used across the Terminals screen and sidebar.
+@MainActor
+struct RestorableShellActions {
+    let shell: RestorableShell
+    let restore: () -> Void
+    let forget: () -> Void
+
+    init(shell: RestorableShell, model: AppModel) {
+        self.shell = shell
+        self.restore = { model.restoreShell(shell) }
+        self.forget = { model.forgetShell(shell) }
+    }
+
+    init(shell: RestorableShell, onRestore: @escaping () -> Void, onDismiss: @escaping () -> Void) {
+        self.shell = shell
+        self.restore = onRestore
+        self.forget = onDismiss
+    }
+
+    var restoreHelp: String {
+        shell.command.map { "Re-run: \($0)" } ?? "Open a fresh shell in this folder"
+    }
+
+    var forgetHelp: String {
+        "Forget this terminal"
+    }
+}
+
 private struct EarlierShellRow: View {
     let shell: RestorableShell
     let model: AppModel
+
+    private var actions: RestorableShellActions {
+        RestorableShellActions(shell: shell, model: model)
+    }
 
     var body: some View {
         SidebarRow(
             title: shell.title,
             titleColor: Theme.textSecondary,
-            help: shell.command.map { "Re-run: \($0)" } ?? "Open a fresh shell in this folder",
-            action: { model.restoreShell(shell) }
+            help: actions.restoreHelp,
+            action: actions.restore
         ) {
             Image(systemName: "terminal")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textTertiary)
         } trailing: { hovering in
             if hovering {
-                Button { model.forgetShell(shell) } label: { RowGlyph(systemName: "xmark") }
+                Button(action: actions.forget) { RowGlyph(systemName: "xmark") }
                     .buttonStyle(.plain)
-                    .help("Forget this terminal")
+                    .help(actions.forgetHelp)
             }
         }
     }
