@@ -404,15 +404,25 @@ final class AppModel {
         }
     }
 
+    /// Guards `refreshCodexUsage` against overlapping reads — the panel-open trigger and the
+    /// 5-minute timer tick can otherwise land close enough together that a slow read (a large
+    /// `.codex/sessions`) is still in flight when the next one starts.
+    private var codexUsageRefreshInFlight = false
+
     /// Re-read Codex's own rate-limit snapshot. File IO only, and off the main actor: the reader
     /// reads the tail of the few newest rollouts, and the result lands back here.
     private func refreshCodexUsage() {
+        guard !codexUsageRefreshInFlight else { return }
+        codexUsageRefreshInFlight = true
         let reader = CodexUsageReader(
             sessionsDirectory: FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".codex/sessions"))
         Task.detached(priority: .utility) { [weak self] in
             let usage = reader.read()
-            await MainActor.run { self?.codexUsage = usage }
+            await MainActor.run {
+                self?.codexUsage = usage
+                self?.codexUsageRefreshInFlight = false
+            }
         }
     }
 
