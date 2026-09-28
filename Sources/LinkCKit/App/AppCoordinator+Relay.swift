@@ -77,12 +77,11 @@ extension AppCoordinator {
 
     /// True when `error` is the store's own lock-acquisition timeout rather than a real failure
     /// (a corrupt `inbox.json`, a missing row, an illegal transition, ...). `InboxStore` throws
-    /// `LinkCError.server` for all of these and carries no dedicated case for this one, so the
-    /// message text is what distinguishes it — matching the same pattern already used to identify
-    /// a `BlackboardStore` lock timeout.
+    /// the typed `LinkCError.lockTimeout` case for this alone, so this checks the case, never the
+    /// message text.
     func isRelayLockTimeout(_ error: Error) -> Bool {
-        guard let linkCError = error as? LinkCError, case .server(let message) = linkCError else { return false }
-        return message.contains("Timed out acquiring inbox lock")
+        guard let linkCError = error as? LinkCError, case .lockTimeout = linkCError else { return false }
+        return true
     }
 
     /// Touches `acceptsPaste` once per tick for every live session in this workspace, whether or
