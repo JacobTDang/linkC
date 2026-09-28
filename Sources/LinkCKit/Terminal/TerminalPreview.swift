@@ -208,17 +208,23 @@ public enum TerminalPreview {
     }
 
     /// A signature of `rows` for detecting a turn that has stopped producing anything new. Rows
-    /// that redraw on their own are dropped, and time values are normalized so a ticking clock
-    /// ("· 9s" a second after "· 8s") reads as unchanged — but any other change, including a
-    /// percentage, byte count, or tally, does not. Known limit: a number that carries a time unit
-    /// is treated as a clock, so a row whose only change is an ETA counting down or a size written
-    /// with an "m" suffix reads as unchanged.
+    /// that redraw on their own are dropped, and elapsed-time shapes are normalized so a ticking
+    /// clock ("· 9s" a second after "· 8s", or "(1m 46s)" a second after "(1m 45s)") reads as
+    /// unchanged — but any other change, including a percentage, byte count, tally, an ETA
+    /// counting down, or a size written with an "m" or "h" suffix, does not.
     public static func progressSignature(rows: [String]) -> String {
         let kept = rows
             .filter { !isLiveMarkerRow($0) }
-            .map { $0.replacingOccurrences(of: #"\d+(\.\d+)?\s?(ms|s|m|h)\b"#, with: "#", options: .regularExpression) }
+            .map { $0.replacingOccurrences(of: Self.elapsedTimeShape, with: "#", options: .regularExpression) }
         return String(kept.joined(separator: "\n").hashValue)
     }
+
+    /// A clock reading in the two shapes this file's rows actually draw one in: right after an
+    /// opening paren ("(12s", "(1m 46s)") or after a middot separator ("· 9s"). A bare number
+    /// carrying a time-unit letter anywhere else — an ETA counting down, a size like "12m" of
+    /// files — is a real value that changes, and normalizing it would read as no progress at all.
+    private static let elapsedTimeShape =
+        #"(?:(?<=\()|(?<=· ))\d+(\.\d+)?\s?(ms|s|m|h)(\s\d+(\.\d+)?\s?(ms|s|m|h))*\b"#
 
     /// The phrase on a live spinner row: one carrying "(12s · esc to interrupt)" or a token
     /// counter, or one led by a spinner glyph (Braille included). nil for any other row.

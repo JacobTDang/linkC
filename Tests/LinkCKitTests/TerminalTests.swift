@@ -886,11 +886,58 @@ final class TerminalPreviewTests: XCTestCase {
         )
     }
 
-    /// A time value need not trail the row to be normalized — only its own number and unit are
-    /// replaced, so the rest of the row still has to match for the signature to be unchanged.
+    /// Only a number directly after "(" or "· " reads as a clock. A time-shaped number written
+    /// any other way in the row is a real value, not a redrawn timer, and must not be masked —
+    /// this used to be normalized regardless of position, which is exactly what let an ETA or a
+    /// file size (below) hide as "no progress" too.
     func testProgressSignatureIgnoresATimeValueNotAtRowEnd() {
         let before = ["Build running for 2m now"]
         let after = ["Build running for 3m now"]
+        XCTAssertNotEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    /// An ETA counting down is real progress, textually shaped just like an elapsed clock — it
+    /// must not be masked into "unchanged" the way the old, unconditional regex did.
+    func testProgressSignatureChangesWhenAnETACountsDown() {
+        let before = ["Downloading dependencies… ETA 45s remaining"]
+        let after = ["Downloading dependencies… ETA 44s remaining"]
+        XCTAssertNotEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    /// A size using the same "m"/"h" letters as minutes/hours ("12m" of files) is not a clock —
+    /// it must register as a real change, not read as a ticking timer.
+    func testProgressSignatureChangesWhenASizeUsesATimeUnitLetter() {
+        let before = ["Copied 12m of files"]
+        let after = ["Copied 18m of files"]
+        XCTAssertNotEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    /// The one-shot duration in "Ran 24 tests (12.4s)" is exactly the shape that must still be
+    /// treated as a clock — parenthesized, right after "(" — so a redrawn row whose count is
+    /// otherwise identical still reads as unchanged.
+    func testProgressSignatureIgnoresAParenthesizedDuration() {
+        let before = ["Ran 24 tests (12.4s)"]
+        let after = ["Ran 24 tests (15.9s)"]
+        XCTAssertEqual(
+            TerminalPreview.progressSignature(rows: before),
+            TerminalPreview.progressSignature(rows: after)
+        )
+    }
+
+    /// A compound elapsed duration ("1m 46s") normalizes as one clock reading, not two separate
+    /// numbers.
+    func testProgressSignatureIgnoresACompoundElapsedDuration() {
+        let before = ["Finished (1m 46s)"]
+        let after = ["Finished (1m 47s)"]
         XCTAssertEqual(
             TerminalPreview.progressSignature(rows: before),
             TerminalPreview.progressSignature(rows: after)
