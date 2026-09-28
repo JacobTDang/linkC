@@ -53,7 +53,7 @@ in `system-map.json` at the project root.
 ![The Board, showing linkC's architecture as components, frames and labeled arrows, next to the project sidebar](docs/images/board.png)
 
 The tools are **Select** (V), **Component**, **Arrow** (A), **Frame** (F), **Note** (N) and
-**Text** (T), plus **Tidy up** to re-lay-out the whole diagram along its flow. Components come in
+**Text** (T), plus **Tidy up** to lay out the whole diagram again along its flow. Components come in
 three groups:
 
 - **System** — database, table, cache, queue, storage, service, host, external.
@@ -95,8 +95,8 @@ Postgres SQL:
 - **Copy SQL** and **Export SQL…** write `CREATE TABLE` statements in foreign-key order. linkC
   never runs SQL against a database.
 
-Agents read and edit the Board through the linkC MCP server; linkC re-lays-out the diagram after
-each edit.
+Agents read and edit the Board through the linkC MCP server; linkC lays out the diagram again
+after each edit.
 
 ### Agents that work together
 
@@ -139,9 +139,9 @@ handed off the task.
 ### Usage and limits
 
 The **Usage** section shows what each agent has left, including its 5-hour and 7-day windows
-where the agent reports one. linkC reads Claude Code usage from local transcripts under
-`~/.claude/projects` and Codex usage from session files under `~/.codex/sessions` — none of it
-leaves your machine. Cursor Agent and Antigravity don't keep local usage records, so linkC can
+where the agent reports one. linkC reads Claude Code's 5-hour and 7-day limits from the status line it adds to each Claude
+Code session, and Codex usage from session files under `~/.codex/sessions` — none of it leaves
+your machine. Cursor Agent and Antigravity don't keep local usage records, so linkC can
 only show a limit for them once the limit message actually appears in the terminal.
 
 ### App tabs
