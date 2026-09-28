@@ -69,8 +69,19 @@ public final class AppPreferences {
     /// Tier → model per agent. Backed by `models.json`, not UserDefaults: `linkc-mcp` is a
     /// separate process with its own defaults domain and needs to read the same mapping.
     public var agentModels: AgentModelSettings {
-        didSet { modelStore.save(agentModels) }
+        didSet {
+            switch modelStore.save(agentModels) {
+            case .success:
+                modelsSaveRefusal = nil
+            case .failure(let refusal):
+                modelsSaveRefusal = refusal.description
+            }
+        }
     }
+
+    /// Why the last `agentModels` write to `models.json` was refused, or nil if the last write
+    /// (if any) succeeded. Settings surfaces this so a refused edit doesn't just vanish silently.
+    public private(set) var modelsSaveRefusal: String?
 
     /// Apps registered in Settings > APPS, available in every project. JSON in UserDefaults: only
     /// the app reads them.

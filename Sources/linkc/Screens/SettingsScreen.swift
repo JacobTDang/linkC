@@ -82,6 +82,13 @@ struct SettingsScreen: View {
                             }
                         }
                     }
+                    if let modelsSaveRefusal = model.preferences.modelsSaveRefusal {
+                        Text(modelsSaveRefusal)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.contextWarn)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 4)
+                    }
 
                     SectionHeader(title: "APPS").padding(.top, 6)
                     Text(

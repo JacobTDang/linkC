@@ -69,6 +69,32 @@ final class AppPreferencesTests: XCTestCase {
         XCTAssertEqual(reloaded.agentModels.model(for: .codex, tier: .standard), "gpt-7-nova")
     }
 
+    func testAnUnreadableModelsFileSetsARefusalThatClearsOnceItSavesAgain() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-prefs-models-refusal-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = AgentModelStore(directory: dir)
+        try Data("not json".utf8).write(to: URL(fileURLWithPath: store.path))
+
+        let prefs = AppPreferences(defaults: defaults, modelStore: store)
+        XCTAssertNil(prefs.modelsSaveRefusal)
+
+        var edited = prefs.agentModels
+        edited.setModel("gpt-7-nova", for: .codex, tier: .standard)
+        prefs.agentModels = edited
+
+        let refusal = try XCTUnwrap(prefs.modelsSaveRefusal)
+        XCTAssertTrue(refusal.hasPrefix("models.json can't be read:"), refusal)
+        XCTAssertTrue(refusal.hasSuffix("Fix or move the file."), refusal)
+
+        try FileManager.default.removeItem(atPath: store.path)
+        var editedAgain = prefs.agentModels
+        editedAgain.setModel("gpt-7-luna", for: .codex, tier: .light)
+        prefs.agentModels = editedAgain
+
+        XCTAssertNil(prefs.modelsSaveRefusal)
+    }
+
     func testAnUnreadableAppsListIsKeptRatherThanLost() {
         let garbage = Data("not json".utf8)
         defaults.set(garbage, forKey: "linkCApps")
