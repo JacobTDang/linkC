@@ -20,13 +20,7 @@ public struct SessionRowStatus: Equatable, Sendable {
     public init(format: Format, tone: Tone, now: Date = Date()) {
         self.format = format
         self.tone = tone
-        switch format {
-        case .fixed(let text):
-            self.text = text
-        case .age(let prefix, let since):
-            let age = AgeFormat.compact(from: since, to: now)
-            self.text = prefix.isEmpty ? age : "\(prefix) \(age)"
-        }
+        self.text = Self.formatText(format: format, now: now)
     }
 
     public init(text: String, tone: Tone) {
@@ -36,10 +30,14 @@ public struct SessionRowStatus: Equatable, Sendable {
     }
 
     public static func == (lhs: SessionRowStatus, rhs: SessionRowStatus) -> Bool {
-        lhs.text == rhs.text && lhs.tone == rhs.tone
+        lhs.format == rhs.format && lhs.tone == rhs.tone && lhs.text == rhs.text
     }
 
     public func text(now: Date) -> String {
+        Self.formatText(format: format, now: now)
+    }
+
+    private static func formatText(format: Format, now: Date) -> String {
         switch format {
         case .fixed(let text):
             return text
@@ -58,6 +56,20 @@ public struct SessionRowStatus: Equatable, Sendable {
         case .age(_, let since):
             let elapsed = max(0, now.timeIntervalSince(since))
             return elapsed < 60.0 ? 1.0 : 15.0
+        }
+    }
+}
+
+/// Pure scheduling rule for age labels: ticks every 1.0s until since + 60s, then backs off to every 15.0s.
+public enum AgeScheduleRule {
+    /// Returns the next tick date after `current` for an age label whose countdown began at `since`.
+    public static func nextTick(after current: Date, since: Date) -> Date {
+        let boundary = since.addingTimeInterval(60.0)
+        if current < boundary {
+            let nextSecond = current.addingTimeInterval(1.0)
+            return min(nextSecond, boundary)
+        } else {
+            return current.addingTimeInterval(15.0)
         }
     }
 }
