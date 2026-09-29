@@ -281,7 +281,7 @@ final class StatusLineFeedTests: XCTestCase {
 
         try commandWrites(shorterReport, to: file)
         XCTAssertTrue(waitUntil { delivered.all.count == 2 })
-        try commandWrites("not json", to: file)
+        try commandWrites("still not json {", to: file)
         XCTAssertTrue(waitUntil { logged.all.count == 3 }, "after a good report the same failure is news again")
     }
 
