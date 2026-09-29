@@ -25,6 +25,7 @@ final class ManualClock: Clock, Sendable {
     private struct State {
         var now = Instant(offset: .zero)
         var pending: [PendingSleep] = []
+        var completed = 0
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -34,6 +35,9 @@ final class ManualClock: Clock, Sendable {
 
     /// The sleeps still waiting, oldest first.
     var pendingSleeps: [PendingSleep] { state.withLock { $0.pending } }
+
+    /// How many sleeps ran their full time (a cancelled one does not count).
+    var completedSleeps: Int { state.withLock { $0.completed } }
 
     func sleep(until deadline: Instant, tolerance: Duration?) async throws {
         let id = UUID()
@@ -65,6 +69,7 @@ final class ManualClock: Clock, Sendable {
             state.now = state.now.advanced(by: duration)
             let due = state.pending.filter { $0.deadline <= state.now }
             state.pending.removeAll { $0.deadline <= state.now }
+            state.completed += due.count
             return due
         }
         for sleep in due { sleep.continuation.resume() }

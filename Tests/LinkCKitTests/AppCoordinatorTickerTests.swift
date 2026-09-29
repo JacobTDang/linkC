@@ -75,6 +75,31 @@ final class AppCoordinatorTickerTests: XCTestCase {
         return predicate()
     }
 
+    /// Runs a minute of one-second steps, letting the loop settle into its next sleep after each.
+    private func runAMinute() async throws {
+        for _ in 0..<60 {
+            clock.advance(by: .seconds(1))
+            for _ in 0..<250 where clock.pendingSleeps.isEmpty { try await Task.sleep(for: .milliseconds(4)) }
+        }
+    }
+
+    /// The count this work exists to lower. Two loops used to wake every second whatever was going
+    /// on, 120 wakeups a minute. Now a hidden, idle app wakes 12 times, and an open panel 60 (one
+    /// loop, not two).
+    func testAHiddenIdleMinuteIsTwelvePassesAndAnOpenPanelMinuteIsSixty() async throws {
+        let coordinator = try await startIdleCoordinator()
+        defer { coordinator.shutdown() }
+
+        try await runAMinute()
+        XCTAssertEqual(clock.completedSleeps, 12, "hidden and idle: one pass every five seconds")
+
+        coordinator.setPanelVisible(true)
+        try await waitForSleep(of: .seconds(1))
+        let before = clock.completedSleeps
+        try await runAMinute()
+        XCTAssertEqual(clock.completedSleeps - before, 60, "panel open: one pass every second")
+    }
+
     func testAnIdleHiddenCoordinatorSleepsFiveSecondsWithATenthAsTolerance() async throws {
         let coordinator = try await startIdleCoordinator()
         defer { coordinator.shutdown() }
