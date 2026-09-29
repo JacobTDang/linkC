@@ -106,6 +106,46 @@ final class LimitScanSkipTests: XCTestCase {
         XCTAssertNil(try inbox.isAgentLimited(agent: .codex), "an unchanged screen must not re-arm a lapsed limit")
     }
 
+    /// A redraw can change the screen without changing the rows the rules read: a frame drawn over
+    /// a blank row is chrome, which the rules never see. The screen scan then runs again and finds
+    /// the same old banner, and only the per-session banner signature stops it re-arming a limit
+    /// whose cooldown has lapsed.
+    @MainActor
+    func testAFrameDrawnOverABlankRowDoesNotRearmALapsedLimitFromTheSameOldBanner() throws {
+        let (coordinator, term, id) = makeSession(
+            agent: .codex, screen: "\u{1b}[2J\u{1b}[H\(rateLimitBanner)\r\n\r\n\r\n"
+        )
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: workspace.path)
+        coordinator.sampleAgentStates()
+        let recorded = try XCTUnwrap(try inbox.isAgentLimited(agent: .codex), "the banner is a limit")
+
+        var seeded = try inbox.load()
+        let index = try XCTUnwrap(seeded.agentLimits.firstIndex { $0.agent == .codex })
+        seeded.agentLimits[index] = AgentLimitStatus(
+            agent: .codex, reason: recorded.reason, limitedAt: recorded.limitedAt,
+            cooldownExpiresAt: Date().addingTimeInterval(-1)
+        )
+        try inbox.saveRaw(seeded)
+        for _ in 0..<3 { coordinator.sampleAgentStates() }
+        XCTAssertNotEqual(coordinator.store.session(id: id)?.state, .error, "the session recovers once its cooldown ends")
+        XCTAssertNil(try inbox.isAgentLimited(agent: .codex))
+        let screenBefore = term.screenSnapshot().fingerprint
+
+        term.terminalView.feed(text: "\u{1b}[3;1H╭──────────────────╮")
+        XCTAssertNotEqual(term.screenSnapshot().fingerprint, screenBefore, "the screen changed")
+        XCTAssertEqual(
+            term.screenSnapshot().recentOutput(lines: 50), rateLimitBanner,
+            "and the rows the rules read did not"
+        )
+        let scans = countingScans(coordinator)
+        coordinator.sampleAgentStates()
+
+        XCTAssertEqual(scans.count, 1, "a changed screen is scanned again")
+        XCTAssertNil(try inbox.isAgentLimited(agent: .codex), "the same old banner must not arm a new limit")
+        XCTAssertNotEqual(coordinator.store.session(id: id)?.state, .error)
+    }
+
     @MainActor
     func testANewBannerOnAChangedScreenIsFoundAfterAQuietStretch() throws {
         let (coordinator, term, _) = makeSession(agent: .cursor, screen: ScreenFixture.terminalInput(spinnerSeconds: nil))
