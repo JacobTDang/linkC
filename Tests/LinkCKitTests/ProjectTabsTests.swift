@@ -128,14 +128,19 @@ final class ProjectTabsTests: XCTestCase {
             Session(id: "s\(i)", cwd: canonical, title: "Session \(i)", state: i == 1 ? .working : .ready)
         }
 
+        let baseline = ThreadCPUTime.elapsed {
+            for _ in 0..<500 {
+                for _ in 0..<20 {
+                    _ = ProjectPath.canonical(canonical)
+                }
+            }
+        }
+
         let elapsed = ThreadCPUTime.elapsed {
             for _ in 0..<500 {
                 _ = ProjectTabs.tabs(project: canonical, sessions: sessions, shells: [], titles: [:])
             }
         }
-        // In the unoptimized code with 20 sessions and 500 iterations, 10,000 open/close syscalls took >0.05s.
-        // With pre-canonicalized cwd direct comparison, it should take <0.02s.
-        XCTAssertLessThan(elapsed, 0.05, "500 calls over 20 sessions should avoid per-session syscalls, took \(elapsed)s")
+        XCTAssertLessThan(elapsed, baseline / 2, "500 calls over 20 sessions should avoid per-session syscalls, took \(elapsed)s vs baseline \(baseline)s")
     }
 }
-

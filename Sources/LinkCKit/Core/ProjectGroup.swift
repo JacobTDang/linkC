@@ -45,7 +45,7 @@ public struct ProjectGroup: Sendable, Identifiable, Equatable {
         var indexByPath: [String: Int] = [:]
 
         for session in sessions {
-            let path = ProjectPath.canonical(session.cwd)
+            let path = session.cwd
             if let idx = indexByPath[path] {
                 groups[idx].sessions.append(session)
             } else {

@@ -41,12 +41,15 @@ public enum ProjectTabs {
 
     /// The Board, then the project's agent sessions, then its terminals, then its open apps — each in the order they were opened. `titles` holds live session titles, which win over the stored ones. `activities`
     /// holds each working or permission-waiting session's current action, keyed by session id.
+    ///
+    /// - Precondition: Each `Session.cwd` is canonicalized upon creation (`Session.init`), so comparing
+    ///   `session.cwd == folder` avoids per-session path normalization syscalls on every tab evaluation.
     public static func tabs(
         project path: String, sessions: [Session], shells: [ShellRow], filed: [String: String] = [:], titles: [String: String],
         activities: [String: String] = [:], openApps: [OpenApp] = []
     ) -> [ProjectTab] {
         let folder = standardized(path)
-        var tabs = [ProjectTab(id: boardID(folder), kind: .board, title: "Board", isWorking: false)]
+        var tabs = [ProjectTab(id: "board:" + folder, kind: .board, title: "Board", isWorking: false)]
         for session in sessions where session.cwd == folder {
             tabs.append(ProjectTab(
                 id: session.id, kind: .agent(session.agentKind),
