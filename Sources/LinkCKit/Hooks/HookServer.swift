@@ -60,19 +60,19 @@ public final class HookServer: @unchecked Sendable {
     /// Where the newest Claude status-line body this process has seen is cached to disk, so
     /// `linkc-mcp` — a separate process per workspace, with no access to this server's
     /// in-memory `onStatusLine` callback — can read the same `rate_limits` figures the sidebar
-    /// shows instead of a structurally different (and much slower) transcript scan. Defaulted
-    /// to linkC's own Application Support folder, the same one the production `AppCoordinator`
-    /// already uses; overridable so a test never touches the real one.
+    /// shows instead of a structurally different (and much slower) transcript scan. The app passes
+    /// `defaultStatusLineCacheURL()`; there is no default here, so a test cannot reach the real
+    /// file by leaving the argument out.
     private let statusLineCacheURL: URL
 
     /// - Parameter maxRequestBytes: hard cap on the total header+body bytes buffered for a
     ///   single request. A connection that exceeds it (or declares a larger `Content-Length`)
     ///   is dropped, bounding memory against a buggy/hostile local client.
-    public init(port: UInt16, maxRequestBytes: Int = 1 << 20, statusLineCacheURL: URL? = nil) {
+    public init(port: UInt16, maxRequestBytes: Int = 1 << 20, statusLineCacheURL: URL) {
         self.requestedPort = port
         self._resolvedPort = port
         self.maxRequestBytes = maxRequestBytes
-        self.statusLineCacheURL = statusLineCacheURL ?? Self.defaultStatusLineCacheURL()
+        self.statusLineCacheURL = statusLineCacheURL
     }
 
     /// `~/Library/Application Support/linkC/claude-status-line.json` — matches the folder

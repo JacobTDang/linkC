@@ -32,6 +32,17 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         }
     }
 
+    /// Where the hook server of every coordinator `makeCoordinator` builds caches Claude's status
+    /// line: beside the test's other files, never in the user's Application Support folder.
+    private var statusLineCache: URL { tempDir.appendingPathComponent("claude-status-line.json") }
+
+    /// What Claude's status line cache holds once a report has been written to it, or nil if none
+    /// is by the time the wait ends.
+    private func cachedStatusLine() async throws -> Data? {
+        guard try await waitUntil({ FileManager.default.fileExists(atPath: statusLineCache.path) }) else { return nil }
+        return try Data(contentsOf: statusLineCache)
+    }
+
     /// Builds a coordinator wired to a real (but un-spawned) terminal manager and a fake
     /// notification center. `isWatching` returns false so notifiable states would notify.
     private func makeCoordinator(
@@ -59,7 +70,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         }
         let coordinator = AppCoordinator(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer(port: 0, statusLineCacheURL: statusLineCache),
             notifications: NotificationManager(sink: sink, now: { Date() }),
             claudePath: claudePath,
             settingsDir: settingsDir,
@@ -1429,6 +1440,17 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertNil(coordinator.store.session(id: "S")?.claudeSessionId, "a non-claude session must never carry a claude id")
     }
 
+    /// Posts one status-line report, tokened, to the coordinator's hook server and waits for its 200.
+    private func postStatusLine(_ body: Data, to coordinator: AppCoordinator) async throws {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(coordinator.hookPort)/hook")!)
+        request.httpMethod = "POST"
+        request.setValue(HookServer.statusLineEvent, forHTTPHeaderField: "X-LinkC-Event")
+        request.setValue(coordinator.hookToken, forHTTPHeaderField: "X-LinkC-Token")
+        request.httpBody = body
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
     /// A tokened status-line report from any Claude session becomes Claude's usage reading.
     func testAStatusLineReportBecomesClaudesUsage() async throws {
         let coordinator = makeCoordinator()
@@ -1436,17 +1458,31 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         defer { coordinator.shutdown() }
         XCTAssertNil(coordinator.claudeUsage, "no reading before any report")
 
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(coordinator.hookPort)/hook")!)
-        request.httpMethod = "POST"
-        request.setValue(HookServer.statusLineEvent, forHTTPHeaderField: "X-LinkC-Event")
-        request.setValue(coordinator.hookToken, forHTTPHeaderField: "X-LinkC-Token")
-        request.httpBody = Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#.utf8)
-        let (_, response) = try await URLSession.shared.data(for: request)
-        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let body = Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#.utf8)
+        try await postStatusLine(body, to: coordinator)
 
         let arrived = try await waitUntil { coordinator.claudeUsage?.windows.count == 2 }
         XCTAssertTrue(arrived, "the reading must reach the coordinator")
         XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "5h" }?.usedPercent, 66)
+        let cached = try await cachedStatusLine()
+        XCTAssertEqual(cached, body, "the report is cached where the test said, not in the user's folder")
+    }
+
+    /// The headless coordinator keeps its state under the workspace folder it is given, the
+    /// status-line cache included: it must not reach the user's Application Support folder.
+    func testAHeadlessCoordinatorCachesTheStatusLineUnderItsWorkspace() async throws {
+        let workspace = tempDir.appendingPathComponent("headless")
+        let coordinator = AppCoordinator(workspaceDir: workspace)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+
+        let body = Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000}}}"#.utf8)
+        try await postStatusLine(body, to: coordinator)
+
+        let cache = workspace.appendingPathComponent("claude-status-line.json")
+        let written = try await waitUntil { FileManager.default.fileExists(atPath: cache.path) }
+        XCTAssertTrue(written, "the report must be cached under the workspace")
+        XCTAssertEqual(try Data(contentsOf: cache), body)
     }
 
     /// The status file a launched session's command writes: `<settings folder>/status-lines/<id>.line`.
@@ -1501,7 +1537,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let input = Pipe()
         shell.standardInput = input
         try shell.run()
-        input.fileHandleForWriting.write(Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#.utf8 + [0x0A]))
+        let body = Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#.utf8)
+        input.fileHandleForWriting.write(body + [0x0A])
         try input.fileHandleForWriting.close()
         shell.waitUntilExit()
 
@@ -1509,6 +1546,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertTrue(arrived, "the reading must reach the coordinator through the file")
         XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "5h" }?.usedPercent, 66)
         XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "7d" }?.usedPercent, 92)
+        let cached = try await cachedStatusLine()
+        XCTAssertEqual(cached, body, "the report is cached where the test said, not in the user's folder")
     }
 
     /// The file follows the session: stopping it removes the file, and so does a launch that fails.

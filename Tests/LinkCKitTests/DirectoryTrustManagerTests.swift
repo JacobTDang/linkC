@@ -303,7 +303,7 @@ final class DirectoryTrustManagerTests: XCTestCase {
 
         let coordinator = AppCoordinator(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer.forTesting(),
             notifications: NotificationManager(sink: RecordingSink(), now: { Date() }),
             claudePath: "/bin/cat",
             settingsDir: tempDir.appendingPathComponent("settings"),

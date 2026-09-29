@@ -56,7 +56,7 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         let coordinator = AppCoordinator(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer.forTesting(),
             notifications: NotificationManager(sink: sink, now: { Date() }),
             claudePath: scriptURL.path,
             settingsDir: settingsDir,

@@ -230,7 +230,7 @@ public final class AppCoordinator {
         let linkCDir = support.appendingPathComponent("linkC", isDirectory: true)
         self.init(
             terminals: terminals,
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer(port: 0, statusLineCacheURL: HookServer.defaultStatusLineCacheURL()),
             notifications: NotificationManager(),
             claudePath: claudePath,
             settingsDir: linkCDir,
@@ -253,7 +253,7 @@ public final class AppCoordinator {
     ) {
         self.init(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer(port: 0, statusLineCacheURL: workspaceDir.appendingPathComponent("claude-status-line.json")),
             notifications: NotificationManager(sink: NullSink(), now: { Date() }),
             claudePath: "/usr/bin/true",
             settingsDir: workspaceDir,

@@ -400,7 +400,7 @@ final class HookServerTests: XCTestCase {
     private let rateLimitsBody = #"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#
 
     func testEndToEndLoopbackDeliversDecodedEventAndRespondsOKWithEmptyJSONBody() async throws {
-        let server = HookServer(port: 0)
+        let server = HookServer.forTesting()
         let box = EventBox()
         server.onEvent = { box.record($0) }
         try server.start()
@@ -431,7 +431,7 @@ final class HookServerTests: XCTestCase {
     }
 
     func testUnrecognizedEventStillRespondsOKAndNeverFiresCallback() async throws {
-        let server = HookServer(port: 0)
+        let server = HookServer.forTesting()
         let box = EventBox()
         server.onEvent = { box.record($0) }
         try server.start()
@@ -454,7 +454,7 @@ final class HookServerTests: XCTestCase {
         // Tight cap so the test needn't send a real megabyte. A request whose body (and
         // declared Content-Length) exceeds the cap must be dropped — no response, no event —
         // rather than buffered without bound.
-        let server = HookServer(port: 0, maxRequestBytes: 1024)
+        let server = HookServer.forTesting(maxRequestBytes: 1024)
         let box = EventBox()
         server.onEvent = { box.record($0) }
         try server.start()
@@ -478,7 +478,7 @@ final class HookServerTests: XCTestCase {
     }
 
     func testATokenedStatusLineDeliversClaudesLimitsAndNoSessionEvent() async throws {
-        let server = HookServer(port: 0)
+        let server = HookServer.forTesting()
         server.requiredToken = "tok"
         let events = EventBox()
         let readings = ReadingBox()
@@ -551,7 +551,7 @@ final class HookServerTests: XCTestCase {
     }
 
     func testAStatusLineWithTheWrongTokenDeliversNothing() async throws {
-        let server = HookServer(port: 0)
+        let server = HookServer.forTesting()
         server.requiredToken = "tok"
         let readings = ReadingBox()
         server.onStatusLine = { readings.record($0) }
@@ -567,7 +567,7 @@ final class HookServerTests: XCTestCase {
     }
 
     func testAStatusLineWithoutRateLimitsDeliversNothingButStillAnswers() async throws {
-        let server = HookServer(port: 0)
+        let server = HookServer.forTesting()
         server.requiredToken = "tok"
         let readings = ReadingBox()
         server.onStatusLine = { readings.record($0) }

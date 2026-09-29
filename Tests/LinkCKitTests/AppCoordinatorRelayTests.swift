@@ -79,7 +79,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         return AppCoordinator(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer.forTesting(),
             notifications: NotificationManager(sink: sink, now: { Date() }),
             claudePath: scriptURL.path,
             settingsDir: settingsDir,
@@ -230,7 +230,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         return AppCoordinator(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer.forTesting(),
             notifications: NotificationManager(sink: RecordingSink(), now: { Date() }),
             claudePath: bannerScript.path,
             settingsDir: settingsDir,
@@ -1227,7 +1227,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         let coordinator = AppCoordinator(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer.forTesting(),
             notifications: NotificationManager(sink: RecordingSink(), now: { Date() }),
             claudePath: scriptURL.path,
             settingsDir: settingsDir,
