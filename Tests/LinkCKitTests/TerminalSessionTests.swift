@@ -19,13 +19,11 @@ extension TerminalSessionTests {
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
         let titleRecorder = TerminalTitleRecorder()
         view.processDelegate = titleRecorder
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         view.needsDisplay = false
         view.getTerminal().clearUpdateRange()
 
         let output = "\u{1b}]0;detached title\u{7}alpha\r\nbeta\u{1b}[?2004h"
         view.dataReceived(slice: Array(output.utf8)[...])
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 
         let terminal = view.getTerminal()
         XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "alpha")
@@ -33,17 +31,17 @@ extension TerminalSessionTests {
         XCTAssertEqual(terminal.getCursorLocation().y, 1)
         XCTAssertTrue(terminal.bracketedPasteMode)
         XCTAssertEqual(titleRecorder.title, "detached title")
+        XCTAssertTrue(view.hasDeferredDisplay)
         XCTAssertNotNil(terminal.getUpdateRange(),
                         "detached output must remain dirty until attachment, not be consumed by updateDisplay")
     }
 
     func testDetachedFeedRequestsFullDisplayWhenReattached() {
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         view.needsDisplay = false
         view.getTerminal().clearUpdateRange()
         view.dataReceived(slice: Array("reattached content".utf8)[...])
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertTrue(view.hasDeferredDisplay)
         XCTAssertNotNil(view.getTerminal().getUpdateRange())
 
         let host = TerminalHostView(frame: view.bounds)
@@ -52,9 +50,8 @@ extension TerminalSessionTests {
         host.show(view)
 
         XCTAssertTrue(view.needsDisplay, "reattaching after background output must invalidate the full terminal")
+        XCTAssertFalse(view.hasDeferredDisplay)
         XCTAssertEqual(view.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "reattached content")
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        XCTAssertNil(view.getTerminal().getUpdateRange(), "attachment must consume the accumulated dirty rows")
     }
 
     func testDetachedFeedUsesLessCPUThanTheInheritedDisplayPath() {

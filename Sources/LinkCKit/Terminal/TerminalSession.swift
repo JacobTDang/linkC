@@ -384,6 +384,7 @@ private final class ProcessDelegate: NSObject, LocalProcessTerminalViewDelegate 
 /// The terminal view `TerminalSession` hosts.
 public final class LinkCTerminalView: LocalProcessTerminalView {
     private var hasDetachedUpdates = false
+    var hasDeferredDisplay: Bool { hasDetachedUpdates }
 
     public override func dataReceived(slice: ArraySlice<UInt8>) {
         guard window == nil else {
