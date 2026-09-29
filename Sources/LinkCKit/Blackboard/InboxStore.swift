@@ -51,7 +51,7 @@ public final class InboxStore: Sendable {
         URL(fileURLWithPath: workspaceRoot, isDirectory: true).appendingPathComponent(".linkc", isDirectory: true)
     }
 
-    private var inboxURL: URL {
+    var inboxURL: URL {
         linkcDirectory.appendingPathComponent("inbox.json")
     }
 
@@ -84,7 +84,7 @@ public final class InboxStore: Sendable {
     /// If `timeout <= 0`, blocks indefinitely.
     func withFileLock<T>(timeout: TimeInterval = 5.0, _ body: () throws -> T) throws -> T {
         try ensureDirectoryExists()
-        let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+        let fd = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard fd >= 0 else {
             throw LinkCError.server("Failed to open inbox lock file at \(lockURL.path)")
         }
@@ -123,23 +123,48 @@ public final class InboxStore: Sendable {
     /// Loads the inbox from disk without locking. Internal use inside locked regions.
     /// A missing file is an empty inbox. A file that does not decode throws: every write loads
     /// first, so the file is never replaced, and the tasks a newer linkC wrote there survive.
+    /// Always reads the file — never the cache — so a read-modify-write builds on what is there
+    /// now, including another process's write. What it decodes refreshes the cache for
+    /// read-only callers.
     private func loadUnlocked() throws -> Inbox {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: inboxURL.path) else {
+        let path = inboxURL.path
+        guard let file = try FileIdentity.read(path) else {
+            InboxReadCache.shared.forget(path: path)
             return Inbox(workspacePath: workspaceRoot)
         }
-        let data = try Data(contentsOf: inboxURL)
+        StateFileReadCounter.shared.record(path: path)
         do {
-            return try decoder.decode(Inbox.self, from: data)
+            let inbox = try decoder.decode(Inbox.self, from: file.data)
+            InboxReadCache.shared.store(inbox, at: path, identity: file.identity)
+            return inbox
         } catch {
-            let mtime = (try? FileManager.default.attributesOfItem(atPath: inboxURL.path))?[.modificationDate] as? Date
-            if LoggedFailureTracker.shared.shouldLog(path: inboxURL.path, mtime: mtime) {
+            InboxReadCache.shared.forget(path: path)
+            let mtime = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+            if LoggedFailureTracker.shared.shouldLog(path: path, mtime: mtime) {
                 NSLog("linkC: inbox.json at %@ could not be decoded — %@; leaving it untouched. It may have been written by a newer linkC.",
-                      inboxURL.path, String(describing: error))
+                      path, String(describing: error))
             }
             throw LinkCError.server(
-                "inbox.json at \(inboxURL.path) could not be decoded (\(error)); leaving it untouched. It may have been written by a newer linkC."
+                "inbox.json at \(path) could not be decoded (\(error)); leaving it untouched. It may have been written by a newer linkC."
             )
+        }
+    }
+
+    /// The inbox for a read-only question. Served from `InboxReadCache` while the file still has
+    /// the identity it was decoded at, without the lock or a read: a writer publishes by renaming
+    /// a finished temp file over `inbox.json`, so an unchanged identity means the cached copy is
+    /// what a locked read would return this instant, and a write still in flight has not landed.
+    /// An absent file is an empty inbox and is not created here. Any change of identity goes to
+    /// disk under the lock, and a file that does not decode still throws.
+    private func snapshot(timeout: TimeInterval) throws -> Inbox {
+        let path = inboxURL.path
+        switch try FileIdentity.probe(path) {
+        case .missing:
+            InboxReadCache.shared.forget(path: path)
+            return Inbox(workspacePath: workspaceRoot)
+        case .present(let identity):
+            if let cached = InboxReadCache.shared.inbox(at: path, matching: identity) { return cached }
+            return try withFileLock(timeout: timeout) { try loadUnlocked() }
         }
     }
 
@@ -203,11 +228,9 @@ public final class InboxStore: Sendable {
         }
     }
 
-    /// Public load acquiring lock.
+    /// The current inbox, for reading. Serves the cached decode while the file is unchanged.
     public func load(timeout: TimeInterval = 5.0) throws -> Inbox {
-        try withFileLock(timeout: timeout) {
-            try loadUnlocked()
-        }
+        try snapshot(timeout: timeout)
     }
 
     /// Public raw save for testing or explicit writes.
@@ -274,10 +297,7 @@ public final class InboxStore: Sendable {
 
     /// Returns pending messages in FIFO order (those with status `.queued`).
     public func fetchPending(timeout: TimeInterval = 5.0) throws -> [PendingMessage] {
-        try withFileLock(timeout: timeout) {
-            let inbox = try loadUnlocked()
-            return inbox.messages.filter { $0.status == .queued }
-        }
+        try snapshot(timeout: timeout).messages.filter { $0.status == .queued }
     }
 
     /// Marks a message as delivered and stamps `deliveredAt`.
@@ -345,17 +365,15 @@ public final class InboxStore: Sendable {
 
     /// Returns the active limit status for an agent kind if cooldown has not expired; returns nil otherwise.
     public func isAgentLimited(agent: AgentKind, timeout: TimeInterval = 5.0) throws -> AgentLimitStatus? {
-        try withFileLock(timeout: timeout) {
-            let inbox = try loadUnlocked()
-            let now = Date()
-            guard let status = inbox.agentLimits.first(where: { $0.agent == agent }) else {
-                return nil
-            }
-            if status.cooldownExpiresAt > now {
-                return status
-            }
+        let inbox = try snapshot(timeout: timeout)
+        let now = Date()
+        guard let status = inbox.agentLimits.first(where: { $0.agent == agent }) else {
             return nil
         }
+        if status.cooldownExpiresAt > now {
+            return status
+        }
+        return nil
     }
 
     // MARK: - Task lifecycle
@@ -420,9 +438,7 @@ public final class InboxStore: Sendable {
 
     public func task(id: String, timeout: TimeInterval = 5.0) throws -> TaskRecord? {
         if let error = failureInjector?(id) { throw error }
-        return try withFileLock(timeout: timeout) {
-            try loadUnlocked().tasks.first { $0.id == id }
-        }
+        return try snapshot(timeout: timeout).tasks.first { $0.id == id }
     }
 
     /// The shortest id prefix `task(matching:)` accepts — the length of `TaskRecord.shortId`.
@@ -431,37 +447,31 @@ public final class InboxStore: Sendable {
     /// The task whose id is `idOrPrefix`, or the one task whose id begins with it, ignoring case.
     /// A prefix shorter than `minimumTaskIdPrefix` matches nothing. Throws when several tasks match.
     public func task(matching idOrPrefix: String, timeout: TimeInterval = 5.0) throws -> TaskRecord? {
-        try withFileLock(timeout: timeout) {
-            let tasks = try loadUnlocked().tasks
-            if let exact = tasks.first(where: { $0.id == idOrPrefix }) { return exact }
-            guard idOrPrefix.count >= Self.minimumTaskIdPrefix else { return nil }
-            let prefix = idOrPrefix.lowercased()
-            let matches = tasks.filter { $0.id.lowercased().hasPrefix(prefix) }
-            guard matches.count <= 1 else {
-                throw InboxError.ambiguousTaskId(prefix: idOrPrefix, matches: matches.map(\.id))
-            }
-            return matches.first
+        let tasks = try snapshot(timeout: timeout).tasks
+        if let exact = tasks.first(where: { $0.id == idOrPrefix }) { return exact }
+        guard idOrPrefix.count >= Self.minimumTaskIdPrefix else { return nil }
+        let prefix = idOrPrefix.lowercased()
+        let matches = tasks.filter { $0.id.lowercased().hasPrefix(prefix) }
+        guard matches.count <= 1 else {
+            throw InboxError.ambiguousTaskId(prefix: idOrPrefix, matches: matches.map(\.id))
         }
+        return matches.first
     }
 
     /// Open tasks, oldest first. `agent == nil` returns all; otherwise tasks assigned to `agent`.
     public func openTasks(for agent: AgentKind? = nil, timeout: TimeInterval = 5.0) throws -> [TaskRecord] {
-        try withFileLock(timeout: timeout) {
-            try loadUnlocked().tasks
-                .filter { $0.state.isOpen && (agent == nil || $0.toAgent == agent) }
-                .sorted { $0.createdAt < $1.createdAt }
-        }
+        try snapshot(timeout: timeout).tasks
+            .filter { $0.state.isOpen && (agent == nil || $0.toAgent == agent) }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     /// Open tasks whose lease overlaps `files`, optionally ignoring a given assignee.
     public func leaseHolders(for files: [String], excludingAssignee: AgentKind? = nil, timeout: TimeInterval = 5.0) throws -> [TaskRecord] {
         let normalized = Set(files.map { ($0 as NSString).standardizingPath })
-        return try withFileLock(timeout: timeout) {
-            try loadUnlocked().tasks.filter { task in
-                task.state.isOpen
-                    && (excludingAssignee == nil || task.toAgent != excludingAssignee)
-                    && !Set(task.files).isDisjoint(with: normalized)
-            }
+        return try snapshot(timeout: timeout).tasks.filter { task in
+            task.state.isOpen
+                && (excludingAssignee == nil || task.toAgent != excludingAssignee)
+                && !Set(task.files).isDisjoint(with: normalized)
         }
     }
 
