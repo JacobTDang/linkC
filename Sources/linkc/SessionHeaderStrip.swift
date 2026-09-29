@@ -66,9 +66,10 @@ struct SessionHeaderStrip: View {
                 }
             }
             // A screen-scraped agent's line comes from its terminal buffer, which nothing
-            // publishes, so this row re-reads it once a second while it is on screen.
-            TimelineView(.periodic(from: .now, by: 1.0)) { _ in
-                if let activity = model.currentActivity(session), !activity.isEmpty {
+            // publishes, so this row re-reads it once a second while working, backing off to hourly when idle.
+            TimelineView(.periodic(from: .now, by: session.state == .working ? 1.0 : 3600.0)) { _ in
+                if ShownActivity.applies(to: session.state),
+                   let activity = model.currentActivity(session), !activity.isEmpty {
                     HStack(spacing: 6) {
                         ActivityLabel(text: activity, isWorking: session.state == .working)
                             .foregroundStyle(Theme.textSecondary)

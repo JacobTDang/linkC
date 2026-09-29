@@ -97,4 +97,64 @@ final class ProjectTabsTests: XCTestCase {
     func testAnAppTabIDNamesItsProjectAndFolder() {
         XCTAssertEqual(ProjectTabs.appTabID(project: "/p/x/", folder: "/tools/notes/."), "app:/p/x#/tools/notes")
     }
+
+    func testSessionCreationCanonicalizesCwd() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-tab-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let realFolder = tempDir.appendingPathComponent("RealProject")
+        try FileManager.default.createDirectory(at: realFolder, withIntermediateDirectories: true)
+
+        let symlink = tempDir.appendingPathComponent("symlink_project")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: realFolder)
+
+        let session = Session(id: "s1", cwd: symlink.path, title: "symlink session")
+        let canonicalReal = ProjectPath.canonical(realFolder.path)
+        XCTAssertEqual(session.cwd, canonicalReal)
+        XCTAssertNotEqual(session.cwd, symlink.path)
+
+        let tabs = ProjectTabs.tabs(project: canonicalReal, sessions: [session], shells: [], titles: [:])
+        XCTAssertEqual(tabs.map(\.id), [ProjectTabs.boardID(canonicalReal), "s1"])
+    }
+
+    func testTheBoardTabIsTheBoardIDOfTheProjectHoweverItsPathIsWritten() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-tab-board-\(UUID().uuidString)")
+        let realFolder = tempDir.appendingPathComponent("RealProject")
+        try FileManager.default.createDirectory(at: realFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let symlink = tempDir.appendingPathComponent("symlink_project")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: realFolder)
+
+        for path in [symlink.path, realFolder.path, realFolder.path + "/"] {
+            let tabs = ProjectTabs.tabs(project: path, sessions: [], shells: [], titles: [:])
+            XCTAssertEqual(tabs.first?.id, ProjectTabs.boardID(path), "written as \(path)")
+        }
+    }
+
+    func testProjectTabsSpeedWithTwentySessions() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-tab-bench-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let canonical = ProjectPath.canonical(tempDir.path)
+        let sessions = (1...20).map { i in
+            Session(id: "s\(i)", cwd: canonical, title: "Session \(i)", state: i == 1 ? .working : .ready)
+        }
+
+        let baseline = ThreadCPUTime.elapsed {
+            for _ in 0..<500 {
+                for _ in 0..<20 {
+                    _ = ProjectPath.canonical(canonical)
+                }
+            }
+        }
+
+        let elapsed = ThreadCPUTime.elapsed {
+            for _ in 0..<500 {
+                _ = ProjectTabs.tabs(project: canonical, sessions: sessions, shells: [], titles: [:])
+            }
+        }
+        XCTAssertLessThan(elapsed, baseline / 2, "500 calls over 20 sessions should avoid per-session syscalls, took \(elapsed)s vs baseline \(baseline)s")
+    }
 }
