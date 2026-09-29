@@ -129,6 +129,28 @@ final class StatusLineFeedTests: XCTestCase {
         Thread.sleep(forTimeInterval: seconds)
     }
 
+    /// Another linkC's sweep can unlink a status file between the open and the lock. The shared lock
+    /// then lands on a file no path reaches, the sweep's check passes, and the watch never sees the
+    /// file the CLI writes next. The descriptor handed back must be the file at the path.
+    func testAFileRemovedBetweenTheOpenAndTheLockIsMadeAgain() throws {
+        let url = directory.appendingPathComponent("race.json")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        var removals = 0
+
+        let descriptor = try StatusLineFeed.openLocked(url, beforeLocking: {
+            if removals == 0 { try? FileManager.default.removeItem(at: url) }
+            removals += 1
+        })
+        defer { close(descriptor) }
+
+        var opened = stat(), atPath = stat()
+        XCTAssertEqual(fstat(descriptor, &opened), 0)
+        XCTAssertEqual(stat(url.path, &atPath), 0, "the file is made again")
+        XCTAssertEqual(opened.st_ino, atPath.st_ino, "the watched descriptor is the file at the path")
+        XCTAssertEqual(atPath.st_mode & 0o777, 0o600)
+    }
+
     func testAReportTheCommandWritesIsDelivered() throws {
         let file = try makeFeed().watch(sessionId: "s1")
 

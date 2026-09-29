@@ -133,15 +133,7 @@ public final class StatusLineFeed: @unchecked Sendable {
         } else if !FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) {
             throw LinkCError.server("could not create the status line file \(url.path)")
         }
-        let descriptor = open(url.path, O_EVTONLY | O_CLOEXEC)
-        guard descriptor != -1 else {
-            throw LinkCError.server("could not watch \(url.path): \(String(cString: strerror(errno)))")
-        }
-        guard flock(descriptor, LOCK_SH | LOCK_NB) == 0 else {
-            let message = String(cString: strerror(errno))
-            close(descriptor)
-            throw LinkCError.server("could not lock \(url.path): \(message)")
-        }
+        let descriptor = try Self.openLocked(url)
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor, eventMask: [.write, .extend, .delete, .rename], queue: queue)
         let watch = Watch(url: url, source: source)
@@ -153,6 +145,37 @@ public final class StatusLineFeed: @unchecked Sendable {
         watches[sessionId] = watch
         source.resume()
         return watch
+    }
+
+    /// Opens `url` for watching and takes the shared lock that marks it live. A `sweep` in another
+    /// process can unlink the file between the open and the lock; the lock would then hold a file
+    /// no path reaches and the watch would never fire, so the file is made again (private, empty)
+    /// and opened afresh until the locked descriptor is the file at the path.
+    /// `beforeLocking` runs between the open and the lock, so a test can remove the file there.
+    static func openLocked(_ url: URL, beforeLocking: () -> Void = {}) throws -> Int32 {
+        for _ in 0..<3 {
+            if !FileManager.default.fileExists(atPath: url.path),
+               !FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) {
+                throw LinkCError.server("could not create the status line file \(url.path)")
+            }
+            let descriptor = open(url.path, O_EVTONLY | O_CLOEXEC)
+            guard descriptor != -1 else {
+                throw LinkCError.server("could not watch \(url.path): \(String(cString: strerror(errno)))")
+            }
+            beforeLocking()
+            guard flock(descriptor, LOCK_SH | LOCK_NB) == 0 else {
+                let message = String(cString: strerror(errno))
+                close(descriptor)
+                throw LinkCError.server("could not lock \(url.path): \(message)")
+            }
+            var opened = stat(), atPath = stat()
+            if fstat(descriptor, &opened) == 0, stat(url.path, &atPath) == 0,
+               opened.st_dev == atPath.st_dev, opened.st_ino == atPath.st_ino {
+                return descriptor
+            }
+            close(descriptor)
+        }
+        throw LinkCError.server("could not watch \(url.path): it was removed each time it was opened")
     }
 
     private func stopWatching(_ sessionId: String) {
