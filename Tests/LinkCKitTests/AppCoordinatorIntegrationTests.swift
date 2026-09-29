@@ -32,6 +32,17 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         }
     }
 
+    /// Where the hook server of every coordinator `makeCoordinator` builds caches Claude's status
+    /// line: beside the test's other files, never in the user's Application Support folder.
+    private var statusLineCache: URL { tempDir.appendingPathComponent("claude-status-line.json") }
+
+    /// What Claude's status line cache holds once a report has been written to it, or nil if none
+    /// is by the time the wait ends.
+    private func cachedStatusLine() async throws -> Data? {
+        guard try await waitUntil({ FileManager.default.fileExists(atPath: statusLineCache.path) }) else { return nil }
+        return try Data(contentsOf: statusLineCache)
+    }
+
     /// Builds a coordinator wired to a real (but un-spawned) terminal manager and a fake
     /// notification center. `isWatching` returns false so notifiable states would notify.
     private func makeCoordinator(
@@ -59,7 +70,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         }
         let coordinator = AppCoordinator(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer(port: 0, statusLineCacheURL: statusLineCache),
             notifications: NotificationManager(sink: sink, now: { Date() }),
             claudePath: claudePath,
             settingsDir: settingsDir,
@@ -1429,6 +1440,17 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertNil(coordinator.store.session(id: "S")?.claudeSessionId, "a non-claude session must never carry a claude id")
     }
 
+    /// Posts one status-line report, tokened, to the coordinator's hook server and waits for its 200.
+    private func postStatusLine(_ body: Data, to coordinator: AppCoordinator) async throws {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(coordinator.hookPort)/hook")!)
+        request.httpMethod = "POST"
+        request.setValue(HookServer.statusLineEvent, forHTTPHeaderField: "X-LinkC-Event")
+        request.setValue(coordinator.hookToken, forHTTPHeaderField: "X-LinkC-Token")
+        request.httpBody = body
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
     /// A tokened status-line report from any Claude session becomes Claude's usage reading.
     func testAStatusLineReportBecomesClaudesUsage() async throws {
         let coordinator = makeCoordinator()
@@ -1436,20 +1458,47 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         defer { coordinator.shutdown() }
         XCTAssertNil(coordinator.claudeUsage, "no reading before any report")
 
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(coordinator.hookPort)/hook")!)
-        request.httpMethod = "POST"
-        request.setValue(HookServer.statusLineEvent, forHTTPHeaderField: "X-LinkC-Event")
-        request.setValue(coordinator.hookToken, forHTTPHeaderField: "X-LinkC-Token")
-        request.httpBody = Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#.utf8)
-        let (_, response) = try await URLSession.shared.data(for: request)
-        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let body = Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#.utf8)
+        try await postStatusLine(body, to: coordinator)
 
         let arrived = try await waitUntil { coordinator.claudeUsage?.windows.count == 2 }
         XCTAssertTrue(arrived, "the reading must reach the coordinator")
         XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "5h" }?.usedPercent, 66)
+        let cached = try await cachedStatusLine()
+        XCTAssertEqual(cached, body, "the report is cached where the test said, not in the user's folder")
     }
 
-    /// A launch with no status line of its own gets linkC's, carrying this run's token.
+    /// The headless coordinator keeps its state under the workspace folder it is given, the
+    /// status-line cache included: it must not reach the user's Application Support folder.
+    func testAHeadlessCoordinatorCachesTheStatusLineUnderItsWorkspace() async throws {
+        let workspace = tempDir.appendingPathComponent("headless")
+        let coordinator = AppCoordinator(workspaceDir: workspace)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+
+        let body = Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000}}}"#.utf8)
+        try await postStatusLine(body, to: coordinator)
+
+        let cache = workspace.appendingPathComponent("claude-status-line.json")
+        let written = try await waitUntil { FileManager.default.fileExists(atPath: cache.path) }
+        XCTAssertTrue(written, "the report must be cached under the workspace")
+        XCTAssertEqual(try Data(contentsOf: cache), body)
+    }
+
+    /// The status file a launched session's command writes: `<settings folder>/status-lines/<id>.line`.
+    private func statusFile(in settingsDir: URL, for session: Session) -> URL {
+        settingsDir.appendingPathComponent("status-lines/\(session.id).line")
+    }
+
+    /// The command from the settings a launch composed.
+    private func composedStatusLineCommand(in settingsDir: URL, for session: Session) throws -> String? {
+        let file = settingsDir.appendingPathComponent("session-\(session.id).json")
+        let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        return (composed["statusLine"] as? [String: Any])?["command"] as? String
+    }
+
+    /// A launch with no status line of its own gets linkC's: a command that writes the session's own
+    /// status file, which exists, empty, before the session starts.
     func testALaunchGetsLinkCsStatusLine() throws {
         let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sl-\(UUID().uuidString)")
         let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
@@ -1460,11 +1509,81 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
         defer { coordinator.stopSession(session.id) }
 
-        let file = settingsDir.appendingPathComponent("session-\(session.id).json")
-        let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        let statusLine = try XCTUnwrap(composed["statusLine"] as? [String: Any])
-        XCTAssertEqual((statusLine["command"] as? String)?.contains(coordinator.hookToken), true)
+        let file = statusFile(in: settingsDir, for: session)
+        XCTAssertEqual(try composedStatusLineCommand(in: settingsDir, for: session),
+                       SettingsComposer.statusLineCommand(writingTo: file))
+        XCTAssertEqual(try Data(contentsOf: file), Data(), "the file must exist and be empty before the session starts")
         XCTAssertNil(coordinator.claudeUsage)
+    }
+
+    /// The whole path a status refresh takes: the exact command run through the shell with the CLI's
+    /// JSON on stdin, the file it writes, the feed that watches it, and Claude's usage in the sidebar.
+    func testAStatusRefreshRunThroughTheShellBecomesClaudesUsage() async throws {
+        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sl-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+        let coordinator = makeCoordinator(claudePath: "/bin/cat", settingsDir: settingsDir)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        defer { coordinator.stopSession(session.id) }
+        let command = try XCTUnwrap(try composedStatusLineCommand(in: settingsDir, for: session))
+        XCTAssertNil(coordinator.claudeUsage, "no reading before any refresh")
+
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shell.arguments = ["-c", command]
+        let input = Pipe()
+        shell.standardInput = input
+        try shell.run()
+        let body = Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#.utf8)
+        input.fileHandleForWriting.write(body + [0x0A])
+        try input.fileHandleForWriting.close()
+        shell.waitUntilExit()
+
+        let arrived = try await waitUntil { coordinator.claudeUsage?.windows.count == 2 }
+        XCTAssertTrue(arrived, "the reading must reach the coordinator through the file")
+        XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "5h" }?.usedPercent, 66)
+        XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "7d" }?.usedPercent, 92)
+        let cached = try await cachedStatusLine()
+        XCTAssertEqual(cached, body, "the report is cached where the test said, not in the user's folder")
+    }
+
+    /// The file follows the session: stopping it removes the file, and so does a launch that fails.
+    func testAStatusFileGoesWhenItsSessionDoes() throws {
+        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sl-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+        let coordinator = makeCoordinator(claudePath: "/bin/cat", settingsDir: settingsDir)
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        let file = statusFile(in: settingsDir, for: session)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+
+        coordinator.stopSession(session.id)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+
+        let failing = makeCoordinator(claudePath: "/nonexistent/claude-\(UUID().uuidString)", settingsDir: settingsDir)
+        XCTAssertThrowsError(try failing.newSession(cwd: cwd.path, mode: .new))
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: settingsDir.appendingPathComponent("status-lines").path)) ?? []
+        XCTAssertTrue(left.isEmpty, "a failed launch must not orphan its status file: \(left)")
+    }
+
+    /// Status files an earlier run left behind belong to sessions that no longer exist.
+    func testStartupSweepRemovesOrphanedStatusFiles() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sweep-\(UUID().uuidString)")
+        let statusDir = dir.appendingPathComponent("status-lines")
+        try FileManager.default.createDirectory(at: statusDir, withIntermediateDirectories: true)
+        let stale = statusDir.appendingPathComponent("gone.line")
+        try Data("{}\n".utf8).write(to: stale)
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
     }
 
     /// A project that runs its own status line keeps it: linkC adds none, and Claude's usage
@@ -1485,6 +1604,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let file = settingsDir.appendingPathComponent("session-\(session.id).json")
         let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         XCTAssertNil(composed["statusLine"], "Claude applies the local status line itself; linkC must not override it")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: statusFile(in: settingsDir, for: session).path),
+                       "no status line of linkC's, so nothing to listen to")
         XCTAssertEqual(coordinator.claudeUsage?.unavailableReason, ClaudeRateLimits.ownStatusLineReason)
     }
 
@@ -1507,7 +1628,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let file = settingsDir.appendingPathComponent("session-\(session.id).json")
         let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         let statusLine = try XCTUnwrap(composed["statusLine"] as? [String: Any])
-        XCTAssertEqual((statusLine["command"] as? String)?.contains(coordinator.hookToken), true)
+        XCTAssertEqual(statusLine["command"] as? String,
+                       SettingsComposer.statusLineCommand(writingTo: statusFile(in: settingsDir, for: session)))
     }
 }
 

@@ -423,7 +423,7 @@ final class MCPServerModelTests: XCTestCase {
 
         let coordinator = AppCoordinator(
             terminals: terminals,
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer.forTesting(),
             notifications: NotificationManager(sink: MockNotificationSink(), now: { Date() }),
             claudePath: "/bin/sh",
             settingsDir: settingsDir,

@@ -164,6 +164,9 @@ public final class AppCoordinator {
     /// not preserve ordering, and the reducer is last-writer-wins.
     private let eventStream: AsyncStream<HookEvent>
     private let eventContinuation: AsyncStream<HookEvent>.Continuation
+    /// Hears each Claude session's status line through a file it writes, and hands the rate limits
+    /// to the hook server's status-line path. See `SettingsComposer.statusLineCommand`.
+    private let statusLines: StatusLineFeed
     private var consumerTask: Task<Void, Never>?
     /// The one loop behind every periodic sample: the sessions, the relay and, while the panel is
     /// visible, the app's own sampling (`panelSweep`). Its spacing follows `TickCadence`.
@@ -226,6 +229,9 @@ public final class AppCoordinator {
         self.now = now
         self.sweepClock = sweepClock
         self.isWatching = isWatching
+        self.statusLines = StatusLineFeed(
+            directory: settingsDir.appendingPathComponent("status-lines", isDirectory: true),
+            deliver: { [hookServer] body, reading in hookServer.acceptStatusLine(body: body, reading: reading) })
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.
         syncRestorables()
@@ -244,7 +250,7 @@ public final class AppCoordinator {
         let linkCDir = support.appendingPathComponent("linkC", isDirectory: true)
         self.init(
             terminals: terminals,
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer(port: 0, statusLineCacheURL: HookServer.defaultStatusLineCacheURL()),
             notifications: NotificationManager(),
             claudePath: claudePath,
             settingsDir: linkCDir,
@@ -267,7 +273,7 @@ public final class AppCoordinator {
     ) {
         self.init(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer(port: 0, statusLineCacheURL: workspaceDir.appendingPathComponent("claude-status-line.json")),
             notifications: NotificationManager(sink: NullSink(), now: { Date() }),
             claudePath: "/usr/bin/true",
             settingsDir: workspaceDir,
@@ -279,6 +285,7 @@ public final class AppCoordinator {
 
     public func start() throws {
         sweepOrphanedSettingsFiles()
+        statusLines.sweep()
         // Registration rewrites every agent's real config, so it needs a home to write to.
         if let userHome {
             do {
@@ -414,6 +421,7 @@ public final class AppCoordinator {
         inboxWatcher?.stop()
         inboxWatcher = nil
         hookServer.stop()
+        statusLines.sweep()
     }
 
     // MARK: - Hook events → store → focus-aware notification
@@ -512,6 +520,7 @@ public final class AppCoordinator {
         terminals.remove(sessionId)
         let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
         try? FileManager.default.removeItem(at: settingsFile)
+        statusLines.unwatch(sessionId: sessionId)
         notifications.forget(sessionId)
         screenSignatures.removeValue(forKey: sessionId)
         turnEndDebounce.forget(sessionId: sessionId)
@@ -1213,9 +1222,14 @@ public final class AppCoordinator {
         }
         let data = try SettingsComposer.compose(
             userSettings: user, projectSettings: project, projectLocalSettings: projectLocal,
-            port: hookServer.port, token: hookToken)
+            port: hookServer.port, token: hookToken, statusLineFile: statusLines.fileURL(sessionId: session.id))
         claudeStatusLineIsUsers = try SettingsComposer.definesStatusLine(
             user: user, project: project, projectLocal: projectLocal)
+        // The status file must exist and be watched before Claude starts; with the user's own status
+        // line there is nothing of linkC's to write it.
+        if !claudeStatusLineIsUsers {
+            try statusLines.watch(sessionId: session.id)
+        }
         try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         let path = settingsDir.appendingPathComponent("session-\(session.id).json")
         try data.write(to: path)

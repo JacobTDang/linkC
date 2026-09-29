@@ -120,7 +120,7 @@ final class SubagentRobustnessTests: XCTestCase {
         let tracker = UsageTracker(projectsDir: tempDir)
         let coordinator = AppCoordinator(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer.forTesting(),
             notifications: NotificationManager(sink: DummyNotificationSink(), now: { Date() }),
             claudePath: "/bin/echo",
             settingsDir: tempDir.appendingPathComponent("settings"),
