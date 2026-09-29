@@ -60,6 +60,7 @@ struct PanelView: View {
         // Stock controls (switches, pickers, spinners) inherit the system's blue accent
         // otherwise — the panel is coral everywhere, including its toggles.
         .tint(Theme.accent)
+        .environment(\.panelVisible, model.panelVisible)
         .onAppear { model.panelVisible = true }
         .onDisappear { model.panelVisible = false }
     }

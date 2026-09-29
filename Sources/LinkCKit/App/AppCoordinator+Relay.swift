@@ -9,10 +9,11 @@ extension AppCoordinator {
     static let maxConcurrentVerifications = 2
     /// Lock-wait budget for every store call the relay tick itself makes. The default `InboxStore`
     /// timeout (5s) is sized for a person waiting on one CLI command, not for a `@MainActor` tick
-    /// that runs once a second across every workspace: eight to ten `linkc-mcp` processes write
-    /// the same `inbox.json`, so a single slow writer would otherwise stall the whole UI for up to
-    /// 5s, several times per tick. A contended lock is not a failure here — the tick simply skips
-    /// and the next one retries a second later — so this budget only needs to be short, not zero.
+    /// that runs every second or few across every workspace: eight to ten `linkc-mcp` processes
+    /// write the same `inbox.json`, so a single slow writer would otherwise stall the whole UI for
+    /// up to 5s, several times per tick. A contended lock is not a failure here — the tick simply
+    /// skips and the next one, a second later (a contended pass keeps the cadence at one second,
+    /// see `RelayWork`), retries — so this budget only needs to be short, not zero.
     /// Matches the blackboard heartbeat's own 0.5s timeout a few lines below in `sampleAgentStates`.
     static let relayLockTimeout: TimeInterval = 0.5
     /// Minimum time a session must have been paste-ready (see `TerminalSession.pasteReadySince`)
@@ -47,6 +48,7 @@ extension AppCoordinator {
     public func processPendingMessages(workspacePath: String) {
         let norm = ProjectPath.canonical(workspacePath)
         let inboxStore = InboxStore(workspaceRoot: norm)
+        relayWork.beginPass(in: norm)
         pollPasteReadiness(workspacePath: norm)
         guard !settleResolvableTasks(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
@@ -101,6 +103,7 @@ extension AppCoordinator {
     /// writer after `Self.relayLockTimeout`. Never called more than once per `processPendingMessages`
     /// call — a permanently contended workspace must be visible, not merely idle every tick.
     private func logRelayLockContention(workspacePath: String) {
+        relayWork.noteContention(in: workspacePath)
         NSLog("[linkC relay] processPendingMessages: %@ — inbox lock still contended after %.1fs; retrying next tick",
               workspacePath, Self.relayLockTimeout)
     }
@@ -379,7 +382,7 @@ extension AppCoordinator {
             // `.delivered → .failed` is always a legal transition, so the delegator is told now,
             // with the real reason, rather than after a very long silence.
             if terminals.sendInput(sessionId: session.id, text: frame) {
-                recordInjection(sessionId: session.id, text: frame)
+                recordInjection(sessionId: session.id, text: frame, startsWork: true)
                 store.updateState(id: session.id, to: .working)
             } else {
                 let reason = "delivery marked done but the text never reached \(task.toAgent.displayName)'s terminal"
@@ -416,6 +419,7 @@ extension AppCoordinator {
         // A notice stays marked "already told to the user" only while it is still queued here —
         // once it is delivered (below) or expires (a separate phase), evict it so a long-running
         // app does not keep one entry per notice ever seen stuck for its whole lifetime.
+        relayWork.noteQueuedMessages(pending.contains { hasLiveTarget($0, in: norm) }, in: norm)
         let stillQueued = Set(pending.map(\.id))
         undeliveredNoticesReported[norm]?.formIntersection(stillQueued)
         if undeliveredNoticesReported[norm]?.isEmpty == true {
@@ -457,7 +461,7 @@ extension AppCoordinator {
                 } catch {
                     // A contended lock is not "this task has no delegator": falling through would
                     // hand the notice to a different session of the same kind. End the tick — the
-                    // next one, a second later, routes it properly.
+                    // next one routes it properly.
                     if isRelayLockTimeout(error) { return true }
                     NSLog("[linkC relay] dispatchMessages: message %@ delegator lookup — %@",
                           message.id, String(describing: error))
@@ -552,11 +556,31 @@ extension AppCoordinator {
         return false
     }
 
+    /// Whether a queued message is something a tick can act on: a brief spawns an agent, and any
+    /// other kind (a notice is marked delivered at once) needs a session of its target kind that
+    /// can be typed into. One with no such session waits for one to be launched, and launching
+    /// wakes the sweep, so it must not hold the fast cadence in the meantime. A session in `.error`
+    /// (a usage limit; the cooldown can last hours) is no more able to take it than a missing one,
+    /// and the sweep notices it leaving `.error` at any cadence. Nor is one whose process has
+    /// exited, which the delivery itself leaves queued.
+    private func hasLiveTarget(_ message: PendingMessage, in workspace: String) -> Bool {
+        switch message.kind {
+        case .task: return true
+        case .notice: return false
+        default:
+            return store.sessions.contains {
+                $0.cwd == workspace && $0.agentKind == message.toAgent
+                    && $0.state != .ended && $0.state != .error
+                    && terminals.session(id: $0.id)?.isRunning == true
+            }
+        }
+    }
+
     private func injectMessageBatch(_ messages: [PendingMessage], into session: Session) {
         guard !messages.isEmpty else { return }
         let prompts = messages.map(\.prompt)
         terminals.sendInput(sessionId: session.id, text: prompts.joined(separator: "\n"))
-        recordInjection(sessionId: session.id, texts: prompts)
+        recordInjection(sessionId: session.id, texts: prompts, startsWork: true)
         // Commands and legacy briefs are always singleton batches.
         if let message = messages.first, message.kind == .command, message.prompt.hasPrefix("/model ") {
             let id = String(message.prompt.dropFirst("/model ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -587,6 +611,7 @@ extension AppCoordinator {
             NSLog("[linkC relay] launchVerifications: open tasks — %@", String(describing: error))
             return (false, [])
         }
+        relayWork.noteOpenTasks(!open.isEmpty, in: workspacePath)
 
         // Each task's run is decided where the task is classified, below: gating decides gate
         // vs. cancel-with-no-verification, reported decides verify vs. settle. A store error
@@ -790,8 +815,11 @@ extension AppCoordinator {
     /// Detects a provider limit in `sessionId`'s recent output (the one place terminal text is read,
     /// and only for pattern matching). Records the cooldown, tells the delegator via a `.notice`,
     /// cancels the current task, and creates a hop+1 copy for the best available peer (max 2 hops).
+    ///
+    /// `screen` is the caller's read of the session's screen, for a sweep that has already taken
+    /// one; without it the screen is read here.
     @discardableResult
-    public func checkLimitsAndReroute(for sessionId: String) -> Bool {
+    public func checkLimitsAndReroute(for sessionId: String, screen: ScreenSnapshot? = nil) -> Bool {
         guard let session = store.session(id: sessionId) else { return false }
         guard session.agentKind != .shell, session.state != .ended else { return false }
         // A session already tripped by a previous reroute or breaker is left alone: its buffer
@@ -799,18 +827,21 @@ extension AppCoordinator {
         guard session.state != .error else { return false }
 
         let norm = session.cwd
-        let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
+        let screen = screen ?? terminals.session(id: sessionId)?.screenSnapshot() ?? .none
+        // The rules cost far more than comparing what they would read. A session at its prompt
+        // shows the same screen for minutes, and the answer for it was already given.
+        let injected = recentlyInjectedTexts(sessionId: sessionId)
+        let scan = LimitScan(screen: screen.fingerprint, agent: session.agentKind, injected: injected)
+        guard limitScans[sessionId] != scan else { return false }
+        limitScans[sessionId] = scan
+        let recentOutput = screen.recentOutput(lines: 50)
         // Everything linkC has typed into this session is excluded: a brief or notice can quote a
         // limit phrase, and the CLI echoing that back is not the agent hitting a limit. Suppressed
         // by content, once per injected entry, with no time bound and no framing requirement — an
         // unframed injection (a legacy v1 message with no `kind`) is guarded exactly like a framed
         // one — so a real banner that repeats a phrase an older brief quoted still matches (see
         // `LimitDetector.withoutInjected`).
-        guard let match = LimitDetector.detectLimit(
-            inOutput: recentOutput,
-            agent: session.agentKind,
-            ignoringInjected: recentlyInjectedTexts(sessionId: sessionId)
-        ) else { return false }
+        guard let match = limitDetection(recentOutput, session.agentKind, injected) else { return false }
 
         // A stale banner must not re-arm a limit forever: once a cooldown expires and the session
         // returns to `.ready`, the exact same old banner can still sit in the last 50 lines of an
@@ -989,4 +1020,13 @@ extension AppCoordinator {
 private enum VerificationRun: Sendable {
     case gate(Verification)
     case verify(Verification, sha: String)
+}
+
+/// Everything `checkLimitsAndReroute`'s limit rules depend on for one session: the screen (by
+/// `ScreenSnapshot.fingerprint`), the agent whose rules apply, and what linkC has typed into the
+/// session, whose echo the rules leave out.
+struct LimitScan: Equatable {
+    let screen: Int
+    let agent: AgentKind
+    let injected: [String]
 }

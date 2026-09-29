@@ -43,6 +43,34 @@ final class BoardFileWatcherTests: XCTestCase {
         }
     }
 
+    /// Every terminal linkC starts later is forked from it: a descriptor the watcher left
+    /// inheritable would stay open in each of those terminals for as long as they run.
+    func testTheWatchersDescriptorsDoNotSurviveAnExec() throws {
+        try Data("{}".utf8).write(to: file)
+        let watcher = try BoardFileWatcher(fileURL: file) {}
+        defer { watcher.stop() }
+
+        let held = OpenDescriptors.on(file) + OpenDescriptors.on(folder)
+
+        XCTAssertEqual(held.count, 2, "one descriptor on the file and one on its folder: \(held)")
+        XCTAssertTrue(held.allSatisfy(\.closesOnExec), "\(held)")
+    }
+
+    func testTheDescriptorOpenedAfterAnAtomicSaveDoesNotSurviveAnExecEither() throws {
+        try Data("{}".utf8).write(to: file)
+        let saved = expectation(description: "saved")
+        saved.assertForOverFulfill = false
+        let watcher = try BoardFileWatcher(fileURL: file) { saved.fulfill() }
+        defer { watcher.stop() }
+
+        try Data("{ }".utf8).write(to: file, options: .atomic)
+        wait(for: [saved], timeout: 2)
+
+        let held = OpenDescriptors.on(file)
+        XCTAssertFalse(held.isEmpty, "the watcher opens the replacement file")
+        XCTAssertTrue(held.allSatisfy(\.closesOnExec), "\(held)")
+    }
+
     func testAMissingFolderThrows() {
         XCTAssertThrowsError(try BoardFileWatcher(fileURL: folder.appendingPathComponent("nope/system-map.json")) {})
     }

@@ -1,9 +1,9 @@
 import Foundation
 import LinkCKit
 
-/// The sidebar's live inputs. Reads only — the writers are `sampleSidebar()` (once a second,
-/// from the shell sweep) and `markOnScreenSeen()` (just before the selection, the open screen,
-/// or the panel's visibility changes) — never a view body.
+/// The sidebar's live inputs. Reads only — the writers are `sampleSidebar()` (once a second while
+/// the panel is visible, from the coordinator's sweep, and once as it opens) and `markOnScreenSeen()` (just before the
+/// selection, the open screen, or the panel's visibility changes) — never a view body.
 extension AppModel {
     /// The session whose terminal is actually on screen: selected, no screen layered over it,
     /// panel visible.
@@ -17,10 +17,14 @@ extension AppModel {
         SessionTitles.resolve(
             sessions: sessions,
             claudeTitle: { usage.sessionTitle($0) },
-            heldTask: { session in
-                inbox(for: session.cwd).flatMap { SessionTitles.heldTask(for: session, in: $0.tasks) }
-            }
+            heldTask: { heldTask(for: $0) }
         )
+    }
+
+    /// The task a session is holding, read from its project's inbox file — which no observation
+    /// sees change, so `sampleSidebar()` watches it for the sidebar.
+    private func heldTask(for session: Session) -> TaskRecord? {
+        inbox(for: session.cwd).flatMap { SessionTitles.heldTask(for: session, in: $0.tasks) }
     }
 
     func rowStatus(_ session: Session, now: Date = Date()) -> SessionRowStatus {
@@ -51,8 +55,24 @@ extension AppModel {
         return nil
     }
 
+    /// What a session's sidebar row says in place of its name, or nil. An action a state does not
+    /// show is never read.
+    private func shownActivity(_ session: Session) -> ShownActivity? {
+        guard ShownActivity.applies(to: session.state) else { return nil }
+        return ShownActivity(activity: currentActivity(session), state: session.state)
+    }
+
+    /// A session's action line as its row shows it, read from the terminal now. nil is
+    /// authoritative: the session is gone, or there is no line to show. Reads no more than the
+    /// one session — a row's own timeline calls this, not the whole sidebar.
+    func liveActivity(id: String) -> String? {
+        coordinator?.store.session(id: id).flatMap { shownActivity($0)?.text }
+    }
+
     /// The sidebar's Projects rows and the terminals that belong to none of them — built once from
-    /// the same inputs, so a caller needing both (the sidebar's body) never builds the model twice.
+    /// the same inputs, so a caller needing both never builds the model twice. Called from the
+    /// sidebar's body: the observable state it reads re-renders the sidebar the moment it changes,
+    /// and `sidebarSignal` covers the inputs that are not observable.
     func sidebarSections(now: Date = Date()) -> (projects: [SidebarProject], unfiled: [ShellRow]) {
         let titles = sessionTitles
         let inputs = sessions.map { session in
@@ -60,8 +80,8 @@ extension AppModel {
                 session: session,
                 title: titles[session.id] ?? session.agentKind.shortName,
                 status: rowStatus(session, now: now),
-                hasRunningSubagents: visibleAgents(session.id, now: now).contains(where: \.isRunning),
-                activity: ShownActivity.applies(to: session.state) ? currentActivity(session) : nil
+                hasRunningSubagents: usage.sessionAgents(session.id).contains(where: \.isRunning),
+                activity: shownActivity(session)?.text
             )
         }
         return SidebarModel.projects(
@@ -78,8 +98,8 @@ extension AppModel {
     /// live filed terminal — exactly the paths `sidebarSections` would show as project rows.
     /// Lets a terminal's project be resolved (`TerminalFiling.project`) without building the model.
     var knownProjectPaths: Set<String> {
-        Set(sessions.map { ProjectTabs.standardized($0.cwd) })
-            .union(shellRows.compactMap { sidebarState.terminalProjects[$0.id] }.map(ProjectTabs.standardized))
+        Set(sessions.map(\.cwd))
+            .union(shellRows.compactMap { sidebarState.terminalProjects[$0.id] })
     }
 
     /// Sessions that want the user — drives the menu-bar tint.
@@ -99,17 +119,20 @@ extension AppModel {
         return (rows > 0 || supabaseNeedsLogin || !cloudErrors.isEmpty) ? rows : nil
     }
 
-    /// Once a second: forget ended sessions, mark what is on screen as seen, keep the project
-    /// order, and expand projects that just turned coral.
+    /// Once a second while the panel is visible, and once as it opens: forget ended sessions, mark
+    /// what is on screen as seen, keep the project order, expand projects that just turned coral,
+    /// and publish the sidebar's non-observable inputs. The sidebar re-renders on the publish only
+    /// when one of them changed — a quiet second re-renders nothing.
     func sampleSidebar() {
         let now = Date()
         attention.retain(only: Set(sessions.map(\.id)))
         markOnScreenSeen(at: now)
-        let filedPaths = Set(sidebarState.terminalProjects.values.map { ProjectPath.canonical($0) }).sorted()
+        // Filed paths are canonical already: `SidebarState` canonicalizes them as it files them.
+        let filedPaths = Set(sidebarState.terminalProjects.values).sorted()
         sidebarState.noteProjects(ProjectGroup.group(sessions: sessions).map(\.workspacePath) + filedPaths)
         let selectedProject: String?
         if let session = sessions.first(where: { $0.id == selectedId }) {
-            selectedProject = ProjectTabs.standardized(session.cwd)
+            selectedProject = session.cwd
         } else if let shell = shellRows.first(where: { $0.id == selectedId }) {
             selectedProject = TerminalFiling.project(
                 forTerminal: shell.id, cwd: shell.cwd, filed: sidebarState.terminalProjects, projects: knownProjectPaths)
@@ -117,11 +140,16 @@ extension AppModel {
             selectedProject = nil
         }
         sidebarState.noteSelectedProject(selectedProject)
-        let coral = sidebarSections(now: now).projects.filter { $0.dot == .attention }.map(\.path)
-        sidebarState.noteCoral(Set(coral))
+        sidebarSignal.publish(SidebarSignal(
+            sessions: sessions,
+            heldTitle: { heldTask(for: $0).map(SessionTitles.taskTitle) },
+            isRateLimited: { agentLimit(for: $0) != nil },
+            action: { currentActivity($0) }))
+        // A project is coral while any of its sessions is: the same test its row's dot uses.
+        sidebarState.noteCoral(Set(sessions.filter { rowStatus($0, now: now).isCoral }.map(\.cwd)))
     }
 
-    /// Mark the on-screen session seen. Runs once a second from the sweep, and just before the
+    /// Mark the on-screen session seen. Runs with `sampleSidebar()`, and just before the
     /// selection, the open screen, or the panel's visibility changes, so a turn that finished
     /// while the user watched never reads as unseen afterwards.
     func markOnScreenSeen(at now: Date = Date()) {

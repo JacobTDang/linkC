@@ -60,16 +60,58 @@ public final class TerminalSession {
         self.agentKind = agentKind
     }
 
-    /// Query Darwin kernel for any active AI agent in this terminal's child process tree.
+    /// Whether this terminal was launched as Claude. Its state and kind come from hook events for
+    /// good: nothing running inside it changes them, so its process tree is never worth walking.
+    public var isHookDriven: Bool { initialAgentKind == .claude }
+
+    /// The agent running in this terminal's child process tree, or the kind the session started
+    /// as when there is none. The tree is only walked again when the terminal's foreground
+    /// process group moved or the last walk is over `ForegroundAgentSampler.reprobeInterval` old;
+    /// `fresh` walks it regardless, for a caller that is about to persist the answer.
     @discardableResult
-    public func sampleForegroundAgent() -> AgentKind {
+    public func sampleForegroundAgent(fresh: Bool = false) -> AgentKind {
         guard childPid > 0 else { return agentKind }
-        if let detected = ProcessSnooper.detectAgent(inProcessTreeOf: childPid) {
-            self.agentKind = detected
-            return detected
+        if fresh { foregroundAgent.forget() }
+        let probe = agentProbe
+        let pid = childPid
+        let detected = foregroundAgent.sample(
+            foreground: foregroundGroup(),
+            now: probe.now(),
+            probe: { probe.inTree(pid) }
+        )
+        agentKind = detected ?? initialAgentKind
+        return agentKind
+    }
+
+    /// Whether the agent CLI is actually running in this terminal — it is the terminal's own
+    /// process or runs beneath it. Walks the tree every call, so the caller keeps it to the moments
+    /// that need a definite answer (a session still booting).
+    public func agentProcessIsRunning() -> Bool {
+        agentProbe.atOrUnder(childPid) != nil
+    }
+
+    /// The system probes agent detection uses; a test substitutes counting fakes.
+    var agentProbe = AgentProbe.live
+    private var foregroundAgent = ForegroundAgentSampler()
+    /// Where the session reports a failure it carries on through; a test collects the lines.
+    var log: (String) -> Void = { NSLog("%@", $0) }
+    private var unreadableForegroundReads = 0
+    /// The reads in a row that have to fail before it is worth a log line: a terminal that was
+    /// only just spawned answers nothing until its child has a controlling tty.
+    static let unreadableForegroundReadsBeforeLog = 3
+
+    /// The terminal's foreground process group, nil when it cannot be read.
+    private func foregroundGroup() -> pid_t? {
+        guard isRunning else { return nil }
+        if let group = agentProbe.foregroundGroup(childPid) {
+            unreadableForegroundReads = 0
+            return group
         }
-        self.agentKind = initialAgentKind
-        return initialAgentKind
+        unreadableForegroundReads += 1
+        if unreadableForegroundReads == Self.unreadableForegroundReadsBeforeLog {
+            log("linkC: session \(id) could not read its terminal's foreground process group \(unreadableForegroundReads) times in a row; agent detection re-checks on a timer until it can")
+        }
+        return nil
     }
 
     /// Checks if this terminal's process has any running child processes (e.g. running bash commands, tests, compilers).
@@ -295,52 +337,13 @@ public final class TerminalSession {
         return true
     }
 
-    /// The last `lines` content rows of the terminal's visible screen, as plain text — for the
-    /// Terminals screen's live preview. `TerminalPreview` drops chrome-only rows (frames, rules,
-    /// bare prompts) so the preview shows output, not furniture. Returns "" when the PTY was
-    /// never started. Reads the private backing store (not `terminalView`) so a never-shown
-    /// session is never forced to spawn a view.
-    public func recentOutput(lines: Int) -> String {
-        guard let view = _terminalView else { return "" }
-        let terminal = view.getTerminal()
-        var rows: [String] = []
-        for row in 0..<terminal.rows {
-            rows.append(terminal.getLine(row: row)?.translateToString(trimRight: true) ?? "")
-        }
-        return TerminalPreview.excerpt(rows: rows, lines: lines)
-    }
-
-    /// The live activity or spinner phrase from the terminal's visible screen, as plain text.
-    /// Returns nil when the PTY was never started or no activity indicator is found. Reads the
-    /// private backing store (not `terminalView`) so a never-shown session is never forced to spawn.
-    public func liveActivityLine() -> String? {
-        guard _terminalView != nil else { return nil }
-        return TerminalPreview.liveActivity(from: visibleContentRows())
-    }
-
-    /// Whether the visible screen is an agent's folder-trust dialog. false when the PTY was never
-    /// started.
-    public func showsTrustPrompt() -> Bool {
-        TerminalPreview.isTrustPrompt(visibleContentRows())
-    }
-
-    /// A signature of the visible screen with live markers removed — the watchdog's progress
-    /// signal. Tool output, new lines and status changes change it; a spinner's own timer does
-    /// not. "" when the PTY was never started. In-process only: `hashValue` is seeded per launch.
-    public func screenSignature() -> String {
-        guard _terminalView != nil else { return "" }
-        return TerminalPreview.progressSignature(rows: visibleContentRows())
-    }
-
-    /// The last `count` non-blank rows of the visible screen, top to bottom — for a log line that
-    /// has to show what the screen said.
-    public func recentScreenRows(_ count: Int) -> [String] {
-        Array(visibleContentRows().suffix(count))
-    }
-
-    /// The visible screen's non-blank rows, top to bottom. Empty when the PTY was never started.
-    private func visibleContentRows() -> [String] {
-        guard let view = _terminalView else { return [] }
+    /// The visible screen, read once. Reads the private backing store (not `terminalView`) so a
+    /// never-shown session is never forced to spawn a view. Take one snapshot and pass it around
+    /// rather than calling the row-level readers below one after another: each of those reads the
+    /// whole buffer again.
+    public func screenSnapshot() -> ScreenSnapshot {
+        guard let view = _terminalView else { return .none }
+        screenReadCount += 1
         let terminal = view.getTerminal()
         var rows: [String] = []
         for row in 0..<terminal.rows {
@@ -349,7 +352,44 @@ public final class TerminalSession {
                 rows.append(line)
             }
         }
-        return rows
+        return ScreenSnapshot(rows: rows)
+    }
+
+    /// How many times the buffer has been turned into rows — what a test asserts a sweep keeps to
+    /// one per session.
+    private(set) var screenReadCount = 0
+
+    /// The last `lines` content rows of the terminal's visible screen, as plain text — for the
+    /// Terminals screen's live preview. `TerminalPreview` drops chrome-only rows (frames, rules,
+    /// bare prompts) so the preview shows output, not furniture. Returns "" when the PTY was
+    /// never started.
+    public func recentOutput(lines: Int) -> String {
+        screenSnapshot().recentOutput(lines: lines)
+    }
+
+    /// The live activity or spinner phrase from the terminal's visible screen, as plain text.
+    /// Returns nil when the PTY was never started or no activity indicator is found.
+    public func liveActivityLine() -> String? {
+        screenSnapshot().liveActivity()
+    }
+
+    /// Whether the visible screen is an agent's folder-trust dialog. false when the PTY was never
+    /// started.
+    public func showsTrustPrompt() -> Bool {
+        screenSnapshot().showsTrustPrompt()
+    }
+
+    /// A signature of the visible screen with live markers removed — the watchdog's progress
+    /// signal. Tool output, new lines and status changes change it; a spinner's own timer does
+    /// not. "" when the PTY was never started. In-process only: `hashValue` is seeded per launch.
+    public func screenSignature() -> String {
+        screenSnapshot().progressSignature()
+    }
+
+    /// The last `count` non-blank rows of the visible screen, top to bottom — for a log line that
+    /// has to show what the screen said.
+    public func recentScreenRows(_ count: Int) -> [String] {
+        screenSnapshot().recentRows(count)
     }
 
     private func handleTerminated(_ code: Int32?) {

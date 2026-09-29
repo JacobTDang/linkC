@@ -33,8 +33,10 @@ public final class HookServer: @unchecked Sendable {
 
     private var _onStatusLine: (@Sendable (AgentUsage) -> Void)?
 
-    /// The `X-LinkC-Event` value of the status line linkC gives each Claude session
-    /// (`SettingsComposer.statusLine`). Its body is Claude's status JSON, not a hook payload.
+    /// The `X-LinkC-Event` value a status line posts with. Its body is Claude's status JSON, not
+    /// a hook payload. New sessions no longer post: their status line writes a file that
+    /// `StatusLineFeed` watches. This stays for a session still running the `curl` status line an
+    /// earlier build gave it, which keeps that command until the session is relaunched.
     public static let statusLineEvent = "status_line"
 
     /// Called with Claude's rate limits each time a session's status line reports them. Same
@@ -58,19 +60,19 @@ public final class HookServer: @unchecked Sendable {
     /// Where the newest Claude status-line body this process has seen is cached to disk, so
     /// `linkc-mcp` — a separate process per workspace, with no access to this server's
     /// in-memory `onStatusLine` callback — can read the same `rate_limits` figures the sidebar
-    /// shows instead of a structurally different (and much slower) transcript scan. Defaulted
-    /// to linkC's own Application Support folder, the same one the production `AppCoordinator`
-    /// already uses; overridable so a test never touches the real one.
+    /// shows instead of a structurally different (and much slower) transcript scan. The app passes
+    /// `defaultStatusLineCacheURL()`; there is no default here, so a test cannot reach the real
+    /// file by leaving the argument out.
     private let statusLineCacheURL: URL
 
     /// - Parameter maxRequestBytes: hard cap on the total header+body bytes buffered for a
     ///   single request. A connection that exceeds it (or declares a larger `Content-Length`)
     ///   is dropped, bounding memory against a buggy/hostile local client.
-    public init(port: UInt16, maxRequestBytes: Int = 1 << 20, statusLineCacheURL: URL? = nil) {
+    public init(port: UInt16, maxRequestBytes: Int = 1 << 20, statusLineCacheURL: URL) {
         self.requestedPort = port
         self._resolvedPort = port
         self.maxRequestBytes = maxRequestBytes
-        self.statusLineCacheURL = statusLineCacheURL ?? Self.defaultStatusLineCacheURL()
+        self.statusLineCacheURL = statusLineCacheURL
     }
 
     /// `~/Library/Application Support/linkC/claude-status-line.json` — matches the folder
@@ -244,12 +246,19 @@ public final class HookServer: @unchecked Sendable {
     private func deliverStatusLine(_ body: Data) {
         do {
             if let reading = try ClaudeRateLimits.decode(body, receivedAt: Date()) {
-                onStatusLine?(reading)
-                cacheStatusLineBody(body)
+                acceptStatusLine(body: body, reading: reading)
             }
         } catch {
             NSLog("[linkC] a status line report could not be read — %@", String(describing: error))
         }
+    }
+
+    /// Takes a status report already decoded to `reading`, whichever way it arrived: hands the
+    /// reading to `onStatusLine` and caches the raw body for `linkc-mcp`. Same speed rules as
+    /// `onStatusLine`; callable from any queue.
+    public func acceptStatusLine(body: Data, reading: AgentUsage) {
+        onStatusLine?(reading)
+        cacheStatusLineBody(body)
     }
 
     /// Persists the raw body so `ClaudeRateLimits.cachedReading(at:)` can decode the same

@@ -60,7 +60,7 @@ final class AppCoordinatorSwarmTests: XCTestCase {
         try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         return AppCoordinator(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer.forTesting(),
             notifications: NotificationManager(sink: NoOpNotificationSink(), now: { Date() }),
             claudePath: "/usr/bin/true",
             settingsDir: settingsDir,

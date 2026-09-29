@@ -121,7 +121,9 @@ public final class AppCoordinator {
     /// Per session: the last screen signature seen and when it last changed — the watchdog's
     /// "gone quiet" clock. In memory only, so the clock restarts after a relaunch. Stored here
     /// rather than in the watchdog extension because extensions cannot hold stored properties.
-    private var screenSignatures: [String: (signature: String, since: Date)] = [:]
+    /// `fingerprint` is the rows the signature was worked out from: a screen with the same
+    /// fingerprint has the same signature, so it is not worked out again.
+    private var screenSignatures: [String: (fingerprint: Int, signature: String, since: Date)] = [:]
     /// Notices already reported to the user as undeliverable, by message id, keyed by workspace.
     /// Also in memory: a notice still stuck after a relaunch is worth one more mention. Pruned by
     /// `dispatchMessages` to the ids still `.queued` in that workspace's inbox, so a notice that
@@ -135,6 +137,15 @@ public final class AppCoordinator {
     /// different signature) can count as a new limit. Cleared by `cleanup`. In-process only, like
     /// `screenSignature()` above — see its own doc comment.
     var limitSignatures: [String: String] = [:]
+    /// Per session: what `checkLimitsAndReroute` last ran the limit rules over. The rules read only
+    /// the screen, the agent kind and what linkC has typed, so the same three give the same answer
+    /// and the scan is skipped. Cleared by `cleanup`.
+    var limitScans: [String: LimitScan] = [:]
+    /// Finds a provider limit in a session's recent output, given what linkC has typed into it.
+    /// The real rules unless a test substitutes a counter.
+    var limitDetection: (_ output: String, _ agent: AgentKind, _ injected: [String]) -> LimitMatch? = {
+        LimitDetector.detectLimit(inOutput: $0, agent: $1, ignoringInjected: $2)
+    }
 
     /// When `sessionId`'s screen last changed; nil if it has never been sampled.
     func screenUnchangedSince(_ sessionId: String) -> Date? { screenSignatures[sessionId]?.since }
@@ -164,8 +175,29 @@ public final class AppCoordinator {
     /// not preserve ordering, and the reducer is last-writer-wins.
     private let eventStream: AsyncStream<HookEvent>
     private let eventContinuation: AsyncStream<HookEvent>.Continuation
+    /// Hears each Claude session's status line through a file it writes, and hands the rate limits
+    /// to the hook server's status-line path. See `SettingsComposer.statusLineCommand`.
+    private let statusLines: StatusLineFeed
     private var consumerTask: Task<Void, Never>?
-    private var stateSweepTask: Task<Void, Never>?
+    /// The one loop behind every periodic sample: the sessions, the relay and, while the panel is
+    /// visible, the app's own sampling (`panelSweep`). Its spacing follows `TickCadence`.
+    private var sweepTicker: SweepTicker?
+    /// Wakes `sweepTicker` when a workspace's inbox file is replaced, so a new delegation never
+    /// waits out the slow interval. A burst of writes still makes one pass: the ticker holds
+    /// woken passes `TickCadence.minimumWakeGap` apart. Watches the workspaces that have a live
+    /// session: the only ones the relay works on.
+    private var inboxWatcher: InboxWatcher?
+    private let sweepClock: any Clock<Duration>
+    /// What the last relay pass found in each workspace, so choosing the next interval reads
+    /// nothing. Internal: the relay writes it (see `AppCoordinator+Relay.swift`).
+    var relayWork = RelayWork()
+
+    /// Whether the menu-bar panel is on screen. Set through `setPanelVisible`.
+    public private(set) var panelVisible = false
+    /// The app's own sampling that only matters while the panel is on screen (terminals, sidebar).
+    /// Runs on every tick while `panelVisible`, after the sessions are sampled, and once on its own
+    /// when the panel is shown (see `setPanelVisible`).
+    public var panelSweep: (@MainActor () async -> Void)?
 
     /// Designated initializer — all collaborators injected (used by tests).
     public init(
@@ -186,6 +218,7 @@ public final class AppCoordinator {
         injectionGap: TimeInterval = AppCoordinator.injectionGap,
         turnEndQuietPeriod: TimeInterval = 5.0,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
+        sweepClock: any Clock<Duration> = ContinuousClock(),
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -205,7 +238,11 @@ public final class AppCoordinator {
         self.deliverySettle = deliverySettle
         self.turnEndDebounce = TurnEndDebounce(quietPeriod: turnEndQuietPeriod)
         self.now = now
+        self.sweepClock = sweepClock
         self.isWatching = isWatching
+        self.statusLines = StatusLineFeed(
+            directory: settingsDir.appendingPathComponent("status-lines", isDirectory: true),
+            deliver: { [hookServer] body, reading in hookServer.acceptStatusLine(body: body, reading: reading) })
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.
         syncRestorables()
@@ -224,7 +261,7 @@ public final class AppCoordinator {
         let linkCDir = support.appendingPathComponent("linkC", isDirectory: true)
         self.init(
             terminals: terminals,
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer(port: 0, statusLineCacheURL: HookServer.defaultStatusLineCacheURL()),
             notifications: NotificationManager(),
             claudePath: claudePath,
             settingsDir: linkCDir,
@@ -247,7 +284,7 @@ public final class AppCoordinator {
     ) {
         self.init(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer(port: 0, statusLineCacheURL: workspaceDir.appendingPathComponent("claude-status-line.json")),
             notifications: NotificationManager(sink: NullSink(), now: { Date() }),
             claudePath: "/usr/bin/true",
             settingsDir: workspaceDir,
@@ -259,6 +296,7 @@ public final class AppCoordinator {
 
     public func start() throws {
         sweepOrphanedSettingsFiles()
+        statusLines.sweep()
         // Registration rewrites every agent's real config, so it needs a home to write to.
         if let userHome {
             do {
@@ -312,21 +350,63 @@ public final class AppCoordinator {
            terminals.sessions.contains(where: { $0.id == lastId }) {
             terminals.select(lastId)
         }
-        stateSweepTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { break }
-                await MainActor.run {
-                    self?.sampleAgentStates()
-                }
-            }
+        inboxWatcher = InboxWatcher { [weak self] in
+            Task { @MainActor in self?.sweepTicker?.wake() }
         }
+        let ticker = SweepTicker(
+            clock: sweepClock,
+            interval: { [weak self] in self?.sweepInterval() ?? TickCadence.idle },
+            pass: { [weak self] in await self?.sweepTick() }
+        )
+        sweepTicker = ticker
+        ticker.start()
+    }
+
+    /// Tells the coordinator whether the panel is on screen. Showing it gives the panel's own
+    /// sampling one look at once, so the panel never opens on data that is seconds old, and holds
+    /// the one-second cadence while it stays open. The session sweep and the relay do not run on
+    /// show: the app sets this before the window appears, so a full pass here would run on the
+    /// main thread in the middle of the opening animation. The sleep in progress is cut short and
+    /// chosen again instead, so that pass follows within a second.
+    public func setPanelVisible(_ visible: Bool) {
+        guard visible != panelVisible else { return }
+        panelVisible = visible
+        guard visible else { return }
+        sweepTicker?.reschedule()
+        Task { [weak self] in
+            // Hidden again before this got to run: there is nothing on screen to sample for.
+            guard let self, panelVisible else { return }
+            await panelSweep?()
+        }
+    }
+
+    private func sweepInterval() -> Duration {
+        TickCadence.interval(
+            panelVisible: panelVisible,
+            sessionStates: store.sessions.map(\.state),
+            hasRelayWork: !relayWork.isEmpty
+        )
+    }
+
+    /// One pass of the sweep: keep the inbox watches and the relay's notes on the workspaces that
+    /// have a live session, sample the sessions and run the relay, then the app's panel-only
+    /// sampling if the panel is on screen. The watches come first, so a write after them wakes
+    /// the next pass and one before them is read by this one.
+    private func sweepTick() async {
+        let workspaces = Set(store.sessions.filter { $0.state != .ended }.map(\.cwd))
+        relayWork.retain(only: workspaces)
+        inboxWatcher?.watch(workspaces: workspaces)
+        sampleAgentStates()
+        if panelVisible { await panelSweep?() }
     }
 
     /// Snapshot all active sessions to the manifest with wasActiveOnQuit == true before shutdown.
     public func prepareForShutdown(selectedId: String? = nil) {
         for s in store.sessions where s.state != .ended {
-            let liveAgent = terminals.session(id: s.id)?.sampleForegroundAgent() ?? s.agentKind
+            var liveAgent = s.agentKind
+            if let term = terminals.session(id: s.id), !term.isHookDriven {
+                liveAgent = term.sampleForegroundAgent(fresh: true)
+            }
             manifest.upsert(RestorableSession(
                 linkcId: s.id,
                 claudeSessionId: s.claudeSessionId,
@@ -350,9 +430,12 @@ public final class AppCoordinator {
         eventContinuation.finish()
         consumerTask?.cancel()
         consumerTask = nil
-        stateSweepTask?.cancel()
-        stateSweepTask = nil
+        sweepTicker?.stop()
+        sweepTicker = nil
+        inboxWatcher?.stop()
+        inboxWatcher = nil
         hookServer.stop()
+        statusLines.sweep()
     }
 
     // MARK: - Hook events → store → focus-aware notification
@@ -451,6 +534,7 @@ public final class AppCoordinator {
         terminals.remove(sessionId)
         let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
         try? FileManager.default.removeItem(at: settingsFile)
+        statusLines.unwatch(sessionId: sessionId)
         notifications.forget(sessionId)
         screenSignatures.removeValue(forKey: sessionId)
         turnEndDebounce.forget(sessionId: sessionId)
@@ -458,6 +542,7 @@ public final class AppCoordinator {
         injectedText.removeValue(forKey: sessionId)
         lastInjectionAt.removeValue(forKey: sessionId)
         limitSignatures.removeValue(forKey: sessionId)
+        limitScans.removeValue(forKey: sessionId)
         if wasWorker {
             // A worker was linkC's, not the user's: its report is in the task record, so it
             // leaves nothing under Earlier.
@@ -538,19 +623,29 @@ public final class AppCoordinator {
 
     /// Records that linkC just typed `text` into `sessionId`'s terminal. Every call the coordinator
     /// makes to inject text into a session must call this right alongside `terminals.sendInput`.
-    func recordInjection(sessionId: String, text: String) {
-        recordInjection(sessionId: sessionId, texts: [text])
+    /// `startsWork` is for text that hands the session something to do; see the batch overload.
+    func recordInjection(sessionId: String, text: String, startsWork: Bool = false) {
+        recordInjection(sessionId: sessionId, texts: [text], startsWork: startsWork)
     }
 
     /// A batch keeps each prompt in the echo history and stamps its one injection once.
-    func recordInjection(sessionId: String, texts: [String]) {
+    ///
+    /// `startsWork` is true where the text is a task or a message delivered to the session: that is
+    /// where its next stretch of work starts. The screen sample that would notice the screen move
+    /// can be seconds away, and the watchdog reads the quiet clock in between: left alone, an idle
+    /// session's old clock made the task just handed to it look like a stall, so it restarts.
+    /// Other text (a model switch) is not work. Typed into a session that hung mid-turn it must
+    /// leave the clock alone, or it would hide the hang for another quiet period.
+    func recordInjection(sessionId: String, texts: [String], startsWork: Bool = false) {
         var entries = injectedText[sessionId] ?? []
         entries.append(contentsOf: texts)
         if entries.count > Self.injectedHistoryLimit {
             entries.removeFirst(entries.count - Self.injectedHistoryLimit)
         }
         injectedText[sessionId] = entries
-        lastInjectionAt[sessionId] = now()
+        let injectedAt = now()
+        lastInjectionAt[sessionId] = injectedAt
+        if startsWork { screenSignatures[sessionId]?.since = injectedAt }
     }
 
     /// Everything linkC has typed into `sessionId`'s terminal, passed to the limit detector so an
@@ -674,6 +769,8 @@ public final class AppCoordinator {
                 isWorker: asWorker
             ))
             syncRestorables()
+            // A starting session is sampled every second: don't let it wait out a slow sleep.
+            sweepTicker?.wake()
             return session
         } catch {
             cleanup(sessionId: session.id) // fail loud: no ghost session or orphaned settings file
@@ -848,14 +945,19 @@ public final class AppCoordinator {
                     .heartbeat(agentKind: session.agentKind, pid: term.processId, timeout: 0.5)
             }
 
-            // The watchdog's progress signal, taken from the same once-a-second row read.
-            let signature = term.screenSignature()
-            if screenSignatures[session.id]?.signature != signature {
-                screenSignatures[session.id] = (signature, now())
+            // One read of the screen serves every check below.
+            let screen = term.screenSnapshot()
+
+            // The watchdog's progress signal. An unchanged screen has an unchanged signature.
+            let previous = screenSignatures[session.id]
+            if previous?.fingerprint != screen.fingerprint {
+                let signature = screen.progressSignature()
+                let since = previous?.signature == signature ? previous?.since : nil
+                screenSignatures[session.id] = (screen.fingerprint, signature, since ?? now())
             }
 
             // Inspect terminal output for provider rate limits & auto-reroute
-            checkLimitsAndReroute(for: session.id)
+            checkLimitsAndReroute(for: session.id, screen: screen)
 
             // `.error` here means checkLimitsAndReroute found no capable peer (or none at all)
             // for this agent's last limit — not that the session itself is broken. Its own
@@ -875,10 +977,15 @@ public final class AppCoordinator {
                 }
             }
 
-            // Detect dynamic agent kind changes in child process tree
-            let liveAgent = term.sampleForegroundAgent()
-            if liveAgent != session.agentKind && liveAgent != .shell {
-                store.updateAgentKind(id: session.id, to: liveAgent)
+            // Detect dynamic agent kind changes in child process tree. Only for sessions that
+            // could change: a hook-driven launch's kind is known, and walking its tree tells
+            // nothing. Decided by the launch, not the current kind: an agent that runs a `claude`
+            // child reads as Claude until the child exits, and this walk is what turns it back.
+            if !term.isHookDriven {
+                let liveAgent = term.sampleForegroundAgent()
+                if liveAgent != session.agentKind && liveAgent != .shell {
+                    store.updateAgentKind(id: session.id, to: liveAgent)
+                }
             }
 
             // Claude has its own hook server providing exact event transitions.
@@ -888,7 +995,7 @@ public final class AppCoordinator {
 
             // A folder-trust dialog has no spinner, so it read as an idle session and the relay
             // typed briefs into it. Hold the session as needing the user until it is answered.
-            if term.showsTrustPrompt() {
+            if screen.showsTrustPrompt() {
                 if currentSession.state != .waitingPermission {
                     store.updateState(id: session.id, to: .waitingPermission)
                     let updated = store.session(id: session.id) ?? currentSession
@@ -908,7 +1015,7 @@ public final class AppCoordinator {
                 store.updateState(id: session.id, to: .ready)
             }
 
-            let liveActivity = term.liveActivityLine()
+            let liveActivity = screen.liveActivity()
             let isWorking = liveActivity != nil && !liveActivity!.isEmpty
 
             if isWorking {
@@ -918,8 +1025,7 @@ public final class AppCoordinator {
             } else {
                 // A booting TUI is also silent. Promote only once the agent CLI is actually
                 // running, or the relay types the next frame into a process that cannot read it.
-                if currentSession.state == .starting,
-                   ProcessSnooper.detectAgent(atOrUnder: term.processId) != nil {
+                if currentSession.state == .starting, term.agentProcessIsRunning() {
                     store.updateState(id: session.id, to: .ready)
                 }
             }
@@ -944,7 +1050,7 @@ public final class AppCoordinator {
                     // A turn read as ended while a task is open is either the agent stopping short or
                     // the screen read being wrong; the rows it was read from tell which.
                     NSLog("[linkC relay] %@ read as done with a task open; its last rows:\n%@",
-                          session.agentKind.displayName, term.recentScreenRows(12).joined(separator: "\n"))
+                          session.agentKind.displayName, screen.recentRows(12).joined(separator: "\n"))
                 }
             }
         }
@@ -965,8 +1071,8 @@ public final class AppCoordinator {
 
     /// Computes active multi-agent project swarms and inspects file collisions. Each candidate
     /// workspace's blackboard is a flock-guarded file read, so the read runs off the main actor;
-    /// `swarms` is only reassigned when the result actually changed, since this is called once a
-    /// second regardless of whether anything moved.
+    /// `swarms` is only reassigned when the result actually changed, since this is called on every
+    /// tick while the panel is visible, whether or not anything moved.
     public func sampleSwarms(additionalAgents: [String: [AgentKind]] = [:]) async {
         var agentsByPath: [String: Set<AgentKind>] = [:]
 
@@ -1140,9 +1246,14 @@ public final class AppCoordinator {
         }
         let data = try SettingsComposer.compose(
             userSettings: user, projectSettings: project, projectLocalSettings: projectLocal,
-            port: hookServer.port, token: hookToken)
+            port: hookServer.port, token: hookToken, statusLineFile: statusLines.fileURL(sessionId: session.id))
         claudeStatusLineIsUsers = try SettingsComposer.definesStatusLine(
             user: user, project: project, projectLocal: projectLocal)
+        // The status file must exist and be watched before Claude starts; with the user's own status
+        // line there is nothing of linkC's to write it.
+        if !claudeStatusLineIsUsers {
+            try statusLines.watch(sessionId: session.id)
+        }
         try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         let path = settingsDir.appendingPathComponent("session-\(session.id).json")
         try data.write(to: path)

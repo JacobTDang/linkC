@@ -32,11 +32,12 @@ public enum SettingsComposer {
     }
 
     /// Deep-merge user + project settings with linkC hooks. Appends to existing hook
-    /// arrays rather than clobbering them. Adds linkC's status line unless any settings layer —
-    /// including the project's local settings, which Claude applies itself — sets its own.
+    /// arrays rather than clobbering them. Adds linkC's status line, which reports into
+    /// `statusLineFile`, unless any settings layer — including the project's local settings,
+    /// which Claude applies itself — sets its own.
     public static func compose(
         userSettings: Data?, projectSettings: Data?, projectLocalSettings: Data? = nil,
-        port: UInt16, token: String
+        port: UInt16, token: String, statusLineFile: URL
     ) throws -> Data {
         let user = try decodeSettingsObject(userSettings, label: "user")
         let project = try decodeSettingsObject(projectSettings, label: "project")
@@ -54,7 +55,7 @@ public enum SettingsComposer {
         merged["hooks"] = concatHookArrays(base: userAndProjectHooks, appending: linkcHooks(port: port, token: token))
 
         if try !definesStatusLine(user: userSettings, project: projectSettings, projectLocal: projectLocalSettings) {
-            merged["statusLine"] = statusLine(port: port, token: token)
+            merged["statusLine"] = statusLine(reportingTo: statusLineFile)
         }
 
         guard JSONSerialization.isValidJSONObject(merged) else {
@@ -67,14 +68,31 @@ public enum SettingsComposer {
         }
     }
 
-    /// The status line linkC adds: it posts Claude's status JSON to the hook server and prints
-    /// nothing, so no status row appears. Any status line makes Claude drop the "esc to
-    /// interrupt" hint from its footer; Esc itself still works.
-    public static func statusLine(port: UInt16, token: String) -> [String: Any] {
-        [
-            "type": "command",
-            "command": "curl -s -m 2 -X POST -H 'X-LinkC-Token: \(token)' -H 'X-LinkC-Event: \(HookServer.statusLineEvent)' --data-binary @- http://127.0.0.1:\(port)/hook >/dev/null",
-        ]
+    /// The status line linkC adds: it writes Claude's status JSON into `file` and prints nothing, so
+    /// no status row appears. Any status line makes Claude drop the "esc to interrupt" hint from
+    /// its footer; Esc itself still works.
+    public static func statusLine(reportingTo file: URL) -> [String: Any] {
+        ["type": "command", "command": statusLineCommand(writingTo: file)]
+    }
+
+    /// Claude starts a status line as `/bin/sh -c <command>` for each refresh and pipes one line of
+    /// status JSON into it. This is shell builtins only (`read`, `[`, `printf`, and a redirect), so
+    /// the shell Claude already starts is the only process a refresh costs; the earlier `curl` was a
+    /// second one every time, in every hooked session. It is POSIX, not a bash-ism, so it does not
+    /// depend on which shell `sh` is.
+    ///
+    /// - The line goes into the file with its line end, in one `printf`, so a reader can tell a
+    ///   whole report from one it caught mid-write (`StatusLineFile`).
+    /// - Nothing on stdin writes nothing: an empty read must not blank the last report.
+    /// - Everything the shell would print is discarded, and the command never waits for the CLI to
+    ///   close its end of the pipe: it must never block, fail, or show anything during a turn.
+    public static func statusLineCommand(writingTo file: URL) -> String {
+        #"{ IFS= read -r l; [ -z "$l" ] || printf '%s\n' "$l" >"# + shellQuoted(file.path) + #"; } 2>/dev/null"#
+    }
+
+    /// `text` as one single-quoted shell word, whatever it contains.
+    private static func shellQuoted(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
     }
 
     /// True when any settings layer sets its own `statusLine` — linkC never replaces one.
