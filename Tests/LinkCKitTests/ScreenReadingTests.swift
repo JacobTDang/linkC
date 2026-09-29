@@ -77,6 +77,27 @@ final class ScreenReadingTests: XCTestCase {
         XCTAssertNotEqual(ScreenSnapshot(rows: []).progressSignature(), "", "a started terminal with nothing on it is not the same as no terminal")
     }
 
+    func testANeverStartedScreenAndABlankOneHaveDifferentFingerprints() {
+        XCTAssertNotEqual(ScreenSnapshot.none.fingerprint, ScreenSnapshot(rows: []).fingerprint)
+    }
+
+    /// The watchdog's quiet clock starts when the screen last changed. A terminal getting its
+    /// first (blank) screen is a change, and reads as one only if its fingerprint moved.
+    @MainActor
+    func testTheQuietClockRestartsWhenATerminalGetsItsFirstBlankScreen() throws {
+        let coordinator = AppCoordinator(workspaceDir: workspace)
+        defer { coordinator.shutdown() }
+        _ = coordinator.store.create(cwd: workspace.path, title: "s", id: "s", agentKind: .codex)
+        let term = coordinator.terminals.makeSession(id: "s", cwd: workspace.path, title: "s", agentKind: .codex)
+        coordinator.sampleAgentStates()
+        let neverStarted = try XCTUnwrap(coordinator.screenUnchangedSince("s"))
+
+        _ = term.terminalView
+        coordinator.sampleAgentStates()
+
+        XCTAssertGreaterThan(try XCTUnwrap(coordinator.screenUnchangedSince("s")), neverStarted)
+    }
+
     func testTheFingerprintFollowsTheRowsAndTheirBoundaries() {
         let rows = ["⏺ Read(a.swift)", "  ⎿  Read 200 lines", "╭────╮"]
         XCTAssertEqual(ScreenSnapshot(rows: rows).fingerprint, ScreenSnapshot(rows: rows).fingerprint)

@@ -5,9 +5,9 @@ import Foundation
 public struct ScreenSnapshot: Sendable {
     /// The non-blank rows, top to bottom.
     public let rows: [String]
-    /// A hash of `rows`: equal for two snapshots of an unchanged screen, so a consumer that has
-    /// already worked out something from these rows can skip working it out again. In-process
-    /// only — hashing is seeded per launch.
+    /// A hash of `rows` and whether there is a screen at all: equal for two snapshots of an
+    /// unchanged screen, so a consumer that has already worked out something from these rows can
+    /// skip working it out again. In-process only — hashing is seeded per launch.
     public let fingerprint: Int
     /// False for a session whose PTY was never started. It has no screen at all, which is not the
     /// same as a blank one.
@@ -20,6 +20,7 @@ public struct ScreenSnapshot: Sendable {
         self.rows = rows
         self.hasScreen = hasScreen
         var hasher = Hasher()
+        hasher.combine(hasScreen)
         for var row in rows {
             // The bytes, not `String`'s own hash: that normalizes every non-ASCII row (box
             // drawing, spinner glyphs) before hashing, which is most of a Claude screen.
