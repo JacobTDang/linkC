@@ -24,8 +24,7 @@ extension TerminalSessionTests {
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
         let titleRecorder = TerminalTitleRecorder()
         view.processDelegate = titleRecorder
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        view.getTerminal().clearUpdateRange()
+        settleInitialDisplay(of: view)
 
         let output = "\u{1b}]0;detached title\u{7}alpha\r\nbeta\u{1b}[?2004h"
         view.dataReceived(slice: Array(output.utf8)[...])
@@ -43,8 +42,7 @@ extension TerminalSessionTests {
 
     func testDetachedFeedRequestsFullDisplayWhenReattached() {
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        view.getTerminal().clearUpdateRange()
+        settleInitialDisplay(of: view)
         view.dataReceived(slice: Array("reattached content".utf8)[...])
         XCTAssertNotNil(view.getTerminal().getUpdateRange())
 
@@ -91,8 +89,7 @@ extension TerminalSessionTests {
 
     func testDetachedSynchronizedOutputKeepsItsDirtyRange() {
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        view.getTerminal().clearUpdateRange()
+        settleInitialDisplay(of: view)
 
         let output = "\u{1b}[?2026hwrapped output\u{1b}[?2026l"
         view.dataReceived(slice: Array(output.utf8)[...])
@@ -109,8 +106,7 @@ extension TerminalSessionTests {
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
         host.show(view)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        view.getTerminal().clearUpdateRange()
+        settleInitialDisplay(of: view)
 
         window.orderOut(nil)
         view.dataReceived(slice: Array("hidden output".utf8)[...])
@@ -336,6 +332,15 @@ extension TerminalSessionTests {
             try? await Task.sleep(for: .milliseconds(50))
         }
         return session.recentOutput(lines: 10).contains(snippet)
+    }
+
+    /// Waits out the display pass a new view queues for itself, so the only dirty range a test sees is
+    /// the one its own feed makes. A fixed sleep is not enough: under ThreadSanitizer that pass can run
+    /// after it and consume the range the test is about to check.
+    private func settleInitialDisplay(of view: LinkCTerminalView) {
+        XCTAssertTrue(waitUntil(timeout: 5) { view.getTerminal().getUpdateRange() == nil },
+                      "the display pass a new view queues never ran")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     }
 
     private func waitUntil(timeout: TimeInterval, condition: () -> Bool) -> Bool {
