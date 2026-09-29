@@ -588,12 +588,20 @@ public final class AppCoordinator {
 
     /// Records that linkC just typed `text` into `sessionId`'s terminal. Every call the coordinator
     /// makes to inject text into a session must call this right alongside `terminals.sendInput`.
-    func recordInjection(sessionId: String, text: String) {
-        recordInjection(sessionId: sessionId, texts: [text])
+    /// `startsWork` is for text that hands the session something to do; see the batch overload.
+    func recordInjection(sessionId: String, text: String, startsWork: Bool = false) {
+        recordInjection(sessionId: sessionId, texts: [text], startsWork: startsWork)
     }
 
     /// A batch keeps each prompt in the echo history and stamps its one injection once.
-    func recordInjection(sessionId: String, texts: [String]) {
+    ///
+    /// `startsWork` is true where the text is a task or a message delivered to the session: that is
+    /// where its next stretch of work starts. The screen sample that would notice the screen move
+    /// can be seconds away, and the watchdog reads the quiet clock in between: left alone, an idle
+    /// session's old clock made the task just handed to it look like a stall, so it restarts.
+    /// Other text (a model switch) is not work. Typed into a session that hung mid-turn it must
+    /// leave the clock alone, or it would hide the hang for another quiet period.
+    func recordInjection(sessionId: String, texts: [String], startsWork: Bool = false) {
         var entries = injectedText[sessionId] ?? []
         entries.append(contentsOf: texts)
         if entries.count > Self.injectedHistoryLimit {
@@ -602,11 +610,7 @@ public final class AppCoordinator {
         injectedText[sessionId] = entries
         let injectedAt = now()
         lastInjectionAt[sessionId] = injectedAt
-        // Typing into a session is where its next stretch of work starts. The screen sample that
-        // would notice the screen move can be seconds away, and the watchdog reads this clock in
-        // between: left alone, an idle session's old clock made the task just handed to it look
-        // like a stall.
-        screenSignatures[sessionId]?.since = injectedAt
+        if startsWork { screenSignatures[sessionId]?.since = injectedAt }
     }
 
     /// Everything linkC has typed into `sessionId`'s terminal, passed to the limit detector so an

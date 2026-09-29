@@ -382,7 +382,7 @@ extension AppCoordinator {
             // `.delivered → .failed` is always a legal transition, so the delegator is told now,
             // with the real reason, rather than after a very long silence.
             if terminals.sendInput(sessionId: session.id, text: frame) {
-                recordInjection(sessionId: session.id, text: frame)
+                recordInjection(sessionId: session.id, text: frame, startsWork: true)
                 store.updateState(id: session.id, to: .working)
             } else {
                 let reason = "delivery marked done but the text never reached \(task.toAgent.displayName)'s terminal"
@@ -575,7 +575,7 @@ extension AppCoordinator {
         guard !messages.isEmpty else { return }
         let prompts = messages.map(\.prompt)
         terminals.sendInput(sessionId: session.id, text: prompts.joined(separator: "\n"))
-        recordInjection(sessionId: session.id, texts: prompts)
+        recordInjection(sessionId: session.id, texts: prompts, startsWork: true)
         // Commands and legacy briefs are always singleton batches.
         if let message = messages.first, message.kind == .command, message.prompt.hasPrefix("/model ") {
             let id = String(message.prompt.dropFirst("/model ".count)).trimmingCharacters(in: .whitespacesAndNewlines)

@@ -145,6 +145,59 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         XCTAssertTrue(sink.deliveries.filter { $0.title.contains("look stuck") }.isEmpty)
     }
 
+    /// A note delivered to an idle session is the start of that session's next stretch of work,
+    /// like a task: its quiet clock restarts.
+    @MainActor
+    func testDeliveringAMessageToAnIdleSessionRestartsItsQuietClock() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        let peer = try coordinator.newSession(cwd: ws, agent: .codex)
+        let term = try XCTUnwrap(coordinator.terminals.session(id: peer.id))
+        let ready = try await waitUntil { term.acceptsPaste }
+        XCTAssertTrue(ready, "the mock agent never negotiated bracketed paste")
+        coordinator.store.updateState(id: peer.id, to: .ready)
+        clock.set(Date().addingTimeInterval(-20 * 60))
+        coordinator.sampleAgentStates()
+        let lastChange = try XCTUnwrap(coordinator.screenUnchangedSince(peer.id))
+
+        clock.set(Date())
+        _ = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "the schema changed")
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertTrue(try inbox.fetchPending().isEmpty, "the note was delivered")
+        XCTAssertGreaterThan(try XCTUnwrap(coordinator.screenUnchangedSince(peer.id)), lastChange)
+    }
+
+    /// `switchModel` types `/model ...` into a session, which is not work being handed over. Into a
+    /// session that hung mid-turn it must leave the quiet clock alone: restarting it would hide the
+    /// hang for another 15 minutes.
+    @MainActor
+    func testSwitchingAWorkingSessionsModelDoesNotRestartItsQuietClock() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: { clock.now() })
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .claude)
+        let term = try XCTUnwrap(coordinator.terminals.session(id: session.id))
+        let started = try await waitUntil { term.isRunning }
+        XCTAssertTrue(started, "the mock agent never started")
+        coordinator.store.updateState(id: session.id, to: .working)
+        clock.set(Date().addingTimeInterval(-20 * 60))
+        coordinator.sampleAgentStates()
+        let lastChange = try XCTUnwrap(coordinator.screenUnchangedSince(session.id))
+
+        clock.set(Date())
+        try coordinator.switchModel(in: ws, agent: .claude, to: "haiku")
+        XCTAssertEqual(coordinator.screenUnchangedSince(session.id), lastChange, "a model switch is not progress")
+        XCTAssertEqual(coordinator.recentlyInjectedTexts(sessionId: session.id).count, 1,
+                       "the text is still recorded, so the limit detector recognises its echo")
+        XCTAssertNotNil(coordinator.lastInjectionAt[session.id], "and the injection gap still applies")
+    }
+
     /// A brief typed into a session that never starts the task: after 10 minutes the delegator
     /// gets one line and the user one notification, and a second tick repeats neither.
     @MainActor
