@@ -35,17 +35,15 @@ struct Sidebar: View {
         VStack(spacing: 0) {
             BrandRow(model: model)
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 1) {
+                LazyVStack(alignment: .leading, spacing: 1) {
                     NavSection(model: model, isSplit: isSplit)
-                    // Ages and states tick once a second while the sidebar is on screen. Built once
-                    // here — projects and unfiled terminals share the same underlying model — and
-                    // handed down, rather than each section rebuilding it.
-                    TimelineView(.periodic(from: .now, by: 1.0)) { context in
-                        let sections = model.sidebarSections(now: context.date)
-                        ProjectsSection(projects: sections.projects, model: model) { inspectingWorkspace = $0 }
-                        if !sections.unfiled.isEmpty {
-                            TerminalsSidebarSection(unfiled: sections.unfiled, model: model)
-                        }
+                    // Observable state re-renders this on its own; the signal covers what is not
+                    // observable (inbox files, terminal screens, the rate-limit clock).
+                    let _ = model.sidebarSignal.signal
+                    let sections = model.sidebarSections()
+                    ProjectsSection(projects: sections.projects, model: model) { inspectingWorkspace = $0 }
+                    if !sections.unfiled.isEmpty {
+                        TerminalsSidebarSection(unfiled: sections.unfiled, model: model)
                     }
                     if let running = model.serverSummary {
                         CollapsibleSection(title: "Servers", trailing: "\(running) running",
@@ -91,12 +89,23 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
     var isSelected: Bool = false
     var indent: CGFloat = 0
     var help: String? = nil
+    /// Set while the row has an action line to show in place of its title.
     var activity: ShownActivity? = nil
+    /// Reads that line now. The line is only ever what this returns: nil reads as the title.
+    var resolveActivity: (() -> String?)? = nil
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
 
     @State private var hovering = false
+
+    private var titleLabel: some View {
+        Text(title)
+            .font(.system(size: 13))
+            .foregroundStyle(titleColor)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -107,14 +116,18 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
                     leading()
                         .frame(width: 16)
                     if let activity {
-                        ActivityLabel(text: activity.text, isWorking: activity.isWorking, size: 12)
-                            .foregroundStyle(Theme.textSecondary)
+                        // The terminal screen an action line is read from is not observable, so
+                        // this leaf re-reads it while the session works; nothing else re-renders.
+                        TimelineView(.periodic(from: .now, by: activity.isWorking ? 1.0 : 3600.0)) { _ in
+                            if let text = resolveActivity?() {
+                                ActivityLabel(text: text, isWorking: activity.isWorking, size: 12)
+                                    .foregroundStyle(Theme.textSecondary)
+                            } else {
+                                titleLabel
+                            }
+                        }
                     } else {
-                        Text(title)
-                            .font(.system(size: 13))
-                            .foregroundStyle(titleColor)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                        titleLabel
                     }
                     Spacer(minLength: 6)
                 }
@@ -281,7 +294,7 @@ private struct ProjectsSection: View {
     let onInspect: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        LazyVStack(alignment: .leading, spacing: 1) {
             if !projects.isEmpty {
                 SectionLabel(title: "Projects")
             }
@@ -403,21 +416,59 @@ private struct SessionRow: View {
             indent: 18,
             help: "\(row.agentKind.displayName) — \(row.title)",
             activity: row.activity,
+            resolveActivity: { model.liveActivity(id: row.id) },
             action: { model.focus(row.id) }
         ) {
             AgentLogoView(agent: row.agentKind)
                 .foregroundStyle(Theme.textPrimary)
         } trailing: { hovering in
             HStack(spacing: 6) {
-                Text(row.status.text)
-                    .font(.system(size: 11))
-                    .monospacedDigit()
-                    .foregroundStyle(color(for: row.status.tone))
+                SessionStatusLabel(status: row.status)
                 if hovering {
                     Button { model.stop(row.id) } label: { RowGlyph(systemName: "xmark") }
                         .buttonStyle(.plain)
                         .help("Stop this session")
                 }
+            }
+        }
+    }
+}
+
+private struct AgeTimelineSchedule: TimelineSchedule {
+    let since: Date
+
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> Entries {
+        Entries(current: startDate, since: since)
+    }
+
+    struct Entries: Sequence, IteratorProtocol {
+        var current: Date
+        let since: Date
+
+        mutating func next() -> Date? {
+            let nextDate = AgeScheduleRule.nextTick(after: current, since: since)
+            current = nextDate
+            return nextDate
+        }
+    }
+}
+
+private struct SessionStatusLabel: View {
+    let status: SessionRowStatus
+
+    var body: some View {
+        switch status.format {
+        case .fixed(let text):
+            Text(text)
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(color(for: status.tone))
+        case .age(_, let since):
+            TimelineView(AgeTimelineSchedule(since: since)) { context in
+                Text(status.text(now: context.date))
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(color(for: status.tone))
             }
         }
     }
@@ -455,7 +506,7 @@ private struct TerminalsSidebarSection: View {
     let model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        LazyVStack(alignment: .leading, spacing: 1) {
             SectionLabel(title: "Terminals")
                 .dropDestination(for: LinkCTerminalDrag.self) { items, _ in
                     guard let id = droppedTerminalID(items, model: model) else { return false }

@@ -27,7 +27,7 @@ public final class BoardFileWatcher: @unchecked Sendable {
         queue.setSpecific(key: queueKey, value: ())
 
         let folderPath = fileURL.deletingLastPathComponent().path
-        let folderDescriptor = open(folderPath, O_EVTONLY)
+        let folderDescriptor = open(folderPath, O_EVTONLY | O_CLOEXEC)
         guard folderDescriptor != -1 else {
             let message = String(cString: strerror(errno))
             throw LinkCError.server("could not watch \(folderPath): \(message)")
@@ -101,7 +101,7 @@ public final class BoardFileWatcher: @unchecked Sendable {
     /// Opens a fresh watch on the file itself, when it exists and isn't already watched.
     private func openFileSource() {
         guard fileSource == nil else { return }
-        let descriptor = open(fileURL.path, O_EVTONLY)
+        let descriptor = open(fileURL.path, O_EVTONLY | O_CLOEXEC)
         guard descriptor != -1 else { return }   // no file yet; the folder watch will try again
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor, eventMask: [.write, .extend, .delete, .rename, .attrib], queue: queue)
