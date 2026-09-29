@@ -6,3 +6,11 @@
 # linkC avoids the reachable variants (we never call view.terminate(), we track our own
 # liveness), but the exit path itself still races inside the library.
 race:LocalProcess.childStopped
+
+# SwiftTerm LocalProcess: at PTY EOF the IO-read callback writes `childfd = -1`
+# (LocalProcess.swift:297) while `send(data:)` reads `childfd` on the caller's thread, with nothing
+# ordering the two. Any send before a child's exit is reported, however far apart the two are in
+# time, and only some runs report it (the tool forgets old accesses). The only linkC frames in the
+# reading stack are its plain `send` calls, so it is matched on the reading side, `send`: a linkC
+# read of `childfd` from anywhere else still reports.
+race:LocalProcess.send
