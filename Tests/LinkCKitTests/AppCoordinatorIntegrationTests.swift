@@ -50,7 +50,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         claudePath: String = "/x/claude",
         settingsDir: URL = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-\(UUID().uuidString)"),
         manifestDir: URL? = nil,
-        models: AgentModelSettings = .seeded
+        models: AgentModelSettings = .seeded,
+        defaults: UserDefaults? = nil
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -77,6 +78,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-settings.json"),
             manifestDir: manifestDir ?? settingsDir,
             agentPathResolver: { _ in scriptURL.path },
+            defaults: defaults,
             modelSettings: { models },
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
             // make dispatch tests wait for real. Zero here; production keeps the default.
@@ -103,7 +105,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     }
 
     /// Polls until `predicate` holds (or times out). Used to await async event propagation.
-    private func waitUntil(_ predicate: () -> Bool, iterations: Int = 100) async throws -> Bool {
+    private func waitUntil(_ predicate: () -> Bool, iterations: Int = TestWait.polls) async throws -> Bool {
         for _ in 0..<iterations {
             if predicate() { return true }
             try await Task.sleep(for: .milliseconds(20))
@@ -582,12 +584,10 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     func testPrepareForShutdownPersistsActiveSessionsWithLiveAgentAndActiveOnQuit() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-shutdown-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer {
-            try? FileManager.default.removeItem(at: dir)
-            UserDefaults.standard.removeObject(forKey: "LinkCLastSelectedSessionId")
-        }
+        defer { try? FileManager.default.removeItem(at: dir) }
 
-        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        let defaults = InMemoryUserDefaults()
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir, defaults: defaults)
         _ = coordinator.store.create(cwd: "/tmp/project1", title: "p1", id: "L1", agentKind: .claude)
         coordinator.store.apply(HookEvent(kind: .userPromptSubmit, linkcSessionId: "L1", claudeSessionId: "c1", cwd: "/tmp/project1"))
 
@@ -599,7 +599,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
 
         coordinator.prepareForShutdown(selectedId: "L2")
 
-        XCTAssertEqual(UserDefaults.standard.string(forKey: "LinkCLastSelectedSessionId"), "L2")
+        XCTAssertEqual(defaults.string(forKey: AppCoordinator.lastSelectedSessionKey), "L2")
 
         let entries = coordinator.manifest.entries
         guard let entry1 = entries.first(where: { $0.linkcId == "L1" }) else {
@@ -811,7 +811,6 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             try? FileManager.default.removeItem(at: dir)
             try? FileManager.default.removeItem(at: cwd1)
             try? FileManager.default.removeItem(at: cwd2)
-            UserDefaults.standard.removeObject(forKey: "LinkCLastSelectedSessionId")
         }
 
         let seed = WorkspaceManifest(directory: dir)
@@ -834,13 +833,34 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             endedAt: nil
         ))
 
-        UserDefaults.standard.set("TAB1", forKey: "LinkCLastSelectedSessionId")
+        let defaults = InMemoryUserDefaults()
+        defaults.set("TAB1", forKey: AppCoordinator.lastSelectedSessionKey)
 
-        let coordinator = makeCoordinator(sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir)
+        let coordinator = makeCoordinator(
+            sink: RecordingSink(), claudePath: "/bin/cat", settingsDir: dir, manifestDir: dir, defaults: defaults
+        )
         try coordinator.start()
         defer { coordinator.store.sessions.forEach { coordinator.stopSession($0.id) } }
 
         XCTAssertEqual(coordinator.terminals.selectedId, "TAB1")
+    }
+
+    /// A coordinator built without defaults remembers nothing and reads nothing: the tab it
+    /// restores can never depend on what another test — or the developer's own linkC — left in the
+    /// real `UserDefaults.standard` domain, which every test process on the machine shares.
+    func testACoordinatorWithoutDefaultsNeverTouchesTheStandardDomain() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-nodefaults-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let selected = "SEL-\(UUID().uuidString)"
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        _ = coordinator.terminals.makeSession(id: selected, cwd: "/tmp", title: "t", agentKind: .claude)
+        coordinator.prepareForShutdown(selectedId: selected)
+
+        XCTAssertNotEqual(
+            UserDefaults.standard.string(forKey: AppCoordinator.lastSelectedSessionKey), selected,
+            "the selection went to the real standard domain")
     }
 
     /// An invalid or missing directory gracefully leaves the session in restorables without throwing.

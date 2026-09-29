@@ -72,7 +72,7 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
     }
 
     @MainActor
-    private func waitUntil(_ predicate: @MainActor () -> Bool, iterations: Int = 100) async throws -> Bool {
+    private func waitUntil(_ predicate: @MainActor () -> Bool, iterations: Int = TestWait.polls) async throws -> Bool {
         for _ in 0..<iterations {
             if predicate() { return true }
             try await Task.sleep(for: .milliseconds(20))

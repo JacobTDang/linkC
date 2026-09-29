@@ -275,8 +275,10 @@ linkC and use a dark background instead.
 ## Build and test
 
 ```sh
-swift build   # compile
-swift test    # run the unit and integration tests
+swift build                                    # compile
+swift test                                     # run the unit and integration tests
+./scripts/tsan.sh                              # run the tests under ThreadSanitizer
+./scripts/check-commits.sh origin/main..HEAD   # check commit messages and whitespace, as CI does
 ```
 
 ## Source layout
