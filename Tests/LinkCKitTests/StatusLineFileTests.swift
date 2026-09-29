@@ -81,4 +81,32 @@ final class StatusLineFileTests: XCTestCase {
         }
         XCTAssertFalse(message.isEmpty)
     }
+
+    /// The feed logs a failure once and stays quiet while the same one repeats, by comparing
+    /// messages. A message that reads differently each time — an error printed with its userInfo
+    /// dictionary, whose order is not fixed — makes one bad file look like a new failure on every
+    /// refresh.
+    func testTheSameGarbageAlwaysGivesTheSameMessage() throws {
+        try write("this is not json\n")
+
+        let messages = Set((0..<200).map { _ -> String in
+            guard case .garbage(let message) = StatusLineFile.read(at: file, receivedAt: arrived) else {
+                return "not garbage"
+            }
+            return message
+        })
+
+        XCTAssertEqual(messages.count, 1, "\(messages)")
+    }
+
+    func testTheSameUnreadableFileAlwaysGivesTheSameMessage() {
+        let messages = Set((0..<200).map { _ -> String in
+            guard case .unreadable(let message) = StatusLineFile.read(at: file, receivedAt: arrived) else {
+                return "not unreadable"
+            }
+            return message
+        })
+
+        XCTAssertEqual(messages.count, 1, "\(messages)")
+    }
 }

@@ -29,7 +29,7 @@ public enum StatusLineFile {
         do {
             data = try Data(contentsOf: url)
         } catch {
-            return .unreadable("could not read \(url.path) — \(error)")
+            return .unreadable("could not read \(url.path) — \(describe(error))")
         }
         guard !data.isEmpty else { return .empty }
         guard let lineEnd = data.firstIndex(of: UInt8(ascii: "\n")) else { return .torn }
@@ -37,7 +37,21 @@ public enum StatusLineFile {
         do {
             return .report(body: body, reading: try ClaudeRateLimits.decode(body, receivedAt: receivedAt))
         } catch {
-            return .garbage("the report in \(url.path) is not Claude's status JSON — \(error)")
+            return .garbage("the report in \(url.path) is not Claude's status JSON — \(describe(error))")
         }
+    }
+
+    /// An error as text that reads the same every time it happens. `"\(error)"` prints a Cocoa error
+    /// with its userInfo — an underlying error's address, a dictionary in no fixed order — so one
+    /// unchanged bad file would read as a new failure on every refresh, and the feed, which logs a
+    /// failure once by comparing messages, would log it every time.
+    private static func describe(_ error: Error) -> String {
+        if case DecodingError.dataCorrupted(let context) = error,
+           let underlying = context.underlyingError as NSError? {
+            let detail = underlying.userInfo[NSDebugDescriptionErrorKey] as? String ?? underlying.localizedDescription
+            return "\(context.debugDescription) \(detail)"
+        }
+        if error is DecodingError { return "\(error)" }
+        return (error as NSError).localizedDescription
     }
 }
