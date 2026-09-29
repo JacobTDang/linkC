@@ -9,10 +9,11 @@ extension AppCoordinator {
     static let maxConcurrentVerifications = 2
     /// Lock-wait budget for every store call the relay tick itself makes. The default `InboxStore`
     /// timeout (5s) is sized for a person waiting on one CLI command, not for a `@MainActor` tick
-    /// that runs once a second across every workspace: eight to ten `linkc-mcp` processes write
-    /// the same `inbox.json`, so a single slow writer would otherwise stall the whole UI for up to
-    /// 5s, several times per tick. A contended lock is not a failure here — the tick simply skips
-    /// and the next one retries a second later — so this budget only needs to be short, not zero.
+    /// that runs every second or few across every workspace: eight to ten `linkc-mcp` processes
+    /// write the same `inbox.json`, so a single slow writer would otherwise stall the whole UI for
+    /// up to 5s, several times per tick. A contended lock is not a failure here — the tick simply
+    /// skips and the next one, a second later (a contended pass keeps the cadence at one second,
+    /// see `RelayWork`), retries — so this budget only needs to be short, not zero.
     /// Matches the blackboard heartbeat's own 0.5s timeout a few lines below in `sampleAgentStates`.
     static let relayLockTimeout: TimeInterval = 0.5
     /// Minimum time a session must have been paste-ready (see `TerminalSession.pasteReadySince`)
@@ -47,6 +48,7 @@ extension AppCoordinator {
     public func processPendingMessages(workspacePath: String) {
         let norm = ProjectPath.canonical(workspacePath)
         let inboxStore = InboxStore(workspaceRoot: norm)
+        relayWork.beginPass(in: norm)
         pollPasteReadiness(workspacePath: norm)
         guard !settleResolvableTasks(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
@@ -101,6 +103,7 @@ extension AppCoordinator {
     /// writer after `Self.relayLockTimeout`. Never called more than once per `processPendingMessages`
     /// call — a permanently contended workspace must be visible, not merely idle every tick.
     private func logRelayLockContention(workspacePath: String) {
+        relayWork.noteContention(in: workspacePath)
         NSLog("[linkC relay] processPendingMessages: %@ — inbox lock still contended after %.1fs; retrying next tick",
               workspacePath, Self.relayLockTimeout)
     }
@@ -416,6 +419,7 @@ extension AppCoordinator {
         // A notice stays marked "already told to the user" only while it is still queued here —
         // once it is delivered (below) or expires (a separate phase), evict it so a long-running
         // app does not keep one entry per notice ever seen stuck for its whole lifetime.
+        relayWork.noteQueuedMessages(pending.contains { hasLiveTarget($0, in: norm) }, in: norm)
         let stillQueued = Set(pending.map(\.id))
         undeliveredNoticesReported[norm]?.formIntersection(stillQueued)
         if undeliveredNoticesReported[norm]?.isEmpty == true {
@@ -457,7 +461,7 @@ extension AppCoordinator {
                 } catch {
                     // A contended lock is not "this task has no delegator": falling through would
                     // hand the notice to a different session of the same kind. End the tick — the
-                    // next one, a second later, routes it properly.
+                    // next one routes it properly.
                     if isRelayLockTimeout(error) { return true }
                     NSLog("[linkC relay] dispatchMessages: message %@ delegator lookup — %@",
                           message.id, String(describing: error))
@@ -552,6 +556,21 @@ extension AppCoordinator {
         return false
     }
 
+    /// Whether a queued message is something a tick can act on: a brief spawns an agent, and any
+    /// other kind (a notice is marked delivered at once) needs a live session of its target kind
+    /// to take it. One with no such session waits for one to be launched, and launching wakes the
+    /// sweep, so it must not hold the fast cadence in the meantime.
+    private func hasLiveTarget(_ message: PendingMessage, in workspace: String) -> Bool {
+        switch message.kind {
+        case .task: return true
+        case .notice: return false
+        default:
+            return store.sessions.contains {
+                $0.cwd == workspace && $0.agentKind == message.toAgent && $0.state != .ended
+            }
+        }
+    }
+
     private func injectMessageBatch(_ messages: [PendingMessage], into session: Session) {
         guard !messages.isEmpty else { return }
         let prompts = messages.map(\.prompt)
@@ -587,6 +606,7 @@ extension AppCoordinator {
             NSLog("[linkC relay] launchVerifications: open tasks — %@", String(describing: error))
             return (false, [])
         }
+        relayWork.noteOpenTasks(!open.isEmpty, in: workspacePath)
 
         // Each task's run is decided where the task is classified, below: gating decides gate
         // vs. cancel-with-no-verification, reported decides verify vs. settle. A store error

@@ -165,7 +165,23 @@ public final class AppCoordinator {
     private let eventStream: AsyncStream<HookEvent>
     private let eventContinuation: AsyncStream<HookEvent>.Continuation
     private var consumerTask: Task<Void, Never>?
-    private var stateSweepTask: Task<Void, Never>?
+    /// The one loop behind every periodic sample: the sessions, the relay and, while the panel is
+    /// visible, the app's own sampling (`panelSweep`). Its spacing follows `TickCadence`.
+    private var sweepTicker: SweepTicker?
+    /// Wakes `sweepTicker` when a workspace's inbox file is replaced, so a new delegation never
+    /// waits out the slow interval. Watches the workspaces that have a live session: the only
+    /// ones the relay works on.
+    private var inboxWatcher: InboxWatcher?
+    private let sweepClock: any Clock<Duration>
+    /// What the last relay pass found in each workspace, so choosing the next interval reads
+    /// nothing. Internal: the relay writes it (see `AppCoordinator+Relay.swift`).
+    var relayWork = RelayWork()
+
+    /// Whether the menu-bar panel is on screen. Set through `setPanelVisible`.
+    public private(set) var panelVisible = false
+    /// The app's own sampling that only matters while the panel is on screen (terminals, sidebar).
+    /// Runs on every tick while `panelVisible`, after the sessions are sampled.
+    public var panelSweep: (@MainActor () async -> Void)?
 
     /// Designated initializer — all collaborators injected (used by tests).
     public init(
@@ -186,6 +202,7 @@ public final class AppCoordinator {
         injectionGap: TimeInterval = AppCoordinator.injectionGap,
         turnEndQuietPeriod: TimeInterval = 5.0,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
+        sweepClock: any Clock<Duration> = ContinuousClock(),
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -205,6 +222,7 @@ public final class AppCoordinator {
         self.deliverySettle = deliverySettle
         self.turnEndDebounce = TurnEndDebounce(quietPeriod: turnEndQuietPeriod)
         self.now = now
+        self.sweepClock = sweepClock
         self.isWatching = isWatching
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.
@@ -312,15 +330,45 @@ public final class AppCoordinator {
            terminals.sessions.contains(where: { $0.id == lastId }) {
             terminals.select(lastId)
         }
-        stateSweepTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { break }
-                await MainActor.run {
-                    self?.sampleAgentStates()
-                }
-            }
+        inboxWatcher = InboxWatcher { [weak self] in
+            Task { @MainActor in self?.sweepTicker?.wake() }
         }
+        let ticker = SweepTicker(
+            clock: sweepClock,
+            interval: { [weak self] in self?.sweepInterval() ?? TickCadence.idle },
+            pass: { [weak self] in await self?.sweepTick() }
+        )
+        sweepTicker = ticker
+        ticker.start()
+    }
+
+    /// Tells the coordinator whether the panel is on screen. Showing it runs a pass at once, so
+    /// the panel never opens on samples that are seconds old, and holds the one-second cadence
+    /// while it stays open.
+    public func setPanelVisible(_ visible: Bool) {
+        guard visible != panelVisible else { return }
+        panelVisible = visible
+        if visible { sweepTicker?.wake() }
+    }
+
+    private func sweepInterval() -> Duration {
+        TickCadence.interval(
+            panelVisible: panelVisible,
+            sessionStates: store.sessions.map(\.state),
+            hasRelayWork: !relayWork.isEmpty
+        )
+    }
+
+    /// One pass of the sweep: keep the inbox watches and the relay's notes on the workspaces that
+    /// have a live session, sample the sessions and run the relay, then the app's panel-only
+    /// sampling if the panel is on screen. The watches come first, so a write after them wakes
+    /// the next pass and one before them is read by this one.
+    private func sweepTick() async {
+        let workspaces = Set(store.sessions.filter { $0.state != .ended }.map(\.cwd))
+        relayWork.retain(only: workspaces)
+        inboxWatcher?.watch(workspaces: workspaces)
+        sampleAgentStates()
+        if panelVisible { await panelSweep?() }
     }
 
     /// Snapshot all active sessions to the manifest with wasActiveOnQuit == true before shutdown.
@@ -350,8 +398,10 @@ public final class AppCoordinator {
         eventContinuation.finish()
         consumerTask?.cancel()
         consumerTask = nil
-        stateSweepTask?.cancel()
-        stateSweepTask = nil
+        sweepTicker?.stop()
+        sweepTicker = nil
+        inboxWatcher?.stop()
+        inboxWatcher = nil
         hookServer.stop()
     }
 
@@ -674,6 +724,8 @@ public final class AppCoordinator {
                 isWorker: asWorker
             ))
             syncRestorables()
+            // A starting session is sampled every second: don't let it wait out a slow sleep.
+            sweepTicker?.wake()
             return session
         } catch {
             cleanup(sessionId: session.id) // fail loud: no ghost session or orphaned settings file
@@ -965,8 +1017,8 @@ public final class AppCoordinator {
 
     /// Computes active multi-agent project swarms and inspects file collisions. Each candidate
     /// workspace's blackboard is a flock-guarded file read, so the read runs off the main actor;
-    /// `swarms` is only reassigned when the result actually changed, since this is called once a
-    /// second regardless of whether anything moved.
+    /// `swarms` is only reassigned when the result actually changed, since this is called on every
+    /// tick while the panel is visible, whether or not anything moved.
     public func sampleSwarms(additionalAgents: [String: [AgentKind]] = [:]) async {
         var agentsByPath: [String: Set<AgentKind>] = [:]
 
