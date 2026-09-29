@@ -51,7 +51,7 @@ public final class InboxStore: Sendable {
         URL(fileURLWithPath: workspaceRoot, isDirectory: true).appendingPathComponent(".linkc", isDirectory: true)
     }
 
-    private var inboxURL: URL {
+    var inboxURL: URL {
         linkcDirectory.appendingPathComponent("inbox.json")
     }
 
@@ -128,6 +128,7 @@ public final class InboxStore: Sendable {
         guard fm.fileExists(atPath: inboxURL.path) else {
             return Inbox(workspacePath: workspaceRoot)
         }
+        StateFileReadCounter.shared.record(path: inboxURL.path)
         let data = try Data(contentsOf: inboxURL)
         do {
             return try decoder.decode(Inbox.self, from: data)

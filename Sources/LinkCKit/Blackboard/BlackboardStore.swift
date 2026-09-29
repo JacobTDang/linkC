@@ -14,7 +14,7 @@ public final class BlackboardStore: Sendable {
         URL(fileURLWithPath: workspaceRoot, isDirectory: true).appendingPathComponent(".linkc", isDirectory: true)
     }
 
-    private var blackboardURL: URL {
+    var blackboardURL: URL {
         linkcDirectory.appendingPathComponent("blackboard.json")
     }
 
@@ -89,6 +89,7 @@ public final class BlackboardStore: Sendable {
         guard fm.fileExists(atPath: blackboardURL.path) else {
             return Blackboard(projectPath: workspaceRoot)
         }
+        StateFileReadCounter.shared.record(path: blackboardURL.path)
         let data = try Data(contentsOf: blackboardURL)
         do {
             return try decoder.decode(Blackboard.self, from: data)
