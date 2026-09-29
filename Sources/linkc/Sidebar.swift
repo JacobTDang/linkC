@@ -70,6 +70,7 @@ struct Sidebar: View {
         )) {
             if let path = inspectingWorkspace {
                 ProjectDashboardSheet(workspacePath: path, model: model) { inspectingWorkspace = nil }
+                    .environment(\.panelVisible, model.panelVisible)
             }
         }
     }

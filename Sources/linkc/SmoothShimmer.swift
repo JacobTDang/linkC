@@ -1,15 +1,44 @@
 import SwiftUI
+import LinkCKit
+
+private struct PanelVisibleKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var panelVisible: Bool {
+        get { self[PanelVisibleKey.self] }
+        set { self[PanelVisibleKey.self] = newValue }
+    }
+}
 
 /// Clean, smooth highlighting that glides across text when active — matching the ChatGPT / Perplexity status design.
 struct SmoothShimmerModifier: ViewModifier {
     let isWorking: Bool
+    var explicitPanelVisible: Bool? = nil
+
     @State private var phase: CGFloat = 0
+    @State private var isOnScreen = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.panelVisible) private var envPanelVisible
+
+    private var panelVisible: Bool {
+        explicitPanelVisible ?? envPanelVisible
+    }
+
+    private var shouldAnimate: Bool {
+        ShimmerPolicy.shouldAnimate(
+            isWorking: isWorking,
+            isOnScreen: isOnScreen,
+            panelVisible: panelVisible,
+            reduceMotion: reduceMotion
+        )
+    }
 
     func body(content: Content) -> some View {
-        if isWorking && !reduceMotion {
-            content
-                .overlay {
+        content
+            .overlay {
+                if shouldAnimate {
                     GeometryReader { geo in
                         let width = geo.size.width
                         let bandWidth = max(width * 0.45, 30)
@@ -27,37 +56,53 @@ struct SmoothShimmerModifier: ViewModifier {
                     }
                     .mask(content)
                 }
-                .onAppear {
+            }
+            .onAppear {
+                isOnScreen = true
+                updateAnimation()
+            }
+            .onDisappear {
+                isOnScreen = false
+                stopAnimation()
+            }
+            .onChange(of: shouldAnimate) { _, animate in
+                if animate {
                     startAnimation()
+                } else {
+                    stopAnimation()
                 }
-                .onChange(of: isWorking) { _, working in
-                    if working {
-                        startAnimation()
-                    } else {
-                        phase = 0
-                    }
-                }
-                .onChange(of: reduceMotion) { _, _ in
-                    if isWorking { startAnimation() }
-                }
+            }
+    }
+
+    private func updateAnimation() {
+        if shouldAnimate {
+            startAnimation()
         } else {
-            content
+            stopAnimation()
         }
     }
 
     private func startAnimation() {
-        guard !reduceMotion else { return }
+        guard shouldAnimate else { return }
         phase = 0
         withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) {
             phase = 1.0
+        }
+    }
+
+    private func stopAnimation() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            phase = 0
         }
     }
 }
 
 extension View {
     /// Applies a clean, smooth highlighting wave across text letters when active.
-    func smoothShimmer(isWorking: Bool) -> some View {
-        modifier(SmoothShimmerModifier(isWorking: isWorking))
+    func smoothShimmer(isWorking: Bool, panelVisible: Bool? = nil) -> some View {
+        modifier(SmoothShimmerModifier(isWorking: isWorking, explicitPanelVisible: panelVisible))
     }
 }
 
