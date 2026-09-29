@@ -122,7 +122,8 @@ public final class StatusLineFeed: @unchecked Sendable {
     /// Makes the folder and `sessionId`'s file when they are missing, the file private to the user,
     /// and starts watching it. The watch descriptor also holds a shared lock on the file: that is
     /// how `sweep` in another process tells a live file from a leftover, and the system drops the
-    /// lock when this process ends, however it ends.
+    /// lock when this process ends, however it ends. The descriptor is close-on-exec, so a session
+    /// forked later does not inherit the file (or the lock) and keep it past this process.
     /// A file already there keeps what it holds when `keepingContent`, and is emptied otherwise.
     private func arm(_ sessionId: String, keepingContent: Bool) throws -> Watch {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -132,7 +133,7 @@ public final class StatusLineFeed: @unchecked Sendable {
         } else if !FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) {
             throw LinkCError.server("could not create the status line file \(url.path)")
         }
-        let descriptor = open(url.path, O_EVTONLY)
+        let descriptor = open(url.path, O_EVTONLY | O_CLOEXEC)
         guard descriptor != -1 else {
             throw LinkCError.server("could not watch \(url.path): \(String(cString: strerror(errno)))")
         }

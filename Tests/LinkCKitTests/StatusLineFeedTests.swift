@@ -441,6 +441,22 @@ final class StatusLineFeedTests: XCTestCase {
         XCTAssertTrue(logged.all.isEmpty, "\(logged.all)")
     }
 
+    /// A session started later forks from linkC: a watch descriptor it inherited would keep the file
+    /// (and the lock that says a feed is running) open in every terminal for as long as it lives.
+    func testTheFeedsDescriptorsDoNotSurviveAnExec() throws {
+        let feed = makeFeed()
+        let file = try feed.watch(sessionId: "s1")
+        let held = OpenDescriptors.on(file)
+        XCTAssertFalse(held.isEmpty, "the feed must hold the file open to watch it")
+        XCTAssertTrue(held.allSatisfy(\.closesOnExec), "\(held)")
+
+        try FileManager.default.removeItem(at: file)
+        XCTAssertTrue(waitUntil { logged.all.count == 1 })
+        let again = OpenDescriptors.on(file)
+        XCTAssertFalse(again.isEmpty)
+        XCTAssertTrue(again.allSatisfy(\.closesOnExec), "the file made again is held the same way: \(again)")
+    }
+
     func testTheFileIsPrivateToTheUser() throws {
         let file = try makeFeed().watch(sessionId: "s1")
 
