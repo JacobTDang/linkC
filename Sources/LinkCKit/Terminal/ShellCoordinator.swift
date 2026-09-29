@@ -124,9 +124,10 @@ public final class ShellCoordinator {
 
     /// Follows each running shell into the folder it is now in after a `cd`. The row's folder,
     /// and a plain terminal's name, update, and the manifest remembers the new folder so a
-    /// restore reopens there. Runs from the one-second shell sweep. Command terminals (relaunch
-    /// and restore re-run their command in the stored folder) are skipped outright — the shell
-    /// underneath them may `cd`, but the terminal itself must not follow it.
+    /// restore reopens there. Runs from the sweep while the panel is open, and once more at quit.
+    /// Command terminals (relaunch and restore re-run their command in the stored folder) are
+    /// skipped outright — the shell underneath them may `cd`, but the terminal itself must not
+    /// follow it.
     public func sampleDirectories() {
         let runningIds = Set(store.rows.filter { $0.state == .running }.map(\.id))
         unreadableDirectories.formIntersection(runningIds)

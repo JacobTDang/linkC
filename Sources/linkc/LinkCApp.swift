@@ -114,6 +114,7 @@ final class AppModel {
             if !newValue { markOnScreenSeen() }
         }
         didSet {
+            coordinator?.setPanelVisible(panelVisible)
             updateUsageTimer()
             if !panelVisible {
                 flushStateToDisk()
@@ -153,10 +154,6 @@ final class AppModel {
     /// notify, making the alert only ever restate a row the user is already looking at.
     /// The cost is a few HTTP HEADs a minute — nothing like a polling loop.
     @ObservationIgnored private var healthTimer: Timer?
-    /// Samples which agent each dev terminal is running, once a second. Sampling writes
-    /// observable rows, so it runs here and never inside a view body — a body that writes
-    /// what it reads re-renders itself forever.
-    @ObservationIgnored private var shellSweepTask: Task<Void, Never>?
     @ObservationIgnored private var cachedInboxes: [String: Inbox] = [:]
     @ObservationIgnored private var lastInboxFetch: [String: Date] = [:]
 
@@ -210,6 +207,11 @@ final class AppModel {
             }
             try coordinator.start()
             coordinator.usageTracker = usage
+            coordinator.panelSweep = { [weak self] in
+                await self?.sampleShells()
+                self?.sampleSidebar()
+            }
+            coordinator.setPanelVisible(panelVisible)
             self.coordinator = coordinator
             self.mcpServers = MCPServerService(claudePath: preflight.claudePath)
             self.skills = SkillsService(claudePath: preflight.claudePath)
@@ -225,7 +227,6 @@ final class AppModel {
             // quit time, or whose folder was missing and so was skipped above, doesn't lose it.
             let keptTerminals = Set(shellRows.map(\.id)).union(restorableShells.map(\.id))
             sidebarState.pruneTerminals(keeping: keptTerminals)
-            startShellSweep()
             // Forget remembered folders with no live session, no Earlier entry, and no filing.
             let standardized: (String) -> String = { ProjectPath.canonical($0) }
             var inUse = Set(sessions.map { standardized($0.cwd) })
@@ -324,19 +325,6 @@ final class AppModel {
             // Fail loud rather than send Finder to a path that was never written.
             lastError = "Couldn't create endpoints.json: \(error.localizedDescription)"
             return nil
-        }
-    }
-
-    /// Same cadence as the coordinator's session sweep: shells and swarms sampled every second.
-    private func startShellSweep() {
-        guard shellSweepTask == nil else { return }
-        shellSweepTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { break }
-                await self?.sampleShells()
-                self?.sampleSidebar()
-            }
         }
     }
 
@@ -501,12 +489,15 @@ final class AppModel {
         return swarms.first { $0.workspacePath == norm }
     }
 
+    /// How long a read of a workspace's inbox is reused.
+    private static let inboxCacheWindow: TimeInterval = 1.0
+
     /// Loads the inbox for a workspace root with a 1-second in-memory throttle
     /// to avoid redundant synchronous disk reads during SwiftUI view body evaluations.
     func inbox(for workspacePath: String) -> Inbox? {
         let norm = ProjectPath.canonical(workspacePath)
         let now = Date()
-        if let last = lastInboxFetch[norm], now.timeIntervalSince(last) < 1.0 {
+        if let last = lastInboxFetch[norm], now.timeIntervalSince(last) < Self.inboxCacheWindow {
             return cachedInboxes[norm]
         }
         let loaded = readInboxFromDisk(norm: norm)
@@ -529,7 +520,8 @@ final class AppModel {
         }
     }
 
-    /// Refreshes cached inboxes for all active workspaces.
+    /// Loads the inbox of every active workspace ahead of the views, through the same throttle
+    /// `inbox(for:)` applies: one whose read is still fresh is not read again.
     func refreshCachedInboxes() {
         var paths = Set<String>()
         for s in sessions {
@@ -538,10 +530,8 @@ final class AppModel {
         for r in shellRows {
             paths.insert(ProjectPath.canonical(r.cwd))
         }
-        let now = Date()
         for norm in paths {
-            cachedInboxes[norm] = readInboxFromDisk(norm: norm)
-            lastInboxFetch[norm] = now
+            _ = inbox(for: norm)
         }
     }
 
@@ -992,8 +982,10 @@ final class AppModel {
         appProcesses = [:]
         healthTimer?.invalidate()
         healthTimer = nil
-        shellSweepTask?.cancel()
-        shellSweepTask = nil
+        // Terminals are only sampled while the panel is open, so one that changed folder or agent
+        // since then would be remembered as it was. Take the last look before the snapshot below.
+        shells?.sampleDirectories()
+        shells?.sampleAgents()
         // Boards, sessions and shells all flush together — a quit within the Board's 600 ms
         // settle must not lose the edit, and the restore keys must not go stale. Safe to run
         // again on top of `applicationDidResignActive`'s own flush: every part of it is a

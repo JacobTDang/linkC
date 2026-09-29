@@ -108,6 +108,96 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         XCTAssertEqual(coordinator.screenUnchangedSince(session.id), clock.now(), "real output restarts the clock")
     }
 
+    /// The quiet clock only restarts when a sample sees the screen change. A worker that sat idle
+    /// for a long time has an old clock, and the sample after a delivery may be seconds away (the
+    /// sweep sleeps five seconds when nothing is in flight), so a relay pass in between would read
+    /// the fresh task as a stall. Typing the brief in is the start of the work: the clock restarts
+    /// there.
+    @MainActor
+    func testHandingAnIdleWorkerATaskRestartsItsQuietClock() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex)
+        let term = try XCTUnwrap(coordinator.terminals.session(id: worker.id))
+        let ready = try await waitUntil { term.acceptsPaste }
+        XCTAssertTrue(ready, "the mock agent never negotiated bracketed paste")
+        coordinator.store.updateState(id: worker.id, to: .ready)
+        // The inbox stamps its rows off the real clock, so the past is sampled first and the
+        // controllable clock then catches up to now: twenty quiet minutes, then the delivery.
+        clock.set(Date().addingTimeInterval(-20 * 60))
+        coordinator.sampleAgentStates()
+        let lastChange = try XCTUnwrap(coordinator.screenUnchangedSince(worker.id))
+
+        clock.set(Date())
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Refactor migrations", files: [])
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.state, .working)
+        XCTAssertGreaterThan(try XCTUnwrap(coordinator.screenUnchangedSince(worker.id)), lastChange)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertNil(try inbox.task(id: task.id)?.stuckNotifiedAt, "a task handed over a moment ago is not stuck")
+        XCTAssertTrue(sink.deliveries.filter { $0.title.contains("look stuck") }.isEmpty)
+    }
+
+    /// A note delivered to an idle session is the start of that session's next stretch of work,
+    /// like a task: its quiet clock restarts.
+    @MainActor
+    func testDeliveringAMessageToAnIdleSessionRestartsItsQuietClock() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        let peer = try coordinator.newSession(cwd: ws, agent: .codex)
+        let term = try XCTUnwrap(coordinator.terminals.session(id: peer.id))
+        let ready = try await waitUntil { term.acceptsPaste }
+        XCTAssertTrue(ready, "the mock agent never negotiated bracketed paste")
+        coordinator.store.updateState(id: peer.id, to: .ready)
+        clock.set(Date().addingTimeInterval(-20 * 60))
+        coordinator.sampleAgentStates()
+        let lastChange = try XCTUnwrap(coordinator.screenUnchangedSince(peer.id))
+
+        clock.set(Date())
+        _ = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "the schema changed")
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertTrue(try inbox.fetchPending().isEmpty, "the note was delivered")
+        XCTAssertGreaterThan(try XCTUnwrap(coordinator.screenUnchangedSince(peer.id)), lastChange)
+    }
+
+    /// `switchModel` types `/model ...` into a session, which is not work being handed over. Into a
+    /// session that hung mid-turn it must leave the quiet clock alone: restarting it would hide the
+    /// hang for another 15 minutes.
+    @MainActor
+    func testSwitchingAWorkingSessionsModelDoesNotRestartItsQuietClock() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: { clock.now() })
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .claude)
+        let term = try XCTUnwrap(coordinator.terminals.session(id: session.id))
+        let started = try await waitUntil { term.isRunning }
+        XCTAssertTrue(started, "the mock agent never started")
+        coordinator.store.updateState(id: session.id, to: .working)
+        clock.set(Date().addingTimeInterval(-20 * 60))
+        coordinator.sampleAgentStates()
+        let lastChange = try XCTUnwrap(coordinator.screenUnchangedSince(session.id))
+
+        clock.set(Date())
+        try coordinator.switchModel(in: ws, agent: .claude, to: "haiku")
+        XCTAssertEqual(coordinator.screenUnchangedSince(session.id), lastChange, "a model switch is not progress")
+        XCTAssertEqual(coordinator.recentlyInjectedTexts(sessionId: session.id).count, 1,
+                       "the text is still recorded, so the limit detector recognises its echo")
+        XCTAssertNotNil(coordinator.lastInjectionAt[session.id], "and the injection gap still applies")
+    }
+
     /// A brief typed into a session that never starts the task: after 10 minutes the delegator
     /// gets one line and the user one notification, and a second tick repeats neither.
     @MainActor
