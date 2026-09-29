@@ -40,9 +40,10 @@ final class StatusLineFileTests: XCTestCase {
         XCTAssertNil(reading)
     }
 
-    /// The command rewrites the file from the start without shortening it, so a shorter report leaves
-    /// the end of the previous, longer one after its own line end. Only the first line counts.
-    func testBytesAfterTheFirstLineEndAreTheTailOfAnOlderReportAndAreIgnored() throws {
+    /// Two runs of the command can overlap: the later, shorter report ends where the earlier,
+    /// longer one still has bytes, so its tail follows the shorter report's line end. Only the first
+    /// line counts.
+    func testBytesAfterTheFirstLineEndAreTheTailOfAnOverlappingWriteAndAreIgnored() throws {
         try write(report + "\n" + #"ds":{"used_percentage":12}}}"# + "\n")
 
         guard case .report(let body, _) = StatusLineFile.read(at: file, receivedAt: arrived) else {

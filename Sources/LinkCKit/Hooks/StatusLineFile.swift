@@ -19,9 +19,11 @@ public enum StatusLineFile {
         case garbage(String)
     }
 
-    /// The command rewrites the file from its start without shortening it, so a shorter report
-    /// leaves the tail of the previous, longer one behind its own line end. Only the first line
-    /// counts.
+    /// Only the first line counts. The command's `>` empties the file before it writes, so one run
+    /// never leaves an older report's tail behind its own line end. Bytes after the first line
+    /// end come from two runs overlapping (the CLI can start a refresh while the last one's shell is
+    /// still writing): the later, shorter report ends where the earlier, longer one still has
+    /// bytes. The first line is a whole report all the same.
     public static func read(at url: URL, receivedAt: Date) -> Outcome {
         let data: Data
         do {
