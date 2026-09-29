@@ -21,6 +21,8 @@ public final class StatusLineFeed: @unchecked Sendable {
         /// The last failure logged for this file. Cleared by a good report, so a failure that
         /// comes back after one is news again, while the same failure on every refresh is not.
         var lastFailure: String?
+        /// The body of the last report delivered from this file.
+        var lastDelivered: Data?
 
         init(url: URL, source: DispatchSourceFileSystemObject) {
             self.url = url
@@ -214,7 +216,12 @@ public final class StatusLineFeed: @unchecked Sendable {
         case .report(let body, let reading):
             watch.attempts = 0
             watch.lastFailure = nil
-            if let reading { deliver(body, reading) }
+            // One write can raise two events, and each finds the whole file: a report the same as
+            // the last delivered is that write read again.
+            if let reading, body != watch.lastDelivered {
+                watch.lastDelivered = body
+                deliver(body, reading)
+            }
         case .empty:
             guard !mayBeEmpty else { return }
             readAgainOrFail(sessionId, watch, "the status line file \(watch.url.path) was emptied and nothing was written into it")

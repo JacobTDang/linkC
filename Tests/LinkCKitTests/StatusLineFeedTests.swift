@@ -220,6 +220,23 @@ final class StatusLineFeedTests: XCTestCase {
         XCTAssertEqual(delivered.all.count, 1, "the retry that was already queued must stand down")
     }
 
+    /// One write can raise two events, each of which finds the whole file: the second read is the same
+    /// report and must not be delivered again. A different report, even one seen before, is delivered.
+    func testAReportIdenticalToTheLastDeliveredIsNotDeliveredAgain() throws {
+        let file = try makeFeed().watch(sessionId: "s1")
+
+        try commandWrites(report, to: file)
+        XCTAssertTrue(waitUntil { delivered.all.count == 1 })
+        try commandWrites(report, to: file)
+        settle()
+        XCTAssertEqual(delivered.all.count, 1, "the same bytes again are the same report")
+
+        try commandWrites(shorterReport, to: file)
+        XCTAssertTrue(waitUntil { delivered.all.count == 2 })
+        try commandWrites(report, to: file)
+        XCTAssertTrue(waitUntil { delivered.all.count == 3 }, "only the last delivered report counts as a repeat")
+    }
+
     func testATornReadThatNeverCompletesDeliversNothingAndIsLoggedOnce() throws {
         let reader = ScriptedReader([.torn])
         let file = try makeFeed(read: reader.read, maxRetries: 3).watch(sessionId: "s1")
@@ -262,7 +279,7 @@ final class StatusLineFeedTests: XCTestCase {
         XCTAssertTrue(waitUntil { logged.all.count == 2 })
         XCTAssertEqual(delivered.all.count, 1, "garbage never replaces the last report")
 
-        try commandWrites(report, to: file)
+        try commandWrites(shorterReport, to: file)
         XCTAssertTrue(waitUntil { delivered.all.count == 2 })
         try commandWrites("not json", to: file)
         XCTAssertTrue(waitUntil { logged.all.count == 3 }, "after a good report the same failure is news again")
