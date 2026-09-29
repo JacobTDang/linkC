@@ -123,4 +123,30 @@ final class TerminalPreviewPatternTests: XCTestCase {
         XCTAssertGreaterThan(rows.filter { TerminalPreview.spinnerTimerRange(in: $0) != nil }.count, 20)
         XCTAssertGreaterThan(rows.filter { TerminalPreview.normalizingElapsedTime($0) != $0 }.count, 20)
     }
+
+    /// The matchers exist so a sweep doesn't compile a pattern per row. The answers above would
+    /// match just as well if they went back to a literal pattern per call, so this compares their
+    /// cost with that, measured in the same run: interleaved, on this thread's CPU time, so machine
+    /// load moves both sides alike.
+    func testTheCompiledMatchersCostWellUnderAPatternCompiledPerCall() {
+        let rows = ScreenFixture.rows()
+        var compiled: TimeInterval = 0
+        var perCall: TimeInterval = 0
+        for _ in 0..<40 {
+            compiled += ThreadCPUTime.elapsed {
+                for row in rows {
+                    _ = TerminalPreview.hasSpinnerTokenCounter(row)
+                    _ = TerminalPreview.hasUsageBanner(row)
+                }
+            }
+            perCall += ThreadCPUTime.elapsed {
+                for row in rows {
+                    _ = row.range(of: spinnerTokenCounter, options: .regularExpression)
+                    _ = row.range(of: usageBanner, options: .regularExpression)
+                }
+            }
+        }
+        XCTAssertLessThan(compiled / perCall, 0.75,
+                          "compiled \(compiled)s vs a pattern compiled per call \(perCall)s")
+    }
 }
