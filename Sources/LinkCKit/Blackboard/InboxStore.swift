@@ -128,15 +128,14 @@ public final class InboxStore: Sendable {
     /// read-only callers.
     private func loadUnlocked() throws -> Inbox {
         let path = inboxURL.path
-        guard case .present(let identity) = try FileIdentity.probe(path) else {
+        guard let file = try FileIdentity.read(path) else {
             InboxReadCache.shared.forget(path: path)
             return Inbox(workspacePath: workspaceRoot)
         }
         StateFileReadCounter.shared.record(path: path)
-        let data = try Data(contentsOf: inboxURL)
         do {
-            let inbox = try decoder.decode(Inbox.self, from: data)
-            InboxReadCache.shared.store(inbox, at: path, identity: identity)
+            let inbox = try decoder.decode(Inbox.self, from: file.data)
+            InboxReadCache.shared.store(inbox, at: path, identity: file.identity)
             return inbox
         } catch {
             InboxReadCache.shared.forget(path: path)

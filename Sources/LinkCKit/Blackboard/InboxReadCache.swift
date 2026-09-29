@@ -13,12 +13,28 @@ struct FileIdentity: Equatable, Sendable {
         case present(FileIdentity)
     }
 
+    /// A file's bytes and the identity of the file they were read from.
+    struct Contents: Sendable {
+        let identity: FileIdentity
+        let data: Data
+    }
+
     let device: dev_t
     let inode: ino_t
     let modifiedSeconds: Int
     let modifiedNanoseconds: Int
     let size: off_t
 
+    private init(_ info: stat) {
+        device = info.st_dev
+        inode = info.st_ino
+        modifiedSeconds = info.st_mtimespec.tv_sec
+        modifiedNanoseconds = info.st_mtimespec.tv_nsec
+        size = info.st_size
+    }
+
+    /// What `path` is right now, to compare with the identity of bytes read earlier. It says
+    /// nothing about bytes: to read a file and know what it was, use `read`.
     /// `.missing` only for a file (or a directory above it) that is not there. Any other failure to
     /// stat is thrown: reporting it as "no file" would read as an empty inbox.
     static func probe(_ path: String) throws -> Probe {
@@ -28,13 +44,32 @@ struct FileIdentity: Equatable, Sendable {
             if failure == ENOENT || failure == ENOTDIR { return .missing }
             throw LinkCError.server("Failed to stat \(path): errno \(failure)")
         }
-        return .present(FileIdentity(
-            device: info.st_dev,
-            inode: info.st_ino,
-            modifiedSeconds: info.st_mtimespec.tv_sec,
-            modifiedNanoseconds: info.st_mtimespec.tv_nsec,
-            size: info.st_size
-        ))
+        return .present(FileIdentity(info))
+    }
+
+    /// The contents of `path` and the identity of the file they came from, or nil for a file (or a
+    /// directory above it) that is not there. Opens the file once and both stats and reads that
+    /// descriptor, so a rename over `path` at any moment cannot pair one file's identity with
+    /// another's bytes. The identity is taken before the bytes are read: a rewrite in between then
+    /// makes the next probe differ and costs one extra read, where stat-ing after would pair an old
+    /// file's bytes with the new identity and serve them for as long as it held. Any other failure
+    /// to open, stat or read is thrown.
+    /// `beforeReading` runs between the two, so a test can change the path at exactly that moment.
+    static func read(_ path: String, beforeReading: () -> Void = {}) throws -> Contents? {
+        let descriptor = open(path, O_RDONLY)
+        guard descriptor >= 0 else {
+            let failure = errno
+            if failure == ENOENT || failure == ENOTDIR { return nil }
+            throw LinkCError.server("Failed to open \(path): errno \(failure)")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else {
+            throw LinkCError.server("Failed to stat \(path): errno \(errno)")
+        }
+        let identity = FileIdentity(info)
+        beforeReading()
+        return Contents(identity: identity, data: try handle.readToEnd() ?? Data())
     }
 }
 
@@ -64,9 +99,7 @@ final class InboxReadCache: Sendable {
         }
     }
 
-    /// `identity` must be probed BEFORE the file was read: a file replaced in between then makes
-    /// the next probe differ and costs one extra read, where probing after would pair an old
-    /// identity's content with the new file's and serve it forever.
+    /// `identity` is the one `FileIdentity.read` returned with the bytes `inbox` was decoded from.
     func store(_ inbox: Inbox, at path: String, identity: FileIdentity) {
         entries.withLock { $0[path] = Entry(identity: identity, inbox: inbox) }
     }
