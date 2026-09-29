@@ -137,6 +137,15 @@ public final class AppCoordinator {
     /// different signature) can count as a new limit. Cleared by `cleanup`. In-process only, like
     /// `screenSignature()` above — see its own doc comment.
     var limitSignatures: [String: String] = [:]
+    /// Per session: what `checkLimitsAndReroute` last ran the limit rules over. The rules read only
+    /// the screen, the agent kind and what linkC has typed, so the same three give the same answer
+    /// and the scan is skipped. Cleared by `cleanup`.
+    var limitScans: [String: LimitScan] = [:]
+    /// Finds a provider limit in a session's recent output, given what linkC has typed into it.
+    /// The real rules unless a test substitutes a counter.
+    var limitDetection: (_ output: String, _ agent: AgentKind, _ injected: [String]) -> LimitMatch? = {
+        LimitDetector.detectLimit(inOutput: $0, agent: $1, ignoringInjected: $2)
+    }
 
     /// When `sessionId`'s screen last changed; nil if it has never been sampled.
     func screenUnchangedSince(_ sessionId: String) -> Date? { screenSignatures[sessionId]?.since }
@@ -460,6 +469,7 @@ public final class AppCoordinator {
         injectedText.removeValue(forKey: sessionId)
         lastInjectionAt.removeValue(forKey: sessionId)
         limitSignatures.removeValue(forKey: sessionId)
+        limitScans.removeValue(forKey: sessionId)
         if wasWorker {
             // A worker was linkC's, not the user's: its report is in the task record, so it
             // leaves nothing under Earlier.

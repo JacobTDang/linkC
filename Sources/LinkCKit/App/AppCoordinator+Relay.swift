@@ -802,18 +802,21 @@ extension AppCoordinator {
         guard session.state != .error else { return false }
 
         let norm = session.cwd
-        let recentOutput = (screen ?? terminals.session(id: sessionId)?.screenSnapshot() ?? .none).recentOutput(lines: 50)
+        let screen = screen ?? terminals.session(id: sessionId)?.screenSnapshot() ?? .none
+        // The rules cost far more than comparing what they would read. A session at its prompt
+        // shows the same screen for minutes, and the answer for it was already given.
+        let injected = recentlyInjectedTexts(sessionId: sessionId)
+        let scan = LimitScan(screen: screen.fingerprint, agent: session.agentKind, injected: injected)
+        guard limitScans[sessionId] != scan else { return false }
+        limitScans[sessionId] = scan
+        let recentOutput = screen.recentOutput(lines: 50)
         // Everything linkC has typed into this session is excluded: a brief or notice can quote a
         // limit phrase, and the CLI echoing that back is not the agent hitting a limit. Suppressed
         // by content, once per injected entry, with no time bound and no framing requirement — an
         // unframed injection (a legacy v1 message with no `kind`) is guarded exactly like a framed
         // one — so a real banner that repeats a phrase an older brief quoted still matches (see
         // `LimitDetector.withoutInjected`).
-        guard let match = LimitDetector.detectLimit(
-            inOutput: recentOutput,
-            agent: session.agentKind,
-            ignoringInjected: recentlyInjectedTexts(sessionId: sessionId)
-        ) else { return false }
+        guard let match = limitDetection(recentOutput, session.agentKind, injected) else { return false }
 
         // A stale banner must not re-arm a limit forever: once a cooldown expires and the session
         // returns to `.ready`, the exact same old banner can still sit in the last 50 lines of an
@@ -992,4 +995,13 @@ extension AppCoordinator {
 private enum VerificationRun: Sendable {
     case gate(Verification)
     case verify(Verification, sha: String)
+}
+
+/// Everything `checkLimitsAndReroute`'s limit rules depend on for one session: the screen (by
+/// `ScreenSnapshot.fingerprint`), the agent whose rules apply, and what linkC has typed into the
+/// session, whose echo the rules leave out.
+struct LimitScan: Equatable {
+    let screen: Int
+    let agent: AgentKind
+    let injected: [String]
 }
