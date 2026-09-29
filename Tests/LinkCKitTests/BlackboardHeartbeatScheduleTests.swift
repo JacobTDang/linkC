@@ -22,25 +22,43 @@ final class BlackboardHeartbeatScheduleTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    /// A wall clock and a monotonic clock that a test moves separately: `advance` is time passing,
+    /// `setWallClock` is someone changing the date.
     private final class Clock: Sendable {
-        private let box: OSAllocatedUnfairLock<Date>
+        private struct Times: Sendable {
+            var wall: Date
+            var monotonic: ContinuousClock.Instant
+        }
+
+        private let box: OSAllocatedUnfairLock<Times>
 
         init(_ start: Date = Date()) {
-            box = OSAllocatedUnfairLock(initialState: start)
+            box = OSAllocatedUnfairLock(initialState: Times(wall: start, monotonic: .now))
         }
 
         func now() -> Date {
-            box.withLock { $0 }
+            box.withLock { $0.wall }
+        }
+
+        func monotonicNow() -> ContinuousClock.Instant {
+            box.withLock { $0.monotonic }
         }
 
         func advance(_ seconds: TimeInterval) {
-            box.withLock { $0 = $0.addingTimeInterval(seconds) }
+            box.withLock {
+                $0.wall = $0.wall.addingTimeInterval(seconds)
+                $0.monotonic = $0.monotonic.advanced(by: .seconds(seconds))
+            }
+        }
+
+        func setWallClock(by seconds: TimeInterval) {
+            box.withLock { $0.wall = $0.wall.addingTimeInterval(seconds) }
         }
     }
 
     /// A store built fresh for every call, as `sampleAgentStates` does.
     private func freshStore(_ clock: Clock) -> BlackboardStore {
-        BlackboardStore(workspaceRoot: tempDir.path, now: clock.now)
+        BlackboardStore(workspaceRoot: tempDir.path, now: clock.now, monotonicNow: clock.monotonicNow)
     }
 
     private func diskLoads() -> Int {
@@ -149,5 +167,57 @@ final class BlackboardHeartbeatScheduleTests: XCTestCase {
         clock.advance(1)
         XCTAssertThrowsError(try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242))
         XCTAssertEqual(try Data(contentsOf: boardFile), garbage, "the unreadable board is left untouched")
+    }
+
+    // MARK: - The schedule follows a monotonic clock
+
+    /// The due times are in-memory and only mean "this much real time has passed", so setting the
+    /// date back must not hold this process off the board until the date catches up.
+    func testSettingTheWallClockBackDoesNotDelayTheNextHeartbeatRead() throws {
+        let clock = Clock()
+        try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242)
+        clock.setWallClock(by: -3600)
+        let before = diskLoads()
+
+        clock.advance(BlackboardStore.heartbeatRefreshInterval - 1)
+        try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242)
+        XCTAssertEqual(diskLoads() - before, 0, "not due yet")
+
+        clock.advance(1)
+        try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242)
+        XCTAssertEqual(diskLoads() - before, 1, "due after the refresh interval of real time, whatever the date says")
+    }
+
+    func testSettingTheWallClockForwardDoesNotMakeHeartbeatsReadEarly() throws {
+        let clock = Clock()
+        try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242)
+        clock.setWallClock(by: 3600)
+        let before = diskLoads()
+
+        for _ in 0..<30 {
+            clock.advance(1)
+            try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242)
+        }
+
+        XCTAssertEqual(diskLoads() - before, 0)
+    }
+
+    /// After the date is set back, the board holds timestamps in the future. The next read must not
+    /// be scheduled as far out as they are: it comes at most one refresh interval later.
+    func testATimestampInTheFutureDoesNotPushTheNextReadOutWithIt() throws {
+        let clock = Clock()
+        try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242)
+        clock.setWallClock(by: -3600)
+        clock.advance(BlackboardStore.heartbeatRefreshInterval)
+        try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242) // due: reads, finds its record an hour ahead
+        let before = diskLoads()
+
+        clock.advance(BlackboardStore.heartbeatRefreshInterval - 1)
+        try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242)
+        XCTAssertEqual(diskLoads() - before, 0, "not due yet")
+
+        clock.advance(1)
+        try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242)
+        XCTAssertEqual(diskLoads() - before, 1, "reads again one refresh interval after the last read")
     }
 }

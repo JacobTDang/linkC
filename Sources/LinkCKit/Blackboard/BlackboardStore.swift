@@ -6,17 +6,28 @@ import Darwin
 public final class BlackboardStore: Sendable {
     public let workspaceRoot: String
 
-    /// The clock `heartbeat` measures its refresh and prune ages against. Only tests replace it.
+    /// The wall clock `heartbeat` measures its refresh and prune ages against: the timestamps in
+    /// the file are wall-clock. Only tests replace it.
     private let clock: @Sendable () -> Date
+
+    /// The clock `HeartbeatSchedule` counts real time on, unmoved by a change of the date. Only
+    /// tests replace it.
+    private let monotonicClock: @Sendable () -> ContinuousClock.Instant
 
     public init(workspaceRoot: String) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.clock = Date.init
+        self.monotonicClock = { ContinuousClock.now }
     }
 
-    init(workspaceRoot: String, now: @escaping @Sendable () -> Date) {
+    init(
+        workspaceRoot: String,
+        now: @escaping @Sendable () -> Date,
+        monotonicNow: @escaping @Sendable () -> ContinuousClock.Instant
+    ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.clock = now
+        self.monotonicClock = monotonicNow
     }
 
     private var linkcDirectory: URL {
@@ -329,7 +340,7 @@ public final class BlackboardStore: Sendable {
     /// next refresh, not the next second.
     public func heartbeat(agentKind: AgentKind, pid: pid_t, timeout: TimeInterval = 5.0) throws {
         let path = blackboardURL.path
-        guard HeartbeatSchedule.shared.isDue(path: path, pid: pid, now: clock()) else { return }
+        guard HeartbeatSchedule.shared.isDue(path: path, pid: pid, now: monotonicClock()) else { return }
         try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
             let now = clock()
@@ -359,17 +370,25 @@ public final class BlackboardStore: Sendable {
                 board.updatedAt = now
                 try saveUnlocked(board, ownHeartbeat: true)
             }
-            HeartbeatSchedule.shared.schedule(path: path, pid: pid, due: nextHeartbeatDue(in: board, for: pid))
+            HeartbeatSchedule.shared.schedule(
+                path: path, pid: pid,
+                after: secondsUntilNextHeartbeat(in: board, for: pid, now: now),
+                now: monotonicClock()
+            )
         }
     }
 
-    /// The earliest moment a heartbeat for `pid` has anything to do: its own record's refresh, or
-    /// the first other record to pass `staleAgentAge`.
-    private func nextHeartbeatDue(in board: Blackboard, for pid: pid_t) -> Date {
-        board.activeAgents.reduce(Date.distantFuture) { earliest, agent in
+    /// How long from `now` until a heartbeat for `pid` has anything to do: its own record's
+    /// refresh, or the first other record to pass `staleAgentAge`. Never more than one refresh
+    /// interval: with the date right, this pid's own record is never further from its refresh than
+    /// that, and after the date was set back the board holds timestamps in the future, which must
+    /// not push the next read out with them.
+    private func secondsUntilNextHeartbeat(in board: Blackboard, for pid: pid_t, now: Date) -> TimeInterval {
+        let earliest = board.activeAgents.reduce(Self.heartbeatRefreshInterval) { earliest, agent in
             let interval = agent.pid == pid ? Self.heartbeatRefreshInterval : Self.staleAgentAge
-            return min(earliest, agent.lastHeartbeat.addingTimeInterval(interval))
+            return min(earliest, agent.lastHeartbeat.addingTimeInterval(interval).timeIntervalSince(now))
         }
+        return max(0, earliest)
     }
 
     /// Prunes agents whose lastHeartbeat exceeds the threshold.
