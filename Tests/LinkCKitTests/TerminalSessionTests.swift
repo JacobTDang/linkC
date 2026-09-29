@@ -12,9 +12,14 @@ private final class TerminalTitleRecorder: NSObject, LocalProcessTerminalViewDel
     func processTerminated(source: TerminalView, exitCode: Int32?) {}
 }
 
-private final class VisibleTestWindow: NSWindow {
-    override var isVisible: Bool { true }
-    override var occlusionState: NSWindow.OcclusionState { [.visible] }
+/// A window whose visibility a test flips — shown, ordered out, or on but covered — without asking
+/// AppKit to put anything on screen.
+private final class SwitchableTestWindow: NSWindow {
+    enum Presence { case shown, occluded, hidden }
+    var presence = Presence.shown
+
+    override var isVisible: Bool { presence != .hidden }
+    override var occlusionState: NSWindow.OcclusionState { presence == .shown ? [.visible] : [] }
 }
 
 @MainActor
@@ -47,7 +52,7 @@ extension TerminalSessionTests {
         XCTAssertNotNil(view.getTerminal().getUpdateRange())
 
         let host = TerminalHostView(frame: view.bounds)
-        let window = VisibleTestWindow(
+        let window = SwitchableTestWindow(
             contentRect: view.bounds,
             styleMask: [.borderless],
             backing: .buffered,
@@ -96,6 +101,132 @@ extension TerminalSessionTests {
         XCTAssertTrue(waitUntil(timeout: 2) { view.getTerminal().getUpdateRange() == nil },
                       "showing the panel must render output deferred while it was hidden")
         window.orderOut(nil)
+    }
+
+    func testOccludedWindowDefersDisplayAndRedrawsWhenUncovered() {
+        let (view, window) = terminalView(in: .shown)
+        settleInitialDisplay(of: view)
+
+        window.presence = .occluded
+        view.dataReceived(slice: bytes("covered output"))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertNotNil(view.getTerminal().getUpdateRange(),
+                        "a window that is on but covered must not consume terminal display work")
+
+        setPresence(.shown, of: window)
+        XCTAssertTrue(waitUntil(timeout: 2) { view.getTerminal().getUpdateRange() == nil },
+                      "uncovering the window must render output deferred while it was covered")
+    }
+
+    func testReattachRestoresTheSynchronizedOutputModeAFrameLeftOn() {
+        let (view, window) = terminalView(in: .hidden)
+        let terminal = view.getTerminal()
+
+        view.dataReceived(slice: bytes("\u{1b}[?2026hhalf a frame"))
+        XCTAssertFalse(terminal.synchronizedOutputActive, "the toggle must not reach SwiftTerm while hidden")
+
+        setPresence(.shown, of: window)
+        XCTAssertTrue(terminal.synchronizedOutputActive, "the app is mid-frame, so SwiftTerm must be once shown")
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "half a frame")
+
+        view.dataReceived(slice: bytes("\u{1b}[?2026l"))
+        XCTAssertFalse(terminal.synchronizedOutputActive, "the app's own end of frame must still reach SwiftTerm")
+    }
+
+    func testReattachEndsAFrameThatFinishedWhileHidden() {
+        let (view, window) = terminalView(in: .shown)
+        let terminal = view.getTerminal()
+        view.dataReceived(slice: bytes("\u{1b}[?2026hstart"))
+        XCTAssertTrue(terminal.synchronizedOutputActive)
+
+        setPresence(.hidden, of: window)
+        view.dataReceived(slice: bytes("end\u{1b}[?2026l"))
+        setPresence(.shown, of: window)
+
+        XCTAssertFalse(terminal.synchronizedOutputActive, "the frame ended while hidden; SwiftTerm must not wait it out")
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "startend")
+    }
+
+    func testAFrameThatEndedWhileShownIsNotRevivedByLaterHiddenOutput() {
+        let (view, window) = terminalView(in: .hidden)
+        let terminal = view.getTerminal()
+        view.dataReceived(slice: bytes("\u{1b}[?2026hone"))
+        setPresence(.shown, of: window)
+        XCTAssertTrue(terminal.synchronizedOutputActive)
+        view.dataReceived(slice: bytes("\u{1b}[?2026l"))
+        XCTAssertFalse(terminal.synchronizedOutputActive)
+
+        setPresence(.hidden, of: window)
+        view.dataReceived(slice: bytes("two"))
+        setPresence(.shown, of: window)
+
+        XCTAssertFalse(terminal.synchronizedOutputActive,
+                       "the app is not mid-frame; display and echo must not stall on SwiftTerm's timeout")
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "onetwo")
+    }
+
+    func testAToggleSplitAcrossHiddenChunksIsStillFiltered() {
+        let (view, window) = terminalView(in: .hidden)
+        let terminal = view.getTerminal()
+
+        view.dataReceived(slice: bytes("abc\u{1b}[?20"))
+        view.dataReceived(slice: bytes("26h def"))
+        XCTAssertFalse(terminal.synchronizedOutputActive)
+        setPresence(.shown, of: window)
+
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "abc def")
+        XCTAssertTrue(terminal.synchronizedOutputActive)
+    }
+
+    func testAnEscapeHeldAtReattachStillStartsTheSequenceItBegan() {
+        let (view, window) = terminalView(in: .hidden)
+        let terminal = view.getTerminal()
+        view.dataReceived(slice: bytes("\u{1b}[?2026habc\u{1b}"))
+
+        setPresence(.shown, of: window)
+        view.dataReceived(slice: bytes("[31mred"))
+
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "abcred",
+                       "the mode change must not land inside the sequence the held escape begins")
+    }
+
+    func testAPartialToggleHeldAtReattachCompletesAsAnotherMode() {
+        let (view, window) = terminalView(in: .hidden)
+        let terminal = view.getTerminal()
+        view.dataReceived(slice: bytes("\u{1b}[?2026habc\u{1b}[?20"))
+
+        setPresence(.shown, of: window)
+        view.dataReceived(slice: bytes("04hxyz"))
+
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "abcxyz")
+        XCTAssertTrue(terminal.bracketedPasteMode, "the sequence held over must still enable bracketed paste")
+        XCTAssertTrue(terminal.synchronizedOutputActive)
+    }
+
+    func testAPartialToggleHeldAtReattachCompletesAsTheEndOfTheFrame() {
+        let (view, window) = terminalView(in: .hidden)
+        let terminal = view.getTerminal()
+        view.dataReceived(slice: bytes("\u{1b}[?2026habc\u{1b}[?2026"))
+
+        setPresence(.shown, of: window)
+        XCTAssertTrue(terminal.synchronizedOutputActive)
+        view.dataReceived(slice: bytes("lxyz"))
+
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "abcxyz")
+        XCTAssertFalse(terminal.synchronizedOutputActive)
+    }
+
+    func testOutputArrivingShownBeforeTheVisibilityNoticeStillGetsTheHeldEscape() {
+        let (view, window) = terminalView(in: .hidden)
+        let terminal = view.getTerminal()
+        view.dataReceived(slice: bytes("\u{1b}[?2026habc\u{1b}"))
+
+        window.presence = .shown
+        view.dataReceived(slice: bytes("[31mred"))
+
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "abcred",
+                       "shown output must first receive what hidden output left held")
+        XCTAssertTrue(terminal.synchronizedOutputActive)
     }
 
     func testManagerRetainsTerminatingSessionUntilChildIsReaped() async throws {
@@ -312,6 +443,24 @@ extension TerminalSessionTests {
             try? await Task.sleep(for: .milliseconds(50))
         }
         return session.recentOutput(lines: 10).contains(snippet)
+    }
+
+    private func bytes(_ text: String) -> ArraySlice<UInt8> { Array(text.utf8)[...] }
+
+    /// A terminal view hosted in a window that starts out `presence`.
+    private func terminalView(in presence: SwitchableTestWindow.Presence) -> (LinkCTerminalView, SwitchableTestWindow) {
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        let host = TerminalHostView(frame: view.bounds)
+        let window = SwitchableTestWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.presence = presence
+        window.contentView = host
+        host.show(view)
+        return (view, window)
+    }
+
+    private func setPresence(_ presence: SwitchableTestWindow.Presence, of window: SwitchableTestWindow) {
+        window.presence = presence
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: window)
     }
 
     /// Waits out the display pass a new view queues for itself, so the only dirty range a test sees is

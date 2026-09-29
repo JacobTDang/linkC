@@ -429,11 +429,16 @@ public final class LinkCTerminalView: LocalProcessTerminalView {
 
     public override func dataReceived(slice: ArraySlice<UInt8>) {
         guard !isDisplayAttached else {
-            _ = synchronizedOutput.takeCarry()
+            // Output that arrives before the visibility notice must still find what hidden output left behind.
+            redrawDetachedUpdatesIfNeeded()
             super.dataReceived(slice: slice)
             return
         }
-        getTerminal().feed(buffer: synchronizedOutput.filter(slice)[...])
+        let terminal = getTerminal()
+        if !hasDetachedUpdates {
+            synchronizedOutput.active = terminal.synchronizedOutputActive
+        }
+        terminal.feed(buffer: synchronizedOutput.filter(slice)[...])
         hasDetachedUpdates = true
     }
 
@@ -478,11 +483,13 @@ public final class LinkCTerminalView: LocalProcessTerminalView {
         guard window?.isVisible == true, hasDetachedUpdates else { return }
         hasDetachedUpdates = false
         let terminal = getTerminal()
+        // The mode goes in first: with a partial sequence still to be fed, SwiftTerm's parser is
+        // mid-sequence, and the mode's own bytes would land inside it.
+        restoreSynchronizedOutputMode(of: terminal)
         let held = synchronizedOutput.takeCarry()
         if !held.isEmpty {
             terminal.feed(buffer: held[...])
         }
-        restoreSynchronizedOutputMode(of: terminal)
         terminal.updateFullScreen()
         setNeedsDisplay(bounds)
         // SwiftTerm only reaches feedPrepare/queuePendingDisplay through `dataReceived`.
