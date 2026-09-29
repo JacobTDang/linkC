@@ -7,6 +7,10 @@ public enum TickCadence {
     public static let busy: Duration = .seconds(1)
     /// While the panel is hidden and nothing is in flight.
     public static let idle: Duration = .seconds(5)
+    /// The least time between the starts of two passes when a wake asks for the second. A wake is an
+    /// inbox write, and one agent can make a dozen in a moment, each otherwise a full pass of every
+    /// session on the main thread. Ordinary ticks are at least `busy` apart and never see it.
+    public static let minimumWakeGap: Duration = .milliseconds(250)
 
     /// `busy` when the panel is visible, a session is starting, working or waiting on a prompt,
     /// or a workspace has open tasks or queued messages; `idle` otherwise. Every state the

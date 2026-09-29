@@ -206,6 +206,7 @@ final class AppCoordinatorTickerTests: XCTestCase {
         try await waitForSleep(of: .seconds(1))
 
         try inbox.cancelTask(taskId: task.id, reason: "done with it")
+        clock.advance(by: TickCadence.minimumWakeGap)   // the write's wake waits out the gap since the last pass
         try await waitForSleep(of: .seconds(5))
     }
 
@@ -289,9 +290,10 @@ final class AppCoordinatorTickerTests: XCTestCase {
     }
 
     /// The whole point of the slow interval: a delegation written while everything sleeps is still
-    /// picked up at once. A notice is marked delivered by the relay the moment it sees it, so its
-    /// leaving the queue shows a pass ran, and the clock never moved to make it.
-    func testAnInboxWriteWakesTheTickAtOnce() async throws {
+    /// picked up within the wake gap, not at the next tick. A notice is marked delivered by the
+    /// relay the moment it sees it, so its leaving the queue shows a pass ran, and the clock moved
+    /// by the gap only, nowhere near the five seconds.
+    func testAnInboxWriteWakesTheTickWithinTheGapNotAtTheNextTick() async throws {
         let coordinator = try await startIdleCoordinator()
         defer { coordinator.shutdown() }
         // The first pass starts watching this workspace; it has to have run before the write.
@@ -301,10 +303,32 @@ final class AppCoordinatorTickerTests: XCTestCase {
 
         let inbox = InboxStore(workspaceRoot: tempDir.path)
         _ = try inbox.enqueue(from: .codex, to: .claude, kind: .notice, body: "look at this")
+        clock.advance(by: TickCadence.minimumWakeGap)
 
         let delivered = try await waitUntil { (try? inbox.fetchPending().isEmpty) == true }
         XCTAssertTrue(delivered, "a write to the inbox must not wait out the five second sleep")
-        XCTAssertEqual(clock.now.offset, advanced)
+        XCTAssertEqual(clock.now.offset, advanced + TickCadence.minimumWakeGap)
+    }
+
+    /// Writes come in bursts (one agent, a dozen rows), and a pass that follows every one of them
+    /// would cost more than the old one-second tick. They make one pass, after the gap.
+    func testABurstOfInboxWritesMakesOnePassAfterTheGap() async throws {
+        let coordinator = try await startIdleCoordinator()
+        defer { coordinator.shutdown() }
+        clock.advance(by: .seconds(5))
+        try await waitForSleep(of: .seconds(5))
+
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        for index in 0..<5 {
+            _ = try inbox.enqueue(from: .codex, to: .claude, kind: .notice, body: "note \(index)")
+            clock.advance(by: .milliseconds(20))
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(try inbox.fetchPending().count, 5, "no pass runs inside the gap")
+
+        clock.advance(by: TickCadence.minimumWakeGap)
+        let delivered = try await waitUntil { (try? inbox.fetchPending().isEmpty) == true }
+        XCTAssertTrue(delivered, "the pass after the gap reads every write, the last included")
     }
 
     func testAStartingSessionIsNotLeftToASlowSleep() async throws {

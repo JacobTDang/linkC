@@ -169,8 +169,9 @@ public final class AppCoordinator {
     /// visible, the app's own sampling (`panelSweep`). Its spacing follows `TickCadence`.
     private var sweepTicker: SweepTicker?
     /// Wakes `sweepTicker` when a workspace's inbox file is replaced, so a new delegation never
-    /// waits out the slow interval. Watches the workspaces that have a live session: the only
-    /// ones the relay works on.
+    /// waits out the slow interval. A burst of writes still makes one pass: the ticker holds
+    /// woken passes `TickCadence.minimumWakeGap` apart. Watches the workspaces that have a live
+    /// session: the only ones the relay works on.
     private var inboxWatcher: InboxWatcher?
     private let sweepClock: any Clock<Duration>
     /// What the last relay pass found in each workspace, so choosing the next interval reads
