@@ -187,10 +187,14 @@ final class AppCoordinatorTickerTests: XCTestCase {
     }
 
     /// A pass that gave up on a held inbox lock retries on the next tick, so it must not sleep long.
+    /// A read of an unchanged inbox takes no lock, so the file is written by someone else after the
+    /// coordinator started: the pass has never seen it and has to read it under the lock.
     func testAPassThatFoundTheInboxLockHeldRetriesInOneSecond() async throws {
         let coordinator = try await startIdleCoordinator()
         defer { coordinator.shutdown() }
         let workspace = tempDir.path
+        _ = try InboxStore(workspaceRoot: workspace)
+            .enqueue(from: .claude, to: .codex, kind: .peerNote, body: "for a session that is not here")
         let held = expectation(description: "lock held")
         let released = expectation(description: "lock released")
         DispatchQueue.global().async {
