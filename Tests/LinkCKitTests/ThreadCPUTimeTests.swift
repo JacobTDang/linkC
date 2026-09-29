@@ -6,7 +6,8 @@ final class ThreadCPUTimeTests: XCTestCase {
     /// plain `swift test` never does, so it is an independent check on the runtime detection.
     func testBudgetsAreScaledOnlyUnderThreadSanitizer() {
         let underTSan = ProcessInfo.processInfo.environment["TSAN_OPTIONS"] != nil
-        XCTAssertEqual(ThreadCPUTime.budgetScale, underTSan ? 5 : 1)
+        XCTAssertEqual(ThreadCPUTime.budgetScale, underTSan ? 5 : 1,
+                       "TSan detection disagrees with TSAN_OPTIONS — run TSan through scripts/tsan.sh")
         XCTAssertEqual(ThreadCPUTime.budget(2.0), underTSan ? 10.0 : 2.0)
     }
 }
