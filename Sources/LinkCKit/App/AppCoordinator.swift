@@ -127,7 +127,9 @@ public final class AppCoordinator {
     /// Per session: the last screen signature seen and when it last changed — the watchdog's
     /// "gone quiet" clock. In memory only, so the clock restarts after a relaunch. Stored here
     /// rather than in the watchdog extension because extensions cannot hold stored properties.
-    private var screenSignatures: [String: (signature: String, since: Date)] = [:]
+    /// `fingerprint` is the rows the signature was worked out from: a screen with the same
+    /// fingerprint has the same signature, so it is not worked out again.
+    private var screenSignatures: [String: (fingerprint: Int, signature: String, since: Date)] = [:]
     /// Notices already reported to the user as undeliverable, by message id, keyed by workspace.
     /// Also in memory: a notice still stuck after a relaunch is worth one more mention. Pruned by
     /// `dispatchMessages` to the ids still `.queued` in that workspace's inbox, so a notice that
@@ -141,6 +143,15 @@ public final class AppCoordinator {
     /// different signature) can count as a new limit. Cleared by `cleanup`. In-process only, like
     /// `screenSignature()` above — see its own doc comment.
     var limitSignatures: [String: String] = [:]
+    /// Per session: what `checkLimitsAndReroute` last ran the limit rules over. The rules read only
+    /// the screen, the agent kind and what linkC has typed, so the same three give the same answer
+    /// and the scan is skipped. Cleared by `cleanup`.
+    var limitScans: [String: LimitScan] = [:]
+    /// Finds a provider limit in a session's recent output, given what linkC has typed into it.
+    /// The real rules unless a test substitutes a counter.
+    var limitDetection: (_ output: String, _ agent: AgentKind, _ injected: [String]) -> LimitMatch? = {
+        LimitDetector.detectLimit(inOutput: $0, agent: $1, ignoringInjected: $2)
+    }
 
     /// When `sessionId`'s screen last changed; nil if it has never been sampled.
     func screenUnchangedSince(_ sessionId: String) -> Date? { screenSignatures[sessionId]?.since }
@@ -401,7 +412,10 @@ public final class AppCoordinator {
     /// Snapshot all active sessions to the manifest with wasActiveOnQuit == true before shutdown.
     public func prepareForShutdown(selectedId: String? = nil) {
         for s in store.sessions where s.state != .ended {
-            let liveAgent = terminals.session(id: s.id)?.sampleForegroundAgent() ?? s.agentKind
+            var liveAgent = s.agentKind
+            if let term = terminals.session(id: s.id), !term.isHookDriven {
+                liveAgent = term.sampleForegroundAgent(fresh: true)
+            }
             manifest.upsert(RestorableSession(
                 linkcId: s.id,
                 claudeSessionId: s.claudeSessionId,
@@ -537,6 +551,7 @@ public final class AppCoordinator {
         injectedText.removeValue(forKey: sessionId)
         lastInjectionAt.removeValue(forKey: sessionId)
         limitSignatures.removeValue(forKey: sessionId)
+        limitScans.removeValue(forKey: sessionId)
         if wasWorker {
             // A worker was linkC's, not the user's: its report is in the task record, so it
             // leaves nothing under Earlier.
@@ -939,14 +954,19 @@ public final class AppCoordinator {
                     .heartbeat(agentKind: session.agentKind, pid: term.processId, timeout: 0.5)
             }
 
-            // The watchdog's progress signal, taken from the same once-a-second row read.
-            let signature = term.screenSignature()
-            if screenSignatures[session.id]?.signature != signature {
-                screenSignatures[session.id] = (signature, now())
+            // One read of the screen serves every check below.
+            let screen = term.screenSnapshot()
+
+            // The watchdog's progress signal. An unchanged screen has an unchanged signature.
+            let previous = screenSignatures[session.id]
+            if previous?.fingerprint != screen.fingerprint {
+                let signature = screen.progressSignature()
+                let since = previous?.signature == signature ? previous?.since : nil
+                screenSignatures[session.id] = (screen.fingerprint, signature, since ?? now())
             }
 
             // Inspect terminal output for provider rate limits & auto-reroute
-            checkLimitsAndReroute(for: session.id)
+            checkLimitsAndReroute(for: session.id, screen: screen)
 
             // `.error` here means checkLimitsAndReroute found no capable peer (or none at all)
             // for this agent's last limit — not that the session itself is broken. Its own
@@ -966,10 +986,15 @@ public final class AppCoordinator {
                 }
             }
 
-            // Detect dynamic agent kind changes in child process tree
-            let liveAgent = term.sampleForegroundAgent()
-            if liveAgent != session.agentKind && liveAgent != .shell {
-                store.updateAgentKind(id: session.id, to: liveAgent)
+            // Detect dynamic agent kind changes in child process tree. Only for sessions that
+            // could change: a hook-driven launch's kind is known, and walking its tree tells
+            // nothing. Decided by the launch, not the current kind: an agent that runs a `claude`
+            // child reads as Claude until the child exits, and this walk is what turns it back.
+            if !term.isHookDriven {
+                let liveAgent = term.sampleForegroundAgent()
+                if liveAgent != session.agentKind && liveAgent != .shell {
+                    store.updateAgentKind(id: session.id, to: liveAgent)
+                }
             }
 
             // Claude has its own hook server providing exact event transitions.
@@ -979,7 +1004,7 @@ public final class AppCoordinator {
 
             // A folder-trust dialog has no spinner, so it read as an idle session and the relay
             // typed briefs into it. Hold the session as needing the user until it is answered.
-            if term.showsTrustPrompt() {
+            if screen.showsTrustPrompt() {
                 if currentSession.state != .waitingPermission {
                     store.updateState(id: session.id, to: .waitingPermission)
                     let updated = store.session(id: session.id) ?? currentSession
@@ -999,7 +1024,7 @@ public final class AppCoordinator {
                 store.updateState(id: session.id, to: .ready)
             }
 
-            let liveActivity = term.liveActivityLine()
+            let liveActivity = screen.liveActivity()
             let isWorking = liveActivity != nil && !liveActivity!.isEmpty
 
             if isWorking {
@@ -1009,8 +1034,7 @@ public final class AppCoordinator {
             } else {
                 // A booting TUI is also silent. Promote only once the agent CLI is actually
                 // running, or the relay types the next frame into a process that cannot read it.
-                if currentSession.state == .starting,
-                   ProcessSnooper.detectAgent(atOrUnder: term.processId) != nil {
+                if currentSession.state == .starting, term.agentProcessIsRunning() {
                     store.updateState(id: session.id, to: .ready)
                 }
             }
@@ -1035,7 +1059,7 @@ public final class AppCoordinator {
                     // A turn read as ended while a task is open is either the agent stopping short or
                     // the screen read being wrong; the rows it was read from tell which.
                     NSLog("[linkC relay] %@ read as done with a task open; its last rows:\n%@",
-                          session.agentKind.displayName, term.recentScreenRows(12).joined(separator: "\n"))
+                          session.agentKind.displayName, screen.recentRows(12).joined(separator: "\n"))
                 }
             }
         }
