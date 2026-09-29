@@ -50,6 +50,12 @@ public final class AppCoordinator {
     /// home — the test suite used to add each of its temp folders to the developer's own config, over
     /// ten thousand entries, and rewrite every agent's MCP config on each run.
     private let userHome: URL?
+    /// Where the selected session is remembered between launches. nil remembers nothing: only the
+    /// production initializer passes `.standard`, so a test never reads or writes the real domain —
+    /// a shared global that made `testStartRestoresTabSelectionFromUserDefaults` depend on which
+    /// test had run before it.
+    private let defaults: UserDefaults?
+    static let lastSelectedSessionKey = "LinkCLastSelectedSessionId"
     /// Persists the session manifest so sessions survive quitting/crashing and can be restored.
     let manifest: WorkspaceManifest
     /// Per-run shared secret baked into every composed settings file and required by the hook
@@ -200,6 +206,7 @@ public final class AppCoordinator {
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         claudeJsonURL: URL? = nil,
         userHome: URL? = nil,
+        defaults: UserDefaults? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
         usageReaders: [AgentKind: MCPServer.UsageReader] = [:],
@@ -220,6 +227,7 @@ public final class AppCoordinator {
         self.agentPathResolver = agentPathResolver
         self.claudeJsonURL = claudeJsonURL
         self.userHome = userHome
+        self.defaults = defaults
         self.verifier = verifier
         self.modelSettings = modelSettings
         self.usageReaders = usageReaders
@@ -257,6 +265,7 @@ public final class AppCoordinator {
             userSettingsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/settings.json"),
             manifestDir: linkCDir,
             userHome: FileManager.default.homeDirectoryForCurrentUser,
+            defaults: .standard,
             modelSettings: modelSettings,
             usageReaders: MCPServer.defaultUsageReaders(),
             isWatching: isWatching
@@ -335,7 +344,7 @@ public final class AppCoordinator {
         try hookServer.start()
         Task { await notifications.requestAuthorization() }
         restoreActiveSessions()
-        if let lastId = UserDefaults.standard.string(forKey: "LinkCLastSelectedSessionId"),
+        if let lastId = defaults?.string(forKey: Self.lastSelectedSessionKey),
            terminals.sessions.contains(where: { $0.id == lastId }) {
             terminals.select(lastId)
         }
@@ -406,7 +415,7 @@ public final class AppCoordinator {
         }
         let sel = selectedId ?? terminals.selectedId
         if let sel {
-            UserDefaults.standard.set(sel, forKey: "LinkCLastSelectedSessionId")
+            defaults?.set(sel, forKey: Self.lastSelectedSessionKey)
         }
     }
 
