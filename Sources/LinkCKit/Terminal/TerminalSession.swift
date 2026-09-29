@@ -57,6 +57,10 @@ public final class TerminalSession {
         self.agentKind = agentKind
     }
 
+    /// Whether this terminal was launched as Claude. Its state and kind come from hook events for
+    /// good: nothing running inside it changes them, so its process tree is never worth walking.
+    public var isHookDriven: Bool { initialAgentKind == .claude }
+
     /// The agent running in this terminal's child process tree, or the kind the session started
     /// as when there is none. The tree is only walked again when the terminal's foreground
     /// process group moved or the last walk is over `ForegroundAgentSampler.reprobeInterval` old;

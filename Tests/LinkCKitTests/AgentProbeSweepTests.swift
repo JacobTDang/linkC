@@ -170,6 +170,42 @@ final class AgentProbeSweepTests: XCTestCase {
         XCTAssertEqual(coordinator.store.session(id: session.id)?.agentKind, .codex)
     }
 
+    /// An agent that runs a child binary named `claude` reads as Claude while the child lives. Its
+    /// session was not launched as Claude, so nothing but the tree walk can tell it is back to
+    /// itself once the child exits.
+    @MainActor
+    func testASessionReadAsClaudeGoesBackToItsAgentOnceTheClaudeProcessIsGone() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let script = ScriptedProbe()
+        script.tree = .claude
+        let (session, _) = try launch(coordinator, agent: .codex, script: script)
+
+        coordinator.sampleAgentStates()
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.agentKind, .claude, "a claude process runs beneath it")
+
+        script.tree = nil
+        script.advance(10)
+        coordinator.sampleAgentStates()
+
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.agentKind, .codex, "the child exited, so it is the launched agent again")
+    }
+
+    @MainActor
+    func testShuttingDownSavesAHookedSessionAsClaudeWhateverRunsInsideIt() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let script = ScriptedProbe()
+        script.tree = .codex
+        let (session, _) = try launch(coordinator, agent: .claude, script: script)
+
+        coordinator.prepareForShutdown()
+
+        let saved = coordinator.manifest.entries.first { $0.linkcId == session.id }
+        XCTAssertEqual(saved?.agentKind, .claude, "its kind comes from hook events, not from what it runs")
+        XCTAssertEqual(script.treeCalls, 0)
+    }
+
     @MainActor
     func testABootingSessionIsPromotedOnTheTickItsAgentAppearsWhateverTheTreeWalkKept() throws {
         let coordinator = makeCoordinator()

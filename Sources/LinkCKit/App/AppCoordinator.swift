@@ -396,7 +396,10 @@ public final class AppCoordinator {
     /// Snapshot all active sessions to the manifest with wasActiveOnQuit == true before shutdown.
     public func prepareForShutdown(selectedId: String? = nil) {
         for s in store.sessions where s.state != .ended {
-            let liveAgent = terminals.session(id: s.id)?.sampleForegroundAgent(fresh: true) ?? s.agentKind
+            var liveAgent = s.agentKind
+            if let term = terminals.session(id: s.id), !term.isHookDriven {
+                liveAgent = term.sampleForegroundAgent(fresh: true)
+            }
             manifest.upsert(RestorableSession(
                 linkcId: s.id,
                 claudeSessionId: s.claudeSessionId,
@@ -965,15 +968,19 @@ public final class AppCoordinator {
                 }
             }
 
+            // Detect dynamic agent kind changes in child process tree. Only for sessions that
+            // could change: a hook-driven launch's kind is known, and walking its tree tells
+            // nothing. Decided by the launch, not the current kind: an agent that runs a `claude`
+            // child reads as Claude until the child exits, and this walk is what turns it back.
+            if !term.isHookDriven {
+                let liveAgent = term.sampleForegroundAgent()
+                if liveAgent != session.agentKind && liveAgent != .shell {
+                    store.updateAgentKind(id: session.id, to: liveAgent)
+                }
+            }
+
             // Claude has its own hook server providing exact event transitions.
             guard session.agentKind != .claude else { continue }
-
-            // Detect dynamic agent kind changes in child process tree. Only for sessions that
-            // could change: a hooked session's kind is known, and walking its tree told nothing.
-            let liveAgent = term.sampleForegroundAgent()
-            if liveAgent != session.agentKind && liveAgent != .shell {
-                store.updateAgentKind(id: session.id, to: liveAgent)
-            }
 
             guard let currentSession = store.session(id: session.id), currentSession.state != .error else { continue }
 
