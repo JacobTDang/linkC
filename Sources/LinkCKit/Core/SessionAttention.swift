@@ -6,14 +6,59 @@ import Observation
 public struct SessionRowStatus: Equatable, Sendable {
     public enum Tone: Equatable, Sendable { case quiet, working, attention, error }
 
-    public let text: String
+    public enum Format: Equatable, Sendable {
+        case fixed(String)
+        case age(prefix: String, since: Date)
+    }
+
+    public let format: Format
     public let tone: Tone
+    public let text: String
 
     public var isCoral: Bool { tone == .attention || tone == .error }
 
-    public init(text: String, tone: Tone) {
-        self.text = text
+    public init(format: Format, tone: Tone, now: Date = Date()) {
+        self.format = format
         self.tone = tone
+        switch format {
+        case .fixed(let text):
+            self.text = text
+        case .age(let prefix, let since):
+            let age = AgeFormat.compact(from: since, to: now)
+            self.text = prefix.isEmpty ? age : "\(prefix) \(age)"
+        }
+    }
+
+    public init(text: String, tone: Tone) {
+        self.format = .fixed(text)
+        self.tone = tone
+        self.text = text
+    }
+
+    public static func == (lhs: SessionRowStatus, rhs: SessionRowStatus) -> Bool {
+        lhs.text == rhs.text && lhs.tone == rhs.tone
+    }
+
+    public func text(now: Date) -> String {
+        switch format {
+        case .fixed(let text):
+            return text
+        case .age(let prefix, let since):
+            let age = AgeFormat.compact(from: since, to: now)
+            return prefix.isEmpty ? age : "\(prefix) \(age)"
+        }
+    }
+
+    /// The update cadence for this status: 1.0 s while seconds-resolution age is visible (<60s),
+    /// 15.0 s once in minute/hour resolution, or 3600.0 s when fixed / no age is shown.
+    public func cadence(now: Date = Date()) -> TimeInterval {
+        switch format {
+        case .fixed:
+            return 3600.0
+        case .age(_, let since):
+            let elapsed = max(0, now.timeIntervalSince(since))
+            return elapsed < 60.0 ? 1.0 : 15.0
+        }
     }
 }
 
@@ -42,7 +87,7 @@ public final class SessionAttention {
         }
     }
 
-    public func status(for session: Session, onScreen: Bool, rateLimited: Bool, now: Date) -> SessionRowStatus {
+    public func status(for session: Session, onScreen: Bool, rateLimited: Bool, now: Date = Date()) -> SessionRowStatus {
         Self.status(
             state: session.state, stateChangedAt: session.stateChangedAt, lastSeen: lastSeen[session.id],
             onScreen: onScreen, rateLimited: rateLimited, now: now)
@@ -51,27 +96,26 @@ public final class SessionAttention {
     /// The spec's state table. `lastSeen` is when the session was last on screen; `onScreen` is
     /// whether it is on screen right now.
     public nonisolated static func status(
-        state: SessionState, stateChangedAt: Date, lastSeen: Date?, onScreen: Bool, rateLimited: Bool, now: Date
+        state: SessionState, stateChangedAt: Date, lastSeen: Date?, onScreen: Bool, rateLimited: Bool, now: Date = Date()
     ) -> SessionRowStatus {
-        let age = AgeFormat.compact(from: stateChangedAt, to: now)
         switch state {
         case .starting:
-            return SessionRowStatus(text: "starting", tone: .quiet)
+            return SessionRowStatus(format: .fixed("starting"), tone: .quiet, now: now)
         case .ready:
-            return SessionRowStatus(text: "idle \(age)", tone: .quiet)
+            return SessionRowStatus(format: .age(prefix: "idle", since: stateChangedAt), tone: .quiet, now: now)
         case .working:
-            return SessionRowStatus(text: "working", tone: .working)
+            return SessionRowStatus(format: .fixed("working"), tone: .working, now: now)
         case .waitingPermission:
-            return SessionRowStatus(text: "needs you · \(age)", tone: .attention)
+            return SessionRowStatus(format: .age(prefix: "needs you ·", since: stateChangedAt), tone: .attention, now: now)
         case .finished, .waitingIdle:
             let seen = onScreen || (lastSeen.map { $0 >= stateChangedAt } ?? false)
             return seen
-                ? SessionRowStatus(text: "idle \(age)", tone: .quiet)
-                : SessionRowStatus(text: "done · \(age)", tone: .attention)
+                ? SessionRowStatus(format: .age(prefix: "idle", since: stateChangedAt), tone: .quiet, now: now)
+                : SessionRowStatus(format: .age(prefix: "done ·", since: stateChangedAt), tone: .attention, now: now)
         case .error:
-            return SessionRowStatus(text: rateLimited ? "rate limited" : "error", tone: .error)
+            return SessionRowStatus(format: .fixed(rateLimited ? "rate limited" : "error"), tone: .error, now: now)
         case .ended:
-            return SessionRowStatus(text: "ended", tone: .quiet)
+            return SessionRowStatus(format: .fixed("ended"), tone: .quiet, now: now)
         }
     }
 }

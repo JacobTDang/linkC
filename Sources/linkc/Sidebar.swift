@@ -35,17 +35,12 @@ struct Sidebar: View {
         VStack(spacing: 0) {
             BrandRow(model: model)
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 1) {
+                LazyVStack(alignment: .leading, spacing: 1) {
                     NavSection(model: model, isSplit: isSplit)
-                    // Ages and states tick once a second while the sidebar is on screen. Built once
-                    // here — projects and unfiled terminals share the same underlying model — and
-                    // handed down, rather than each section rebuilding it.
-                    TimelineView(.periodic(from: .now, by: 1.0)) { context in
-                        let sections = model.sidebarSections(now: context.date)
-                        ProjectsSection(projects: sections.projects, model: model) { inspectingWorkspace = $0 }
-                        if !sections.unfiled.isEmpty {
-                            TerminalsSidebarSection(unfiled: sections.unfiled, model: model)
-                        }
+                    let sections = model.sidebarSections()
+                    ProjectsSection(projects: sections.projects, model: model) { inspectingWorkspace = $0 }
+                    if !sections.unfiled.isEmpty {
+                        TerminalsSidebarSection(unfiled: sections.unfiled, model: model)
                     }
                     if let running = model.serverSummary {
                         CollapsibleSection(title: "Servers", trailing: "\(running) running",
@@ -281,7 +276,7 @@ private struct ProjectsSection: View {
     let onInspect: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        LazyVStack(alignment: .leading, spacing: 1) {
             if !projects.isEmpty {
                 SectionLabel(title: "Projects")
             }
@@ -409,15 +404,33 @@ private struct SessionRow: View {
                 .foregroundStyle(Theme.textPrimary)
         } trailing: { hovering in
             HStack(spacing: 6) {
-                Text(row.status.text)
-                    .font(.system(size: 11))
-                    .monospacedDigit()
-                    .foregroundStyle(color(for: row.status.tone))
+                SessionStatusLabel(status: row.status)
                 if hovering {
                     Button { model.stop(row.id) } label: { RowGlyph(systemName: "xmark") }
                         .buttonStyle(.plain)
                         .help("Stop this session")
                 }
+            }
+        }
+    }
+}
+
+private struct SessionStatusLabel: View {
+    let status: SessionRowStatus
+
+    var body: some View {
+        switch status.format {
+        case .fixed(let text):
+            Text(text)
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(color(for: status.tone))
+        case .age:
+            TimelineView(.periodic(from: .now, by: status.cadence())) { context in
+                Text(status.text(now: context.date))
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(color(for: status.tone))
             }
         }
     }
@@ -455,7 +468,7 @@ private struct TerminalsSidebarSection: View {
     let model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        LazyVStack(alignment: .leading, spacing: 1) {
             SectionLabel(title: "Terminals")
                 .dropDestination(for: LinkCTerminalDrag.self) { items, _ in
                     guard let id = droppedTerminalID(items, model: model) else { return false }
