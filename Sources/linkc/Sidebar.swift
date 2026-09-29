@@ -37,7 +37,7 @@ struct Sidebar: View {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     NavSection(model: model, isSplit: isSplit)
-                    let sections = model.sidebarSections()
+                    let sections = model.sidebarSnapshot
                     ProjectsSection(projects: sections.projects, model: model) { inspectingWorkspace = $0 }
                     if !sections.unfiled.isEmpty {
                         TerminalsSidebarSection(unfiled: sections.unfiled, model: model)
@@ -70,7 +70,6 @@ struct Sidebar: View {
         )) {
             if let path = inspectingWorkspace {
                 ProjectDashboardSheet(workspacePath: path, model: model) { inspectingWorkspace = nil }
-                    .environment(\.panelVisible, model.panelVisible)
             }
         }
     }
@@ -88,6 +87,7 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
     var indent: CGFloat = 0
     var help: String? = nil
     var activity: ShownActivity? = nil
+    var resolveActivity: (() -> String?)? = nil
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
@@ -103,8 +103,11 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
                     leading()
                         .frame(width: 16)
                     if let activity {
-                        ActivityLabel(text: activity.text, isWorking: activity.isWorking, size: 12)
-                            .foregroundStyle(Theme.textSecondary)
+                        TimelineView(.periodic(from: .now, by: activity.isWorking ? 1.0 : 3600.0)) { _ in
+                            let text = resolveActivity?() ?? activity.text
+                            ActivityLabel(text: text, isWorking: activity.isWorking, size: 12)
+                                .foregroundStyle(Theme.textSecondary)
+                        }
                     } else {
                         Text(title)
                             .font(.system(size: 13))
@@ -399,6 +402,13 @@ private struct SessionRow: View {
             indent: 18,
             help: "\(row.agentKind.displayName) — \(row.title)",
             activity: row.activity,
+            resolveActivity: {
+                guard let session = model.coordinator?.store.session(id: row.id) ?? model.sessions.first(where: { $0.id == row.id }),
+                      ShownActivity.applies(to: session.state) else {
+                    return nil
+                }
+                return model.currentActivity(session)
+            },
             action: { model.focus(row.id) }
         ) {
             AgentLogoView(agent: row.agentKind)
@@ -416,6 +426,25 @@ private struct SessionRow: View {
     }
 }
 
+private struct AgeTimelineSchedule: TimelineSchedule {
+    let since: Date
+
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> Entries {
+        Entries(current: startDate, since: since)
+    }
+
+    struct Entries: Sequence, IteratorProtocol {
+        var current: Date
+        let since: Date
+
+        mutating func next() -> Date? {
+            let nextDate = AgeScheduleRule.nextTick(after: current, since: since)
+            current = nextDate
+            return nextDate
+        }
+    }
+}
+
 private struct SessionStatusLabel: View {
     let status: SessionRowStatus
 
@@ -426,8 +455,8 @@ private struct SessionStatusLabel: View {
                 .font(.system(size: 11))
                 .monospacedDigit()
                 .foregroundStyle(color(for: status.tone))
-        case .age:
-            TimelineView(.periodic(from: .now, by: status.cadence())) { context in
+        case .age(_, let since):
+            TimelineView(AgeTimelineSchedule(since: since)) { context in
                 Text(status.text(now: context.date))
                     .font(.system(size: 11))
                     .monospacedDigit()

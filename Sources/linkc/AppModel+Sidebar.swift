@@ -78,7 +78,7 @@ extension AppModel {
     /// live filed terminal — exactly the paths `sidebarSections` would show as project rows.
     /// Lets a terminal's project be resolved (`TerminalFiling.project`) without building the model.
     var knownProjectPaths: Set<String> {
-        Set(sessions.map { ProjectTabs.standardized($0.cwd) })
+        Set(sessions.map(\.cwd))
             .union(shellRows.compactMap { sidebarState.terminalProjects[$0.id] }.map(ProjectTabs.standardized))
     }
 
@@ -109,7 +109,7 @@ extension AppModel {
         sidebarState.noteProjects(ProjectGroup.group(sessions: sessions).map(\.workspacePath) + filedPaths)
         let selectedProject: String?
         if let session = sessions.first(where: { $0.id == selectedId }) {
-            selectedProject = ProjectTabs.standardized(session.cwd)
+            selectedProject = session.cwd
         } else if let shell = shellRows.first(where: { $0.id == selectedId }) {
             selectedProject = TerminalFiling.project(
                 forTerminal: shell.id, cwd: shell.cwd, filed: sidebarState.terminalProjects, projects: knownProjectPaths)
@@ -117,7 +117,12 @@ extension AppModel {
             selectedProject = nil
         }
         sidebarState.noteSelectedProject(selectedProject)
-        let coral = sidebarSections(now: now).projects.filter { $0.dot == .attention }.map(\.path)
+        let sections = sidebarSections(now: now)
+        let snapshot = SidebarSnapshot(projects: sections.projects, unfiled: sections.unfiled)
+        if snapshot != sidebarSnapshot {
+            sidebarSnapshot = snapshot
+        }
+        let coral = snapshot.projects.filter { $0.dot == .attention }.map(\.path)
         sidebarState.noteCoral(Set(coral))
     }
 

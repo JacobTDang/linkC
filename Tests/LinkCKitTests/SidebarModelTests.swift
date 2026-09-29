@@ -183,4 +183,29 @@ final class SidebarModelTests: XCTestCase {
         XCTAssertTrue(out.projects[0].terminals.isEmpty)
         XCTAssertEqual(out.unfiled.map(\.id), ["s1"])
     }
+
+    func testSidebarSnapshotEqualityDetectsTitleAndStatusChanges() {
+        let projects1 = build([input("1", cwd: "/p/a", tone: .quiet)])
+        let snap1 = SidebarSnapshot(projects: projects1, unfiled: [])
+
+        let projectsSame = build([input("1", cwd: "/p/a", tone: .quiet)])
+        let snapSame = SidebarSnapshot(projects: projectsSame, unfiled: [])
+        XCTAssertEqual(snap1, snapSame)
+
+        // Title changes (e.g. held-task title resolved from inbox)
+        let modifiedInput = SidebarModel.Input(
+            session: Session(id: "1", cwd: "/p/a", title: "a"),
+            title: "new-held-task-title",
+            status: SessionRowStatus(text: "text-1", tone: .quiet),
+            hasRunningSubagents: false
+        )
+        let projectsTitleChanged = build([modifiedInput])
+        let snapTitleChanged = SidebarSnapshot(projects: projectsTitleChanged, unfiled: [])
+        XCTAssertNotEqual(snap1, snapTitleChanged)
+
+        // Status changes (e.g. rate limit cooldown expired: "rate limited" -> "error")
+        let projectsStatusChanged = build([input("1", cwd: "/p/a", tone: .error)])
+        let snapStatusChanged = SidebarSnapshot(projects: projectsStatusChanged, unfiled: [])
+        XCTAssertNotEqual(snap1, snapStatusChanged)
+    }
 }
