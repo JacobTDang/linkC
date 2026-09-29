@@ -26,13 +26,14 @@ final class StateFileReadCounterTests: XCTestCase {
         XCTAssertEqual(StateFileReadCounter.shared.count(path: store.inboxURL.path), 0)
     }
 
-    func testEachInboxLoadOfAnExistingFileCountsOnce() throws {
+    /// Every write reads the file under the lock, so each one is exactly one disk load.
+    func testEachInboxWriteOfAnExistingFileCountsOneLoad() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
         try store.saveRaw(Inbox(workspacePath: store.workspaceRoot))
         let before = StateFileReadCounter.shared.count(path: store.inboxURL.path)
 
-        _ = try store.load()
-        _ = try store.load()
+        _ = try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "one")
+        _ = try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "two")
 
         XCTAssertEqual(StateFileReadCounter.shared.count(path: store.inboxURL.path) - before, 2)
     }

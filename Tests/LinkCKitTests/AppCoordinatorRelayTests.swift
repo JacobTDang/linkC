@@ -2981,6 +2981,72 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(coordinator.store.session(id: codexSession.id)?.state, .working)
         XCTAssertFalse(try inbox.load().messages.contains { $0.prompt.contains("turn ended without a report") })
     }
+
+    // MARK: - Inbox reads per relay pass
+
+    /// A steady workspace: a settled task, the completion line it left for a delegator with no
+    /// session here (so the line stays queued, untouched, every tick), and a worker so the reaper
+    /// reads too. A relay pass over it changes nothing — the case that used to open, lock, read
+    /// and decode `inbox.json` once per stage, plus once per queued line. Returns the worker's id.
+    @MainActor
+    @discardableResult
+    private func makeQuietWorkspace(_ coordinator: AppCoordinator, inbox: InboxStore, ws: String) throws -> String {
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "settled", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "ok"))
+        try inbox.acceptUnverifiedAndNotify(taskId: task.id, notifyBody: "done (unverified)")
+        return worker.id
+    }
+
+    @MainActor
+    func testRelayPassesOverAnUnchangedInboxReadItFromDiskAtMostOnce() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        try makeQuietWorkspace(coordinator, inbox: inbox, ws: ws)
+        let before = StateFileReadCounter.shared.count(path: inbox.inboxURL.path)
+
+        let passes = 6
+        for _ in 0..<passes { coordinator.processPendingMessages(workspacePath: ws) }
+
+        let loads = StateFileReadCounter.shared.count(path: inbox.inboxURL.path) - before
+        XCTAssertLessThanOrEqual(loads, 1, "\(passes) relay passes over a file that never changed read it from disk \(loads) times")
+        let settled = try inbox.load()
+        XCTAssertEqual(settled.tasks.map(\.state), [.done], "the passes were no-ops, so the count is the cost of doing nothing")
+        XCTAssertEqual(settled.messages.filter { $0.status == .queued }.count, 1)
+    }
+
+    @MainActor
+    func testARelayPassActsOnAChangeAnotherProcessMadeSinceThePreviousPass() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let workerId = try makeQuietWorkspace(coordinator, inbox: inbox, ws: ws)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        // `linkc-mcp` replaces the file: the worker has reported a task done.
+        let reported = TaskRecord(
+            fromAgent: .claude, toAgent: .codex, assigneeSessionId: workerId, prompt: "reported elsewhere",
+            state: .reported, report: TaskReport(status: "done", summary: "ok")
+        )
+        var changed = try inbox.load()
+        changed.tasks.append(reported)
+        try ForeignInboxWriter.replace(changed, in: inbox)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.task(id: reported.id)?.state, .done, "the pass must see the other process's write and settle the task")
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.
