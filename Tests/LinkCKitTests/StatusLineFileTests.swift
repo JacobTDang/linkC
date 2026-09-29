@@ -91,6 +91,7 @@ final class StatusLineFileTests: XCTestCase {
 
         let messages = Set((0..<200).map { _ -> String in
             guard case .garbage(let message) = StatusLineFile.read(at: file, receivedAt: arrived) else {
+                XCTFail("the read was not reported as garbage")
                 return "not garbage"
             }
             return message
@@ -102,6 +103,7 @@ final class StatusLineFileTests: XCTestCase {
     func testTheSameUnreadableFileAlwaysGivesTheSameMessage() {
         let messages = Set((0..<200).map { _ -> String in
             guard case .unreadable(let message) = StatusLineFile.read(at: file, receivedAt: arrived) else {
+                XCTFail("the read was not reported as unreadable")
                 return "not unreadable"
             }
             return message

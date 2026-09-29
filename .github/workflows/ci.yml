@@ -111,6 +111,9 @@ jobs:
       - name: Test the commit check
         run: ./scripts/test-check-commits.sh
 
+      - name: Test the TSan wrapper
+        run: ./scripts/test-tsan.sh
+
       - name: Check the commits in this change
         run: |
           # A branch's first push has no "before" commit; check just the pushed head.

@@ -241,7 +241,7 @@ final class ShellPersistenceTests: XCTestCase {
         in folder: String, terminals: TerminalSessionManager, id: String
     ) async throws {
         let expected = try XCTUnwrap(ProcessSnooper.canonicalPath(folder))
-        for _ in 0..<250 {
+        for _ in 0..<TestWait.polls {
             if let session = terminals.session(id: id),
                ProcessSnooper.currentDirectory(ofPid: session.processId) == expected { return }
             try await Task.sleep(for: .milliseconds(20))
