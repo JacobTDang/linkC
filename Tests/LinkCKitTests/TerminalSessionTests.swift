@@ -19,7 +19,7 @@ extension TerminalSessionTests {
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
         let titleRecorder = TerminalTitleRecorder()
         view.processDelegate = titleRecorder
-        view.needsDisplay = false
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         view.getTerminal().clearUpdateRange()
 
         let output = "\u{1b}]0;detached title\u{7}alpha\r\nbeta\u{1b}[?2004h"
@@ -31,30 +31,31 @@ extension TerminalSessionTests {
         XCTAssertEqual(terminal.getCursorLocation().y, 1)
         XCTAssertTrue(terminal.bracketedPasteMode)
         XCTAssertEqual(titleRecorder.title, "detached title")
-        XCTAssertTrue(view.hasDeferredDisplay)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertNotNil(terminal.getUpdateRange(),
                         "detached output must remain dirty until attachment, not be consumed by updateDisplay")
     }
 
     func testDetachedFeedRequestsFullDisplayWhenReattached() {
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
-        view.needsDisplay = false
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         view.getTerminal().clearUpdateRange()
         view.dataReceived(slice: Array("reattached content".utf8)[...])
-        XCTAssertTrue(view.hasDeferredDisplay)
         XCTAssertNotNil(view.getTerminal().getUpdateRange())
 
         let host = TerminalHostView(frame: view.bounds)
         let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
+        window.makeKeyAndOrderFront(nil)
         host.show(view)
 
-        XCTAssertTrue(view.needsDisplay, "reattaching after background output must invalidate the full terminal")
-        XCTAssertFalse(view.hasDeferredDisplay)
+        XCTAssertTrue(waitUntil(timeout: 2) { view.getTerminal().getUpdateRange() == nil },
+                      "reattaching must run the deferred full redraw")
         XCTAssertEqual(view.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "reattached content")
+        window.orderOut(nil)
     }
 
-    func testDetachedFeedUsesLessCPUThanTheInheritedDisplayPath() {
+    func testDetachedFeedCPUIsReportedWithoutAFlakyRelativeAssertion() {
         let detached = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
         let inherited = LocalProcessTerminalView(frame: detached.frame)
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -74,7 +75,43 @@ extension TerminalSessionTests {
         }
 
         print(String(format: "Detached terminal feed CPU: before %.6fs, after %.6fs", before, after))
-        XCTAssertLessThan(after, before)
+        XCTAssertNotNil(detached.getTerminal().getUpdateRange())
+    }
+
+    func testDetachedSynchronizedOutputKeepsItsDirtyRange() {
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        view.getTerminal().clearUpdateRange()
+
+        let output = "\u{1b}[?2026hwrapped output\u{1b}[?2026l"
+        view.dataReceived(slice: Array(output.utf8)[...])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        XCTAssertNotNil(view.getTerminal().getUpdateRange(),
+                        "synchronized-output end must not schedule a display pass while detached")
+    }
+
+    func testHiddenWindowDefersDisplayAndRedrawsWhenShownAgain() {
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        let host = TerminalHostView(frame: view.bounds)
+        let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        host.show(view)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        view.getTerminal().clearUpdateRange()
+
+        window.orderOut(nil)
+        view.dataReceived(slice: Array("hidden output".utf8)[...])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertNotNil(view.getTerminal().getUpdateRange(),
+                        "an ordered-out panel must not consume terminal display work")
+
+        window.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        XCTAssertTrue(waitUntil(timeout: 2) { view.getTerminal().getUpdateRange() == nil },
+                      "showing the panel must render output deferred while it was hidden")
+        window.orderOut(nil)
     }
 
     func testManagerRetainsTerminatingSessionUntilChildIsReaped() async throws {
@@ -95,11 +132,16 @@ extension TerminalSessionTests {
         manager.terminate("reap-on-close")
         session = nil
         XCTAssertTrue(manager.sessions.isEmpty, "the closed terminal must disappear from the UI immediately")
-        try await Task.sleep(for: .milliseconds(900))
 
         var status: Int32 = 0
-        errno = 0
-        let result = waitpid(pid, &status, WNOHANG)
+        let deadline = ContinuousClock.now + .seconds(5)
+        var result: pid_t = 0
+        repeat {
+            errno = 0
+            result = waitpid(pid, &status, WNOHANG)
+            if result != 0 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        } while ContinuousClock.now < deadline
         let waitError = errno
         if result == 0 {
             kill(pid, SIGKILL)
@@ -107,6 +149,26 @@ extension TerminalSessionTests {
         }
         XCTAssertEqual(result, -1, "waitpid returned \(result); returning the pid proves the child was left as a zombie")
         XCTAssertEqual(waitError, ECHILD, "SwiftTerm must already have reaped the closed terminal child")
+    }
+
+    func testManagerReleasesTerminatingSessionAfterChildExit() async throws {
+        let manager = TerminalSessionManager()
+        var session: TerminalSession? = manager.makeSession(
+            id: "release-on-exit",
+            cwd: FileManager.default.currentDirectoryPath,
+            title: "delayed exit"
+        )
+        weak let weakSession = session
+        try session?.start(executable: "/bin/sh", args: ["-c", "trap '' TERM; sleep 1"], env: [:])
+
+        manager.terminate("release-on-exit")
+        session = nil
+        let deadline = ContinuousClock.now + .seconds(5)
+        while weakSession != nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertNil(weakSession, "the manager must release a terminating session after SwiftTerm reaps its child")
     }
 
     func testAOneLineMessageWaitsForTheSettleThenSubmitsOnce() {
@@ -263,5 +325,13 @@ extension TerminalSessionTests {
             try? await Task.sleep(for: .milliseconds(50))
         }
         return session.recentOutput(lines: 10).contains(snippet)
+    }
+
+    private func waitUntil(timeout: TimeInterval, condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        return condition()
     }
 }

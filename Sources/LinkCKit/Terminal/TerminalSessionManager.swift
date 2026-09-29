@@ -62,8 +62,8 @@ public final class TerminalSessionManager {
         guard let session = session(id: id) else { return }
         if session.isRunning {
             let key = ObjectIdentifier(session)
-            session.onProcessReaped = { [weak self, weak session] in
-                guard let self, let session, self.terminatingSessions[key] === session else { return }
+            session.onProcessReaped = { [weak self] in
+                guard let self, self.terminatingSessions[key] === session else { return }
                 self.terminatingSessions.removeValue(forKey: key)
             }
             terminatingSessions[key] = session

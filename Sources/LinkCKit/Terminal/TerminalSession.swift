@@ -384,23 +384,111 @@ private final class ProcessDelegate: NSObject, LocalProcessTerminalViewDelegate 
 /// The terminal view `TerminalSession` hosts.
 public final class LinkCTerminalView: LocalProcessTerminalView {
     private var hasDetachedUpdates = false
-    var hasDeferredDisplay: Bool { hasDetachedUpdates }
+    private var synchronizedOutputPrefix: [UInt8] = []
+    private var detachedSynchronizedOutputActive = false
+    private weak var observedWindow: NSWindow?
+
+    private static let synchronizedOutputStart = Array("\u{1b}[?2026h".utf8)
+    private static let synchronizedOutputEnd = Array("\u{1b}[?2026l".utf8)
 
     public override func dataReceived(slice: ArraySlice<UInt8>) {
-        guard window == nil else {
+        guard !isDisplayAttached else {
+            synchronizedOutputPrefix.removeAll(keepingCapacity: true)
             super.dataReceived(slice: slice)
             return
         }
-        getTerminal().feed(buffer: slice)
+        getTerminal().feed(buffer: filterSynchronizedOutput(Array(slice))[...])
         hasDetachedUpdates = true
     }
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil, hasDetachedUpdates else { return }
+        observeWindowVisibility()
+        redrawDetachedUpdatesIfNeeded()
+    }
+
+    public override func viewWillDraw() {
+        redrawDetachedUpdatesIfNeeded()
+        super.viewWillDraw()
+    }
+
+    private var isDisplayAttached: Bool {
+        guard let window else { return false }
+        return window.isVisible && window.occlusionState.contains(.visible)
+    }
+
+    private func observeWindowVisibility() {
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didChangeOcclusionStateNotification] {
+            NotificationCenter.default.removeObserver(self, name: name, object: observedWindow)
+        }
+        observedWindow = nil
+        guard let window else { return }
+        observedWindow = window
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didChangeOcclusionStateNotification] {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowVisibilityChanged),
+                name: name,
+                object: window
+            )
+        }
+    }
+
+    @objc private func windowVisibilityChanged() {
+        redrawDetachedUpdatesIfNeeded()
+    }
+
+    private func redrawDetachedUpdatesIfNeeded() {
+        guard window?.isVisible == true, hasDetachedUpdates else { return }
         hasDetachedUpdates = false
+        flushSynchronizedOutputPrefix()
+        synchronizeOutputMode()
         getTerminal().updateFullScreen()
         setNeedsDisplay(bounds)
+        // SwiftTerm only reaches feedPrepare/queuePendingDisplay through `dataReceived`.
+        // An empty feed deliberately schedules that full dirty range for display; it also
+        // resets search/selection, which is correct when a previously hidden terminal returns.
         super.dataReceived(slice: ArraySlice<UInt8>())
+    }
+
+    private func filterSynchronizedOutput(_ bytes: [UInt8]) -> [UInt8] {
+        let pending = synchronizedOutputPrefix + bytes
+        synchronizedOutputPrefix.removeAll(keepingCapacity: true)
+        var filtered: [UInt8] = []
+        filtered.reserveCapacity(pending.count)
+        var index = pending.startIndex
+        while index < pending.endIndex {
+            let suffix = pending[index...]
+            if suffix.starts(with: Self.synchronizedOutputStart) {
+                detachedSynchronizedOutputActive = true
+                index += Self.synchronizedOutputStart.count
+            } else if suffix.starts(with: Self.synchronizedOutputEnd) {
+                detachedSynchronizedOutputActive = false
+                index += Self.synchronizedOutputEnd.count
+            } else if Self.synchronizedOutputStart.starts(with: suffix)
+                        || Self.synchronizedOutputEnd.starts(with: suffix) {
+                synchronizedOutputPrefix = Array(suffix)
+                break
+            } else {
+                filtered.append(pending[index])
+                index += 1
+            }
+        }
+        return filtered
+    }
+
+    private func flushSynchronizedOutputPrefix() {
+        guard !synchronizedOutputPrefix.isEmpty else { return }
+        getTerminal().feed(buffer: synchronizedOutputPrefix[...])
+        synchronizedOutputPrefix.removeAll(keepingCapacity: true)
+    }
+
+    private func synchronizeOutputMode() {
+        let terminal = getTerminal()
+        guard terminal.synchronizedOutputActive != detachedSynchronizedOutputActive else { return }
+        let sequence = detachedSynchronizedOutputActive
+            ? Self.synchronizedOutputStart
+            : Self.synchronizedOutputEnd
+        terminal.feed(buffer: sequence[...])
     }
 }
