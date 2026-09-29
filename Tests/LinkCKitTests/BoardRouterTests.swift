@@ -217,7 +217,7 @@ final class BoardRouterTests: XCTestCase {
             routes = BoardRouter.routes(for: m)
         }
         XCTAssertGreaterThanOrEqual(routes.count, 290)
-        XCTAssertLessThan(elapsed, 3.0, "debug-build guard (CPU time); report the measured time")
+        XCTAssertLessThan(elapsed, ThreadCPUTime.budget(3.0), "debug-build guard (CPU time); report the measured time")
     }
 
     /// A shared-database hub: 200 components in the same grid layout as the test above, but each
@@ -235,7 +235,7 @@ final class BoardRouterTests: XCTestCase {
             routes = BoardRouter.routes(for: m)
         }
         XCTAssertEqual(routes.count, 199)
-        XCTAssertLessThan(elapsed, 3.0, "debug-build guard (CPU time); report the measured time")
+        XCTAssertLessThan(elapsed, ThreadCPUTime.budget(3.0), "debug-build guard (CPU time); report the measured time")
     }
 
     /// "Add what's running" packs boxes a few points apart — well inside `clearance` — so a
