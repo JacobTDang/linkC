@@ -15,16 +15,11 @@ extension EnvironmentValues {
 /// Clean, smooth highlighting that glides across text when active — matching the ChatGPT / Perplexity status design.
 struct SmoothShimmerModifier: ViewModifier {
     let isWorking: Bool
-    var explicitPanelVisible: Bool? = nil
 
     @State private var phase: CGFloat = 0
     @State private var isOnScreen = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.panelVisible) private var envPanelVisible
-
-    private var panelVisible: Bool {
-        explicitPanelVisible ?? envPanelVisible
-    }
+    @Environment(\.panelVisible) private var panelVisible
 
     private var shouldAnimate: Bool {
         ShimmerPolicy.shouldAnimate(
@@ -59,11 +54,9 @@ struct SmoothShimmerModifier: ViewModifier {
             }
             .onAppear {
                 isOnScreen = true
-                updateAnimation()
             }
             .onDisappear {
                 isOnScreen = false
-                stopAnimation()
             }
             .onChange(of: shouldAnimate) { _, animate in
                 if animate {
@@ -72,14 +65,6 @@ struct SmoothShimmerModifier: ViewModifier {
                     stopAnimation()
                 }
             }
-    }
-
-    private func updateAnimation() {
-        if shouldAnimate {
-            startAnimation()
-        } else {
-            stopAnimation()
-        }
     }
 
     private func startAnimation() {
@@ -101,8 +86,8 @@ struct SmoothShimmerModifier: ViewModifier {
 
 extension View {
     /// Applies a clean, smooth highlighting wave across text letters when active.
-    func smoothShimmer(isWorking: Bool, panelVisible: Bool? = nil) -> some View {
-        modifier(SmoothShimmerModifier(isWorking: isWorking, explicitPanelVisible: panelVisible))
+    func smoothShimmer(isWorking: Bool) -> some View {
+        modifier(SmoothShimmerModifier(isWorking: isWorking))
     }
 }
 
