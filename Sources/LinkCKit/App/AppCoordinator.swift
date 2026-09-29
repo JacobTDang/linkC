@@ -180,7 +180,8 @@ public final class AppCoordinator {
     /// Whether the menu-bar panel is on screen. Set through `setPanelVisible`.
     public private(set) var panelVisible = false
     /// The app's own sampling that only matters while the panel is on screen (terminals, sidebar).
-    /// Runs on every tick while `panelVisible`, after the sessions are sampled.
+    /// Runs on every tick while `panelVisible`, after the sessions are sampled, and once on its own
+    /// when the panel is shown (see `setPanelVisible`).
     public var panelSweep: (@MainActor () async -> Void)?
 
     /// Designated initializer — all collaborators injected (used by tests).
@@ -342,13 +343,22 @@ public final class AppCoordinator {
         ticker.start()
     }
 
-    /// Tells the coordinator whether the panel is on screen. Showing it runs a pass at once, so
-    /// the panel never opens on samples that are seconds old, and holds the one-second cadence
-    /// while it stays open.
+    /// Tells the coordinator whether the panel is on screen. Showing it gives the panel's own
+    /// sampling one look at once, so the panel never opens on data that is seconds old, and holds
+    /// the one-second cadence while it stays open. The session sweep and the relay do not run on
+    /// show: the app sets this before the window appears, so a full pass here would run on the
+    /// main thread in the middle of the opening animation. The sleep in progress is cut short and
+    /// chosen again instead, so that pass follows within a second.
     public func setPanelVisible(_ visible: Bool) {
         guard visible != panelVisible else { return }
         panelVisible = visible
-        if visible { sweepTicker?.wake() }
+        guard visible else { return }
+        sweepTicker?.reschedule()
+        Task { [weak self] in
+            // Hidden again before this got to run: there is nothing on screen to sample for.
+            guard let self, panelVisible else { return }
+            await panelSweep?()
+        }
     }
 
     private func sweepInterval() -> Duration {

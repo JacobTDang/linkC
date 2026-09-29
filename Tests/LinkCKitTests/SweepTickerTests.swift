@@ -59,6 +59,21 @@ final class SweepTickerTests: XCTestCase {
         XCTAssertEqual(sleep.tolerance, .milliseconds(100))
     }
 
+    /// The interval can change under a sleeping loop (the panel opens while it waits out five
+    /// seconds). Rescheduling ends that sleep and starts one with the new interval, and runs nothing.
+    func testRescheduleEndsTheSleepWithoutAPassAndReadsTheIntervalAgain() async throws {
+        ticker.start()
+        try await waitForSleep()
+        nextInterval = .seconds(1)
+        ticker.reschedule()
+        try await waitUntil { self.clock.pendingSleeps.first?.requested == .seconds(1) }
+        XCTAssertEqual(passes, 0)
+        XCTAssertEqual(clock.now.offset, .zero)
+
+        clock.advance(by: .seconds(1))
+        try await waitUntil { self.passes == 1 }
+    }
+
     func testAWakeRunsAPassAtOnceWithoutTimeMoving() async throws {
         ticker.start()
         try await waitForSleep()

@@ -128,21 +128,47 @@ final class AppCoordinatorTickerTests: XCTestCase {
         XCTAssertEqual(sleep.tolerance, .milliseconds(500))
     }
 
-    func testShowingThePanelRunsThePanelSweepAtOnceAndKeepsTheCadenceAtOneSecond() async throws {
+    /// The panel is set visible before its window shows, so whatever runs on show runs in the middle
+    /// of the 0.22 s opening animation, on the main thread. Only the panel's own sampling runs then;
+    /// the session sweep and the relay (a full pass, ~20 ms per pass with many sessions) wait for the
+    /// next tick, which the visible panel has brought forward to one second.
+    func testShowingThePanelRunsOnlyThePanelSweepAtOnceAndTheFullPassFollowsWithinASecond() async throws {
         let coordinator = try await startIdleCoordinator()
         defer { coordinator.shutdown() }
+        // A notice leaves the queue only in a full pass, and nothing watches this workspace yet, so
+        // writing it wakes nothing.
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        _ = try inbox.enqueue(from: .codex, to: .claude, kind: .notice, body: "look at this")
         var sweeps = 0
         coordinator.panelSweep = { sweeps += 1 }
 
         coordinator.setPanelVisible(true)
         let ran = try await waitUntil { sweeps == 1 }
         XCTAssertTrue(ran, "opening the panel must run the panel sweep without waiting out the interval")
-        XCTAssertEqual(clock.now.offset, .zero)
         try await waitForSleep(of: .seconds(1))
+        XCTAssertEqual(clock.now.offset, .zero)
+        XCTAssertEqual(try inbox.fetchPending().count, 1, "the session sweep and the relay did not run on show")
 
         clock.advance(by: .seconds(1))
-        let again = try await waitUntil { sweeps == 2 }
-        XCTAssertTrue(again, "and it keeps running every second while the panel stays open")
+        // At least two: delivering the notice writes the inbox, which now wakes one more pass.
+        let again = try await waitUntil { sweeps >= 2 }
+        XCTAssertTrue(again, "and the panel sweep keeps running every second while the panel stays open")
+        let delivered = try await waitUntil { (try? inbox.fetchPending().isEmpty) == true }
+        XCTAssertTrue(delivered, "the full pass follows one second after the panel opened")
+    }
+
+    /// The show-time panel sweep is a task of its own; a panel already hidden again by the time it
+    /// gets to run has nothing to sample for.
+    func testAPanelHiddenBeforeTheShowSweepGetsToRunIsNotSampled() async throws {
+        let coordinator = try await startIdleCoordinator()
+        defer { coordinator.shutdown() }
+        var sweeps = 0
+        coordinator.panelSweep = { sweeps += 1 }
+
+        coordinator.setPanelVisible(true)
+        coordinator.setPanelVisible(false)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(sweeps, 0)
     }
 
     func testThePanelSweepStaysQuietWhileThePanelIsHidden() async throws {
