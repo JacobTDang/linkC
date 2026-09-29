@@ -55,7 +55,7 @@ final class AgentProbeSweepTests: XCTestCase {
         try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         return AppCoordinator(
             terminals: TerminalSessionManager(),
-            hookServer: HookServer(port: 0),
+            hookServer: HookServer.forTesting(),
             notifications: NotificationManager(sink: NullSink(), now: { Date() }),
             claudePath: script.path,
             settingsDir: settingsDir,
