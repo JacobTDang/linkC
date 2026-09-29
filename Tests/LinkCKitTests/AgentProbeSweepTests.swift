@@ -133,6 +133,25 @@ final class AgentProbeSweepTests: XCTestCase {
         XCTAssertEqual(script.treeCalls, 3, "ten seconds since the last walk")
     }
 
+    /// A minute of sweeps over a mix of hooked and other sessions, the shape of a working day.
+    @MainActor
+    func testAMinuteOfSweepsWalksTheTreeOnceEveryTenSecondsPerUnhookedSession() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let script = ScriptedProbe()
+        for agent in [AgentKind.claude, .claude, .codex, .cursor, .agy] {
+            _ = try launch(coordinator, agent: agent, script: script)
+        }
+
+        for _ in 0..<60 {
+            coordinator.sampleAgentStates()
+            script.advance(1)
+        }
+
+        // Three unhooked sessions, walked at 0, 10, ... 50 seconds. Before: five sessions x 60 sweeps.
+        XCTAssertEqual(script.treeCalls, 3 * 6)
+    }
+
     @MainActor
     func testADifferentAgentInTheTreeStillChangesTheSessionsKind() throws {
         let coordinator = makeCoordinator()
