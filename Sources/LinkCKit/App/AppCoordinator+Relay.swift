@@ -557,16 +557,21 @@ extension AppCoordinator {
     }
 
     /// Whether a queued message is something a tick can act on: a brief spawns an agent, and any
-    /// other kind (a notice is marked delivered at once) needs a live session of its target kind
-    /// to take it. One with no such session waits for one to be launched, and launching wakes the
-    /// sweep, so it must not hold the fast cadence in the meantime.
+    /// other kind (a notice is marked delivered at once) needs a session of its target kind that
+    /// can be typed into. One with no such session waits for one to be launched, and launching
+    /// wakes the sweep, so it must not hold the fast cadence in the meantime. A session in `.error`
+    /// (a usage limit; the cooldown can last hours) is no more able to take it than a missing one,
+    /// and the sweep notices it leaving `.error` at any cadence. Nor is one whose process has
+    /// exited, which the delivery itself leaves queued.
     private func hasLiveTarget(_ message: PendingMessage, in workspace: String) -> Bool {
         switch message.kind {
         case .task: return true
         case .notice: return false
         default:
             return store.sessions.contains {
-                $0.cwd == workspace && $0.agentKind == message.toAgent && $0.state != .ended
+                $0.cwd == workspace && $0.agentKind == message.toAgent
+                    && $0.state != .ended && $0.state != .error
+                    && terminals.session(id: $0.id)?.isRunning == true
             }
         }
     }
