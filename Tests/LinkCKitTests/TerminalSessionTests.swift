@@ -12,6 +12,11 @@ private final class TerminalTitleRecorder: NSObject, LocalProcessTerminalViewDel
     func processTerminated(source: TerminalView, exitCode: Int32?) {}
 }
 
+private final class VisibleTestWindow: NSWindow {
+    override var isVisible: Bool { true }
+    override var occlusionState: NSWindow.OcclusionState { [.visible] }
+}
+
 @MainActor
 extension TerminalSessionTests {
 
@@ -44,11 +49,17 @@ extension TerminalSessionTests {
         XCTAssertNotNil(view.getTerminal().getUpdateRange())
 
         let host = TerminalHostView(frame: view.bounds)
-        let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        let window = VisibleTestWindow(
+            contentRect: view.bounds,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
         window.contentView = host
-        window.makeKeyAndOrderFront(nil)
         host.show(view)
 
+        XCTAssertEqual(view.getTerminal().getUpdateRange()?.endY, view.getTerminal().rows,
+                       "reattaching must invalidate the full terminal before drawing")
         XCTAssertTrue(waitUntil(timeout: 2) { view.getTerminal().getUpdateRange() == nil },
                       "reattaching must run the deferred full redraw")
         XCTAssertEqual(view.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "reattached content")
