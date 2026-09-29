@@ -220,4 +220,55 @@ final class BlackboardHeartbeatScheduleTests: XCTestCase {
         try freshStore(clock).heartbeat(agentKind: .cursor, pid: 4242)
         XCTAssertEqual(diskLoads() - before, 1, "reads again one refresh interval after the last read")
     }
+
+    // MARK: - The schedule stays bounded
+
+    /// A pid that stops heartbeating (its process exited, or nothing asks about its workspace any
+    /// more) never touches its entry again, so nothing but a sweep removes it.
+    func testEntriesWellPastDueAreDroppedWhenALaterOneIsScheduled() {
+        let table = HeartbeatSchedule()
+        let start = ContinuousClock.now
+        let path = "/workspace/.linkc/blackboard.json"
+        for pid in 1...100 {
+            table.schedule(path: path, pid: pid_t(pid), after: 300, now: start)
+        }
+        XCTAssertEqual(table.scheduledCount(path: path), 100)
+
+        let stillWithinRetention = start.advanced(by: .seconds(300 + HeartbeatSchedule.retention - 1))
+        table.schedule(path: path, pid: 1000, after: 300, now: stillWithinRetention)
+        XCTAssertEqual(table.scheduledCount(path: path), 101, "an entry that came due a moment ago is kept")
+
+        let wellPastDue = start.advanced(by: .seconds(300 + HeartbeatSchedule.retention + 1))
+        table.schedule(path: path, pid: 1001, after: 300, now: wellPastDue)
+        XCTAssertEqual(table.scheduledCount(path: path), 2, "the 100 that never beat again are gone; 1000 and 1001 remain")
+        XCTAssertTrue(table.isDue(path: path, pid: 1, now: wellPastDue), "a dropped pid that beats again reads the board")
+        XCTAssertFalse(table.isDue(path: path, pid: 1001, now: wellPastDue))
+    }
+
+    func testTheSweepCoversEveryFileNotJustTheOneBeingScheduled() {
+        let table = HeartbeatSchedule()
+        let start = ContinuousClock.now
+        table.schedule(path: "/workspace-that-was-read-once", pid: 1, after: 300, now: start)
+
+        table.schedule(path: "/another-workspace", pid: 2, after: 300, now: start.advanced(by: .seconds(300 + HeartbeatSchedule.retention + 1)))
+
+        XCTAssertEqual(table.scheduledCount(path: "/workspace-that-was-read-once"), 0)
+        XCTAssertEqual(table.scheduledCount(path: "/another-workspace"), 1)
+    }
+
+    /// Through the store, as `sampleAgentStates` uses it: pids come and go, and the process-wide
+    /// schedule keeps only the ones that are still current.
+    func testPidsThatStoppedHeartbeatingDoNotAccumulateInTheProcessWideSchedule() throws {
+        let clock = Clock()
+        let boardPath = BlackboardStore(workspaceRoot: tempDir.path).blackboardURL.path
+        for pid in 1...50 {
+            try freshStore(clock).heartbeat(agentKind: .cursor, pid: pid_t(pid))
+        }
+        XCTAssertEqual(HeartbeatSchedule.shared.scheduledCount(path: boardPath), 50)
+
+        clock.advance(BlackboardStore.heartbeatRefreshInterval + HeartbeatSchedule.retention + 1)
+        try freshStore(clock).heartbeat(agentKind: .codex, pid: 1000)
+
+        XCTAssertEqual(HeartbeatSchedule.shared.scheduledCount(path: boardPath), 1)
+    }
 }

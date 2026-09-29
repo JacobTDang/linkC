@@ -17,6 +17,12 @@ import os
 final class HeartbeatSchedule: Sendable {
     static let shared = HeartbeatSchedule()
 
+    /// How long an entry stays after it came due. A pid that keeps heartbeating replaces its entry
+    /// well inside this (the app beats every second, `linkc-mcp` on every tool call); one that does
+    /// not — its process exited, or nothing asks about its workspace any more — would otherwise
+    /// stay for the life of the process. Dropping an entry is always safe: absent means due.
+    static let retention: TimeInterval = BlackboardStore.staleAgentAge
+
     private struct Key: Hashable, Sendable {
         let path: String
         let pid: pid_t
@@ -31,9 +37,20 @@ final class HeartbeatSchedule: Sendable {
         }
     }
 
-    /// The next heartbeat for `pid` has nothing to do until `delay` seconds after `now`.
+    /// The next heartbeat for `pid` has nothing to do until `delay` seconds after `now`. Also
+    /// drops every entry, for any file, that came due more than `retention` before `now`.
     func schedule(path: String, pid: pid_t, after delay: TimeInterval, now: ContinuousClock.Instant) {
-        dueInstants.withLock { $0[Key(path: path, pid: pid)] = now.advanced(by: .seconds(delay)) }
+        dueInstants.withLock { instants in
+            instants[Key(path: path, pid: pid)] = now.advanced(by: .seconds(delay))
+            instants = instants.filter { now < $0.value.advanced(by: .seconds(Self.retention)) }
+        }
+    }
+
+    /// How many pids are scheduled for `path`.
+    func scheduledCount(path: String) -> Int {
+        dueInstants.withLock { instants in
+            instants.keys.filter { $0.path == path }.count
+        }
     }
 
     /// Drops every pid's schedule for `path`. Called when this process saves the file for any
