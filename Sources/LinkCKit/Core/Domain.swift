@@ -100,7 +100,7 @@ public struct Session: Sendable, Identifiable, Equatable {
     /// linkC's own id (UUID string), injected as `LINKC_SESSION` and the kitty `linkc_session` user var.
     public let id: String
     public var claudeSessionId: String?
-    public var cwd: String
+    public private(set) var cwd: String
     public var title: String
     public var state: SessionState
     /// When `state` last actually changed — feeds "needs permission · 4m". A re-asserted
@@ -129,7 +129,7 @@ public struct Session: Sendable, Identifiable, Equatable {
         isWorker: Bool = false
     ) {
         self.id = id
-        self.cwd = cwd
+        self.cwd = ProjectPath.canonical(cwd)
         self.title = title
         self.state = state
         self.claudeSessionId = claudeSessionId
