@@ -105,7 +105,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     }
 
     /// Polls until `predicate` holds (or times out). Used to await async event propagation.
-    private func waitUntil(_ predicate: () -> Bool, iterations: Int = 100) async throws -> Bool {
+    private func waitUntil(_ predicate: () -> Bool, iterations: Int = TestWait.polls) async throws -> Bool {
         for _ in 0..<iterations {
             if predicate() { return true }
             try await Task.sleep(for: .milliseconds(20))

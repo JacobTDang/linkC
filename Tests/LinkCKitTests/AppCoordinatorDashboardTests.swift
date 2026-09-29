@@ -4,7 +4,7 @@ import XCTest
 final class AppCoordinatorDashboardTests: XCTestCase {
     /// Polls until `predicate` holds (or times out) instead of sleeping a fixed duration.
     @MainActor
-    private func waitUntil(_ predicate: @MainActor () -> Bool, iterations: Int = 100) async throws -> Bool {
+    private func waitUntil(_ predicate: @MainActor () -> Bool, iterations: Int = TestWait.polls) async throws -> Bool {
         for _ in 0..<iterations {
             if predicate() { return true }
             try await Task.sleep(for: .milliseconds(20))
