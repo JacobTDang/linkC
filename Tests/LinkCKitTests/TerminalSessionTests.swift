@@ -117,22 +117,25 @@ extension TerminalSessionTests {
         session = nil
         XCTAssertTrue(manager.sessions.isEmpty, "the closed terminal must disappear from the UI immediately")
 
-        var status: Int32 = 0
+        // `waitid` with WNOWAIT looks without reaping: a zombie is still there to see, and ECHILD means
+        // SwiftTerm has reaped it. The test's own `waitpid` could reap it first and hide the answer.
         let deadline = ContinuousClock.now + .seconds(5)
-        var result: pid_t = 0
+        var reaped = false
         repeat {
+            var info = siginfo_t()
             errno = 0
-            result = waitpid(pid, &status, WNOHANG)
-            if result != 0 { break }
+            if waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) == -1, errno == ECHILD {
+                reaped = true
+                break
+            }
             try await Task.sleep(for: .milliseconds(20))
         } while ContinuousClock.now < deadline
-        let waitError = errno
-        if result == 0 {
+        if !reaped {
+            var status: Int32 = 0
             kill(pid, SIGKILL)
             waitpid(pid, &status, 0)
         }
-        XCTAssertEqual(result, -1, "waitpid returned \(result); returning the pid proves the child was left as a zombie")
-        XCTAssertEqual(waitError, ECHILD, "SwiftTerm must already have reaped the closed terminal child")
+        XCTAssertTrue(reaped, "the closed terminal's child was still a zombie or still running at the deadline")
     }
 
     func testManagerReleasesTerminatingSessionAfterChildExit() async throws {
