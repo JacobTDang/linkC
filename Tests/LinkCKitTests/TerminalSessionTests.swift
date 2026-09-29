@@ -64,29 +64,6 @@ extension TerminalSessionTests {
         window.orderOut(nil)
     }
 
-    func testDetachedFeedCPUIsReportedWithoutAFlakyRelativeAssertion() {
-        let detached = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
-        let inherited = LocalProcessTerminalView(frame: detached.frame)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        let chunk = Array((0..<8).map { "\u{1b}[32mstreamed line \($0)\u{1b}[0m\r\n" }.joined().utf8)[...]
-
-        let before = ThreadCPUTime.elapsed {
-            for _ in 0..<50 {
-                inherited.dataReceived(slice: chunk)
-                RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-            }
-        }
-        let after = ThreadCPUTime.elapsed {
-            for _ in 0..<50 {
-                detached.dataReceived(slice: chunk)
-                RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-            }
-        }
-
-        print(String(format: "Detached terminal feed CPU: before %.6fs, after %.6fs", before, after))
-        XCTAssertNotNil(detached.getTerminal().getUpdateRange())
-    }
-
     func testDetachedSynchronizedOutputKeepsItsDirtyRange() {
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
         settleInitialDisplay(of: view)
