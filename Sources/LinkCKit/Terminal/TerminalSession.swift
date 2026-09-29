@@ -20,6 +20,9 @@ public final class TerminalSession {
     /// Fired on the main actor when the child process exits — for ANY reason, including being
     /// killed by `terminate()`. Carries the exit code (nil when the exit was an IO error).
     public var onTerminated: ((Int32?) -> Void)?
+    /// Separate from the client's exit callback so the manager can keep this object — and
+    /// SwiftTerm's waitpid monitor — alive until the exit has actually been observed.
+    var onProcessReaped: (() -> Void)?
 
     /// Held strongly: `LocalProcessTerminalView.processDelegate` is a `weak` reference.
     private let processDelegate = ProcessDelegate()
@@ -351,6 +354,8 @@ public final class TerminalSession {
 
     private func handleTerminated(_ code: Int32?) {
         onTerminated?(code)
+        onProcessReaped?()
+        onProcessReaped = nil
     }
 
     /// Prepend Homebrew's bin dirs to `PATH` if absent, preserving everything else in order.

@@ -80,6 +80,38 @@ extension TerminalSessionTests {
         XCTAssertLessThan(after, before)
     }
 
+    func testManagerRetainsTerminatingSessionUntilChildIsReaped() async throws {
+        let manager = TerminalSessionManager()
+        var session: TerminalSession? = manager.makeSession(
+            id: "reap-on-close",
+            cwd: FileManager.default.currentDirectoryPath,
+            title: "delayed exit"
+        )
+        try session?.start(
+            executable: "/bin/sh",
+            args: ["-c", "trap '' TERM; sleep 1"],
+            env: [:]
+        )
+        let pid = try XCTUnwrap(session?.processId)
+        try await Task.sleep(for: .milliseconds(100))
+
+        manager.terminate("reap-on-close")
+        session = nil
+        XCTAssertTrue(manager.sessions.isEmpty, "the closed terminal must disappear from the UI immediately")
+        try await Task.sleep(for: .milliseconds(900))
+
+        var status: Int32 = 0
+        errno = 0
+        let result = waitpid(pid, &status, WNOHANG)
+        let waitError = errno
+        if result == 0 {
+            kill(pid, SIGKILL)
+            waitpid(pid, &status, 0)
+        }
+        XCTAssertEqual(result, -1, "waitpid returned \(result); returning the pid proves the child was left as a zombie")
+        XCTAssertEqual(waitError, ECHILD, "SwiftTerm must already have reaped the closed terminal child")
+    }
+
     func testAOneLineMessageWaitsForTheSettleThenSubmitsOnce() {
         XCTAssertEqual(TerminalSession.inputPlan(for: "[linkC task X] done (unverified)\n", negotiatedPaste: true),
                        [.text("[linkC task X] done (unverified)"), .wait(milliseconds: TerminalSession.pasteSettleMilliseconds), .submit])
