@@ -29,8 +29,10 @@ public struct SessionRowStatus: Equatable, Sendable {
         self.text = text
     }
 
+    /// `text` is derived from `format` and the clock, so it stays out of the comparison: an age
+    /// label that nothing happened to is the same status every second.
     public static func == (lhs: SessionRowStatus, rhs: SessionRowStatus) -> Bool {
-        lhs.format == rhs.format && lhs.tone == rhs.tone && lhs.text == rhs.text
+        lhs.format == rhs.format && lhs.tone == rhs.tone
     }
 
     public func text(now: Date) -> String {
@@ -44,18 +46,6 @@ public struct SessionRowStatus: Equatable, Sendable {
         case .age(let prefix, let since):
             let age = AgeFormat.compact(from: since, to: now)
             return prefix.isEmpty ? age : "\(prefix) \(age)"
-        }
-    }
-
-    /// The update cadence for this status: 1.0 s while seconds-resolution age is visible (<60s),
-    /// 15.0 s once in minute/hour resolution, or 3600.0 s when fixed / no age is shown.
-    public func cadence(now: Date = Date()) -> TimeInterval {
-        switch format {
-        case .fixed:
-            return 3600.0
-        case .age(_, let since):
-            let elapsed = max(0, now.timeIntervalSince(since))
-            return elapsed < 60.0 ? 1.0 : 15.0
         }
     }
 }

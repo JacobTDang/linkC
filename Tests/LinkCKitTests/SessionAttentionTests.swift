@@ -82,44 +82,6 @@ final class SessionAttentionTests: XCTestCase {
                                         now: t0.addingTimeInterval(90)).isCoral)
     }
 
-    func testCadenceForFixedStatusIsHourly() {
-        XCTAssertEqual(status(.starting).cadence(), 3600.0)
-        XCTAssertEqual(status(.working).cadence(), 3600.0)
-        XCTAssertEqual(status(.error).cadence(), 3600.0)
-        XCTAssertEqual(status(.error, rateLimited: true).cadence(), 3600.0)
-        XCTAssertEqual(SessionAttention.status(
-            state: .ended, stateChangedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false, now: t0
-        ).cadence(), 3600.0)
-    }
-
-    func testCadenceForRecentAgeIsOneSecond() {
-        let readyStatus = SessionAttention.status(
-            state: .ready, stateChangedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false, now: t0
-        )
-        // At 15 seconds elapsed, seconds resolution text ("15s") is visible -> must tick every 1s
-        XCTAssertEqual(readyStatus.cadence(now: t0.addingTimeInterval(15)), 1.0)
-        // At 59 seconds elapsed, still seconds resolution
-        XCTAssertEqual(readyStatus.cadence(now: t0.addingTimeInterval(59)), 1.0)
-    }
-
-    func testCadenceForMinuteResolutionAgeIsCoarse() {
-        let readyStatus = SessionAttention.status(
-            state: .ready, stateChangedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false, now: t0
-        )
-        // At 60 seconds (1m) elapsed, minute resolution -> coarse tick <= 15s
-        let cadence60 = readyStatus.cadence(now: t0.addingTimeInterval(60))
-        XCTAssertLessThanOrEqual(cadence60, 15.0)
-        XCTAssertGreaterThan(cadence60, 1.0)
-
-        // At 120 seconds (2m)
-        let cadence120 = readyStatus.cadence(now: t0.addingTimeInterval(120))
-        XCTAssertEqual(cadence120, 15.0)
-
-        // At 3600 seconds (1h)
-        let cadenceHour = readyStatus.cadence(now: t0.addingTimeInterval(3600))
-        XCTAssertEqual(cadenceHour, 15.0)
-    }
-
     func testStatusTextRendersAccuratelyAtGivenNow() {
         let readyStatus = SessionAttention.status(
             state: .ready, stateChangedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false, now: t0
@@ -174,6 +136,29 @@ final class SessionAttentionTests: XCTestCase {
         }
 
         XCTAssertEqual(ticksPast60, 1, "Only 1 tick should occur in the 16s window between 60s and 76s, got \(ticksPast60)")
+    }
+
+    /// The label's text is derived from its format and the clock, so it must not count: an idle
+    /// session that nothing happened to reads "the same" every second, across the minute boundary
+    /// too, and a publisher guarding on equality stays quiet.
+    func testAnUnchangedAgeStatusIsEqualAtEveryLaterTime() {
+        func idle(at offset: TimeInterval) -> SessionRowStatus {
+            SessionAttention.status(
+                state: .ready, stateChangedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false,
+                now: t0.addingTimeInterval(offset))
+        }
+        XCTAssertNotEqual(idle(at: 59).text, idle(at: 60).text, "the derived text does move with the clock")
+        XCTAssertEqual(idle(at: 30), idle(at: 31))
+        XCTAssertEqual(idle(at: 59), idle(at: 60))
+        XCTAssertEqual(idle(at: 300), idle(at: 301))
+    }
+
+    func testAnAgeStatusDiffersWhenItsSinceOrToneDoes() {
+        let now = t0.addingTimeInterval(30)
+        let idle = SessionRowStatus(format: .age(prefix: "idle", since: t0), tone: .quiet, now: now)
+        XCTAssertNotEqual(idle, SessionRowStatus(format: .age(prefix: "idle", since: t0.addingTimeInterval(1)), tone: .quiet, now: now))
+        XCTAssertNotEqual(idle, SessionRowStatus(format: .age(prefix: "done ·", since: t0), tone: .quiet, now: now))
+        XCTAssertNotEqual(idle, SessionRowStatus(format: .age(prefix: "idle", since: t0), tone: .attention, now: now))
     }
 
     func testSessionRowStatusEqualityIncludesFormat() {
