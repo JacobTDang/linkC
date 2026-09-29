@@ -20,6 +20,7 @@ public enum ProjectPath {
         guard fcntl(fd, F_GETPATH, &buffer) >= 0 else {
             return standardized
         }
-        return String(cString: buffer)
+        let length = buffer.firstIndex(of: 0) ?? buffer.count
+        return String(decoding: buffer[..<length].map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 }
