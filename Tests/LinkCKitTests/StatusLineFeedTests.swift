@@ -90,16 +90,22 @@ final class StatusLineFeedTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    /// - Parameter onDeliver: runs on the feed's queue after each delivery is recorded. A test that
+    ///   blocks in it holds the feed still while it changes files the feed would react to.
     private func makeFeed(
         read: @escaping @Sendable (URL, Date) -> StatusLineFile.Outcome = StatusLineFile.read(at:receivedAt:),
         retryDelay: TimeInterval = 0.02,
-        maxRetries: Int = 5
+        maxRetries: Int = 5,
+        onDeliver: @escaping @Sendable () -> Void = {}
     ) -> StatusLineFeed {
         let delivered = delivered!
         let logged = logged!
         feed = StatusLineFeed(
             directory: directory,
-            deliver: { body, reading in delivered.record((body, reading)) },
+            deliver: { body, reading in
+                delivered.record((body, reading))
+                onDeliver()
+            },
             log: { logged.record($0) },
             read: read, retryDelay: retryDelay, maxRetries: maxRetries)
         return feed
@@ -276,15 +282,97 @@ final class StatusLineFeedTests: XCTestCase {
         XCTAssertTrue(logged.all.isEmpty, "removing a file on purpose is not an error: \(logged.all)")
     }
 
-    func testAFileRemovedUnderTheWatchIsLoggedOnce() throws {
+    /// Once the file is gone the command's `>` makes a new one at the same path, and nobody would
+    /// be watching it: the feed makes it again, private to the user, and watches that one.
+    func testAFileRemovedUnderTheWatchIsMadeAgainAndHeardAgain() throws {
         let file = try makeFeed().watch(sessionId: "s1")
 
         try FileManager.default.removeItem(at: file)
 
         XCTAssertTrue(waitUntil { logged.all.count == 1 })
+        XCTAssertTrue(logged.all.first?.contains("\(file.path) was removed or replaced") == true, "\(logged.all)")
+        let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
+        XCTAssertEqual(permissions, 0o600, "the new file is private too")
+
+        try commandWrites(report, to: file)
+        XCTAssertTrue(waitUntil { delivered.all.count == 1 }, "a report written to the new file must be heard")
         settle()
-        XCTAssertEqual(logged.all.count, 1, "\(logged.all)")
-        XCTAssertTrue(logged.all.first?.contains(file.path) == true, "\(logged.all)")
+        XCTAssertEqual(logged.all.count, 1, "one removal is one line: \(logged.all)")
+    }
+
+    /// The command may make the file again before the feed has looked: what it wrote is a report
+    /// like any other, and the file it made is not left open to other users. The feed is held inside
+    /// its first delivery, so it cannot look until the new file has its report.
+    func testAFileTheCommandMadeAgainBeforeTheFeedLookedIsHeardAndMadePrivate() throws {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let file = try makeFeed(onDeliver: { entered.signal(); release.wait() }).watch(sessionId: "s1")
+        try commandWrites(report, to: file)
+        XCTAssertEqual(entered.wait(timeout: .now() + 3), .success)
+
+        try FileManager.default.removeItem(at: file)
+        try commandWrites(shorterReport, to: file)   // what `>` does: a new file, open to other users
+        release.signal()
+        release.signal()
+
+        XCTAssertTrue(waitUntil { delivered.all.count == 2 }, "\(logged.all)")
+        XCTAssertEqual(delivered.all.last?.body, Data(shorterReport.utf8))
+        let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
+        XCTAssertEqual(permissions, 0o600)
+    }
+
+    /// A file moved away (or replaced by a rename) has the same effect as one removed, and what the
+    /// moved file holds is not the session's report.
+    func testAFileMovedAwayUnderTheWatchIsMadeAgainEmptyAndHeardAgain() throws {
+        let file = try makeFeed().watch(sessionId: "s1")
+        let moved = directory.appendingPathComponent("moved-away")
+        try commandWrites(report, to: file)
+        XCTAssertTrue(waitUntil { delivered.all.count == 1 })
+
+        try FileManager.default.moveItem(at: file, to: moved)
+
+        XCTAssertTrue(waitUntil { logged.all.count == 1 })
+        XCTAssertTrue(logged.all.first?.contains("\(file.path) was removed or replaced") == true, "\(logged.all)")
+        XCTAssertEqual(try Data(contentsOf: file), Data(), "the new file starts empty")
+        try commandWrites(shorterReport, to: file)
+        XCTAssertTrue(waitUntil { delivered.all.count == 2 })
+        XCTAssertEqual(delivered.all.last?.body, Data(shorterReport.utf8))
+    }
+
+    /// The folder itself can go (a cleanup of Application Support): the feed makes it again with the
+    /// file. It is held inside a delivery while the folder goes, so it looks only when it is gone.
+    func testAFolderRemovedUnderTheWatchIsMadeAgainToo() throws {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let file = try makeFeed(onDeliver: { entered.signal(); release.wait() }).watch(sessionId: "s1")
+        try commandWrites(report, to: file)
+        XCTAssertEqual(entered.wait(timeout: .now() + 3), .success)
+
+        try FileManager.default.removeItem(at: directory)
+        release.signal()
+        release.signal()
+
+        XCTAssertTrue(waitUntil { logged.all.count == 1 })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        try commandWrites(shorterReport, to: file)
+        XCTAssertTrue(waitUntil { delivered.all.count == 2 })
+    }
+
+    /// A file that cannot be made again is said, not swallowed. The feed is held inside a delivery
+    /// while the folder is taken away, so it finds the folder gone when it looks.
+    func testAFileThatCannotBeMadeAgainIsLoggedAndTheSessionIsNoLongerHeard() throws {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let file = try makeFeed(onDeliver: { entered.signal(); release.wait() }).watch(sessionId: "s1")
+        try commandWrites(report, to: file)
+        XCTAssertEqual(entered.wait(timeout: .now() + 3), .success)
+
+        try FileManager.default.removeItem(at: directory)
+        try Data().write(to: directory)   // a file where the folder must go
+        release.signal()
+
+        XCTAssertTrue(waitUntil { logged.all.count == 1 })
+        XCTAssertTrue(logged.all.first?.contains("\(file.path) was removed or replaced and could not be watched again") == true, "\(logged.all)")
     }
 
     func testWatchingASessionAgainStartsItsFileEmpty() throws {
@@ -309,6 +397,24 @@ final class StatusLineFeedTests: XCTestCase {
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertTrue(logged.all.isEmpty, "\(logged.all)")
+    }
+
+    /// A second linkC (a dev build beside the installed one) shares the folder: its startup sweep
+    /// must not take the first one's files, only ones nobody holds.
+    func testASweepLeavesTheFilesOfAFeedThatIsStillRunning() throws {
+        let running = makeFeed()
+        let file = try running.watch(sessionId: "s1")
+        let orphan = directory.appendingPathComponent("orphan.line")
+        try Data("x\n".utf8).write(to: orphan)
+        let second = StatusLineFeed(directory: directory, deliver: { _, _ in }, log: { [logged] in logged!.record($0) })
+
+        second.sweep()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path), "a file nobody holds is swept")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "a file a running feed holds is not")
+        try commandWrites(report, to: file)
+        XCTAssertTrue(waitUntil { delivered.all.count == 1 }, "the running feed still hears its session")
         XCTAssertTrue(logged.all.isEmpty, "\(logged.all)")
     }
 

@@ -28,6 +28,8 @@ public final class StatusLineFeed: @unchecked Sendable {
         }
     }
 
+    private static let fileExtension = "line"
+
     private let directory: URL
     private let deliver: Deliver
     private let now: @Sendable () -> Date
@@ -70,7 +72,7 @@ public final class StatusLineFeed: @unchecked Sendable {
 
     /// Where `sessionId`'s status file is, or would be: the path its status-line command is given.
     public func fileURL(sessionId: String) -> URL {
-        directory.appendingPathComponent("\(sessionId).line")
+        directory.appendingPathComponent("\(sessionId).\(Self.fileExtension)")
     }
 
     /// Creates `sessionId`'s status file empty, private to the user, and watches it before this
@@ -79,27 +81,8 @@ public final class StatusLineFeed: @unchecked Sendable {
     @discardableResult
     public func watch(sessionId: String) throws -> URL {
         try queue.sync {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = fileURL(sessionId: sessionId)
             stopWatching(sessionId)
-            guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
-                throw LinkCError.server("could not create the status line file \(url.path)")
-            }
-            let descriptor = open(url.path, O_EVTONLY)
-            guard descriptor != -1 else {
-                throw LinkCError.server("could not watch \(url.path): \(String(cString: strerror(errno)))")
-            }
-            let source = DispatchSource.makeFileSystemObjectSource(
-                fileDescriptor: descriptor, eventMask: [.write, .extend, .delete, .rename], queue: queue)
-            let watch = Watch(url: url, source: source)
-            source.setEventHandler { [weak self, weak source] in
-                guard let self, let source else { return }
-                changed(sessionId, watch, source.data)
-            }
-            source.setCancelHandler { close(descriptor) }
-            watches[sessionId] = watch
-            source.resume()
-            return url
+            return try arm(sessionId, keepingContent: false).url
         }
     }
 
@@ -111,15 +94,20 @@ public final class StatusLineFeed: @unchecked Sendable {
         }
     }
 
-    /// Stops watching every session and removes every file in the folder, including ones a
-    /// crashed run left behind. Run before any session is live.
+    /// Stops watching every session and removes their files, and any file no running feed holds:
+    /// one a crashed run left behind. The folder is shared with every other linkC that runs (a dev
+    /// build beside the installed app), so a file another running feed watches is left alone.
     public func sweep() {
         queue.sync {
-            for id in Array(watches.keys) { stopWatching(id) }
+            for id in Array(watches.keys) {
+                stopWatching(id)
+                remove(fileURL(sessionId: id))
+            }
             guard FileManager.default.fileExists(atPath: directory.path) else { return }
             do {
-                for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
-                    remove(file)
+                for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                where file.pathExtension == Self.fileExtension {
+                    removeUnlessHeld(file)
                 }
             } catch {
                 log("could not list the status line folder \(directory.path) — \(error)")
@@ -129,8 +117,57 @@ public final class StatusLineFeed: @unchecked Sendable {
 
     // MARK: - Confined to `queue`
 
+    /// Makes the folder and `sessionId`'s file when they are missing, the file private to the user,
+    /// and starts watching it. The watch descriptor also holds a shared lock on the file: that is
+    /// how `sweep` in another process tells a live file from a leftover, and the system drops the
+    /// lock when this process ends, however it ends.
+    /// A file already there keeps what it holds when `keepingContent`, and is emptied otherwise.
+    private func arm(_ sessionId: String, keepingContent: Bool) throws -> Watch {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = fileURL(sessionId: sessionId)
+        if keepingContent && FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } else if !FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) {
+            throw LinkCError.server("could not create the status line file \(url.path)")
+        }
+        let descriptor = open(url.path, O_EVTONLY)
+        guard descriptor != -1 else {
+            throw LinkCError.server("could not watch \(url.path): \(String(cString: strerror(errno)))")
+        }
+        guard flock(descriptor, LOCK_SH | LOCK_NB) == 0 else {
+            let message = String(cString: strerror(errno))
+            close(descriptor)
+            throw LinkCError.server("could not lock \(url.path): \(message)")
+        }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor, eventMask: [.write, .extend, .delete, .rename], queue: queue)
+        let watch = Watch(url: url, source: source)
+        source.setEventHandler { [weak self, weak source] in
+            guard let self, let source else { return }
+            changed(sessionId, watch, source.data)
+        }
+        source.setCancelHandler { close(descriptor) }
+        watches[sessionId] = watch
+        source.resume()
+        return watch
+    }
+
     private func stopWatching(_ sessionId: String) {
         watches.removeValue(forKey: sessionId)?.source.cancel()
+    }
+
+    private func removeUnlessHeld(_ url: URL) {
+        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
+        guard descriptor != -1 else {
+            if errno != ENOENT { log("could not open the status line file \(url.path): \(String(cString: strerror(errno)))") }
+            return
+        }
+        defer { close(descriptor) }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            if errno != EWOULDBLOCK { log("could not lock the status line file \(url.path): \(String(cString: strerror(errno)))") }
+            return
+        }
+        remove(url)
     }
 
     private func remove(_ url: URL) {
@@ -146,8 +183,7 @@ public final class StatusLineFeed: @unchecked Sendable {
     private func changed(_ sessionId: String, _ watch: Watch, _ event: DispatchSource.FileSystemEvent) {
         guard watches[sessionId] === watch else { return }
         if event.contains(.delete) || event.contains(.rename) {
-            stopWatching(sessionId)
-            log("the status line file \(watch.url.path) was removed or replaced — this session's usage is no longer heard")
+            rearm(sessionId, watch)
             return
         }
         watch.epoch += 1
@@ -155,7 +191,24 @@ public final class StatusLineFeed: @unchecked Sendable {
         check(sessionId, watch)
     }
 
-    private func check(_ sessionId: String, _ watch: Watch) {
+    /// The file this watch holds was removed or moved. The command's `>` makes its file again the
+    /// next time it runs, at the same path and open to other users, and nothing would be watching
+    /// it: make the file (or take the one that is there) and watch that. A report the command
+    /// already wrote into it is read now, since it raised its event before anyone was watching.
+    private func rearm(_ sessionId: String, _ old: Watch) {
+        stopWatching(sessionId)
+        let watch: Watch
+        do {
+            watch = try arm(sessionId, keepingContent: true)
+        } catch {
+            log("the status line file \(old.url.path) was removed or replaced and could not be watched again — this session's usage is no longer heard: \(error)")
+            return
+        }
+        log("the status line file \(old.url.path) was removed or replaced — watching the file now at that path")
+        check(sessionId, watch, mayBeEmpty: true)
+    }
+
+    private func check(_ sessionId: String, _ watch: Watch, mayBeEmpty: Bool = false) {
         guard watches[sessionId] === watch else { return }
         switch read(watch.url, now()) {
         case .report(let body, let reading):
@@ -163,6 +216,7 @@ public final class StatusLineFeed: @unchecked Sendable {
             watch.lastFailure = nil
             if let reading { deliver(body, reading) }
         case .empty:
+            guard !mayBeEmpty else { return }
             readAgainOrFail(sessionId, watch, "the status line file \(watch.url.path) was emptied and nothing was written into it")
         case .torn:
             readAgainOrFail(sessionId, watch, "the status line file \(watch.url.path) still ends mid-line after \(maxRetries) more reads")
