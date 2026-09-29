@@ -790,8 +790,11 @@ extension AppCoordinator {
     /// Detects a provider limit in `sessionId`'s recent output (the one place terminal text is read,
     /// and only for pattern matching). Records the cooldown, tells the delegator via a `.notice`,
     /// cancels the current task, and creates a hop+1 copy for the best available peer (max 2 hops).
+    ///
+    /// `screen` is the caller's read of the session's screen, for a sweep that has already taken
+    /// one; without it the screen is read here.
     @discardableResult
-    public func checkLimitsAndReroute(for sessionId: String) -> Bool {
+    public func checkLimitsAndReroute(for sessionId: String, screen: ScreenSnapshot? = nil) -> Bool {
         guard let session = store.session(id: sessionId) else { return false }
         guard session.agentKind != .shell, session.state != .ended else { return false }
         // A session already tripped by a previous reroute or breaker is left alone: its buffer
@@ -799,7 +802,7 @@ extension AppCoordinator {
         guard session.state != .error else { return false }
 
         let norm = session.cwd
-        let recentOutput = terminals.session(id: sessionId)?.recentOutput(lines: 50) ?? ""
+        let recentOutput = (screen ?? terminals.session(id: sessionId)?.screenSnapshot() ?? .none).recentOutput(lines: 50)
         // Everything linkC has typed into this session is excluded: a brief or notice can quote a
         // limit phrase, and the CLI echoing that back is not the agent hitting a limit. Suppressed
         // by content, once per injected entry, with no time bound and no framing requirement — an

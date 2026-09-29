@@ -121,7 +121,9 @@ public final class AppCoordinator {
     /// Per session: the last screen signature seen and when it last changed — the watchdog's
     /// "gone quiet" clock. In memory only, so the clock restarts after a relaunch. Stored here
     /// rather than in the watchdog extension because extensions cannot hold stored properties.
-    private var screenSignatures: [String: (signature: String, since: Date)] = [:]
+    /// `fingerprint` is the rows the signature was worked out from: a screen with the same
+    /// fingerprint has the same signature, so it is not worked out again.
+    private var screenSignatures: [String: (fingerprint: Int, signature: String, since: Date)] = [:]
     /// Notices already reported to the user as undeliverable, by message id, keyed by workspace.
     /// Also in memory: a notice still stuck after a relaunch is worth one more mention. Pruned by
     /// `dispatchMessages` to the ids still `.queued` in that workspace's inbox, so a notice that
@@ -848,14 +850,19 @@ public final class AppCoordinator {
                     .heartbeat(agentKind: session.agentKind, pid: term.processId, timeout: 0.5)
             }
 
-            // The watchdog's progress signal, taken from the same once-a-second row read.
-            let signature = term.screenSignature()
-            if screenSignatures[session.id]?.signature != signature {
-                screenSignatures[session.id] = (signature, now())
+            // One read of the screen serves every check below.
+            let screen = term.screenSnapshot()
+
+            // The watchdog's progress signal. An unchanged screen has an unchanged signature.
+            let previous = screenSignatures[session.id]
+            if previous?.fingerprint != screen.fingerprint {
+                let signature = screen.progressSignature()
+                let since = previous?.signature == signature ? previous?.since : nil
+                screenSignatures[session.id] = (screen.fingerprint, signature, since ?? now())
             }
 
             // Inspect terminal output for provider rate limits & auto-reroute
-            checkLimitsAndReroute(for: session.id)
+            checkLimitsAndReroute(for: session.id, screen: screen)
 
             // `.error` here means checkLimitsAndReroute found no capable peer (or none at all)
             // for this agent's last limit — not that the session itself is broken. Its own
@@ -888,7 +895,7 @@ public final class AppCoordinator {
 
             // A folder-trust dialog has no spinner, so it read as an idle session and the relay
             // typed briefs into it. Hold the session as needing the user until it is answered.
-            if term.showsTrustPrompt() {
+            if screen.showsTrustPrompt() {
                 if currentSession.state != .waitingPermission {
                     store.updateState(id: session.id, to: .waitingPermission)
                     let updated = store.session(id: session.id) ?? currentSession
@@ -908,7 +915,7 @@ public final class AppCoordinator {
                 store.updateState(id: session.id, to: .ready)
             }
 
-            let liveActivity = term.liveActivityLine()
+            let liveActivity = screen.liveActivity()
             let isWorking = liveActivity != nil && !liveActivity!.isEmpty
 
             if isWorking {
@@ -944,7 +951,7 @@ public final class AppCoordinator {
                     // A turn read as ended while a task is open is either the agent stopping short or
                     // the screen read being wrong; the rows it was read from tell which.
                     NSLog("[linkC relay] %@ read as done with a task open; its last rows:\n%@",
-                          session.agentKind.displayName, term.recentScreenRows(12).joined(separator: "\n"))
+                          session.agentKind.displayName, screen.recentRows(12).joined(separator: "\n"))
                 }
             }
         }
