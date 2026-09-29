@@ -982,9 +982,10 @@ final class AppModel {
         appProcesses = [:]
         healthTimer?.invalidate()
         healthTimer = nil
-        // Terminals are only sampled while the panel is open, so one that changed folder since then
-        // would be remembered where it was. Take the last look before the snapshot below.
+        // Terminals are only sampled while the panel is open, so one that changed folder or agent
+        // since then would be remembered as it was. Take the last look before the snapshot below.
         shells?.sampleDirectories()
+        shells?.sampleAgents()
         // Boards, sessions and shells all flush together — a quit within the Board's 600 ms
         // settle must not lose the edit, and the restore keys must not go stale. Safe to run
         // again on top of `applicationDidResignActive`'s own flush: every part of it is a
