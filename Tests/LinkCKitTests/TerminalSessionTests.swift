@@ -264,6 +264,32 @@ extension TerminalSessionTests {
                        "the mode change must not land inside the sequence the held escape begins")
     }
 
+    /// Any control sequence a hidden chunk ends inside is held, not only one that could still be a
+    /// toggle: the mode restored on reattach must never land inside it.
+    func testAnUnfinishedControlSequenceHeldAtReattachCompletesUntouched() {
+        let (view, window) = terminalView(in: .hidden)
+        let terminal = view.getTerminal()
+        view.dataReceived(slice: bytes("\u{1b}[?2026habc\u{1b}[3"))
+
+        setPresence(.shown, of: window)
+        view.dataReceived(slice: bytes("1mred"))
+
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "abcred",
+                       "the mode change must not land inside the colour sequence the hidden chunk ended in")
+    }
+
+    /// The same for a sequence that starts like a toggle and runs on past it (`ESC [ ? 20263`).
+    func testAnUnfinishedSequenceThatOutgrowsATogglePrefixIsHeldToo() {
+        let (view, window) = terminalView(in: .hidden)
+        let terminal = view.getTerminal()
+        view.dataReceived(slice: bytes("\u{1b}[?2026habc\u{1b}[?20263"))
+
+        setPresence(.shown, of: window)
+        view.dataReceived(slice: bytes("hxyz"))
+
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "abcxyz")
+    }
+
     func testAPartialToggleHeldAtReattachCompletesAsAnotherMode() {
         let (view, window) = terminalView(in: .hidden)
         let terminal = view.getTerminal()

@@ -14,8 +14,9 @@ struct SynchronizedOutputFilter {
     /// The mode the stream last set — the mode SwiftTerm would be in had it seen every toggle.
     /// Seeded from SwiftTerm's own mode when a hidden stretch begins.
     var active = false
-    /// The tail of a chunk that could still become a toggle, held back until the next chunk shows
-    /// whether it does.
+    /// The tail of a chunk that could still become a toggle, or that ends inside any other control
+    /// sequence, held back until the next chunk. Holding the second kind too means the mode restored
+    /// on reattach never lands inside a sequence SwiftTerm's parser is still reading.
     private(set) var carry: [UInt8] = []
 
     /// `ESC [ ? 2026`: what a start and an end toggle have in common; the byte after it tells them apart.
@@ -23,6 +24,8 @@ struct SynchronizedOutputFilter {
     private static let startByte = UInt8(ascii: "h")
     private static let endByte = UInt8(ascii: "l")
     private static let toggleLength = introducer.count + 1
+    /// The longest unfinished control sequence held back; anything longer passes through as it is.
+    private static let longestHeldSequence = 64
 
     private enum Match { case start, end, partial, other }
 
@@ -75,16 +78,26 @@ struct SynchronizedOutputFilter {
     }
 
     /// What the `remaining` bytes from an ESC on begin with: a whole toggle, the first part of one
-    /// (`partial`: the chunk ended too soon to tell), or something else.
+    /// or of any control sequence the chunk ends inside (`partial`), or something else.
     private static func match(_ escape: UnsafePointer<UInt8>, remaining: Int, introducer: [UInt8]) -> Match {
         for offset in 1..<min(remaining, introducer.count) where escape[offset] != introducer[offset] {
-            return .other
+            return endsInsideAControlSequence(escape, remaining: remaining) ? .partial : .other
         }
         guard remaining > introducer.count else { return .partial }
         switch escape[introducer.count] {
         case startByte: return .start
         case endByte: return .end
-        default: return .other
+        default: return endsInsideAControlSequence(escape, remaining: remaining) ? .partial : .other
         }
+    }
+
+    /// Whether the bytes from an ESC to the end of the chunk are a control sequence (`ESC [`) still
+    /// waiting for its final byte: only parameter and intermediate bytes (0x20–0x3F) after the `[`.
+    private static func endsInsideAControlSequence(_ escape: UnsafePointer<UInt8>, remaining: Int) -> Bool {
+        guard remaining >= 2, remaining <= longestHeldSequence, escape[1] == UInt8(ascii: "[") else { return false }
+        for offset in 2..<remaining where !(0x20...0x3F).contains(escape[offset]) {
+            return false
+        }
+        return true
     }
 }
