@@ -377,4 +377,24 @@ private final class ProcessDelegate: NSObject, LocalProcessTerminalViewDelegate 
 }
 
 /// The terminal view `TerminalSession` hosts.
-public final class LinkCTerminalView: LocalProcessTerminalView {}
+public final class LinkCTerminalView: LocalProcessTerminalView {
+    private var hasDetachedUpdates = false
+
+    public override func dataReceived(slice: ArraySlice<UInt8>) {
+        guard window == nil else {
+            super.dataReceived(slice: slice)
+            return
+        }
+        getTerminal().feed(buffer: slice)
+        hasDetachedUpdates = true
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, hasDetachedUpdates else { return }
+        hasDetachedUpdates = false
+        getTerminal().updateFullScreen()
+        setNeedsDisplay(bounds)
+        super.dataReceived(slice: ArraySlice<UInt8>())
+    }
+}

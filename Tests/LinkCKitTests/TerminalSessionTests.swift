@@ -1,8 +1,84 @@
+import AppKit
+import SwiftTerm
 import XCTest
 @testable import LinkCKit
 
+private final class TerminalTitleRecorder: NSObject, LocalProcessTerminalViewDelegate {
+    var title: String?
+
+    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+    func setTerminalTitle(source: LocalProcessTerminalView, title: String) { self.title = title }
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func processTerminated(source: TerminalView, exitCode: Int32?) {}
+}
+
 @MainActor
 extension TerminalSessionTests {
+
+    func testDetachedFeedUpdatesModelWithoutSchedulingDisplayWork() {
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        let titleRecorder = TerminalTitleRecorder()
+        view.processDelegate = titleRecorder
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        view.needsDisplay = false
+        view.getTerminal().clearUpdateRange()
+
+        let output = "\u{1b}]0;detached title\u{7}alpha\r\nbeta\u{1b}[?2004h"
+        view.dataReceived(slice: Array(output.utf8)[...])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        let terminal = view.getTerminal()
+        XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "alpha")
+        XCTAssertEqual(terminal.getLine(row: 1)?.translateToString(trimRight: true), "beta")
+        XCTAssertEqual(terminal.getCursorLocation().y, 1)
+        XCTAssertTrue(terminal.bracketedPasteMode)
+        XCTAssertEqual(titleRecorder.title, "detached title")
+        XCTAssertNotNil(terminal.getUpdateRange(),
+                        "detached output must remain dirty until attachment, not be consumed by updateDisplay")
+    }
+
+    func testDetachedFeedRequestsFullDisplayWhenReattached() {
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        view.needsDisplay = false
+        view.getTerminal().clearUpdateRange()
+        view.dataReceived(slice: Array("reattached content".utf8)[...])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertNotNil(view.getTerminal().getUpdateRange())
+
+        let host = TerminalHostView(frame: view.bounds)
+        let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        host.show(view)
+
+        XCTAssertTrue(view.needsDisplay, "reattaching after background output must invalidate the full terminal")
+        XCTAssertEqual(view.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "reattached content")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertNil(view.getTerminal().getUpdateRange(), "attachment must consume the accumulated dirty rows")
+    }
+
+    func testDetachedFeedUsesLessCPUThanTheInheritedDisplayPath() {
+        let detached = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        let inherited = LocalProcessTerminalView(frame: detached.frame)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let chunk = Array((0..<8).map { "\u{1b}[32mstreamed line \($0)\u{1b}[0m\r\n" }.joined().utf8)[...]
+
+        let before = ThreadCPUTime.elapsed {
+            for _ in 0..<50 {
+                inherited.dataReceived(slice: chunk)
+                RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            }
+        }
+        let after = ThreadCPUTime.elapsed {
+            for _ in 0..<50 {
+                detached.dataReceived(slice: chunk)
+                RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            }
+        }
+
+        print(String(format: "Detached terminal feed CPU: before %.6fs, after %.6fs", before, after))
+        XCTAssertLessThan(after, before)
+    }
 
     func testAOneLineMessageWaitsForTheSettleThenSubmitsOnce() {
         XCTAssertEqual(TerminalSession.inputPlan(for: "[linkC task X] done (unverified)\n", negotiatedPaste: true),
