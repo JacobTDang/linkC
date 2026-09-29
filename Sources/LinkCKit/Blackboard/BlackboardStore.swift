@@ -6,8 +6,17 @@ import Darwin
 public final class BlackboardStore: Sendable {
     public let workspaceRoot: String
 
+    /// The clock `heartbeat` measures its refresh and prune ages against. Only tests replace it.
+    private let clock: @Sendable () -> Date
+
     public init(workspaceRoot: String) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
+        self.clock = Date.init
+    }
+
+    init(workspaceRoot: String, now: @escaping @Sendable () -> Date) {
+        self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
+        self.clock = now
     }
 
     private var linkcDirectory: URL {
@@ -109,7 +118,10 @@ public final class BlackboardStore: Sendable {
     }
 
     /// Saves the blackboard atomically via a temporary file without locking. Internal use inside locked regions.
-    private func saveUnlocked(_ board: Blackboard) throws {
+    /// Forgets every heartbeat schedule for this file (see `HeartbeatSchedule`) unless the save is
+    /// a heartbeat's own, which reschedules the pid it is for.
+    private func saveUnlocked(_ board: Blackboard, ownHeartbeat: Bool = false) throws {
+        if !ownHeartbeat { HeartbeatSchedule.shared.forget(path: blackboardURL.path) }
         try ensureDirectoryExists()
         let data = try encoder.encode(board)
         let tmpURL = linkcDirectory.appendingPathComponent("blackboard.tmp.\(UUID().uuidString)")
@@ -162,7 +174,7 @@ public final class BlackboardStore: Sendable {
     ) throws -> [CollisionWarning] {
         try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
-            pruneStaleUnlocked(&board, olderThan: 900) // 15 min
+            pruneStaleUnlocked(&board, olderThan: Self.staleAgentAge)
 
             let normalizedClaimed = files.map { ($0 as NSString).standardizingPath }
 
@@ -225,7 +237,7 @@ public final class BlackboardStore: Sendable {
     public func checkConflicts(files: [String], excludingPid: pid_t? = nil, timeout: TimeInterval = 5.0) throws -> [CollisionWarning] {
         try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
-            pruneStaleUnlocked(&board, olderThan: 900)
+            pruneStaleUnlocked(&board, olderThan: Self.staleAgentAge)
 
             let normalized = files.map { ($0 as NSString).standardizingPath }
             var warnings: [CollisionWarning] = []
@@ -289,7 +301,7 @@ public final class BlackboardStore: Sendable {
         try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
             let beforeCount = board.activeAgents.count
-            pruneStaleUnlocked(&board, olderThan: 900)
+            pruneStaleUnlocked(&board, olderThan: Self.staleAgentAge)
             if board.activeAgents.count != beforeCount {
                 try saveUnlocked(board)
             }
@@ -297,20 +309,33 @@ public final class BlackboardStore: Sendable {
         }
     }
 
-    /// Refreshes presence for `pid`. Inserts an idle record when none exists; never overwrites
-    /// an existing goal or claimed files.
+    /// How long an agent record may go without a beat before any call that reads the board prunes it.
+    public static let staleAgentAge: TimeInterval = 15 * 60
+
     /// How stale a record must be before a heartbeat rewrites it. Presence only has to outlive the
     /// 15-minute prune, and rewriting the board on every heartbeat — once a second per agent plus
     /// once per MCP call — showed every agent that had read the file a diff on each edit.
     public static let heartbeatRefreshInterval: TimeInterval = 5 * 60
 
+    /// Refreshes presence for `pid`. Inserts an idle record when none exists; never overwrites
+    /// an existing goal or claimed files.
+    ///
+    /// Touches the file only when something is due, which `HeartbeatSchedule` remembers in memory:
+    /// this pid has no record yet, its record has gone `heartbeatRefreshInterval` without a beat,
+    /// or another agent's record is about to pass `staleAgentAge`. A record another process adds
+    /// later is fresh when added, so it cannot go stale before this pid's own refresh reads the
+    /// board again. A due heartbeat still reads and writes under the lock, so it builds on what
+    /// other processes wrote. One consequence: a record deleted from outside is re-inserted at the
+    /// next refresh, not the next second.
     public func heartbeat(agentKind: AgentKind, pid: pid_t, timeout: TimeInterval = 5.0) throws {
+        let path = blackboardURL.path
+        guard HeartbeatSchedule.shared.isDue(path: path, pid: pid, now: clock()) else { return }
         try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
+            let now = clock()
             let countBeforePrune = board.activeAgents.count
-            pruneStaleUnlocked(&board, olderThan: 900)
+            pruneStaleUnlocked(&board, olderThan: Self.staleAgentAge, now: now)
             var changed = board.activeAgents.count != countBeforePrune
-            let now = Date()
             if let idx = board.activeAgents.firstIndex(where: { $0.pid == pid }) {
                 if now.timeIntervalSince(board.activeAgents[idx].lastHeartbeat) >= Self.heartbeatRefreshInterval {
                     board.activeAgents[idx].lastHeartbeat = now
@@ -330,14 +355,25 @@ public final class BlackboardStore: Sendable {
                 )
                 changed = true
             }
-            guard changed else { return }
-            board.updatedAt = now
-            try saveUnlocked(board)
+            if changed {
+                board.updatedAt = now
+                try saveUnlocked(board, ownHeartbeat: true)
+            }
+            HeartbeatSchedule.shared.schedule(path: path, pid: pid, due: nextHeartbeatDue(in: board, for: pid))
+        }
+    }
+
+    /// The earliest moment a heartbeat for `pid` has anything to do: its own record's refresh, or
+    /// the first other record to pass `staleAgentAge`.
+    private func nextHeartbeatDue(in board: Blackboard, for pid: pid_t) -> Date {
+        board.activeAgents.reduce(Date.distantFuture) { earliest, agent in
+            let interval = agent.pid == pid ? Self.heartbeatRefreshInterval : Self.staleAgentAge
+            return min(earliest, agent.lastHeartbeat.addingTimeInterval(interval))
         }
     }
 
     /// Prunes agents whose lastHeartbeat exceeds the threshold.
-    public func pruneStale(olderThan: TimeInterval = 900, timeout: TimeInterval = 5.0) throws {
+    public func pruneStale(olderThan: TimeInterval = BlackboardStore.staleAgentAge, timeout: TimeInterval = 5.0) throws {
         try withFileLock(timeout: timeout) {
             var board = try loadUnlocked()
             pruneStaleUnlocked(&board, olderThan: olderThan)
@@ -345,8 +381,7 @@ public final class BlackboardStore: Sendable {
         }
     }
 
-    private func pruneStaleUnlocked(_ board: inout Blackboard, olderThan: TimeInterval) {
-        let now = Date()
+    private func pruneStaleUnlocked(_ board: inout Blackboard, olderThan: TimeInterval, now: Date = Date()) {
         board.activeAgents.removeAll { now.timeIntervalSince($0.lastHeartbeat) > olderThan }
     }
 }
