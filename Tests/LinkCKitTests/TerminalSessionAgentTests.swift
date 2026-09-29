@@ -3,6 +3,60 @@ import XCTest
 
 @MainActor
 final class TerminalSessionAgentTests: XCTestCase {
+    /// A running terminal whose foreground group reads answer from `reads` in order (nil is a
+    /// refusal), and the lines it logged.
+    private final class ForegroundReads {
+        var reads: [pid_t?]
+        var logged: [String] = []
+        init(_ reads: [pid_t?]) { self.reads = reads }
+    }
+
+    private func runningSession(reading script: ForegroundReads) throws -> TerminalSession {
+        let session = TerminalSession(id: "fg", cwd: "/tmp", title: "fg", agentKind: .codex)
+        try session.start(executable: "/bin/cat", args: [], env: [:])
+        session.agentProbe = AgentProbe(
+            inTree: { _ in nil },
+            atOrUnder: { _ in nil },
+            foregroundGroup: { _ in script.reads.removeFirst() },
+            now: Date.init
+        )
+        session.log = { script.logged.append($0) }
+        return session
+    }
+
+    func testAnUnreadableForegroundGroupIsNotLoggedUntilItPersists() throws {
+        let script = ForegroundReads([nil, nil])
+        let session = try runningSession(reading: script)
+        defer { session.terminate() }
+
+        for _ in 0..<2 { session.sampleForegroundAgent() }
+
+        XCTAssertTrue(script.logged.isEmpty, "the first reads after a spawn can fail before the terminal has a foreground group")
+    }
+
+    func testAPersistingUnreadableForegroundGroupIsLoggedOncePerStreak() throws {
+        let script = ForegroundReads([nil, nil, nil, nil, nil, 42, nil, nil, nil])
+        let session = try runningSession(reading: script)
+        defer { session.terminate() }
+
+        for _ in 0..<5 { session.sampleForegroundAgent() }
+        XCTAssertEqual(script.logged.count, 1, "logged when the streak reached three, not on every read after")
+        XCTAssertTrue(script.logged[0].contains("fg"), "names the session")
+
+        for _ in 0..<4 { session.sampleForegroundAgent() }
+        XCTAssertEqual(script.logged.count, 2, "a later failure after a good read is a new streak, and is reported")
+    }
+
+    func testAReadableForegroundGroupBreaksTheStreak() throws {
+        let script = ForegroundReads([nil, nil, 42, nil, nil, 42, nil, nil])
+        let session = try runningSession(reading: script)
+        defer { session.terminate() }
+
+        for _ in 0..<8 { session.sampleForegroundAgent() }
+
+        XCTAssertTrue(script.logged.isEmpty, "no three unreadable reads in a row")
+    }
+
     func testTerminalSessionAgentKindInit() {
         let defaultSession = TerminalSession(id: "s1", cwd: "/tmp", title: "Test")
         XCTAssertEqual(defaultSession.agentKind, .shell)

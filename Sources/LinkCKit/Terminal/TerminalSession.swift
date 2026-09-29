@@ -90,15 +90,23 @@ public final class TerminalSession {
     /// The system probes agent detection uses; a test substitutes counting fakes.
     var agentProbe = AgentProbe.live
     private var foregroundAgent = ForegroundAgentSampler()
-    private var loggedForegroundFailure = false
+    /// Where the session reports a failure it carries on through; a test collects the lines.
+    var log: (String) -> Void = { NSLog("%@", $0) }
+    private var unreadableForegroundReads = 0
+    /// The reads in a row that have to fail before it is worth a log line: a terminal that was
+    /// only just spawned answers nothing until its child has a controlling tty.
+    static let unreadableForegroundReadsBeforeLog = 3
 
     /// The terminal's foreground process group, nil when it cannot be read.
     private func foregroundGroup() -> pid_t? {
         guard isRunning else { return nil }
-        if let group = agentProbe.foregroundGroup(childPid) { return group }
-        if !loggedForegroundFailure {
-            loggedForegroundFailure = true
-            NSLog("linkC: session %@ could not read its terminal's foreground process group; agent detection falls back to a timer", id)
+        if let group = agentProbe.foregroundGroup(childPid) {
+            unreadableForegroundReads = 0
+            return group
+        }
+        unreadableForegroundReads += 1
+        if unreadableForegroundReads == Self.unreadableForegroundReadsBeforeLog {
+            log("linkC: session \(id) could not read its terminal's foreground process group \(unreadableForegroundReads) times in a row; agent detection re-checks on a timer until it can")
         }
         return nil
     }
