@@ -1,8 +1,8 @@
 import Foundation
 import LinkCKit
 
-/// The sidebar's live inputs. Reads only — the writers are `sampleSidebar()` (once a second,
-/// from the shell sweep, and as the panel shows) and `markOnScreenSeen()` (just before the
+/// The sidebar's live inputs. Reads only — the writers are `sampleSidebar()` (once a second while
+/// the panel is visible, from the coordinator's sweep, and once as it opens) and `markOnScreenSeen()` (just before the
 /// selection, the open screen, or the panel's visibility changes) — never a view body.
 extension AppModel {
     /// The session whose terminal is actually on screen: selected, no screen layered over it,
@@ -119,10 +119,10 @@ extension AppModel {
         return (rows > 0 || supabaseNeedsLogin || !cloudErrors.isEmpty) ? rows : nil
     }
 
-    /// Once a second, and as the panel shows: forget ended sessions, mark what is on screen as
-    /// seen, keep the project order, expand projects that just turned coral, and publish the
-    /// sidebar's non-observable inputs. The sidebar re-renders on the publish only when one of
-    /// them changed — a quiet second re-renders nothing.
+    /// Once a second while the panel is visible, and once as it opens: forget ended sessions, mark
+    /// what is on screen as seen, keep the project order, expand projects that just turned coral,
+    /// and publish the sidebar's non-observable inputs. The sidebar re-renders on the publish only
+    /// when one of them changed — a quiet second re-renders nothing.
     func sampleSidebar() {
         let now = Date()
         attention.retain(only: Set(sessions.map(\.id)))
@@ -149,7 +149,7 @@ extension AppModel {
         sidebarState.noteCoral(Set(sessions.filter { rowStatus($0, now: now).isCoral }.map(\.cwd)))
     }
 
-    /// Mark the on-screen session seen. Runs once a second from the sweep, and just before the
+    /// Mark the on-screen session seen. Runs with `sampleSidebar()`, and just before the
     /// selection, the open screen, or the panel's visibility changes, so a turn that finished
     /// while the user watched never reads as unseen afterwards.
     func markOnScreenSeen(at now: Date = Date()) {

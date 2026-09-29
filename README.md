@@ -180,9 +180,9 @@ is active, and that session's tab is selected. Click a notification to jump to i
 | Agent | Command | How linkC knows the session state |
 |---|---|---|
 | Claude Code | `claude` | Hooks push each event to a local HTTP server inside linkC. |
-| Codex | `codex` | linkC reads the terminal screen once a second. |
-| Antigravity | `agy` | linkC reads the terminal screen once a second. |
-| Cursor Agent | `cursor` | linkC reads the terminal screen once a second. |
+| Codex | `codex` | linkC reads the terminal screen every second while the panel is open or work is in flight, every five seconds otherwise. |
+| Antigravity | `agy` | linkC reads the terminal screen every second while the panel is open or work is in flight, every five seconds otherwise. |
+| Cursor Agent | `cursor` | linkC reads the terminal screen every second while the panel is open or work is in flight, every five seconds otherwise. |
 
 ## Requirements
 
