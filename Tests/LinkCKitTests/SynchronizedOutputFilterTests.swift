@@ -118,6 +118,35 @@ final class SynchronizedOutputFilterTests: XCTestCase {
                        "a taken partial is gone: the next chunk starts fresh")
     }
 
+    /// Text with no escape in it costs the filter one search and one copy, so it must stay within a
+    /// small multiple of a plain copy of the same bytes — measured in the same run, so a slower or
+    /// busier machine (or ThreadSanitizer) moves both.
+    func testFilteringPlainTextCostsAboutAsMuchAsCopyingIt() {
+        var text = ""
+        for line in 0..<6000 {
+            text += "streamed line number \(line) with plain words only\r\n"
+        }
+        let output = Array(text.utf8.prefix(128 * 1024))[...]
+        var filter = SynchronizedOutputFilter()
+        let passes = 50
+        var copied = 0
+
+        var filtering = TimeInterval.greatestFiniteMagnitude
+        var copying = TimeInterval.greatestFiniteMagnitude
+        for _ in 0..<5 {
+            filtering = min(filtering, ThreadCPUTime.elapsed {
+                for _ in 0..<passes { _ = filter.filter(output) }
+            })
+            copying = min(copying, ThreadCPUTime.elapsed {
+                for _ in 0..<passes { copied += output.withUnsafeBufferPointer { Array($0) }.count }
+            })
+        }
+
+        XCTAssertEqual(copied, 5 * passes * output.count)
+        XCTAssertLessThan(filtering, copying * 20,
+                          String(format: "filtering %d passes of 128 KB took %.6fs; copying them took %.6fs", passes, filtering, copying))
+    }
+
     /// Filtering must stay a small fraction of parsing the same bytes — measured in the same run on
     /// escape-dense output (the worst case for the filter), so a slower or busier machine moves both.
     @MainActor
