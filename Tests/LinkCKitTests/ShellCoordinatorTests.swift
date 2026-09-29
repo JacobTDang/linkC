@@ -233,6 +233,22 @@ final class ShellPersistenceTests: XCTestCase {
         XCTAssertTrue(ShellManifest(directory: dir).entries.isEmpty, "persisted")
     }
 
+    /// Waits until the shell process itself stands in `folder`. A child changes into its launch
+    /// folder after it is forked, and until then the kernel reports the folder of the process that
+    /// forked it, which a sample reads as a `cd`. A test that asserts no `cd` happened must first
+    /// wait for the shell to be where it was told to start — sampling right after `launch` races it.
+    private func waitUntilShellStands(
+        in folder: String, terminals: TerminalSessionManager, id: String
+    ) async throws {
+        let expected = try XCTUnwrap(ProcessSnooper.canonicalPath(folder))
+        for _ in 0..<250 {
+            if let session = terminals.session(id: id),
+               ProcessSnooper.currentDirectory(ofPid: session.processId) == expected { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail("the shell never reached \(folder)")
+    }
+
     func testAShellThatChangesFolderIsRenamedAndRememberedThere() async throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -257,7 +273,7 @@ final class ShellPersistenceTests: XCTestCase {
 
     /// `/tmp` is itself a symlink to `/private/tmp`, which the kernel always resolves — so a
     /// terminal launched at `/tmp` that never `cd`s must not appear to move on the first tick.
-    func testALaunchFolderThatNeverChangesStaysPut() throws {
+    func testALaunchFolderThatNeverChangesStaysPut() async throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let terminals = TerminalSessionManager()
@@ -265,6 +281,7 @@ final class ShellPersistenceTests: XCTestCase {
         let coordinator = ShellCoordinator(terminals: terminals, manifestDir: dir, shellPath: { "/bin/cat" })
 
         let row = try coordinator.launch(cwd: "/tmp")
+        try await waitUntilShellStands(in: "/tmp", terminals: terminals, id: row.id)
         for _ in 0..<5 { coordinator.sampleDirectories() }
 
         XCTAssertEqual(coordinator.store.row(id: row.id)?.cwd, "/tmp", "no cd happened")
@@ -275,7 +292,7 @@ final class ShellPersistenceTests: XCTestCase {
     /// A launch folder that is itself a symlink (e.g. `~/Desktop/projects` -> `~/Projects`) must
     /// not move the terminal on the first sample: the kernel reports the resolved target, but
     /// without a real `cd` the row should keep the symlink path it was launched with.
-    func testASymlinkedLaunchFolderDoesNotMoveTheTerminalWithoutACd() throws {
+    func testASymlinkedLaunchFolderDoesNotMoveTheTerminalWithoutACd() async throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let target = tempDir()
@@ -290,6 +307,7 @@ final class ShellPersistenceTests: XCTestCase {
         let coordinator = ShellCoordinator(terminals: terminals, manifestDir: dir, shellPath: { "/bin/cat" })
 
         let row = try coordinator.launch(cwd: link.path)
+        try await waitUntilShellStands(in: link.path, terminals: terminals, id: row.id)
         for _ in 0..<5 { coordinator.sampleDirectories() }
 
         XCTAssertEqual(coordinator.store.row(id: row.id)?.cwd, link.path, "a symlinked launch folder is not a cd")
