@@ -1,0 +1,31 @@
+name: Swift toolchain
+description: Report the toolchain a job builds with and restore its SwiftPM build cache.
+
+inputs:
+  cache-name:
+    description: Names the cache. Jobs that build with different flags keep separate caches.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Report the toolchain
+      id: toolchain
+      shell: bash
+      run: |
+        swift --version
+        xcodebuild -version
+        build="$(xcodebuild -version | awk '/Build version/ { print $3 }')"
+        test -n "$build"
+        echo "xcode-build=$build" >> "$GITHUB_OUTPUT"
+
+    # .build holds the compiled dependencies (SwiftTerm is most of a cold build). The key names
+    # the Xcode build and the resolved dependency versions, so a new toolchain or a bumped
+    # dependency starts from an empty cache instead of reusing stale objects.
+    - name: Restore the SwiftPM build cache
+      uses: actions/cache@v6
+      with:
+        path: .build
+        key: spm-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-xcode${{ steps.toolchain.outputs.xcode-build }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
+        restore-keys: |
+          spm-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-xcode${{ steps.toolchain.outputs.xcode-build }}-
