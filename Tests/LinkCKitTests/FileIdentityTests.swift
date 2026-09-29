@@ -53,6 +53,24 @@ final class FileIdentityTests: XCTestCase {
         XCTAssertNotEqual(try probedIdentity(file), read.identity, "the path now holds a different file")
     }
 
+    /// The identity must be taken BEFORE the bytes are read. An in-place rewrite at that moment
+    /// then leaves an identity older than the bytes, so the next probe differs and the cache reads
+    /// again; stat-ing after the read would stamp whatever bytes were read with the newer identity.
+    func testTheIdentityIsTakenBeforeTheBytesAreRead() throws {
+        try write("first", to: file)
+
+        let read = try XCTUnwrap(try FileIdentity.read(file, beforeReading: {
+            let handle = FileHandle(forWritingAtPath: self.file)!
+            handle.seekToEndOfFile()
+            handle.write(Data(" and more".utf8))
+            handle.closeFile()
+        }))
+
+        XCTAssertEqual(String(decoding: read.data, as: UTF8.self), "first and more")
+        XCTAssertNotEqual(read.identity, try probedIdentity(file),
+                          "an identity taken after the rewrite would match the probe and hide it")
+    }
+
     /// A cache hit compares a path probe against the identity a read returned, so the two must be
     /// built the same way.
     func testAReadAndAProbeAgreeOnAnUnchangedFile() throws {

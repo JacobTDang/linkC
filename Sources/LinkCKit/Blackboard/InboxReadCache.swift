@@ -56,7 +56,7 @@ struct FileIdentity: Equatable, Sendable {
     /// to open, stat or read is thrown.
     /// `beforeReading` runs between the two, so a test can change the path at exactly that moment.
     static func read(_ path: String, beforeReading: () -> Void = {}) throws -> Contents? {
-        let descriptor = open(path, O_RDONLY)
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC)
         guard descriptor >= 0 else {
             let failure = errno
             if failure == ENOENT || failure == ENOTDIR { return nil }

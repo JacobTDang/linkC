@@ -84,7 +84,7 @@ public final class InboxStore: Sendable {
     /// If `timeout <= 0`, blocks indefinitely.
     func withFileLock<T>(timeout: TimeInterval = 5.0, _ body: () throws -> T) throws -> T {
         try ensureDirectoryExists()
-        let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+        let fd = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard fd >= 0 else {
             throw LinkCError.server("Failed to open inbox lock file at \(lockURL.path)")
         }
