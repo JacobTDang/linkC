@@ -37,6 +37,12 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertNil(ProcessSnooper.parentPid(of: -1))
     }
 
+    func testTerminalForegroundGroupIsNilForAnInvalidOrGonePid() {
+        XCTAssertNil(ProcessSnooper.terminalForegroundGroup(of: -1))
+        XCTAssertNil(ProcessSnooper.terminalForegroundGroup(of: 0))
+        XCTAssertNil(ProcessSnooper.terminalForegroundGroup(of: pid_t(Int32.max)))
+    }
+
     func testStartTimeOfSelfIsReadableAndNilForAnInvalidPid() {
         let start = ProcessSnooper.startTime(of: getpid())
         XCTAssertNotNil(start)
