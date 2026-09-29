@@ -9,6 +9,9 @@ import Observation
 public final class TerminalSessionManager {
     public private(set) var sessions: [TerminalSession] = []
     public private(set) var selectedId: String?
+    /// Sessions disappear from `sessions` immediately when closed, but their SwiftTerm process
+    /// monitor must live through exit so it can waitpid the child rather than leave a zombie.
+    @ObservationIgnored private var terminatingSessions: [ObjectIdentifier: TerminalSession] = [:]
 
     /// Called just before `selectedId` changes, whatever changes it, while the old value is still
     /// readable — so the app can record what was on screen before it leaves.
@@ -56,7 +59,15 @@ public final class TerminalSessionManager {
     /// Kill `id`'s child process and drop the session. Selection falls back to the last
     /// remaining terminal (or nil). Idempotent.
     public func terminate(_ id: String) {
-        session(id: id)?.terminate()
+        guard let session = session(id: id) else { return }
+        if session.isRunning {
+            let key = ObjectIdentifier(session)
+            session.onProcessReaped = { [weak self] in
+                self?.terminatingSessions.removeValue(forKey: key)
+            }
+            terminatingSessions[key] = session
+        }
+        session.terminate()
         remove(id)
     }
 

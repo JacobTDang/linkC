@@ -20,6 +20,9 @@ public final class TerminalSession {
     /// Fired on the main actor when the child process exits — for ANY reason, including being
     /// killed by `terminate()`. Carries the exit code (nil when the exit was an IO error).
     public var onTerminated: ((Int32?) -> Void)?
+    /// Separate from the client's exit callback so the manager can keep this object — and
+    /// SwiftTerm's waitpid monitor — alive until the exit has actually been observed.
+    var onProcessReaped: (() -> Void)?
 
     /// Held strongly: `LocalProcessTerminalView.processDelegate` is a `weak` reference.
     private let processDelegate = ProcessDelegate()
@@ -391,6 +394,8 @@ public final class TerminalSession {
 
     private func handleTerminated(_ code: Int32?) {
         onTerminated?(code)
+        onProcessReaped?()
+        onProcessReaped = nil
     }
 
     /// Prepend Homebrew's bin dirs to `PATH` if absent, preserving everything else in order.
@@ -417,4 +422,87 @@ private final class ProcessDelegate: NSObject, LocalProcessTerminalViewDelegate 
 }
 
 /// The terminal view `TerminalSession` hosts.
-public final class LinkCTerminalView: LocalProcessTerminalView {}
+public final class LinkCTerminalView: LocalProcessTerminalView {
+    private var hasDetachedUpdates = false
+    private var synchronizedOutput = SynchronizedOutputFilter()
+    private weak var observedWindow: NSWindow?
+
+    public override func dataReceived(slice: ArraySlice<UInt8>) {
+        guard !isDisplayAttached else {
+            // Output that arrives before the visibility notice must still find what hidden output left behind.
+            redrawDetachedUpdatesIfNeeded()
+            super.dataReceived(slice: slice)
+            return
+        }
+        let terminal = getTerminal()
+        if !hasDetachedUpdates {
+            synchronizedOutput.active = terminal.synchronizedOutputActive
+        }
+        terminal.feed(buffer: synchronizedOutput.filter(slice)[...])
+        hasDetachedUpdates = true
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observeWindowVisibility()
+        redrawDetachedUpdatesIfNeeded()
+    }
+
+    public override func viewWillDraw() {
+        redrawDetachedUpdatesIfNeeded()
+        super.viewWillDraw()
+    }
+
+    private var isDisplayAttached: Bool {
+        guard let window else { return false }
+        return window.isVisible && window.occlusionState.contains(.visible)
+    }
+
+    private func observeWindowVisibility() {
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didChangeOcclusionStateNotification] {
+            NotificationCenter.default.removeObserver(self, name: name, object: observedWindow)
+        }
+        observedWindow = nil
+        guard let window else { return }
+        observedWindow = window
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didChangeOcclusionStateNotification] {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowVisibilityChanged),
+                name: name,
+                object: window
+            )
+        }
+    }
+
+    @objc private func windowVisibilityChanged() {
+        redrawDetachedUpdatesIfNeeded()
+    }
+
+    private func redrawDetachedUpdatesIfNeeded() {
+        guard window?.isVisible == true, hasDetachedUpdates else { return }
+        hasDetachedUpdates = false
+        let terminal = getTerminal()
+        // The mode goes in first: with a partial sequence still to be fed, SwiftTerm's parser is
+        // mid-sequence, and the mode's own bytes would land inside it.
+        restoreSynchronizedOutputMode(of: terminal)
+        let held = synchronizedOutput.takeCarry()
+        if !held.isEmpty {
+            terminal.feed(buffer: held[...])
+        }
+        terminal.updateFullScreen()
+        setNeedsDisplay(bounds)
+        // SwiftTerm only reaches feedPrepare/queuePendingDisplay through `dataReceived`.
+        // An empty feed deliberately schedules that full dirty range for display; it also
+        // resets search/selection, which is correct when a previously hidden terminal returns.
+        super.dataReceived(slice: ArraySlice<UInt8>())
+    }
+
+    /// Puts SwiftTerm in the synchronized-output mode the hidden stream left the app in, by feeding
+    /// it the toggle that hidden output withheld.
+    private func restoreSynchronizedOutputMode(of terminal: Terminal) {
+        guard terminal.synchronizedOutputActive != synchronizedOutput.active else { return }
+        let toggle = synchronizedOutput.active ? "\u{1b}[?2026h" : "\u{1b}[?2026l"
+        terminal.feed(buffer: Array(toggle.utf8)[...])
+    }
+}
