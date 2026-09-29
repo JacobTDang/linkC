@@ -101,6 +101,19 @@ public struct ProcessSnooper: Sendable {
         return pid_t(info.pbi_ppid)
     }
 
+    /// The foreground process group of the terminal `pid` runs in, via
+    /// `proc_pidinfo(PROC_PIDTBSDINFO)`. It moves when the terminal's shell starts a command as a
+    /// job, or the command ends. Nil for invalid pids, when the kernel refuses, or when `pid` has no
+    /// controlling terminal.
+    public static func terminalForegroundGroup(of pid: pid_t) -> pid_t? {
+        guard pid > 0 else { return nil }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        let got = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size)
+        guard got == size, info.e_tpgid > 0 else { return nil }
+        return pid_t(info.e_tpgid)
+    }
+
     /// The canonical, symlink-resolved form of `path` via `realpath(3)`. Nil when the path
     /// doesn't exist or the kernel refuses. Unlike `URL.resolvingSymlinksInPath` and
     /// `NSString.resolvingSymlinksInPath`, this never re-strips `/private` off a path the

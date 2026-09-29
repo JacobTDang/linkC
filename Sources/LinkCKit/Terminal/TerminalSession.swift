@@ -57,16 +57,46 @@ public final class TerminalSession {
         self.agentKind = agentKind
     }
 
-    /// Query Darwin kernel for any active AI agent in this terminal's child process tree.
+    /// The agent running in this terminal's child process tree, or the kind the session started
+    /// as when there is none. The tree is only walked again when the terminal's foreground
+    /// process group moved or the last walk is over `ForegroundAgentSampler.reprobeInterval` old;
+    /// `fresh` walks it regardless, for a caller that is about to persist the answer.
     @discardableResult
-    public func sampleForegroundAgent() -> AgentKind {
+    public func sampleForegroundAgent(fresh: Bool = false) -> AgentKind {
         guard childPid > 0 else { return agentKind }
-        if let detected = ProcessSnooper.detectAgent(inProcessTreeOf: childPid) {
-            self.agentKind = detected
-            return detected
+        if fresh { foregroundAgent.forget() }
+        let probe = agentProbe
+        let pid = childPid
+        let detected = foregroundAgent.sample(
+            foreground: foregroundGroup(),
+            now: probe.now(),
+            probe: { probe.inTree(pid) }
+        )
+        agentKind = detected ?? initialAgentKind
+        return agentKind
+    }
+
+    /// Whether the agent CLI is actually running in this terminal — it is the terminal's own
+    /// process or runs beneath it. Walks the tree every call, so the caller keeps it to the moments
+    /// that need a definite answer (a session still booting).
+    public func agentProcessIsRunning() -> Bool {
+        agentProbe.atOrUnder(childPid) != nil
+    }
+
+    /// The system probes agent detection uses; a test substitutes counting fakes.
+    var agentProbe = AgentProbe.live
+    private var foregroundAgent = ForegroundAgentSampler()
+    private var loggedForegroundFailure = false
+
+    /// The terminal's foreground process group, nil when it cannot be read.
+    private func foregroundGroup() -> pid_t? {
+        guard isRunning else { return nil }
+        if let group = agentProbe.foregroundGroup(childPid) { return group }
+        if !loggedForegroundFailure {
+            loggedForegroundFailure = true
+            NSLog("linkC: session %@ could not read its terminal's foreground process group; agent detection falls back to a timer", id)
         }
-        self.agentKind = initialAgentKind
-        return initialAgentKind
+        return nil
     }
 
     /// Checks if this terminal's process has any running child processes (e.g. running bash commands, tests, compilers).

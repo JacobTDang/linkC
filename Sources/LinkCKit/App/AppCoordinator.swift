@@ -337,7 +337,7 @@ public final class AppCoordinator {
     /// Snapshot all active sessions to the manifest with wasActiveOnQuit == true before shutdown.
     public func prepareForShutdown(selectedId: String? = nil) {
         for s in store.sessions where s.state != .ended {
-            let liveAgent = terminals.session(id: s.id)?.sampleForegroundAgent() ?? s.agentKind
+            let liveAgent = terminals.session(id: s.id)?.sampleForegroundAgent(fresh: true) ?? s.agentKind
             manifest.upsert(RestorableSession(
                 linkcId: s.id,
                 claudeSessionId: s.claudeSessionId,
@@ -892,14 +892,15 @@ public final class AppCoordinator {
                 }
             }
 
-            // Detect dynamic agent kind changes in child process tree
+            // Claude has its own hook server providing exact event transitions.
+            guard session.agentKind != .claude else { continue }
+
+            // Detect dynamic agent kind changes in child process tree. Only for sessions that
+            // could change: a hooked session's kind is known, and walking its tree told nothing.
             let liveAgent = term.sampleForegroundAgent()
             if liveAgent != session.agentKind && liveAgent != .shell {
                 store.updateAgentKind(id: session.id, to: liveAgent)
             }
-
-            // Claude has its own hook server providing exact event transitions.
-            guard session.agentKind != .claude else { continue }
 
             guard let currentSession = store.session(id: session.id), currentSession.state != .error else { continue }
 
@@ -935,8 +936,7 @@ public final class AppCoordinator {
             } else {
                 // A booting TUI is also silent. Promote only once the agent CLI is actually
                 // running, or the relay types the next frame into a process that cannot read it.
-                if currentSession.state == .starting,
-                   ProcessSnooper.detectAgent(atOrUnder: term.processId) != nil {
+                if currentSession.state == .starting, term.agentProcessIsRunning() {
                     store.updateState(id: session.id, to: .ready)
                 }
             }
