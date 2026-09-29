@@ -600,7 +600,13 @@ public final class AppCoordinator {
             entries.removeFirst(entries.count - Self.injectedHistoryLimit)
         }
         injectedText[sessionId] = entries
-        lastInjectionAt[sessionId] = now()
+        let injectedAt = now()
+        lastInjectionAt[sessionId] = injectedAt
+        // Typing into a session is where its next stretch of work starts. The screen sample that
+        // would notice the screen move can be seconds away, and the watchdog reads this clock in
+        // between: left alone, an idle session's old clock made the task just handed to it look
+        // like a stall.
+        screenSignatures[sessionId]?.since = injectedAt
     }
 
     /// Everything linkC has typed into `sessionId`'s terminal, passed to the limit detector so an

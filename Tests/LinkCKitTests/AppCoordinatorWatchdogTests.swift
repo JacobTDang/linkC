@@ -108,6 +108,43 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         XCTAssertEqual(coordinator.screenUnchangedSince(session.id), clock.now(), "real output restarts the clock")
     }
 
+    /// The quiet clock only restarts when a sample sees the screen change. A worker that sat idle
+    /// for a long time has an old clock, and the sample after a delivery may be seconds away (the
+    /// sweep sleeps five seconds when nothing is in flight), so a relay pass in between would read
+    /// the fresh task as a stall. Typing the brief in is the start of the work: the clock restarts
+    /// there.
+    @MainActor
+    func testHandingAnIdleWorkerATaskRestartsItsQuietClock() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex)
+        let term = try XCTUnwrap(coordinator.terminals.session(id: worker.id))
+        let ready = try await waitUntil { term.acceptsPaste }
+        XCTAssertTrue(ready, "the mock agent never negotiated bracketed paste")
+        coordinator.store.updateState(id: worker.id, to: .ready)
+        // The inbox stamps its rows off the real clock, so the past is sampled first and the
+        // controllable clock then catches up to now: twenty quiet minutes, then the delivery.
+        clock.set(Date().addingTimeInterval(-20 * 60))
+        coordinator.sampleAgentStates()
+        let lastChange = try XCTUnwrap(coordinator.screenUnchangedSince(worker.id))
+
+        clock.set(Date())
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Refactor migrations", files: [])
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered)
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.state, .working)
+        XCTAssertGreaterThan(try XCTUnwrap(coordinator.screenUnchangedSince(worker.id)), lastChange)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertNil(try inbox.task(id: task.id)?.stuckNotifiedAt, "a task handed over a moment ago is not stuck")
+        XCTAssertTrue(sink.deliveries.filter { $0.title.contains("look stuck") }.isEmpty)
+    }
+
     /// A brief typed into a session that never starts the task: after 10 minutes the delegator
     /// gets one line and the user one notification, and a second tick repeats neither.
     @MainActor
