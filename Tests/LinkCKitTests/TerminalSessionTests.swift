@@ -22,6 +22,26 @@ private final class SwitchableTestWindow: NSWindow {
     override var occlusionState: NSWindow.OcclusionState { presence == .shown ? [.visible] : [] }
 }
 
+/// What a terminal shows and which modes it is in: everything a mangled stream would change.
+private struct TerminalContent: Equatable {
+    var rows: [String]
+    var cursorColumn: Int
+    var cursorRow: Int
+    var bracketedPasteMode: Bool
+    var applicationCursor: Bool
+    var synchronizedOutputActive: Bool
+
+    init(_ terminal: Terminal) {
+        rows = (0..<terminal.rows).map { terminal.getLine(row: $0)?.translateToString(trimRight: true) ?? "" }
+        let cursor = terminal.getCursorLocation()
+        cursorColumn = cursor.x
+        cursorRow = cursor.y
+        bracketedPasteMode = terminal.bracketedPasteMode
+        applicationCursor = terminal.applicationCursor
+        synchronizedOutputActive = terminal.synchronizedOutputActive
+    }
+}
+
 @MainActor
 extension TerminalSessionTests {
 
@@ -176,6 +196,60 @@ extension TerminalSessionTests {
 
         XCTAssertEqual(terminal.getLine(row: 0)?.translateToString(trimRight: true), "abc def")
         XCTAssertTrue(terminal.synchronizedOutputActive)
+    }
+
+    /// The stream reaches a hidden terminal in whatever pieces the PTY read it in. Cut at every byte
+    /// (and, for a shorter stream, at every pair of bytes), the terminal that is then shown must
+    /// match one that parsed the whole stream, toggles and all: the withheld toggles restored, every
+    /// other private mode and escape sequence intact. What arrives after the terminal is shown
+    /// follows on from whatever the hidden stretch left held, so it is part of the comparison.
+    func testHiddenOutputSplitAnywhereEndsUpAsTheUnsplitStreamWould() {
+        let host = TerminalHostView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        let window = SwitchableTestWindow(contentRect: host.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+
+        func hiddenThenShown(_ chunks: [ArraySlice<UInt8>], then shownOutput: ArraySlice<UInt8>) -> TerminalContent {
+            window.presence = .hidden
+            let view = LinkCTerminalView(frame: host.bounds)
+            host.show(view)
+            for chunk in chunks { view.dataReceived(slice: chunk) }
+            setPresence(.shown, of: window)
+            view.dataReceived(slice: shownOutput)
+            return TerminalContent(view.getTerminal())
+        }
+
+        let esc = "\u{1b}"
+        let cases: [(stream: String, then: String, everyPair: Bool)] = [
+            ("\(esc)[?2026hab\(esc)[?2004h\(esc)[?1h\(esc)[31mcd\(esc)[0m\r\n\(esc)[?2026lef\(esc)[?2026h",
+             "gh\(esc)[?2026l", false),
+            ("\(esc)[?2026hgh\(esc)[?2026lij\(esc)[?25l\(esc)[?2026hkl\(esc)[?20", "04hxyz", false),
+            ("\(esc)[?2026hab\(esc)[?2004hcd\(esc)[?2026lef", "gh", true),
+        ]
+
+        for (stream, then, everyPair) in cases.map({ (bytes($0.stream), bytes($0.then), $0.everyPair) }) {
+            let whole = LinkCTerminalView(frame: host.bounds).getTerminal()
+            whole.feed(buffer: stream)
+            whole.feed(buffer: then)
+            let expected = TerminalContent(whole)
+            XCTAssertFalse(expected.rows[0].isEmpty, "the reference must have parsed something")
+
+            var differing: [String] = []
+            for first in 0...stream.count {
+                if hiddenThenShown([stream[..<first], stream[first...]], then: then) != expected {
+                    differing.append("\(first)")
+                }
+                guard everyPair else { continue }
+                for second in first...stream.count {
+                    if hiddenThenShown([stream[..<first], stream[first..<second], stream[second...]], then: then) != expected {
+                        differing.append("\(first),\(second)")
+                    }
+                }
+            }
+            XCTAssertEqual(differing, [],
+                           "cuts that changed what \(String(decoding: stream, as: UTF8.self).debugDescription) shows")
+        }
+        window.presence = .hidden
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     }
 
     func testAnEscapeHeldAtReattachStillStartsTheSequenceItBegan() {
