@@ -11,6 +11,16 @@ enum ThreadCPUTime {
         return TimeInterval(ts.tv_sec) + TimeInterval(ts.tv_nsec) / 1_000_000_000
     }
 
+    /// ThreadSanitizer (`scripts/tsan.sh`) makes instrumented code run several times slower, so a
+    /// budget sized for a plain debug build fails there with no real regression. Detected from the
+    /// TSan runtime being loaded, so it holds however the suite was launched.
+    static let budgetScale: Double = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "__tsan_init") != nil ? 5 : 1
+
+    /// `seconds` as a CPU-time budget for this run: unchanged normally, scaled up under TSan.
+    static func budget(_ seconds: TimeInterval) -> TimeInterval {
+        seconds * budgetScale
+    }
+
     /// Runs `body` and returns the CPU time it consumed on the calling thread, in seconds.
     static func elapsed(_ body: () -> Void) -> TimeInterval {
         let start = now()
