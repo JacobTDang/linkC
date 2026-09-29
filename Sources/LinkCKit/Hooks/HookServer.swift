@@ -33,8 +33,10 @@ public final class HookServer: @unchecked Sendable {
 
     private var _onStatusLine: (@Sendable (AgentUsage) -> Void)?
 
-    /// The `X-LinkC-Event` value of the status line linkC gives each Claude session
-    /// (`SettingsComposer.statusLine`). Its body is Claude's status JSON, not a hook payload.
+    /// The `X-LinkC-Event` value a status line posts with. Its body is Claude's status JSON, not
+    /// a hook payload. New sessions no longer post: their status line writes a file that
+    /// `StatusLineFeed` watches. This stays for a session still running the `curl` status line an
+    /// earlier build gave it, which keeps that command until the session is relaunched.
     public static let statusLineEvent = "status_line"
 
     /// Called with Claude's rate limits each time a session's status line reports them. Same
@@ -244,12 +246,19 @@ public final class HookServer: @unchecked Sendable {
     private func deliverStatusLine(_ body: Data) {
         do {
             if let reading = try ClaudeRateLimits.decode(body, receivedAt: Date()) {
-                onStatusLine?(reading)
-                cacheStatusLineBody(body)
+                acceptStatusLine(body: body, reading: reading)
             }
         } catch {
             NSLog("[linkC] a status line report could not be read — %@", String(describing: error))
         }
+    }
+
+    /// Takes a status report already decoded to `reading`, whichever way it arrived: hands the
+    /// reading to `onStatusLine` and caches the raw body for `linkc-mcp`. Same speed rules as
+    /// `onStatusLine`; callable from any queue.
+    public func acceptStatusLine(body: Data, reading: AgentUsage) {
+        onStatusLine?(reading)
+        cacheStatusLineBody(body)
     }
 
     /// Persists the raw body so `ClaudeRateLimits.cachedReading(at:)` can decode the same

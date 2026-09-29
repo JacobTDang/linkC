@@ -68,12 +68,19 @@ public final class StatusLineFeed: @unchecked Sendable {
         for watch in watches.values { watch.source.cancel() }
     }
 
-    /// The file `sessionId`'s status-line command must write: created empty, private to the user,
-    /// and watched before this returns. Watching a session again starts its file empty.
+    /// Where `sessionId`'s status file is, or would be: the path its status-line command is given.
+    public func fileURL(sessionId: String) -> URL {
+        directory.appendingPathComponent("\(sessionId).line")
+    }
+
+    /// Creates `sessionId`'s status file empty, private to the user, and watches it before this
+    /// returns; the status-line command may write it from then on. Watching a session again starts
+    /// its file empty.
+    @discardableResult
     public func watch(sessionId: String) throws -> URL {
         try queue.sync {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appendingPathComponent("\(sessionId).line")
+            let url = fileURL(sessionId: sessionId)
             stopWatching(sessionId)
             guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
                 throw LinkCError.server("could not create the status line file \(url.path)")
@@ -99,9 +106,8 @@ public final class StatusLineFeed: @unchecked Sendable {
     /// Stops watching `sessionId` and removes its file. Idempotent.
     public func unwatch(sessionId: String) {
         queue.sync {
-            let url = watches[sessionId]?.url ?? directory.appendingPathComponent("\(sessionId).line")
             stopWatching(sessionId)
-            remove(url)
+            remove(fileURL(sessionId: sessionId))
         }
     }
 

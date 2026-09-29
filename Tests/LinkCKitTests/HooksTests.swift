@@ -129,6 +129,8 @@ final class HookEventDecoderTests: XCTestCase {
 // MARK: - SettingsComposer
 
 final class SettingsComposerTests: XCTestCase {
+    private let statusFile = URL(fileURLWithPath: "/Users/x/Library/Application Support/linkC/status-lines/S1.line")
+
     func testLinkcHooksNotificationHasExactlyTwoMatcherEntriesWithRightTokens() throws {
         let hooks = SettingsComposer.linkcHooks(port: 4567, token: "tok-test")
 
@@ -196,7 +198,7 @@ final class SettingsComposerTests: XCTestCase {
         """
         let userData = Data(userJSON.utf8)
 
-        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: nil, port: 4321, token: "tok-test")
+        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: nil, port: 4321, token: "tok-test", statusLineFile: statusFile)
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
 
         XCTAssertEqual(decoded["model"] as? String, "claude-opus-4", "compose must preserve unrelated user settings")
@@ -225,7 +227,7 @@ final class SettingsComposerTests: XCTestCase {
         let userData = Data(#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user-stop"}]}]}}"#.utf8)
         let projectData = Data(#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"project-stop"}]}]}}"#.utf8)
 
-        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: projectData, port: 4321, token: "tok-test")
+        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: projectData, port: 4321, token: "tok-test", statusLineFile: statusFile)
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
         let hooks = try XCTUnwrap(decoded["hooks"] as? [String: Any])
         let stopBlocks = try XCTUnwrap(hooks["Stop"] as? [[String: Any]])
@@ -249,7 +251,7 @@ final class SettingsComposerTests: XCTestCase {
     }
 
     func testComposeWithNilSettingsStillProducesLinkcHooks() throws {
-        let composed = try SettingsComposer.compose(userSettings: nil, projectSettings: nil, port: 1111, token: "tok-test")
+        let composed = try SettingsComposer.compose(userSettings: nil, projectSettings: nil, port: 1111, token: "tok-test", statusLineFile: statusFile)
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
         let hooks = try XCTUnwrap(decoded["hooks"] as? [String: Any])
 
@@ -261,7 +263,7 @@ final class SettingsComposerTests: XCTestCase {
         let userData = Data(#"{"model": "user-model", "other": {"a": 1, "b": 2}}"#.utf8)
         let projectData = Data(#"{"model": "project-model", "other": {"b": 3}}"#.utf8)
 
-        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: projectData, port: 55, token: "tok-test")
+        let composed = try SettingsComposer.compose(userSettings: userData, projectSettings: projectData, port: 55, token: "tok-test", statusLineFile: statusFile)
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
 
         XCTAssertEqual(decoded["model"] as? String, "project-model", "project settings take precedence over user")
@@ -273,17 +275,33 @@ final class SettingsComposerTests: XCTestCase {
     private func composedStatusLine(user: String? = nil, project: String? = nil, local: String? = nil) throws -> [String: Any]? {
         let composed = try SettingsComposer.compose(
             userSettings: user.map { Data($0.utf8) }, projectSettings: project.map { Data($0.utf8) },
-            projectLocalSettings: local.map { Data($0.utf8) }, port: 4242, token: "tok-test")
+            projectLocalSettings: local.map { Data($0.utf8) }, port: 4242, token: "tok-test", statusLineFile: statusFile)
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: composed) as? [String: Any])
         return decoded["statusLine"] as? [String: Any]
     }
 
-    func testComposeAddsASilentStatusLinePostingToTheHookServer() throws {
+    /// Golden: the command is shell builtins only — `read`, `[`, `printf` and a redirect — so the
+    /// shell the agent CLI already starts is the only process a status refresh costs. It writes the
+    /// one line of JSON the CLI sends into the session's file, prints nothing, and leaves an
+    /// earlier report alone when nothing arrives.
+    func testComposeAddsASilentStatusLineWritingToTheSessionFile() throws {
         let statusLine = try XCTUnwrap(try composedStatusLine())
         XCTAssertEqual(statusLine["type"] as? String, "command")
         XCTAssertEqual(
             statusLine["command"] as? String,
-            "curl -s -m 2 -X POST -H 'X-LinkC-Token: tok-test' -H 'X-LinkC-Event: status_line' --data-binary @- http://127.0.0.1:4242/hook >/dev/null")
+            #"{ IFS= read -r l; [ -z "$l" ] || printf '%s\n' "$l" >'/Users/x/Library/Application Support/linkC/status-lines/S1.line'; } 2>/dev/null"#)
+    }
+
+    func testTheStatusLineCommandQuotesAPathWithAQuoteInIt() {
+        let command = SettingsComposer.statusLineCommand(writingTo: URL(fileURLWithPath: "/Users/o'brien/s 1.line"))
+        XCTAssertTrue(command.contains(#">'/Users/o'\''brien/s 1.line';"#), command)
+    }
+
+    func testTheStatusLineNoLongerCarriesTheHookToken() throws {
+        let command = try XCTUnwrap(try composedStatusLine()?["command"] as? String)
+        XCTAssertFalse(command.contains("tok-test"))
+        XCTAssertFalse(command.contains("curl"))
+        XCTAssertFalse(command.contains("4242"))
     }
 
     func testComposeKeepsTheUsersOwnStatusLine() throws {
@@ -494,6 +512,24 @@ final class HookServerTests: XCTestCase {
 
         let cached = try Data(contentsOf: cacheURL)
         XCTAssertEqual(cached, Data(rateLimitsBody.utf8))
+    }
+
+    /// The file feed hands over a report it has already decoded: it reaches `onStatusLine` and the
+    /// disk cache exactly as a posted one does, with no listener involved.
+    func testAStatusReportAcceptedDirectlyIsDeliveredAndCached() throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-status-line-cache-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let server = HookServer(port: 0, statusLineCacheURL: cacheURL)
+        let readings = ReadingBox()
+        server.onStatusLine = { readings.record($0) }
+        let body = Data(rateLimitsBody.utf8)
+        let reading = try XCTUnwrap(ClaudeRateLimits.decode(body, receivedAt: Date()))
+
+        server.acceptStatusLine(body: body, reading: reading)
+
+        XCTAssertEqual(readings.all, [reading])
+        XCTAssertEqual(try Data(contentsOf: cacheURL), body)
     }
 
     /// A body that decodes to nothing useful (no `rate_limits`) must not overwrite a previously

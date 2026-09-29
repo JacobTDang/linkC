@@ -1449,7 +1449,20 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "5h" }?.usedPercent, 66)
     }
 
-    /// A launch with no status line of its own gets linkC's, carrying this run's token.
+    /// The status file a launched session's command writes: `<settings folder>/status-lines/<id>.line`.
+    private func statusFile(in settingsDir: URL, for session: Session) -> URL {
+        settingsDir.appendingPathComponent("status-lines/\(session.id).line")
+    }
+
+    /// The command from the settings a launch composed.
+    private func composedStatusLineCommand(in settingsDir: URL, for session: Session) throws -> String? {
+        let file = settingsDir.appendingPathComponent("session-\(session.id).json")
+        let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        return (composed["statusLine"] as? [String: Any])?["command"] as? String
+    }
+
+    /// A launch with no status line of its own gets linkC's: a command that writes the session's own
+    /// status file, which exists, empty, before the session starts.
     func testALaunchGetsLinkCsStatusLine() throws {
         let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sl-\(UUID().uuidString)")
         let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
@@ -1460,11 +1473,78 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
         defer { coordinator.stopSession(session.id) }
 
-        let file = settingsDir.appendingPathComponent("session-\(session.id).json")
-        let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        let statusLine = try XCTUnwrap(composed["statusLine"] as? [String: Any])
-        XCTAssertEqual((statusLine["command"] as? String)?.contains(coordinator.hookToken), true)
+        let file = statusFile(in: settingsDir, for: session)
+        XCTAssertEqual(try composedStatusLineCommand(in: settingsDir, for: session),
+                       SettingsComposer.statusLineCommand(writingTo: file))
+        XCTAssertEqual(try Data(contentsOf: file), Data(), "the file must exist and be empty before the session starts")
         XCTAssertNil(coordinator.claudeUsage)
+    }
+
+    /// The whole path a status refresh takes: the exact command run through the shell with the CLI's
+    /// JSON on stdin, the file it writes, the feed that watches it, and Claude's usage in the sidebar.
+    func testAStatusRefreshRunThroughTheShellBecomesClaudesUsage() async throws {
+        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sl-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+        let coordinator = makeCoordinator(claudePath: "/bin/cat", settingsDir: settingsDir)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        defer { coordinator.stopSession(session.id) }
+        let command = try XCTUnwrap(try composedStatusLineCommand(in: settingsDir, for: session))
+        XCTAssertNil(coordinator.claudeUsage, "no reading before any refresh")
+
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shell.arguments = ["-c", command]
+        let input = Pipe()
+        shell.standardInput = input
+        try shell.run()
+        input.fileHandleForWriting.write(Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":1789980000},"seven_day":{"used_percentage":92,"resets_at":1790017200}}}"#.utf8 + [0x0A]))
+        try input.fileHandleForWriting.close()
+        shell.waitUntilExit()
+
+        let arrived = try await waitUntil { coordinator.claudeUsage?.windows.count == 2 }
+        XCTAssertTrue(arrived, "the reading must reach the coordinator through the file")
+        XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "5h" }?.usedPercent, 66)
+        XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "7d" }?.usedPercent, 92)
+    }
+
+    /// The file follows the session: stopping it removes the file, and so does a launch that fails.
+    func testAStatusFileGoesWhenItsSessionDoes() throws {
+        let settingsDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sl-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+        let coordinator = makeCoordinator(claudePath: "/bin/cat", settingsDir: settingsDir)
+        let session = try coordinator.newSession(cwd: cwd.path, mode: .new)
+        let file = statusFile(in: settingsDir, for: session)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+
+        coordinator.stopSession(session.id)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+
+        let failing = makeCoordinator(claudePath: "/nonexistent/claude-\(UUID().uuidString)", settingsDir: settingsDir)
+        XCTAssertThrowsError(try failing.newSession(cwd: cwd.path, mode: .new))
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: settingsDir.appendingPathComponent("status-lines").path)) ?? []
+        XCTAssertTrue(left.isEmpty, "a failed launch must not orphan its status file: \(left)")
+    }
+
+    /// Status files an earlier run left behind belong to sessions that no longer exist.
+    func testStartupSweepRemovesOrphanedStatusFiles() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sweep-\(UUID().uuidString)")
+        let statusDir = dir.appendingPathComponent("status-lines")
+        try FileManager.default.createDirectory(at: statusDir, withIntermediateDirectories: true)
+        let stale = statusDir.appendingPathComponent("gone.line")
+        try Data("{}\n".utf8).write(to: stale)
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
     }
 
     /// A project that runs its own status line keeps it: linkC adds none, and Claude's usage
@@ -1485,6 +1565,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let file = settingsDir.appendingPathComponent("session-\(session.id).json")
         let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         XCTAssertNil(composed["statusLine"], "Claude applies the local status line itself; linkC must not override it")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: statusFile(in: settingsDir, for: session).path),
+                       "no status line of linkC's, so nothing to listen to")
         XCTAssertEqual(coordinator.claudeUsage?.unavailableReason, ClaudeRateLimits.ownStatusLineReason)
     }
 
@@ -1507,7 +1589,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let file = settingsDir.appendingPathComponent("session-\(session.id).json")
         let composed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         let statusLine = try XCTUnwrap(composed["statusLine"] as? [String: Any])
-        XCTAssertEqual((statusLine["command"] as? String)?.contains(coordinator.hookToken), true)
+        XCTAssertEqual(statusLine["command"] as? String,
+                       SettingsComposer.statusLineCommand(writingTo: statusFile(in: settingsDir, for: session)))
     }
 }
 
