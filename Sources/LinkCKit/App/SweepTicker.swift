@@ -17,6 +17,7 @@ public final class SweepTicker {
     private let pass: @MainActor () async -> Void
     private var loop: Task<Void, Never>?
     private var sleeping: Task<Bool, Never>?
+    private var currentSleep: SleepStart?
     private var wakePending = false
     private var lastPassStart: PassStart?
 
@@ -66,9 +67,12 @@ public final class SweepTicker {
         sleeping?.cancel()
     }
 
-    /// Ends the sleep without a pass, so the next one is chosen with whatever `interval` returns
-    /// now. For a change that shortens the interval but has nothing to sample yet.
+    /// Ends the sleep without a pass when what `interval` returns now would end sooner than what
+    /// is left of it, so the next sleep is chosen anew. For a change that shortens the interval but
+    /// has nothing to sample yet. A sleep that already ends sooner is left alone: restarting it
+    /// would push the next pass back, and repeated calls would keep pushing it.
     public func reschedule() {
+        guard let currentSleep, interval() < currentSleep.remaining() else { return }
         sleeping?.cancel()
     }
 
@@ -82,8 +86,10 @@ public final class SweepTicker {
             (try? await clock.sleep(for: interval, tolerance: tolerance)) != nil
         }
         sleeping = task
+        currentSleep = SleepStart.now(on: clock, lasting: interval)
         let ranOut = await task.value
         sleeping = nil
+        currentSleep = nil
         return ranOut
     }
 
@@ -94,6 +100,19 @@ public final class SweepTicker {
         guard let lastPassStart else { return }
         // Cancellation is the only error a clock sleep throws; the loop checks for it next.
         try? await lastPassStart.sleepUntilGapEnds(minimumGap)
+    }
+}
+
+/// A sleep in progress, measured in its clock's own instants like `PassStart`.
+private struct SleepStart {
+    let remaining: () -> Duration
+
+    static func now(on clock: any Clock<Duration>, lasting length: Duration) -> SleepStart {
+        func mark<C: Clock<Duration>>(_ clock: C) -> SleepStart {
+            let start = clock.now
+            return SleepStart { length - start.duration(to: clock.now) }
+        }
+        return mark(clock)
     }
 }
 

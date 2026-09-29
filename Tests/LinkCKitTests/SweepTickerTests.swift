@@ -77,6 +77,23 @@ final class SweepTickerTests: XCTestCase {
         try await waitUntil { self.passes == 1 }
     }
 
+    /// Rescheduling must only ever bring the next pass forward. Opening the panel 4.9 s into a
+    /// five-second sleep, with a one-second interval now, must not restart a full second: the pass
+    /// due in 0.1 s still runs then. Toggling the panel repeatedly must not keep pushing it back.
+    func testRescheduleLeavesASleepThatEndsSoonerThanTheNewIntervalAlone() async throws {
+        ticker.start()
+        try await waitForSleep()
+        clock.advance(by: .seconds(4.9))
+        nextInterval = .seconds(1)
+        ticker.reschedule()
+        ticker.reschedule()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(clock.pendingSleeps.first?.requested, .seconds(5), "the original sleep is kept")
+
+        clock.advance(by: .seconds(0.1))
+        try await waitUntil { self.passes == 1 }
+    }
+
     func testAWakeRunsAPassAtOnceWithoutTimeMoving() async throws {
         ticker.start()
         try await waitForSleep()
