@@ -157,6 +157,89 @@ final class InboxReadCacheTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent(".linkc").path))
     }
 
+    // MARK: - Bounded size
+
+    /// Any identity will do: the cache keys entries by path and compares the identity it is given
+    /// with the one it stored.
+    private func someIdentity() throws -> FileIdentity {
+        let file = tempDir.appendingPathComponent("identity.json")
+        try Data("{}".utf8).write(to: file)
+        guard case .present(let identity) = try FileIdentity.probe(file.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return identity
+    }
+
+    private func isCached(_ cache: InboxReadCache, _ path: String, _ identity: FileIdentity) -> Bool {
+        cache.inbox(at: path, matching: identity) != nil
+    }
+
+    func testTheCacheHoldsAtMostItsCapacityAndDropsTheLeastRecentlyUsed() throws {
+        let identity = try someIdentity()
+        let cache = InboxReadCache(capacity: 3)
+
+        for index in 0..<1000 {
+            cache.store(Inbox(workspacePath: "w\(index)"), at: "/w\(index)/inbox.json", identity: identity)
+        }
+
+        let cached = (0..<1000).filter { isCached(cache, "/w\($0)/inbox.json", identity) }
+        XCTAssertEqual(cached, [997, 998, 999], "only the three most recently stored inboxes remain")
+    }
+
+    func testAHitCountsAsUseSoTheColdestEntryIsTheOneDropped() throws {
+        let identity = try someIdentity()
+        let cache = InboxReadCache(capacity: 3)
+        for name in ["a", "b", "c"] {
+            cache.store(Inbox(workspacePath: name), at: name, identity: identity)
+        }
+
+        XCTAssertNotNil(cache.inbox(at: "a", matching: identity), "reading a makes b the coldest")
+        cache.store(Inbox(workspacePath: "d"), at: "d", identity: identity)
+
+        XCTAssertTrue(isCached(cache, "a", identity))
+        XCTAssertFalse(isCached(cache, "b", identity))
+        XCTAssertTrue(isCached(cache, "c", identity))
+        XCTAssertTrue(isCached(cache, "d", identity))
+    }
+
+    func testRefreshingAPathKeepsEveryOtherEntry() throws {
+        let identity = try someIdentity()
+        let cache = InboxReadCache(capacity: 3)
+        for name in ["a", "b", "c"] {
+            cache.store(Inbox(workspacePath: name), at: name, identity: identity)
+        }
+
+        cache.store(Inbox(workspacePath: "a again"), at: "a", identity: identity)
+
+        XCTAssertEqual(cache.inbox(at: "a", matching: identity)?.workspacePath, "a again")
+        XCTAssertTrue(isCached(cache, "b", identity))
+        XCTAssertTrue(isCached(cache, "c", identity))
+    }
+
+    /// The process-wide cache is the one the relay uses; it must be bounded too, not just a small
+    /// cache built by a test.
+    func testTheProcessWideCacheIsBoundedToItsCapacity() throws {
+        let workspaces = InboxReadCache.defaultCapacity + 2
+        var stores: [InboxStore] = []
+        for index in 0..<workspaces {
+            let root = tempDir.appendingPathComponent("workspace-\(index)").path
+            let store = InboxStore(workspaceRoot: root)
+            _ = try store.createTask(from: .claude, to: .codex, prompt: "brief \(index)", files: [])
+            _ = try store.load()
+            stores.append(store)
+        }
+
+        let newest = try XCTUnwrap(stores.last)
+        let newestBefore = diskLoads(newest)
+        _ = try newest.load()
+        XCTAssertEqual(diskLoads(newest) - newestBefore, 0, "the newest inbox is still cached")
+
+        let oldest = try XCTUnwrap(stores.first)
+        let oldestBefore = diskLoads(oldest)
+        _ = try oldest.load()
+        XCTAssertEqual(diskLoads(oldest) - oldestBefore, 1, "the oldest was dropped to stay within the capacity")
+    }
+
     /// Readers on several threads while one writer keeps replacing the file: every read is a
     /// consistent snapshot (a task list only ever grows here), and once the writer is done every
     /// reader converges on the final state. Run under ThreadSanitizer this also covers the cache's

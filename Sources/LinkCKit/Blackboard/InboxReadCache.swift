@@ -81,30 +81,58 @@ struct FileIdentity: Equatable, Sendable {
 /// lock, because another process (`linkc-mcp`) may have written since. A cached copy is served
 /// only while the file still has the identity it was read at, so any save by anyone — an atomic
 /// rename gives the file a new inode — makes the next read go back to disk.
+///
+/// Holds at most `capacity` inboxes, dropping the least recently used: a long-running app reads
+/// workspaces it will never look at again, and each entry is a whole decoded inbox.
 final class InboxReadCache: Sendable {
+    /// Well above the workspaces a relay tick touches, so steady state never evicts; a workspace
+    /// evicted anyway only costs one read the next time it is asked about.
+    static let defaultCapacity = 64
+
     static let shared = InboxReadCache()
 
     private struct Entry: Sendable {
         let identity: FileIdentity
         let inbox: Inbox
+        var lastUse: UInt64
     }
 
-    private let entries = OSAllocatedUnfairLock<[String: Entry]>(initialState: [:])
+    private struct State: Sendable {
+        var entries: [String: Entry] = [:]
+        /// Bumped on every store and hit; the entry with the smallest `lastUse` is the coldest.
+        var useCount: UInt64 = 0
+    }
+
+    private let capacity: Int
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    init(capacity: Int = InboxReadCache.defaultCapacity) {
+        self.capacity = capacity
+    }
 
     /// The cached inbox for `path`, if it was read from a file with exactly this identity.
     func inbox(at path: String, matching identity: FileIdentity) -> Inbox? {
-        entries.withLock { cache in
-            guard let entry = cache[path], entry.identity == identity else { return nil }
+        state.withLock { state in
+            guard let entry = state.entries[path], entry.identity == identity else { return nil }
+            state.useCount += 1
+            state.entries[path]?.lastUse = state.useCount
             return entry.inbox
         }
     }
 
     /// `identity` is the one `FileIdentity.read` returned with the bytes `inbox` was decoded from.
     func store(_ inbox: Inbox, at path: String, identity: FileIdentity) {
-        entries.withLock { $0[path] = Entry(identity: identity, inbox: inbox) }
+        state.withLock { state in
+            state.useCount += 1
+            state.entries[path] = Entry(identity: identity, inbox: inbox, lastUse: state.useCount)
+            if state.entries.count > capacity,
+               let coldest = state.entries.min(by: { $0.value.lastUse < $1.value.lastUse }) {
+                state.entries.removeValue(forKey: coldest.key)
+            }
+        }
     }
 
     func forget(path: String) {
-        entries.withLock { _ = $0.removeValue(forKey: path) }
+        state.withLock { _ = $0.entries.removeValue(forKey: path) }
     }
 }
