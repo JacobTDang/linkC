@@ -7,6 +7,10 @@ import XCTest
 final class ScreenSweepCostTests: XCTestCase {
     private static let sessionCount = 20
     private static let ticks = 100
+    /// The most of a redrawn sweep's cost an idle sweep may take. Measured at 0.46 to 0.47 in a
+    /// debug build, whatever the machine's load (an idle sweep still reads every screen once), and
+    /// at 1.0 with the limit scan and the watchdog signature recomputed on every sweep.
+    private static let idleShareOfRedrawnCost = 0.75
 
     private var workspace: URL!
 
@@ -22,18 +26,21 @@ final class ScreenSweepCostTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    /// Twenty sessions across the agent kinds, each drawn with `screen`.
+    /// Twenty sessions across the agent kinds, each drawn with `screen`, in their own folder `name`
+    /// so two coordinators in one test share no blackboard or inbox.
     @MainActor
-    private func makeSessions(screen: String) -> (AppCoordinator, [TerminalSession]) {
-        let coordinator = AppCoordinator(workspaceDir: workspace)
+    private func makeSessions(in name: String, screen: String) throws -> (AppCoordinator, [TerminalSession]) {
+        let folder = workspace.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let coordinator = AppCoordinator(workspaceDir: folder)
         let kinds: [AgentKind] = [.claude, .codex, .cursor, .agy]
         var terminals: [TerminalSession] = []
         for i in 0..<Self.sessionCount {
             let id = "S\(i)"
             let kind = kinds[i % kinds.count]
-            _ = coordinator.store.create(cwd: workspace.path, title: id, id: id, agentKind: kind)
+            _ = coordinator.store.create(cwd: folder.path, title: id, id: id, agentKind: kind)
             coordinator.store.updateState(id: id, to: .ready)
-            let term = coordinator.terminals.makeSession(id: id, cwd: workspace.path, title: id, agentKind: kind)
+            let term = coordinator.terminals.makeSession(id: id, cwd: folder.path, title: id, agentKind: kind)
             term.terminalView.getTerminal().resize(cols: 120, rows: ScreenFixture.height)
             term.terminalView.feed(text: screen)
             terminals.append(term)
@@ -41,40 +48,38 @@ final class ScreenSweepCostTests: XCTestCase {
         return (coordinator, terminals)
     }
 
-    /// Sessions waiting at their prompt: nothing on any screen changes between ticks.
+    /// Sweeps over sessions waiting at their prompt cost a fraction of sweeps over sessions whose
+    /// screen changes every tick: an unchanged screen is not classified or scanned again.
+    ///
+    /// The baseline is measured in the same run, tick for tick, on identical sessions whose spinner
+    /// timer redraws every tick (so no screen ever matches the last). That makes the guard a ratio
+    /// that holds on a slow or busy machine, where a fixed CPU-time budget does not. Nothing in
+    /// this test says how long a sweep takes; `ScreenReadingTests` and `LimitScanSkipTests` count
+    /// the reads, scans and walks a sweep is allowed.
     @MainActor
-    func testAHundredSweepsOverTwentyIdleScreensStayWithinBudget() {
-        let (coordinator, _) = makeSessions(screen: ScreenFixture.terminalInput(spinnerSeconds: nil))
-        defer { coordinator.shutdown() }
-        coordinator.sampleAgentStates()
-
-        let elapsed = ThreadCPUTime.elapsed {
-            for _ in 0..<Self.ticks { coordinator.sampleAgentStates() }
+    func testSweepsOverUnchangedScreensCostFarLessThanSweepsOverRedrawnOnes() throws {
+        let (idleCoordinator, _) = try makeSessions(in: "idle", screen: ScreenFixture.terminalInput(spinnerSeconds: nil))
+        let (redrawnCoordinator, redrawnTerminals) = try makeSessions(in: "redrawn", screen: ScreenFixture.terminalInput(spinnerSeconds: 1))
+        defer {
+            idleCoordinator.shutdown()
+            redrawnCoordinator.shutdown()
         }
+        idleCoordinator.sampleAgentStates()
+        redrawnCoordinator.sampleAgentStates()
 
-        XCTAssertLessThan(
-            elapsed, ThreadCPUTime.budget(2.5),
-            "debug-build guard: \(Self.ticks) sweeps over \(Self.sessionCount) idle sessions took \(elapsed)s of CPU"
-        )
-    }
-
-    /// Sessions mid-turn: the spinner's timer redraws every tick, so every screen differs from the last.
-    @MainActor
-    func testAHundredSweepsOverTwentyTickingScreensStayWithinBudget() {
-        let (coordinator, terminals) = makeSessions(screen: ScreenFixture.terminalInput(spinnerSeconds: 1))
-        defer { coordinator.shutdown() }
-        coordinator.sampleAgentStates()
-
-        var elapsed: TimeInterval = 0
+        var idle: TimeInterval = 0
+        var redrawn: TimeInterval = 0
         for tick in 0..<Self.ticks {
             let redraw = "\u{1b}[H" + ScreenFixture.rows(spinnerSeconds: tick + 2).joined(separator: "\r\n")
-            for term in terminals { term.terminalView.feed(text: redraw) }
-            elapsed += ThreadCPUTime.elapsed { coordinator.sampleAgentStates() }
+            for term in redrawnTerminals { term.terminalView.feed(text: redraw) }
+            idle += ThreadCPUTime.elapsed { idleCoordinator.sampleAgentStates() }
+            redrawn += ThreadCPUTime.elapsed { redrawnCoordinator.sampleAgentStates() }
         }
 
+        XCTAssertGreaterThan(redrawn, 0, "the baseline measured nothing")
         XCTAssertLessThan(
-            elapsed, ThreadCPUTime.budget(4.5),
-            "debug-build guard: \(Self.ticks) sweeps over \(Self.sessionCount) redrawn sessions took \(elapsed)s of CPU"
+            idle / redrawn, Self.idleShareOfRedrawnCost,
+            "\(Self.ticks) sweeps over \(Self.sessionCount) sessions: idle screens took \(idle)s of CPU, redrawn ones \(redrawn)s"
         )
     }
 }
