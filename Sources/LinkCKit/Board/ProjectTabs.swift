@@ -47,7 +47,7 @@ public enum ProjectTabs {
     ) -> [ProjectTab] {
         let folder = standardized(path)
         var tabs = [ProjectTab(id: boardID(folder), kind: .board, title: "Board", isWorking: false)]
-        for session in sessions where standardized(session.cwd) == folder {
+        for session in sessions where session.cwd == folder {
             tabs.append(ProjectTab(
                 id: session.id, kind: .agent(session.agentKind),
                 title: titles[session.id] ?? session.title,

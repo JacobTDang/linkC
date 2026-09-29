@@ -666,7 +666,7 @@ final class AppModel {
         if let boardProject { return boardProject }
         if let appTab { return appTab.project }
         guard let id = selectedId else { return nil }
-        if let session = sessions.first(where: { $0.id == id }) { return ProjectTabs.standardized(session.cwd) }
+        if let session = sessions.first(where: { $0.id == id }) { return session.cwd }
         if let shell = shellRows.first(where: { $0.id == id }) {
             return TerminalFiling.project(
                 forTerminal: shell.id, cwd: shell.cwd, filed: sidebarState.terminalProjects, projects: knownProjectPaths
@@ -677,15 +677,16 @@ final class AppModel {
 
     var projectTabs: [ProjectTab] {
         guard let project = currentProject else { return [] }
+        let canonicalProject = ProjectTabs.standardized(project)
         var activities: [String: String] = [:]
         for session in sessions
-        where ProjectTabs.standardized(session.cwd) == ProjectTabs.standardized(project)
+        where session.cwd == canonicalProject
             && ShownActivity.applies(to: session.state) {
             activities[session.id] = currentActivity(session)
         }
         return ProjectTabs.tabs(
-            project: project, sessions: sessions, shells: shellRows, filed: sidebarState.terminalProjects, titles: sessionTitles,
-            activities: activities, openApps: sidebarState.openApps(in: project))
+            project: canonicalProject, sessions: sessions, shells: shellRows, filed: sidebarState.terminalProjects, titles: sessionTitles,
+            activities: activities, openApps: sidebarState.openApps(in: canonicalProject))
     }
 
     /// Whether the current project has a session mid-turn — computed directly, without building
@@ -694,7 +695,8 @@ final class AppModel {
     /// timer either.
     var projectHasWorkingSession: Bool {
         guard let project = currentProject else { return false }
-        return sessions.contains { $0.state == .working && ProjectTabs.standardized($0.cwd) == project }
+        let canonicalProject = ProjectTabs.standardized(project)
+        return sessions.contains { $0.state == .working && $0.cwd == canonicalProject }
     }
 
     /// The tab showing: the project's Board, an app tab, or the selected session or terminal.

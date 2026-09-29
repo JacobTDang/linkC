@@ -129,7 +129,7 @@ public struct Session: Sendable, Identifiable, Equatable {
         isWorker: Bool = false
     ) {
         self.id = id
-        self.cwd = cwd
+        self.cwd = ProjectPath.canonical(cwd)
         self.title = title
         self.state = state
         self.claudeSessionId = claudeSessionId
