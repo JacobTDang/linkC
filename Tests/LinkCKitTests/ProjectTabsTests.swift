@@ -118,6 +118,20 @@ final class ProjectTabsTests: XCTestCase {
         XCTAssertEqual(tabs.map(\.id), [ProjectTabs.boardID(canonicalReal), "s1"])
     }
 
+    func testTheBoardTabIsTheBoardIDOfTheProjectHoweverItsPathIsWritten() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-tab-board-\(UUID().uuidString)")
+        let realFolder = tempDir.appendingPathComponent("RealProject")
+        try FileManager.default.createDirectory(at: realFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let symlink = tempDir.appendingPathComponent("symlink_project")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: realFolder)
+
+        for path in [symlink.path, realFolder.path, realFolder.path + "/"] {
+            let tabs = ProjectTabs.tabs(project: path, sessions: [], shells: [], titles: [:])
+            XCTAssertEqual(tabs.first?.id, ProjectTabs.boardID(path), "written as \(path)")
+        }
+    }
+
     func testProjectTabsSpeedWithTwentySessions() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-tab-bench-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)

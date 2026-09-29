@@ -32,7 +32,12 @@ public enum ProjectTabs {
     }
 
     public static func boardID(_ path: String) -> String {
-        "board:" + standardized(path)
+        boardID(canonical: standardized(path))
+    }
+
+    /// The Board tab's id for a path that is already canonical — no filesystem lookup.
+    public static func boardID(canonical path: String) -> String {
+        "board:" + path
     }
 
     public static func appTabID(project: String, folder: String) -> String {
@@ -49,7 +54,7 @@ public enum ProjectTabs {
         activities: [String: String] = [:], openApps: [OpenApp] = []
     ) -> [ProjectTab] {
         let folder = standardized(path)
-        var tabs = [ProjectTab(id: "board:" + folder, kind: .board, title: "Board", isWorking: false)]
+        var tabs = [ProjectTab(id: boardID(canonical: folder), kind: .board, title: "Board", isWorking: false)]
         for session in sessions where session.cwd == folder {
             tabs.append(ProjectTab(
                 id: session.id, kind: .agent(session.agentKind),
