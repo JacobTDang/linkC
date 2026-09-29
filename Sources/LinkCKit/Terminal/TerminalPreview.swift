@@ -47,7 +47,7 @@ public enum TerminalPreview {
         if bannerPrefixes.contains(where: t.hasPrefix) { return true }
         // The spinner row carries its token counter ("Boondoggling… (50s · ↓2.5k tokens …")
         // even when a narrow pane cuts off the "esc to interrupt" hint that usually marks it.
-        if t.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil {
+        if hasSpinnerTokenCounter(t) {
             return true
         }
         // The same running-spinner shape without a token counter — the thinking-phase row
@@ -55,10 +55,36 @@ public enum TerminalPreview {
         if claudeSpinnerRowPhrase(text) != nil {
             return true
         }
-        return t.range(
-            of: #"^(\d+ MCP servers? needs? authentication|Approaching [\w ]{0,24}usage limit|You've used \d+% of your session limit)\b"#,
-            options: .regularExpression
-        ) != nil
+        return hasUsageBanner(t)
+    }
+
+    // The patterns below are compiled once. They run over every row of every session's screen once
+    // a second; building each from a string literal on every call was a large share of the cost of
+    // reading a screen.
+
+    private static let spinnerTokenCounter = try! NSRegularExpression(
+        pattern: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#
+    )
+
+    private static let usageBanner = try! NSRegularExpression(
+        pattern: #"^(\d+ MCP servers? needs? authentication|Approaching [\w ]{0,24}usage limit|You've used \d+% of your session limit)\b"#
+    )
+
+    private static let spinnerTimer = try! NSRegularExpression(pattern: #"… \(\d+[hms]"#)
+
+    /// Whether `text` carries a spinner row's token counter: "… (50s · ↓2.5k tokens".
+    static func hasSpinnerTokenCounter(_ text: String) -> Bool {
+        spinnerTokenCounter.matches(text)
+    }
+
+    /// Whether `text` opens with one of Claude Code's usage banners.
+    static func hasUsageBanner(_ text: String) -> Bool {
+        usageBanner.matches(text)
+    }
+
+    /// Where a spinner timer starts in `text`: "… (12s".
+    static func spinnerTimerRange(in text: String) -> Range<String.Index>? {
+        spinnerTimer.firstRange(in: text)
     }
 
     /// Box Drawing (U+2500–U+257F) and Block Elements (U+2580–U+259F).
@@ -200,7 +226,7 @@ public enum TerminalPreview {
         guard !text.isEmpty else { return false }
         if isWorkingFooter(text) { return true }
         if text.contains("esc to interrupt") { return true }
-        if text.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil { return true }
+        if hasSpinnerTokenCounter(text) { return true }
         // The same running-spinner shape without a token counter — the thinking-phase row
         // ("✳ Bunning… (2s · thinking with xhigh effort)") has none.
         if claudeSpinnerRowPhrase(text) != nil { return true }
@@ -215,7 +241,7 @@ public enum TerminalPreview {
     public static func progressSignature(rows: [String]) -> String {
         let kept = rows
             .filter { !isLiveMarkerRow($0) }
-            .map { $0.replacingOccurrences(of: Self.elapsedTimeShape, with: "#", options: .regularExpression) }
+            .map(normalizingElapsedTime)
         return String(kept.joined(separator: "\n").hashValue)
     }
 
@@ -223,14 +249,20 @@ public enum TerminalPreview {
     /// opening paren ("(12s", "(1m 46s)") or after a middot separator ("· 9s"). A bare number
     /// carrying a time-unit letter anywhere else — an ETA counting down, a size like "12m" of
     /// files — is a real value that changes, and normalizing it would read as no progress at all.
-    private static let elapsedTimeShape =
-        #"(?:(?<=\()|(?<=· ))\d+(\.\d+)?\s?(ms|s|m|h)(\s\d+(\.\d+)?\s?(ms|s|m|h))*\b"#
+    private static let elapsedTime = try! NSRegularExpression(
+        pattern: #"(?:(?<=\()|(?<=· ))\d+(\.\d+)?\s?(ms|s|m|h)(\s\d+(\.\d+)?\s?(ms|s|m|h))*\b"#
+    )
+
+    /// `row` with each elapsed-time reading replaced by "#".
+    static func normalizingElapsedTime(_ row: String) -> String {
+        elapsedTime.replacingMatches(in: row, with: "#")
+    }
 
     /// The phrase on a live spinner row: one carrying "(12s · esc to interrupt)" or a token
     /// counter, or one led by a spinner glyph (Braille included). nil for any other row.
     private static func spinnerPhrase(_ text: String) -> String? {
         let cleaned = cleanLeadingSpinner(text)
-        if text.contains("esc to interrupt") || text.range(of: #"… \(\d+[hms][\dhms ]*·\s*[↑↓]"#, options: .regularExpression) != nil {
+        if text.contains("esc to interrupt") || hasSpinnerTokenCounter(text) {
             if let parenIndex = cleaned.firstIndex(of: "(") {
                 let extracted = String(cleaned[..<parenIndex]).trimmingCharacters(in: .whitespaces)
                 if !extracted.isEmpty { return extracted }
@@ -287,7 +319,7 @@ public enum TerminalPreview {
         if phrase.hasSuffix("esc to interrupt)") {
             return nil
         }
-        guard let timer = phrase.range(of: #"… \(\d+[hms]"#, options: .regularExpression) else { return nil }
+        guard let timer = spinnerTimerRange(in: phrase) else { return nil }
         if let closeParen = phrase[timer.lowerBound...].firstIndex(of: ")") {
             // A ")" that isn't the row's last character means text continues past the timer —
             // that's prose, not a spinner.
@@ -337,5 +369,24 @@ public enum TerminalPreview {
             }
         }
         return t
+    }
+}
+
+private extension NSRegularExpression {
+    /// The first match of the pattern in `text`, as a `String` range. Same result as
+    /// `text.range(of: pattern, options: .regularExpression)`, without compiling the pattern again.
+    func firstRange(in text: String) -> Range<String.Index>? {
+        let found = rangeOfFirstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+        guard found.location != NSNotFound else { return nil }
+        return Range(found, in: text)
+    }
+
+    func matches(_ text: String) -> Bool {
+        rangeOfFirstMatch(in: text, range: NSRange(text.startIndex..., in: text)).location != NSNotFound
+    }
+
+    /// `text` with every match replaced by `template`.
+    func replacingMatches(in text: String, with template: String) -> String {
+        stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: template)
     }
 }
