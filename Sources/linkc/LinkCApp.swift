@@ -117,6 +117,9 @@ final class AppModel {
             updateUsageTimer()
             if !panelVisible {
                 flushStateToDisk()
+            } else if !oldValue {
+                // Not a sweep tick behind: sample what changed while the panel was hidden.
+                sampleSidebar()
             }
         }
     }
@@ -142,8 +145,8 @@ final class AppModel {
     let sidebarState = SidebarState()
     /// Codex's own rate-limit snapshot, re-read off the main thread. nil until the first read lands.
     private(set) var codexUsage: AgentUsage?
-    /// Equality-guarded snapshot of sidebar rows, published once a second by `sampleSidebar()`.
-    var sidebarSnapshot = SidebarSnapshot()
+    /// The sidebar's non-observable inputs, published by `sampleSidebar()` only when they change.
+    let sidebarSignal = SidebarSignalFeed()
 
     /// Surface a one-off failure in the panel's error bar (fail loud, stay standing).
     func surface(error message: String) { lastError = message }
@@ -234,7 +237,6 @@ final class AppModel {
             inUse.formUnion(restorables.map { standardized($0.cwd) })
             inUse = SidebarState.inUseProjects(sessionPaths: inUse, filed: sidebarState.terminalProjects)
             sidebarState.prune(keeping: inUse)
-            sampleSidebar()
             if let lastId = UserDefaults.standard.string(forKey: "LinkCLastSelectedSessionId"),
                terminals.sessions.contains(where: { $0.id == lastId }) {
                 terminals.select(lastId)

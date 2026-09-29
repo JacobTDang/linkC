@@ -37,7 +37,10 @@ struct Sidebar: View {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     NavSection(model: model, isSplit: isSplit)
-                    let sections = model.sidebarSnapshot
+                    // Observable state re-renders this on its own; the signal covers what is not
+                    // observable (inbox files, terminal screens, the rate-limit clock).
+                    let _ = model.sidebarSignal.signal
+                    let sections = model.sidebarSections()
                     ProjectsSection(projects: sections.projects, model: model) { inspectingWorkspace = $0 }
                     if !sections.unfiled.isEmpty {
                         TerminalsSidebarSection(unfiled: sections.unfiled, model: model)
@@ -86,13 +89,23 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
     var isSelected: Bool = false
     var indent: CGFloat = 0
     var help: String? = nil
+    /// Set while the row has an action line to show in place of its title.
     var activity: ShownActivity? = nil
+    /// Reads that line now. The line is only ever what this returns: nil reads as the title.
     var resolveActivity: (() -> String?)? = nil
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
 
     @State private var hovering = false
+
+    private var titleLabel: some View {
+        Text(title)
+            .font(.system(size: 13))
+            .foregroundStyle(titleColor)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -103,17 +116,18 @@ struct SidebarRow<Leading: View, Trailing: View>: View {
                     leading()
                         .frame(width: 16)
                     if let activity {
+                        // The terminal screen an action line is read from is not observable, so
+                        // this leaf re-reads it while the session works; nothing else re-renders.
                         TimelineView(.periodic(from: .now, by: activity.isWorking ? 1.0 : 3600.0)) { _ in
-                            let text = resolveActivity?() ?? activity.text
-                            ActivityLabel(text: text, isWorking: activity.isWorking, size: 12)
-                                .foregroundStyle(Theme.textSecondary)
+                            if let text = resolveActivity?() {
+                                ActivityLabel(text: text, isWorking: activity.isWorking, size: 12)
+                                    .foregroundStyle(Theme.textSecondary)
+                            } else {
+                                titleLabel
+                            }
                         }
                     } else {
-                        Text(title)
-                            .font(.system(size: 13))
-                            .foregroundStyle(titleColor)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                        titleLabel
                     }
                     Spacer(minLength: 6)
                 }
@@ -402,13 +416,7 @@ private struct SessionRow: View {
             indent: 18,
             help: "\(row.agentKind.displayName) — \(row.title)",
             activity: row.activity,
-            resolveActivity: {
-                guard let session = model.coordinator?.store.session(id: row.id) ?? model.sessions.first(where: { $0.id == row.id }),
-                      ShownActivity.applies(to: session.state) else {
-                    return nil
-                }
-                return model.currentActivity(session)
-            },
+            resolveActivity: { model.liveActivity(id: row.id) },
             action: { model.focus(row.id) }
         ) {
             AgentLogoView(agent: row.agentKind)

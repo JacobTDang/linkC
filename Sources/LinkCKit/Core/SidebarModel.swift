@@ -35,17 +35,6 @@ public struct SidebarProject: Identifiable, Equatable, Sendable {
     public let terminals: [ShellRow]
 }
 
-/// An observable snapshot of the sidebar's projects and unfiled terminals.
-public struct SidebarSnapshot: Equatable, Sendable {
-    public let projects: [SidebarProject]
-    public let unfiled: [ShellRow]
-
-    public init(projects: [SidebarProject] = [], unfiled: [ShellRow] = []) {
-        self.projects = projects
-        self.unfiled = unfiled
-    }
-}
-
 /// Builds the sidebar's Projects section from live sessions. Pure: every input is a value.
 public enum SidebarModel {
     public struct Input: Equatable, Sendable {
