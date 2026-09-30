@@ -25,6 +25,12 @@ private final class ControllableClock: Sendable {
 final class AppCoordinatorRelayTests: XCTestCase {
     private var tempDir: URL!
 
+    /// The state of a worker that has hit a limit and stopped: its turn is over. A limit banner on
+    /// the screen of a session that is still `.working` is held back (see
+    /// `testALimitMatchOnAWorkingAssigneeLeavesItsTaskInPlaceAndTellsTheDelegator`), so the tests
+    /// that exercise the reroute itself give their worker this state.
+    private static let turnOver: SessionState = .finished
+
     override func setUpWithError() throws {
         try super.setUpWithError()
         tempDir = FileManager.default.temporaryDirectory
@@ -1063,7 +1069,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let sourceSession = try coordinator.newSession(cwd: ws, agent: .claude)
-        coordinator.store.updateState(id: sourceSession.id, to: .working)
+        coordinator.store.updateState(id: sourceSession.id, to: Self.turnOver)
         let original = try inbox.createTask(from: .cursor, to: .claude, prompt: "Build high-throughput streaming proxy", files: ["Proxy.swift"])
         try inbox.markTaskDelivered(taskId: original.id, sessionId: sourceSession.id)
         try inbox.markTaskStarted(taskId: original.id)
@@ -1108,7 +1114,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let session = try coordinator.newSession(cwd: ws, agent: .claude)
-        coordinator.store.updateState(id: session.id, to: .working)
+        coordinator.store.updateState(id: session.id, to: Self.turnOver)
         let hop2 = try inbox.createTask(from: .codex, to: .claude, prompt: "Complex distributed algorithm", files: [], hop: 2)
         try inbox.markTaskDelivered(taskId: hop2.id, sessionId: session.id)
 
@@ -1196,7 +1202,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try inbox.cancelTask(taskId: old.id, reason: "rerouted to Codex after limit")
 
         let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
-        coordinator.store.updateState(id: claudeSession.id, to: .working)
+        coordinator.store.updateState(id: claudeSession.id, to: Self.turnOver)
         let fresh = try inbox.createTask(from: .codex, to: .claude, prompt: "New fresh task to run", files: ["Fresh.swift"])
         try inbox.markTaskDelivered(taskId: fresh.id, sessionId: claudeSession.id)
 
@@ -1240,7 +1246,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let inbox = InboxStore(workspaceRoot: ws)
         let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
-        coordinator.store.updateState(id: claudeSession.id, to: .working)
+        coordinator.store.updateState(id: claudeSession.id, to: Self.turnOver)
         let task = try inbox.createTask(from: .cursor, to: .claude, prompt: "Deploy service mesh", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: claudeSession.id)
 
@@ -1291,7 +1297,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
-        coordinator.store.updateState(id: claudeSession.id, to: .working)
+        coordinator.store.updateState(id: claudeSession.id, to: Self.turnOver)
         let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
         coordinator.store.updateState(id: cursorSession.id, to: .ready)
 
@@ -1376,7 +1382,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let sourceSession = try coordinator.newSession(cwd: ws, agent: .claude)
-        coordinator.store.updateState(id: sourceSession.id, to: .working)
+        coordinator.store.updateState(id: sourceSession.id, to: Self.turnOver)
         let original = try inbox.createTask(from: .cursor, to: .claude, prompt: "Build high-throughput streaming proxy", files: ["Proxy.swift"])
         try inbox.markTaskDelivered(taskId: original.id, sessionId: sourceSession.id)
         try inbox.markTaskStarted(taskId: original.id)
@@ -1417,7 +1423,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let sourceSession = try coordinator.newSession(cwd: ws, agent: .claude)
-        coordinator.store.updateState(id: sourceSession.id, to: .working)
+        coordinator.store.updateState(id: sourceSession.id, to: Self.turnOver)
         let original = try inbox.createTask(from: .cursor, to: .claude, prompt: "Build high-throughput streaming proxy", files: ["Proxy.swift"])
         try inbox.markTaskDelivered(taskId: original.id, sessionId: sourceSession.id)
         try inbox.markTaskStarted(taskId: original.id)
@@ -1444,6 +1450,136 @@ final class AppCoordinatorRelayTests: XCTestCase {
             try inbox.load().messages.contains { $0.kind == .notice && $0.taskId == original.id },
             "no 'paused' notice for a task that was already done"
         )
+    }
+
+    /// A Codex worker holding a started task, its screen showing a limit banner. The worker is a
+    /// session of the mock agent, which echoes the banner onto its screen.
+    @MainActor
+    private func makeWorkerShowingABanner(
+        _ coordinator: AppCoordinator, inbox: InboxStore, state: SessionState
+    ) async throws -> (session: Session, task: TaskRecord) {
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .codex)
+        coordinator.store.updateState(id: session.id, to: state)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Review the terminal work", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        coordinator.terminals.sendInput(sessionId: session.id, text: "429 Too Many Requests\n")
+        let shown = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("429 Too Many Requests") ?? false
+        }
+        XCTAssertTrue(shown, "the mock agent never printed the banner")
+        return (session, task)
+    }
+
+    /// Task 97273A41 was cancelled and sent to another agent while its Codex worker was still busy
+    /// in the same checkout. A worker whose session is working is not out of quota, whatever its
+    /// screen quotes: nothing is cancelled, moved or recorded, and the delegator is told once.
+    @MainActor
+    func testALimitMatchOnAWorkingAssigneeLeavesItsTaskInPlaceAndTellsTheDelegator() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let (worker, task) = try await makeWorkerShowingABanner(coordinator, inbox: inbox, state: .working)
+
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: worker.id), "a working session is not rerouted")
+        _ = coordinator.checkLimitsAndReroute(for: worker.id)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started)
+        XCTAssertFalse(try inbox.load().tasks.contains { $0.hop == 1 }, "no copy for another agent")
+        XCTAssertNil(try inbox.isAgentLimited(agent: .codex), "a working session's screen is not evidence of a limit")
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.state, .working, "the session is left as it was")
+        let notices = try inbox.load().messages.filter { $0.kind == .notice && $0.taskId == task.id }
+        XCTAssertEqual(notices.count, 1, "the delegator is told once, not on every tick")
+        let notice = try XCTUnwrap(notices.first)
+        XCTAssertEqual(notice.toAgent, .claude)
+        XCTAssertTrue(notice.prompt.contains("still working"), notice.prompt)
+        XCTAssertTrue(notice.prompt.contains(task.shortId), notice.prompt)
+        XCTAssertTrue(notice.prompt.contains("linkc_cancel_task(\"\(task.id)\")"), notice.prompt)
+    }
+
+    /// The same banner on a worker whose turn is over (its screen has gone quiet, and its state
+    /// says so) is a real limit: the task moves, as before.
+    @MainActor
+    func testALimitMatchOnAnIdleAssigneeReroutesItsTask() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let (worker, task) = try await makeWorkerShowingABanner(coordinator, inbox: inbox, state: .finished)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: worker.id))
+
+        let cancelled = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(cancelled.state, .cancelled)
+        XCTAssertNotNil(try inbox.load().tasks.first { $0.hop == 1 && $0.prompt == task.prompt })
+        XCTAssertNotNil(try inbox.isAgentLimited(agent: .codex))
+    }
+
+    /// A reroute waits out a worker that is still working, then goes ahead: once the session's
+    /// state says the turn is over, the banner on its screen is the agent's own.
+    @MainActor
+    func testARerouteHeldBackForAWorkingAssigneeGoesAheadOnceItsTurnEnds() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let (worker, task) = try await makeWorkerShowingABanner(coordinator, inbox: inbox, state: .working)
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: worker.id))
+
+        coordinator.store.updateState(id: worker.id, to: .finished)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: worker.id), "the screen did not change; the worker did")
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled)
+        XCTAssertNotNil(try inbox.load().tasks.first { $0.hop == 1 })
+    }
+
+    /// A screen still changing counts as activity even when the session's state has not caught up
+    /// (a turn end misread, a hook not yet in). The banner just drew, so the screen changed a
+    /// moment ago; once it has stayed the same for the quiet period the reroute goes ahead, with
+    /// nothing new on the screen to trigger it.
+    @MainActor
+    func testARerouteHeldBackForAScreenStillChangingGoesAheadOnceItHasBeenQuiet() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
+        defer { coordinator.shutdown() }
+        let (_, task) = try await makeWorkerShowingABanner(coordinator, inbox: inbox, state: .finished)
+
+        coordinator.sampleAgentStates()
+        currentTime = currentTime.addingTimeInterval(3)
+        coordinator.sampleAgentStates()
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started, "the screen changed 3s ago")
+        XCTAssertFalse(try inbox.load().tasks.contains { $0.hop == 1 })
+
+        currentTime = currentTime.addingTimeInterval(3)
+        coordinator.sampleAgentStates()
+
+        let cancelled = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(cancelled.state, .cancelled, "6s of the same screen is quiet")
+        XCTAssertNotNil(try inbox.load().tasks.first { $0.hop == 1 })
+    }
+
+    /// The task keeps why it moved, so the next reroute can be explained from the inbox alone.
+    @MainActor
+    func testARerouteRecordsWhatTheWorkerWasDoingWhenItMoved() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
+        defer { coordinator.shutdown() }
+        let (_, task) = try await makeWorkerShowingABanner(coordinator, inbox: inbox, state: .finished)
+        coordinator.sampleAgentStates()
+        currentTime = currentTime.addingTimeInterval(8)
+
+        coordinator.sampleAgentStates()
+
+        let reason = try XCTUnwrap(inbox.task(id: task.id)?.cancelReason)
+        XCTAssertTrue(reason.hasPrefix("rerouted to"), reason)
+        XCTAssertTrue(reason.contains("after limit"), reason)
+        XCTAssertTrue(reason.contains("Codex session was finished"), reason)
+        XCTAssertTrue(reason.contains("screen unchanged for 8s"), reason)
     }
 
     /// Test 12: Turn end without a report sends exactly one short line, never scrollback, and never loops.
@@ -2070,7 +2206,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let source = try coordinator.newSession(cwd: ws, agent: .claude)
-        coordinator.store.updateState(id: source.id, to: .working)
+        coordinator.store.updateState(id: source.id, to: Self.turnOver)
         let peer = try coordinator.newSession(cwd: ws, agent: .codex)
         coordinator.store.updateState(id: peer.id, to: .working) // busy, so the copy waits in the queue
         let original = try inbox.createTask(from: .cursor, to: .claude, prompt: "Make check pass", files: [], verification: verification())
@@ -2271,7 +2407,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light)
-        coordinator.store.updateState(id: session.id, to: .working)
+        coordinator.store.updateState(id: session.id, to: Self.turnOver)
         let task = try inbox.createTask(from: .cursor, to: .claude, tier: .light, prompt: "Build a streaming proxy", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
         try inbox.markTaskStarted(taskId: task.id)
@@ -2304,7 +2440,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light)
-        coordinator.store.updateState(id: session.id, to: .working)
+        coordinator.store.updateState(id: session.id, to: Self.turnOver)
         let task = try inbox.createTask(from: .cursor, to: .claude, tier: .light, prompt: "Build a streaming proxy", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
         try inbox.markTaskStarted(taskId: task.id)
@@ -2340,7 +2476,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light)
         try await waitForPasteReady(coordinator, sessionId: session.id)
-        coordinator.store.updateState(id: session.id, to: .working)
+        coordinator.store.updateState(id: session.id, to: Self.turnOver)
         let stuck = try inbox.createTask(from: .cursor, to: .claude, tier: .light, prompt: "Build a streaming proxy", files: [])
         try inbox.markTaskDelivered(taskId: stuck.id, sessionId: session.id)
         try inbox.markTaskStarted(taskId: stuck.id)
@@ -2393,7 +2529,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .standard)
-        coordinator.store.updateState(id: session.id, to: .working)
+        coordinator.store.updateState(id: session.id, to: Self.turnOver)
         let task = try inbox.createTask(from: .cursor, to: .claude, tier: .standard, prompt: "work", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
         try inbox.markTaskStarted(taskId: task.id)
@@ -2502,7 +2638,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         defer { coordinator.shutdown() }
 
         let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light)
-        coordinator.store.updateState(id: session.id, to: .working)
+        coordinator.store.updateState(id: session.id, to: Self.turnOver)
         let task = try inbox.createTask(from: .cursor, to: .claude, tier: .light, prompt: "Rename a file", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
         try inbox.markTaskStarted(taskId: task.id)
@@ -2879,7 +3015,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
         coordinator.store.updateState(id: claudeSession.id, to: .ready)
         let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
-        coordinator.store.updateState(id: cursorSession.id, to: .working)
+        coordinator.store.updateState(id: cursorSession.id, to: Self.turnOver)
 
         let task = try inbox.createTask(from: .claude, to: .cursor, prompt: "Refactor router", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: cursorSession.id)
@@ -2910,7 +3046,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
         coordinator.store.updateState(id: claudeSession.id, to: .ready)
         let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
-        coordinator.store.updateState(id: cursorSession.id, to: .working)
+        coordinator.store.updateState(id: cursorSession.id, to: Self.turnOver)
 
         let task = try inbox.createTask(from: .claude, to: .cursor, prompt: "Refactor router", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: cursorSession.id)

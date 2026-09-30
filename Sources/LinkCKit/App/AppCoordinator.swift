@@ -147,6 +147,10 @@ public final class AppCoordinator {
     /// the screen, the agent kind and what linkC has typed, so the same three give the same answer
     /// and the scan is skipped. Cleared by `cleanup`.
     var limitScans: [String: LimitScan] = [:]
+    /// Per session: the task a "limit match held back" notice was last sent for, so a worker that
+    /// keeps printing (and keeps the match on its screen) tells the delegator once, not every
+    /// tick. Cleared by `cleanup`.
+    var heldLimitNotices: [String: String] = [:]
     /// Finds a provider limit in a session's recent output, given what linkC has typed into it.
     /// The real rules unless a test substitutes a counter.
     var limitDetection: (_ output: String, _ agent: AgentKind, _ injected: [String]) -> LimitMatch? = {
@@ -155,6 +159,18 @@ public final class AppCoordinator {
 
     /// When `sessionId`'s screen last changed; nil if it has never been sampled.
     func screenUnchangedSince(_ sessionId: String) -> Date? { screenSignatures[sessionId]?.since }
+
+    /// What says `session` is busy right now, or nil when it is quiet: its state is working, or its
+    /// screen changed within the turn-end quiet period (a state that has not caught up, or a turn
+    /// end misread, still shows in the screen). A limit banner on a busy session is not the agent's
+    /// own, and moving its task would put a second agent in a checkout it is still using.
+    func activity(of session: Session) -> String? {
+        if session.state.bucket == .active { return "its session is still working" }
+        guard let since = screenUnchangedSince(session.id) else { return nil }
+        let quiet = now().timeIntervalSince(since)
+        guard quiet < turnEndDebounce.quietPeriod else { return nil }
+        return "its screen changed \(Int(max(0, quiet)))s ago"
+    }
     /// The current tier → model mapping. A closure, not a value, so a settings edit is seen on
     /// the next spawn without anyone re-injecting anything.
     private let modelSettings: @MainActor @Sendable () -> AgentModelSettings
@@ -552,6 +568,7 @@ public final class AppCoordinator {
         lastInjectionAt.removeValue(forKey: sessionId)
         limitSignatures.removeValue(forKey: sessionId)
         limitScans.removeValue(forKey: sessionId)
+        heldLimitNotices.removeValue(forKey: sessionId)
         if wasWorker {
             // A worker was linkC's, not the user's: its report is in the task record, so it
             // leaves nothing under Earlier.
