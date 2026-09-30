@@ -2845,6 +2845,93 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertNotNil(coordinator.store.session(id: worker.id))
     }
+
+    /// A worker whose task has ended is closed a minute later, not ten, and only the worker: the
+    /// user's session that carried a task of its own stays.
+    @MainActor
+    func testAWorkerIsClosedAMinuteAfterItsTaskEnds() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        let mine = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "finish", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        let myTask = try inbox.createTask(from: .claude, to: .codex, prompt: "mine", files: [])
+        try inbox.markTaskDelivered(taskId: myTask.id, sessionId: mine.id)
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        try inbox.cancelTask(taskId: myTask.id, reason: "not needed")
+        coordinator.store.updateState(id: worker.id, to: .finished)
+        coordinator.store.updateState(id: mine.id, to: .finished)
+
+        clock.set(Date().addingTimeInterval(30))
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "30 s after the task ended: still inside the grace")
+
+        clock.set(Date().addingTimeInterval(61))
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertNil(coordinator.store.session(id: worker.id), "a minute after its task ended: closed through the tick")
+        XCTAssertNotNil(coordinator.store.session(id: mine.id), "the user's session is never closed")
+    }
+
+    /// A follow-up for the same agent kind inside the grace reuses the finished worker: the tick
+    /// that would have closed it hands it the task instead, and no second session is launched.
+    @MainActor
+    func testAFollowUpInsideTheGraceReusesTheWorker() async throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        _ = try coordinator.newSession(cwd: ws, agent: .claude)
+        let first = try inbox.createTask(from: .claude, to: .codex, prompt: "first", files: [])
+        try inbox.markTaskDelivered(taskId: first.id, sessionId: worker.id)
+        try inbox.cancelTask(taskId: first.id, reason: "done with it")
+        coordinator.store.updateState(id: worker.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: worker.id)
+
+        clock.set(Date().addingTimeInterval(30))
+        let followUp = try inbox.createTask(from: .claude, to: .codex, prompt: "second", files: [])
+        clock.set(Date().addingTimeInterval(61))
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "the follow-up must not lose its worker to the close")
+        XCTAssertEqual(coordinator.store.sessions.count, 2, "the follow-up must not launch a second worker")
+        XCTAssertEqual(try inbox.task(id: followUp.id)?.assigneeSessionId, worker.id)
+    }
+
+    @MainActor
+    func testTheWorkerOnScreenIsNotClosedWhenItsTaskEnds() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        XCTAssertEqual(coordinator.terminals.selectedId, worker.id, "the new worker starts on screen")
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "finish", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        coordinator.store.updateState(id: worker.id, to: .finished)
+
+        clock.set(Date().addingTimeInterval(120))
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "the worker on screen must not be closed")
+    }
+
     @MainActor
     func testRerouteExcludesDelegatorAndMovesToAnotherPeer() async throws {
         let ws = tempDir.path

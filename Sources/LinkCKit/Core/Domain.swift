@@ -112,8 +112,9 @@ public struct Session: Sendable, Identifiable, Equatable {
     /// relay can trust this when it picks an assignee.
     public var model: String?
     public var modelTier: ModelTier?
-    /// A session linkC started to carry a delegated task, not one the user opened. Closed once it
-    /// has sat idle with no task for `WorkerReaper.idleGrace`; opening it makes it the user's.
+    /// A session linkC started to carry a delegated task, not one the user opened. Closed once its
+    /// tasks have ended (`WorkerReaper.completionGrace`) or it has sat idle with no task for
+    /// `WorkerReaper.idleGrace`; opening it makes it the user's.
     public var isWorker: Bool
 
     public init(
@@ -138,6 +139,18 @@ public struct Session: Sendable, Identifiable, Equatable {
         self.model = model
         self.modelTier = modelTier
         self.isWorker = isWorker
+    }
+}
+
+extension Session {
+    /// Whether the relay may hand `task` to this session: the same agent kind, and the pinned
+    /// tier when the task names one — a task written before tiers has none and keeps the rule
+    /// that any session of its kind will do. Never the session that delegated it, whose
+    /// terminal is mid-turn. Whether the session is idle and in the right workspace is the
+    /// caller's to check.
+    func canCarry(_ task: TaskRecord) -> Bool {
+        agentKind == task.toAgent && id != task.fromSessionId
+            && (task.tier == nil || modelTier == task.tier)
     }
 }
 
