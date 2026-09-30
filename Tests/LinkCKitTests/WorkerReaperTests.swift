@@ -160,4 +160,85 @@ final class WorkerReaperTests: XCTestCase {
         let tasks = [task(.queued, assignee: nil)]
         XCTAssertEqual(closable([session("W", .finished, idleFor: 10)], tasks: tasks), ["W"])
     }
+
+    // MARK: - Close requests
+
+    private func decide(
+        _ by: CloseRequest.Requester = .delegator, task: TaskRecord? = nil, among: [TaskRecord] = [],
+        session: Session?, onScreen: Bool = false
+    ) -> CloseDecision {
+        let asked = task ?? self.task(.reported, assignee: "W")
+        return WorkerReaper.decision(
+            for: CloseRequest(by: by), task: asked, among: [asked] + among, session: session, onScreen: onScreen)
+    }
+
+    func testAnIdleWorkerIsClosedOnRequest() {
+        for state in [SessionState.ready, .finished, .waitingIdle] {
+            for by in [CloseRequest.Requester.delegator, .worker] {
+                XCTAssertEqual(
+                    decide(by, session: session("W", state, idleFor: 0)), .close(sessionId: "W"), "\(state) \(by)")
+            }
+        }
+    }
+
+    func testARequestClosesAWorkerWithoutWaitingOutAGrace() {
+        let ended = task(.done, assignee: "W", endedAgo: 1)
+        XCTAssertEqual(
+            decide(task: ended, session: session("W", .finished, idleFor: 0)), .close(sessionId: "W"))
+    }
+
+    func testARequestIsRefusedForASessionTheUserOpened() {
+        guard case .refuse(let reason) = decide(session: session("W", .finished, idleFor: 0, worker: false)) else {
+            return XCTFail("a user-opened session must be refused")
+        }
+        XCTAssertTrue(reason.contains("not a worker linkC launched"), reason)
+    }
+
+    func testARequestIsRefusedForTheSessionOnScreen() {
+        guard case .refuse(let reason) = decide(session: session("W", .finished, idleFor: 0), onScreen: true) else {
+            return XCTFail("the session on screen must be refused")
+        }
+        XCTAssertTrue(reason.contains("on screen"), reason)
+    }
+
+    func testTheDelegatorsRequestIsRefusedWhileTheWorkerIsBusy() {
+        for state in [SessionState.starting, .working, .waitingPermission, .error] {
+            guard case .refuse(let reason) = decide(.delegator, session: session("W", state, idleFor: 0)) else {
+                return XCTFail("\(state) must be refused")
+            }
+            XCTAssertTrue(reason.contains("idle"), reason)
+        }
+    }
+
+    func testTheWorkersOwnRequestWaitsForItsTurnToEnd() {
+        for state in [SessionState.starting, .working, .waitingPermission, .error] {
+            XCTAssertEqual(decide(.worker, session: session("W", state, idleFor: 0)), .wait, "\(state)")
+        }
+    }
+
+    func testARequestIsRefusedWhileTheWorkerHoldsAnotherOpenTask() {
+        let other = task(.started, assignee: "W")
+        guard case .refuse(let reason) = decide(among: [other], session: session("W", .finished, idleFor: 0)) else {
+            return XCTFail("another open task must refuse")
+        }
+        XCTAssertTrue(reason.contains(other.shortId), reason)
+    }
+
+    func testARequestOnATaskStillRunningIsRefused() {
+        let running = task(.started, assignee: "W")
+        guard case .refuse = decide(task: running, session: session("W", .finished, idleFor: 0)) else {
+            return XCTFail("a running task must refuse")
+        }
+    }
+
+    func testARequestForASessionThatIsGoneIsAlreadyDone() {
+        XCTAssertEqual(decide(session: nil), .alreadyClosed)
+        XCTAssertEqual(decide(.worker, among: [task(.started, assignee: "W")], session: nil), .alreadyClosed)
+    }
+
+    func testARequestOnATaskNeverDeliveredIsRefused() {
+        guard case .refuse = decide(task: task(.queued, assignee: nil), session: nil) else {
+            return XCTFail("an undelivered task has no worker")
+        }
+    }
 }

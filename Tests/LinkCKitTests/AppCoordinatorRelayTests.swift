@@ -2932,6 +2932,239 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(coordinator.store.session(id: worker.id), "the worker on screen must not be closed")
     }
 
+    // MARK: - Close requests
+
+    /// A workspace with a worker (`W`, finished, its task reported) and a session of the user's
+    /// on screen; a request from `requester` waits on the task.
+    @MainActor
+    private func workerWithRequest(
+        _ coordinator: AppCoordinator, inbox: InboxStore, by requester: CloseRequest.Requester,
+        workerState: SessionState = .finished, taskState: TaskState = .reported
+    ) throws -> (worker: Session, mine: Session, task: TaskRecord) {
+        let ws = inbox.workspaceRoot
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        let mine = try coordinator.newSession(cwd: ws, agent: .codex)
+        var task = try inbox.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        switch taskState {
+        case .reported:
+            try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "did it"))
+        case .cancelled:
+            try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        default:
+            break
+        }
+        coordinator.store.updateState(id: worker.id, to: workerState)
+        coordinator.store.updateState(id: mine.id, to: .finished)
+        _ = try inbox.requestClose(taskId: task.id, by: requester)
+        task = try XCTUnwrap(inbox.task(id: task.id))
+        return (worker, mine, task)
+    }
+
+    @MainActor
+    private func closeRequest(_ inbox: InboxStore, _ task: TaskRecord) throws -> CloseRequest {
+        try XCTUnwrap(inbox.task(id: task.id)?.closeRequest)
+    }
+
+    @MainActor
+    func testADelegatorsRequestClosesAnIdleWorkerAtOnce() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, mine, task) = try workerWithRequest(coordinator, inbox: inbox, by: .delegator)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNil(coordinator.store.session(id: worker.id), "an idle worker the delegator asked to close is closed")
+        XCTAssertNotNil(coordinator.store.session(id: mine.id))
+        let request = try closeRequest(inbox, task)
+        XCTAssertNotNil(request.closedAt, "the answer must be on the task for the caller to read")
+        XCTAssertNil(request.refusal)
+    }
+
+    @MainActor
+    func testARequestIsReachedThroughTheRelayTick() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, _, task) = try workerWithRequest(coordinator, inbox: inbox, by: .delegator)
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertNil(coordinator.store.session(id: worker.id))
+        XCTAssertNotNil(try closeRequest(inbox, task).closedAt)
+    }
+
+    @MainActor
+    func testARequestNeverClosesASessionTheUserOpened() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let mine = try coordinator.newSession(cwd: ws, agent: .codex)
+        let other = try coordinator.newSession(cwd: ws, agent: .claude)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: mine.id)
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        coordinator.store.updateState(id: mine.id, to: .finished)
+        XCTAssertEqual(coordinator.terminals.selectedId, other.id)
+        _ = try inbox.requestClose(taskId: task.id, by: .delegator)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNotNil(coordinator.store.session(id: mine.id), "a session the user opened is never closed")
+        let request = try closeRequest(inbox, task)
+        XCTAssertTrue(try XCTUnwrap(request.refusal).contains("not a worker linkC launched"))
+    }
+
+    @MainActor
+    func testARequestNeverClosesAWorkerTheUserHasTakenOver() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, mine, task) = try workerWithRequest(coordinator, inbox: inbox, by: .delegator)
+        coordinator.focusSession(worker.id)
+        coordinator.terminals.select(mine.id)
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, false, "focusing adopts the worker")
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "an adopted worker is never closed")
+        XCTAssertNotNil(try closeRequest(inbox, task).refusal)
+    }
+
+    @MainActor
+    func testARequestNeverClosesTheSessionOnScreen() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, _, task) = try workerWithRequest(coordinator, inbox: inbox, by: .delegator)
+        coordinator.terminals.select(worker.id)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "the worker on screen must not be closed")
+        XCTAssertTrue(try XCTUnwrap(closeRequest(inbox, task).refusal).contains("on screen"))
+    }
+
+    @MainActor
+    func testTheDelegatorsRequestIsRefusedWhileTheWorkerIsBusy() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, _, task) = try workerWithRequest(
+            coordinator, inbox: inbox, by: .delegator, workerState: .working)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "a busy worker is not closed")
+        XCTAssertTrue(try XCTUnwrap(closeRequest(inbox, task).refusal).contains("not idle"))
+    }
+
+    @MainActor
+    func testAWorkersOwnRequestWaitsForItsTurnToEndThenCloses() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, _, task) = try workerWithRequest(
+            coordinator, inbox: inbox, by: .worker, workerState: .working)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "still finishing its turn")
+        XCTAssertTrue(try closeRequest(inbox, task).isPending, "the request waits rather than being refused")
+
+        coordinator.store.updateState(id: worker.id, to: .finished)
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNil(coordinator.store.session(id: worker.id), "closed once its turn ended")
+        XCTAssertNotNil(try closeRequest(inbox, task).closedAt)
+    }
+
+    @MainActor
+    func testARequestIsRefusedOnceTheWorkerHoldsAnotherTask() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, _, task) = try workerWithRequest(coordinator, inbox: inbox, by: .worker)
+        let next = try inbox.createTask(from: .claude, to: .codex, prompt: "next", files: [])
+        try inbox.markTaskDelivered(taskId: next.id, sessionId: worker.id)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "a worker with new work is kept")
+        XCTAssertTrue(try XCTUnwrap(closeRequest(inbox, task).refusal).contains(next.shortId))
+    }
+
+    @MainActor
+    func testARequestForASessionThatIsAlreadyGoneIsAnsweredClosed() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, _, task) = try workerWithRequest(coordinator, inbox: inbox, by: .delegator)
+        coordinator.stopSession(worker.id)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        let request = try closeRequest(inbox, task)
+        XCTAssertNotNil(request.closedAt)
+        XCTAssertNil(request.refusal)
+    }
+
+    @MainActor
+    func testARequestClosesOnlyTheWorkerItNames() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, mine, _) = try workerWithRequest(coordinator, inbox: inbox, by: .delegator)
+        let bystander = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        coordinator.store.updateState(id: bystander.id, to: .finished)
+        coordinator.terminals.select(mine.id)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNil(coordinator.store.session(id: worker.id))
+        XCTAssertNotNil(coordinator.store.session(id: bystander.id), "an idle worker nobody asked about stays inside its grace")
+    }
+
     @MainActor
     func testRerouteExcludesDelegatorAndMovesToAnotherPeer() async throws {
         let ws = tempDir.path
