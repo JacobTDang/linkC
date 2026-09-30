@@ -771,6 +771,9 @@ extension AppCoordinator {
 
     /// For each open task assigned to `sessionId`, sends one short "ended without report" line
     /// to the delegator — once per task. Reads no terminal output. Returns the number notified.
+    /// A task whose reroute is held back for a limit match is skipped: it is about to move, and the
+    /// line would be stale by the time the delegator reads it. `checkLimitsAndReroute` sends it if
+    /// the banner leaves the screen and the task stays.
     @discardableResult
     public func relayTurnEnd(sessionId: String, workspacePath: String) -> Int {
         guard let session = store.session(id: sessionId), session.agentKind != .shell else { return 0 }
@@ -787,7 +790,8 @@ extension AppCoordinator {
         var notified = 0
         for task in open where task.assigneeSessionId == sessionId
             && (task.state == .delivered || task.state == .started)
-            && !task.unreportedTurnEndNotified {
+            && !task.unreportedTurnEndNotified
+            && limitHolds[sessionId]?.taskId != task.id {
             do {
                 try echo(
                     // The line is read when the delegator is next idle, so it names the state at turn
@@ -873,8 +877,11 @@ extension AppCoordinator {
         // one — so a real banner that repeats a phrase an older brief quoted still matches (see
         // `LimitDetector.withoutInjected`).
         guard let match = limitDetection(recentOutput, session.agentKind, injected) else {
-            // The banner is gone, so the reroute it was held back for is no longer wanted.
-            limitHolds[sessionId] = nil
+            // The banner is gone, so the reroute it was held back for is no longer wanted. A turn that
+            // ended in the meantime was not reported while the hold lasted.
+            if limitHolds.removeValue(forKey: sessionId) != nil, session.state == .finished {
+                relayTurnEnd(sessionId: sessionId, workspacePath: norm)
+            }
             return false
         }
 
@@ -1087,26 +1094,38 @@ extension AppCoordinator {
     }
 
     /// A limit rule matched the screen of a session that is busy with `task`. True while the
-    /// reroute stays held back: the task is left where it is, and the delegator is told once, when
-    /// the hold begins. False once `limitHoldCap` has passed since `previous`, the hold's start
-    /// (nil for a hold that begins now): the task moves anyway. `busy` says why the session counts
-    /// as busy.
+    /// reroute stays held back: the task is left where it is. `previous` is the hold already in
+    /// place for this task (nil for one that begins now). False once `limitHoldCap` has passed
+    /// since it began: the task moves anyway. `busy` says why the session counts as busy.
+    ///
+    /// The delegator is told once the hold has outlasted two quiet periods. A worker whose turn has
+    /// ended is moved within one quiet period and a tick, and a notice that the task was left with
+    /// it would be contradicted by that move.
     fileprivate func holdBack(
         _ match: LimitMatch, task: TaskRecord, of session: Session, busy: String,
         since previous: LimitHold?, at tickNow: Date, inboxStore: InboxStore
     ) -> Bool {
-        let hold = previous ?? LimitHold(taskId: task.id, since: tickNow)
+        var hold = previous ?? LimitHold(taskId: task.id, since: tickNow)
         let heldFor = tickNow.timeIntervalSince(hold.since)
         guard heldFor < Self.limitHoldCap else {
             NSLog("[linkC relay] checkLimitsAndReroute: %@ (session %@) is still busy — %@ — %ds after its limit rule '%@' matched; task %@ moves anyway",
                   session.agentKind.displayName, session.id, busy, Int(heldFor), match.matchedPattern, task.shortId)
             return false
         }
+        if previous == nil {
+            NSLog("[linkC relay] checkLimitsAndReroute: %@ matched limit rule '%@' but %@ (session %@); task %@ left in place for up to %ds",
+                  session.agentKind.displayName, match.matchedPattern, busy, session.id, task.shortId, Int(Self.limitHoldCap))
+        }
+        if !hold.delegatorTold, heldFor >= 2 * turnEndQuietPeriod {
+            hold.delegatorTold = true
+            tellDelegatorOfHold(task: task, of: session, busy: busy, inboxStore: inboxStore)
+        }
         limitHolds[session.id] = hold
-        guard previous == nil else { return true }
-        NSLog("[linkC relay] checkLimitsAndReroute: %@ matched limit rule '%@' but %@ (session %@); task %@ left in place for up to %ds",
-              session.agentKind.displayName, match.matchedPattern, busy, session.id, task.shortId, Int(Self.limitHoldCap))
-        guard task.fromAgent != session.agentKind else { return true }
+        return true
+    }
+
+    private func tellDelegatorOfHold(task: TaskRecord, of session: Session, busy: String, inboxStore: InboxStore) {
+        guard task.fromAgent != session.agentKind else { return }
         do {
             _ = try inboxStore.enqueue(
                 from: session.agentKind, to: task.fromAgent, kind: .notice, taskId: task.id,
@@ -1115,14 +1134,15 @@ extension AppCoordinator {
         } catch {
             NSLog("[linkC relay] checkLimitsAndReroute: task %@ held-back notice — %@", task.shortId, String(describing: error))
         }
-        return true
     }
 }
 
-/// A reroute held back for a busy worker: the task it is for, and when the hold began.
+/// A reroute held back for a busy worker: the task it is for, when the hold began, and whether the
+/// delegator has been told.
 struct LimitHold: Equatable {
     let taskId: String
     let since: Date
+    var delegatorTold = false
 }
 
 /// The run `launchVerifications` starts: the gate at base, or verification at the reported sha.

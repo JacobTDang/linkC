@@ -1473,16 +1473,25 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
     /// Task 97273A41 was cancelled and sent to another agent while its Codex worker was still busy
     /// in the same checkout. While the worker's session is working its task is not moved: nothing
-    /// is cancelled or copied for another agent, and the delegator is told once.
+    /// is cancelled or copied for another agent, and the delegator is told once, after the hold has
+    /// outlasted two quiet periods.
     @MainActor
     func testALimitMatchOnAWorkingAssigneeLeavesItsTaskInPlaceAndTellsTheDelegator() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
-        let coordinator = makeCoordinator()
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
         defer { coordinator.shutdown() }
         let (worker, task) = try await makeWorkerShowingABanner(coordinator, inbox: inbox, state: .working)
 
         XCTAssertFalse(coordinator.checkLimitsAndReroute(for: worker.id), "a working session is not rerouted")
+        XCTAssertTrue(
+            try inbox.load().messages.filter { $0.kind == .notice }.isEmpty,
+            "no 'left with it' notice yet: a worker that stops within a quiet period or two is moved instead"
+        )
+        currentTime = currentTime.addingTimeInterval(11)
+        _ = coordinator.checkLimitsAndReroute(for: worker.id)
+        currentTime = currentTime.addingTimeInterval(1)
         _ = coordinator.checkLimitsAndReroute(for: worker.id)
 
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .started)
@@ -1556,8 +1565,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(try inbox.isAgentLimited(agent: .codex))
     }
 
-    /// A reroute waits out a worker that is still working, then goes ahead: once the session's
-    /// state says the turn is over, the banner on its screen is the agent's own.
+    /// A reroute is held while the worker's session is working and goes ahead once its state says
+    /// the turn is over, with nothing new on the screen to trigger it.
     @MainActor
     func testARerouteHeldBackForAWorkingAssigneeGoesAheadOnceItsTurnEnds() async throws {
         let ws = tempDir.path
@@ -1601,6 +1610,91 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(try inbox.load().tasks.first { $0.hop == 1 })
     }
 
+    /// A Codex worker holding a started task whose turn ended on its limit: the status row is gone
+    /// and a banner is up, but its session says working until the turn-end debounce fires.
+    @MainActor
+    private func makeWorkerWhoseTurnEndedOnItsLimit(
+        _ coordinator: AppCoordinator, inbox: InboxStore
+    ) throws -> (session: Session, task: TaskRecord) {
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Review the terminal work", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        coordinator.store.updateState(id: session.id, to: .working)
+        try showCodexScreen(
+            "codex-0.159-turn-finished", on: session.id, of: coordinator,
+            replacing: "• done", with: "• 429 Too Many Requests"
+        )
+        return (session, task)
+    }
+
+    /// The reroute a real limit waits for the turn-end debounce; the delegator must not be told the
+    /// turn ended without a report about a task that is then moved.
+    @MainActor
+    func testARerouteHeldBackUntilTheTurnEndIsReadSendsNoTurnEndLine() throws {
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
+        defer { coordinator.shutdown() }
+        let (_, task) = try makeWorkerWhoseTurnEndedOnItsLimit(coordinator, inbox: inbox)
+
+        for _ in 0..<12 {
+            coordinator.sampleAgentStates()
+            currentTime = currentTime.addingTimeInterval(1)
+        }
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled)
+        XCTAssertNotNil(try inbox.load().tasks.first { $0.hop == 1 && $0.prompt == task.prompt })
+        XCTAssertFalse(
+            try inbox.load().messages.contains { $0.prompt.contains("turn ended without a report") },
+            "the task moved, so there is no turn to report on"
+        )
+    }
+
+    /// The same flow: the hold lasts about one quiet period, so a notice that the task was left
+    /// with the worker would be contradicted by the reroute a second later.
+    @MainActor
+    func testARerouteHeldBackForOneQuietPeriodSendsNoHeldNotice() throws {
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
+        defer { coordinator.shutdown() }
+        let (_, task) = try makeWorkerWhoseTurnEndedOnItsLimit(coordinator, inbox: inbox)
+
+        for _ in 0..<12 {
+            coordinator.sampleAgentStates()
+            currentTime = currentTime.addingTimeInterval(1)
+        }
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled)
+        XCTAssertFalse(
+            try inbox.load().messages.contains { $0.kind == .notice && $0.prompt.contains("left with it for now") },
+            "no 'left with the worker' notice for a task that moved"
+        )
+    }
+
+    /// A turn that ended while its reroute was held, whose banner then went from the screen, still
+    /// owes the delegator the line the hold kept back.
+    @MainActor
+    func testATurnEndKeptBackByAHeldRerouteIsReportedOnceTheBannerIsGone() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let (worker, task) = try await makeWorkerShowingABanner(coordinator, inbox: inbox, state: .working)
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: worker.id))
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: worker.id, workspacePath: ws), 0, "held: the task is about to move")
+
+        coordinator.store.updateState(id: worker.id, to: .finished)
+        try showCodexScreen("codex-0.159-turn-finished", on: worker.id, of: coordinator)
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: worker.id))
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started, "no banner, no reroute")
+        let lines = try inbox.load().messages.filter { $0.prompt.contains("turn ended without a report") }
+        XCTAssertEqual(lines.count, 1, "the turn ended while the task was held; the delegator is told once the hold ends")
+        XCTAssertEqual(lines.first?.taskId, task.id)
+    }
+
     /// In the 97273A41 incident Codex's turn ended on its limit while a `swift test` it had started
     /// went on in the checkout, its footer saying "1 background terminal running". The worker is
     /// quiet and its state says finished, but it is not done: the reroute waits for the terminal,
@@ -1617,11 +1711,10 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
         try inbox.markTaskStarted(taskId: task.id)
         coordinator.store.updateState(id: session.id, to: .finished)
-        let term = try XCTUnwrap(coordinator.terminals.session(id: session.id))
-        term.terminalView.getTerminal().resize(cols: 120, rows: ScreenFixture.height)
-        term.terminalView.feed(text: try CodexScreenFixture.terminalInput(
-            "codex-0.159-turn-finished-background-terminal", replacing: "• started", with: "• 429 Too Many Requests"
-        ))
+        try showCodexScreen(
+            "codex-0.159-turn-finished-background-terminal", on: session.id, of: coordinator,
+            replacing: "• started", with: "• 429 Too Many Requests"
+        )
 
         coordinator.sampleAgentStates()
         currentTime = currentTime.addingTimeInterval(8)
@@ -3218,10 +3311,13 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
     /// Draws a captured Codex frame on `sessionId`'s screen, standing in for what the CLI shows.
     @MainActor
-    private func showCodexScreen(_ name: String, on sessionId: String, of coordinator: AppCoordinator) throws {
+    private func showCodexScreen(
+        _ name: String, on sessionId: String, of coordinator: AppCoordinator,
+        replacing marker: String? = nil, with row: String = ""
+    ) throws {
         let term = try XCTUnwrap(coordinator.terminals.session(id: sessionId))
         term.terminalView.getTerminal().resize(cols: 120, rows: ScreenFixture.height)
-        term.terminalView.feed(text: try CodexScreenFixture.terminalInput(name))
+        term.terminalView.feed(text: try CodexScreenFixture.terminalInput(name, replacing: marker, with: row))
     }
 
     /// Codex drew a tip under its status row 30 seconds into a turn; linkC read the turn as ended

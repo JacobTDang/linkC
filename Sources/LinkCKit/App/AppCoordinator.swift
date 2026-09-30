@@ -185,6 +185,8 @@ public final class AppCoordinator {
     public static let injectionGap: TimeInterval = 2
     let injectionGap: TimeInterval
     private var turnEndDebounce: TurnEndDebounce
+    /// How long a working session's activity line must stay away before its turn reads as ended.
+    var turnEndQuietPeriod: TimeInterval { turnEndDebounce.quietPeriod }
     var lastInjectionAt: [String: Date] = [:]
 
     /// How long `dispatchTasks` requires a session to have been paste-ready before delivering
