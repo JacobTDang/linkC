@@ -569,6 +569,53 @@ public final class InboxStore: Sendable {
         })
     }
 
+    /// Records a request to close the session that carried `taskId`, for linkC's relay pass to
+    /// decide. Refused, and nothing written, when the tasks alone rule it out (see
+    /// `CloseRequest.refusal`). A pending request from the same side is returned as it is; any
+    /// other replaces the one there.
+    public func requestClose(
+        taskId: String, by requester: CloseRequest.Requester, timeout: TimeInterval = 5.0
+    ) throws -> CloseRequest {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            guard let idx = inbox.tasks.firstIndex(where: { $0.id == taskId }) else {
+                throw InboxError.taskNotFound(taskId)
+            }
+            if let reason = CloseRequest.refusal(for: inbox.tasks[idx], among: inbox.tasks) {
+                throw InboxError.closeRefused(reason)
+            }
+            if let existing = inbox.tasks[idx].closeRequest, existing.isPending, existing.by == requester {
+                return existing
+            }
+            let request = CloseRequest(by: requester)
+            inbox.tasks[idx].closeRequest = request
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+            return request
+        }
+    }
+
+    /// Records what linkC did with the pending request on `taskId`. A request that is not pending
+    /// (answered already, or none) is left as it is.
+    public func resolveCloseRequest(
+        taskId: String, outcome: CloseRequest.Outcome, timeout: TimeInterval = 5.0
+    ) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            guard let idx = inbox.tasks.firstIndex(where: { $0.id == taskId }) else {
+                throw InboxError.taskNotFound(taskId)
+            }
+            guard var request = inbox.tasks[idx].closeRequest, request.isPending else { return }
+            switch outcome {
+            case .closed(let at): request.closedAt = at
+            case .refused(let reason): request.refusal = reason
+            }
+            inbox.tasks[idx].closeRequest = request
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+        }
+    }
+
     public func expireTask(taskId: String, reason: String, timeout: TimeInterval = 5.0) throws {
         try transition(taskId: taskId, to: .expired, timeout: timeout) { task in
             task.cancelReason = reason
