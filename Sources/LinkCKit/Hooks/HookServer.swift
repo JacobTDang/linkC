@@ -233,7 +233,9 @@ public final class HookServer: @unchecked Sendable {
             }
         }
 
-        let response = Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".utf8)
+        // The connection is closed right after this response, so say so: without it an HTTP/1.1
+        // client keeps the socket for its next request and finds it gone.
+        let response = Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".utf8)
         connection.send(content: response, completion: .contentProcessed { [weak self] _ in
             self?.untrack(connection)
             connection.cancel()
