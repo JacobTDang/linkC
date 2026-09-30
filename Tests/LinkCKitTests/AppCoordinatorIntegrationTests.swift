@@ -1261,6 +1261,50 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, false)
     }
 
+    /// A worker can land on screen without being opened (the fallback when the one on screen
+    /// closes). Typing into it is the user using it: it becomes theirs, in memory and on disk.
+    func testTypingIntoAWorkerMakesItTheUsers() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-adopt-typing-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        let worker = try coordinator.newSession(cwd: cwd.path, agent: .codex, asWorker: true)
+        let bystander = try coordinator.newSession(cwd: cwd.path, agent: .codex, asWorker: true)
+        defer {
+            coordinator.stopSession(worker.id)
+            coordinator.stopSession(bystander.id)
+        }
+
+        coordinator.terminals.session(id: worker.id)?.terminalView.send(txt: "x")
+
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, false)
+        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, false)
+        XCTAssertEqual(coordinator.store.session(id: bystander.id)?.isWorker, true, "another worker is not the user's")
+    }
+
+    /// What linkC types into a worker (a brief, a note, a model switch) is not the user using it.
+    func testTextLinkCTypesIntoAWorkerDoesNotMakeItTheUsers() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-adopt-inject-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        let worker = try coordinator.newSession(cwd: cwd.path, agent: .codex, asWorker: true)
+        defer { coordinator.stopSession(worker.id) }
+
+        coordinator.terminals.sendInput(sessionId: worker.id, text: "linkc brief for the worker")
+        let echoed = try await waitUntil {
+            coordinator.terminals.session(id: worker.id)?.recentOutput(lines: 10).contains("linkc brief for the worker") ?? false
+        }
+        XCTAssertTrue(echoed, "the input plan never finished")
+
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, true)
+        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, true)
+    }
+
     /// A worker that ends leaves nothing under Earlier; the user's session does.
     func testAStoppedWorkerLeavesNothingUnderEarlier() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-worker-end-\(UUID().uuidString)")

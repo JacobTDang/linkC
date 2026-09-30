@@ -20,6 +20,9 @@ public final class TerminalSession {
     /// Fired on the main actor when the child process exits — for ANY reason, including being
     /// killed by `terminate()`. Carries the exit code (nil when the exit was an IO error).
     public var onTerminated: ((Int32?) -> Void)?
+    /// Fired on the main actor when the user types or pastes into the terminal. Not for what linkC
+    /// injects with `sendInput`, nor for the terminal's own replies to the program in it.
+    public var onUserInput: (() -> Void)?
     /// Separate from the client's exit callback so the manager can keep this object — and
     /// SwiftTerm's waitpid monitor — alive until the exit has actually been observed.
     var onProcessReaped: (() -> Void)?
@@ -126,6 +129,7 @@ public final class TerminalSession {
         if let existing = _terminalView { return existing }
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
         view.processDelegate = processDelegate
+        view.onUserInput = { [weak self] in self?.onUserInput?() }
         view.nativeBackgroundColor = NSColor(calibratedWhite: 0.09, alpha: 1)
         view.nativeForegroundColor = NSColor(calibratedWhite: 0.92, alpha: 1)
 
@@ -327,12 +331,15 @@ public final class TerminalSession {
             NSLog("linkC: session %@ dropped input — child process is not running", id)
             return false
         }
-        switch step {
-        case .text(let text): terminalView.send(txt: text)
-        case .pasteStart: terminalView.send(data: Self.bracketedPasteStart[...])
-        case .pasteEnd: terminalView.send(data: Self.bracketedPasteEnd[...])
-        case .submit: terminalView.send(txt: "\r")
-        case .wait: preconditionFailure("wait must be executed asynchronously")
+        let view = terminalView
+        view.sendingOwnInput {
+            switch step {
+            case .text(let text): view.send(txt: text)
+            case .pasteStart: view.send(data: Self.bracketedPasteStart[...])
+            case .pasteEnd: view.send(data: Self.bracketedPasteEnd[...])
+            case .submit: view.send(txt: "\r")
+            case .wait: preconditionFailure("wait must be executed asynchronously")
+            }
         }
         return true
     }
@@ -426,6 +433,32 @@ public final class LinkCTerminalView: LocalProcessTerminalView {
     private var hasDetachedUpdates = false
     private var synchronizedOutput = SynchronizedOutputFilter()
     private weak var observedWindow: NSWindow?
+
+    /// Fired when the user types or pastes into the terminal. Everything the view sends to the
+    /// program is either that, text linkC injects (`sendingOwnInput`), or the terminal's own reply
+    /// to the program's query (a device report, a focus or mouse report), and only the first counts.
+    var onUserInput: (() -> Void)?
+    /// How many of linkC's own sends are in progress: the view is main-actor only, and a send is
+    /// synchronous, so the depth says whether the send now reaching the delegate is the user's.
+    private var ownSendDepth = 0
+
+    /// Runs `body`, whose sends to the program are linkC's, not the user's.
+    func sendingOwnInput(_ body: () -> Void) {
+        ownSendDepth += 1
+        defer { ownSendDepth -= 1 }
+        body()
+    }
+
+    /// The terminal's own reply to something the program asked (SwiftTerm routes it through here).
+    public override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        sendingOwnInput { super.send(source: source, data: data) }
+    }
+
+    /// Everything sent to the program passes here, whoever it came from.
+    public override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if ownSendDepth == 0 { onUserInput?() }
+        super.send(source: source, data: data)
+    }
 
     public override func dataReceived(slice: ArraySlice<UInt8>) {
         guard !isDisplayAttached else {

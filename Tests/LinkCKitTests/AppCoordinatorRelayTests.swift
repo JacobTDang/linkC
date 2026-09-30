@@ -2799,6 +2799,31 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(coordinator.store.session(id: worker.id), "the worker on screen must not be closed")
     }
 
+    /// A worker can land on screen without being opened (the fallback when the one on screen
+    /// closes). If the user types into it, it is theirs: switching away must not leave it to close.
+    @MainActor
+    func testAWorkerTheUserTypedIntoIsNotClosedWhenTheyLeaveIt() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        let mine = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.terminals.select(worker.id)
+        coordinator.terminals.session(id: worker.id)?.terminalView.send(txt: "x")
+        coordinator.terminals.select(mine.id)
+        coordinator.store.updateState(id: worker.id, to: .finished)
+
+        clock.set(Date().addingTimeInterval(11 * 60))
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "a worker the user typed into is theirs")
+    }
+
     /// Wiring check: the idle-worker phase is reached through the relay tick, not just directly
     /// callable — a previous review deleted that phase from `processPendingMessages` and every
     /// test that called `reapIdleWorkers` directly stayed green. This one goes through the real

@@ -27,10 +27,10 @@ extension AppCoordinator {
             $0.isWorker && $0.cwd == norm
         }
         for id in WorkerReaper.closable(sessions: workers, tasks: tasks, lastTypedAt: lastInjectionAt, now: now()) {
-            // Only `focusSession` clears `isWorker`, but a worker can land on screen another way
-            // (a relaunch, or the fallback that hands the selection to the newest terminal when
-            // the one on screen closes) without ever being adopted. Never close the one the user
-            // is actually looking at.
+            // Only opening a worker or typing into it clears `isWorker`, but a worker can land on
+            // screen another way (a relaunch, or the fallback that hands the selection to the newest
+            // terminal when the one on screen closes) and be only watched. Never close the one the
+            // user is actually looking at.
             guard id != terminals.selectedId else { continue }
             NSLog("[linkC relay] closing finished worker %@ in %@", id, workspacePath)
             stopSession(id)

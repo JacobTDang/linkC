@@ -114,7 +114,7 @@ public struct Session: Sendable, Identifiable, Equatable {
     public var modelTier: ModelTier?
     /// A session linkC started to carry a delegated task, not one the user opened. Closed once it
     /// has been idle since its tasks ended (`WorkerReaper.completionGrace`) or with no task for
-    /// `WorkerReaper.idleGrace`; opening it makes it the user's.
+    /// `WorkerReaper.idleGrace`; opening it or typing into it makes it the user's.
     public var isWorker: Bool
 
     public init(
