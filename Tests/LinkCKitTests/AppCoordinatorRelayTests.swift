@@ -2982,6 +2982,64 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertFalse(try inbox.load().messages.contains { $0.prompt.contains("turn ended without a report") })
     }
 
+    /// Draws a captured Codex frame on `sessionId`'s screen, standing in for what the CLI shows.
+    @MainActor
+    private func showCodexScreen(_ name: String, on sessionId: String, of coordinator: AppCoordinator) throws {
+        let term = try XCTUnwrap(coordinator.terminals.session(id: sessionId))
+        term.terminalView.getTerminal().resize(cols: 120, rows: ScreenFixture.height)
+        term.terminalView.feed(text: try CodexScreenFixture.terminalInput(name))
+    }
+
+    /// Codex drew a tip under its status row 30 seconds into a turn; linkC read the turn as ended
+    /// five seconds later and told the delegator, while Codex went on to finish and report.
+    @MainActor
+    func testACodexTurnWithATipUnderItsStatusRowIsNotReadAsEnded() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "long task", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        coordinator.store.updateState(id: session.id, to: .working)
+        try showCodexScreen("codex-0.159-working-tip-under-status", on: session.id, of: coordinator)
+
+        for _ in 0..<12 {
+            coordinator.sampleAgentStates()
+            currentTime = currentTime.addingTimeInterval(1)
+        }
+
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.state, .working)
+        XCTAssertTrue(try inbox.load().messages.isEmpty, "no turn-end line while the status row is up")
+    }
+
+    /// A brief pasted while Codex was still starting its tool servers sat under "Waiting for
+    /// startup" for more than five seconds; linkC read that as the turn ended, with the task
+    /// still only delivered.
+    @MainActor
+    func testACodexBriefWaitingForStartupIsNotReadAsAnEndedTurn() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "fresh task", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+        coordinator.store.updateState(id: session.id, to: .working)
+        try showCodexScreen("codex-0.159-waiting-for-startup", on: session.id, of: coordinator)
+
+        for _ in 0..<12 {
+            coordinator.sampleAgentStates()
+            currentTime = currentTime.addingTimeInterval(1)
+        }
+
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.state, .working)
+        XCTAssertTrue(try inbox.load().messages.isEmpty, "no turn-end line while the brief waits for startup")
+    }
+
     // MARK: - Inbox reads per relay pass
 
     /// A steady workspace: a settled task, the completion line it left for a delegator with no
