@@ -532,6 +532,24 @@ final class HookServerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: cacheURL), body)
     }
 
+    /// The server closes each connection after its one response, so it must say so. An HTTP/1.1
+    /// response without `Connection: close` tells the client the socket stays open, and a client
+    /// that pools connections (URLSession) sends its next request down the closed socket and gets
+    /// "the network connection was lost".
+    func testEveryResponseSaysTheConnectionCloses() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-status-line-cache-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let server = HookServer(port: 0, statusLineCacheURL: cacheURL)
+        server.requiredToken = "tok"
+        try server.start()
+        defer { server.stop() }
+
+        let (_, response) = try await postStatusLine(port: server.port, token: "tok", body: rateLimitsBody)
+
+        XCTAssertEqual(response.value(forHTTPHeaderField: "Connection")?.lowercased(), "close")
+    }
+
     /// A body that decodes to nothing useful (no `rate_limits`) must not overwrite a previously
     /// cached reading with an empty one — only a body that actually carries limits is cached.
     func testAStatusLineWithoutRateLimitsDoesNotOverwriteTheCache() async throws {
