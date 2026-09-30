@@ -128,7 +128,10 @@ final class TerminalPreviewPatternTests: XCTestCase {
     /// match just as well if they went back to a literal pattern per call, so this compares their
     /// cost with that, measured in the same run: interleaved, on this thread's CPU time, so machine
     /// load moves both sides alike.
-    func testTheCompiledMatchersCostWellUnderAPatternCompiledPerCall() {
+    func testTheCompiledMatchersCostWellUnderAPatternCompiledPerCall() throws {
+        // ThreadSanitizer instruments linkC's code but not Foundation's, which compiles the per-call
+        // pattern, so under it the two sides no longer cost what they cost in a real build.
+        try XCTSkipIf(ThreadCPUTime.budgetScale > 1, "the ratio is only meaningful without ThreadSanitizer")
         let rows = ScreenFixture.rows()
         var compiled: TimeInterval = 0
         var perCall: TimeInterval = 0
