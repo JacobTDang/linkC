@@ -451,36 +451,14 @@ extension AppCoordinator {
                 continue
             }
 
-            // A notice about a task belongs to the session that delegated it: any other session of
-            // that kind is a different conversation. Fall back to one only when it is gone.
-            var target: Session?
-            if let taskId = message.taskId {
-                let record: TaskRecord?
-                do {
-                    record = try inboxStore.task(id: taskId, timeout: Self.relayLockTimeout)
-                } catch {
-                    // A contended lock is not "this task has no delegator": falling through would
-                    // hand the notice to a different session of the same kind. End the tick — the
-                    // next one routes it properly.
-                    if isRelayLockTimeout(error) { return true }
-                    NSLog("[linkC relay] dispatchMessages: message %@ delegator lookup — %@",
-                          message.id, String(describing: error))
-                    record = nil
-                }
-                if let delegatorId = record?.fromSessionId {
-                    // Same workspace as the fallback below demands: `fromSessionId` comes from the
-                    // caller's own `LINKC_SESSION`, so one from another project must not pull this
-                    // workspace's notice into that project's terminal.
-                    target = store.sessions.first {
-                        $0.id == delegatorId && $0.state != .ended
-                            && $0.cwd == norm
-                    }
-                }
-            }
-            if target == nil {
-                target = store.sessions.first {
-                    $0.cwd == norm && $0.agentKind == message.toAgent && $0.state != .ended
-                }
+            let target: Session?
+            do {
+                target = try deliveryTarget(for: message, in: norm, inboxStore: inboxStore, caller: "dispatchMessages")
+            } catch {
+                // A contended lock is not "this task has no delegator": falling through would hand
+                // the notice to a different session of the same kind. End the tick — the next one
+                // routes it properly.
+                return true
             }
             if target == nil {
                 // Only a task brief is worth spawning an agent for. Every other message — a
@@ -569,32 +547,42 @@ extension AppCoordinator {
         case .task: return true
         case .notice: return false
         default:
-            var target: Session?
-            if let taskId = message.taskId {
-                let record: TaskRecord?
-                do {
-                    record = try inboxStore.task(id: taskId, timeout: Self.relayLockTimeout)
-                } catch {
-                    if isRelayLockTimeout(error) { return true }
-                    NSLog("[linkC relay] hasLiveTarget: message %@ delegator lookup — %@",
-                          message.id, String(describing: error))
-                    record = nil
-                }
-                if let delegatorId = record?.fromSessionId {
-                    target = store.sessions.first {
-                        $0.id == delegatorId && $0.state != .ended
-                            && $0.cwd == workspace
-                    }
-                }
-            }
-            if target == nil {
-                target = store.sessions.first {
-                    $0.cwd == workspace && $0.agentKind == message.toAgent && $0.state != .ended
-                }
+            let target: Session?
+            do {
+                target = try deliveryTarget(for: message, in: workspace, inboxStore: inboxStore, caller: "hasLiveTarget")
+            } catch {
+                // A contended lock proves nothing about the target; keep the fast cadence to retry.
+                return true
             }
             guard let target else { return false }
             return target.state != .error && terminals.session(id: target.id)?.isRunning == true
         }
+    }
+
+    /// The session a queued message goes to. A message about a task belongs to the session that
+    /// delegated it — any other session of that kind is a different conversation — so that one is
+    /// chosen while it lives in this workspace (`fromSessionId` comes from the caller's own
+    /// `LINKC_SESSION`, so a delegator in another project must not pull this workspace's notice into
+    /// that project's terminal). Otherwise, or once it is gone, the first live session of the target
+    /// kind. Delivery and the sweep cadence both route through here so they cannot disagree about
+    /// where a message is going. Throws only the relay lock timeout; any other lookup failure is
+    /// logged and treated as "no delegator".
+    func deliveryTarget(for message: PendingMessage, in workspace: String, inboxStore: InboxStore, caller: String) throws -> Session? {
+        if let taskId = message.taskId {
+            let record: TaskRecord?
+            do {
+                record = try inboxStore.task(id: taskId, timeout: Self.relayLockTimeout)
+            } catch {
+                if isRelayLockTimeout(error) { throw error }
+                NSLog("[linkC relay] %@: message %@ delegator lookup — %@", caller, message.id, String(describing: error))
+                record = nil
+            }
+            if let delegatorId = record?.fromSessionId,
+               let delegator = store.sessions.first(where: { $0.id == delegatorId && $0.state != .ended && $0.cwd == workspace }) {
+                return delegator
+            }
+        }
+        return store.sessions.first { $0.cwd == workspace && $0.agentKind == message.toAgent && $0.state != .ended }
     }
 
     private func injectMessageBatch(_ messages: [PendingMessage], into session: Session) {

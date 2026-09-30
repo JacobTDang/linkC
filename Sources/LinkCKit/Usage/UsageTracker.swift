@@ -144,7 +144,8 @@ public final class UsageTracker {
             }
         }
         scanRecords.removeAll { $0.timestamp < cutoff }
-        window = UsageWindows.compute(scanRecords, now: now)
+        let computed = UsageWindows.compute(scanRecords, now: now)
+        if window != computed { window = computed }
     }
 
     // MARK: - Accumulation
