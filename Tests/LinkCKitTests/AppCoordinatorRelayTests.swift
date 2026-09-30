@@ -1483,6 +1483,30 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(sink.deliveries.contains { $0.title == "linkC: Cursor Agent turn ended" })
     }
 
+    /// The line reaches the delegator when the delegator is next idle, which can be a minute after
+    /// the turn ended; the task may have started or reported by then. It said "remains delivered"
+    /// for a task the inbox already showed as started, so it must say what the task was when the
+    /// turn ended, and point at `linkc_get_task` for the state it is in now.
+    @MainActor
+    func testTheTurnEndLineNamesTheStateAtTurnEndNotOneItMayHaveLeftBeforeItIsRead() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "a task", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: session.id, workspacePath: ws), 1)
+        try inbox.markTaskStarted(taskId: task.id)
+
+        let line = try XCTUnwrap(inbox.load().messages.first { $0.taskId == task.id }).prompt
+        XCTAssertFalse(line.contains("remains"), "\(line)")
+        XCTAssertTrue(line.contains("was delivered at that point"), line)
+        XCTAssertTrue(line.contains("linkc_get_task(\"\(task.id)\") shows where it stands now"), line)
+        XCTAssertTrue(line.contains("linkc_cancel_task(\"\(task.id)\")"), line)
+    }
+
     /// Test 12b: A completion message delivered to the delegator is never treated as a task and never re-echoed.
     @MainActor
     func testCompletionEchoIsNeverReEchoed() throws {

@@ -764,7 +764,9 @@ extension AppCoordinator {
             && !task.unreportedTurnEndNotified {
             do {
                 try echo(
-                    "\(session.agentKind.displayName) turn ended without a report. Task remains \(task.state.rawValue); linkc_get_task(\"\(task.id)\") or linkc_cancel_task(\"\(task.id)\").",
+                    // The line is read when the delegator is next idle, so it names the state at turn
+                    // end and leaves the current one to `linkc_get_task`.
+                    "\(session.agentKind.displayName) turn ended without a report; the task was \(task.state.rawValue) at that point. linkc_get_task(\"\(task.id)\") shows where it stands now, or linkc_cancel_task(\"\(task.id)\").",
                     for: task,
                     inboxStore: inboxStore
                 )
