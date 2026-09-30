@@ -26,8 +26,12 @@ final class WorkerReaperTests: XCTestCase {
             createdAt: now.addingTimeInterval(-3600), finishedAt: state.isOpen ? nil : ended)
     }
 
-    private func closable(_ sessions: [Session], tasks: [TaskRecord] = []) -> [String] {
-        WorkerReaper.closable(sessions: sessions, tasks: tasks, now: now)
+    /// `typed` is when linkC last typed into each session, in seconds before `now`.
+    private func closable(
+        _ sessions: [Session], tasks: [TaskRecord] = [], typed: [String: TimeInterval] = [:]
+    ) -> [String] {
+        WorkerReaper.closable(
+            sessions: sessions, tasks: tasks, lastTypedAt: typed.mapValues { now.addingTimeInterval(-$0) }, now: now)
     }
 
     // MARK: - The idle backstop
@@ -115,6 +119,44 @@ final class WorkerReaperTests: XCTestCase {
         XCTAssertEqual(closable([session("W", .finished, idleFor: 2)], tasks: tasks), [])
     }
 
+    // MARK: - Only after a whole grace of quiet
+
+    /// A worker that looked busy a moment ago is not one that has finished, however long ago its
+    /// task ended: a peer note or a lapsed lease can leave it working after the task is over,
+    /// and a screen read can call a long tool call a turn end.
+    func testAWorkerThatWentIdleInsideTheGraceIsKeptEvenThoughItsTaskEndedLongAgo() {
+        let tasks = [task(.done, assignee: "W", endedAgo: 120)]
+        XCTAssertEqual(closable([session("W", .finished, idleFor: 1.0 / 60)], tasks: tasks), [])
+        XCTAssertEqual(closable([session("W", .finished, idleFor: 59.0 / 60)], tasks: tasks), [])
+    }
+
+    func testAWorkerIsClosedOnceItHasBeenIdleForTheWholeGrace() {
+        let tasks = [task(.done, assignee: "W", endedAgo: 120)]
+        XCTAssertEqual(closable([session("W", .finished, idleFor: 61.0 / 60)], tasks: tasks), ["W"])
+    }
+
+    func testAWorkerTypedIntoAfterItsTaskEndedIsLeftToTheIdleBackstop() {
+        let tasks = [task(.done, assignee: "W", endedAgo: 120)]
+        XCTAssertEqual(
+            closable([session("W", .finished, idleFor: 5)], tasks: tasks, typed: ["W": 30]), [],
+            "a note typed in after the task ended: it may be acting on it, and its idle reading predates it")
+    }
+
+    func testTypingBeforeTheTaskEndedDoesNotKeepTheWorker() {
+        let tasks = [task(.done, assignee: "W", endedAgo: 120)]
+        XCTAssertEqual(closable([session("W", .finished, idleFor: 5)], tasks: tasks, typed: ["W": 300]), ["W"])
+    }
+
+    func testTypingIntoAnotherSessionDoesNotKeepThisWorker() {
+        let tasks = [task(.done, assignee: "W", endedAgo: 120)]
+        XCTAssertEqual(closable([session("W", .finished, idleFor: 5)], tasks: tasks, typed: ["other": 30]), ["W"])
+    }
+
+    func testTypingRestartsTheIdleBackstop() {
+        XCTAssertEqual(closable([session("W", .finished, idleFor: 11)], typed: ["W": 2 * 60]), [], "typed 2 min ago")
+        XCTAssertEqual(closable([session("W", .finished, idleFor: 11)], typed: ["W": 10 * 60 + 1]), ["W"])
+    }
+
     func testATaskWithoutAFinishTimeCountsFromItsCreation() {
         var ended = task(.cancelled, assignee: "W")
         ended.finishedAt = nil
@@ -163,13 +205,15 @@ final class WorkerReaperTests: XCTestCase {
 
     // MARK: - Close requests
 
+    /// `typed` is when linkC last typed into the session, in seconds before `now`.
     private func decide(
         _ by: CloseRequest.Requester = .delegator, task: TaskRecord? = nil, among: [TaskRecord] = [],
-        session: Session?, onScreen: Bool = false
+        session: Session?, onScreen: Bool = false, typed: TimeInterval? = nil
     ) -> CloseDecision {
         let asked = task ?? self.task(.reported, assignee: "W")
         return WorkerReaper.decision(
-            for: CloseRequest(by: by), task: asked, among: [asked] + among, session: session, onScreen: onScreen)
+            for: CloseRequest(by: by), task: asked, among: [asked] + among, session: session, onScreen: onScreen,
+            lastTypedAt: typed.map { now.addingTimeInterval(-$0) })
     }
 
     func testAnIdleWorkerIsClosedOnRequest() {
@@ -214,6 +258,43 @@ final class WorkerReaperTests: XCTestCase {
         for state in [SessionState.starting, .working, .waitingPermission, .error] {
             XCTAssertEqual(decide(.worker, session: session("W", state, idleFor: 0)), .wait, "\(state)")
         }
+    }
+
+    /// linkC types only into a session that reads as idle, so what it typed is not yet reflected
+    /// in the reading: the worker may be acting on it.
+    func testARequestIsRefusedForASessionTypedIntoAfterItsTaskEnded() {
+        let ended = task(.done, assignee: "W", endedAgo: 120)
+        let idle = session("W", .finished, idleFor: 5)
+        guard case .refuse(let reason) = decide(.delegator, task: ended, session: idle, typed: 30) else {
+            return XCTFail("a session typed into after its task ended must be refused")
+        }
+        XCTAssertTrue(reason.contains("typed"), reason)
+        XCTAssertEqual(decide(.worker, task: ended, session: idle, typed: 30), .wait)
+    }
+
+    func testARequestOnAReportedTaskIsRefusedWhileTheIdleReadingIsOlderThanTheTyping() {
+        let idle = session("W", .finished, idleFor: 1)
+        guard case .refuse = decide(.delegator, session: idle, typed: 10) else {
+            return XCTFail("typed into after it last went idle: the reading is stale")
+        }
+        XCTAssertEqual(decide(.worker, session: idle, typed: 10), .wait)
+        XCTAssertEqual(decide(.delegator, session: idle, typed: 300), .close(sessionId: "W"), "typed before it went idle")
+    }
+
+    /// The frame that delivered a later task is typed after an earlier one ended, and says nothing
+    /// about it.
+    func testARequestIgnoresTheFrameThatDeliveredALaterTaskThatEndedToo() {
+        let first = task(.done, assignee: "W", endedAgo: 600)
+        let second = task(.done, assignee: "W", endedAgo: 120)
+        XCTAssertEqual(
+            decide(task: first, among: [second], session: session("W", .finished, idleFor: 5), typed: 300),
+            .close(sessionId: "W"))
+    }
+
+    func testARequestIgnoresTypingThatCameBeforeTheTaskEnded() {
+        let ended = task(.done, assignee: "W", endedAgo: 120)
+        XCTAssertEqual(
+            decide(task: ended, session: session("W", .finished, idleFor: 5), typed: 300), .close(sessionId: "W"))
     }
 
     func testARequestIsRefusedWhileTheWorkerHoldsAnotherOpenTask() {

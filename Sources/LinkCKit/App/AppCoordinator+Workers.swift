@@ -2,8 +2,8 @@ import Foundation
 
 extension AppCoordinator {
     /// Closes this workspace's workers: those a delegator or the worker itself asked to close, those
-    /// whose tasks have ended (`WorkerReaper.completionGrace`), and those that have sat idle with no
-    /// open task for `WorkerReaper.idleGrace`. A relay phase: returns `true` when the inbox lock
+    /// idle for `WorkerReaper.completionGrace` since their tasks ended, and those that have sat idle
+    /// with no open task for `WorkerReaper.idleGrace`. A relay phase: returns `true` when the inbox lock
     /// was still contended after `relayLockTimeout`, so the tick stops there; any other failure is
     /// logged and closes nothing. It runs before `dispatchTasks`, so a worker idle past the backstop
     /// can be closed in the tick a new task was queued for it; the next tick picks or spawns
@@ -26,7 +26,7 @@ extension AppCoordinator {
         let workers = store.sessions.filter {
             $0.isWorker && $0.cwd == norm
         }
-        for id in WorkerReaper.closable(sessions: workers, tasks: tasks, now: now()) {
+        for id in WorkerReaper.closable(sessions: workers, tasks: tasks, lastTypedAt: lastInjectionAt, now: now()) {
             // Only `focusSession` clears `isWorker`, but a worker can land on screen another way
             // (a relaunch, or the fallback that hands the selection to the newest terminal when
             // the one on screen closes) without ever being adopted. Never close the one the user
@@ -48,7 +48,9 @@ extension AppCoordinator {
             let session = task.assigneeSessionId.flatMap { store.session(id: $0) }
             let onScreen = session.map { $0.id == terminals.selectedId } ?? false
             let outcome: CloseRequest.Outcome
-            switch WorkerReaper.decision(for: request, task: task, among: tasks, session: session, onScreen: onScreen) {
+            switch WorkerReaper.decision(
+                for: request, task: task, among: tasks, session: session, onScreen: onScreen,
+                lastTypedAt: session.flatMap { lastInjectionAt[$0.id] }) {
             case .wait:
                 continue
             case .close(let sessionId):

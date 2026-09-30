@@ -112,8 +112,8 @@ public struct Session: Sendable, Identifiable, Equatable {
     /// relay can trust this when it picks an assignee.
     public var model: String?
     public var modelTier: ModelTier?
-    /// A session linkC started to carry a delegated task, not one the user opened. Closed once its
-    /// tasks have ended (`WorkerReaper.completionGrace`) or it has sat idle with no task for
+    /// A session linkC started to carry a delegated task, not one the user opened. Closed once it
+    /// has been idle since its tasks ended (`WorkerReaper.completionGrace`) or with no task for
     /// `WorkerReaper.idleGrace`; opening it makes it the user's.
     public var isWorker: Bool
 

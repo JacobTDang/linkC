@@ -2932,6 +2932,69 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(coordinator.store.session(id: worker.id), "the worker on screen must not be closed")
     }
 
+    /// The completion rule needs a whole grace of quiet, not just an old task: a worker that
+    /// looked busy a moment ago (a false turn end read off its screen, a peer note still being
+    /// worked) is not finished because its task ended long ago.
+    @MainActor
+    func testAWorkerThatWentIdleJustNowIsNotClosedBecauseItsTaskEndedLongAgo() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        _ = try coordinator.newSession(cwd: ws, agent: .claude)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "finish", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        var raw = try inbox.load()
+        raw.tasks[0].finishedAt = Date().addingTimeInterval(-120)
+        try inbox.saveRaw(raw)
+        coordinator.store.updateState(id: worker.id, to: .finished)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "idle for an instant: its task ending long ago is not enough")
+
+        clock.set(Date().addingTimeInterval(61))
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+        XCTAssertNil(coordinator.store.session(id: worker.id), "idle for the whole grace: closed")
+    }
+
+    /// linkC types only into a session that reads as idle, and that reading lags what was typed.
+    /// A note typed into a finished worker just before its grace ends must not be followed by a
+    /// close on the next tick, before the worker's state has moved.
+    @MainActor
+    func testANoteTypedIntoAFinishedWorkerNearTheEndOfItsGraceIsNotFollowedByAClose() async throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        _ = try coordinator.newSession(cwd: ws, agent: .claude)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "finish", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        coordinator.store.updateState(id: worker.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: worker.id)
+
+        clock.set(Date().addingTimeInterval(59))
+        let note = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "one more thing")
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertEqual(try inbox.load().messages.first { $0.id == note.id }?.status, .delivered, "the note reached the worker")
+
+        clock.set(Date().addingTimeInterval(62))
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "typed into after its task ended: not closed on the next tick")
+    }
+
     // MARK: - Close requests
 
     /// A workspace with a worker (finished, its task reported) and a session of the user's on
@@ -3115,6 +3178,25 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertNil(coordinator.store.session(id: worker.id), "closed once its turn ended")
         XCTAssertNotNil(try closeRequest(inbox, task).closedAt)
+    }
+
+    @MainActor
+    func testARequestIsRefusedForAWorkerLinkCTypedIntoAfterItsTaskEnded() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, _, task) = try workerWithRequest(
+            coordinator, inbox: inbox, by: .delegator, taskState: .cancelled)
+        coordinator.recordInjection(sessionId: worker.id, text: "one more thing")
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "it may be acting on what was typed in")
+        XCTAssertTrue(try XCTUnwrap(closeRequest(inbox, task).refusal).contains("typed"))
     }
 
     @MainActor
