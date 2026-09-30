@@ -1,4 +1,6 @@
 import XCTest
+import Observation
+import os
 @testable import LinkCKit
 
 /// The usage pipeline's pure core: transcript-line parsing. Lines come from claude's session
@@ -381,5 +383,72 @@ final class UsageTrackerTests: XCTestCase {
         XCTAssertEqual(w.weekTokens, 1500)
         XCTAssertEqual(w.blockTokens, 1500)
         XCTAssertNotNil(w.blockResetAt)
+    }
+
+    /// A subscript write to an Observation-tracked dictionary notifies observers even when
+    /// the value is equal. An unchanged refresh must not re-write accumulators, assemblers,
+    /// activities, or titles, so open views observing them do not invalidate.
+    func testUnchangedRefreshLeavesObservedValuesUntouched() throws {
+        let path = dir.appendingPathComponent("proj-a/session.jsonl").path
+        let line = transcriptLine(at: "2026-07-22T05:00:00Z", output: 100, context: 50_000) + "\n"
+        try line.data(using: .utf8)!.write(to: URL(fileURLWithPath: path))
+
+        let tracker = UsageTracker(projectsDir: dir)
+        tracker.bind(sessionId: "L1", transcriptPath: path)
+        tracker.refreshSession("L1")
+
+        let fired = OSAllocatedUnfairLock(initialState: 0)
+        withObservationTracking {
+            _ = tracker.sessionUsage("L1")
+            _ = tracker.sessionAgents("L1")
+            _ = tracker.sessionActivity("L1")
+            _ = tracker.sessionTitle("L1")
+        } onChange: {
+            fired.withLock { $0 += 1 }
+        }
+
+        // Unchanged refresh: no new lines added to transcript.
+        tracker.refreshSession("L1")
+        XCTAssertEqual(fired.withLock { $0 }, 0, "an unchanged refresh must not notify Observation")
+
+        // Changed refresh: appending a line must notify observers.
+        let handle = FileHandle(forWritingAtPath: path)!
+        try handle.seekToEnd()
+        try handle.write(contentsOf: (transcriptLine(at: "2026-07-22T05:01:00Z", output: 50, context: 55_000) + "\n").data(using: .utf8)!)
+        try handle.close()
+
+        let firedAfterChange = OSAllocatedUnfairLock(initialState: 0)
+        withObservationTracking {
+            _ = tracker.sessionUsage("L1")
+            _ = tracker.sessionAgents("L1")
+            _ = tracker.sessionActivity("L1")
+            _ = tracker.sessionTitle("L1")
+        } onChange: {
+            firedAfterChange.withLock { $0 += 1 }
+        }
+
+        tracker.refreshSession("L1")
+        XCTAssertEqual(firedAfterChange.withLock { $0 }, 1, "a changed refresh must notify Observation")
+    }
+
+    /// SweepAgents must not notify observers when there are no active agent runs or activity.
+    func testUnchangedSweepAgentsLeavesObservedValuesUntouched() throws {
+        let path = dir.appendingPathComponent("proj-a/empty.jsonl").path
+        try "".data(using: .utf8)!.write(to: URL(fileURLWithPath: path))
+
+        let tracker = UsageTracker(projectsDir: dir)
+        tracker.bind(sessionId: "L1", transcriptPath: path)
+        tracker.refreshSession("L1")
+
+        let fired = OSAllocatedUnfairLock(initialState: 0)
+        withObservationTracking {
+            _ = tracker.sessionAgents("L1")
+            _ = tracker.sessionActivity("L1")
+        } onChange: {
+            fired.withLock { $0 += 1 }
+        }
+
+        tracker.sweepAgents("L1")
+        XCTAssertEqual(fired.withLock { $0 }, 0, "an unchanged sweep must not notify Observation")
     }
 }

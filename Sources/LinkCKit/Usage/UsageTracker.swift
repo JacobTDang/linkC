@@ -71,9 +71,9 @@ public final class UsageTracker {
                 activity = ActivityEvents.apply(decoded, to: activity)
             }
         }
-        accumulators[sessionId] = acc
-        agentAssemblers[sessionId] = agents
-        activities[sessionId] = activity
+        if accumulators[sessionId] != acc { accumulators[sessionId] = acc }
+        if agentAssemblers[sessionId] != agents { agentAssemblers[sessionId] = agents }
+        if activities[sessionId] != activity { activities[sessionId] = activity }
         if titles[sessionId] != title { titles[sessionId] = title }
     }
 
@@ -87,10 +87,10 @@ public final class UsageTracker {
     /// are ended (anything "running" past a turn boundary is a phantom) and the current
     /// activity is cleared (a new prompt must never open showing the last turn's action).
     public func sweepAgents(_ sessionId: String, at date: Date = Date()) {
-        activities[sessionId] = nil
+        if activities[sessionId] != nil { activities[sessionId] = nil }
         guard var agents = agentAssemblers[sessionId] else { return }
         agents.endAllRunning(at: date)
-        agentAssemblers[sessionId] = agents
+        if agentAssemblers[sessionId] != agents { agentAssemblers[sessionId] = agents }
     }
 
     /// The session's current action ("$ swift test", "✎ PanelView.swift"), nil while idle
@@ -149,7 +149,7 @@ public final class UsageTracker {
 
     // MARK: - Accumulation
 
-    private struct Accumulator {
+    private struct Accumulator: Equatable {
         var contextTokens = 0
         var contextModel = ""
         var totalTokens = 0
