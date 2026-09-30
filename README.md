@@ -128,12 +128,13 @@ standard or deep), configured per agent in **Settings > Models**. A verified tas
 test command: linkC runs it itself, and the work only counts as done if the tests fail before it
 and pass after.
 
-When no agent of the right kind is free, linkC launches one to carry the task. That worker closes a
-minute after its task ends, unless another task for the same kind of agent is waiting for it, and
-after ten idle minutes at the latest. The delegating agent can close it sooner with
-`linkc_close_worker`, and the worker can close itself when it reports with `close_session`. linkC
-closes a worker only when it is idle and holds no other open task. Sessions you open never close
-by themselves, a worker becomes yours when you open it, and the session on screen is never closed.
+When no agent of the right kind is free, linkC launches one to carry the task. That worker closes
+once it has been idle for a minute since its task ended, unless another task for the same kind of
+agent is waiting for it, and after ten idle minutes at the latest. The delegating agent can close it
+sooner with `linkc_close_worker`, and the worker can close itself when it reports with
+`close_session`. linkC closes a worker only when it is idle, holds no other open task, and waits on
+none it delegated. Sessions you open never close by themselves, a worker becomes yours when you
+open it, and the session on screen is never closed.
 
 When an agent hits its usage limit, its current task moves to another available agent — never
 back to the one that gave it — and the limited agent rests until it actually recovers. linkC

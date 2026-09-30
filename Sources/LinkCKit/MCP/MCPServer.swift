@@ -531,14 +531,14 @@ public final class MCPServer: Sendable {
                         "sha": ["type": "string", "description": "The commit holding your work; required for a verified task reported done"],
                         "commits": ["type": "array", "items": ["type": "string"]],
                         "tests": ["type": "array", "items": ["type": "string"], "description": "Deprecated; ignored"],
-                        "close_session": ["type": "boolean", "description": "Also ask linkC to close this session once your turn ends. Honoured only if linkC launched the session for this task and it holds no other open task; otherwise the session stays and linkC says why. A finished worker closes by itself about a minute after its task ends."]
+                        "close_session": ["type": "boolean", "description": "Also ask linkC to close this session once your turn ends. Honoured only for a session linkC launched as a worker (any worker linkC launched, including one reused for a later task) that holds no other open task, waits on none it delegated, and is not the session on screen; otherwise the session stays and linkC says why. A finished worker closes by itself about a minute after it goes idle."]
                     ],
                     "required": ["task_id", "status", "summary"]
                 ]
             ],
             [
                 "name": "linkc_close_worker",
-                "description": "Close the terminal session of the worker that carried a task you delegated, to free it before it closes by itself about a minute after the task ends. linkC closes it only if it launched that session for a task, the session is idle, and it holds no other open task; a session the user opened or took over, and the one on screen, are never closed. Otherwise you get the reason.",
+                "description": "Close the terminal session of the worker that carried a task you delegated, to free it before it closes by itself about a minute after it goes idle. linkC closes it only if it is a worker linkC launched, the session is idle, and it holds no other open task and waits on none it delegated; a session the user opened or took over, and the one on screen, are never closed. Otherwise you get the reason.",
                 "inputSchema": [
                     "type": "object",
                     "properties": ["task_id": ["type": "string", "description": "A task you delegated; its reported or ended state is required"]],

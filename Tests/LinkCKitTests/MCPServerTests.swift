@@ -80,6 +80,12 @@ final class MCPServerTests: XCTestCase {
         let properties = try XCTUnwrap((complete["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])
         let flag = try XCTUnwrap(properties["close_session"] as? [String: Any])
         XCTAssertEqual(flag["type"] as? String, "boolean")
+        // The rule is any worker linkC launched (one reused for a later task included), never the
+        // session on screen: not "the session launched for this task".
+        let rule = try XCTUnwrap(flag["description"] as? String)
+        XCTAssertTrue(rule.contains("any worker linkC launched"), rule)
+        XCTAssertTrue(rule.contains("on screen"), rule)
+        XCTAssertFalse(rule.contains("for this task"), rule)
         let required = try XCTUnwrap((complete["inputSchema"] as? [String: Any])?["required"] as? [String])
         XCTAssertFalse(required.contains("close_session"), "the flag is optional")
     }
