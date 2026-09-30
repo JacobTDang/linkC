@@ -913,7 +913,7 @@ extension AppCoordinator {
         // A busy worker keeps its task for now: the peer would start in a checkout the worker is
         // still using. The reroute goes ahead once the worker is quiet, or after `limitHoldCap`.
         let holdForTask = held.flatMap { $0.taskId == currentTask?.id ? $0 : nil }
-        if let currentTask, let busy = activity(of: session),
+        if let currentTask, let busy = activity(of: session, screen: screen),
            holdBack(match, task: currentTask, of: session, busy: busy, since: holdForTask, at: tickNow, inboxStore: inboxStore) {
             return false
         }

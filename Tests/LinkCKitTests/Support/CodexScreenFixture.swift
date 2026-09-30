@@ -20,8 +20,14 @@ enum CodexScreenFixture {
         try lines(name).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 
-    /// The frame as terminal input that draws it on a fresh screen.
-    static func terminalInput(_ name: String) throws -> String {
-        "\u{1b}[2J\u{1b}[H" + (try lines(name)).joined(separator: "\r\n")
+    /// The frame as terminal input that draws it on a fresh screen. With `replacing`, the first row
+    /// that contains that text is drawn as `row` instead.
+    static func terminalInput(_ name: String, replacing marker: String? = nil, with row: String = "") throws -> String {
+        var frame = try lines(name)
+        if let marker {
+            let index = try XCTUnwrap(frame.firstIndex { $0.contains(marker) }, "no row of \(name) contains \(marker)")
+            frame[index] = row
+        }
+        return "\u{1b}[2J\u{1b}[H" + frame.joined(separator: "\r\n")
     }
 }

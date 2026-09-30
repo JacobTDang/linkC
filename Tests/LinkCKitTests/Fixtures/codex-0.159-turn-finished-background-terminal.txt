@@ -1,0 +1,40 @@
+
+  >_ OpenAI Codex (v0.159.0)
+     ~/Projects/linkC/.worktrees/relay-turnend
+  permissions: YOLO mode
+
+  Got an itch to fix a thing?
+
+
+› Call your exec_command tool with cmd 'sleep 100' exactly as written (no trailing
+  ampersand) and yield_time_ms 1000. It will return still running. Do not wait for it or
+  poll it; immediately reply with the single word started.
+
+
+• started
+
+  Worked for 5s • 10:08 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  1 background terminal running · /ps to view · /stop to close
+
+
+› Ask Codex to do anything
+
+  GPT-5.6-Luna low · ~/Projects/linkC/.worktrees/relay-turnend · Start sleep command
+  ← for agents · ? for shortcuts

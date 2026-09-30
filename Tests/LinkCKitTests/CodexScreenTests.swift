@@ -60,4 +60,34 @@ final class CodexScreenTests: XCTestCase {
     func testAFinishedTurnReadsAsNotWorking() throws {
         XCTAssertNil(TerminalPreview.liveActivity(from: try screen("codex-0.159-turn-finished")))
     }
+
+    /// A turn can end with a terminal Codex started still running: the reply is out, the status
+    /// row is gone, and a footer above the input box says one is left. The worker is not idle.
+    func testAFinishedTurnWithABackgroundTerminalLeftRunningShowsIt() throws {
+        let rows = try screen("codex-0.159-turn-finished-background-terminal")
+        XCTAssertNil(TerminalPreview.liveActivity(from: rows), "the turn itself is over")
+        XCTAssertTrue(TerminalPreview.hasBackgroundTerminals(in: rows))
+    }
+
+    /// The footer is cut at the panel's width.
+    func testTheFooterCutShortByANarrowPanelStillShowsIt() {
+        XCTAssertTrue(TerminalPreview.hasBackgroundTerminals(in: [
+            "• started", "  Worked for 5s • 10:08 PM", "  1 background terminal running · /ps",
+            "› Ask Codex to do anything", "  GPT-5.6-Luna low · ~/Projects/linkC…",
+        ]))
+        XCTAssertTrue(TerminalPreview.hasBackgroundTerminals(in: [
+            "• done", "  3 background terminals running · /ps to view · /stop to close", "› Ask Codex to do anything",
+        ]))
+    }
+
+    func testAFinishedTurnWithNoBackgroundTerminalShowsNone() throws {
+        XCTAssertFalse(TerminalPreview.hasBackgroundTerminals(in: try screen("codex-0.159-turn-finished")))
+    }
+
+    /// The phrase quoted in output well above the input box is not Codex's footer.
+    func testTheFooterQuotedInOutputHigherUpIsNotTheFooter() throws {
+        var rows = try screen("codex-0.159-turn-finished")
+        rows.insert("  1 background terminal running · /ps to view · /stop to close", at: 2)
+        XCTAssertFalse(TerminalPreview.hasBackgroundTerminals(in: rows))
+    }
 }

@@ -206,6 +206,16 @@ public enum TerminalPreview {
         return footerSaysWorking ? "Working" : nil
     }
 
+    private static let backgroundTerminals = try! NSRegularExpression(pattern: #"^\d+ background terminals? running\b"#)
+
+    /// Whether Codex's footer says terminals it started are still running: the row it draws above
+    /// the input box once a turn ends with one left ("1 background terminal running · /ps to
+    /// view · /stop to close"). Only the rows near the input box are read, so the phrase quoted in
+    /// output higher up is not taken for it.
+    public static func hasBackgroundTerminals(in rows: [String]) -> Bool {
+        rows.suffix(12).contains { backgroundTerminals.matches(visibleText($0)) }
+    }
+
     /// Whether the screen is Codex's or Antigravity's folder-trust dialog: its question row, then
     /// its "yes" choice at the bottom of the screen. A question quoted in ordinary output has no
     /// choice under it, and a dialog left above a redrawn session has been answered.

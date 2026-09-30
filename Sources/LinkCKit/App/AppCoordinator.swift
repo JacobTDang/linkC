@@ -163,12 +163,16 @@ public final class AppCoordinator {
     /// When `sessionId`'s screen last changed; nil if it has never been sampled.
     func screenUnchangedSince(_ sessionId: String) -> Date? { screenSignatures[sessionId]?.since }
 
-    /// What says `session` is busy right now, or nil when it is quiet: its state is working, or its
+    /// What says `session` is busy right now, or nil when it is quiet: its state is working, Codex's
+    /// footer says a terminal it started is still running (its turn can end with one left), or its
     /// screen changed within the turn-end quiet period (a state that has not caught up, or a turn
     /// end misread, still shows in the screen). `checkLimitsAndReroute` holds a reroute back while
     /// the worker is busy: moving its task would put a second agent in a checkout it is still using.
-    func activity(of session: Session) -> String? {
+    func activity(of session: Session, screen: ScreenSnapshot) -> String? {
         if session.state.bucket == .active { return "its session is still working" }
+        if session.agentKind == .codex, screen.showsBackgroundTerminals() {
+            return "it still has a background terminal running"
+        }
         guard let since = screenUnchangedSince(session.id) else { return nil }
         let quiet = now().timeIntervalSince(since)
         guard quiet < turnEndDebounce.quietPeriod else { return nil }

@@ -1601,6 +1601,40 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(try inbox.load().tasks.first { $0.hop == 1 })
     }
 
+    /// In the 97273A41 incident Codex's turn ended on its limit while a `swift test` it had started
+    /// went on in the checkout, its footer saying "1 background terminal running". The worker is
+    /// quiet and its state says finished, but it is not done: the reroute waits for the terminal,
+    /// up to the cap.
+    @MainActor
+    func testARerouteWaitsForAWorkersBackgroundTerminalUpToTheCap() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: ws, agent: .codex)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Run the whole suite", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        coordinator.store.updateState(id: session.id, to: .finished)
+        let term = try XCTUnwrap(coordinator.terminals.session(id: session.id))
+        term.terminalView.getTerminal().resize(cols: 120, rows: ScreenFixture.height)
+        term.terminalView.feed(text: try CodexScreenFixture.terminalInput(
+            "codex-0.159-turn-finished-background-terminal", replacing: "• started", with: "• 429 Too Many Requests"
+        ))
+
+        coordinator.sampleAgentStates()
+        currentTime = currentTime.addingTimeInterval(8)
+        coordinator.sampleAgentStates()
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started, "quiet for 8s, but its terminal is still running")
+        XCTAssertFalse(try inbox.load().tasks.contains { $0.hop == 1 })
+
+        currentTime = currentTime.addingTimeInterval(AppCoordinator.limitHoldCap)
+        coordinator.sampleAgentStates()
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled, "the cap has passed")
+        XCTAssertNotNil(try inbox.load().tasks.first { $0.hop == 1 && $0.prompt == task.prompt })
+    }
+
     /// The task keeps why it moved, so the next reroute can be explained from the inbox alone.
     @MainActor
     func testARerouteRecordsWhatTheWorkerWasDoingWhenItMoved() async throws {
