@@ -419,7 +419,7 @@ extension AppCoordinator {
         // A notice stays marked "already told to the user" only while it is still queued here —
         // once it is delivered (below) or expires (a separate phase), evict it so a long-running
         // app does not keep one entry per notice ever seen stuck for its whole lifetime.
-        relayWork.noteQueuedMessages(pending.contains { hasLiveTarget($0, in: norm) }, in: norm)
+        relayWork.noteQueuedMessages(pending.contains { hasLiveTarget($0, in: norm, inboxStore: inboxStore) }, in: norm)
         let stillQueued = Set(pending.map(\.id))
         undeliveredNoticesReported[norm]?.formIntersection(stillQueued)
         if undeliveredNoticesReported[norm]?.isEmpty == true {
@@ -558,21 +558,42 @@ extension AppCoordinator {
 
     /// Whether a queued message is something a tick can act on: a brief spawns an agent, and any
     /// other kind (a notice is marked delivered at once) needs a session of its target kind that
-    /// can be typed into. One with no such session waits for one to be launched, and launching
-    /// wakes the sweep, so it must not hold the fast cadence in the meantime. A session in `.error`
-    /// (a usage limit; the cooldown can last hours) is no more able to take it than a missing one,
-    /// and the sweep notices it leaving `.error` at any cadence. Nor is one whose process has
-    /// exited, which the delivery itself leaves queued.
-    private func hasLiveTarget(_ message: PendingMessage, in workspace: String) -> Bool {
+    /// can be typed into. A message carrying a `taskId` is delivered to its delegator session,
+    /// so it routes delegator-first just as `dispatchMessages` does. One with no live target waits
+    /// for one to be launched, and launching wakes the sweep, so it must not hold the fast cadence
+    /// in the meantime. A session in `.error` (a usage limit; the cooldown can last hours) is no more
+    /// able to take it than a missing one, and the sweep notices it leaving `.error` at any cadence.
+    /// Nor is one whose process has exited, which the delivery itself leaves queued.
+    private func hasLiveTarget(_ message: PendingMessage, in workspace: String, inboxStore: InboxStore) -> Bool {
         switch message.kind {
         case .task: return true
         case .notice: return false
         default:
-            return store.sessions.contains {
-                $0.cwd == workspace && $0.agentKind == message.toAgent
-                    && $0.state != .ended && $0.state != .error
-                    && terminals.session(id: $0.id)?.isRunning == true
+            var target: Session?
+            if let taskId = message.taskId {
+                let record: TaskRecord?
+                do {
+                    record = try inboxStore.task(id: taskId, timeout: Self.relayLockTimeout)
+                } catch {
+                    if isRelayLockTimeout(error) { return true }
+                    NSLog("[linkC relay] hasLiveTarget: message %@ delegator lookup — %@",
+                          message.id, String(describing: error))
+                    record = nil
+                }
+                if let delegatorId = record?.fromSessionId {
+                    target = store.sessions.first {
+                        $0.id == delegatorId && $0.state != .ended
+                            && $0.cwd == workspace
+                    }
+                }
             }
+            if target == nil {
+                target = store.sessions.first {
+                    $0.cwd == workspace && $0.agentKind == message.toAgent && $0.state != .ended
+                }
+            }
+            guard let target else { return false }
+            return target.state != .error && terminals.session(id: target.id)?.isRunning == true
         }
     }
 
