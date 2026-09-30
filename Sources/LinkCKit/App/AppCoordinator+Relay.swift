@@ -857,13 +857,13 @@ extension AppCoordinator {
         let norm = session.cwd
         let screen = screen ?? terminals.session(id: sessionId)?.screenSnapshot() ?? .none
         // The rules cost far more than comparing what they would read. A session at its prompt
-        // shows the same screen for minutes, and the answer for it was already given.
+        // shows the same screen for minutes, and the answer for it was already given. A reroute held
+        // back is looked at on every tick instead: it ends by the clock or by the worker going quiet,
+        // and neither shows on the screen.
         let injected = recentlyInjectedTexts(sessionId: sessionId)
-        // Whether the session is busy is part of the scan: a match held back for a busy session must
-        // be looked at again once it goes quiet, with nothing new on the screen.
-        let busy = activity(of: session)
-        let scan = LimitScan(screen: screen.fingerprint, agent: session.agentKind, injected: injected, busy: busy != nil)
-        guard limitScans[sessionId] != scan else { return false }
+        let held = limitHolds[sessionId]
+        let scan = LimitScan(screen: screen.fingerprint, agent: session.agentKind, injected: injected)
+        guard held != nil || limitScans[sessionId] != scan else { return false }
         limitScans[sessionId] = scan
         let recentOutput = screen.recentOutput(lines: 50)
         // Everything linkC has typed into this session is excluded: a brief or notice can quote a
@@ -872,16 +872,23 @@ extension AppCoordinator {
         // unframed injection (a legacy v1 message with no `kind`) is guarded exactly like a framed
         // one — so a real banner that repeats a phrase an older brief quoted still matches (see
         // `LimitDetector.withoutInjected`).
-        guard let match = limitDetection(recentOutput, session.agentKind, injected) else { return false }
+        guard let match = limitDetection(recentOutput, session.agentKind, injected) else {
+            // The banner is gone, so the reroute it was held back for is no longer wanted.
+            limitHolds[sessionId] = nil
+            return false
+        }
 
         // A stale banner must not re-arm a limit forever: once a cooldown expires and the session
         // returns to `.ready`, the exact same old banner can still sit in the last 50 lines of an
         // idle terminal. Signature the recent output this match came from; a later detection with
         // the SAME signature for this session is that identical old banner, not new evidence — no
         // record, no reroute. Only output that actually changed (the agent printed something
-        // since) can count as a fresh hit.
+        // since) can count as a fresh hit. A reroute already held back was matched from a fresh hit.
         let outputSignature = String(recentOutput.hashValue)
-        guard limitSignatures[sessionId] != outputSignature else { return false }
+        if held == nil {
+            guard limitSignatures[sessionId] != outputSignature else { return false }
+            limitSignatures[sessionId] = outputSignature
+        }
 
         let inboxStore = InboxStore(workspaceRoot: norm)
         // Current task: newest open task assigned to this exact session.
@@ -896,42 +903,21 @@ extension AppCoordinator {
             .filter { $0.assigneeSessionId == sessionId && ($0.state == .delivered || $0.state == .started) }
             .last
 
-        // A busy session holding a task is left alone. Nothing is recorded or marked either, and
-        // this signature is not remembered, so the match is acted on if it is still there once the
-        // session goes quiet.
-        if let currentTask, let busy {
-            holdBackLimit(match, task: currentTask, of: session, busy: busy, inboxStore: inboxStore)
+        // The agent is out of quota from the moment its limit is matched, whether or not its worker
+        // is done: recording it now sends new delegations elsewhere while the reroute is held back.
+        let tickNow = now()
+        if held == nil {
+            recordLimit(of: session, match: match, at: tickNow, inboxStore: inboxStore)
+        }
+
+        // A busy worker keeps its task for now: the peer would start in a checkout the worker is
+        // still using. The reroute goes ahead once the worker is quiet, or after `limitHoldCap`.
+        let holdForTask = held.flatMap { $0.taskId == currentTask?.id ? $0 : nil }
+        if let currentTask, let busy = activity(of: session),
+           holdBack(match, task: currentTask, of: session, busy: busy, since: holdForTask, at: tickNow, inboxStore: inboxStore) {
             return false
         }
-        limitSignatures[sessionId] = outputSignature
-
-        // The agent's current usage, if any — Claude's freshest number is the live status-line
-        // reading; every other agent goes through its own registered reader (empty/production —
-        // see `usageReaders`'s doc comment).
-        let usage: AgentUsage? = session.agentKind == .claude ? claudeUsage : usageReaders[session.agentKind]?()
-        let tickNow = now()
-        // Whether there is real evidence to rest on (a usage window's own reset, or a time the
-        // banner itself states) — not merely `checkLimitsAndReroute`'s fixed fallback duration
-        // recomputed against a later `now`, which would always look "later" than an already-live
-        // cooldown that is actually ticking down. See `LimitCooldown.hasConfidentSignal`.
-        let hasConfidentExpiry = LimitCooldown.hasConfidentSignal(
-            bannerText: match.bannerText, usage: usage, now: tickNow, calendar: .current
-        )
-        do {
-            try inboxStore.recordLimit(agent: session.agentKind, reason: match.matchedPattern, cooldown: match.cooldown)
-            if hasConfidentExpiry {
-                // recordLimit only ever creates the record with the fixed cooldown (or keeps a
-                // still-live one exactly as it was); extendLimit is the only thing allowed to push
-                // it out further to the more accurate expiry below, and only ever later, never
-                // shorter.
-                let expiry = LimitCooldown.expiry(
-                    bannerText: match.bannerText, usage: usage, now: tickNow, calendar: .current, fallback: match.cooldown
-                )
-                try inboxStore.extendLimit(agent: session.agentKind, until: expiry)
-            }
-        } catch {
-            NSLog("[linkC relay] checkLimitsAndReroute: record limit — %@", String(describing: error))
-        }
+        limitHolds[sessionId] = nil
 
         // Tell the delegator (notice: shown in inbox/dashboard, never injected). Sent when the
         // breaker trips or once the current task has actually been cancelled — never for a task
@@ -1030,6 +1016,9 @@ extension AppCoordinator {
             if let since = screenUnchangedSince(sessionId) {
                 evidence += ", screen unchanged for \(Int(max(0, tickNow.timeIntervalSince(since))))s"
             }
+            if let holdForTask {
+                evidence += ", reroute held for \(Int(max(0, tickNow.timeIntervalSince(holdForTask.since))))s"
+            }
             // The copy exists only if the cancel succeeded. If the assignee reached a terminal
             // state between the openTasks read and here, the transition throws and nothing is
             // re-dispatched or announced. A verified copy keeps its verification and the gate it
@@ -1066,25 +1055,74 @@ extension AppCoordinator {
 }
 
 extension AppCoordinator {
-    /// A limit rule matched the screen of a session that is busy with `task`: say so, once per task,
-    /// to the delegator, and leave everything as it is. `busy` says why the session counts as busy.
-    fileprivate func holdBackLimit(
-        _ match: LimitMatch, task: TaskRecord, of session: Session, busy: String, inboxStore: InboxStore
-    ) {
-        guard heldLimitNotices[session.id] != task.id else { return }
-        heldLimitNotices[session.id] = task.id
-        NSLog("[linkC relay] checkLimitsAndReroute: %@ matched limit rule '%@' but %@ (session %@); task %@ left in place",
-              session.agentKind.displayName, match.matchedPattern, busy, session.id, task.shortId)
-        guard task.fromAgent != session.agentKind else { return }
+    /// Records `session`'s agent as out of quota: until the limit's own reset when there is real
+    /// evidence of one, otherwise for the rule's fixed cooldown.
+    fileprivate func recordLimit(of session: Session, match: LimitMatch, at tickNow: Date, inboxStore: InboxStore) {
+        // The agent's current usage, if any — Claude's freshest number is the live status-line
+        // reading; every other agent goes through its own registered reader (empty/production —
+        // see `usageReaders`'s doc comment).
+        let usage: AgentUsage? = session.agentKind == .claude ? claudeUsage : usageReaders[session.agentKind]?()
+        // Whether there is real evidence to rest on (a usage window's own reset, or a time the
+        // banner itself states) — not merely `checkLimitsAndReroute`'s fixed fallback duration
+        // recomputed against a later `now`, which would always look "later" than an already-live
+        // cooldown that is actually ticking down. See `LimitCooldown.hasConfidentSignal`.
+        let hasConfidentExpiry = LimitCooldown.hasConfidentSignal(
+            bannerText: match.bannerText, usage: usage, now: tickNow, calendar: .current
+        )
+        do {
+            try inboxStore.recordLimit(agent: session.agentKind, reason: match.matchedPattern, cooldown: match.cooldown)
+            if hasConfidentExpiry {
+                // recordLimit only ever creates the record with the fixed cooldown (or keeps a
+                // still-live one exactly as it was); extendLimit is the only thing allowed to push
+                // it out further to the more accurate expiry below, and only ever later, never
+                // shorter.
+                let expiry = LimitCooldown.expiry(
+                    bannerText: match.bannerText, usage: usage, now: tickNow, calendar: .current, fallback: match.cooldown
+                )
+                try inboxStore.extendLimit(agent: session.agentKind, until: expiry)
+            }
+        } catch {
+            NSLog("[linkC relay] checkLimitsAndReroute: record limit — %@", String(describing: error))
+        }
+    }
+
+    /// A limit rule matched the screen of a session that is busy with `task`. True while the
+    /// reroute stays held back: the task is left where it is, and the delegator is told once, when
+    /// the hold begins. False once `limitHoldCap` has passed since `previous`, the hold's start
+    /// (nil for a hold that begins now): the task moves anyway. `busy` says why the session counts
+    /// as busy.
+    fileprivate func holdBack(
+        _ match: LimitMatch, task: TaskRecord, of session: Session, busy: String,
+        since previous: LimitHold?, at tickNow: Date, inboxStore: InboxStore
+    ) -> Bool {
+        let hold = previous ?? LimitHold(taskId: task.id, since: tickNow)
+        let heldFor = tickNow.timeIntervalSince(hold.since)
+        guard heldFor < Self.limitHoldCap else {
+            NSLog("[linkC relay] checkLimitsAndReroute: %@ (session %@) is still busy — %@ — %ds after its limit rule '%@' matched; task %@ moves anyway",
+                  session.agentKind.displayName, session.id, busy, Int(heldFor), match.matchedPattern, task.shortId)
+            return false
+        }
+        limitHolds[session.id] = hold
+        guard previous == nil else { return true }
+        NSLog("[linkC relay] checkLimitsAndReroute: %@ matched limit rule '%@' but %@ (session %@); task %@ left in place for up to %ds",
+              session.agentKind.displayName, match.matchedPattern, busy, session.id, task.shortId, Int(Self.limitHoldCap))
+        guard task.fromAgent != session.agentKind else { return true }
         do {
             _ = try inboxStore.enqueue(
                 from: session.agentKind, to: task.fromAgent, kind: .notice, taskId: task.id,
-                body: "\(session.agentKind.displayName)'s screen matches a limit rule but \(busy), so task \(task.shortId) was left with it and not moved to another agent. linkc_cancel_task(\"\(task.id)\") if it is stuck."
+                body: "\(session.agentKind.displayName)'s screen matches a limit rule but \(busy), so task \(task.shortId) is left with it for now. It moves to another agent after \(Int(Self.limitHoldCap / 60)) minutes if it is still busy. linkc_cancel_task(\"\(task.id)\") to stop it now."
             )
         } catch {
             NSLog("[linkC relay] checkLimitsAndReroute: task %@ held-back notice — %@", task.shortId, String(describing: error))
         }
+        return true
     }
+}
+
+/// A reroute held back for a busy worker: the task it is for, and when the hold began.
+struct LimitHold: Equatable {
+    let taskId: String
+    let since: Date
 }
 
 /// The run `launchVerifications` starts: the gate at base, or verification at the reported sha.
@@ -1093,13 +1131,11 @@ private enum VerificationRun: Sendable {
     case verify(Verification, sha: String)
 }
 
-/// Everything `checkLimitsAndReroute`'s answer depends on for one session: the screen (by
-/// `ScreenSnapshot.fingerprint`), the agent whose rules apply, what linkC has typed into the
-/// session, whose echo the rules leave out, and whether the session is busy, which decides
-/// whether a match is acted on now or held back.
+/// Everything the limit rules' answer depends on for one session: the screen (by
+/// `ScreenSnapshot.fingerprint`), the agent whose rules apply, and what linkC has typed into the
+/// session, whose echo the rules leave out.
 struct LimitScan: Equatable {
     let screen: Int
     let agent: AgentKind
     let injected: [String]
-    let busy: Bool
 }

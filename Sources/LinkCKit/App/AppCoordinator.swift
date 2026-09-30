@@ -147,10 +147,13 @@ public final class AppCoordinator {
     /// the screen, the agent kind and what linkC has typed, so the same three give the same answer
     /// and the scan is skipped. Cleared by `cleanup`.
     var limitScans: [String: LimitScan] = [:]
-    /// Per session: the task a "limit match held back" notice was last sent for, so a worker that
-    /// keeps printing (and keeps the match on its screen) tells the delegator once, not every
-    /// tick. Cleared by `cleanup`.
-    var heldLimitNotices: [String: String] = [:]
+    /// Per session: the reroute `checkLimitsAndReroute` is holding back because the worker is busy.
+    /// Cleared by `cleanup`.
+    var limitHolds: [String: LimitHold] = [:]
+    /// How long a reroute is held back for a worker that stays busy, from when the hold began. A
+    /// worker whose state stays working, or whose screen keeps changing, must not keep its task
+    /// for ever once the agent is out of quota.
+    static let limitHoldCap: TimeInterval = 180
     /// Finds a provider limit in a session's recent output, given what linkC has typed into it.
     /// The real rules unless a test substitutes a counter.
     var limitDetection: (_ output: String, _ agent: AgentKind, _ injected: [String]) -> LimitMatch? = {
@@ -162,8 +165,8 @@ public final class AppCoordinator {
 
     /// What says `session` is busy right now, or nil when it is quiet: its state is working, or its
     /// screen changed within the turn-end quiet period (a state that has not caught up, or a turn
-    /// end misread, still shows in the screen). A limit banner on a busy session is not the agent's
-    /// own, and moving its task would put a second agent in a checkout it is still using.
+    /// end misread, still shows in the screen). `checkLimitsAndReroute` holds a reroute back while
+    /// the worker is busy: moving its task would put a second agent in a checkout it is still using.
     func activity(of session: Session) -> String? {
         if session.state.bucket == .active { return "its session is still working" }
         guard let since = screenUnchangedSince(session.id) else { return nil }
@@ -568,7 +571,7 @@ public final class AppCoordinator {
         lastInjectionAt.removeValue(forKey: sessionId)
         limitSignatures.removeValue(forKey: sessionId)
         limitScans.removeValue(forKey: sessionId)
-        heldLimitNotices.removeValue(forKey: sessionId)
+        limitHolds.removeValue(forKey: sessionId)
         if wasWorker {
             // A worker was linkC's, not the user's: its report is in the task record, so it
             // leaves nothing under Earlier.

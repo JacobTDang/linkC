@@ -1472,8 +1472,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
     }
 
     /// Task 97273A41 was cancelled and sent to another agent while its Codex worker was still busy
-    /// in the same checkout. A worker whose session is working is not out of quota, whatever its
-    /// screen quotes: nothing is cancelled, moved or recorded, and the delegator is told once.
+    /// in the same checkout. While the worker's session is working its task is not moved: nothing
+    /// is cancelled or copied for another agent, and the delegator is told once.
     @MainActor
     func testALimitMatchOnAWorkingAssigneeLeavesItsTaskInPlaceAndTellsTheDelegator() async throws {
         let ws = tempDir.path
@@ -1487,7 +1487,6 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .started)
         XCTAssertFalse(try inbox.load().tasks.contains { $0.hop == 1 }, "no copy for another agent")
-        XCTAssertNil(try inbox.isAgentLimited(agent: .codex), "a working session's screen is not evidence of a limit")
         XCTAssertEqual(coordinator.store.session(id: worker.id)?.state, .working, "the session is left as it was")
         let notices = try inbox.load().messages.filter { $0.kind == .notice && $0.taskId == task.id }
         XCTAssertEqual(notices.count, 1, "the delegator is told once, not on every tick")
@@ -1496,6 +1495,47 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(notice.prompt.contains("still working"), notice.prompt)
         XCTAssertTrue(notice.prompt.contains(task.shortId), notice.prompt)
         XCTAssertTrue(notice.prompt.contains("linkc_cancel_task(\"\(task.id)\")"), notice.prompt)
+    }
+
+    /// The agent is out of quota whether or not its worker is done yet: the cooldown is recorded
+    /// when the limit is matched, so a delegation made while the reroute is held goes elsewhere.
+    @MainActor
+    func testALimitMatchOnAWorkingAssigneeRecordsTheAgentsCooldownAtOnce() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let (worker, task) = try await makeWorkerShowingABanner(coordinator, inbox: inbox, state: .working)
+
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: worker.id))
+
+        XCTAssertNotNil(try inbox.isAgentLimited(agent: .codex), "the limit is recorded while the reroute is held")
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started, "only the reroute waits")
+    }
+
+    /// A worker that stays busy (its state never leaves working, or its screen keeps changing)
+    /// cannot hold its task for ever: after `limitHoldCap` the task moves anyway.
+    @MainActor
+    func testARerouteHeldBackForABusyAssigneeGoesAheadOnceTheCapHasPassed() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let coordinator = makeCoordinator(turnEndQuietPeriod: 5.0, now: { currentTime })
+        defer { coordinator.shutdown() }
+        let (worker, task) = try await makeWorkerShowingABanner(coordinator, inbox: inbox, state: .working)
+
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: worker.id))
+        currentTime = currentTime.addingTimeInterval(AppCoordinator.limitHoldCap - 1)
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: worker.id), "still inside the cap")
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started)
+
+        currentTime = currentTime.addingTimeInterval(2)
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: worker.id), "the cap has passed")
+
+        let moved = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(moved.state, .cancelled)
+        XCTAssertNotNil(try inbox.load().tasks.first { $0.hop == 1 && $0.prompt == task.prompt })
+        XCTAssertTrue(try XCTUnwrap(moved.cancelReason).contains("held"), moved.cancelReason ?? "nil")
     }
 
     /// The same banner on a worker whose turn is over (its screen has gone quiet, and its state
