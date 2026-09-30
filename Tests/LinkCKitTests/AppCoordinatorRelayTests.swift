@@ -2932,6 +2932,36 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(coordinator.store.session(id: worker.id), "the worker on screen must not be closed")
     }
 
+    /// A worker that handed a task on is still waiting for its report: closing the worker first
+    /// sends that report to any session of the delegating kind, possibly the user's.
+    @MainActor
+    func testAWorkerWaitingOnATaskItDelegatedIsNotClosedWhenItsOwnTaskEnds() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        _ = try coordinator.newSession(cwd: ws, agent: .claude)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "finish", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        let sub = try inbox.createTask(from: .codex, to: .agy, fromSessionId: worker.id, prompt: "sub-task", files: [])
+        try inbox.markTaskDelivered(taskId: sub.id, sessionId: "elsewhere")
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        coordinator.store.updateState(id: worker.id, to: .finished)
+
+        clock.set(Date().addingTimeInterval(11 * 60))
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "waiting on a sub-task: kept, even past the idle backstop")
+
+        try inbox.cancelTask(taskId: sub.id, reason: "not needed")
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+        XCTAssertNil(coordinator.store.session(id: worker.id), "once the sub-task ended, the worker goes")
+    }
+
     /// The completion rule needs a whole grace of quiet, not just an old task: a worker that
     /// looked busy a moment ago (a false turn end read off its screen, a peer note still being
     /// worked) is not finished because its task ended long ago.

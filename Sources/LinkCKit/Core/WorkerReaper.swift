@@ -15,8 +15,9 @@ public enum WorkerReaper {
 
     private static let idleStates: Set<SessionState> = [.ready, .finished, .waitingIdle]
 
-    /// `tasks` is every task in the workspace. An open task assigned to a session holds it; a
-    /// final one starts its completion grace. A queued or gating task a worker could take keeps
+    /// `tasks` is every task in the workspace. An open task holds the session it is assigned to
+    /// and the one that delegated it (the report comes back there); a final one starts its
+    /// completion grace. A queued or gating task a worker could take keeps
     /// it through the completion grace, so a follow-up is not raced by the close; the idle
     /// backstop does not wait for one.
     ///
@@ -27,8 +28,9 @@ public enum WorkerReaper {
     public static func closable(
         sessions: [Session], tasks: [TaskRecord], lastTypedAt: [String: Date], now: Date
     ) -> [String] {
-        let holders = Set(tasks.filter { $0.state.isOpen }.compactMap(\.assigneeSessionId))
-        let unassigned = tasks.filter { $0.state.isOpen && $0.assigneeSessionId == nil }
+        let open = tasks.filter { $0.state.isOpen }
+        let holders = Set(open.compactMap(\.assigneeSessionId)).union(open.compactMap(\.fromSessionId))
+        let unassigned = open.filter { $0.assigneeSessionId == nil }
         let lastEnded = latestEnds(in: tasks)
         return sessions
             .filter { session in

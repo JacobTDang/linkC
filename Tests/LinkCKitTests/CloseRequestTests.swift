@@ -88,6 +88,33 @@ final class CloseRequestTests: XCTestCase {
         XCTAssertNil(try store.task(id: ended.id)?.closeRequest)
     }
 
+    /// The report of a task the worker handed on comes back to the worker; closing it first sends
+    /// that notice to any session of the delegating kind, possibly the user's.
+    func testARequestIsRefusedWhileTheWorkerWaitsOnATaskItDelegated() throws {
+        let ended = try delivered(.cancelled, prompt: "first")
+        let queued = try store.createTask(from: .codex, to: .agy, fromSessionId: "W", prompt: "queued sub-task", files: [])
+        let running = try store.createTask(from: .codex, to: .agy, fromSessionId: "W", prompt: "running sub-task", files: [])
+        try store.markTaskDelivered(taskId: running.id, sessionId: "X")
+
+        for sub in [queued, running] {
+            XCTAssertThrowsError(try store.requestClose(taskId: ended.id, by: .worker), "\(sub.state)") { error in
+                let text = error.localizedDescription
+                XCTAssertTrue(text.contains(sub.shortId), text)
+                XCTAssertTrue(text.contains("delegated"), text)
+            }
+            try store.cancelTask(taskId: sub.id, reason: "next case")
+        }
+        XCTAssertNil(try store.task(id: ended.id)?.closeRequest)
+    }
+
+    func testATaskTheWorkerDelegatedThatEndedDoesNotBlockTheRequest() throws {
+        let mine = try delivered(.cancelled, prompt: "mine")
+        let sub = try store.createTask(from: .codex, to: .agy, fromSessionId: "W", prompt: "sub-task", files: [])
+        try store.cancelTask(taskId: sub.id, reason: "not needed")
+
+        XCTAssertNoThrow(try store.requestClose(taskId: mine.id, by: .worker))
+    }
+
     func testAnotherSessionsOpenTaskDoesNotBlockTheRequest() throws {
         let mine = try delivered(.cancelled, prompt: "mine")
         let theirs = try store.createTask(from: .claude, to: .codex, prompt: "theirs", files: [])

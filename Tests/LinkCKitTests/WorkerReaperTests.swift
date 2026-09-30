@@ -190,11 +190,32 @@ final class WorkerReaperTests: XCTestCase {
             closable([session("W", .finished, idleFor: 2, tier: .deep)], tasks: tasks), [])
     }
 
-    func testATaskTheWorkerDelegatedItselfDoesNotKeepIt() {
-        let tasks = [
-            task(.done, assignee: "W", endedAgo: 120),
-            task(.queued, assignee: nil, from: "W")
+    // MARK: - A worker waiting on a task it delegated
+
+    /// Its own task is over, but the report of the task it handed on comes back to it: close it and
+    /// that notice falls to any session of the delegating kind, possibly the user's.
+    func testAWorkerWaitingOnATaskItDelegatedIsKept() {
+        let ended = task(.done, assignee: "W", endedAgo: 120)
+        let delegated: [(TaskState, String?)] = [
+            (.gating, nil), (.queued, nil), (.delivered, "X"), (.started, "X"), (.reported, "X")
         ]
+        for (state, assignee) in delegated {
+            let sub = task(state, assignee: assignee, from: "W")
+            XCTAssertEqual(closable([session("W", .finished, idleFor: 2)], tasks: [ended, sub]), [], "\(state)")
+            XCTAssertEqual(closable([session("W", .finished, idleFor: 60)], tasks: [ended, sub]), [], "\(state), past the backstop")
+        }
+    }
+
+    func testAWorkerWhoseDelegatedTaskEndedIsClosed() {
+        let ended = task(.done, assignee: "W", endedAgo: 120)
+        for state in [TaskState.done, .failed, .cancelled, .expired] {
+            let sub = task(state, assignee: "X", endedAgo: 90, from: "W")
+            XCTAssertEqual(closable([session("W", .finished, idleFor: 2)], tasks: [ended, sub]), ["W"], "\(state)")
+        }
+    }
+
+    func testATaskAnotherSessionDelegatedDoesNotKeepThisWorker() {
+        let tasks = [task(.done, assignee: "W", endedAgo: 120), task(.started, assignee: "X", from: "other")]
         XCTAssertEqual(closable([session("W", .finished, idleFor: 2)], tasks: tasks), ["W"])
     }
 
@@ -303,6 +324,15 @@ final class WorkerReaperTests: XCTestCase {
             return XCTFail("another open task must refuse")
         }
         XCTAssertTrue(reason.contains(other.shortId), reason)
+    }
+
+    func testARequestIsRefusedWhileTheWorkerWaitsOnATaskItDelegated() {
+        let delegated = task(.started, assignee: "X", from: "W")
+        guard case .refuse(let reason) = decide(among: [delegated], session: session("W", .finished, idleFor: 5)) else {
+            return XCTFail("a delegated open task must refuse")
+        }
+        XCTAssertTrue(reason.contains(delegated.shortId), reason)
+        XCTAssertTrue(reason.contains("delegated"), reason)
     }
 
     func testARequestOnATaskStillRunningIsRefused() {

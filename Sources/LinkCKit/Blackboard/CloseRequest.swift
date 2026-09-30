@@ -36,8 +36,9 @@ public struct CloseRequest: Codable, Sendable, Equatable, Identifiable {
 
     /// Why the worker that carried `task` cannot be closed, judged from the tasks alone; nil when
     /// nothing in them stands in the way. The task must have reached a session and stopped
-    /// running (reported, or in a final state), and the session must hold no other open task.
-    /// Whether the session is a worker, idle, and off screen is only known to the app.
+    /// running (reported, or in a final state), and the session must hold no other open task and
+    /// wait on none it delegated (its report comes back to that session). Whether the session is a
+    /// worker, idle, and off screen is only known to the app.
     static func refusal(for task: TaskRecord, among tasks: [TaskRecord]) -> String? {
         guard let session = task.assigneeSessionId else {
             return "task \(task.shortId) was never delivered to a session, so there is no worker to close."
@@ -51,6 +52,10 @@ public struct CloseRequest: Codable, Sendable, Equatable, Identifiable {
         let others = tasks.filter { $0.id != task.id && $0.state.isOpen && $0.assigneeSessionId == session }
         guard others.isEmpty else {
             return "the session also holds open task \(others.map(\.shortId).joined(separator: ", "))."
+        }
+        let delegated = tasks.filter { $0.state.isOpen && $0.fromSessionId == session }
+        guard delegated.isEmpty else {
+            return "the session is waiting on open task \(delegated.map(\.shortId).joined(separator: ", ")), which it delegated."
         }
         return nil
     }

@@ -854,6 +854,18 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
     }
 
+    func testCloseWorkerRefusesAWorkerThatWaitsOnATaskItDelegated() throws {
+        let task = try reportedTask()
+        let sub = try inbox.createTask(from: .codex, to: .agy, fromSessionId: "W", prompt: "sub-task", files: [])
+
+        let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains(sub.shortId), res.text)
+        XCTAssertTrue(res.text.contains("delegated"), res.text)
+        XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
+    }
+
     func testCloseWorkerNeedsATaskId() throws {
         let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker")
 
@@ -919,6 +931,21 @@ final class MCPServerTaskTests: XCTestCase {
         let stored = try XCTUnwrap(inbox.task(id: task.id))
         XCTAssertEqual(stored.state, .reported)
         XCTAssertNil(stored.closeRequest)
+    }
+
+    func testCompleteTaskDoesNotAskToCloseASessionThatWaitsOnATaskItDelegated() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+        let sub = try inbox.createTask(from: .codex, to: .agy, fromSessionId: "W", prompt: "sub-task", files: [])
+
+        let res = try mcpCall(server(as: .codex, session: "W"), "linkc_complete_task", [
+            "task_id": task.id, "status": "done", "summary": "Implemented.", "close_session": true
+        ])
+
+        XCTAssertFalse(res.isError, "the report itself succeeded: \(res.text)")
+        XCTAssertTrue(res.text.contains("Not closing this session"), res.text)
+        XCTAssertTrue(res.text.contains(sub.shortId), res.text)
+        XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
     }
 
     func testCompleteTaskRefusesACloseSessionThatIsNotABoolean() throws {
