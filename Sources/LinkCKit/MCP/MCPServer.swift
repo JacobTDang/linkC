@@ -1454,7 +1454,7 @@ public final class MCPServer: Sendable {
     private func closeOwnSession(after task: TaskRecord) -> String {
         do {
             _ = try inboxStore.requestClose(taskId: task.id, by: .worker)
-            return "Close requested: linkC closes this session after your turn ends if it launched it for this task."
+            return "Close requested: linkC closes this session after your turn ends if it launched it as a worker, it holds no other open task, and nothing was typed into it after the task ended."
         } catch InboxError.closeRefused(let reason) {
             return "Not closing this session: \(reason)"
         } catch {
