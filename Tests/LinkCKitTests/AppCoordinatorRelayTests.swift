@@ -2934,17 +2934,18 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
     // MARK: - Close requests
 
-    /// A workspace with a worker (`W`, finished, its task reported) and a session of the user's
-    /// on screen; a request from `requester` waits on the task.
+    /// A workspace with a worker (finished, its task reported) and a session of the user's on
+    /// screen. The task was delegated by Claude session "D".
     @MainActor
-    private func workerWithRequest(
-        _ coordinator: AppCoordinator, inbox: InboxStore, by requester: CloseRequest.Requester,
+    private func reportedWorker(
+        _ coordinator: AppCoordinator, inbox: InboxStore,
         workerState: SessionState = .finished, taskState: TaskState = .reported
     ) throws -> (worker: Session, mine: Session, task: TaskRecord) {
         let ws = inbox.workspaceRoot
         let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
         let mine = try coordinator.newSession(cwd: ws, agent: .codex)
-        var task = try inbox.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        let task = try inbox.createTask(
+            from: .claude, to: .codex, fromSessionId: "D", prompt: "carry", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
         switch taskState {
         case .reported:
@@ -2956,9 +2957,18 @@ final class AppCoordinatorRelayTests: XCTestCase {
         }
         coordinator.store.updateState(id: worker.id, to: workerState)
         coordinator.store.updateState(id: mine.id, to: .finished)
-        _ = try inbox.requestClose(taskId: task.id, by: requester)
-        task = try XCTUnwrap(inbox.task(id: task.id))
-        return (worker, mine, task)
+        return (worker, mine, try XCTUnwrap(inbox.task(id: task.id)))
+    }
+
+    /// `reportedWorker`, with a close request from `requester` already waiting on the task.
+    @MainActor
+    private func workerWithRequest(
+        _ coordinator: AppCoordinator, inbox: InboxStore, by requester: CloseRequest.Requester,
+        workerState: SessionState = .finished, taskState: TaskState = .reported
+    ) throws -> (worker: Session, mine: Session, task: TaskRecord) {
+        let scene = try reportedWorker(coordinator, inbox: inbox, workerState: workerState, taskState: taskState)
+        _ = try inbox.requestClose(taskId: scene.task.id, by: requester)
+        return (scene.worker, scene.mine, try XCTUnwrap(inbox.task(id: scene.task.id)))
     }
 
     @MainActor
@@ -3163,6 +3173,177 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertNil(coordinator.store.session(id: worker.id))
         XCTAssertNotNil(coordinator.store.session(id: bystander.id), "an idle worker nobody asked about stays inside its grace")
+    }
+
+    // MARK: - The close tools against a real coordinator
+
+    /// An MCP server for a caller in `session`, whose wait for linkC's answer runs a relay pass.
+    @MainActor
+    private func closeServer(
+        _ coordinator: AppCoordinator, workspace ws: String, as agent: AgentKind = .claude, session: String = "D"
+    ) -> MCPServer {
+        MCPServer(
+            workspaceRoot: ws, environment: ["LINKC_AGENT": agent.rawValue, "LINKC_SESSION": session],
+            ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:],
+            closeAnswerWait: MCPServer.CloseAnswerWait(timeout: 1, interval: 0.1, sleep: { _ in
+                MainActor.assumeIsolated {
+                    _ = coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: InboxStore(workspaceRoot: ws))
+                }
+            }))
+    }
+
+    @MainActor
+    func testTheCloseToolClosesAnIdleWorkerItsDelegatorLaunched() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, mine, task) = try reportedWorker(coordinator, inbox: inbox)
+
+        let res = try mcpCall(closeServer(coordinator, workspace: ws), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertNil(coordinator.store.session(id: worker.id), "the worker is closed")
+        XCTAssertNotNil(coordinator.store.session(id: mine.id))
+    }
+
+    @MainActor
+    func testTheCloseToolRefusesASessionTheUserOpened() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let mine = try coordinator.newSession(cwd: ws, agent: .codex)
+        _ = try coordinator.newSession(cwd: ws, agent: .claude)
+        let task = try inbox.createTask(from: .claude, to: .codex, fromSessionId: "D", prompt: "carry", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: mine.id)
+        try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "did it"))
+        coordinator.store.updateState(id: mine.id, to: .finished)
+
+        let res = try mcpCall(closeServer(coordinator, workspace: ws), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("not a worker linkC launched"), res.text)
+        XCTAssertNotNil(coordinator.store.session(id: mine.id), "a session the user opened stays")
+    }
+
+    @MainActor
+    func testTheCloseToolRefusesAWorkerTheUserHasTakenOver() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, mine, task) = try reportedWorker(coordinator, inbox: inbox)
+        coordinator.focusSession(worker.id)
+        coordinator.terminals.select(mine.id)
+
+        let res = try mcpCall(closeServer(coordinator, workspace: ws), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "an adopted worker stays")
+    }
+
+    @MainActor
+    func testTheCloseToolRefusesABusyWorker() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, _, task) = try reportedWorker(coordinator, inbox: inbox, workerState: .working)
+
+        let res = try mcpCall(closeServer(coordinator, workspace: ws), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("not idle"), res.text)
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "a busy worker stays")
+    }
+
+    @MainActor
+    func testTheCloseToolRefusesAnotherSessionOfTheDelegatingKind() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, _, task) = try reportedWorker(coordinator, inbox: inbox)
+
+        let res = try mcpCall(
+            closeServer(coordinator, workspace: ws, session: "E"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "another delegator's worker stays")
+    }
+
+    /// The worker closes itself: it reports with `close_session` while still finishing its turn, so
+    /// the relay waits for the turn to end before closing it.
+    @MainActor
+    func testAWorkerThatReportsWithCloseSessionIsClosedWhenItsTurnEnds() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex, asWorker: true)
+        let mine = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: mine.id, to: .finished)
+        coordinator.store.updateState(id: worker.id, to: .working)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+
+        let res = try mcpCall(closeServer(coordinator, workspace: ws, as: .codex, session: worker.id), "linkc_complete_task", [
+            "task_id": task.id, "status": "done", "summary": "Implemented.", "close_session": true
+        ])
+        XCTAssertFalse(res.isError, res.text)
+        coordinator.processPendingMessages(workspacePath: ws)
+        XCTAssertNotNil(coordinator.store.session(id: worker.id), "still finishing its turn")
+
+        coordinator.store.updateState(id: worker.id, to: .finished)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertNil(coordinator.store.session(id: worker.id), "closed once its turn ended")
+        XCTAssertNotNil(coordinator.store.session(id: mine.id))
+    }
+
+    /// A user's own session that reports with `close_session` keeps running: only a worker
+    /// linkC launched is ever closed.
+    @MainActor
+    func testASessionTheUserOpenedThatReportsWithCloseSessionStaysOpen() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let mine = try coordinator.newSession(cwd: ws, agent: .codex)
+        _ = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: mine.id, to: .finished)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: mine.id)
+
+        _ = try mcpCall(closeServer(coordinator, workspace: ws, as: .codex, session: mine.id), "linkc_complete_task", [
+            "task_id": task.id, "status": "done", "summary": "Implemented.", "close_session": true
+        ])
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertNotNil(coordinator.store.session(id: mine.id))
+        XCTAssertNotNil(try closeRequest(inbox, task).refusal)
     }
 
     @MainActor

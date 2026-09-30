@@ -47,7 +47,7 @@ final class MCPServerTests: XCTestCase {
         let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
         let result = resJson?["result"] as? [String: Any]
         let tools = result?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 17)
+        XCTAssertEqual(tools?.count, 18)
 
         let toolNames = Set(tools?.compactMap { $0["name"] as? String } ?? [])
         XCTAssertTrue(toolNames.contains("linkc_broadcast_intent"))
@@ -58,11 +58,30 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(toolNames.contains("linkc_send_message"))
         XCTAssertTrue(toolNames.contains("linkc_get_inbox"))
         for name in [
-            "linkc_start_task", "linkc_complete_task", "linkc_cancel_task", "linkc_get_task", "linkc_my_tasks",
+            "linkc_start_task", "linkc_complete_task", "linkc_cancel_task", "linkc_close_worker", "linkc_get_task", "linkc_my_tasks",
             "linkc_switch_model", "linkc_get_models", "linkc_get_usage_status", "linkc_get_board", "linkc_edit_board"
         ] {
             XCTAssertTrue(toolNames.contains(name), "missing \(name)")
         }
+    }
+
+    func testTheCloseToolsAreDocumentedInTheToolList() throws {
+        let req = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 3, "method": "tools/list"])
+        let resData = try XCTUnwrap(server.handleMessage(req))
+        let result = try XCTUnwrap((try JSONSerialization.jsonObject(with: resData) as? [String: Any])?["result"] as? [String: Any])
+        let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
+
+        let close = try XCTUnwrap(tools.first { $0["name"] as? String == "linkc_close_worker" })
+        XCTAssertTrue((close["description"] as? String ?? "").contains("never closed"))
+        let closeSchema = try XCTUnwrap(close["inputSchema"] as? [String: Any])
+        XCTAssertEqual(closeSchema["required"] as? [String], ["task_id"])
+
+        let complete = try XCTUnwrap(tools.first { $0["name"] as? String == "linkc_complete_task" })
+        let properties = try XCTUnwrap((complete["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])
+        let flag = try XCTUnwrap(properties["close_session"] as? [String: Any])
+        XCTAssertEqual(flag["type"] as? String, "boolean")
+        let required = try XCTUnwrap((complete["inputSchema"] as? [String: Any])?["required"] as? [String])
+        XCTAssertFalse(required.contains("close_session"), "the flag is optional")
     }
 
     func testDelegateTaskSuccessResponseIsNotErrorAndTaskPersists() throws {
