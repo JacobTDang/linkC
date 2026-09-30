@@ -77,7 +77,7 @@ public final class SessionStore {
 
     public func remove(id: String) { sessions.removeAll { $0.id == id } }
 
-    /// The user opened this worker's terminal: from now on it is theirs, and never closed for them.
+    /// The user opened this worker's terminal or typed into it: from now on it is theirs, and never closed for them.
     public func adopt(id: String) {
         guard let idx = sessions.firstIndex(where: { $0.id == id }), sessions[idx].isWorker else { return }
         sessions[idx].isWorker = false

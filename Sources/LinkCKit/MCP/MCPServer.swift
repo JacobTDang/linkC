@@ -134,6 +134,25 @@ public final class MCPServer: Sendable {
     public typealias SessionResolver = @Sendable () -> String?
     public typealias UsageReader = @Sendable () -> AgentUsage
 
+    /// How `linkc_close_worker` waits for linkC's answer to its request: it polls the task every
+    /// `interval` seconds, up to `timeout`, calling `sleep` between polls. A seam, so a test can
+    /// play the app's answer at each wait instead of really waiting.
+    public struct CloseAnswerWait: Sendable {
+        public var timeout: TimeInterval
+        public var interval: TimeInterval
+        public var sleep: @Sendable (TimeInterval) -> Void
+
+        public init(timeout: TimeInterval, interval: TimeInterval, sleep: @escaping @Sendable (TimeInterval) -> Void) {
+            self.timeout = timeout
+            self.interval = interval
+            self.sleep = sleep
+        }
+
+        /// A relay pass runs about once a second, and a request written to the inbox wakes one.
+        public static let standard = CloseAnswerWait(
+            timeout: 5, interval: 0.1, sleep: { Thread.sleep(forTimeInterval: $0) })
+    }
+
     public let workspaceRoot: String
     public let store: BlackboardStore
     public let inboxStore: InboxStore
@@ -161,6 +180,7 @@ public final class MCPServer: Sendable {
     /// reader can warn is decided once, where readers are registered, and stays correct even if
     /// a different reader is swapped in for an agent later.
     public let warnCapableAgents: Set<AgentKind>
+    public let closeAnswerWait: CloseAnswerWait
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -209,7 +229,8 @@ public final class MCPServer: Sendable {
         modelSettings: @escaping ModelSettingsProvider = { AgentModelStore.applicationSupport.load() },
         sessionResolver: @escaping SessionResolver = { AncestorSessionCache.value },
         usageReaders: [AgentKind: UsageReader] = MCPServer.defaultUsageReaders(),
-        warnCapableAgents: Set<AgentKind> = MCPServer.defaultWarnCapableAgents
+        warnCapableAgents: Set<AgentKind> = MCPServer.defaultWarnCapableAgents,
+        closeAnswerWait: CloseAnswerWait = .standard
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -221,6 +242,7 @@ public final class MCPServer: Sendable {
         self.sessionResolver = sessionResolver
         self.usageReaders = usageReaders
         self.warnCapableAgents = warnCapableAgents
+        self.closeAnswerWait = closeAnswerWait
     }
 
     /// The real readers, wired to each agent's own on-disk records. `agy` and `cursor` write
@@ -508,9 +530,19 @@ public final class MCPServer: Sendable {
                         "summary": ["type": "string", "description": "What changed, at most 1,000 characters"],
                         "sha": ["type": "string", "description": "The commit holding your work; required for a verified task reported done"],
                         "commits": ["type": "array", "items": ["type": "string"]],
-                        "tests": ["type": "array", "items": ["type": "string"], "description": "Deprecated; ignored"]
+                        "tests": ["type": "array", "items": ["type": "string"], "description": "Deprecated; ignored"],
+                        "close_session": ["type": "boolean", "description": "Also ask linkC to close this session once your turn ends. Honoured only for a session linkC launched as a worker (any worker linkC launched, including one reused for a later task) that holds no other open task, waits on none it delegated, and is not the session on screen; otherwise the session stays and linkC says why. A finished worker closes by itself about a minute after it goes idle."]
                     ],
                     "required": ["task_id", "status", "summary"]
+                ]
+            ],
+            [
+                "name": "linkc_close_worker",
+                "description": "Close the terminal session of the worker that carried a task you delegated, to free it before it closes by itself about a minute after it goes idle. linkC closes it only if it is a worker linkC launched, the session is idle, and it holds no other open task and waits on none it delegated; a session the user opened or took over, and the one on screen, are never closed. Otherwise you get the reason.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": ["task_id": ["type": "string", "description": "A task you delegated; its reported or ended state is required"]],
+                    "required": ["task_id"]
                 ]
             ],
             [
@@ -1090,6 +1122,15 @@ public final class MCPServer: Sendable {
                     guard status == "done" || status == "failed" else {
                         return toolResultResponse(id: id, text: "Error: 'status' must be \"done\" or \"failed\".", isError: true)
                     }
+                    let closeSession: Bool
+                    switch args["close_session"] {
+                    case nil, is NSNull:
+                        closeSession = false
+                    case let flag as Bool:
+                        closeSession = flag
+                    default:
+                        return toolResultResponse(id: id, text: "Error: close_session must be true or false.", isError: true)
+                    }
                     let summary = (args["summary"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !summary.isEmpty else {
                         return toolResultResponse(id: id, text: InboxError.emptySummary.localizedDescription, isError: true)
@@ -1106,7 +1147,7 @@ public final class MCPServer: Sendable {
                     let report = TaskReport(status: status, summary: summary, sha: sha, commits: args["commits"] as? [String] ?? [])
                     try inboxStore.reportTask(taskId: task.id, report: report)
 
-                    let text: String
+                    var text: String
                     if task.verification == nil {
                         text = "Reported. Unverified task."
                     } else if status == "done", let sha {
@@ -1114,7 +1155,28 @@ public final class MCPServer: Sendable {
                     } else {
                         text = "Reported. linkC will mark the task failed."
                     }
+                    if closeSession {
+                        text += " " + closeOwnSession(after: task)
+                    }
                     return toolResultResponse(id: id, text: text)
+                } catch {
+                    return errorResult(id: id, error)
+                }
+
+            case "linkc_close_worker":
+                do {
+                    let task = try requireTask(args)
+                    guard caller.agent == task.fromAgent, callerDelegated(task) else {
+                        return toolResultResponse(id: id, text: "Error: only the agent that delegated task \(task.shortId) (\(task.fromAgent.displayName)) may close its worker.", isError: true)
+                    }
+                    let request = try inboxStore.requestClose(taskId: task.id, by: .delegator)
+                    guard let answer = try awaitAnswer(to: request, on: task.id) else {
+                        return toolResultResponse(id: id, text: "Close requested for the worker of task \(task.shortId), but linkC has not answered yet (is it running?). The request may still be acted on if the worker still qualifies; linkc_get_task(\"\(task.id)\") shows the outcome.")
+                    }
+                    if let refusal = answer.refusal {
+                        return errorResult(id: id, InboxError.closeRefused(refusal))
+                    }
+                    return toolResultResponse(id: id, text: "Closed the worker that carried task \(task.shortId).")
                 } catch {
                     return errorResult(id: id, error)
                 }
@@ -1197,6 +1259,10 @@ public final class MCPServer: Sendable {
         text += "- **Lease expires:** \(iso.string(from: t.leaseExpiresAt))\n"
         if !t.files.isEmpty { text += "- **Files:** \(t.files.joined(separator: ", "))\n" }
         if let r = t.cancelReason { text += "- **Reason:** \(r)\n" }
+        if let close = t.closeRequest {
+            let outcome = close.refusal.map { "refused — \($0)" } ?? close.closedAt.map { "closed at \(iso.string(from: $0))" } ?? "pending"
+            text += "- **Close request:** \(outcome) (asked by the \(close.by.rawValue))\n"
+        }
         text += "\n## Brief\n\(t.prompt)\n"
         if let r = t.report {
             text += "\n## Report (\(r.status))\n\(r.summary)\n"
@@ -1371,6 +1437,51 @@ public final class MCPServer: Sendable {
         guard let assignee = task.assigneeSessionId,
               let caller = callerSessionId() else { return true }
         return assignee == caller
+    }
+
+    /// Whether the caller is the session that delegated `task`. A task with no delegating session
+    /// (written before they were recorded, or delegated from outside linkC), or a caller with no
+    /// session id, is not locked out for the same reason as in `callerMayAct`.
+    private func callerDelegated(_ task: TaskRecord) -> Bool {
+        guard let delegator = task.fromSessionId,
+              let caller = callerSessionId() else { return true }
+        return delegator == caller
+    }
+
+    /// The reporting worker's own request to close its session, after its report is recorded:
+    /// a sentence for the tool result. A refusal is stated, not raised — the report already
+    /// landed and stays.
+    private func closeOwnSession(after task: TaskRecord) -> String {
+        do {
+            _ = try inboxStore.requestClose(taskId: task.id, by: .worker)
+            return "Close requested: linkC closes this session after your turn ends if it launched it as a worker, it holds no other open task, and nothing was typed into it after the task ended."
+        } catch InboxError.closeRefused(let reason) {
+            return "Not closing this session: \(reason)"
+        } catch {
+            return "Warning: the close request was not recorded: \(error.localizedDescription)"
+        }
+    }
+
+    /// linkC's answer to `request`, polled from the task until `closeAnswerWait` runs out; nil when
+    /// none came. Only the answer to this very request counts — an earlier one is not. The request
+    /// is already recorded, so a poll that cannot take the inbox lock (the relay holds it while it
+    /// decides) is not an answer yet, not a failure of the request; any other read error is.
+    private func awaitAnswer(to request: CloseRequest, on taskId: String) throws -> CloseRequest? {
+        var waited: TimeInterval = 0
+        while true {
+            let current: TaskRecord?
+            do {
+                current = try inboxStore.task(id: taskId)
+            } catch LinkCError.lockTimeout {
+                return nil
+            }
+            if let answer = current?.closeRequest, answer.id == request.id, !answer.isPending {
+                return answer
+            }
+            guard waited < closeAnswerWait.timeout else { return nil }
+            closeAnswerWait.sleep(closeAnswerWait.interval)
+            waited += closeAnswerWait.interval
+        }
     }
 
     /// Applies `steps` to the Board, load–apply–save, and retries once if the file changed on

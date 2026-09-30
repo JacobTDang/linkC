@@ -700,6 +700,10 @@ public final class AppCoordinator {
             terminal.onTerminated = { [weak self] _ in
                 self?.cleanup(sessionId: session.id)
             }
+            // A worker the user types into is theirs, on screen or not.
+            terminal.onUserInput = { [weak self] in
+                self?.adoptWorker(session.id)
+            }
 
             let executable: String
             let args: [String]
@@ -933,12 +937,18 @@ public final class AppCoordinator {
         terminals.select(id)
         onSessionFocused?(id)
         // Opening a worker's terminal makes it the user's: they are using it now.
-        store.adopt(id: id)
-        manifest.markAdopted(linkcId: id)
+        adoptWorker(id)
         NSApp?.activate(ignoringOtherApps: true)
         if let s = store.session(id: id), s.agentKind != .claude, s.state.bucket == .needsYou {
             store.updateState(id: id, to: .ready)
         }
+    }
+
+    /// Makes a worker the user's, in memory and in the manifest, so it is never closed for them. A
+    /// no-op for any session that is not a worker.
+    private func adoptWorker(_ id: String) {
+        store.adopt(id: id)
+        manifest.markAdopted(linkcId: id)
     }
 
     /// Periodically inspects all sessions to detect live agent kind and working/finished/idle state

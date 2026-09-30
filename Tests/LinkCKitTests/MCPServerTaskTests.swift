@@ -715,4 +715,319 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.text.contains("91%"), res.text)
         XCTAssertEqual(try inbox.openTasks().count, 1, "the task is still created even though the broadcast failed")
     }
+
+    // MARK: - Closing a worker
+
+    /// A caller in `session`, with linkC's answer to a close request played by `answer` at each
+    /// wait instead of a real sleep: the test stands in for the relay pass.
+    private func server(
+        as agent: AgentKind, session: String?, inboxStore: InboxStore? = nil,
+        answer: @escaping @Sendable () -> Void = {}
+    ) -> MCPServer {
+        var environment = ["LINKC_AGENT": agent.rawValue]
+        if let session { environment["LINKC_SESSION"] = session }
+        return MCPServer(
+            workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: environment,
+            ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:],
+            closeAnswerWait: MCPServer.CloseAnswerWait(timeout: 1, interval: 0.1, sleep: { _ in answer() }))
+    }
+
+    /// A task Claude session "D" delegated, delivered to session "W" and reported.
+    private func reportedTask(from session: String? = "D", prompt: String = "carry") throws -> TaskRecord {
+        let task = try inbox.createTask(from: .claude, to: .codex, fromSessionId: session, prompt: prompt, files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+        try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "did it"))
+        return task
+    }
+
+    func testCloseWorkerRecordsARequestAndReportsThatItWasClosed() throws {
+        let task = try reportedTask()
+        let inbox = self.inbox!
+        let srv = server(as: .claude, session: "D") {
+            try? inbox.resolveCloseRequest(taskId: task.id, outcome: .closed(at: Date()))
+        }
+
+        let res = try mcpCall(srv, "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("Closed"), res.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.closeRequest?.by, .delegator)
+    }
+
+    func testCloseWorkerPassesOnWhyLinkCRefused() throws {
+        let task = try reportedTask()
+        let inbox = self.inbox!
+        let srv = server(as: .claude, session: "D") {
+            try? inbox.resolveCloseRequest(taskId: task.id, outcome: .refused("it is open on screen"))
+        }
+
+        let res = try mcpCall(srv, "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("it is open on screen"), res.text)
+    }
+
+    func testCloseWorkerSaysSoWhenLinkCHasNotAnsweredAndKeepsTheRequest() throws {
+        let task = try reportedTask()
+
+        let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("not answered"), res.text)
+        XCTAssertTrue(try XCTUnwrap(inbox.task(id: task.id)?.closeRequest).isPending)
+    }
+
+    /// The request can be dropped (an older build saving the inbox) or replaced by the worker's
+    /// own, so the text must not promise it stays.
+    func testCloseWorkerDoesNotPromiseThatTheRequestStays() throws {
+        let task = try reportedTask()
+
+        let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.text.contains("may still be acted on"), res.text)
+        XCTAssertTrue(res.text.contains("linkc_get_task"), res.text)
+        XCTAssertFalse(res.text.contains("stays on the task"), res.text)
+    }
+
+    /// The request is on the task before the wait starts. A read that fails to take the inbox lock
+    /// while polling (the relay holds it) means no answer yet, not that the request failed.
+    func testCloseWorkerTreatsALockTimeoutWhileWaitingAsNotAnsweredYet() throws {
+        let task = try reportedTask()
+        let contended = InboxStore(workspaceRoot: tempDir.path, failureInjector: {
+            $0 == task.id ? LinkCError.lockTimeout("inbox lock busy") : nil
+        })
+
+        let res = try mcpCall(server(as: .claude, session: "D", inboxStore: contended), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("not answered"), res.text)
+        XCTAssertTrue(try XCTUnwrap(inbox.task(id: task.id)?.closeRequest).isPending, "the request is recorded")
+    }
+
+    func testCloseWorkerStillFailsLoudOnAnyOtherReadErrorWhileWaiting() throws {
+        let task = try reportedTask()
+        let broken = InboxStore(workspaceRoot: tempDir.path, failureInjector: {
+            $0 == task.id ? LinkCError.server("inbox unreadable") : nil
+        })
+
+        let res = try mcpCall(server(as: .claude, session: "D", inboxStore: broken), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("inbox unreadable"), res.text)
+    }
+
+    /// While the delegator waits, the worker's own request can replace its request on the task
+    /// and be answered; that answer is not the delegator's.
+    func testCloseWorkerReadsOnlyTheAnswerToItsOwnRequest() throws {
+        let task = try reportedTask()
+        let inbox = self.inbox!
+        let srv = server(as: .claude, session: "D") {
+            _ = try? inbox.requestClose(taskId: task.id, by: .worker)
+            try? inbox.resolveCloseRequest(taskId: task.id, outcome: .refused("the answer to another request"))
+        }
+
+        let res = try mcpCall(srv, "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertFalse(res.text.contains("the answer to another request"), res.text)
+        XCTAssertTrue(res.text.contains("not answered"), res.text)
+    }
+
+    func testCloseWorkerRefusesACallerThatDidNotDelegateTheTask() throws {
+        let task = try reportedTask()
+
+        let res = try mcpCall(server(as: .codex, session: "W"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("delegated"), res.text)
+        XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
+    }
+
+    func testCloseWorkerRefusesAnotherSessionOfTheDelegatingKind() throws {
+        let task = try reportedTask()
+
+        let res = try mcpCall(server(as: .claude, session: "E"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("delegated"), res.text)
+        XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
+    }
+
+    func testCloseWorkerAcceptsACallerWithNoSessionForATaskItsKindDelegated() throws {
+        let task = try reportedTask(from: nil)
+
+        let res = try mcpCall(server(as: .claude, session: nil), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertNotNil(try inbox.task(id: task.id)?.closeRequest)
+    }
+
+    func testCloseWorkerRefusesATaskThatIsStillRunning() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, fromSessionId: "D", prompt: "carry", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+        try inbox.markTaskStarted(taskId: task.id)
+
+        let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("linkc_cancel_task"), res.text)
+        XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
+    }
+
+    func testCloseWorkerRefusesATaskThatWasNeverDelivered() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, fromSessionId: "D", prompt: "carry", files: [])
+
+        let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("never delivered"), res.text)
+    }
+
+    func testCloseWorkerRefusesAWorkerThatHoldsAnotherOpenTask() throws {
+        let task = try reportedTask()
+        let other = try inbox.createTask(from: .claude, to: .codex, fromSessionId: "D", prompt: "next", files: [])
+        try inbox.markTaskDelivered(taskId: other.id, sessionId: "W")
+
+        let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains(other.shortId), res.text)
+        XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
+    }
+
+    func testCloseWorkerRefusesAWorkerThatWaitsOnATaskItDelegated() throws {
+        let task = try reportedTask()
+        let sub = try inbox.createTask(from: .codex, to: .agy, fromSessionId: "W", prompt: "sub-task", files: [])
+
+        let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains(sub.shortId), res.text)
+        XCTAssertTrue(res.text.contains("delegated"), res.text)
+        XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
+    }
+
+    func testCloseWorkerNeedsATaskId() throws {
+        let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker")
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("task_id"), res.text)
+    }
+
+    func testCloseWorkerIsAnErrorResultOnAnUnreadableInbox() throws {
+        let inboxURL = tempDir.appendingPathComponent(".linkc/inbox.json")
+        try FileManager.default.createDirectory(at: inboxURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not valid json".utf8).write(to: inboxURL)
+
+        let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker", ["task_id": "abcdef12"])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("could not be decoded"), res.text)
+    }
+
+    func testCompleteTaskWithCloseSessionAsksForTheReportersSessionToClose() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+
+        let res = try mcpCall(server(as: .codex, session: "W"), "linkc_complete_task", [
+            "task_id": task.id, "status": "done", "summary": "Implemented.", "close_session": true
+        ])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.hasPrefix("Reported. Unverified task."), res.text)
+        XCTAssertTrue(res.text.contains("Close requested"), res.text)
+        let stored = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(stored.state, .reported)
+        XCTAssertEqual(stored.closeRequest?.by, .worker)
+    }
+
+    func testCompleteTaskWithoutCloseSessionAsksForNothing() throws {
+        for flag in [nil, false] as [Bool?] {
+            let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build \(String(describing: flag))", files: [])
+            try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+            var args: [String: Any] = ["task_id": task.id, "status": "done", "summary": "Implemented."]
+            if let flag { args["close_session"] = flag }
+
+            let res = try mcpCall(server(as: .codex, session: "W"), "linkc_complete_task", args)
+
+            XCTAssertEqual(res.text, "Reported. Unverified task.")
+            XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
+            try inbox.cancelTask(taskId: task.id, reason: "next case")
+        }
+    }
+
+    func testCompleteTaskStillReportsWhenTheSessionCannotBeClosed() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+        let other = try inbox.createTask(from: .claude, to: .codex, prompt: "Next", files: [])
+        try inbox.markTaskDelivered(taskId: other.id, sessionId: "W")
+
+        let res = try mcpCall(server(as: .codex, session: "W"), "linkc_complete_task", [
+            "task_id": task.id, "status": "done", "summary": "Implemented.", "close_session": true
+        ])
+
+        XCTAssertFalse(res.isError, "the report itself succeeded: \(res.text)")
+        XCTAssertTrue(res.text.contains("Not closing this session"), res.text)
+        XCTAssertTrue(res.text.contains(other.shortId), res.text)
+        let stored = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(stored.state, .reported)
+        XCTAssertNil(stored.closeRequest)
+    }
+
+    func testCompleteTaskDoesNotAskToCloseASessionThatWaitsOnATaskItDelegated() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+        let sub = try inbox.createTask(from: .codex, to: .agy, fromSessionId: "W", prompt: "sub-task", files: [])
+
+        let res = try mcpCall(server(as: .codex, session: "W"), "linkc_complete_task", [
+            "task_id": task.id, "status": "done", "summary": "Implemented.", "close_session": true
+        ])
+
+        XCTAssertFalse(res.isError, "the report itself succeeded: \(res.text)")
+        XCTAssertTrue(res.text.contains("Not closing this session"), res.text)
+        XCTAssertTrue(res.text.contains(sub.shortId), res.text)
+        XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
+    }
+
+    func testCompleteTaskRefusesACloseSessionThatIsNotABoolean() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+
+        let res = try mcpCall(server(as: .codex, session: "W"), "linkc_complete_task", [
+            "task_id": task.id, "status": "done", "summary": "Implemented.", "close_session": "yes"
+        ])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("close_session"), res.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "a malformed call records nothing")
+    }
+
+    func testAnotherSessionCannotAskForTheWorkersSessionToClose() throws {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "W")
+
+        let res = try mcpCall(server(as: .codex, session: "sibling"), "linkc_complete_task", [
+            "task_id": task.id, "status": "done", "summary": "Implemented.", "close_session": true
+        ])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertNil(try inbox.task(id: task.id)?.closeRequest)
+    }
+
+    func testGetTaskShowsTheCloseRequestAndItsAnswer() throws {
+        let task = try reportedTask()
+        _ = try inbox.requestClose(taskId: task.id, by: .delegator)
+        let srv = server(as: .claude, session: "D")
+
+        let pending = try mcpCall(srv, "linkc_get_task", ["task_id": task.id])
+        XCTAssertTrue(pending.text.contains("Close request:** pending"), pending.text)
+
+        try inbox.resolveCloseRequest(taskId: task.id, outcome: .refused("it is open on screen"))
+        let refused = try mcpCall(srv, "linkc_get_task", ["task_id": task.id])
+        XCTAssertTrue(refused.text.contains("refused — it is open on screen"), refused.text)
+
+        _ = try inbox.requestClose(taskId: task.id, by: .delegator)
+        try inbox.resolveCloseRequest(taskId: task.id, outcome: .closed(at: Date()))
+        let closed = try mcpCall(srv, "linkc_get_task", ["task_id": task.id])
+        XCTAssertTrue(closed.text.contains("Close request:** closed"), closed.text)
+    }
 }
