@@ -145,7 +145,9 @@ public final class AppCoordinator {
     var limitSignatures: [String: String] = [:]
     /// Per session: what `checkLimitsAndReroute` last ran the limit rules over. The rules read only
     /// the screen, the agent kind and what linkC has typed, so the same three give the same answer
-    /// and the scan is skipped. Cleared by `cleanup`.
+    /// and the scan is skipped — except while a reroute is held for that session, when the rules run
+    /// every tick so the hold can end as soon as the worker is quiet or the banner goes. Cleared by
+    /// `cleanup`.
     var limitScans: [String: LimitScan] = [:]
     /// Per session: the reroute `checkLimitsAndReroute` is holding back because the worker is busy.
     /// Cleared by `cleanup`.

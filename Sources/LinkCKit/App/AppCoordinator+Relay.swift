@@ -1131,7 +1131,7 @@ extension AppCoordinator {
         do {
             _ = try inboxStore.enqueue(
                 from: session.agentKind, to: task.fromAgent, kind: .notice, taskId: task.id,
-                body: "\(session.agentKind.displayName)'s screen matches a limit rule but \(busy), so task \(task.shortId) is left with it for now. It moves to another agent after \(Int(Self.limitHoldCap / 60)) minutes if it is still busy. linkc_cancel_task(\"\(task.id)\") to stop it now."
+                body: "\(session.agentKind.displayName)'s screen matches a limit rule but \(busy), so task \(task.shortId) is left with it for now. It moves to another agent once the worker is quiet, or at most \(Int(Self.limitHoldCap / 60)) minutes after the limit rule first matched. linkc_cancel_task(\"\(task.id)\") to stop it now."
             )
         } catch {
             NSLog("[linkC relay] checkLimitsAndReroute: task %@ held-back notice — %@", task.shortId, String(describing: error))
