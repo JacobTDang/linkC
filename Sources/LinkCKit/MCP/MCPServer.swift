@@ -1171,7 +1171,7 @@ public final class MCPServer: Sendable {
                     }
                     let request = try inboxStore.requestClose(taskId: task.id, by: .delegator)
                     guard let answer = try awaitAnswer(to: request, on: task.id) else {
-                        return toolResultResponse(id: id, text: "Close requested for the worker of task \(task.shortId), but linkC has not answered yet (is it running?). The request stays on the task; linkC closes the worker when it next checks, if it still qualifies. linkc_get_task(\"\(task.id)\") shows the outcome.")
+                        return toolResultResponse(id: id, text: "Close requested for the worker of task \(task.shortId), but linkC has not answered yet (is it running?). The request may still be acted on if the worker still qualifies; linkc_get_task(\"\(task.id)\") shows the outcome.")
                     }
                     if let refusal = answer.refusal {
                         return errorResult(id: id, InboxError.closeRefused(refusal))
@@ -1463,12 +1463,20 @@ public final class MCPServer: Sendable {
     }
 
     /// linkC's answer to `request`, polled from the task until `closeAnswerWait` runs out; nil when
-    /// none came. Only the answer to this very request counts — an earlier one is not.
+    /// none came. Only the answer to this very request counts — an earlier one is not. The request
+    /// is already recorded, so a poll that cannot take the inbox lock (the relay holds it while it
+    /// decides) is not an answer yet, not a failure of the request; any other read error is.
     private func awaitAnswer(to request: CloseRequest, on taskId: String) throws -> CloseRequest? {
         var waited: TimeInterval = 0
         while true {
-            if let current = try inboxStore.task(id: taskId)?.closeRequest, current.id == request.id, !current.isPending {
-                return current
+            let current: TaskRecord?
+            do {
+                current = try inboxStore.task(id: taskId)
+            } catch LinkCError.lockTimeout {
+                return nil
+            }
+            if let answer = current?.closeRequest, answer.id == request.id, !answer.isPending {
+                return answer
             }
             guard waited < closeAnswerWait.timeout else { return nil }
             closeAnswerWait.sleep(closeAnswerWait.interval)

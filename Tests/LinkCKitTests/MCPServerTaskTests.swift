@@ -721,12 +721,13 @@ final class MCPServerTaskTests: XCTestCase {
     /// A caller in `session`, with linkC's answer to a close request played by `answer` at each
     /// wait instead of a real sleep: the test stands in for the relay pass.
     private func server(
-        as agent: AgentKind, session: String?, answer: @escaping @Sendable () -> Void = {}
+        as agent: AgentKind, session: String?, inboxStore: InboxStore? = nil,
+        answer: @escaping @Sendable () -> Void = {}
     ) -> MCPServer {
         var environment = ["LINKC_AGENT": agent.rawValue]
         if let session { environment["LINKC_SESSION"] = session }
         return MCPServer(
-            workspaceRoot: tempDir.path, environment: environment,
+            workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: environment,
             ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:],
             closeAnswerWait: MCPServer.CloseAnswerWait(timeout: 1, interval: 0.1, sleep: { _ in answer() }))
     }
@@ -774,6 +775,45 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertFalse(res.isError, res.text)
         XCTAssertTrue(res.text.contains("not answered"), res.text)
         XCTAssertTrue(try XCTUnwrap(inbox.task(id: task.id)?.closeRequest).isPending)
+    }
+
+    /// The request can be dropped (an older build saving the inbox) or replaced by the worker's
+    /// own, so the text must not promise it stays.
+    func testCloseWorkerDoesNotPromiseThatTheRequestStays() throws {
+        let task = try reportedTask()
+
+        let res = try mcpCall(server(as: .claude, session: "D"), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.text.contains("may still be acted on"), res.text)
+        XCTAssertTrue(res.text.contains("linkc_get_task"), res.text)
+        XCTAssertFalse(res.text.contains("stays on the task"), res.text)
+    }
+
+    /// The request is on the task before the wait starts. A read that fails to take the inbox lock
+    /// while polling (the relay holds it) means no answer yet, not that the request failed.
+    func testCloseWorkerTreatsALockTimeoutWhileWaitingAsNotAnsweredYet() throws {
+        let task = try reportedTask()
+        let contended = InboxStore(workspaceRoot: tempDir.path, failureInjector: {
+            $0 == task.id ? LinkCError.lockTimeout("inbox lock busy") : nil
+        })
+
+        let res = try mcpCall(server(as: .claude, session: "D", inboxStore: contended), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("not answered"), res.text)
+        XCTAssertTrue(try XCTUnwrap(inbox.task(id: task.id)?.closeRequest).isPending, "the request is recorded")
+    }
+
+    func testCloseWorkerStillFailsLoudOnAnyOtherReadErrorWhileWaiting() throws {
+        let task = try reportedTask()
+        let broken = InboxStore(workspaceRoot: tempDir.path, failureInjector: {
+            $0 == task.id ? LinkCError.server("inbox unreadable") : nil
+        })
+
+        let res = try mcpCall(server(as: .claude, session: "D", inboxStore: broken), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertTrue(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("inbox unreadable"), res.text)
     }
 
     /// While the delegator waits, the worker's own request can replace its request on the task
