@@ -329,6 +329,61 @@ extension TerminalSessionTests {
         XCTAssertTrue(terminal.synchronizedOutputActive)
     }
 
+    // MARK: - User input
+
+    func testKeysTypedIntoTheViewAreReportedAsUserInput() {
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        var reports = 0
+        view.onUserInput = { reports += 1 }
+
+        view.send(txt: "hello")
+
+        XCTAssertEqual(reports, 1)
+    }
+
+    func testTextLinkCTypesIsNotUserInput() {
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        var reports = 0
+        view.onUserInput = { reports += 1 }
+
+        view.sendingOwnInput {
+            view.send(txt: "linkC's brief")
+            view.send(data: bytes("\r"))
+        }
+        XCTAssertEqual(reports, 0)
+
+        view.send(txt: "then the user")
+        XCTAssertEqual(reports, 1, "the mark ends with the injection")
+    }
+
+    /// A program's queries (device status, attributes) are answered by the terminal itself, and
+    /// those replies travel the same way keys do.
+    func testTheTerminalsOwnRepliesAreNotUserInput() {
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        var reports = 0
+        view.onUserInput = { reports += 1 }
+
+        view.dataReceived(slice: bytes("\u{1b}[5n\u{1b}[c\u{1b}[6n"))
+
+        XCTAssertEqual(reports, 0)
+    }
+
+    func testTextInjectedThroughASessionIsNotUserInputButKeysAre() async throws {
+        let session = TerminalSession(id: "test-user-input", cwd: "/tmp", title: "cat")
+        try session.start(executable: "/bin/cat", args: [], env: [:])
+        defer { session.terminate() }
+        var reports = 0
+        session.onUserInput = { reports += 1 }
+
+        session.sendInput("injected by linkc")
+        let echoed = await waitForOutput(session: session, containing: "injected by linkc", timeout: 3.0)
+        XCTAssertTrue(echoed, "the input plan never finished: \(session.recentOutput(lines: 10))")
+        XCTAssertEqual(reports, 0, "linkC's own injection is not the user typing")
+
+        session.terminalView.send(txt: "u")
+        XCTAssertEqual(reports, 1)
+    }
+
     func testManagerRetainsTerminatingSessionUntilChildIsReaped() async throws {
         let manager = TerminalSessionManager()
         var session: TerminalSession? = manager.makeSession(

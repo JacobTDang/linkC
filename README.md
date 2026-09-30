@@ -107,8 +107,9 @@ hand off work and share context with each other:
 |---|---|
 | `linkc_delegate_task` | Give a task to another agent, with an optional model tier and verification. |
 | `linkc_start_task` | Accept a task that linkC delivered. |
-| `linkc_complete_task` | Report a task as done or failed. |
+| `linkc_complete_task` | Report a task as done or failed. With `close_session`, also ask linkC to close the reporting worker. |
 | `linkc_cancel_task` | Cancel a task. |
+| `linkc_close_worker` | Close the worker that carried a task you delegated. |
 | `linkc_get_task` | Show the full record of a task. |
 | `linkc_my_tasks` | List your open tasks. |
 | `linkc_send_message` | Send a message to another agent. |
@@ -126,6 +127,14 @@ message queued for one agent goes in as a single paste. A task can carry a model
 standard or deep), configured per agent in **Settings > Models**. A verified task also carries a
 test command: linkC runs it itself, and the work only counts as done if the tests fail before it
 and pass after.
+
+When no agent of the right kind is free, linkC launches one to carry the task. That worker closes
+once it has been idle for a minute since its task ended, unless another task for the same kind of
+agent is waiting for it, and after ten idle minutes at the latest. The delegating agent can close it
+sooner with `linkc_close_worker`, and the worker can close itself when it reports with
+`close_session`. linkC closes a worker only when it is idle, holds no other open task, and waits on
+none it delegated. Sessions you open never close by themselves, a worker becomes yours when you
+open it or type into it, and the session on screen is never closed.
 
 When an agent hits its usage limit, its current task moves to another available agent — never
 back to the one that gave it — and the limited agent rests until it actually recovers. linkC

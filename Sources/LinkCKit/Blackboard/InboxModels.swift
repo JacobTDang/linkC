@@ -160,6 +160,11 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     public var verification: Verification?
     public var gate: Verdict?
     public var verdict: Verdict?
+    /// Set when the delegator or the worker asked for the assignee's session to be closed. Optional
+    /// for the same reason as `tier`: `loadUnlocked` throws on a decode error, so a required field
+    /// would make every task row written before it unreadable and take the inbox with it. An
+    /// older build ignores the key on a row that has one.
+    public var closeRequest: CloseRequest?
 
     public var shortId: String { String(id.prefix(8)) }
 
@@ -186,7 +191,8 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         stuckNotifiedAt: Date? = nil,
         verification: Verification? = nil,
         gate: Verdict? = nil,
-        verdict: Verdict? = nil
+        verdict: Verdict? = nil,
+        closeRequest: CloseRequest? = nil
     ) {
         self.id = id
         self.fromAgent = fromAgent
@@ -211,6 +217,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.verification = verification
         self.gate = gate
         self.verdict = verdict
+        self.closeRequest = closeRequest
     }
 }
 
@@ -279,6 +286,7 @@ public enum InboxError: Error, LocalizedError, Equatable {
     case invalidReportStatus(String)
     case notVerified(String)
     case verificationPresent(String)
+    case closeRefused(String)
 
     public var errorDescription: String? {
         switch self {
@@ -316,6 +324,8 @@ public enum InboxError: Error, LocalizedError, Equatable {
             return "Task \(id.prefix(8)) has no verification."
         case .verificationPresent(let id):
             return "Task \(id.prefix(8)) is verified; linkC must adjudicate it."
+        case .closeRefused(let reason):
+            return "Cannot close the worker: \(reason)"
         }
     }
 }

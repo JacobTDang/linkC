@@ -291,11 +291,7 @@ extension AppCoordinator {
         var loggedInjectionWait = false
         for task in queued {
             let candidates = store.sessions.filter {
-                $0.cwd == norm && $0.agentKind == task.toAgent
-                    && $0.state != .ended && $0.id != task.fromSessionId
-                    // A tiered task runs only on a session pinned to that tier. A row written
-                    // before tiers has none, and keeps the pre-tier rule: any session of its kind.
-                    && (task.tier == nil || $0.modelTier == task.tier)
+                $0.cwd == norm && $0.state != .ended && $0.canCarry(task)
             }
             if candidates.isEmpty {
                 // A tiered task whose tier no longer resolves to a model (settings edited while
