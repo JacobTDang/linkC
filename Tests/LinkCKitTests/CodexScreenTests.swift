@@ -39,6 +39,17 @@ final class CodexScreenTests: XCTestCase {
         XCTAssertNil(TerminalPreview.liveActivity(from: rows))
     }
 
+    /// Only rows under a `└` detail row are skipped as its wrapped continuation. Indented rows
+    /// straight under the status row are something else, so the status row is no longer the one
+    /// the input box sits under.
+    func testIndentedRowsWithNoDetailRowAboveThemAreNotSkipped() throws {
+        var rows = try screen("codex-0.159-working-before-tip")
+        XCTAssertNotNil(TerminalPreview.liveActivity(from: rows), "the frame reads as working as captured")
+        let box = try XCTUnwrap(rows.firstIndex { $0.contains("Ask Codex to do anything") })
+        rows.insert(contentsOf: ["    stray indented output", "    more of it"], at: box)
+        XCTAssertNil(TerminalPreview.liveActivity(from: rows))
+    }
+
     /// A brief pasted while Codex is still starting its tool servers sits in the input box under
     /// "Waiting for startup"; there is no status row yet. The turn has not begun, but the worker
     /// is not idle either.

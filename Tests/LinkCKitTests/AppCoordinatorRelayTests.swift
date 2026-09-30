@@ -1695,6 +1695,28 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(lines.first?.taskId, task.id)
     }
 
+    /// The same when the user opens the worker's tab during the hold: that moves a finished screen-read
+    /// session to ready, but its turn is still over and still unreported.
+    @MainActor
+    func testATurnEndKeptBackByAHeldRerouteIsReportedEvenIfTheWorkerWasOpenedMeanwhile() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let (worker, task) = try await makeWorkerShowingABanner(coordinator, inbox: inbox, state: .working)
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: worker.id))
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: worker.id, workspacePath: ws), 0, "held: the task is about to move")
+
+        coordinator.store.updateState(id: worker.id, to: .finished)
+        coordinator.store.updateState(id: worker.id, to: .ready)
+        try showCodexScreen("codex-0.159-turn-finished", on: worker.id, of: coordinator)
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: worker.id))
+
+        let lines = try inbox.load().messages.filter { $0.prompt.contains("turn ended without a report") }
+        XCTAssertEqual(lines.count, 1, "the turn is over whether or not the user opened the tab")
+        XCTAssertEqual(lines.first?.taskId, task.id)
+    }
+
     /// In the 97273A41 incident Codex's turn ended on its limit while a `swift test` it had started
     /// went on in the checkout, its footer saying "1 background terminal running". The worker is
     /// quiet and its state says finished, but it is not done: the reroute waits for the terminal,

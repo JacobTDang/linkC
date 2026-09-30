@@ -878,8 +878,10 @@ extension AppCoordinator {
         // `LimitDetector.withoutInjected`).
         guard let match = limitDetection(recentOutput, session.agentKind, injected) else {
             // The banner is gone, so the reroute it was held back for is no longer wanted. A turn that
-            // ended in the meantime was not reported while the hold lasted.
-            if limitHolds.removeValue(forKey: sessionId) != nil, session.state == .finished {
+            // ended in the meantime was not reported while the hold lasted. Opening the worker's tab
+            // moves a finished session to ready, which is still a turn that is over.
+            if limitHolds.removeValue(forKey: sessionId) != nil,
+               [.finished, .ready, .waitingIdle].contains(session.state) {
                 relayTurnEnd(sessionId: sessionId, workspacePath: norm)
             }
             return false
