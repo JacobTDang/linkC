@@ -131,16 +131,26 @@ public enum TerminalPreview {
             guard !text.hasSuffix("(shift+tab to cycle)") && text != "? for shortcuts" else { continue }
 
             if isPromptRow(text) {
-                let above = Array(recent[(index + 1)...].lazy.map { visibleText($0) }.filter { !$0.isEmpty })
+                var above: [String] = []
+                var aboveRaw: [String] = []
+                for raw in recent[(index + 1)...] {
+                    let visible = visibleText(raw)
+                    guard !visible.isEmpty else { continue }
+                    above.append(visible)
+                    aboveRaw.append(raw)
+                }
                 if footerSaysWorking {
                     return above.compactMap { spinnerPhrase($0) }.first ?? "Working"
                 }
                 // Codex has no working footer: its status row ("• Working (9s • esc to interrupt)")
                 // sits right above the input box, and is gone once the turn ends. Messages queued
                 // mid-turn sit between the two, under a "Messages to be submitted after next tool
-                // call" header, so the status row is then the one above that header.
+                // call" header, so the status row is then the one above that header. A detail
+                // under the status row (a tip, once the turn has run a while) sits between them
+                // too, and is skipped the same way.
                 let queueHeader = above.firstIndex { $0.contains("Messages to be submitted after next tool call") }
-                let statusIndex = queueHeader.map { $0 + 1 } ?? 0
+                let firstDetail = queueHeader.map { $0 + 1 } ?? 0
+                let statusIndex = firstDetail + statusDetailRowCount(in: aboveRaw[firstDetail...])
                 if statusIndex < above.count, above[statusIndex].contains("esc to interrupt)") {
                     let status = above[statusIndex]
                     // The bullet pulses between "•" and "◦".
@@ -194,6 +204,16 @@ public enum TerminalPreview {
             }
         }
         return footerSaysWorking ? "Working" : nil
+    }
+
+    private static let backgroundTerminals = try! NSRegularExpression(pattern: #"^\d+ background terminals? running\b"#)
+
+    /// Whether Codex's footer says terminals it started are still running: the row it draws above
+    /// the input box once a turn ends with one left ("1 background terminal running · /ps to
+    /// view · /stop to close"). Only the rows near the input box are read, so the phrase quoted in
+    /// output higher up is not taken for it.
+    public static func hasBackgroundTerminals(in rows: [String]) -> Bool {
+        rows.suffix(12).contains { backgroundTerminals.matches(visibleText($0)) }
     }
 
     /// Whether the screen is Codex's or Antigravity's folder-trust dialog: its question row, then
@@ -285,7 +305,41 @@ public enum TerminalPreview {
     /// spinner row instead ends "esc to interrupt)") or Antigravity's "esc to cancel".
     private static func isWorkingFooter(_ text: String) -> Bool {
         if text.hasPrefix("esc to cancel") { return true }
+        // Codex, while it starts its tool servers, holds a submitted brief in the input box under
+        // "Waiting for startup  · esc cancel", with no status row until the turn begins.
+        if text.hasPrefix("Waiting for startup") && text.contains("esc cancel") { return true }
         return text.contains("esc to interrupt") && !text.contains("esc to interrupt)")
+    }
+
+    /// How many rows are skipped under Codex's status row.
+    private static let maxStatusDetailRows = 3
+
+    /// Whether `row` is a detail under Codex's status row: a "└" row. The queued-message rows
+    /// ("↳") and every bulleted row are ordinary content.
+    private static func isStatusDetail(_ row: String) -> Bool {
+        row.drop { $0 == " " }.first == "└"
+    }
+
+    /// Whether `row` continues the "└" row above it: a detail wrapped at a narrow width is indented
+    /// under the text of the first row.
+    private static func isDetailContinuation(_ row: String) -> Bool {
+        row.hasPrefix("    ")
+    }
+
+    /// How many of `rows` (nearest the input box first) lie under the status row: the "└" detail
+    /// rows and the continuation rows nearest the box that wrap them, up to `maxStatusDetailRows`.
+    /// Continuation rows count only when a "└" row sits above them, so an indented row that is
+    /// anything else is not skipped.
+    private static func statusDetailRowCount(in rows: ArraySlice<String>) -> Int {
+        var count = 0
+        for (offset, row) in rows.prefix(maxStatusDetailRows).enumerated() {
+            if isStatusDetail(row) {
+                count = offset + 1
+            } else if !isDetailContinuation(row) {
+                break
+            }
+        }
+        return count
     }
 
     /// The glyphs that lead Claude Code's spinner row while a turn runs.

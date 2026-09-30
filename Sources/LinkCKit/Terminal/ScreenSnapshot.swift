@@ -45,6 +45,11 @@ public struct ScreenSnapshot: Sendable {
         TerminalPreview.liveActivity(from: rows)
     }
 
+    /// Whether Codex's footer says terminals it started are still running.
+    public func showsBackgroundTerminals() -> Bool {
+        TerminalPreview.hasBackgroundTerminals(in: rows)
+    }
+
     /// Whether the screen is an agent's folder-trust dialog.
     public func showsTrustPrompt() -> Bool {
         TerminalPreview.isTrustPrompt(rows)
