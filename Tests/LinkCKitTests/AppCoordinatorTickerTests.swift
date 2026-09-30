@@ -238,6 +238,82 @@ final class AppCoordinatorTickerTests: XCTestCase {
         XCTAssertEqual(try InboxStore(workspaceRoot: tempDir.path).fetchPending().count, 1, "it stays queued")
     }
 
+    /// A completion or notice carrying a `taskId` is delivered to that task's delegator session,
+    /// not to any ready session of that agent kind. When the delegator is in `.error` (such as a
+    /// rate-limit cooldown), the presence of another ready session of the same kind must not
+    /// keep the sweep at the fast 1-second cadence; once the delegator is ready again, it does.
+    /// Delivery and the sweep cadence share one routing rule. A message about a task goes to the
+    /// session that delegated it while that session lives in this workspace; otherwise — delegator
+    /// ended, task unknown, no task at all — to the first live session of the target kind.
+    func testAMessageIsRoutedToItsDelegatorAndOtherwiseToTheFirstLiveSessionOfItsKind() throws {
+        let coordinator = try makeCoordinator()
+        defer { coordinator.shutdown() }
+        // The relay routes with the canonical path, as `Session.init` stores it.
+        let workspace = ProjectPath.canonical(tempDir.path)
+        _ = coordinator.store.create(cwd: workspace, title: "first", id: "F1")
+        _ = coordinator.store.create(cwd: workspace, title: "delegator", id: "D1")
+        let inbox = InboxStore(workspaceRoot: workspace)
+        var data = try inbox.load()
+        data.tasks.append(TaskRecord(id: "T1", fromAgent: .claude, fromSessionId: "D1", toAgent: .codex,
+                                     prompt: "work", state: .done))
+        try inbox.saveRaw(data)
+        let aboutTask = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: "T1", body: "done")
+        let aboutUnknownTask = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: "T9", body: "done")
+        let aboutNoTask = try inbox.enqueue(from: .codex, to: .claude, kind: .peerNote, body: "hi")
+
+        func target(_ message: PendingMessage) throws -> String? {
+            try coordinator.deliveryTarget(for: message, in: workspace, inboxStore: inbox, caller: "test")?.id
+        }
+        XCTAssertEqual(try target(aboutTask), "D1", "the delegator, not the first session of the kind")
+        XCTAssertEqual(try target(aboutUnknownTask), "F1")
+        XCTAssertEqual(try target(aboutNoTask), "F1")
+
+        coordinator.store.updateState(id: "D1", to: .ended)
+        XCTAssertEqual(try target(aboutTask), "F1", "an ended delegator falls back to a live session of the kind")
+    }
+
+    func testAQueuedCompletionWithDelegatorInErrorLeavesTheCadenceAtFiveEvenIfPeerIsReady() async throws {
+        let (coordinator, delegator) = try await startCoordinatorWithLiveSession()
+        defer { coordinator.shutdown() }
+
+        let peer = try coordinator.newSession(cwd: tempDir.path, agent: .claude)
+        coordinator.store.updateState(id: peer.id, to: .ready)
+        coordinator.lastInjectionAt[peer.id] = Date()
+        let peerTerminal = try XCTUnwrap(coordinator.terminals.session(id: peer.id))
+        let peerRunning = try await waitUntil { peerTerminal.isRunning }
+        XCTAssertTrue(peerRunning, "peer agent never started")
+        clock.advance(by: TickCadence.minimumWakeGap)
+        try await waitForSleep(of: .seconds(5))
+
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        var inboxData = try inbox.load()
+        let task = TaskRecord(
+            id: "T1",
+            fromAgent: .claude,
+            fromSessionId: delegator.id,
+            toAgent: .codex,
+            prompt: "work",
+            state: .done
+        )
+        inboxData.tasks.append(task)
+        try inbox.saveRaw(inboxData)
+        _ = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: task.id, body: "done")
+
+        // Put delegator in .error with a recorded limit:
+        try inbox.recordLimit(agent: .claude, reason: "cooling down", cooldown: 3600)
+        coordinator.store.updateState(id: delegator.id, to: .error)
+
+        // Advance past the previous 5s sleep to let the relay pass evaluate cadence:
+        clock.advance(by: .seconds(5))
+        try await waitForSleep(of: .seconds(5))
+        XCTAssertEqual(try inbox.fetchPending().count, 1, "it stays queued because delegator is in error")
+
+        // Bringing delegator back to ready allows delivery, so fast cadence is held:
+        coordinator.store.updateState(id: delegator.id, to: .ready)
+        clock.advance(by: .seconds(5))
+        try await waitForSleep(of: .seconds(1))
+    }
+
     /// A session with no running process cannot be typed into: the relay leaves the message queued
     /// ("child exited"), and so it holds no more than a message with no session at all.
     func testAQueuedMessageForASessionWhoseProcessIsGoneLeavesTheCadenceAtFive() async throws {

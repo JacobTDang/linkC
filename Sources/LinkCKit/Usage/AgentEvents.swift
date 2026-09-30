@@ -93,7 +93,7 @@ public enum AgentEvents {
 
 /// Pairs spawns with completions across incremental feeds. Completions for unknown ids are
 /// quiet no-ops (the spawn may predate the tail window).
-public struct AgentAssembler: Sendable {
+public struct AgentAssembler: Equatable, Sendable {
     public private(set) var runs: [AgentRun] = []
 
     public init() {}
