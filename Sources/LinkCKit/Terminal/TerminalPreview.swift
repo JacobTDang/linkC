@@ -149,12 +149,8 @@ public enum TerminalPreview {
                 // under the status row (a tip, once the turn has run a while) sits between them
                 // too, and is skipped the same way.
                 let queueHeader = above.firstIndex { $0.contains("Messages to be submitted after next tool call") }
-                var statusIndex = queueHeader.map { $0 + 1 } ?? 0
-                let firstDetail = statusIndex
-                while statusIndex < aboveRaw.count, isStatusDetail(aboveRaw[statusIndex]),
-                      statusIndex - firstDetail < maxStatusDetailRows {
-                    statusIndex += 1
-                }
+                let firstDetail = queueHeader.map { $0 + 1 } ?? 0
+                let statusIndex = firstDetail + statusDetailRowCount(in: aboveRaw[firstDetail...])
                 if statusIndex < above.count, above[statusIndex].contains("esc to interrupt)") {
                     let status = above[statusIndex]
                     // The bullet pulses between "•" and "◦".
@@ -305,13 +301,35 @@ public enum TerminalPreview {
         return text.contains("esc to interrupt") && !text.contains("esc to interrupt)")
     }
 
-    /// How many "└" detail rows are skipped under Codex's status row.
+    /// How many rows are skipped under Codex's status row.
     private static let maxStatusDetailRows = 3
 
     /// Whether `row` is a detail under Codex's status row: a "└" row. The queued-message rows
     /// ("↳") and every bulleted row are ordinary content.
     private static func isStatusDetail(_ row: String) -> Bool {
         row.drop { $0 == " " }.first == "└"
+    }
+
+    /// Whether `row` continues the "└" row above it: a detail wrapped at a narrow width is indented
+    /// under the text of the first row.
+    private static func isDetailContinuation(_ row: String) -> Bool {
+        row.hasPrefix("    ")
+    }
+
+    /// How many of `rows` (nearest the input box first) lie under the status row: the "└" detail
+    /// rows and the continuation rows nearest the box that wrap them, up to `maxStatusDetailRows`.
+    /// Continuation rows count only when a "└" row sits above them, so an indented row that is
+    /// anything else is not skipped.
+    private static func statusDetailRowCount(in rows: ArraySlice<String>) -> Int {
+        var count = 0
+        for (offset, row) in rows.prefix(maxStatusDetailRows).enumerated() {
+            if isStatusDetail(row) {
+                count = offset + 1
+            } else if !isDetailContinuation(row) {
+                break
+            }
+        }
+        return count
     }
 
     /// The glyphs that lead Claude Code's spinner row while a turn runs.
