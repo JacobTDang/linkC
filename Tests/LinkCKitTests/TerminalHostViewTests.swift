@@ -119,6 +119,22 @@ final class TerminalHostViewTests: XCTestCase {
         window.makeFirstResponder(view)
         XCTAssertEqual(focused, 1)
     }
+
+    /// A click is the user's own act, unlike the keyboard arriving by itself, so it reports apart.
+    func testATerminalViewReportsAClickButNotFocusAlone() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        window.contentView = view
+        var clicks = 0
+        view.onClick = { clicks += 1 }
+        window.makeFirstResponder(view)
+        XCTAssertEqual(clicks, 0, "taking the keyboard is not a click")
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: NSPoint(x: 10, y: 10), modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        view.mouseDown(with: event)
+        XCTAssertEqual(clicks, 1)
+    }
 }
 
 private final class FocusableView: NSView {

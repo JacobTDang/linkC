@@ -11,14 +11,16 @@ public struct TerminalContainer: NSViewRepresentable {
     private let session: TerminalSession?
     private let takesFocus: Bool
     private let onFocus: (() -> Void)?
+    private let onClick: (() -> Void)?
 
     /// `takesFocus`: grab the keyboard when the terminal is attached here — the single pane does,
     /// a split's cells only for the focused pane. `onFocus`: told when a click (or anything else)
-    /// gives this terminal the keyboard.
-    public init(session: TerminalSession?, takesFocus: Bool = true, onFocus: (() -> Void)? = nil) {
+    /// gives this terminal the keyboard. `onClick`: told when the user clicks in it.
+    public init(session: TerminalSession?, takesFocus: Bool = true, onFocus: (() -> Void)? = nil, onClick: (() -> Void)? = nil) {
         self.session = session
         self.takesFocus = takesFocus
         self.onFocus = onFocus
+        self.onClick = onClick
     }
 
     public func makeNSView(context: Context) -> TerminalHostView {
@@ -27,6 +29,7 @@ public struct TerminalContainer: NSViewRepresentable {
 
     public func updateNSView(_ nsView: TerminalHostView, context: Context) {
         session?.terminalView.onFocus = onFocus
+        session?.terminalView.onClick = onClick
         nsView.show(session?.terminalView, takesFocus: takesFocus)
     }
 }

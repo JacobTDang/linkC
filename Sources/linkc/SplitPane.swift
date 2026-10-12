@@ -87,13 +87,14 @@ private struct SplitCell: View {
             .contentShape(Rectangle())
             .onTapGesture { model.clickSplitPane(id) }
             .draggable(LinkCTerminalDrag(id: id, fromPane: true))
-            // The click reports from inside AppKit's first-responder change, which can run during a
+            // Focus reports from inside AppKit's first-responder change, which can run during a
             // view update: hand it to the main actor instead of writing state from there. The weak
-            // model breaks the cycle model -> terminals -> session -> view -> this closure. Any pane
-            // that takes the keyboard reports, one that took it by itself included, so the model only
-            // moves the selection.
+            // model breaks the cycle model -> terminals -> session -> view -> these closures. Any pane
+            // that takes the keyboard reports focus, one that took it by itself included, so that only
+            // moves the selection; a click is the user's pick and opens the pane as a tab would.
             TerminalContainer(session: session, takesFocus: isFocused,
-                              onFocus: { [weak model] in Task { @MainActor in model?.focusInSplit(id) } })
+                              onFocus: { [weak model] in Task { @MainActor in model?.focusInSplit(id) } },
+                              onClick: { [weak model] in Task { @MainActor in model?.pickSplitPane(id) } })
                 .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous)

@@ -826,16 +826,23 @@ final class AppModel {
     /// when the focused one ended): remember it as the split's focus and select it, keeping the grid
     /// on screen. Only the selection moves, as `repairSplitSelection()` moves it: this also runs for
     /// a pane that took the keyboard by itself, so it never activates the app or adopts a worker.
-    /// Typing into a worker adopts it (`onUserInput`).
+    /// The user's own click goes on to `pickSplitPane(_:)`.
     func focusInSplit(_ id: String) {
         guard let project = splitProject, let split = sidebarState.split(for: project), split.members.contains(id) else { return }
         if selectedId != id { coordinator?.terminals.select(id) }
         sidebarState.setSplit(split.focusing(id), for: project)
     }
 
+    /// The user clicked a pane: it is opened as a tab is (`focus(_:)`), so a worker becomes theirs and
+    /// an agent waiting on them reads as seen. `showSelection()` keeps the grid and moves its focus.
+    func pickSplitPane(_ id: String) {
+        guard let project = splitProject, sidebarState.split(for: project)?.members.contains(id) == true else { return }
+        focus(id)
+    }
+
     /// A click on a pane's title row: the pane gets the keyboard, as a click inside its terminal gives it.
     func clickSplitPane(_ id: String) {
-        focusInSplit(id)
+        pickSplitPane(id)
         if let view = terminalSession(id)?.terminalView { view.window?.makeFirstResponder(view) }
     }
 
