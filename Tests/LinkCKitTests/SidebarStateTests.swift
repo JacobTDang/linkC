@@ -222,6 +222,36 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertNil(state.split(for: "/b"))
     }
 
+    /// The bad entry is rewritten out of the file at load, not left to be logged on every launch.
+    func testABadSplitEntryIsRewrittenOutOfTheFile() throws {
+        let json = #"{"projectOrder":["/a"],"expandOverrides":{},"openSections":[],"splits":{"/a":{"members":["A","B"]},"/b":{"members":42}}}"#
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        _ = SidebarState(defaults: defaults)
+        XCTAssertEqual(try storedSplitProjects(), ["/a"])
+        XCTAssertEqual(SidebarState(defaults: defaults).projectsWithSplits, ["/a"])
+    }
+
+    /// A `splits` value of the wrong type costs the splits, not the rest of the sidebar state.
+    func testASplitsFieldOfTheWrongTypeLoadsTheRestOfTheState() throws {
+        for splits in ["42", #""text""#, #"["A","B"]"#] {
+            let json = #"{"projectOrder":["/a"],"expandOverrides":{"/a":true},"openSections":["more"],"splits":\#(splits)}"#
+            defaults.set(Data(json.utf8), forKey: SidebarState.key)
+            let state = SidebarState(defaults: defaults)
+            XCTAssertEqual(state.projectOrder, ["/a"], "splits: \(splits)")
+            XCTAssertEqual(state.expandOverrides, ["/a": true], "splits: \(splits)")
+            XCTAssertTrue(state.isOpen(.more), "splits: \(splits)")
+            XCTAssertTrue(state.projectsWithSplits.isEmpty, "splits: \(splits)")
+            XCTAssertEqual(try storedSplitProjects(), [], "the unreadable field is rewritten out of the file; splits: \(splits)")
+        }
+    }
+
+    /// The projects holding a split in the saved file, read back without going through `SidebarState`.
+    private func storedSplitProjects() throws -> [String] {
+        let data = try XCTUnwrap(defaults.data(forKey: SidebarState.key))
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return ((object["splits"] as? [String: Any]) ?? [:]).keys.sorted()
+    }
+
     func testSavedDataKeyedByTwoSpellingsLoadsAsOneKeyWithFirstOccurrencesOrderAndOverrides() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("linkc-sidebar-canonical-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
