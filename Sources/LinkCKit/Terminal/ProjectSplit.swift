@@ -11,6 +11,8 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
         case targetNotInSplit
         /// The dragged terminal or the one it was dropped on is not one of the project's terminals.
         case notSplittable
+        /// A terminal was dropped on itself, which splits nothing.
+        case onItself
     }
 
     public private(set) var members: [String]
@@ -39,10 +41,11 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
     /// The split a drop of `id` on `edge` of `target` leaves: the project's `existing` split when
     /// `target` is in it, else a new one starting from `target` (a project has one split, so a drop
     /// on a terminal always splits with that terminal). Both terminals must be in `splittable`, the
-    /// project's own.
+    /// project's own. A terminal dropped on itself is refused: there is nothing to split.
     public static func dropping(
         _ id: String, onto target: String, edge: SplitEdge, into existing: ProjectSplit?, splittable: Set<String>
     ) throws -> ProjectSplit {
+        guard id != target else { throw Refusal.onItself }
         guard splittable.contains(id), splittable.contains(target) else { throw Refusal.notSplittable }
         let base = existing.flatMap { $0.members.contains(target) ? $0 : nil }
             ?? ProjectSplit(members: [target], focused: target)

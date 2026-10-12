@@ -13,6 +13,14 @@ extension UTType {
 /// highlighting when hovering arbitrary text drags.
 struct LinkCTerminalDrag: Transferable, Codable, Equatable, Sendable {
     let id: String
+    /// Whether the drag began on a split pane's title row rather than a tab or a sidebar row. Only
+    /// a pane dropped on the tab strip leaves the split.
+    let fromPane: Bool
+
+    init(id: String, fromPane: Bool = false) {
+        self.id = id
+        self.fromPane = fromPane
+    }
 
     static var transferRepresentation: some TransferRepresentation {
         CodableRepresentation(contentType: .linkcTerminal)
@@ -433,6 +441,7 @@ private struct SessionRow: View {
                 }
             }
         }
+        .draggable(LinkCTerminalDrag(id: row.id))
     }
 }
 

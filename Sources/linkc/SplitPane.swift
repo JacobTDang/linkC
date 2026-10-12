@@ -84,7 +84,7 @@ private struct SplitCell: View {
             }
             .padding(.horizontal, 4)
             .contentShape(Rectangle())
-            .draggable(LinkCTerminalDrag(id: id))
+            .draggable(LinkCTerminalDrag(id: id, fromPane: true))
             // The click reports from inside AppKit's first-responder change, which can run during a
             // view update: hand it to the main actor instead of writing state from there. The weak
             // model breaks the cycle model -> terminals -> session -> view -> this closure.

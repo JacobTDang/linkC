@@ -846,19 +846,25 @@ final class AppModel {
 
     /// `id` dragged onto `edge` of the terminal `target` in the current project: starts the project's
     /// split if `target` isn't in one, else adds `id` to it or moves it within, then shows the split.
-    /// A terminal from another project, or a ninth pane, is refused and the error bar says why.
+    /// A terminal that isn't one of the project's, or a ninth pane, is refused and the error bar says why.
+    /// A terminal dropped on itself does nothing.
     func dropTerminal(_ id: String, onto target: String, edge: SplitEdge) {
-        guard id != target, let project = currentProject else { return }
+        guard let project = currentProject else {
+            lastError = "Couldn't split: the terminal you dropped on has ended."
+            return
+        }
         do {
             let next = try ProjectSplit.dropping(
                 id, onto: target, edge: edge, into: sidebarState.split(for: project), splittable: splittableIDs(in: project))
             lastError = nil
             sidebarState.setSplit(next, for: project)
             showSplit(project)
+        } catch ProjectSplit.Refusal.onItself {
+            return
         } catch ProjectSplit.Refusal.notSplittable {
-            lastError = "That terminal belongs to another project — a split only holds this project's terminals."
+            lastError = "That terminal isn't one of this project's terminals — a split only holds this project's terminals."
         } catch ProjectSplit.Refusal.full {
-            lastError = "This split already shows \(SplitLayout.maxPanes) terminals."
+            lastError = "The split is full — it holds at most \(SplitLayout.maxPanes) terminals."
         } catch {
             lastError = "Couldn't split: \(error)"
         }

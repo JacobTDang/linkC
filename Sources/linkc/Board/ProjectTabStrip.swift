@@ -50,12 +50,13 @@ struct ProjectTabStrip: View {
                         .background(WindowDragHandle())
                     }
                     .scrollDisabled(CGFloat(sessions.count) * (width + 2) <= geometry.size.width)
-                    // A split pane dropped here leaves the split. Anything else is declined, so a
-                    // drag that means nothing here is left to whatever else would take it.
+                    // A split pane dragged by its title row and dropped here leaves the split. Anything
+                    // else, a member's own tab chip included, is declined, so a drag that means
+                    // nothing here is left to whatever else would take it.
                     .dropDestination(for: LinkCTerminalDrag.self) { items, _ in
-                        guard let project = model.splitProject, let id = items.first?.id,
-                              model.liveSplitMembers(in: project).contains(id) else { return false }
-                        model.removeFromSplit(id)
+                        guard let project = model.splitProject, let drag = items.first, drag.fromPane,
+                              model.liveSplitMembers(in: project).contains(drag.id) else { return false }
+                        model.removeFromSplit(drag.id)
                         return true
                     }
                 }

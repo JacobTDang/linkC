@@ -36,7 +36,14 @@ private struct EdgeHighlight: View {
     var body: some View {
         if let edge {
             let horizontal = edge == .left || edge == .right
-            let shape = RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous)
+            // Only the corners on the pane's own outline are round: the half's inner edge is straight.
+            let radius = Theme.terminalRadius
+            let shape = UnevenRoundedRectangle(
+                topLeadingRadius: edge == .left || edge == .top ? radius : 0,
+                bottomLeadingRadius: edge == .left || edge == .bottom ? radius : 0,
+                bottomTrailingRadius: edge == .right || edge == .bottom ? radius : 0,
+                topTrailingRadius: edge == .right || edge == .top ? radius : 0,
+                style: .continuous)
             shape
                 .fill(Theme.accent.opacity(0.12))
                 .overlay(shape.stroke(Theme.accent.opacity(0.5), lineWidth: 1))
@@ -68,7 +75,7 @@ private struct TerminalDropDelegate: DropDelegate {
     func dropUpdated(info: DropInfo) -> DropProposal? {
         let edge = SplitLayout.edge(at: info.location, in: size)
         if hovered != edge { hovered = edge }
-        return DropProposal(operation: .move)
+        return DropProposal(operation: .copy)
     }
 
     func dropExited(info: DropInfo) { hovered = nil }

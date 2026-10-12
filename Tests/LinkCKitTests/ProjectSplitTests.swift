@@ -58,12 +58,22 @@ final class ProjectSplitTests: XCTestCase {
         let existing = ProjectSplit(members: ["A", "B"], focused: "A")
         let split = try ProjectSplit.dropping("D", onto: "C", edge: .right, into: existing, splittable: project)
         XCTAssertEqual(split.members, ["C", "D"])
+        XCTAssertEqual(split.focused, "D")
     }
 
     func testDroppingAMemberOnAnotherMovesIt() throws {
         let existing = ProjectSplit(members: ["A", "B", "C"], focused: "A")
         let split = try ProjectSplit.dropping("A", onto: "C", edge: .right, into: existing, splittable: project)
         XCTAssertEqual(split.members, ["B", "C", "A"])
+    }
+
+    func testDroppingATerminalOnItselfIsRefusedWithOrWithoutASplit() {
+        let existing = ProjectSplit(members: ["A", "B"], focused: "A")
+        for split in [existing, nil] {
+            XCTAssertThrowsError(try ProjectSplit.dropping("A", onto: "A", edge: .left, into: split, splittable: project)) {
+                XCTAssertEqual($0 as? ProjectSplit.Refusal, .onItself)
+            }
+        }
     }
 
     func testATerminalOfAnotherProjectIsRefused() {
