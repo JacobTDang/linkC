@@ -241,15 +241,20 @@ final class SidebarStateTests: XCTestCase {
             XCTAssertEqual(state.expandOverrides, ["/a": true], "splits: \(splits)")
             XCTAssertTrue(state.isOpen(.more), "splits: \(splits)")
             XCTAssertTrue(state.projectsWithSplits.isEmpty, "splits: \(splits)")
-            XCTAssertEqual(try storedSplitProjects(), [], "the unreadable field is rewritten out of the file; splits: \(splits)")
+            let stored = try storedObject()["splits"]
+            XCTAssertTrue(stored == nil || stored is [String: Any],
+                          "the unreadable field is rewritten out of the file, not left as \(String(describing: stored)); splits: \(splits)")
         }
     }
 
     /// The projects holding a split in the saved file, read back without going through `SidebarState`.
     private func storedSplitProjects() throws -> [String] {
+        ((try storedObject()["splits"] as? [String: Any]) ?? [:]).keys.sorted()
+    }
+
+    private func storedObject() throws -> [String: Any] {
         let data = try XCTUnwrap(defaults.data(forKey: SidebarState.key))
-        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        return ((object["splits"] as? [String: Any]) ?? [:]).keys.sorted()
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
     func testSavedDataKeyedByTwoSpellingsLoadsAsOneKeyWithFirstOccurrencesOrderAndOverrides() throws {
