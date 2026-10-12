@@ -2,7 +2,8 @@ import AppKit
 import SwiftTerm
 import SwiftUI
 
-/// SwiftUI bridge that hosts the selected session's live `LocalProcessTerminalView`.
+/// SwiftUI bridge that hosts a session's live `LocalProcessTerminalView`: the selected one in the
+/// single pane, a pane's own in a split cell.
 ///
 /// Swapping the shown session only detaches/attaches views — it never destroys them — so
 /// background terminals keep their process and scrollback fully alive while off screen.
@@ -33,6 +34,10 @@ public struct TerminalContainer: NSViewRepresentable {
 /// A plain container that shows at most one terminal view at a time, sized to fill it.
 public final class TerminalHostView: NSView {
     private weak var shown: NSView?
+    /// The shown view should have the keyboard and does not yet: its pane takes focus, but the host
+    /// had no window to give it in. `viewDidMoveToWindow` makes good on it.
+    private var wantsFocus = false
+    /// The keyboard has gone to the shown view since `takesFocus` last turned true.
     private var tookFocus = false
 
     public override init(frame frameRect: NSRect) {
@@ -51,24 +56,39 @@ public final class TerminalHostView: NSView {
     ///
     /// `takesFocus` makes the view the window's first responder when it is attached here, and again
     /// when it flips from false to true while attached (a pane that becomes the focused one). A
-    /// repeat with `takesFocus` still true never takes the keyboard back from another field.
+    /// repeat with `takesFocus` still true never takes the keyboard back from another field. A host
+    /// with no window yet, as a new grid cell is on its first update, takes the keyboard once it has one.
     func show(_ view: NSView?, takesFocus: Bool = true) {
-        let gainsFocus = takesFocus && !tookFocus
-        tookFocus = takesFocus
         if let view, shown === view, view.superview === self {
             view.frame = bounds
-            if gainsFocus, let window, window.firstResponder !== view { window.makeFirstResponder(view) }
-            return
+            wantsFocus = takesFocus && !tookFocus
+        } else {
+            if let shown, shown !== view, shown.superview === self {
+                shown.removeFromSuperview()
+            }
+            shown = view
+            if let view {
+                view.frame = bounds
+                view.autoresizingMask = [.width, .height]
+                addSubview(view)
+            }
+            tookFocus = false
+            wantsFocus = takesFocus
         }
-        if let shown, shown !== view, shown.superview === self {
-            shown.removeFromSuperview()
-        }
-        shown = view
-        guard let view else { return }
-        view.frame = bounds
-        view.autoresizingMask = [.width, .height]
-        addSubview(view)
-        if takesFocus { window?.makeFirstResponder(view) }
+        if !takesFocus { tookFocus = false }
+        giveFocus()
+    }
+
+    private func giveFocus() {
+        guard wantsFocus, let shown, shown.superview === self, let window else { return }
+        guard window.firstResponder === shown || window.makeFirstResponder(shown) else { return }   // refused: try again
+        wantsFocus = false
+        tookFocus = true
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        giveFocus()
     }
 
     public override func layout() {

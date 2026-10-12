@@ -67,6 +67,49 @@ final class TerminalHostViewTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === field, "a repeated update must not take the keyboard back from another field")
     }
 
+    /// A grid cell's first update comes before the cell is in a window: the wish for the keyboard waits for one.
+    func testAFocusedPaneShownBeforeItsHostHasAWindowTakesTheKeyboardOnceItDoes() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        window.contentView = root
+        let host = TerminalHostView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        let view = FocusableView()
+        host.show(view, takesFocus: true)
+        host.show(view, takesFocus: true)
+        XCTAssertFalse(window.firstResponder === view)
+        root.addSubview(host)
+        XCTAssertTrue(window.firstResponder === view, "a focused pane must get the keyboard when it reaches a window")
+    }
+
+    func testAnUnfocusedPaneNeverTakesTheKeyboardWhenItsHostReachesAWindow() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        window.contentView = root
+        let host = TerminalHostView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        let view = FocusableView()
+        host.show(view, takesFocus: false)
+        root.addSubview(host)
+        XCTAssertFalse(window.firstResponder === view)
+    }
+
+    /// The keyboard is given once per spell of focus: a host that moves windows later doesn't take it back.
+    func testAHostThatMovesWindowsDoesNotTakeTheKeyboardBack() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        let host = TerminalHostView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        let field = FocusableView(frame: NSRect(x: 200, y: 0, width: 200, height: 200))
+        root.addSubview(host)
+        root.addSubview(field)
+        window.contentView = root
+        let view = FocusableView()
+        host.show(view, takesFocus: true)
+        XCTAssertTrue(window.firstResponder === view)
+        window.makeFirstResponder(field)
+        host.removeFromSuperview()
+        root.addSubview(host)
+        XCTAssertTrue(window.firstResponder === field)
+    }
+
     func testATerminalViewReportsBecomingFirstResponder() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
