@@ -2,9 +2,9 @@ import AppKit
 import SwiftUI
 import LinkCKit
 
-/// The Chrome-style strip above the right pane: the project's Board, pinned, then a tab per
-/// session, then ＋. ⌘1–⌘9 pick a tab and ⌃Tab cycles, through a local key monitor that exists
-/// only while the strip does.
+/// The Chrome-style strip above the right pane: the project's Board, pinned, then its Split when it
+/// has one showing, then a tab per session, then ＋. ⌘1–⌘9 pick a tab and ⌃Tab cycles, through a
+/// local key monitor that exists only while the strip does.
 struct ProjectTabStrip: View {
     let model: AppModel
     let onBack: (() -> Void)?

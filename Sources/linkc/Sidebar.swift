@@ -8,9 +8,10 @@ extension UTType {
     static let linkcTerminal = UTType(exportedAs: "com.linkc.terminal", conformingTo: .data)
 }
 
-/// A transferable drag payload representing a live linkC terminal being filed in the sidebar.
-/// Using a dedicated UTType prevents project rows and the Terminals section header from
-/// highlighting when hovering arbitrary text drags.
+/// A transferable drag payload representing a live linkC terminal: filed under a project in the
+/// sidebar, or dropped on another terminal's edge to split with it. Using a dedicated UTType
+/// prevents project rows and the Terminals section header from highlighting when hovering
+/// arbitrary text drags.
 struct LinkCTerminalDrag: Transferable, Codable, Equatable, Sendable {
     let id: String
     /// Whether the drag began on a split pane's title row rather than a tab or a sidebar row. Only

@@ -2,8 +2,8 @@ import LinkCKit
 import SwiftUI
 
 /// A project's Split tab: its live split members in an even grid (see `SplitLayout`), each a full
-/// live terminal. A click inside a pane gives it the keyboard and the focus outline; the title row's
-/// × takes it out of the split (its session keeps running).
+/// live terminal. A click inside a pane, or on its title row, gives it the keyboard and the focus
+/// outline; the title row's × takes it out of the split (its session keeps running).
 ///
 /// A pane that ends leaves the tab up to a second before the model's repair ends the grid, so fewer
 /// than two live members still render: one fills the pane, none shows a placeholder.
@@ -16,10 +16,11 @@ struct SplitPane: View {
         // are resolved here, where the signal is read, and handed to the cells as values: a cell's
         // own inputs do not change when the signal publishes, so it would skip its body.
         let _ = model.sidebarSignal.signal
-        let panes = model.liveSplitMembers(in: project).map {
-            SplitPaneItem(id: $0, title: model.splitPaneTitle($0), dot: model.splitPaneDot($0))
+        let state = model.splitPaneState(in: project)
+        let panes = state.members.map {
+            SplitPaneItem(id: $0, title: model.splitPaneTitle($0, titles: state.titles), dot: model.splitPaneDot($0))
         }
-        let focused = model.focusedSplitMember(in: project)
+        let focused = state.focused
         Group {
             switch panes.count {
             case 0:
@@ -84,10 +85,13 @@ private struct SplitCell: View {
             }
             .padding(.horizontal, 4)
             .contentShape(Rectangle())
+            .onTapGesture { model.clickSplitPane(id) }
             .draggable(LinkCTerminalDrag(id: id, fromPane: true))
             // The click reports from inside AppKit's first-responder change, which can run during a
             // view update: hand it to the main actor instead of writing state from there. The weak
-            // model breaks the cycle model -> terminals -> session -> view -> this closure.
+            // model breaks the cycle model -> terminals -> session -> view -> this closure. Any pane
+            // that takes the keyboard reports, one that took it by itself included, so the model only
+            // moves the selection.
             TerminalContainer(session: session, takesFocus: isFocused,
                               onFocus: { [weak model] in Task { @MainActor in model?.focusInSplit(id) } })
                 .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))

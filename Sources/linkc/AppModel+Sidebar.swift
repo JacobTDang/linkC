@@ -154,15 +154,17 @@ extension AppModel {
         sidebarState.noteCoral(Set(sessions.filter { rowStatus($0, now: now).isCoral }.map(\.cwd)))
     }
 
-    /// A split keeps the terminals that are live or can still be restored; fewer than two of those
-    /// left is no split. Without a coordinator and shell coordinator (start-up failed) nothing is
-    /// live or restorable, so nothing can be judged gone: the saved splits are left alone.
+    /// A split holds its project's live terminals: a member that ended or was stopped drops out, so the
+    /// cap and the drop positions match the grid shown, and fewer than two left is no split. Safe across
+    /// a relaunch: the sessions and shells linkC relaunches at start-up keep their ids and are live by the
+    /// time both coordinators exist, so the guard below keeps the first prune from seeing them as gone.
+    /// Without a coordinator and shell coordinator (start-up failed) nothing is live, so nothing can be
+    /// judged gone: the saved splits are left alone.
     private func pruneSplits() {
         guard coordinator != nil, shells != nil else { return }
-        let known = Set(sessions.map(\.id)).union(shellRows.map(\.id)).union(restorables.map(\.linkcId))
         for project in sidebarState.projectsWithSplits {
             guard let split = sidebarState.split(for: project) else { continue }
-            let pruned = split.pruned(keeping: known)
+            let pruned = split.pruned(keeping: splittableIDs(in: project))
             if !pruned.isViable {
                 sidebarState.clearSplit(for: project)
             } else if pruned != split {
