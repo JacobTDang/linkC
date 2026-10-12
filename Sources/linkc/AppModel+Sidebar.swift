@@ -165,6 +165,10 @@ extension AppModel {
         for project in sidebarState.projectsWithSplits {
             guard let split = sidebarState.split(for: project) else { continue }
             let pruned = split.pruned(keeping: splittableIDs(in: project))
+            let gone = split.members.filter { !pruned.members.contains($0) }
+            if !gone.isEmpty {
+                NSLog("[linkC] split for %@ dropped terminals no longer live there: %@", project, gone.joined(separator: ", "))
+            }
             if !pruned.isViable {
                 sidebarState.clearSplit(for: project)
             } else if pruned != split {

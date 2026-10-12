@@ -478,7 +478,7 @@ public final class LinkCTerminalView: LocalProcessTerminalView {
     /// Told whenever this terminal gets the keyboard — a split uses it to follow which pane has focus.
     public var onFocus: (() -> Void)?
 
-    /// Told when the user clicks in this terminal. Unlike `onFocus`, a host giving it the keyboard
+    /// Told when the user left-clicks in this terminal. Unlike `onFocus`, a host giving it the keyboard
     /// by itself never reports here, so a split can tell the user's pick from its own.
     public var onClick: (() -> Void)?
 

@@ -885,7 +885,7 @@ final class AppModel {
         } catch ProjectSplit.Refusal.onItself {
             return
         } catch ProjectSplit.Refusal.notSplittable {
-            lastError = "That terminal belongs to another project, so it can't join this split."
+            lastError = "That terminal isn't one of this project's running terminals, so it can't join this split."
         } catch ProjectSplit.Refusal.splitAlreadyShowing {
             lastError = "This project already has a split — drop onto one of its panes, or close the Split tab first."
         } catch ProjectSplit.Refusal.full {
