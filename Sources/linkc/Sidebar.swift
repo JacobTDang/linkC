@@ -363,7 +363,7 @@ private struct ProjectRow: View {
                     .fixedSize()
                     .help("More for \(project.name)")
                 }
-                ProjectDotView(dot: project.dot)
+                StateDotView(dot: project.dot)
             }
         }
         .overlay {
@@ -384,7 +384,9 @@ private struct ProjectRow: View {
     }
 }
 
-private struct ProjectDotView: View {
+/// The 6pt state dot beside a project in the sidebar, and beside a pane's title in a split: coral
+/// when something wants you, teal while it works, an empty slot when idle.
+struct StateDotView: View {
     let dot: ProjectDot
 
     var body: some View {

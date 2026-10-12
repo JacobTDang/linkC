@@ -791,6 +791,21 @@ final class AppModel {
         coordinator?.terminals.session(id: id)
     }
 
+    /// A split pane's title: the tab strip's own, so the two never disagree. The live title first,
+    /// then the session's stored one, then a shell terminal's, then the id.
+    func splitPaneTitle(_ id: String) -> String {
+        sessionTitles[id] ?? sessions.first { $0.id == id }?.title ?? shellRows.first { $0.id == id }?.title ?? id
+    }
+
+    /// The state dot beside the pane's title, by the rule the sidebar's dots follow. nil for a shell
+    /// terminal, which has no state to show.
+    func splitPaneDot(_ id: String) -> ProjectDot? {
+        guard let session = sessions.first(where: { $0.id == id }) else { return nil }
+        return SidebarModel.dot(
+            status: rowStatus(session),
+            hasRunningSubagents: usage.sessionAgents(id).contains(where: \.isRunning))
+    }
+
     /// Shows `project`'s Split tab, its focused live member selected. Does nothing when the project
     /// has no active split.
     func showSplit(_ project: String) {

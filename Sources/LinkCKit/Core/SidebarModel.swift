@@ -124,8 +124,15 @@ public enum SidebarModel {
     }
 
     static func dot(for rows: [Input]) -> ProjectDot {
-        if rows.contains(where: { $0.status.isCoral }) { return .attention }
-        if rows.contains(where: { $0.status.tone == .working || $0.hasRunningSubagents }) { return .working }
-        return .none
+        let dots = rows.map { dot(status: $0.status, hasRunningSubagents: $0.hasRunningSubagents) }
+        if dots.contains(.attention) { return .attention }
+        return dots.contains(.working) ? .working : .none
+    }
+
+    /// One session's dot, by the rule a project's dot is built from: coral when it wants you, teal
+    /// when it is working or has a running subagent, none when idle.
+    public static func dot(status: SessionRowStatus, hasRunningSubagents: Bool) -> ProjectDot {
+        if status.isCoral { return .attention }
+        return status.tone == .working || hasRunningSubagents ? .working : .none
     }
 }
