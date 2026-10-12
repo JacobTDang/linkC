@@ -62,11 +62,22 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> Ad-hoc code signing (required for notifications)"
+# Signing is required for notifications. macOS ties privacy grants (Screen Recording,
+# notifications) to the signature, and an ad-hoc one changes with every build — so sign with
+# this Mac's own stable identity when the keychain has it (the in-app updater, UpdateSwap,
+# makes the same choice), and say plainly when it doesn't.
+SIGN_IDENTITY="linkC Local Signing"
+if security find-identity -p codesigning | grep -qF "\"$SIGN_IDENTITY\""; then
+  SIGN="$SIGN_IDENTITY"
+  echo "==> Code signing with \"$SIGN_IDENTITY\" (privacy grants survive rebuilds)"
+else
+  SIGN="-"
+  echo "==> Ad-hoc code signing: no \"$SIGN_IDENTITY\" identity in the keychain, so macOS privacy grants reset with each build"
+fi
 # File-provider sync (iCloud Desktop) stamps FinderInfo/xattrs onto the fresh bundle,
 # which codesign rejects as "detritus" — strip them right before signing.
 xattr -cr "$APP"
-codesign --force --deep --sign - "$APP"
+codesign --force --deep --sign "$SIGN" "$APP"
 
 echo "==> Done: $APP"
 echo "    Launch with:  open \"$APP\""
@@ -85,9 +96,9 @@ if [[ "${1:-}" == "--install" ]]; then
   # succeeds: the ditto above just replaced the plist with dist's key-less one.
   /usr/libexec/PlistBuddy -c "Add :LinkCSourceDist string $APP" \
     "/Applications/$NAME.app/Contents/Info.plist"
-  # Re-sign: the plist edit invalidated the ad-hoc signature. Clean xattrs first —
+  # Re-sign: the plist edit invalidated the signature. Clean xattrs first —
   # iCloud-synced folders stamp Finder detritus that codesign refuses.
   xattr -cr "/Applications/$NAME.app"
-  codesign --force --deep --sign - "/Applications/$NAME.app"
+  codesign --force --deep --sign "$SIGN" "/Applications/$NAME.app"
   echo "==> Installed: /Applications/$NAME.app"
 fi

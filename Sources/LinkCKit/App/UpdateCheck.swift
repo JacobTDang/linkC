@@ -36,6 +36,12 @@ public enum UpdateCheck {
 /// a failed staging (deleted dist, disk full) leaves the installed app untouched and
 /// still brings it back. The script deletes itself last.
 public enum UpdateSwap {
+    /// This Mac's own code-signing identity, which `build-app.sh` signs with too. macOS ties
+    /// privacy grants (Screen Recording, notifications) to the app's signature, and an ad-hoc
+    /// one changes with every build — a stable identity keeps the grants across updates.
+    /// Without it in the keychain, both sign ad-hoc.
+    public static let signingIdentity = "linkC Local Signing"
+
     public static func script(pid: Int32, distPath: String, installPath: String) -> String {
         let dist = shellQuoted(distPath)
         let install = shellQuoted(installPath)
@@ -44,14 +50,18 @@ public enum UpdateSwap {
         // PlistBuddy takes the rest of the -c string as the value, spaces included; the
         // whole command is one shell-quoted argument.
         let stamp = shellQuoted("Add :LinkCSourceDist string \(distPath)")
+        let identity = shellQuoted(signingIdentity)
+        let listed = shellQuoted("\"\(signingIdentity)\"")
         return """
         #!/bin/sh
         while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
         rm -rf \(stage)
+        identity=-
+        if security find-identity -p codesigning | grep -qF \(listed); then identity=\(identity); fi
         if ditto \(dist) \(stage) \\
            && /usr/libexec/PlistBuddy -c \(stamp) \(stagePlist) \\
            && xattr -cr \(stage) \\
-           && codesign --force --deep --sign - \(stage); then
+           && codesign --force --deep --sign "$identity" \(stage); then
           rm -rf \(install)
           mv \(stage) \(install)
         else
