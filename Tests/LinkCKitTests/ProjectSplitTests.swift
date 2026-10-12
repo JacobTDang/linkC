@@ -72,8 +72,8 @@ final class ProjectSplitTests: XCTestCase {
     }
 
     func testFocusAfterMove() throws {
-        let split = try ProjectSplit(members: ["A", "B", "C"]).adding("A", onto: "C", edge: .right)
-        XCTAssertEqual(split.focused, "A")
+        let split = try ProjectSplit(members: ["A", "B", "C"], focused: "B").adding("A", onto: "C", edge: .right)
+        XCTAssertEqual(split.focused, "A", "the moved terminal takes the focus from the one that had it")
     }
 
     func testRemovingUnfocusedMemberKeepsFocus() {
@@ -104,7 +104,7 @@ final class ProjectSplitTests: XCTestCase {
         XCTAssertEqual(split.focused, "B")
     }
 
-    func testPruningNilFocusBecomesfirstKept() {
+    func testPruningNilFocusBecomesFirstKept() {
         let split = ProjectSplit(members: ["A", "B", "C"], focused: nil).pruned(keeping: ["A", "B"])
         XCTAssertEqual(split.focused, "A")
     }
