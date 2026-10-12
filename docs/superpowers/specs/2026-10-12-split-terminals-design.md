@@ -7,7 +7,7 @@ Tearing a terminal or a grid off into its own window is a separate, later piece.
 ## Behavior
 
 - **Making a split:** drag a session or shell terminal onto the left, right, top or bottom edge of the terminal you are viewing. You can drag from the sidebar or from the project's tab strip. A **⊞ Split** tab appears in the tab strip right after Board, holding both terminals. A project has at most one split.
-- **Growing it:** drag more of the project's terminals onto the Split tab's panes. The edge you drop on decides the position, and the grid reflows. Dropping a terminal already in the split moves it. The cap is 8 panes. A drop the split can't take (a ninth terminal, or one from another project) is refused, and linkC's error bar says why. The dragged terminal's id is only available once it is dropped, so the refusal can't be shown while hovering.
+- **Growing it:** drag more of the project's terminals onto the Split tab's panes. The edge you drop on decides the position, and the grid reflows. Dropping a terminal already in the split moves it. The cap is 8 panes. A drop the split can't take (a ninth terminal, or one from another project) is refused, and linkC's error bar says why. A drop onto a terminal outside a split that is showing is refused too, and the error bar says to drop onto one of its panes or close the Split tab first; a split with fewer than two live members isn't showing, so a drop elsewhere replaces it. The dragged terminal's id is only available once it is dropped, so the refusal can't be shown while hovering.
 - **Layout:** panes form an even grid with these panes per row:
 
   | Panes | Per row |
@@ -29,9 +29,10 @@ Tearing a terminal or a grid off into its own window is a separate, later piece.
   - When fewer than two panes are left, the Split tab disappears and the remaining terminal shows on its own.
 - **Ended sessions:** a session that ends, or that linkC closes (an idle worker, #49), drops out of the grid and the grid reflows.
 - **Single tabs still work:** each session's own tab still shows it full-size. Going back to Split shows the grid.
-- **Persistence:** each project's split is kept across relaunch. Members are stored by linkC session id, and restored sessions keep their ids, so a restored session rejoins its split.
-  - Only live members are shown.
-  - A stored id that is neither live nor restorable is dropped.
+- **Persistence:** each project's split is kept across relaunch. Members are stored by linkC session id, and a split's members are the project's live terminals.
+  - Members are kept across relaunch: the sessions linkC relaunches at start-up keep their ids and rejoin.
+  - A member that ends drops out of the split, as "Ended sessions" says. It no longer counts toward the cap of 8.
+  - Restoring an Earlier card later starts a new session that is not in the split.
 - **Scope:** only terminals that belong to the project can join its split. That means its sessions, plus shell terminals filed under it, which are exactly what its tab strip lists. A terminal from another project can't be dropped there.
 - **Panel size:** the panel doesn't grow by itself (one consistent size). Many panes in a small panel are cramped, so you resize it. The future tear-off window is where large grids live.
 
@@ -52,7 +53,7 @@ Each session keeps exactly one live terminal view (`LocalProcessTerminalView`). 
   - `adding(_:at:)`: no duplicates. A member already present moves.
   - Refuses a ninth member with a typed error.
   - `removing(_:)`, which moves focus to the neighbor.
-  - `pruned(keeping:)`, which drops ids not in a given live-or-restorable set.
+  - `pruned(keeping:)`, which drops ids not in a given live set.
   - `liveMembers(in:)`.
   - `isActive(liveIDs:)`: 2 or more live members.
 - `SidebarState`:
@@ -86,7 +87,7 @@ Panes on screen draw normally. Panes not on screen, behind another tab or with t
 ## Error handling
 
 - Adding a ninth member, adding a terminal from another project, or splitting with an unknown id is refused with a typed error. Nothing changes and the error bar says why.
-- A stored split entry that fails to decode is dropped with a log line naming the project, and the rest of the sidebar state still loads. The `splits` field is decoded entry by entry, so one bad entry can't make the whole `Stored` decode fail.
+- A stored split entry that fails to decode is dropped with a log line naming the project, and the rest of the sidebar state still loads. The `splits` field is decoded entry by entry, so one bad entry can't make the whole `Stored` decode fail, and a `splits` value of the wrong type costs only the splits. A stored split with duplicate members, more than 8, or a focus that names no member is repaired as it is read, with a log line.
 
 ## Testing
 
