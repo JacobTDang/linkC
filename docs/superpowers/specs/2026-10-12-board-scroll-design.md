@@ -44,16 +44,19 @@ saved per-board view position keeps working.
 - `BoardScrollbar.horizontal(viewport:content:width:margin:)` → `BoardScrollbar?`: the track's
   canvas span (`minX`, `span`) and the thumb as track fractions (`thumbStart`, `thumbLength`); nil
   when there is no content or the view already covers it. Inverses: `originX(thumbStart:)` (kept
-  on the track) and `originX(centredOn:)`.
+  on the track) and `originX(centredOn:)`. `tracking(_:width:)` is the same track with the thumb
+  where a viewport now is (what is drawn during a drag), and `thumb(inTrack:minLength:)` the thumb
+  in points, never shorter than `minLength` or past the track's end. `BoardViewport.edgeMargin` is
+  the one margin `fitting` and `horizontal` share, so a fitted view never shows a bar.
 
 ### App target (`linkc`)
 - `BoardInput.press(from:)` reads key codes 123 (←), 124 (→), 125 (↓).
 - `BoardCanvas.perform(.pan)` sets `viewport = viewport.panned(pan, width:height:)` with the
   canvas `size`.
-- `BoardScrollBar` (new SwiftUI view, `Sources/linkc/Board/BoardScrollBar.swift`): binds the
-  viewport, reads the content bounds and canvas width, draws the thumb, and handles the drag and
-  the track click as above. It sits in the canvas's `ZStack`, above the overlays, at the bottom
-  edge, so its gesture wins over the canvas's own in its strip.
+- `BoardScrollBarView` (new SwiftUI view, `Sources/linkc/Board/BoardScrollBarView.swift`): binds
+  the viewport, reads the content bounds and canvas width, draws the thumb, and handles the drag
+  and the track click as above. It sits in the canvas's `ZStack`, above the overlays and below the
+  hover card, at the bottom edge, so its gesture wins over the canvas's own in its strip.
 
 ## Testing
 - Unit tests: the key map (each arrow, ⇧ page, ⌘↑ still `goUp`, modifiers declined, typing

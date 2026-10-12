@@ -64,9 +64,13 @@ public struct BoardViewport: Equatable, Sendable {
                   w: Int((width / zoom).rounded(.up)), h: Int((height / zoom).rounded(.up)))
     }
 
+    /// The screen points `fitting` leaves around the content, which the Board's scroll bar also
+    /// pads its track with; one value, so a fitted view never shows a bar.
+    public static let edgeMargin = 48.0
+
     /// The viewport that shows all of `bounds` with `margin` screen points around it, never
     /// zoomed in past 100%, looking through `lens`.
-    public static func fitting(_ bounds: BoardRect, width: Double, height: Double, margin: Double = 48, lens: BoardLens = .all) -> BoardViewport {
+    public static func fitting(_ bounds: BoardRect, width: Double, height: Double, margin: Double = edgeMargin, lens: BoardLens = .all) -> BoardViewport {
         let usableWidth = max(1, width - 2 * margin)
         let usableHeight = max(1, height - 2 * margin)
         let zoom = min(1.0, min(usableWidth / Double(max(1, bounds.w)), usableHeight / Double(max(1, bounds.h))))

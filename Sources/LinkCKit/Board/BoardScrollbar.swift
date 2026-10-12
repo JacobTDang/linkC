@@ -12,7 +12,7 @@ public struct BoardScrollbar: Equatable, Sendable {
     public let thumbLength: Double
 
     /// Nil when there is no content, or the view already shows all of it across.
-    public static func horizontal(viewport: BoardViewport, content: BoardRect?, width: Double, margin: Double = 48) -> BoardScrollbar? {
+    public static func horizontal(viewport: BoardViewport, content: BoardRect?, width: Double, margin: Double = BoardViewport.edgeMargin) -> BoardScrollbar? {
         guard let content, width > 0 else { return nil }
         let visibleWidth = width / viewport.zoom
         let pad = margin / viewport.zoom
@@ -22,6 +22,20 @@ public struct BoardScrollbar: Equatable, Sendable {
         guard span - visibleWidth > 0.5 else { return nil }
         return BoardScrollbar(minX: minX, span: span,
                               thumbStart: (viewport.originX - minX) / span, thumbLength: visibleWidth / span)
+    }
+
+    /// This track with the thumb moved to where `viewport` is now: the same `minX` and `span`, so the
+    /// track holds still while a drag lasts. The thumb may lie off the track if the view strays off it.
+    public func tracking(_ viewport: BoardViewport, width: Double) -> BoardScrollbar {
+        BoardScrollbar(minX: minX, span: span,
+                       thumbStart: (viewport.originX - minX) / span, thumbLength: width / viewport.zoom / span)
+    }
+
+    /// The thumb in points along a track `track` points long: at least `minLength` long (so it can
+    /// be grabbed) and kept on the track.
+    public func thumb(inTrack track: Double, minLength: Double) -> (start: Double, length: Double) {
+        let length = min(track, max(minLength, track * thumbLength))
+        return (min(max(track * thumbStart, 0), track - length), length)
     }
 
     /// The view's `originX` that puts the thumb's left end at `start` along the track, kept on it.
