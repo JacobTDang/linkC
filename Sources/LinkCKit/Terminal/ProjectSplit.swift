@@ -1,14 +1,18 @@
 import Foundation
 
 /// A project's split: the terminals shown together in its Split tab, in grid order, and which one
-/// has the keyboard. Members are linkC terminal ids (session ids or shell terminal ids); a session
-/// restored after a relaunch keeps its id and so rejoins. Pure value type.
+/// has the keyboard. Members are linkC terminal ids (session ids or shell terminal ids) and are the
+/// project's live terminals: one that ends drops out. A session linkC relaunches at start-up keeps its
+/// id and so rejoins; one restored later from Earlier is a new session, not in the split. Pure value type.
 public struct ProjectSplit: Codable, Equatable, Sendable {
     public enum Refusal: Error, Equatable {
         /// The split already holds `SplitLayout.maxPanes` terminals.
         case full
         /// The terminal dropped on is not in this split.
         case targetNotInSplit
+        /// The project's split is showing (two or more live members) and the terminal dropped on is not
+        /// one of its panes. Replacing a split the user is looking at would lose it without asking.
+        case splitAlreadyShowing
         /// The dragged terminal or the one it was dropped on is not one of the project's terminals.
         case notSplittable
         /// A terminal was dropped on itself, which splits nothing.
@@ -19,6 +23,27 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
     public private(set) var focused: String?
 
     public init(members: [String] = [], focused: String? = nil) {
+        self.members = members
+        self.focused = focused
+    }
+
+    private enum CodingKeys: String, CodingKey { case members, focused }
+
+    /// A stored split is repaired as it is read: duplicate members would put one terminal in two
+    /// cells, more than `SplitLayout.maxPanes` would not fit the grid, and a focus that names no member
+    /// would leave no pane with the keyboard. Anything repaired is logged.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let stored = try container.decode([String].self, forKey: .members)
+        let storedFocus = try container.decodeIfPresent(String.self, forKey: .focused)
+        var seen: Set<String> = []
+        let members = Array(stored.filter { seen.insert($0).inserted }.prefix(SplitLayout.maxPanes))
+        var focused = storedFocus
+        if let current = focused, !members.contains(current) { focused = members.first }
+        if members != stored || focused != storedFocus {
+            NSLog("[linkC] a stored split had duplicate or surplus members, or a focus outside them — repaired from %@ (focused %@) to %@ (focused %@)",
+                  stored.joined(separator: ","), storedFocus ?? "none", members.joined(separator: ","), focused ?? "none")
+        }
         self.members = members
         self.focused = focused
     }
@@ -38,17 +63,26 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
         return ProjectSplit(members: next, focused: id)
     }
 
-    /// The split a drop of `id` on `edge` of `target` leaves: the project's `existing` split when
-    /// `target` is in it, else a new one starting from `target` (a project has one split, so a drop
-    /// on a terminal always splits with that terminal). Both terminals must be in `splittable`, the
-    /// project's own. A terminal dropped on itself is refused: there is nothing to split.
+    /// The split a drop of `id` on `edge` of `target` leaves. Both terminals must be in `splittable`,
+    /// the project's own live ones. The `existing` split counts only its `splittable` members, so the
+    /// cap and the drop's position match the grid the user sees. `target` in it: `id` joins or moves
+    /// there. `target` outside it: a new split from `target` — unless the existing one shows a grid
+    /// (two or more live members), which is refused rather than replaced. A terminal dropped on itself
+    /// is refused: there is nothing to split.
     public static func dropping(
         _ id: String, onto target: String, edge: SplitEdge, into existing: ProjectSplit?, splittable: Set<String>
     ) throws -> ProjectSplit {
         guard id != target else { throw Refusal.onItself }
         guard splittable.contains(id), splittable.contains(target) else { throw Refusal.notSplittable }
-        let base = existing.flatMap { $0.members.contains(target) ? $0 : nil }
-            ?? ProjectSplit(members: [target], focused: target)
+        let live = existing?.pruned(keeping: splittable) ?? ProjectSplit()
+        let base: ProjectSplit
+        if live.members.contains(target) {
+            base = live
+        } else if live.isActive(liveIDs: splittable) {
+            throw Refusal.splitAlreadyShowing
+        } else {
+            base = ProjectSplit(members: [target], focused: target)
+        }
         return try base.adding(id, onto: target, edge: edge)
     }
 
@@ -68,7 +102,7 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
         return ProjectSplit(members: members, focused: id)
     }
 
-    /// Only the members in `ids` — the terminals that are live or can still be restored.
+    /// Only the members in `ids` — the project's live terminals.
     public func pruned(keeping ids: Set<String>) -> ProjectSplit {
         let kept = members.filter { ids.contains($0) }
         let focus = focused.flatMap { kept.contains($0) ? $0 : nil } ?? kept.first
@@ -90,8 +124,8 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
         liveMembers(in: liveIDs).count >= 2
     }
 
-    /// Whether it can ever be a grid: two or more members, live or not. Below that there is nothing
-    /// worth keeping, even for a member that comes back on restore.
+    /// Whether it can still be a grid: two or more members, live or not. Below that there is nothing
+    /// worth keeping.
     public var isViable: Bool { members.count >= 2 }
 
     /// What a showing split needs once its members or the selection changed: whether the grid still
