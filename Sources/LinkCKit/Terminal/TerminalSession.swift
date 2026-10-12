@@ -475,6 +475,19 @@ public final class LinkCTerminalView: LocalProcessTerminalView {
         hasDetachedUpdates = true
     }
 
+    /// Told whenever this terminal gets the keyboard — a split uses it to follow which pane has focus.
+    public var onFocus: (() -> Void)?
+
+    /// SwiftTerm's `becomeFirstResponder` is not `open`, but it sets this to true exactly when the
+    /// view accepts the keyboard, so the setter is where a new first responder is seen.
+    public override var hasFocus: Bool {
+        get { super.hasFocus }
+        set {
+            super.hasFocus = newValue
+            if newValue { onFocus?() }
+        }
+    }
+
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         observeWindowVisibility()

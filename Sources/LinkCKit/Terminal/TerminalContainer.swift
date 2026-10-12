@@ -8,9 +8,16 @@ import SwiftUI
 /// background terminals keep their process and scrollback fully alive while off screen.
 public struct TerminalContainer: NSViewRepresentable {
     private let session: TerminalSession?
+    private let takesFocus: Bool
+    private let onFocus: (() -> Void)?
 
-    public init(session: TerminalSession?) {
+    /// `takesFocus`: grab the keyboard when the terminal is attached here — the single pane does,
+    /// a split's cells only for the focused pane. `onFocus`: told when a click (or anything else)
+    /// gives this terminal the keyboard.
+    public init(session: TerminalSession?, takesFocus: Bool = true, onFocus: (() -> Void)? = nil) {
         self.session = session
+        self.takesFocus = takesFocus
+        self.onFocus = onFocus
     }
 
     public func makeNSView(context: Context) -> TerminalHostView {
@@ -18,7 +25,8 @@ public struct TerminalContainer: NSViewRepresentable {
     }
 
     public func updateNSView(_ nsView: TerminalHostView, context: Context) {
-        nsView.show(session?.terminalView)
+        session?.terminalView.onFocus = onFocus
+        nsView.show(session?.terminalView, takesFocus: takesFocus)
     }
 }
 
@@ -35,19 +43,24 @@ public final class TerminalHostView: NSView {
     public required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     /// Show `view` (or nothing). Detaching the previously shown terminal leaves it — and its
-    /// PTY — fully alive; it is only removed from the view hierarchy until reselected.
-    func show(_ view: NSView?) {
-        if shown === view {
-            view?.frame = bounds
+    /// PTY — fully alive; it is only removed from the view hierarchy until reselected. A terminal
+    /// moves between hosts (its own tab, a split cell), so "shown last" is not "still here": a view
+    /// another host has since taken is attached again, and one this host no longer holds is never
+    /// pulled out of the host that does.
+    func show(_ view: NSView?, takesFocus: Bool = true) {
+        if let view, shown === view, view.superview === self {
+            view.frame = bounds
             return
         }
-        shown?.removeFromSuperview()
+        if let shown, shown !== view, shown.superview === self {
+            shown.removeFromSuperview()
+        }
         shown = view
         guard let view else { return }
         view.frame = bounds
         view.autoresizingMask = [.width, .height]
         addSubview(view)
-        window?.makeFirstResponder(view)
+        if takesFocus { window?.makeFirstResponder(view) }
     }
 
     public override func layout() {
