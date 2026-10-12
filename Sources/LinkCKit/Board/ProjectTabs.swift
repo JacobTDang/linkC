@@ -76,18 +76,21 @@ public enum ProjectTabs {
         for app in openApps {
             tabs.append(ProjectTab(id: appTabID(project: folder, folder: app.folder), kind: .app, title: app.name, isWorking: false))
         }
-        if let split {
-            let liveIDs = Set(tabs.lazy.filter { tab in
-                switch tab.kind {
-                case .agent, .terminal: return true
-                default: return false
-                }
-            }.map(\.id))
-            if split.isActive(liveIDs: liveIDs) {
-                tabs.insert(ProjectTab(id: splitID(canonical: folder), kind: .split, title: "Split", isWorking: false), at: 1)
-            }
+        if let split, split.isActive(liveIDs: Set(terminalIDs(tabs))) {
+            tabs.insert(ProjectTab(id: splitID(canonical: folder), kind: .split, title: "Split", isWorking: false), at: 1)
         }
         return tabs
+    }
+
+    /// The ids of `tabs` that are terminals — the agent sessions and shell terminals — in strip order. These
+    /// are the terminals a project's split may hold; the Board, Split and app tabs are not.
+    public static func terminalIDs(_ tabs: [ProjectTab]) -> [String] {
+        tabs.compactMap { tab in
+            switch tab.kind {
+            case .agent, .terminal: return tab.id
+            case .board, .app, .split: return nil
+            }
+        }
     }
 
     /// ⌘1 is the Board; ⌘2–⌘9 are the tabs after it in order: the Split first when the project has one, then its sessions.
