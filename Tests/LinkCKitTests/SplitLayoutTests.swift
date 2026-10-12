@@ -19,6 +19,7 @@ final class SplitLayoutTests: XCTestCase {
         XCTAssertEqual(SplitLayout.rowRanges(for: 5), [0..<3, 3..<5])
         XCTAssertEqual(SplitLayout.rowRanges(for: 2), [0..<2])
         XCTAssertEqual(SplitLayout.rowRanges(for: 1), [])
+        XCTAssertEqual(SplitLayout.rowRanges(for: 12), [0..<4, 4..<8], "never more than the cap")
     }
 
     func testAJoiningTerminalGoesBeforeOnLeftOrTopAndAfterOnRightOrBottom() {
@@ -33,6 +34,8 @@ final class SplitLayoutTests: XCTestCase {
         XCTAssertEqual(SplitLayout.insertionIndex(droppingOn: 3, edge: .right, movingFrom: 0), 3)
         XCTAssertEqual(SplitLayout.insertionIndex(droppingOn: 3, edge: .left, movingFrom: 0), 2)
         XCTAssertEqual(SplitLayout.insertionIndex(droppingOn: 0, edge: .left, movingFrom: 3), 0)
+        XCTAssertEqual(SplitLayout.insertionIndex(droppingOn: 2, edge: .right, movingFrom: 2), 2)
+        XCTAssertEqual(SplitLayout.insertionIndex(droppingOn: 2, edge: .left, movingFrom: 2), 2)
     }
 
     /// The edge nearest the pointer, relative to the pane's size; y grows downward.
@@ -43,5 +46,6 @@ final class SplitLayoutTests: XCTestCase {
         XCTAssertEqual(SplitLayout.edge(at: CGPoint(x: 200, y: 5), in: size), .top)
         XCTAssertEqual(SplitLayout.edge(at: CGPoint(x: 200, y: 195), in: size), .bottom)
         XCTAssertEqual(SplitLayout.edge(at: CGPoint(x: 100, y: 100), in: size), .left, "a quarter across is nearer the side than the middle row is to top or bottom")
+        XCTAssertEqual(SplitLayout.edge(at: CGPoint(x: 100, y: 60), in: size), .left, "measured as a fraction of each side: 100/400 = 0.25 from the left beats 60/200 = 0.30 from the top; raw pixels would say top")
     }
 }
