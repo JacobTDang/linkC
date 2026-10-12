@@ -1323,6 +1323,7 @@ struct BoardCanvas: View {
                 board.saveNow()
                 model.showBoard(parent)
             }
+        case .pan: break // The Board's arrow pan lands next.
         }
     }
 

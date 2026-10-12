@@ -40,9 +40,33 @@ final class BoardKeysTests: XCTestCase {
 
     func testCommandUpGoesUpOneBoard() {
         XCTAssertEqual(BoardKeyMap.command(for: KeyPress(.up, command: true), isEditingText: false), .goUp)
-        XCTAssertNil(BoardKeyMap.command(for: KeyPress(.up), isEditingText: false))
         XCTAssertNil(BoardKeyMap.command(for: KeyPress(.up, command: true, shift: true), isEditingText: false))
         XCTAssertNil(BoardKeyMap.command(for: KeyPress(.up, command: true), isEditingText: true))
     }
-}
 
+    func testArrowsPanAStepAndShiftArrowsAPage() {
+        let arrows: [(KeyPress.Key, BoardPan.Direction)] = [(.left, .left), (.right, .right), (.up, .up), (.down, .down)]
+        for (key, direction) in arrows {
+            XCTAssertEqual(BoardKeyMap.command(for: KeyPress(key), isEditingText: false), .pan(BoardPan(direction)), "\(key)")
+            XCTAssertEqual(BoardKeyMap.command(for: KeyPress(key, shift: true), isEditingText: false),
+                           .pan(BoardPan(direction, page: true)), "⇧\(key)")
+        }
+    }
+
+    func testCommandUpStillGoesUpAndOtherModifiedArrowsAreNotTheBoards() {
+        XCTAssertEqual(BoardKeyMap.command(for: KeyPress(.up, command: true), isEditingText: false), .goUp)
+        for key in [KeyPress.Key.left, .right, .up, .down] {
+            XCTAssertNil(BoardKeyMap.command(for: KeyPress(key, control: true), isEditingText: false), "⌃\(key)")
+            XCTAssertNil(BoardKeyMap.command(for: KeyPress(key, option: true), isEditingText: false), "⌥\(key)")
+        }
+        for key in [KeyPress.Key.left, .right, .down] {
+            XCTAssertNil(BoardKeyMap.command(for: KeyPress(key, command: true), isEditingText: false), "⌘\(key)")
+        }
+    }
+
+    func testArrowsBelongToAFieldBeingEdited() {
+        for key in [KeyPress.Key.left, .right, .up, .down] {
+            XCTAssertNil(BoardKeyMap.command(for: KeyPress(key), isEditingText: true), "\(key)")
+        }
+    }
+}

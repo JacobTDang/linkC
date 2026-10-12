@@ -10,6 +10,9 @@ public struct KeyPress: Equatable, Sendable {
         case delete
         case space
         case up
+        case down
+        case left
+        case right
     }
 
     public let key: Key
@@ -53,6 +56,19 @@ public enum TabKeyMap {
 public enum BoardCommand: Equatable, Sendable {
     case selectTool, componentTool, arrowTool, frameTool, noteTool, textTool
     case delete, cancel, undo, redo, fitAll, goUp
+    case pan(BoardPan)
+}
+
+/// An arrow key's pan: which way the view moves, and whether by a page (⇧) or a step.
+public struct BoardPan: Equatable, Sendable {
+    public enum Direction: Equatable, Sendable { case left, right, up, down }
+    public let direction: Direction
+    public let page: Bool
+
+    public init(_ direction: Direction, page: Bool = false) {
+        self.direction = direction
+        self.page = page
+    }
 }
 
 public enum BoardKeyMap {
@@ -69,7 +85,10 @@ public enum BoardKeyMap {
             if press.command, !press.control, !press.option, !press.shift {
                 return .goUp
             }
-            return nil
+            return pan(.up, press)
+        case .down: return pan(.down, press)
+        case .left: return pan(.left, press)
+        case .right: return pan(.right, press)
         case .character(let raw):
             let character = raw.lowercased()
             if press.command, !press.control, !press.option, character == "z" {
@@ -89,5 +108,11 @@ public enum BoardKeyMap {
         default:
             return nil
         }
+    }
+
+    /// An arrow pans; ⇧ makes it a page. With ⌘, ⌃ or ⌥ it is not the Board's.
+    private static func pan(_ direction: BoardPan.Direction, _ press: KeyPress) -> BoardCommand? {
+        guard !press.command, !press.control, !press.option else { return nil }
+        return .pan(BoardPan(direction, page: press.shift))
     }
 }
