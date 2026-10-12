@@ -119,14 +119,27 @@ extension AppModel {
         return (rows > 0 || supabaseNeedsLogin || !cloudErrors.isEmpty) ? rows : nil
     }
 
-    /// Once a second while the panel is visible, and once as it opens: forget ended sessions, mark
-    /// what is on screen as seen, keep the project order, expand projects that just turned coral,
-    /// and publish the sidebar's non-observable inputs. The sidebar re-renders on the publish only
-    /// when one of them changed — a quiet second re-renders nothing.
+    /// Once a second while the panel is visible, and once as it opens: forget ended sessions, drop
+    /// split members that are gone, mark what is on screen as seen, keep the project order, expand
+    /// projects that just turned coral, and publish the sidebar's non-observable inputs. The sidebar
+    /// re-renders on the publish only when one of them changed — a quiet second re-renders nothing.
     func sampleSidebar() {
         let now = Date()
         attention.retain(only: Set(sessions.map(\.id)))
         markOnScreenSeen(at: now)
+        // A split keeps the terminals that are live or can still be restored; fewer than two left
+        // is no split.
+        let known = Set(sessions.map(\.id)).union(shellRows.map(\.id)).union(restorables.map(\.linkcId))
+        for project in sidebarState.projectsWithSplits {
+            guard let split = sidebarState.split(for: project) else { continue }
+            let pruned = split.pruned(keeping: known)
+            if pruned.members.count < 2 {
+                dissolveSplit(project)
+            } else if pruned != split {
+                sidebarState.setSplit(pruned, for: project)
+            }
+        }
+        if let splitProject, liveSplitMembers(in: splitProject).count < 2 { dissolveSplit(splitProject) }
         // Filed paths are canonical already: `SidebarState` canonicalizes them as it files them.
         let filedPaths = Set(sidebarState.terminalProjects.values).sorted()
         sidebarState.noteProjects(ProjectGroup.group(sessions: sessions).map(\.workspacePath) + filedPaths)

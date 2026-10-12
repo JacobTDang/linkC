@@ -1,12 +1,13 @@
 import Foundation
 
-/// One tab in a project's strip: its Board, one of its agent sessions, one of its terminals, or an app.
+/// One tab in a project's strip: its Board, its Split, one of its agent sessions, one of its terminals, or an app.
 public struct ProjectTab: Equatable, Sendable, Identifiable {
     public enum Kind: Equatable, Sendable {
         case board
         case agent(AgentKind)
         case terminal
         case app
+        case split
     }
 
     public let id: String
@@ -40,18 +41,23 @@ public enum ProjectTabs {
         "board:" + path
     }
 
+    /// The Split tab's id for a canonical project path.
+    public static func splitID(canonical path: String) -> String {
+        "split:" + path
+    }
+
     public static func appTabID(project: String, folder: String) -> String {
         "app:" + standardized(project) + "#" + standardized(folder)
     }
 
-    /// The Board, then the project's agent sessions, then its terminals, then its open apps — each in the order they were opened. `titles` holds live session titles, which win over the stored ones. `activities`
-    /// holds each working or permission-waiting session's current action, keyed by session id.
+    /// The Board, then the Split when `split` holds two or more live terminals, then the project's agent sessions, then its terminals, then its open apps — each in the order they were opened. `titles` holds live
+    /// session titles, which win over the stored ones. `activities` holds each working or permission-waiting session's current action, keyed by session id.
     ///
     /// - Precondition: Each `Session.cwd` is canonicalized upon creation (`Session.init`), so comparing
     ///   `session.cwd == folder` avoids per-session path normalization syscalls on every tab evaluation.
     public static func tabs(
         project path: String, sessions: [Session], shells: [ShellRow], filed: [String: String] = [:], titles: [String: String],
-        activities: [String: String] = [:], openApps: [OpenApp] = []
+        activities: [String: String] = [:], openApps: [OpenApp] = [], split: ProjectSplit? = nil
     ) -> [ProjectTab] {
         let folder = standardized(path)
         var tabs = [ProjectTab(id: boardID(canonical: folder), kind: .board, title: "Board", isWorking: false)]
@@ -69,6 +75,17 @@ public enum ProjectTabs {
         }
         for app in openApps {
             tabs.append(ProjectTab(id: appTabID(project: folder, folder: app.folder), kind: .app, title: app.name, isWorking: false))
+        }
+        if let split {
+            let liveIDs = Set(tabs.lazy.filter { tab in
+                switch tab.kind {
+                case .agent, .terminal: return true
+                default: return false
+                }
+            }.map(\.id))
+            if split.isActive(liveIDs: liveIDs) {
+                tabs.insert(ProjectTab(id: splitID(canonical: folder), kind: .split, title: "Split", isWorking: false), at: 1)
+            }
         }
         return tabs
     }

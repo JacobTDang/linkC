@@ -637,6 +637,10 @@ final class AppModel {
     /// The project whose Board is showing, or nil when a terminal — or nothing — is.
     private(set) var boardProject: String?
 
+    /// The project whose Split tab is showing, or nil. Written only by `showSplit`, `showSelection`,
+    /// `showBoard`, `showApp`, `select(_:)`, `dissolveSplit` and `goBack` — never by a view.
+    private(set) var splitProject: String?
+
     /// The apps each project can open: its own `.linkc/app.json`, then the ones registered in
     /// Settings. Reads the manifest fresh (on a short TTL) each time it's asked, so an edit to
     /// app.json takes effect without a restart.
@@ -659,6 +663,7 @@ final class AppModel {
     /// The project the tab strip belongs to: the Board's, or the open session's or terminal's folder.
     var currentProject: String? {
         if let boardProject { return boardProject }
+        if let splitProject { return splitProject }
         if let appTab { return appTab.project }
         guard let id = selectedId else { return nil }
         if let session = sessions.first(where: { $0.id == id }) { return session.cwd }
@@ -681,7 +686,8 @@ final class AppModel {
         }
         return ProjectTabs.tabs(
             project: canonicalProject, sessions: sessions, shells: shellRows, filed: sidebarState.terminalProjects, titles: sessionTitles,
-            activities: activities, openApps: sidebarState.openApps(in: canonicalProject))
+            activities: activities, openApps: sidebarState.openApps(in: canonicalProject),
+            split: sidebarState.split(for: canonicalProject))
     }
 
     /// Whether the current project has a session mid-turn — computed directly, without building
@@ -694,9 +700,10 @@ final class AppModel {
         return sessions.contains { $0.state == .working && $0.cwd == canonicalProject }
     }
 
-    /// The tab showing: the project's Board, an app tab, or the selected session or terminal.
+    /// The tab showing: the project's Board or Split, an app tab, or the selected session or terminal.
     var selectedTabID: String? {
         if let boardProject { return ProjectTabs.boardID(boardProject) }
+        if let splitProject { return ProjectTabs.splitID(canonical: splitProject) }
         if let appTab { return appTab.id }
         return selectedId
     }
@@ -721,6 +728,7 @@ final class AppModel {
 
     func showBoard(_ path: String) {
         boardProject = ProjectTabs.standardized(path)
+        splitProject = nil
         appTab = nil
         activeScreen = nil
     }
@@ -730,6 +738,7 @@ final class AppModel {
     func showApp(_ ref: AppTabRef) {
         appTab = ref
         boardProject = nil
+        splitProject = nil
         activeScreen = nil
     }
 
@@ -743,16 +752,94 @@ final class AppModel {
     /// an open screen, another project's Board, or an open app tab (else the new one opens
     /// hidden underneath it).
     private func showSelection() {
+        if let splitProject {
+            let isMember = selectedId.map { sidebarState.split(for: splitProject)?.members.contains($0) ?? false } ?? false
+            if !isMember { self.splitProject = nil }
+        }
         boardProject = nil
         appTab = nil
         activeScreen = nil
+    }
+
+    /// The terminals that may sit in `project`'s split: its sessions and the shell terminals filed
+    /// under it — exactly what its tab strip lists.
+    func splittableIDs(in project: String) -> Set<String> {
+        let tabs = ProjectTabs.tabs(project: project, sessions: sessions, shells: shellRows,
+                                    filed: sidebarState.terminalProjects, titles: [:])
+        return Set(tabs.lazy.filter { tab in
+            switch tab.kind {
+            case .agent, .terminal: return true
+            default: return false
+            }
+        }.map(\.id))
+    }
+
+    func liveSplitMembers(in project: String) -> [String] {
+        sidebarState.split(for: project)?.liveMembers(in: splittableIDs(in: project)) ?? []
+    }
+
+    func focusedSplitMember(in project: String) -> String? {
+        sidebarState.split(for: project)?.focusedLive(in: splittableIDs(in: project))
+    }
+
+    func terminalSession(_ id: String) -> TerminalSession? {
+        coordinator?.terminals.session(id: id)
+    }
+
+    /// Shows `project`'s Split tab, its focused live member selected. Does nothing when the project
+    /// has no active split.
+    func showSplit(_ project: String) {
+        let key = ProjectTabs.standardized(project)
+        guard let target = focusedSplitMember(in: key), liveSplitMembers(in: key).count >= 2 else { return }
+        splitProject = key   // first, so the selection callback below keeps it
+        focus(target)
+        boardProject = nil
+        appTab = nil
+        activeScreen = nil
+    }
+
+    /// A pane in the showing split got the keyboard (a click inside it): remember it as the
+    /// split's focus and select it, keeping the grid on screen.
+    func focusInSplit(_ id: String) {
+        guard let project = splitProject, let split = sidebarState.split(for: project), split.members.contains(id) else { return }
+        sidebarState.setSplit(split.focusing(id), for: project)
+        if selectedId != id { focus(id) }
+    }
+
+    /// Takes `id` out of the current project's split; the session keeps running. Fewer than two
+    /// panes left dissolves the split.
+    func removeFromSplit(_ id: String) {
+        guard let project = currentProject, let split = sidebarState.split(for: project) else { return }
+        let next = split.removing(id)
+        if next.liveMembers(in: splittableIDs(in: project)).count < 2 {
+            dissolveSplit(project)
+        } else {
+            sidebarState.setSplit(next, for: project)
+            if splitProject != nil, let focus = next.focusedLive(in: splittableIDs(in: project)), selectedId != focus {
+                self.focus(focus)
+            }
+        }
+    }
+
+    /// Forgets `project`'s split. The terminal that had the focus stays selected, shown on its own.
+    func dissolveSplit(_ project: String) {
+        let key = ProjectTabs.standardized(project)
+        let focusID = focusedSplitMember(in: key)
+        sidebarState.clearSplit(for: key)
+        if splitProject == key {
+            splitProject = nil
+            if let focusID, selectedId != focusID { focus(focusID) }
+        }
     }
 
     func select(_ tab: ProjectTab) {
         switch tab.kind {
         case .board:
             if let project = currentProject { showBoard(project) }
+        case .split:
+            if let project = currentProject { showSplit(project) }
         case .agent, .terminal:
+            splitProject = nil   // a member's own tab shows it full-size
             focus(tab.id)
         case .app:
             guard let ref = openAppRef(forTab: tab.id) else { return }
@@ -768,6 +855,7 @@ final class AppModel {
         let project = currentProject
         switch tab.kind {
         case .board: return
+        case .split: if let project { dissolveSplit(project) }
         case .agent: stop(tab.id)
         case .terminal: stopShell(tab.id)
         case .app: closeApp(tab)
@@ -1057,6 +1145,9 @@ final class AppModel {
             coordinator?.terminals.deselect()
         } else if appTab != nil {
             appTab = nil
+            coordinator?.terminals.deselect()
+        } else if splitProject != nil {
+            splitProject = nil
             coordinator?.terminals.deselect()
         } else {
             coordinator?.terminals.deselect()

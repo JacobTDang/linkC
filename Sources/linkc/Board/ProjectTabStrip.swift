@@ -162,6 +162,8 @@ private struct TabChip: View {
                 Image(systemName: "terminal").font(.system(size: 9))
             case .app:
                 Image(systemName: "globe").font(.system(size: 9))
+            case .split:
+                Image(systemName: "square.split.2x2").font(.system(size: 10))
             }
             if let activity = tab.activity {
                 ActivityLabel(text: activity.text, isWorking: activity.isWorking, size: 11.5)
@@ -178,7 +180,7 @@ private struct TabChip: View {
                 }
                 .buttonStyle(.plain)
                 .opacity(hovering || isSelected ? 1 : 0)
-                .help("Stop this session")
+                .help(tab.kind == .split ? "Close the split" : "Stop this session")
             }
         }
         .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
