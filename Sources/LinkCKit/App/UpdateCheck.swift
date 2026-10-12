@@ -75,10 +75,12 @@ public enum UpdateSwap {
             + "so macOS will ask for linkC's permissions again. scripts/make-signing-identity.sh makes a new one.")
         let failed = shellQuoted(
             "The update couldn't be installed, so the previous build is still running. Details: \(logPath)")
+        let unmoved = shellQuoted(
+            "The update was staged but couldn't replace the installed app. Details: \(logPath)")
         return """
         #!/bin/sh
-        exec >>\(log) 2>&1
-        echo "== $(date) update from \(distPath)"
+        command exec >>\(log) 2>&1 || exec >/dev/null 2>&1
+        echo "== $(date) update from" \(dist)
         while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
         rm -rf \(stage)
         identity=-
@@ -88,7 +90,7 @@ public enum UpdateSwap {
           echo "security find-identity failed, so this update is signed ad-hoc"
         fi
         if [ "$identity" = - ]; then
-          case "$(codesign -dv \(install) 2>&1)" in
+          case "$(codesign -dvv \(install) 2>&1)" in
             \(authority)) echo \(downgraded) > \(notice) ;;
           esac
         fi
@@ -97,9 +99,12 @@ public enum UpdateSwap {
            && /usr/libexec/PlistBuddy -c \(stamp) \(stagePlist) \\
            && xattr -cr \(stage) \\
            && codesign --force --deep --sign "$identity" \(stage); then
-          rm -rf \(install)
-          mv \(stage) \(install)
-          echo "installed"
+          if rm -rf \(install) && mv \(stage) \(install); then
+            echo "installed"
+          else
+            echo \(unmoved) > \(notice)
+            echo "failed: the staged update couldn't replace the installed app"
+          fi
         else
           rm -rf \(stage)
           echo \(failed) > \(notice)
@@ -114,13 +119,20 @@ public enum UpdateSwap {
     /// unreadable notice is itself reported rather than dropped.
     public static func takeNotice(at url: URL = UpdateSwap.noticeURL) -> String? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        defer { try? FileManager.default.removeItem(at: url) }
+        var notice: String?
         do {
             let text = try String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? nil : text
+            notice = text.isEmpty ? nil : text
         } catch {
-            return "The last update left a notice linkC couldn't read (\(url.path)): \(error.localizedDescription)"
+            notice = "The last update left a notice linkC couldn't read: \(error.localizedDescription). Details: \(logURL.path)"
         }
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            // Left in place it would show on every launch; say why it couldn't go.
+            notice = (notice ?? "") + " (linkC couldn't remove \(url.path): \(error.localizedDescription))"
+        }
+        return notice
     }
 
     private static func shellQuoted(_ path: String) -> String {

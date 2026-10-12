@@ -244,7 +244,9 @@ macOS ties privacy grants such as Screen Recording and notifications to the app'
 ad-hoc signature changes with every build, so each update would ask for them again. To keep them,
 `build-app.sh` and the in-app update sign with a local identity named "linkC Local Signing" when
 the login keychain has one. Run `scripts/make-signing-identity.sh` once to create it. It is a
-self-signed certificate that stays on this Mac. Without it, both sign ad-hoc and say so.
+self-signed certificate that stays on this Mac. Without it, both sign ad-hoc: `build-app.sh` warns,
+and the in-app update says so at the next launch if it replaced a build signed with the identity.
+Each in-app update logs what it did to `~/Library/Logs/linkC-update.log`.
 
 Either way `open` works on the Mac that built the app. On any other Mac, Gatekeeper blocks the
 first launch — right-click the app and choose **Open** instead.

@@ -123,7 +123,9 @@ final class UpdateSwapTests: XCTestCase {
         let script = UpdateSwap.script(pid: 1, distPath: "/d/linkC.app", installPath: "/Applications/linkC.app",
                                        logPath: "/dev/null", noticePath: notice.path)
         let block = try Self.block(of: script, from: #"if [ "$identity" = - ]; then"#)
-        _ = try sandbox.run("identity=-\n" + block, stubs: ["codesign": "echo 'Authority=linkC Local Signing' >&2"])
+        // Like the real tool, Authority lines appear only at -dvv.
+        let authorityAtDvv = #"case "$1" in -dvv) echo 'Authority=linkC Local Signing' >&2 ;; *) echo 'Signature size=9000' >&2 ;; esac"#
+        _ = try sandbox.run("identity=-\n" + block, stubs: ["codesign": authorityAtDvv])
         let text = try String(contentsOf: notice, encoding: .utf8)
         XCTAssertTrue(text.contains("signed ad-hoc"), text)
         try FileManager.default.removeItem(at: notice)
@@ -153,6 +155,16 @@ final class UpdateSwapTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the script still deletes itself")
     }
 
+    /// The dist path reaches the log quoted like every other path: one with `$(...)` or a quote
+    /// in it neither runs a command nor breaks the script.
+    func testTheLogHeaderQuotesTheDistPath() throws {
+        let script = UpdateSwap.script(pid: 1, distPath: #"/d/a"b$(touch pwned).app"#, installPath: "/Applications/linkC.app")
+        let header = try XCTUnwrap(script.split(separator: "\n").first { $0.hasPrefix("echo \"== ") })
+        let sandbox = try Sandbox()
+        let out = try sandbox.run(String(header), stubs: [:])
+        XCTAssertTrue(out.contains(#"/d/a"b$(touch pwned).app"#), out)
+    }
+
     /// The next launch takes the notice once: read, then gone.
     func testTakingTheNoticeReadsItOnce() throws {
         let sandbox = try Sandbox()
@@ -163,11 +175,23 @@ final class UpdateSwapTests: XCTestCase {
         XCTAssertNil(UpdateSwap.takeNotice(at: notice))
     }
 
+    /// A notice that can't be read is still reported, pointing at the log, and not left to repeat.
+    func testAnUnreadableNoticeIsReportedAndRemoved() throws {
+        let sandbox = try Sandbox()
+        let notice = sandbox.dir.appendingPathComponent("notice.txt")
+        try FileManager.default.createDirectory(at: notice, withIntermediateDirectories: true)   // unreadable as text
+        let text = try XCTUnwrap(UpdateSwap.takeNotice(at: notice))
+        XCTAssertTrue(text.contains(UpdateSwap.logURL.path), text)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: notice.path))
+    }
+
     /// build-app.sh and the swap must choose the same identity.
     func testBuildScriptSignsWithTheSameIdentity() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let build = try String(contentsOf: root.appendingPathComponent("build-app.sh"), encoding: .utf8)
         XCTAssertTrue(build.contains(#"SIGN_IDENTITY="\#(UpdateSwap.signingIdentity)""#))
+        let make = try String(contentsOf: root.appendingPathComponent("scripts/make-signing-identity.sh"), encoding: .utf8)
+        XCTAssertTrue(make.contains(#"NAME="\#(UpdateSwap.signingIdentity)""#), "the script makes the identity both sign with")
     }
 
     /// The lines of `script` from the one starting with `first` through the first line that is
@@ -179,14 +203,16 @@ final class UpdateSwapTests: XCTestCase {
         return lines[start...end].joined(separator: "\n")
     }
 
-    /// A temp dir whose stub tools come first on PATH.
-    private struct Sandbox {
+    /// A temp dir whose stub tools come first on PATH, removed when the test lets go of it.
+    private final class Sandbox {
         let dir: URL
 
         init() throws {
             dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-swap-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
+
+        deinit { try? FileManager.default.removeItem(at: dir) }
 
         func run(_ shell: String, stubs: [String: String]) throws -> String {
             for (name, body) in stubs {
