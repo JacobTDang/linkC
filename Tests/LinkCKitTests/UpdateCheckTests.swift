@@ -92,38 +92,119 @@ final class UpdateSwapTests: XCTestCase {
     func testScriptReSignsWithTheLocalIdentityWhenTheKeychainHasIt() throws {
         let script = UpdateSwap.script(pid: 1, distPath: "/d/linkC.app", installPath: "/Applications/linkC.app")
         XCTAssertEqual(UpdateSwap.signingIdentity, "linkC Local Signing")
-        let choose = try XCTUnwrap(script.range(of: #"security find-identity -p codesigning | grep -qF '"linkC Local Signing"'"#))
+        let choose = try XCTUnwrap(script.range(of: "if listing=$(security find-identity -p codesigning); then"))
         let sign = try XCTUnwrap(script.range(of: #"codesign --force --deep --sign "$identity" "#))
         XCTAssertLessThan(choose.lowerBound, sign.lowerBound, "the identity is chosen before re-signing")
-        XCTAssertTrue(script.contains("identity=-\n"), "ad-hoc when the keychain has no local identity")
-        XCTAssertTrue(script.contains("identity='linkC Local Signing'"))
         XCTAssertFalse(script.contains("--sign - "), "never a hard-coded ad-hoc signature")
     }
 
-    /// The identity choice, run for real: with no matching identity it falls back to ad-hoc.
-    func testIdentityChoiceRunsAndPicksAdHocWithoutTheIdentity() throws {
+    /// The identity choice, run for real against a stub `security`: the identity when it is
+    /// listed, ad-hoc when it isn't, and ad-hoc with a logged reason when `security` fails.
+    func testIdentityChoiceRunsForReal() throws {
         let script = UpdateSwap.script(pid: 1, distPath: "/d/linkC.app", installPath: "/Applications/linkC.app")
-        let line = try XCTUnwrap(script.split(separator: "\n").first { $0.contains("find-identity") })
-        // A stub `security` that lists no identities stands in for the keychain.
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-swap-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let stub = dir.appendingPathComponent("security")
-        try "#!/bin/sh\necho '     0 valid identities found'\n".write(to: stub, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
-        let run = { (listing: String) throws -> String in
-            try "#!/bin/sh\necho '\(listing)'\n".write(to: stub, atomically: true, encoding: .utf8)
+        let block = try Self.block(of: script, from: "identity=-")
+        let sandbox = try Sandbox()
+        XCTAssertEqual(try sandbox.run(block + "\nprintf '[%s]' \"$identity\"",
+                                       stubs: ["security": "echo '  1) B845 \"linkC Local Signing\" (CSSMERR_TP_NOT_TRUSTED)'"]),
+                       "[linkC Local Signing]")
+        XCTAssertEqual(try sandbox.run(block + "\nprintf '[%s]' \"$identity\"",
+                                       stubs: ["security": "echo '     0 valid identities found'"]),
+                       "[-]")
+        let failed = try sandbox.run(block + "\nprintf '[%s]' \"$identity\"", stubs: ["security": "exit 44"])
+        XCTAssertTrue(failed.hasSuffix("[-]"), failed)
+        XCTAssertTrue(failed.contains("security find-identity failed"), "a failing keychain lookup is logged: \(failed)")
+    }
+
+    /// Falling back to ad-hoc over an app that carried the local identity would quietly cost the
+    /// user every privacy grant: the swap leaves a notice saying so.
+    func testAnAdHocSwapOverALocallySignedAppLeavesANotice() throws {
+        let sandbox = try Sandbox()
+        let notice = sandbox.dir.appendingPathComponent("notice.txt")
+        let script = UpdateSwap.script(pid: 1, distPath: "/d/linkC.app", installPath: "/Applications/linkC.app",
+                                       logPath: "/dev/null", noticePath: notice.path)
+        let block = try Self.block(of: script, from: #"if [ "$identity" = - ]; then"#)
+        _ = try sandbox.run("identity=-\n" + block, stubs: ["codesign": "echo 'Authority=linkC Local Signing' >&2"])
+        let text = try String(contentsOf: notice, encoding: .utf8)
+        XCTAssertTrue(text.contains("signed ad-hoc"), text)
+        try FileManager.default.removeItem(at: notice)
+        _ = try sandbox.run("identity=-\n" + block, stubs: ["codesign": "echo 'Signature=adhoc' >&2"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: notice.path), "an app that was ad-hoc already loses nothing")
+    }
+
+    /// A swap that can't stage or sign keeps the old app, logs why, and leaves a notice the next
+    /// launch shows — run for real, with a dist that isn't there.
+    func testAFailedSwapLogsAndLeavesANotice() throws {
+        let sandbox = try Sandbox()
+        let log = sandbox.dir.appendingPathComponent("update.log")
+        let notice = sandbox.dir.appendingPathComponent("notice.txt")
+        let script = UpdateSwap.script(
+            pid: 999_999, distPath: sandbox.dir.appendingPathComponent("missing.app").path,
+            installPath: sandbox.dir.appendingPathComponent("installed.app").path,
+            logPath: log.path, noticePath: notice.path)
+        let file = sandbox.dir.appendingPathComponent("swap.sh")
+        try script.replacingOccurrences(of: "\nopen ", with: "\n: ").write(to: file, atomically: true, encoding: .utf8)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [file.path]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertTrue(try String(contentsOf: notice, encoding: .utf8).contains("couldn't be installed"))
+        XCTAssertFalse(try String(contentsOf: log, encoding: .utf8).isEmpty, "the swap logs what it did")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the script still deletes itself")
+    }
+
+    /// The next launch takes the notice once: read, then gone.
+    func testTakingTheNoticeReadsItOnce() throws {
+        let sandbox = try Sandbox()
+        let notice = sandbox.dir.appendingPathComponent("notice.txt")
+        XCTAssertNil(UpdateSwap.takeNotice(at: notice))
+        try "The update couldn't be installed.\n".write(to: notice, atomically: true, encoding: .utf8)
+        XCTAssertEqual(UpdateSwap.takeNotice(at: notice), "The update couldn't be installed.")
+        XCTAssertNil(UpdateSwap.takeNotice(at: notice))
+    }
+
+    /// build-app.sh and the swap must choose the same identity.
+    func testBuildScriptSignsWithTheSameIdentity() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let build = try String(contentsOf: root.appendingPathComponent("build-app.sh"), encoding: .utf8)
+        XCTAssertTrue(build.contains(#"SIGN_IDENTITY="\#(UpdateSwap.signingIdentity)""#))
+    }
+
+    /// The lines of `script` from the one starting with `first` through the first line that is
+    /// exactly `fi` after it.
+    private static func block(of script: String, from first: String) throws -> String {
+        let lines = script.components(separatedBy: "\n")
+        let start = try XCTUnwrap(lines.firstIndex { $0.hasPrefix(first) }, "no line starting \(first)")
+        let end = try XCTUnwrap(lines[start...].firstIndex(of: "fi"))
+        return lines[start...end].joined(separator: "\n")
+    }
+
+    /// A temp dir whose stub tools come first on PATH.
+    private struct Sandbox {
+        let dir: URL
+
+        init() throws {
+            dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-swap-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+
+        func run(_ shell: String, stubs: [String: String]) throws -> String {
+            for (name, body) in stubs {
+                let stub = dir.appendingPathComponent(name)
+                try "#!/bin/sh\n\(body)\n".write(to: stub, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+            }
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-c", "identity=-\n\(line)\nprintf %s \"$identity\""]
+            process.arguments = ["-c", shell]
             process.environment = ["PATH": "\(dir.path):/usr/bin:/bin"]
             let out = Pipe()
             process.standardOutput = out
+            process.standardError = out
             try process.run()
+            let data = out.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            return String(decoding: data, as: UTF8.self)
         }
-        XCTAssertEqual(try run("     0 valid identities found"), "-")
-        XCTAssertEqual(try run(#"  1) B845 "linkC Local Signing" (CSSMERR_TP_NOT_TRUSTED)"#), "linkC Local Signing")
     }
 }

@@ -67,12 +67,16 @@ PLIST
 # this Mac's own stable identity when the keychain has it (the in-app updater, UpdateSwap,
 # makes the same choice), and say plainly when it doesn't.
 SIGN_IDENTITY="linkC Local Signing"
-if security find-identity -p codesigning | grep -qF "\"$SIGN_IDENTITY\""; then
+if ! IDENTITIES="$(security find-identity -p codesigning)"; then
+  echo "WARNING: security find-identity failed — signing ad-hoc" >&2
+  IDENTITIES=""
+fi
+if [[ "$IDENTITIES" == *"\"$SIGN_IDENTITY\""* ]]; then
   SIGN="$SIGN_IDENTITY"
   echo "==> Code signing with \"$SIGN_IDENTITY\" (privacy grants survive rebuilds)"
 else
   SIGN="-"
-  echo "==> Ad-hoc code signing: no \"$SIGN_IDENTITY\" identity in the keychain, so macOS privacy grants reset with each build"
+  echo "WARNING: ad-hoc code signing — no \"$SIGN_IDENTITY\" identity in the keychain, so macOS privacy grants reset with each build. scripts/make-signing-identity.sh makes one." >&2
 fi
 # File-provider sync (iCloud Desktop) stamps FinderInfo/xattrs onto the fresh bundle,
 # which codesign rejects as "detritus" — strip them right before signing.

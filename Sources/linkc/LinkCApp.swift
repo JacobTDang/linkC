@@ -256,6 +256,12 @@ final class AppModel {
             self.watchedEndpointsStore = WatchedEndpointsStore(directory: linkCSupport)
             reloadConfiguredEndpoints()
             startHealthTimer()
+            // The swap that installed this build ran with no app to tell: what it left for the
+            // user (a failed install, or grants about to be lost) is posted now, where it stays.
+            if let notice = UpdateSwap.takeNotice() {
+                lastError = notice
+                coordinator.notify(id: "update", title: "linkC update", body: notice)
+            }
         } catch {
             setupError = error.localizedDescription
         }

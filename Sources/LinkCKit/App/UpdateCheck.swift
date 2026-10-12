@@ -33,8 +33,11 @@ public enum UpdateCheck {
 /// beside the installed bundle, re-stamps `LinkCSourceDist` (dist's plist never carries
 /// it — without this the FIRST in-app update would kill detection forever) and re-signs,
 /// then atomically replaces the old bundle. The relaunch sits OUTSIDE the success branch:
-/// a failed staging (deleted dist, disk full) leaves the installed app untouched and
-/// still brings it back. The script deletes itself last.
+/// a failed staging (deleted dist, disk full, a locked keychain) leaves the installed app
+/// untouched and still brings it back. Nothing the app can watch runs while it is gone, so
+/// the script writes what it did to `logPath`, and anything the user must hear about — a
+/// failed swap, or grants about to be lost — to `noticePath`, which the next launch shows.
+/// The script deletes itself last.
 public enum UpdateSwap {
     /// This Mac's own code-signing identity, which `build-app.sh` signs with too. macOS ties
     /// privacy grants (Screen Recording, notifications) to the app's signature, and an ad-hoc
@@ -42,7 +45,18 @@ public enum UpdateSwap {
     /// Without it in the keychain, both sign ad-hoc.
     public static let signingIdentity = "linkC Local Signing"
 
-    public static func script(pid: Int32, distPath: String, installPath: String) -> String {
+    private static var logs: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs", isDirectory: true)
+    }
+    /// Where the swap writes what it did.
+    public static var logURL: URL { logs.appendingPathComponent("linkC-update.log") }
+    /// Where the swap leaves a message for the next launch.
+    public static var noticeURL: URL { logs.appendingPathComponent("linkC-update-notice.txt") }
+
+    public static func script(
+        pid: Int32, distPath: String, installPath: String,
+        logPath: String = UpdateSwap.logURL.path, noticePath: String = UpdateSwap.noticeURL.path
+    ) -> String {
         let dist = shellQuoted(distPath)
         let install = shellQuoted(installPath)
         let stage = shellQuoted(installPath + ".update")
@@ -51,25 +65,62 @@ public enum UpdateSwap {
         // whole command is one shell-quoted argument.
         let stamp = shellQuoted("Add :LinkCSourceDist string \(distPath)")
         let identity = shellQuoted(signingIdentity)
-        let listed = shellQuoted("\"\(signingIdentity)\"")
+        // `case` patterns: the wildcards stay outside the quotes, or they match only themselves.
+        let listed = "*" + shellQuoted("\"\(signingIdentity)\"") + "*"
+        let authority = "*" + shellQuoted("Authority=\(signingIdentity)") + "*"
+        let log = shellQuoted(logPath)
+        let notice = shellQuoted(noticePath)
+        let downgraded = shellQuoted(
+            "This update was signed ad-hoc: the \"\(signingIdentity)\" identity wasn't in the keychain, "
+            + "so macOS will ask for linkC's permissions again. scripts/make-signing-identity.sh makes a new one.")
+        let failed = shellQuoted(
+            "The update couldn't be installed, so the previous build is still running. Details: \(logPath)")
         return """
         #!/bin/sh
+        exec >>\(log) 2>&1
+        echo "== $(date) update from \(distPath)"
         while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
         rm -rf \(stage)
         identity=-
-        if security find-identity -p codesigning | grep -qF \(listed); then identity=\(identity); fi
+        if listing=$(security find-identity -p codesigning); then
+          case "$listing" in \(listed)) identity=\(identity) ;; esac
+        else
+          echo "security find-identity failed, so this update is signed ad-hoc"
+        fi
+        if [ "$identity" = - ]; then
+          case "$(codesign -dv \(install) 2>&1)" in
+            \(authority)) echo \(downgraded) > \(notice) ;;
+          esac
+        fi
+        echo "signing with: $identity"
         if ditto \(dist) \(stage) \\
            && /usr/libexec/PlistBuddy -c \(stamp) \(stagePlist) \\
            && xattr -cr \(stage) \\
            && codesign --force --deep --sign "$identity" \(stage); then
           rm -rf \(install)
           mv \(stage) \(install)
+          echo "installed"
         else
           rm -rf \(stage)
+          echo \(failed) > \(notice)
+          echo "failed: the previous build stays"
         fi
         open \(install)
         rm -- "$0"
         """
+    }
+
+    /// The message the last swap left for this launch, if any — read once, then removed. An
+    /// unreadable notice is itself reported rather than dropped.
+    public static func takeNotice(at url: URL = UpdateSwap.noticeURL) -> String? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        } catch {
+            return "The last update left a notice linkC couldn't read (\(url.path)): \(error.localizedDescription)"
+        }
     }
 
     private static func shellQuoted(_ path: String) -> String {
