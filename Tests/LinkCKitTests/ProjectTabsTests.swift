@@ -132,6 +132,40 @@ final class ProjectTabsTests: XCTestCase {
         }
     }
 
+    func testAnActiveSplitIsTheTabAfterTheBoard() {
+        let project = ProjectPath.canonical(NSTemporaryDirectory())
+        let a = Session(id: "A", cwd: project, title: "a")
+        let b = Session(id: "B", cwd: project, title: "b")
+        let tabs = ProjectTabs.tabs(project: project, sessions: [a, b], shells: [], titles: [:],
+                                    split: ProjectSplit(members: ["A", "B"], focused: "A"))
+        XCTAssertEqual(tabs.map(\.id), [ProjectTabs.boardID(canonical: project), ProjectTabs.splitID(canonical: project), "A", "B"])
+        XCTAssertEqual(tabs[1].kind, .split)
+        XCTAssertEqual(tabs[1].title, "Split")
+        XCTAssertFalse(tabs[1].isWorking, "closing a split stops nothing, so it never asks first")
+    }
+
+    func testASplitWithFewerThanTwoLiveMembersHasNoTab() {
+        let project = ProjectPath.canonical(NSTemporaryDirectory())
+        let a = Session(id: "A", cwd: project, title: "a")
+        let tabs = ProjectTabs.tabs(project: project, sessions: [a], shells: [], titles: [:],
+                                    split: ProjectSplit(members: ["A", "GONE"]))
+        XCTAssertFalse(tabs.contains { $0.kind == .split })
+    }
+
+    /// The terminals a split may hold: the agent and terminal tabs, in strip order, never the Board, Split or an app.
+    func testTerminalIDsAreTheAgentAndTerminalTabsInOrder() {
+        let tabs = [
+            ProjectTab(id: "board:/p", kind: .board, title: "Board", isWorking: false),
+            ProjectTab(id: "split:/p", kind: .split, title: "Split", isWorking: false),
+            ProjectTab(id: "A", kind: .agent(.claude), title: "a", isWorking: false),
+            ProjectTab(id: "T", kind: .terminal, title: "t", isWorking: false),
+            ProjectTab(id: "B", kind: .agent(.codex), title: "b", isWorking: true),
+            ProjectTab(id: "app:/p#/f", kind: .app, title: "App", isWorking: false),
+        ]
+        XCTAssertEqual(ProjectTabs.terminalIDs(tabs), ["A", "T", "B"])
+        XCTAssertEqual(ProjectTabs.terminalIDs([]), [])
+    }
+
     func testProjectTabsSpeedWithTwentySessions() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-tab-bench-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)

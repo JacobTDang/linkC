@@ -68,11 +68,12 @@ struct PanelView: View {
 
 /// One Equatable discriminator for the pane-swap animation.
 private enum Pane: Equatable {
-    case terminal, board(String), app(String), screen(PanelScreen), launcher
+    case terminal, board(String), split(String), app(String), screen(PanelScreen), launcher
 
     @MainActor init(_ model: AppModel) {
         if let screen = model.activeScreen { self = .screen(screen) }
         else if let board = model.boardProject { self = .board(board) }
+        else if let split = model.splitProject { self = .split(split) }
         else if let app = model.appTab { self = .app(app.id) }
         else if model.selectedId != nil { self = .terminal }
         else { self = .launcher }
@@ -106,7 +107,10 @@ private struct RightPane: View {
             } else if model.currentProject != nil {
                 VStack(spacing: 0) {
                     ProjectTabStrip(model: model, onBack: showsBack ? { model.goBack() } : nil)
-                    if let board = model.boardProject {
+                    if let split = model.splitProject {
+                        SplitPane(model: model, project: split)
+                            .id(split)
+                    } else if let board = model.boardProject {
                         BoardPane(model: model, path: board)
                             .id(board)
                     } else if let app = model.appTab {
@@ -163,7 +167,7 @@ private struct TerminalPane: View {
         .padding(.bottom, 12)
         .onChange(of: model.selectedId, initial: true) { _, _ in
             readerAgent = nil
-            styleTerminal(model.selectedTerminal)
+            TerminalStyle.apply(to: model.selectedTerminal)
         }
     }
 
@@ -177,6 +181,7 @@ private struct TerminalPane: View {
                     .foregroundStyle(Theme.textTertiary)
             }
         }
+        .terminalDropTarget(model: model, target: model.selectedTerminal == nil ? nil : model.selectedId)
     }
 
     /// Re-resolve the opened agent so a completion arriving mid-read fills the body in.
@@ -185,16 +190,6 @@ private struct TerminalPane: View {
     private func currentAgent(_ agent: AgentRun) -> AgentRun {
         guard let id = model.selectedId else { return agent }
         return model.usage.sessionAgents(id).first { $0.id == agent.id } ?? agent
-    }
-
-    /// Restyle the live terminal to the panel's tokens: SF Mono at 12.5 and a translucent
-    /// background, so the glass reads through the terminal. The font must be set first and the
-    /// layer cleared last: `setupOptions()` re-stamps an opaque layer background on font changes.
-    private func styleTerminal(_ session: TerminalSession?) {
-        guard let view = session?.terminalView else { return }
-        view.font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
-        view.nativeBackgroundColor = NSColor.black.withAlphaComponent(0.30)
-        view.layer?.backgroundColor = NSColor.clear.cgColor
     }
 }
 

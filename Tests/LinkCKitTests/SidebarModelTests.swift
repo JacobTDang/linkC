@@ -35,6 +35,17 @@ final class SidebarModelTests: XCTestCase {
             id: "1", agentKind: .agy, title: "title-1", status: SessionRowStatus(text: "text-1", tone: .quiet)))
     }
 
+    func testOneSessionsDotFollowsTheSameRule() {
+        func dot(_ tone: SessionRowStatus.Tone, subagents: Bool = false) -> ProjectDot {
+            SidebarModel.dot(status: SessionRowStatus(text: "", tone: tone), hasRunningSubagents: subagents)
+        }
+        XCTAssertEqual(dot(.attention), .attention)
+        XCTAssertEqual(dot(.error), .attention)
+        XCTAssertEqual(dot(.working), .working)
+        XCTAssertEqual(dot(.quiet, subagents: true), .working)
+        XCTAssertEqual(dot(.quiet), .none)
+    }
+
     func testTheDotIsCoralOverTealOverNone() {
         func dot(_ inputs: [SidebarModel.Input]) -> ProjectDot { build(inputs)[0].dot }
         XCTAssertEqual(dot([input("1", cwd: "/p", tone: .working), input("2", cwd: "/p", tone: .attention)]), .attention)

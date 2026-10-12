@@ -8,11 +8,20 @@ extension UTType {
     static let linkcTerminal = UTType(exportedAs: "com.linkc.terminal", conformingTo: .data)
 }
 
-/// A transferable drag payload representing a live linkC terminal being filed in the sidebar.
-/// Using a dedicated UTType prevents project rows and the Terminals section header from
-/// highlighting when hovering arbitrary text drags.
+/// A transferable drag payload representing a live linkC terminal: filed under a project in the
+/// sidebar, or dropped on another terminal's edge to split with it. Using a dedicated UTType
+/// prevents project rows and the Terminals section header from highlighting when hovering
+/// arbitrary text drags.
 struct LinkCTerminalDrag: Transferable, Codable, Equatable, Sendable {
     let id: String
+    /// Whether the drag began on a split pane's title row rather than a tab or a sidebar row. Only
+    /// a pane dropped on the tab strip leaves the split.
+    let fromPane: Bool
+
+    init(id: String, fromPane: Bool = false) {
+        self.id = id
+        self.fromPane = fromPane
+    }
 
     static var transferRepresentation: some TransferRepresentation {
         CodableRepresentation(contentType: .linkcTerminal)
@@ -363,7 +372,7 @@ private struct ProjectRow: View {
                     .fixedSize()
                     .help("More for \(project.name)")
                 }
-                ProjectDotView(dot: project.dot)
+                StateDotView(dot: project.dot)
             }
         }
         .overlay {
@@ -384,7 +393,9 @@ private struct ProjectRow: View {
     }
 }
 
-private struct ProjectDotView: View {
+/// The 6pt state dot beside a project in the sidebar, and beside a pane's title in a split: coral
+/// when something wants you, teal while it works, an empty slot when idle.
+struct StateDotView: View {
     let dot: ProjectDot
 
     var body: some View {
@@ -431,6 +442,7 @@ private struct SessionRow: View {
                 }
             }
         }
+        .draggable(LinkCTerminalDrag(id: row.id))
     }
 }
 

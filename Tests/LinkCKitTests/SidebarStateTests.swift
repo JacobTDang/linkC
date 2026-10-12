@@ -189,6 +189,74 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(state.openApps(in: "/p/a"), [])
     }
 
+    func testASplitSurvivesARelaunch() {
+        let state = SidebarState(defaults: defaults)
+        state.setSplit(ProjectSplit(members: ["A", "B"], focused: "B"), for: "/tmp")
+        let reloaded = SidebarState(defaults: defaults)
+        XCTAssertEqual(reloaded.split(for: "/tmp"), ProjectSplit(members: ["A", "B"], focused: "B"))
+        XCTAssertEqual(reloaded.projectsWithSplits, [ProjectPath.canonical("/tmp")])
+    }
+
+    func testClearingASplitForgetsIt() {
+        let state = SidebarState(defaults: defaults)
+        state.setSplit(ProjectSplit(members: ["A", "B"]), for: "/tmp")
+        state.clearSplit(for: "/tmp")
+        XCTAssertNil(SidebarState(defaults: defaults).split(for: "/tmp"))
+    }
+
+    /// A file written before splits existed has no `splits` key at all.
+    func testAFileWithoutSplitsLoadsWithNone() throws {
+        defaults.set(Data(#"{"projectOrder":["/a"],"expandOverrides":{},"openSections":[]}"#.utf8), forKey: SidebarState.key)
+        let state = SidebarState(defaults: defaults)
+        XCTAssertEqual(state.projectOrder, ["/a"])
+        XCTAssertTrue(state.projectsWithSplits.isEmpty)
+    }
+
+    /// One unreadable split entry is dropped; the rest of the sidebar state, other splits included, loads.
+    func testABadSplitEntryIsDroppedAndTheRestLoads() throws {
+        let json = #"{"projectOrder":["/a"],"expandOverrides":{},"openSections":[],"splits":{"/a":{"members":["A","B"]},"/b":{"members":42}}}"#
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        let state = SidebarState(defaults: defaults)
+        XCTAssertEqual(state.projectOrder, ["/a"])
+        XCTAssertEqual(state.split(for: "/a")?.members, ["A", "B"])
+        XCTAssertNil(state.split(for: "/b"))
+    }
+
+    /// The bad entry is rewritten out of the file at load, not left to be logged on every launch.
+    func testABadSplitEntryIsRewrittenOutOfTheFile() throws {
+        let json = #"{"projectOrder":["/a"],"expandOverrides":{},"openSections":[],"splits":{"/a":{"members":["A","B"]},"/b":{"members":42}}}"#
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        _ = SidebarState(defaults: defaults)
+        XCTAssertEqual(try storedSplitProjects(), ["/a"])
+        XCTAssertEqual(SidebarState(defaults: defaults).projectsWithSplits, ["/a"])
+    }
+
+    /// A `splits` value of the wrong type costs the splits, not the rest of the sidebar state.
+    func testASplitsFieldOfTheWrongTypeLoadsTheRestOfTheState() throws {
+        for splits in ["42", #""text""#, #"["A","B"]"#] {
+            let json = #"{"projectOrder":["/a"],"expandOverrides":{"/a":true},"openSections":["more"],"splits":\#(splits)}"#
+            defaults.set(Data(json.utf8), forKey: SidebarState.key)
+            let state = SidebarState(defaults: defaults)
+            XCTAssertEqual(state.projectOrder, ["/a"], "splits: \(splits)")
+            XCTAssertEqual(state.expandOverrides, ["/a": true], "splits: \(splits)")
+            XCTAssertTrue(state.isOpen(.more), "splits: \(splits)")
+            XCTAssertTrue(state.projectsWithSplits.isEmpty, "splits: \(splits)")
+            let stored = try storedObject()["splits"]
+            XCTAssertTrue(stored == nil || stored is [String: Any],
+                          "the unreadable field is rewritten out of the file, not left as \(String(describing: stored)); splits: \(splits)")
+        }
+    }
+
+    /// The projects holding a split in the saved file, read back without going through `SidebarState`.
+    private func storedSplitProjects() throws -> [String] {
+        ((try storedObject()["splits"] as? [String: Any]) ?? [:]).keys.sorted()
+    }
+
+    private func storedObject() throws -> [String: Any] {
+        let data = try XCTUnwrap(defaults.data(forKey: SidebarState.key))
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
     func testSavedDataKeyedByTwoSpellingsLoadsAsOneKeyWithFirstOccurrencesOrderAndOverrides() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("linkc-sidebar-canonical-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)

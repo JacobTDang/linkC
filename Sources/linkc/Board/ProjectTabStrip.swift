@@ -2,9 +2,9 @@ import AppKit
 import SwiftUI
 import LinkCKit
 
-/// The Chrome-style strip above the right pane: the project's Board, pinned, then a tab per
-/// session, then ＋. ⌘1–⌘9 pick a tab and ⌃Tab cycles, through a local key monitor that exists
-/// only while the strip does.
+/// The Chrome-style strip above the right pane: the project's Board, pinned, then its Split when it
+/// has one showing, then a tab per session, then ＋. ⌘1–⌘9 pick a tab and ⌃Tab cycles, through a
+/// local key monitor that exists only while the strip does.
 struct ProjectTabStrip: View {
     let model: AppModel
     let onBack: (() -> Void)?
@@ -50,6 +50,15 @@ struct ProjectTabStrip: View {
                         .background(WindowDragHandle())
                     }
                     .scrollDisabled(CGFloat(sessions.count) * (width + 2) <= geometry.size.width)
+                    // A split pane dragged by its title row and dropped here leaves the split. Anything
+                    // else, a member's own tab chip included, is declined, so a drag that means
+                    // nothing here is left to whatever else would take it.
+                    .dropDestination(for: LinkCTerminalDrag.self) { items, _ in
+                        guard let project = model.splitProject, let drag = items.first, drag.fromPane,
+                              model.liveSplitMembers(in: project).contains(drag.id) else { return false }
+                        model.removeFromSplit(drag.id)
+                        return true
+                    }
                 }
                 .frame(height: 30)
                 Menu {
@@ -162,6 +171,8 @@ private struct TabChip: View {
                 Image(systemName: "terminal").font(.system(size: 9))
             case .app:
                 Image(systemName: "globe").font(.system(size: 9))
+            case .split:
+                Image(systemName: "square.split.2x2").font(.system(size: 10))
             }
             if let activity = tab.activity {
                 ActivityLabel(text: activity.text, isWorking: activity.isWorking, size: 11.5)
@@ -178,7 +189,7 @@ private struct TabChip: View {
                 }
                 .buttonStyle(.plain)
                 .opacity(hovering || isSelected ? 1 : 0)
-                .help("Stop this session")
+                .help(tab.kind == .split ? "Close the split" : "Stop this session")
             }
         }
         .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
@@ -189,8 +200,24 @@ private struct TabChip: View {
                 .fill(isSelected ? Color.white.opacity(0.08) : (hovering ? Theme.hover : .clear)))
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+        .modifier(TerminalChipDrag(tab: tab))
         .onHover { hovering = $0 }
         .help(tab.title)
+    }
+}
+
+/// A session or terminal tab can be dragged onto a terminal's edge to split with it; the Board, an
+/// app and the Split tab itself have nothing to drop.
+private struct TerminalChipDrag: ViewModifier {
+    let tab: ProjectTab
+
+    func body(content: Content) -> some View {
+        switch tab.kind {
+        case .agent, .terminal:
+            content.draggable(LinkCTerminalDrag(id: tab.id))
+        case .board, .app, .split:
+            content
+        }
     }
 }
 

@@ -18,6 +18,25 @@ public final class SidebarState {
         var boardViewports: [String: BoardViewport]?
         var terminalProjects: [String: String]?
         var openApps: [String: [OpenApp]]?
+        var splits: StoredSplits?
+    }
+
+    /// One project's stored split. An entry that doesn't decode keeps the error instead of failing the
+    /// whole `Stored` decode, so one bad split can't take the rest of the sidebar with it.
+    private struct SplitEntry: Codable {
+        let split: Result<ProjectSplit, Error>
+        init(_ split: ProjectSplit) { self.split = .success(split) }
+        init(from decoder: Decoder) throws { split = Result { try ProjectSplit(from: decoder) } }
+        func encode(to encoder: Encoder) throws { try split.get().encode(to: encoder) }
+    }
+
+    /// The stored `splits` field. A value of the wrong type keeps the error too, for the same reason: it
+    /// costs the splits, not the rest of the sidebar.
+    private struct StoredSplits: Codable {
+        let entries: Result<[String: SplitEntry], Error>
+        init(_ splits: [String: ProjectSplit]) { entries = .success(splits.mapValues(SplitEntry.init)) }
+        init(from decoder: Decoder) throws { entries = Result { try [String: SplitEntry](from: decoder) } }
+        func encode(to encoder: Encoder) throws { try entries.get().encode(to: encoder) }
     }
 
     static let key = "sidebarState"
@@ -34,6 +53,7 @@ public final class SidebarState {
     private var boardViewports: [String: BoardViewport] = [:]
     public private(set) var terminalProjects: [String: String] = [:]
     private var openAppsByProject: [String: [OpenApp]] = [:]
+    private var splitsByProject: [String: ProjectSplit] = [:]
     private let defaults: UserDefaults
 
     private static func canonicalViewportKey(_ key: String) -> String {
@@ -131,11 +151,34 @@ public final class SidebarState {
 
         openAppsByProject = Self.mergeCanonical(stored.openApps ?? [:], canonicalize: ProjectPath.canonical)
 
+        var readableSplits: [String: ProjectSplit] = [:]
+        var droppedSplits = false
+        switch stored.splits?.entries {
+        case .success(let entries)?:
+            for (project, entry) in entries {
+                switch entry.split {
+                case .success(let split):
+                    readableSplits[project] = split
+                case .failure(let error):
+                    NSLog("[linkC] the stored split for %@ is unreadable — dropped: %@", project, String(describing: error))
+                    droppedSplits = true
+                }
+            }
+        case .failure(let error)?:
+            NSLog("[linkC] the stored splits are unreadable — all dropped: %@", String(describing: error))
+            droppedSplits = true
+        case nil:
+            break
+        }
+        splitsByProject = Self.mergeCanonical(readableSplits, canonicalize: ProjectPath.canonical)
+
         let changed = stored.projectOrder != projectOrder
             || stored.expandOverrides != expandOverrides
             || (stored.boardViewports ?? [:]) != boardViewports
             || (stored.terminalProjects ?? [:]) != terminalProjects
             || (stored.openApps ?? [:]) != openAppsByProject
+            || droppedSplits
+            || Set(readableSplits.keys) != Set(splitsByProject.keys)
         if changed {
             save()
         }
@@ -249,7 +292,7 @@ public final class SidebarState {
     }
 
     private func save() {
-        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections, boardViewports: boardViewports.isEmpty ? nil : boardViewports, terminalProjects: terminalProjects.isEmpty ? nil : terminalProjects, openApps: openAppsByProject.isEmpty ? nil : openAppsByProject)
+        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections, boardViewports: boardViewports.isEmpty ? nil : boardViewports, terminalProjects: terminalProjects.isEmpty ? nil : terminalProjects, openApps: openAppsByProject.isEmpty ? nil : openAppsByProject, splits: splitsByProject.isEmpty ? nil : StoredSplits(splitsByProject))
         do {
             defaults.set(try JSONEncoder().encode(stored), forKey: Self.key)
         } catch {
@@ -291,4 +334,24 @@ public final class SidebarState {
         openAppsByProject[key] = apps.isEmpty ? nil : apps
         save()
     }
+
+    /// The project's split, if it has one.
+    public func split(for project: String) -> ProjectSplit? {
+        splitsByProject[ProjectPath.canonical(project)]
+    }
+
+    public func setSplit(_ split: ProjectSplit, for project: String) {
+        let key = ProjectPath.canonical(project)
+        guard splitsByProject[key] != split else { return }
+        splitsByProject[key] = split
+        save()
+    }
+
+    public func clearSplit(for project: String) {
+        guard splitsByProject.removeValue(forKey: ProjectPath.canonical(project)) != nil else { return }
+        save()
+    }
+
+    /// The canonical paths of every project with a stored split.
+    public var projectsWithSplits: [String] { splitsByProject.keys.sorted() }
 }
