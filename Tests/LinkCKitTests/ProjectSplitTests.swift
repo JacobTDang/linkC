@@ -37,6 +37,58 @@ final class ProjectSplitTests: XCTestCase {
         }
     }
 
+    // MARK: - The drop rule
+
+    private let project: Set<String> = ["A", "B", "C", "D"]
+
+    func testDroppingOnATerminalWithNoSplitStartsOneFromTheTarget() throws {
+        let split = try ProjectSplit.dropping("B", onto: "A", edge: .left, into: nil, splittable: project)
+        XCTAssertEqual(split.members, ["B", "A"])
+        XCTAssertEqual(split.focused, "B")
+    }
+
+    func testDroppingOnAMemberJoinsTheExistingSplit() throws {
+        let existing = ProjectSplit(members: ["A", "B"], focused: "A")
+        let split = try ProjectSplit.dropping("C", onto: "B", edge: .right, into: existing, splittable: project)
+        XCTAssertEqual(split.members, ["A", "B", "C"])
+        XCTAssertEqual(split.focused, "C")
+    }
+
+    func testDroppingOnATerminalOutsideTheSplitReplacesTheSplitWithOneFromThatTerminal() throws {
+        let existing = ProjectSplit(members: ["A", "B"], focused: "A")
+        let split = try ProjectSplit.dropping("D", onto: "C", edge: .right, into: existing, splittable: project)
+        XCTAssertEqual(split.members, ["C", "D"])
+    }
+
+    func testDroppingAMemberOnAnotherMovesIt() throws {
+        let existing = ProjectSplit(members: ["A", "B", "C"], focused: "A")
+        let split = try ProjectSplit.dropping("A", onto: "C", edge: .right, into: existing, splittable: project)
+        XCTAssertEqual(split.members, ["B", "C", "A"])
+    }
+
+    func testATerminalOfAnotherProjectIsRefused() {
+        XCTAssertThrowsError(try ProjectSplit.dropping("X", onto: "A", edge: .left, into: nil, splittable: project)) {
+            XCTAssertEqual($0 as? ProjectSplit.Refusal, .notSplittable)
+        }
+    }
+
+    func testATargetOfAnotherProjectIsRefused() {
+        let existing = ProjectSplit(members: ["A", "B"])
+        XCTAssertThrowsError(try ProjectSplit.dropping("A", onto: "X", edge: .left, into: existing, splittable: project)) {
+            XCTAssertEqual($0 as? ProjectSplit.Refusal, .notSplittable)
+        }
+    }
+
+    func testANinthTerminalIsRefusedWhateverTheProject() {
+        let members = (1...8).map { "T\($0)" }
+        let full = ProjectSplit(members: members)
+        let splittable = Set(members + ["T9"])
+        XCTAssertThrowsError(try ProjectSplit.dropping("T9", onto: "T1", edge: .left, into: full, splittable: splittable)) {
+            XCTAssertEqual($0 as? ProjectSplit.Refusal, .full)
+        }
+        XCTAssertEqual(try ProjectSplit.dropping("T8", onto: "T1", edge: .left, into: full, splittable: splittable).members.first, "T8")
+    }
+
     func testRemovingTheFocusedMemberFocusesItsNeighbour() {
         let split = ProjectSplit(members: ["A", "B", "C"], focused: "B").removing("B")
         XCTAssertEqual(split.members, ["A", "C"])

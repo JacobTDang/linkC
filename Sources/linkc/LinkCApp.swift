@@ -844,6 +844,26 @@ final class AppModel {
         if let target = repair.select { focus(target) }
     }
 
+    /// `id` dragged onto `edge` of the terminal `target` in the current project: starts the project's
+    /// split if `target` isn't in one, else adds `id` to it or moves it within, then shows the split.
+    /// A terminal from another project, or a ninth pane, is refused and the error bar says why.
+    func dropTerminal(_ id: String, onto target: String, edge: SplitEdge) {
+        guard id != target, let project = currentProject else { return }
+        do {
+            let next = try ProjectSplit.dropping(
+                id, onto: target, edge: edge, into: sidebarState.split(for: project), splittable: splittableIDs(in: project))
+            lastError = nil
+            sidebarState.setSplit(next, for: project)
+            showSplit(project)
+        } catch ProjectSplit.Refusal.notSplittable {
+            lastError = "That terminal belongs to another project — a split only holds this project's terminals."
+        } catch ProjectSplit.Refusal.full {
+            lastError = "This split already shows \(SplitLayout.maxPanes) terminals."
+        } catch {
+            lastError = "Couldn't split: \(error)"
+        }
+    }
+
     /// Forgets `project`'s split — the user closed its tab. The selected pane stays, shown on its own.
     func dissolveSplit(_ project: String) {
         let key = ProjectTabs.standardized(project)

@@ -83,6 +83,7 @@ private struct SplitCell: View {
                         .animation(Theme.hoverEase, value: isFocused)
                         .allowsHitTesting(false)
                 }
+                .terminalDropTarget(model: model, target: id)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onHover { hovering = $0 }

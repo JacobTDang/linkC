@@ -50,6 +50,14 @@ struct ProjectTabStrip: View {
                         .background(WindowDragHandle())
                     }
                     .scrollDisabled(CGFloat(sessions.count) * (width + 2) <= geometry.size.width)
+                    // A split pane dropped here leaves the split. Anything else is declined, so a
+                    // drag that means nothing here is left to whatever else would take it.
+                    .dropDestination(for: LinkCTerminalDrag.self) { items, _ in
+                        guard let project = model.splitProject, let id = items.first?.id,
+                              model.liveSplitMembers(in: project).contains(id) else { return false }
+                        model.removeFromSplit(id)
+                        return true
+                    }
                 }
                 .frame(height: 30)
                 Menu {
@@ -191,8 +199,24 @@ private struct TabChip: View {
                 .fill(isSelected ? Color.white.opacity(0.08) : (hovering ? Theme.hover : .clear)))
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+        .modifier(TerminalChipDrag(tab: tab))
         .onHover { hovering = $0 }
         .help(tab.title)
+    }
+}
+
+/// A session or terminal tab can be dragged onto a terminal's edge to split with it; the Board, an
+/// app and the Split tab itself have nothing to drop.
+private struct TerminalChipDrag: ViewModifier {
+    let tab: ProjectTab
+
+    func body(content: Content) -> some View {
+        switch tab.kind {
+        case .agent, .terminal:
+            content.draggable(LinkCTerminalDrag(id: tab.id))
+        case .board, .app, .split:
+            content
+        }
     }
 }
 

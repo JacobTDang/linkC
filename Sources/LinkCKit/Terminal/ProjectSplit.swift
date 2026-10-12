@@ -9,6 +9,8 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
         case full
         /// The terminal dropped on is not in this split.
         case targetNotInSplit
+        /// The dragged terminal or the one it was dropped on is not one of the project's terminals.
+        case notSplittable
     }
 
     public private(set) var members: [String]
@@ -32,6 +34,19 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
         let index = SplitLayout.insertionIndex(droppingOn: targetIndex, edge: edge, movingFrom: source)
         next.insert(id, at: index)
         return ProjectSplit(members: next, focused: id)
+    }
+
+    /// The split a drop of `id` on `edge` of `target` leaves: the project's `existing` split when
+    /// `target` is in it, else a new one starting from `target` (a project has one split, so a drop
+    /// on a terminal always splits with that terminal). Both terminals must be in `splittable`, the
+    /// project's own.
+    public static func dropping(
+        _ id: String, onto target: String, edge: SplitEdge, into existing: ProjectSplit?, splittable: Set<String>
+    ) throws -> ProjectSplit {
+        guard splittable.contains(id), splittable.contains(target) else { throw Refusal.notSplittable }
+        let base = existing.flatMap { $0.members.contains(target) ? $0 : nil }
+            ?? ProjectSplit(members: [target], focused: target)
+        return try base.adding(id, onto: target, edge: edge)
     }
 
     /// `id` taken out. A focused member hands the focus to the one that takes its place, or to the
