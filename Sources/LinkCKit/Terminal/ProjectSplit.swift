@@ -71,4 +71,26 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
     public func isActive(liveIDs: Set<String>) -> Bool {
         liveMembers(in: liveIDs).count >= 2
     }
+
+    /// Whether it can ever be a grid: two or more members, live or not. Below that there is nothing
+    /// worth keeping, even for a member that comes back on restore.
+    public var isViable: Bool { members.count >= 2 }
+
+    /// What a showing split needs once its members or the selection changed: whether the grid still
+    /// has two live panes, and which live member to select when `selected` is not one of them.
+    /// A pane that was just taken out is no longer a member, so it never counts as the selection.
+    public func repair(selected: String?, liveIDs: Set<String>) -> Repair {
+        let live = liveMembers(in: liveIDs)
+        if let selected, live.contains(selected) {
+            return Repair(keepsGrid: live.count >= 2, select: nil)
+        }
+        return Repair(keepsGrid: live.count >= 2, select: focusedLive(in: liveIDs))
+    }
+
+    public struct Repair: Equatable, Sendable {
+        /// Two or more live members are left to show side by side.
+        public let keepsGrid: Bool
+        /// The live member to select, or nil when the selection can stay (or nothing is live).
+        public let select: String?
+    }
 }

@@ -6,10 +6,12 @@ import LinkCKit
 /// selection, the open screen, or the panel's visibility changes) — never a view body.
 extension AppModel {
     /// The session whose terminal is actually on screen: selected, no screen layered over it,
-    /// panel visible.
+    /// panel visible. While a split shows, only a selected pane counts: after a pane ends, the
+    /// manager's fallback selection sits behind the grid until `repairSplitSelection()` moves off it.
     var onScreenSessionId: String? {
-        guard panelVisible, activeScreen == nil else { return nil }
-        return selectedId
+        guard panelVisible, activeScreen == nil, let id = selectedId else { return nil }
+        if let splitProject, !(sidebarState.split(for: splitProject)?.members.contains(id) ?? false) { return nil }
+        return id
     }
 
     /// Every live session's row title, keyed by session id.
@@ -119,27 +121,17 @@ extension AppModel {
         return (rows > 0 || supabaseNeedsLogin || !cloudErrors.isEmpty) ? rows : nil
     }
 
-    /// Once a second while the panel is visible, and once as it opens: forget ended sessions, drop
-    /// split members that are gone, mark what is on screen as seen, keep the project order, expand
-    /// projects that just turned coral, and publish the sidebar's non-observable inputs. The sidebar
-    /// re-renders on the publish only when one of them changed — a quiet second re-renders nothing.
+    /// Once a second while the panel is visible, and once as it opens: keep a showing split's
+    /// selection on its panes, forget ended sessions, drop split members that are gone, mark what is
+    /// on screen as seen, keep the project order, expand projects that just turned coral, and publish
+    /// the sidebar's non-observable inputs. The sidebar re-renders on the publish only when one of
+    /// them changed — a quiet second re-renders nothing.
     func sampleSidebar() {
         let now = Date()
+        repairSplitSelection()
         attention.retain(only: Set(sessions.map(\.id)))
         markOnScreenSeen(at: now)
-        // A split keeps the terminals that are live or can still be restored; fewer than two left
-        // is no split.
-        let known = Set(sessions.map(\.id)).union(shellRows.map(\.id)).union(restorables.map(\.linkcId))
-        for project in sidebarState.projectsWithSplits {
-            guard let split = sidebarState.split(for: project) else { continue }
-            let pruned = split.pruned(keeping: known)
-            if pruned.members.count < 2 {
-                dissolveSplit(project)
-            } else if pruned != split {
-                sidebarState.setSplit(pruned, for: project)
-            }
-        }
-        if let splitProject, liveSplitMembers(in: splitProject).count < 2 { dissolveSplit(splitProject) }
+        pruneSplits()
         // Filed paths are canonical already: `SidebarState` canonicalizes them as it files them.
         let filedPaths = Set(sidebarState.terminalProjects.values).sorted()
         sidebarState.noteProjects(ProjectGroup.group(sessions: sessions).map(\.workspacePath) + filedPaths)
@@ -160,6 +152,23 @@ extension AppModel {
             action: { currentActivity($0) }))
         // A project is coral while any of its sessions is: the same test its row's dot uses.
         sidebarState.noteCoral(Set(sessions.filter { rowStatus($0, now: now).isCoral }.map(\.cwd)))
+    }
+
+    /// A split keeps the terminals that are live or can still be restored; fewer than two of those
+    /// left is no split. Without a coordinator and shell coordinator (start-up failed) nothing is
+    /// live or restorable, so nothing can be judged gone: the saved splits are left alone.
+    private func pruneSplits() {
+        guard coordinator != nil, shells != nil else { return }
+        let known = Set(sessions.map(\.id)).union(shellRows.map(\.id)).union(restorables.map(\.linkcId))
+        for project in sidebarState.projectsWithSplits {
+            guard let split = sidebarState.split(for: project) else { continue }
+            let pruned = split.pruned(keeping: known)
+            if !pruned.isViable {
+                sidebarState.clearSplit(for: project)
+            } else if pruned != split {
+                sidebarState.setSplit(pruned, for: project)
+            }
+        }
     }
 
     /// Mark the on-screen session seen. Runs with `sampleSidebar()`, and just before the

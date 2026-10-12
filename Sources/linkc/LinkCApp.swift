@@ -638,7 +638,8 @@ final class AppModel {
     private(set) var boardProject: String?
 
     /// The project whose Split tab is showing, or nil. Written only by `showSplit`, `showSelection`,
-    /// `showBoard`, `showApp`, `select(_:)`, `dissolveSplit` and `goBack` — never by a view.
+    /// `showBoard`, `showApp`, `select(_:)`, `removeFromSplit`, `dissolveSplit`, `repairSplitSelection`
+    /// and `goBack` — never by a view.
     private(set) var splitProject: String?
 
     /// The apps each project can open: its own `.linkc/app.json`, then the ones registered in
@@ -753,8 +754,12 @@ final class AppModel {
     /// hidden underneath it).
     private func showSelection() {
         if let splitProject {
-            let isMember = selectedId.map { sidebarState.split(for: splitProject)?.members.contains($0) ?? false } ?? false
-            if !isMember { self.splitProject = nil }
+            if let id = selectedId, let split = sidebarState.split(for: splitProject), split.members.contains(id) {
+                // Selected another way (a sidebar row, a notification): the split's focus follows.
+                sidebarState.setSplit(split.focusing(id), for: splitProject)
+            } else {
+                self.splitProject = nil
+            }
         }
         boardProject = nil
         appTab = nil
@@ -807,29 +812,49 @@ final class AppModel {
     }
 
     /// Takes `id` out of the current project's split; the session keeps running. Fewer than two
-    /// panes left dissolves the split.
+    /// panes left, live or restorable, forgets the split; fewer than two live ones, with a
+    /// restorable one still in it, only ends the grid. Whatever pane is left shows on its own.
     func removeFromSplit(_ id: String) {
         guard let project = currentProject, let split = sidebarState.split(for: project) else { return }
+        markOnScreenSeen()   // the pane leaving the grid was on screen until now
         let next = split.removing(id)
-        if next.liveMembers(in: splittableIDs(in: project)).count < 2 {
-            dissolveSplit(project)
-        } else {
+        if next.isViable {
             sidebarState.setSplit(next, for: project)
-            if splitProject != nil, let focus = next.focusedLive(in: splittableIDs(in: project)), selectedId != focus {
-                self.focus(focus)
-            }
+        } else {
+            sidebarState.clearSplit(for: project)
         }
+        guard splitProject != nil else { return }
+        let repair = next.repair(selected: selectedId, liveIDs: splittableIDs(in: project))
+        if !repair.keepsGrid { splitProject = nil }
+        if let target = repair.select { focus(target) }
     }
 
-    /// Forgets `project`'s split. The terminal that had the focus stays selected, shown on its own.
+    /// Forgets `project`'s split — the user closed its tab. The selected pane stays, shown on its own.
     func dissolveSplit(_ project: String) {
         let key = ProjectTabs.standardized(project)
-        let focusID = focusedSplitMember(in: key)
+        let split = sidebarState.split(for: key)
         sidebarState.clearSplit(for: key)
-        if splitProject == key {
-            splitProject = nil
-            if let focusID, selectedId != focusID { focus(focusID) }
+        guard splitProject == key else { return }
+        splitProject = nil
+        if let target = split?.repair(selected: selectedId, liveIDs: splittableIDs(in: key)).select { focus(target) }
+    }
+
+    /// Keeps a showing split's selection on its own panes. A pane that ends hands the selection to
+    /// whatever terminal the manager falls back on, which the grid does not show: select a live pane
+    /// instead, and end the grid once fewer than two are live. The stored split stays — a restorable
+    /// member can rejoin — and only `sampleSidebar()`'s pruning forgets it. Runs from the 1 Hz tick
+    /// and after a close, never on a user's behalf, so it moves the selection without `focus(_:)`'s
+    /// side effects (activating the app, adopting a worker).
+    func repairSplitSelection() {
+        guard let project = splitProject else { return }
+        let split = sidebarState.split(for: project) ?? ProjectSplit()
+        let repair = split.repair(selected: selectedId, liveIDs: splittableIDs(in: project))
+        // Select before the grid goes, so the terminal being left is judged as hidden, not seen.
+        if let target = repair.select {
+            coordinator?.terminals.select(target)
+            if repair.keepsGrid { sidebarState.setSplit(split.focusing(target), for: project) }
         }
+        if !repair.keepsGrid { splitProject = nil }
     }
 
     func select(_ tab: ProjectTab) {
@@ -860,6 +885,7 @@ final class AppModel {
         case .terminal: stopShell(tab.id)
         case .app: closeApp(tab)
         }
+        repairSplitSelection()
         if let project, currentProject != project { showBoard(project) }
     }
 

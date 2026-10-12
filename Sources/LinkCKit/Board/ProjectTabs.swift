@@ -90,7 +90,7 @@ public enum ProjectTabs {
         return tabs
     }
 
-    /// ⌘1 is the Board; ⌘2–⌘9 are the sessions in order.
+    /// ⌘1 is the Board; ⌘2–⌘9 are the tabs after it in order: the Split first when the project has one, then its sessions.
     public static func tab(forDigit digit: Int, in tabs: [ProjectTab]) -> ProjectTab? {
         guard (1...9).contains(digit), digit <= tabs.count else { return nil }
         return tabs[digit - 1]
