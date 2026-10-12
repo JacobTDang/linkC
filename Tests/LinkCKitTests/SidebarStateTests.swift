@@ -189,6 +189,39 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(state.openApps(in: "/p/a"), [])
     }
 
+    func testASplitSurvivesARelaunch() {
+        let state = SidebarState(defaults: defaults)
+        state.setSplit(ProjectSplit(members: ["A", "B"], focused: "B"), for: "/tmp")
+        let reloaded = SidebarState(defaults: defaults)
+        XCTAssertEqual(reloaded.split(for: "/tmp"), ProjectSplit(members: ["A", "B"], focused: "B"))
+        XCTAssertEqual(reloaded.projectsWithSplits, [ProjectPath.canonical("/tmp")])
+    }
+
+    func testClearingASplitForgetsIt() {
+        let state = SidebarState(defaults: defaults)
+        state.setSplit(ProjectSplit(members: ["A", "B"]), for: "/tmp")
+        state.clearSplit(for: "/tmp")
+        XCTAssertNil(SidebarState(defaults: defaults).split(for: "/tmp"))
+    }
+
+    /// A file written before splits existed has no `splits` key at all.
+    func testAFileWithoutSplitsLoadsWithNone() throws {
+        defaults.set(Data(#"{"projectOrder":["/a"],"expandOverrides":{},"openSections":[]}"#.utf8), forKey: SidebarState.key)
+        let state = SidebarState(defaults: defaults)
+        XCTAssertEqual(state.projectOrder, ["/a"])
+        XCTAssertTrue(state.projectsWithSplits.isEmpty)
+    }
+
+    /// One unreadable split entry is dropped; the rest of the sidebar state, other splits included, loads.
+    func testABadSplitEntryIsDroppedAndTheRestLoads() throws {
+        let json = #"{"projectOrder":["/a"],"expandOverrides":{},"openSections":[],"splits":{"/a":{"members":["A","B"]},"/b":{"members":42}}}"#
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        let state = SidebarState(defaults: defaults)
+        XCTAssertEqual(state.projectOrder, ["/a"])
+        XCTAssertEqual(state.split(for: "/a")?.members, ["A", "B"])
+        XCTAssertNil(state.split(for: "/b"))
+    }
+
     func testSavedDataKeyedByTwoSpellingsLoadsAsOneKeyWithFirstOccurrencesOrderAndOverrides() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("linkc-sidebar-canonical-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
