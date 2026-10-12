@@ -7,7 +7,7 @@ Tearing a terminal or a grid off into its own window is a separate, later piece.
 ## Behavior
 
 - **Making a split:** drag a session or shell terminal onto the left, right, top or bottom edge of the terminal you are viewing. You can drag from the sidebar or from the project's tab strip. A **⊞ Split** tab appears in the tab strip right after Board, holding both terminals. A project has at most one split.
-- **Growing it:** drag more of the project's terminals onto the Split tab's panes. The edge you drop on decides the position, and the grid reflows. Dropping a terminal already in the split moves it. The cap is 8 panes. While the split is full, the drop overlay shows that it is full and refuses the drop.
+- **Growing it:** drag more of the project's terminals onto the Split tab's panes. The edge you drop on decides the position, and the grid reflows. Dropping a terminal already in the split moves it. The cap is 8 panes. A drop the split can't take (a ninth terminal, or one from another project) is refused, and linkC's error bar says why. The dragged terminal's id is only available once it is dropped, so the refusal can't be shown while hovering.
 - **Layout:** panes form an even grid with these panes per row:
 
   | Panes | Per row |
@@ -60,7 +60,7 @@ Each session keeps exactly one live terminal view (`LocalProcessTerminalView`). 
   - Exposes `split(for:)`, `setSplit(_:for:)` and `clearSplit(for:)`.
 - `ProjectTabs.tabs`:
   - Adds a `ProjectTab` of kind `.split` right after Board when the project's split is active, with id `split:<canonical path>`.
-  - Its `isWorking` is true when any live member is working.
+  - Its `isWorking` is false. Closing it only dissolves the split and stops nothing, so its × never asks first.
 
 ### App target (`linkc`)
 
@@ -74,7 +74,7 @@ Each session keeps exactly one live terminal view (`LocalProcessTerminalView`). 
 - Drop overlay:
   - While a `LinkCTerminalDrag` is over the terminal area (single pane or split pane), an overlay highlights the edge under the pointer.
   - Dropping calls `model.addToSplit(project:terminal:onto:edge:)`.
-  - The overlay rejects terminals from another project, and shows the full state at 8.
+  - A refused drop (another project's terminal, or a ninth) sets the panel's error bar text.
   - The tab strip accepts a `LinkCTerminalDrag` from a pane to remove it from the split.
 - Selection: `AppModel.select(_:)` handles the `.split` tab. The pane switches to `SplitPane`, and the selected id becomes the focused member.
 - `TerminalHostView.show(_:)` fix: today it returns early when the view is the one it last showed, even if that view has since been attached elsewhere. It must re-attach whenever `view.superview !== self`.
@@ -85,7 +85,7 @@ Panes on screen draw normally. Panes not on screen, behind another tab or with t
 
 ## Error handling
 
-- Adding a ninth member, adding a terminal from another project, or splitting with an unknown id is refused with a typed error. Nothing changes and the overlay shows why.
+- Adding a ninth member, adding a terminal from another project, or splitting with an unknown id is refused with a typed error. Nothing changes and the error bar says why.
 - A stored split entry that fails to decode is dropped with a log line naming the project, and the rest of the sidebar state still loads. The `splits` field is decoded entry by entry, so one bad entry can't make the whole `Stored` decode fail.
 
 ## Testing
@@ -94,7 +94,7 @@ Panes on screen draw normally. Panes not on screen, behind another tab or with t
   - `SplitLayout` rows for 0–8, and insertion indexes for each edge, including a member being moved.
   - `ProjectSplit` add/move/remove/cap/prune/focus rules.
   - `SidebarState` round-trips splits, decodes a file without the field, and is decoded by older code (an extra key is ignored).
-  - `ProjectTabs` puts the split tab after Board only when it is active, and derives its working flag.
+  - `ProjectTabs` puts the split tab after Board only when it is active (2 or more live members).
 - **AppKit test:** `TerminalHostView` re-attaches a view that was moved to another host and back.
 - **App target (no UI test harness):** the manual checks are:
   - drag to create a split;
