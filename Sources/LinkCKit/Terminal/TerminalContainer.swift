@@ -33,6 +33,7 @@ public struct TerminalContainer: NSViewRepresentable {
 /// A plain container that shows at most one terminal view at a time, sized to fill it.
 public final class TerminalHostView: NSView {
     private weak var shown: NSView?
+    private var tookFocus = false
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -47,9 +48,16 @@ public final class TerminalHostView: NSView {
     /// moves between hosts (its own tab, a split cell), so "shown last" is not "still here": a view
     /// another host has since taken is attached again, and one this host no longer holds is never
     /// pulled out of the host that does.
+    ///
+    /// `takesFocus` makes the view the window's first responder when it is attached here, and again
+    /// when it flips from false to true while attached (a pane that becomes the focused one). A
+    /// repeat with `takesFocus` still true never takes the keyboard back from another field.
     func show(_ view: NSView?, takesFocus: Bool = true) {
+        let gainsFocus = takesFocus && !tookFocus
+        tookFocus = takesFocus
         if let view, shown === view, view.superview === self {
             view.frame = bounds
+            if gainsFocus, let window, window.firstResponder !== view { window.makeFirstResponder(view) }
             return
         }
         if let shown, shown !== view, shown.superview === self {
@@ -65,6 +73,6 @@ public final class TerminalHostView: NSView {
 
     public override func layout() {
         super.layout()
-        shown?.frame = bounds
+        if let shown, shown.superview === self { shown.frame = bounds }
     }
 }

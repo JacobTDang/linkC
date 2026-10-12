@@ -38,6 +38,35 @@ final class TerminalHostViewTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === eager)
     }
 
+    func testALayoutPassOnAHostNeverResizesAViewAnotherHostHolds() {
+        let a = TerminalHostView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        let b = TerminalHostView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        let view = NSView()
+        a.show(view)
+        b.show(view)
+        XCTAssertEqual(view.frame, b.bounds)
+        a.layout()
+        XCTAssertEqual(view.frame, b.bounds, "a host must size only the view it holds")
+    }
+
+    func testAPaneThatBecomesFocusedTakesTheKeyboardButARepeatDoesNotStealIt() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        let host = TerminalHostView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        let field = FocusableView(frame: NSRect(x: 200, y: 0, width: 200, height: 200))
+        root.addSubview(host)
+        root.addSubview(field)
+        window.contentView = root
+        let view = FocusableView()
+        host.show(view, takesFocus: false)
+        XCTAssertFalse(window.firstResponder === view)
+        host.show(view, takesFocus: true)
+        XCTAssertTrue(window.firstResponder === view, "a pane that becomes the focused one must take the keyboard")
+        window.makeFirstResponder(field)
+        host.show(view, takesFocus: true)
+        XCTAssertTrue(window.firstResponder === field, "a repeated update must not take the keyboard back from another field")
+    }
+
     func testATerminalViewReportsBecomingFirstResponder() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
