@@ -112,13 +112,14 @@ struct BoardCanvas: View {
                     drawing
                     elements
                     overlays
-                    hoverCardOverlay
                     // The Spacer takes the height and doesn't hit-test, so only the bar's own strip
                     // sits over the canvas; everything above it still reaches the layers beneath.
+                    // Below the hover card, which never takes a hit, so the card draws over the bar.
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
-                        BoardScrollBar(viewport: $viewport, content: board.contentBounds, canvasWidth: size.width)
+                        BoardScrollBarView(viewport: $viewport, content: board.contentBounds, canvasWidth: size.width)
                     }
+                    hoverCardOverlay
                 }
                 .background(WindowReader { input.window = $0 })
                 .coordinateSpace(.named(Self.space))
