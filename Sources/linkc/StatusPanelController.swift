@@ -122,14 +122,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        let effect = NSVisualEffectView()
-        // .popover, not .hudWindow: the softer mid-grey dark glass (what dark-mode menus
-        // use) rather than the near-black HUD tint.
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.isEmphasized = true
-        effect.appearance = NSAppearance(named: .darkAqua)   // dark glass even in Light Mode
+        let effect = NSVisualEffectView.linkCGlass()
         effect.wantsLayer = true
         effect.layer?.cornerRadius = Theme.panelRadius
         effect.layer?.masksToBounds = true
@@ -407,7 +400,8 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     private func focusTerminalIfNeeded() {
         guard model.selectedId != nil else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.panel.isVisible,
+            // A terminal that lives in a window has no live view in the panel to take the keyboard.
+            guard let self, self.panel.isVisible, let id = self.model.selectedId, self.model.host(of: id) == nil,
                   let terminalView = self.model.selectedTerminal?.terminalView else { return }
             self.panel.makeFirstResponder(terminalView)
         }
@@ -434,6 +428,21 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     func windowDidChangeScreen(_ notification: Notification) {
         notePanelMoved()
+    }
+}
+
+extension NSVisualEffectView {
+    /// The dark frosted glass behind the panel and the torn-off windows.
+    static func linkCGlass() -> NSVisualEffectView {
+        let effect = NSVisualEffectView()
+        // .popover, not .hudWindow: the softer mid-grey dark glass (what dark-mode menus
+        // use) rather than the near-black HUD tint.
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.isEmphasized = true
+        effect.appearance = NSAppearance(named: .darkAqua)   // dark glass even in Light Mode
+        return effect
     }
 }
 

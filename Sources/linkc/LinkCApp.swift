@@ -18,6 +18,7 @@ struct LinkCApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private var panelController: StatusPanelController?
+    private var tornOffWindows: TornOffWindows?
     private var hotKey: GlobalHotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -27,7 +28,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey = GlobalHotKey { [weak self] in self?.panelController?.togglePanel() }
         applyHotKeyPreference()
         observeHotKeyPreference()
-        Task { await model.start() }
+        Task {
+            await model.start()
+            // A failed start-up leaves nothing live, and the panel shows why: no windows to open.
+            guard model.setupError == nil else { return }
+            // Start-up has restored the terminals and pruned the windows whose terminal or split did
+            // not come back, so only live ones open.
+            tornOffWindows = TornOffWindows(model: model)
+        }
     }
 
     /// Re-registers the global shortcut whenever the preference changes — the same
@@ -912,10 +920,13 @@ final class AppModel {
         }
     }
 
-    /// A click on a pane's title row: the pane gets the keyboard, as a click inside its terminal gives it.
-    func clickSplitPane(_ id: String, in project: String) {
+    /// A click on a pane's title row, in the grid `grid` draws (a torn-off window's item, nil for the
+    /// panel): the pane gets the keyboard, as a click inside its terminal gives it. A pane whose terminal
+    /// lives in another host shows a note in this grid, and its live view is not here to take the keyboard.
+    func clickSplitPane(_ id: String, in project: String, grid: TornOffItem?) {
         pickSplitPane(id, in: project)
-        if let view = terminalSession(id)?.terminalView { view.window?.makeFirstResponder(view) }
+        guard host(of: id) == grid, let view = terminalSession(id)?.terminalView else { return }
+        view.window?.makeFirstResponder(view)
     }
 
     /// Takes `id` out of `project`'s split; the session keeps running. Fewer than two

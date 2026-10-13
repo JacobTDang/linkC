@@ -98,7 +98,7 @@ private struct SplitCell: View {
             }
             .padding(.horizontal, 4)
             .contentShape(Rectangle())
-            .onTapGesture { model.clickSplitPane(id, in: project) }
+            .onTapGesture { model.clickSplitPane(id, in: project, grid: grid) }
             .draggable(LinkCTerminalDrag(id: id, fromPane: true))
             // Focus reports from inside AppKit's first-responder change, which can run during a
             // view update: hand it to the main actor instead of writing state from there. The weak

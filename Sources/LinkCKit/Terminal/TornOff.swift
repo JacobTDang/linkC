@@ -34,9 +34,42 @@ extension TornOffItem {
         case .split: CGSize(width: 960, height: 600)
         }
     }
+
+    /// A split window's title: its project's folder name and "Split". A terminal's window is titled with
+    /// the terminal's own title, which the app resolves.
+    public static func splitTitle(project: String) -> String {
+        "\(URL(fileURLWithPath: project).lastPathComponent) \u{2014} Split"
+    }
 }
 
 extension TornOffFrame {
+    public init(_ rect: CGRect) {
+        self.init(x: rect.origin.x, y: rect.origin.y, w: rect.size.width, h: rect.size.height)
+    }
+
+    public var rect: CGRect { CGRect(x: x, y: y, width: w, height: h) }
+
+    /// This frame kept where it is when a screen (each given as its visible frame) holds all of it.
+    /// Otherwise it moves onto the screen that holds most of it, or the first when it is on none — the
+    /// display it was saved on is gone — by the least that fits it there. One larger than that screen
+    /// shrinks to it. With no screens at all there is nothing to fit it to, and it is returned as it is.
+    public func clamped(within screens: [CGRect]) -> TornOffFrame {
+        let rect = rect
+        if screens.contains(where: { $0.contains(rect) }) { return self }
+        let overlap = { (screen: CGRect) -> CGFloat in
+            let shared = screen.intersection(rect)
+            return shared.isNull ? 0 : shared.width * shared.height
+        }
+        var best = screens.first
+        var bestArea: CGFloat = 0
+        for screen in screens where overlap(screen) > bestArea {
+            best = screen
+            bestArea = overlap(screen)
+        }
+        guard let best else { return self }
+        return Self.fitted(origin: rect.origin, size: rect.size, within: best)
+    }
+
     /// The space left between a window opened beside the panel and the panel.
     public static let panelGap = 24.0
 
@@ -129,6 +162,13 @@ public struct TornOff: Equatable, Sendable {
             if live.contains(id), split.isActive(liveIDs: live) { return window.item }
         }
         return nil
+    }
+
+    /// What the open windows (`open`, by item) must do to match these entries: the entries with no window
+    /// yet, in the order they were added, and the windows whose entry is gone.
+    public func changes(from open: Set<TornOffItem>) -> (toOpen: [TornOffWindow], toClose: Set<TornOffItem>) {
+        let wanted = Set(windows.map(\.item))
+        return (windows.filter { !open.contains($0.item) }, open.subtracting(wanted))
     }
 
     /// What stays open: terminals still live, splits still active. `closed` is what went, in order.

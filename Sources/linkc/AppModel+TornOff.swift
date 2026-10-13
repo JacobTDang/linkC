@@ -101,6 +101,22 @@ extension AppModel {
         onRaiseWindow?(item)
     }
 
+    /// A window's title: a terminal's is the one its tab strip shows (its live title, else the stored
+    /// one), a split's is its project's folder and "Split". `titles` is `sessionTitles`, resolved once
+    /// for all the windows.
+    func windowTitle(for item: TornOffItem, titles: [String: String]) -> String {
+        switch item {
+        case .terminal(let id): splitPaneTitle(id, titles: titles)
+        case .split(let project): TornOffItem.splitTitle(project: project)
+        }
+    }
+
+    /// The user clicked in a window's terminal: it is opened as clicking its tab opens it, minus the
+    /// selection the panel keeps.
+    func acknowledge(_ id: String) {
+        coordinator?.acknowledgeSession(id)
+    }
+
     /// Windows are keyed by canonical project path, the form `host(of:)` and `pruneTornOff()` compare.
     private func standardized(_ item: TornOffItem) -> TornOffItem {
         guard case .split(let project) = item else { return item }

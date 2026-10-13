@@ -137,4 +137,99 @@ final class TornOffTests: XCTestCase {
         let placed = TornOffFrame.placed(size: CGSize(width: 720, height: 460), beside: panel, within: screen)
         XCTAssertEqual(placed, TornOffFrame(x: 880, y: 340, w: 720, h: 460))
     }
+
+    // MARK: Following the model: which windows to open and close
+
+    func testNothingChangesWhileTheWindowsMatch() {
+        let torn = TornOff().adding(.terminal("A"), frame: frame).adding(.split("/p"), frame: frame)
+        let changes = torn.changes(from: [.terminal("A"), .split("/p")])
+        XCTAssertTrue(changes.toOpen.isEmpty)
+        XCTAssertTrue(changes.toClose.isEmpty)
+    }
+
+    func testNewEntriesOpenAtTheirFramesInTheOrderTheyWereAdded() {
+        let moved = TornOffFrame(x: 5, y: 5, w: 800, h: 500)
+        let torn = TornOff().adding(.terminal("A"), frame: frame).adding(.terminal("B"), frame: moved)
+            .adding(.split("/p"), frame: frame)
+        let changes = torn.changes(from: [.terminal("A")])
+        XCTAssertEqual(changes.toOpen, [TornOffWindow(item: .terminal("B"), frame: moved),
+                                        TornOffWindow(item: .split("/p"), frame: frame)])
+        XCTAssertTrue(changes.toClose.isEmpty)
+    }
+
+    func testWindowsWhoseEntryIsGoneClose() {
+        let torn = TornOff().adding(.terminal("A"), frame: frame)
+        let changes = torn.changes(from: [.terminal("A"), .terminal("GONE"), .split("/dead")])
+        XCTAssertTrue(changes.toOpen.isEmpty)
+        XCTAssertEqual(changes.toClose, [.terminal("GONE"), .split("/dead")])
+    }
+
+    func testEveryWindowOpensWhenNoneIsOpen() {
+        let torn = TornOff().adding(.terminal("A"), frame: frame).adding(.terminal("B"), frame: frame)
+        XCTAssertEqual(torn.changes(from: []).toOpen.map(\.item), [.terminal("A"), .terminal("B")])
+        XCTAssertEqual(TornOff().changes(from: [.terminal("A")]).toClose, [.terminal("A")])
+    }
+
+    // MARK: Frames and screens
+
+    func testAFrameConvertsToAndFromARect() {
+        let rect = CGRect(x: -20, y: 40, width: 720, height: 460)
+        XCTAssertEqual(TornOffFrame(rect), TornOffFrame(x: -20, y: 40, w: 720, h: 460))
+        XCTAssertEqual(TornOffFrame(rect).rect, rect)
+    }
+
+    func testAFrameOnAScreenStaysWhereItWas() {
+        let saved = TornOffFrame(x: 100, y: 50, w: 720, h: 460)
+        XCTAssertEqual(saved.clamped(within: [screen]), saved)
+    }
+
+    /// The display the window was on was unplugged: it comes back on the screen that is left.
+    func testAFrameOnAScreenThatIsGoneMovesOntoTheOneThatIsLeft() {
+        let saved = TornOffFrame(x: 2000, y: 100, w: 720, h: 460)
+        XCTAssertEqual(saved.clamped(within: [screen]), TornOffFrame(x: 880, y: 100, w: 720, h: 460))
+        let above = TornOffFrame(x: 100, y: 3000, w: 720, h: 460)
+        XCTAssertEqual(above.clamped(within: [screen]), TornOffFrame(x: 100, y: 440, w: 720, h: 460))
+    }
+
+    func testAFrameHangingOffAnEdgeIsPulledBackOnScreen() {
+        let saved = TornOffFrame(x: 1300, y: -100, w: 720, h: 460)
+        XCTAssertEqual(saved.clamped(within: [screen]), TornOffFrame(x: 880, y: 0, w: 720, h: 460))
+    }
+
+    /// With two screens it goes to the one holding most of the window, whichever comes first.
+    func testAFrameGoesToTheScreenHoldingMostOfIt() {
+        let right = CGRect(x: 1600, y: 0, width: 1200, height: 800)
+        let saved = TornOffFrame(x: 1500, y: 100, w: 720, h: 460)   // 100 pt on the first screen, 620 on the second
+        XCTAssertEqual(saved.clamped(within: [screen, right]), TornOffFrame(x: 1600, y: 100, w: 720, h: 460))
+    }
+
+    func testAFrameAlreadyOnTheSecondScreenIsLeftAlone() {
+        let right = CGRect(x: 1600, y: 0, width: 1200, height: 800)
+        let saved = TornOffFrame(x: 1700, y: 100, w: 720, h: 460)
+        XCTAssertEqual(saved.clamped(within: [screen, right]), saved)
+    }
+
+    func testAFrameWithNoOverlapGoesToTheFirstScreen() {
+        let right = CGRect(x: 1600, y: 0, width: 1200, height: 800)
+        let saved = TornOffFrame(x: 5000, y: 5000, w: 720, h: 460)
+        XCTAssertEqual(saved.clamped(within: [screen, right]), TornOffFrame(x: 880, y: 440, w: 720, h: 460))
+    }
+
+    func testAFrameLargerThanTheScreenShrinksToIt() {
+        let small = CGRect(x: 0, y: 0, width: 800, height: 500)
+        XCTAssertEqual(TornOffFrame(x: 50, y: 50, w: 960, h: 600).clamped(within: [small]),
+                       TornOffFrame(x: 0, y: 0, w: 800, h: 500))
+    }
+
+    func testWithNoScreensAFrameIsKept() {
+        let saved = TornOffFrame(x: 2000, y: 100, w: 720, h: 460)
+        XCTAssertEqual(saved.clamped(within: []), saved)
+    }
+
+    // MARK: Titles
+
+    func testASplitWindowIsTitledWithItsProjectsFolder() {
+        XCTAssertEqual(TornOffItem.splitTitle(project: "/Users/me/Projects/linkC"), "linkC \u{2014} Split")
+        XCTAssertEqual(TornOffItem.splitTitle(project: "/Users/me/Projects/linkC/"), "linkC \u{2014} Split")
+    }
 }
