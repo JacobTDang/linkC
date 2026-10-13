@@ -9,9 +9,19 @@ final class ScriptedGit: GitInspecting, @unchecked Sendable {
     var ancestor = true
     var changed: [String] = []
     var error: Error?
+    /// The checkout each branch is checked out in (`git worktree list`); a branch missing here has none.
+    var worktrees: [String: URL] = [:]
+    var worktreeError: Error?
     /// The `paths` argument of every `changedFiles` call, in order — lets a test assert what
     /// was protected, not just whether the check passed.
     private(set) var changedFilesCalls: [[String]] = []
+    /// The checkout every git call ran in, in order, `worktree(holding:in:)` excluded.
+    private var workspacesSeen: [URL] = []
+    var workspaces: [URL] { lock.withLock { workspacesSeen } }
+    /// The root each `worktree(holding:in:)` call looked from.
+    private(set) var worktreeLookups: [URL] = []
+
+    private func saw(_ workspace: URL) { lock.withLock { workspacesSeen.append(workspace) } }
 
     init(heads: [String], statuses: [String] = [""]) {
         self.heads = heads
@@ -19,19 +29,30 @@ final class ScriptedGit: GitInspecting, @unchecked Sendable {
     }
 
     func headSha(in workspace: URL) throws -> String {
+        saw(workspace)
         if let error { throw error }
         return lock.withLock { heads.count > 1 ? heads.removeFirst() : heads[0] }
     }
     func statusPorcelain(in workspace: URL) throws -> String {
-        lock.withLock { statuses.count > 1 ? statuses.removeFirst() : statuses[0] }
+        saw(workspace)
+        return lock.withLock { statuses.count > 1 ? statuses.removeFirst() : statuses[0] }
     }
     func resolveCommit(_ rev: String, in workspace: URL) throws -> String { rev }
-    func isAncestor(_ ancestor: String, of descendant: String, in workspace: URL) throws -> Bool { self.ancestor }
+    func isAncestor(_ ancestor: String, of descendant: String, in workspace: URL) throws -> Bool {
+        saw(workspace)
+        return self.ancestor
+    }
     func changedFiles(_ paths: [String], from: String, to: String, in workspace: URL) throws -> [String] {
+        saw(workspace)
         lock.withLock { changedFilesCalls.append(paths) }
         return changed
     }
     func fileExists(_ path: String, at rev: String, in workspace: URL) throws -> Bool { true }
+    func worktree(holding branch: String, in workspace: URL) throws -> URL? {
+        lock.withLock { worktreeLookups.append(workspace) }
+        if let worktreeError { throw worktreeError }
+        return worktrees[branch]
+    }
 }
 
 /// Records each command and returns one scripted result.
@@ -80,6 +101,48 @@ final class VerificationRunnerTests: XCTestCase {
         XCTAssertEqual(verdict.exitStatus, 1)
         XCTAssertEqual(verdict.sha, base)
         XCTAssertEqual(command.calls, [CommandStub.Call(executable: "/bin/zsh", args: ["-l", "-c", "run-tests"], cwd: workspace, timeout: 5)])
+    }
+
+    /// Parallel work keeps its branch in a git worktree: the gate checks and runs there, not in the
+    /// project root the task was delegated from.
+    func testGateRunsInTheWorktreeHoldingTheBranch() async {
+        let checkout = URL(fileURLWithPath: "/tmp/linkc-verify-worktree")
+        let git = ScriptedGit(heads: [base])
+        git.worktrees = ["task/x": checkout]
+        let command = exits(1)
+        let verdict = await runner(git, command).gate(verification, in: workspace)
+        XCTAssertTrue(verdict.passed)
+        XCTAssertEqual(command.calls.map(\.cwd), [checkout])
+        XCTAssertEqual(git.worktreeLookups, [workspace], "the lookup starts from the project root")
+        XCTAssertFalse(git.workspaces.isEmpty)
+        XCTAssertEqual(Set(git.workspaces), [checkout], "every HEAD and clean check runs in the worktree")
+    }
+
+    func testVerifyRunsInTheWorktreeHoldingTheBranch() async {
+        let checkout = URL(fileURLWithPath: "/tmp/linkc-verify-worktree")
+        let git = ScriptedGit(heads: [head])
+        git.worktrees = ["task/x": checkout]
+        let command = exits(0)
+        let verdict = await runner(git, command).verify(verification, sha: head, in: workspace)
+        XCTAssertTrue(verdict.passed, verdict.reason ?? "")
+        XCTAssertEqual(command.calls.map(\.cwd), [checkout])
+        XCTAssertEqual(git.worktreeLookups, [workspace])
+        XCTAssertEqual(Set(git.workspaces), [checkout], "HEAD, clean, ancestry and changed-file checks all run in the worktree")
+        XCTAssertEqual(git.changedFilesCalls.count, 1, "the protected-file check ran")
+    }
+
+    /// A worktree lookup that fails says so, rather than checking the project root and reporting a
+    /// HEAD mismatch that hides the cause; nothing runs.
+    func testAWorktreeLookupThatFailsSaysSo() async {
+        let git = ScriptedGit(heads: [base])
+        git.worktreeError = LinkCError.process("git worktree list failed")
+        let command = exits(1)
+        let gate = await runner(git, command).gate(verification, in: workspace)
+        XCTAssertFalse(gate.passed)
+        XCTAssertEqual(gate.reason, "gate failed: couldn't find the checkout for task/x: git worktree list failed")
+        let verify = await runner(git, command).verify(verification, sha: head, in: workspace)
+        XCTAssertEqual(verify.reason, "couldn't find the checkout for task/x: git worktree list failed")
+        XCTAssertTrue(command.calls.isEmpty)
     }
 
     func testGateRefusesWhenTestsAlreadyPass() async {

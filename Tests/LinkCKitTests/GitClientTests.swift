@@ -113,4 +113,63 @@ final class GitClientTests: XCTestCase {
             XCTAssertEqual(error.localizedDescription, "git rev-parse timed out after 1s")
         }
     }
+
+    /// A temporary linked worktree of `repo` on a new branch, removed with the test.
+    private func addWorktree(_ name: String, branch: String?) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString)")
+        let root: URL = repo
+        addTeardownBlock {
+            _ = try? runGit(["worktree", "remove", "--force", dir.path], in: root)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        if let branch {
+            _ = try runGit(["worktree", "add", dir.path, "-b", branch], in: repo)
+        } else {
+            _ = try runGit(["worktree", "add", "--detach", dir.path], in: repo)
+        }
+        return dir
+    }
+
+    func testTheWorktreeHoldingABranchIsFound() throws {
+        let dir = try addWorktree("linkc-wt", branch: "feature/worktree-branch")
+        let found = try XCTUnwrap(try git.worktree(holding: "feature/worktree-branch", in: repo))
+        XCTAssertEqual(ProjectPath.canonical(found.path), ProjectPath.canonical(dir.path))
+    }
+
+    func testTheRootHoldsItsOwnBranch() throws {
+        let found = try XCTUnwrap(try git.worktree(holding: "main", in: repo))
+        XCTAssertEqual(ProjectPath.canonical(found.path), ProjectPath.canonical(repo.path))
+    }
+
+    func testABranchNoWorktreeHoldsHasNone() throws {
+        _ = try runGit(["branch", "unlinked-branch"], in: repo)
+        XCTAssertNil(try git.worktree(holding: "unlinked-branch", in: repo))
+        XCTAssertNil(try git.worktree(holding: "does-not-exist", in: repo))
+    }
+
+    /// Only the exact branch matches: a sibling sharing its prefix, and a detached worktree, don't.
+    func testOnlyTheExactBranchMatches() throws {
+        let sibling = try addWorktree("linkc-wt-sibling", branch: "feature/x-2")
+        _ = try addWorktree("linkc-wt-detached", branch: nil)
+        XCTAssertNil(try git.worktree(holding: "feature/x", in: repo))
+        let found = try XCTUnwrap(try git.worktree(holding: "feature/x-2", in: repo))
+        XCTAssertEqual(ProjectPath.canonical(found.path), ProjectPath.canonical(sibling.path))
+    }
+
+    func testAWorktreePathWithASpaceAndAFullRefName() throws {
+        let dir = try addWorktree("linkc wt spaced", branch: "task/spaced")
+        let byName = try XCTUnwrap(try git.worktree(holding: "task/spaced", in: repo))
+        XCTAssertEqual(ProjectPath.canonical(byName.path), ProjectPath.canonical(dir.path))
+        let byRef = try XCTUnwrap(try git.worktree(holding: "refs/heads/task/spaced", in: repo))
+        XCTAssertEqual(ProjectPath.canonical(byRef.path), ProjectPath.canonical(dir.path))
+    }
+
+    /// A worktree whose folder is gone is not a checkout to run in: the lookup says so.
+    func testAWorktreeWhoseFolderIsGoneIsReported() throws {
+        let dir = try addWorktree("linkc-wt-gone", branch: "task/gone")
+        try FileManager.default.removeItem(at: dir)
+        XCTAssertThrowsError(try git.worktree(holding: "task/gone", in: repo)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("git worktree prune"), error.localizedDescription)
+        }
+    }
 }

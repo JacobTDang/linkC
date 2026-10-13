@@ -451,7 +451,7 @@ public final class MCPServer: Sendable {
                             "type": "object",
                             "description": "Make this a verified task. linkC confirms the tests fail at base_sha before delivery, then runs command at the worker's reported sha and decides done or failed itself.",
                             "properties": [
-                                "branch": ["type": "string", "description": "Branch the worker commits on; its tip must equal base_sha"],
+                                "branch": ["type": "string", "description": "Branch the worker commits on; its tip must equal base_sha. linkC gates and verifies in the git worktree that has this branch checked out, else in the project root"],
                                 "base_sha": ["type": "string", "description": "Commit holding the tests you wrote"],
                                 "command": ["type": "string", "description": "Shell command that runs those tests; exit 0 means they pass"],
                                 "test_paths": ["type": "array", "items": ["type": "string"], "description": "Test files the worker must not modify"],
