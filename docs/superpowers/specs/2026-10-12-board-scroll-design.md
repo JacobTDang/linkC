@@ -59,12 +59,24 @@ saved per-board view position keeps working.
   hover card, at the bottom edge, so its gesture wins over the canvas's own in its strip.
 
 ## Testing
-- Unit tests: the key map (each arrow, ⇧ page, ⌘↑ still `goUp`, modifiers declined, typing
-  declined); `BoardViewport.panned(_:)` for each direction, step and page, at zoom ≠ 1;
-  `BoardScrollbar` hidden with no content / when everything fits, thumb fractions, the track
-  growing to include a view beyond the content, `originX(thumbStart:)` clamping at both ends,
-  `originX(centredOn:)`.
-- Manual checks (no app-target harness): arrows and ⇧-arrows pan; arrows type in a field instead;
-  ⌘↑ goes up; the bar appears only when content is wider than the view; dragging the thumb slides
-  and stays on the track; clicking the track centres there; zooming resizes the thumb; the bar
-  doesn't cover the toolbar.
+- Unit tests:
+  - the key map: each arrow, ⇧ page, ⌘↑ still `goUp`, modifiers declined, typing declined;
+  - `BoardViewport.panned(_:)` for each direction, step and page, at zoom ≠ 1;
+  - `BoardScrollbar`:
+    - hidden with no content, when everything fits, and right after "fit all";
+    - thumb fractions;
+    - the track growing to include a view beyond the content on either side;
+    - `originX(thumbStart:)` clamping at both ends;
+    - `originX(centredOn:)`;
+    - `tracking(_:width:)` keeping a drag's track;
+    - `thumb(inTrack:minLength:)` staying on the track.
+- Manual checks (no app-target harness):
+  - arrows and ⇧-arrows pan;
+  - arrows type in a field instead;
+  - ⌘↑ goes up a level;
+  - the bar appears only when the content is wider than the view;
+  - dragging the thumb slides it and stays on the track, also when dragging back from far past the content;
+  - clicking the track centres there and dragging continues;
+  - zooming resizes the thumb;
+  - the bar doesn't cover the toolbar or the hover card;
+  - clicks and drags on the canvas above the bar behave as before.
