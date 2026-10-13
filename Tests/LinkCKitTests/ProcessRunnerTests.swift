@@ -11,14 +11,15 @@ final class ProcessRunnerTests: XCTestCase {
     }
 
     func testTimeoutTerminatesAndThrows() async {
-        let started = Date()
+        let clock = SuspendingClock()
+        let started = clock.now
         do {
             _ = try await LiveProcessRunner().run("/bin/sleep", args: ["5"], cwd: nil, timeout: 0.2)
             XCTFail("expected a timeout throw")
         } catch {
             XCTAssertTrue("\(error)".contains("timed out"), "got: \(error)")
         }
-        XCTAssertLessThan(Date().timeIntervalSince(started), 3, "must not wait out the child")
+        XCTAssertLessThan(started.duration(to: clock.now), .seconds(3), "must not wait out the child")
     }
 
     func testMissingExecutableThrows() async {
@@ -274,14 +275,15 @@ final class ProcessRunnerSpawnTests: XCTestCase {
             "(trap '' TERM; exec sleep \(marker)) & wait",
         ]
         for command in commands {
-            let started = Date()
+            let clock = SuspendingClock()
+            let started = clock.now
             do {
                 _ = try await LiveProcessRunner().runCapturing("/bin/sh", args: ["-c", command], cwd: nil, timeout: 1)
                 XCTFail("expected a timeout: \(command)")
             } catch {
                 XCTAssertEqual(error as? ProcessRunnerError, .timedOut(seconds: 1), command)
             }
-            XCTAssertLessThan(Date().timeIntervalSince(started), 4.5, "must return within a few seconds: \(command)")
+            XCTAssertLessThan(started.duration(to: clock.now), .milliseconds(4500), "must return within a few seconds: \(command)")
 
             var remaining = try survivors()
             for _ in 0..<20 where !remaining.isEmpty {
