@@ -401,10 +401,10 @@ public final class AppCoordinator {
 
     /// Tells the coordinator whether the panel, or a window that needs the same sampling, is on screen.
     /// Showing it gives the panel's own sampling one look at once, so the panel never opens on data
-    /// that is seconds old, and holds the one-second cadence while it stays open. The session sweep and the relay do not run on
-    /// show: the app sets this before the window appears, so a full pass here would run on the
-    /// main thread in the middle of the opening animation. The sleep in progress is cut short and
-    /// chosen again instead, so that pass follows within a second.
+    /// that is seconds old, and holds the one-second cadence while it stays open. The session sweep
+    /// and the relay do not run on show: the app sets this before the window appears, so a full pass
+    /// here would run on the main thread in the middle of the opening animation. The sleep in progress
+    /// is cut short and chosen again instead, so that pass follows within a second.
     public func setPanelVisible(_ visible: Bool) {
         guard visible != panelVisible else { return }
         panelVisible = visible

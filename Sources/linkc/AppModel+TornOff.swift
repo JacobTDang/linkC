@@ -7,12 +7,18 @@ import LinkCKit
 extension AppModel {
     var tornOff: TornOff { sidebarState.tornOff }
 
+    /// The windows that hold the live views of `ids` (only the ids that live in one): the host rule,
+    /// `TornOff.hosts`, with the stored splits and live terminals read once per call.
+    func hosts(of ids: [String]) -> [String: TornOffItem] {
+        guard !tornOff.isEmpty, !ids.isEmpty else { return [:] }
+        return tornOff.hosts(of: ids, splits: storedSplits(), liveIDs: { splittableIDs(in: $0) })
+    }
+
     /// The window that holds terminal `id`'s live view, or nil for the panel. Asked for every sidebar
     /// row, so it does no work while nothing is torn off, and builds the stored splits only when a split
     /// window is open.
     func host(of id: String) -> TornOffItem? {
-        guard !tornOff.isEmpty else { return nil }
-        return tornOff.host(of: id, splits: storedSplits(), liveIDs: { splittableIDs(in: $0) })
+        hosts(of: [id])[id]
     }
 
     /// The terminal the key torn-off window is showing: its own, or its split's focused live pane — when

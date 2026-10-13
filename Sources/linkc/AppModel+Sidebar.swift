@@ -125,11 +125,11 @@ extension AppModel {
     }
 
     /// Once a second while the panel is visible or a torn-off window is open (`syncSweepVisibility()`),
-    /// and once as the panel opens: keep a showing split's
-    /// selection on its panes, forget ended sessions, drop split members that are gone, mark what is
-    /// on screen as seen, keep the project order, expand projects that just turned coral, and publish
-    /// the sidebar's non-observable inputs. The sidebar re-renders on the publish only when one of
-    /// them changed — a quiet second re-renders nothing.
+    /// and once as the panel opens: keep a showing split's selection on its panes, forget ended
+    /// sessions, drop split members that are gone, mark what is on screen as seen, keep the project
+    /// order, expand projects that just turned coral, and publish the sidebar's non-observable inputs.
+    /// The sidebar re-renders on the publish only when one of them changed — a quiet second
+    /// re-renders nothing.
     func sampleSidebar() {
         let now = Date()
         repairSplitSelection()
