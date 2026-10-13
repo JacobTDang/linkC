@@ -207,8 +207,8 @@ final class AppModel {
             // A notification click reaches `focusSession` directly — never through `focus(_:)`
             // below — so this is the one place both paths funnel through: whichever one focused
             // a session, drop whatever was covering it.
-            coordinator.onSessionFocused = { [weak self] _ in
-                self?.showSelection()
+            coordinator.onSessionFocused = { [weak self] id in
+                self?.showSelection(opening: id)
             }
             try coordinator.start()
             coordinator.usageTracker = usage
@@ -641,8 +641,8 @@ final class AppModel {
     /// `showBoard`, `showApp`, `select(_:)`, `removeFromSplit`, `dissolveSplit`, `repairSplitSelection`
     /// and `goBack` — never by a view.
     private(set) var splitProject: String?
-    /// The terminal whose own tab chip was just clicked: it shows full-size, not in its split.
-    /// Read and cleared by the next `showSelection()`.
+    /// The terminal whose own tab chip is being opened: it shows full-size, not in its split. Set
+    /// only for the length of `select(_:)`'s focus.
     @ObservationIgnored private var fullSizeRequest: String?
 
     /// The apps each project can open: its own `.linkc/app.json`, then the ones registered in
@@ -754,26 +754,20 @@ final class AppModel {
 
     /// A session or terminal was just selected — show it. Clears everything that could cover it:
     /// an open screen, another project's Board, or an open app tab (else the new one opens
-    /// hidden underneath it). Opened from outside its tab strip (a sidebar row, a notification),
-    /// a live member of an active split shows in that split, focused; its own tab chip asked for it
-    /// full-size (`fullSizeRequest`) and gets it.
-    private func showSelection() {
-        let fullSize = fullSizeRequest != nil && fullSizeRequest == selectedId
-        fullSizeRequest = nil
-        if let splitProject {
-            if let id = selectedId, let split = sidebarState.split(for: splitProject), split.members.contains(id) {
-                // Selected another way (a sidebar row, a notification): the split's focus follows.
-                sidebarState.setSplit(split.focusing(id), for: splitProject)
-            } else {
-                self.splitProject = nil
-            }
+    /// hidden underneath it). `opened` is what the user opened (a sidebar row, a notification, a
+    /// screen's Open): a live member of an active split shows in that split, focused, unless its own
+    /// tab chip asked for it full-size (`fullSizeRequest`). See `ProjectSplit.showing`.
+    private func showSelection(opening opened: String? = nil) {
+        let splits = storedSplits()
+        let showing = ProjectSplit.showing(
+            selected: selectedId, opened: opened, current: splitProject,
+            fullSize: selectedId != nil && fullSizeRequest == selectedId,
+            splits: splits, liveIDs: { self.splittableIDs(in: $0) })
+        if let showing, let id = selectedId, let split = splits[showing] {
+            // The split's focus follows whatever was selected.
+            sidebarState.setSplit(split.focusing(id), for: showing)
         }
-        if splitProject == nil, !fullSize, let id = selectedId,
-           let project = ProjectSplit.project(opening: id, in: storedSplits, liveIDs: { self.splittableIDs(in: $0) }),
-           let split = sidebarState.split(for: project) {
-            sidebarState.setSplit(split.focusing(id), for: project)
-            splitProject = project
-        }
+        if splitProject != showing { splitProject = showing }
         boardProject = nil
         appTab = nil
         activeScreen = nil
@@ -787,8 +781,8 @@ final class AppModel {
         return Set(ProjectTabs.terminalIDs(tabs))
     }
 
-    /// Every project's stored split.
-    private var storedSplits: [String: ProjectSplit] {
+    /// Every project's stored split, by canonical project path.
+    private func storedSplits() -> [String: ProjectSplit] {
         Dictionary(uniqueKeysWithValues: sidebarState.projectsWithSplits.compactMap { project in
             sidebarState.split(for: project).map { (project, $0) }
         })
@@ -954,6 +948,7 @@ final class AppModel {
             // A member's own tab shows it full-size: say so, or the selection would open its split.
             splitProject = nil
             fullSizeRequest = tab.id
+            defer { fullSizeRequest = nil }
             focus(tab.id)
         case .app:
             guard let ref = openAppRef(forTab: tab.id) else { return }
@@ -1271,8 +1266,9 @@ final class AppModel {
 
     /// Focusing a session always wins over an open screen. Select first, then close the screen:
     /// the session being left is judged by what was really on screen (a screen covered it).
-    /// `focusSession`'s `onSessionFocused` callback (wired in `start()`) does the clearing, so
-    /// a notification click gets the same treatment without going through this method at all.
+    /// `focusSession`'s `onSessionFocused` callback (wired in `start()`) does the clearing — and
+    /// opens the split holding `id`, when there is one — so a notification click gets the same
+    /// treatment without going through this method at all.
     func focus(_ id: String) {
         coordinator?.focusSession(id)
     }

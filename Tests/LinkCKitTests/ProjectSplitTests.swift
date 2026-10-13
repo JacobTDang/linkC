@@ -277,4 +277,29 @@ final class ProjectSplitTests: XCTestCase {
         let splits = ["/a": ProjectSplit(members: ["A1", "A2"])]
         XCTAssertNil(ProjectSplit.project(opening: "A1", in: splits) { _ in ["A1"] })
     }
+
+    func testALiveTerminalThatIsNotAMemberOpensNoSplit() {
+        let splits = ["/a": ProjectSplit(members: ["A1", "A2"])]
+        XCTAssertNil(ProjectSplit.project(opening: "A3", in: splits) { _ in ["A1", "A2", "A3"] })
+    }
+
+    /// Which split shows once `selected` is selected, `opened` being what the user opened (nil when
+    /// the selection moved by itself).
+    func testWhichSplitShowsAfterASelection() {
+        let splits = ["/a": ProjectSplit(members: ["A1", "A2"]), "/b": ProjectSplit(members: ["B1", "B2"])]
+        let live: [String: Set<String>] = ["/a": ["A1", "A2", "A3"], "/b": ["B1", "B2"]]
+        let showing = { (selected: String?, opened: String?, current: String?, fullSize: Bool) in
+            ProjectSplit.showing(selected: selected, opened: opened, current: current, fullSize: fullSize,
+                                 splits: splits) { live[$0] ?? [] }
+        }
+        XCTAssertEqual(showing("A1", "A1", nil, false), "/a", "a member opened from the sidebar or a notification shows its split")
+        XCTAssertNil(showing("A1", "A1", nil, true), "its own tab chip asked for it full-size")
+        XCTAssertEqual(showing("A2", "A2", "/a", false), "/a", "a member of the showing split keeps it")
+        XCTAssertEqual(showing("A2", "A2", "/a", true), "/a", "a member of the showing split keeps it")
+        XCTAssertEqual(showing("B1", "B1", "/a", false), "/b", "a member of another project's split shows that split")
+        XCTAssertNil(showing("A3", "A3", "/a", false), "a non-member leaves the split")
+        XCTAssertNil(showing("A1", "GONE", nil, false), "opening something that selected nothing opens no split")
+        XCTAssertNil(showing("A1", nil, nil, false), "a selection that moved by itself opens no split")
+        XCTAssertNil(showing(nil, "A1", "/a", false))
+    }
 }

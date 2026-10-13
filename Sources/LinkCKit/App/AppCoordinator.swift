@@ -958,7 +958,9 @@ public final class AppCoordinator {
     /// whether that came from a click (`AppModel.focus`) or from clicking a macOS notification
     /// (`notifications.onActivate` calls `focusSession` directly, bypassing `AppModel.focus`).
     /// Lets the UI layer react to any focus of a session the same way, e.g. dropping an open
-    /// Board or screen that would otherwise stay on top of the newly-selected session.
+    /// Board or screen that would otherwise stay on top of the newly-selected session, or showing
+    /// the split that holds it. It runs even when `id` selected nothing (an ended session), so the
+    /// UI compares `id` with the selection before acting on it.
     public var onSessionFocused: ((String) -> Void)?
 
     public func focusSession(_ id: String) {
