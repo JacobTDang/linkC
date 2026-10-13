@@ -34,7 +34,11 @@ public struct VerificationRunner: TaskVerifier {
     private static let harnessProtectedPaths = ["Package.swift", "*.xcodeproj/project.pbxproj"]
 
     public func gate(_ v: Verification, in root: URL) async -> Verdict {
-        let workspace = await checkout(holding: v.branch, in: root)
+        let workspace: URL
+        switch await checkoutHolding(v.branch, in: root) {
+        case .success(let found): workspace = found
+        case .failure(let error): return .notRun(reason: "gate failed: \(Self.lookupFailure(v.branch, error))")
+        }
         let before = await offGitThread { self.checkout(v.baseSha, label: "base ", in: workspace) }
         if let problem = before.problem {
             return .notRun(reason: "gate failed: \(problem)")
@@ -66,7 +70,11 @@ public struct VerificationRunner: TaskVerifier {
     }
 
     public func verify(_ v: Verification, sha: String, in root: URL) async -> Verdict {
-        let workspace = await checkout(holding: v.branch, in: root)
+        let workspace: URL
+        switch await checkoutHolding(v.branch, in: root) {
+        case .success(let found): workspace = found
+        case .failure(let error): return .notRun(reason: Self.lookupFailure(v.branch, error))
+        }
         let before = await offGitThread { self.checkout(sha, label: "", in: workspace) }
         if let problem = before.problem {
             return .notRun(reason: problem)
@@ -136,17 +144,16 @@ public struct VerificationRunner: TaskVerifier {
 
     /// The checkout a task's branch lives in: the git worktree that has it checked out, so parallel
     /// work kept in `.worktrees/` is gated and verified where its commits are, else the project root.
-    /// A failed lookup is logged and falls back to the root, whose HEAD check then reports the mismatch.
-    private func checkout(holding branch: String, in root: URL) async -> URL {
+    /// A lookup that fails is the verdict's reason, not a fallback to the root: the root's own HEAD
+    /// check would only report a mismatch that hides the cause.
+    private func checkoutHolding(_ branch: String, in root: URL) async -> Result<URL, Error> {
         await offGitThread {
-            do {
-                return try self.git.worktree(holding: branch, in: root) ?? root
-            } catch {
-                NSLog("[linkC verify] couldn't find the worktree for %@ in %@ — using the project root: %@",
-                      branch, root.path, String(describing: error))
-                return root
-            }
+            Result { try self.git.worktree(holding: branch, in: root) ?? root }
         }
+    }
+
+    private static func lookupFailure(_ branch: String, _ error: Error) -> String {
+        "couldn't find the checkout for \(branch): \(error.localizedDescription)"
     }
 
     /// Runs synchronous git work off the calling thread. `gate`/`verify` are `async`, and a

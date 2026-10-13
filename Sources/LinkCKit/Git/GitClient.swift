@@ -131,21 +131,27 @@ public struct GitClient: GitInspecting {
         !(try output(["ls-tree", "--name-only", rev, "--", path], in: workspace)).isEmpty
     }
 
+    /// The checkout that has `branch` (a name, or a full `refs/heads/` ref) checked out: a linked
+    /// worktree, or the main one. nil when no checkout holds it. A worktree whose folder is gone
+    /// throws rather than handing back a path nothing can run in.
     public func worktree(holding branch: String, in workspace: URL) throws -> URL? {
-        let expectedRef = "refs/heads/\(branch)"
+        let expectedRef = branch.hasPrefix("refs/heads/") ? branch : "refs/heads/\(branch)"
         let text = try output(["worktree", "list", "--porcelain"], in: workspace)
-        var currentPath: String?
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.hasPrefix("worktree ") {
-                currentPath = String(line.dropFirst("worktree ".count))
-            } else if line.hasPrefix("branch ") {
-                let ref = String(line.dropFirst("branch ".count))
-                if ref == expectedRef, let currentPath {
-                    return URL(fileURLWithPath: currentPath)
-                }
-            } else if line.isEmpty {
-                currentPath = nil
+        // Records are blank-line separated; each starts with its `worktree <path>` line.
+        for record in text.components(separatedBy: "\n\n") {
+            var path: String?
+            var ref: String?
+            var prunable = false
+            for line in record.split(separator: "\n") {
+                if line.hasPrefix("worktree ") { path = String(line.dropFirst("worktree ".count)) }
+                else if line.hasPrefix("branch ") { ref = String(line.dropFirst("branch ".count)) }
+                else if line == "prunable" || line.hasPrefix("prunable ") { prunable = true }
             }
+            guard ref == expectedRef, let path else { continue }
+            if prunable || !FileManager.default.fileExists(atPath: path) {
+                throw LinkCError.process("the worktree for \(branch) at \(path) is missing — run git worktree prune")
+            }
+            return URL(fileURLWithPath: path)
         }
         return nil
     }
