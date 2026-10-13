@@ -1053,6 +1053,25 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(focused, ["S1"], "focusSession must call onSessionFocused with the focused id")
     }
 
+    /// An ended session's id selects nothing, but the callback still hears it: the UI compares it
+    /// with the selection before acting (a stale notification must not open the selection's split).
+    func testFocusingAnIdThatSelectsNothingStillReportsThatId() throws {
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+
+        _ = coordinator.store.create(cwd: "/tmp", title: "s", id: "S1")
+        _ = coordinator.terminals.makeSession(id: "S1", cwd: "/tmp", title: "s", agentKind: .claude)
+        coordinator.focusSession("S1")
+
+        var focused: [String] = []
+        coordinator.onSessionFocused = { focused.append($0) }
+        coordinator.focusSession("GONE")
+
+        XCTAssertEqual(focused, ["GONE"])
+        XCTAssertEqual(coordinator.terminals.selectedId, "S1", "an unknown id leaves the selection where it was")
+    }
+
     func testPersistentChildProcessesDoNotKeepSessionStuckInWorking() throws {
         let sink = RecordingSink()
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-idle-\(UUID().uuidString)")

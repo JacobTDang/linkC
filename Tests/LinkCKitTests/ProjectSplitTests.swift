@@ -296,6 +296,7 @@ final class ProjectSplitTests: XCTestCase {
         XCTAssertNil(showing("A1", "A1", nil, true), "its own tab chip asked for it full-size")
         XCTAssertEqual(showing("A2", "A2", "/a", false), "/a", "a member of the showing split keeps it")
         XCTAssertEqual(showing("A2", "A2", "/a", true), "/a", "a member of the showing split keeps it")
+        XCTAssertEqual(showing("A2", nil, "/a", false), "/a", "kept even when the selection moved by itself")
         XCTAssertEqual(showing("B1", "B1", "/a", false), "/b", "a member of another project's split shows that split")
         XCTAssertNil(showing("A3", "A3", "/a", false), "a non-member leaves the split")
         XCTAssertNil(showing("A1", "GONE", nil, false), "opening something that selected nothing opens no split")
