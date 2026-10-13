@@ -106,6 +106,8 @@ final class AppModel {
         get { errorFlash.text }
         set { errorFlash.show(newValue) }
     }
+    /// An update notice waiting for the panel to open (see `start()`).
+    private var pendingUpdateNotice: String?
     /// Whether the menu-bar panel is currently on screen. Feeds the coordinator's watch probe
     /// and gates the usage-refresh timer — no panel, no polling.
     var panelVisible = false {
@@ -119,6 +121,10 @@ final class AppModel {
             if !panelVisible {
                 flushStateToDisk()
             } else if !oldValue {
+                if let notice = pendingUpdateNotice {
+                    pendingUpdateNotice = nil
+                    lastError = notice
+                }
                 // Not a sweep tick behind: sample what changed while the panel was hidden.
                 sampleSidebar()
             }
@@ -256,6 +262,13 @@ final class AppModel {
             self.watchedEndpointsStore = WatchedEndpointsStore(directory: linkCSupport)
             reloadConfiguredEndpoints()
             startHealthTimer()
+            // The swap that installed this build ran with no app to tell: what it left for the
+            // user (a failed install, or grants about to be lost) is posted now, and shown again
+            // in the error bar the next time the panel opens — the panel is hidden at launch.
+            if let notice = UpdateSwap.takeNotice() {
+                coordinator.notify(id: "update", title: "linkC update", body: notice)
+                if panelVisible { lastError = notice } else { pendingUpdateNotice = notice }
+            }
         } catch {
             setupError = error.localizedDescription
         }
