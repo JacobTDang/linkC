@@ -641,6 +641,9 @@ final class AppModel {
     /// `showBoard`, `showApp`, `select(_:)`, `removeFromSplit`, `dissolveSplit`, `repairSplitSelection`
     /// and `goBack` — never by a view.
     private(set) var splitProject: String?
+    /// The terminal whose own tab chip was just clicked: it shows full-size, not in its split.
+    /// Read and cleared by the next `showSelection()`.
+    @ObservationIgnored private var fullSizeRequest: String?
 
     /// The apps each project can open: its own `.linkc/app.json`, then the ones registered in
     /// Settings. Reads the manifest fresh (on a short TTL) each time it's asked, so an edit to
@@ -751,8 +754,12 @@ final class AppModel {
 
     /// A session or terminal was just selected — show it. Clears everything that could cover it:
     /// an open screen, another project's Board, or an open app tab (else the new one opens
-    /// hidden underneath it).
+    /// hidden underneath it). Opened from outside its tab strip (a sidebar row, a notification),
+    /// a live member of an active split shows in that split, focused; its own tab chip asked for it
+    /// full-size (`fullSizeRequest`) and gets it.
     private func showSelection() {
+        let fullSize = fullSizeRequest != nil && fullSizeRequest == selectedId
+        fullSizeRequest = nil
         if let splitProject {
             if let id = selectedId, let split = sidebarState.split(for: splitProject), split.members.contains(id) {
                 // Selected another way (a sidebar row, a notification): the split's focus follows.
@@ -760,6 +767,12 @@ final class AppModel {
             } else {
                 self.splitProject = nil
             }
+        }
+        if splitProject == nil, !fullSize, let id = selectedId,
+           let project = ProjectSplit.project(opening: id, in: storedSplits, liveIDs: { self.splittableIDs(in: $0) }),
+           let split = sidebarState.split(for: project) {
+            sidebarState.setSplit(split.focusing(id), for: project)
+            splitProject = project
         }
         boardProject = nil
         appTab = nil
@@ -772,6 +785,13 @@ final class AppModel {
         let tabs = ProjectTabs.tabs(project: project, sessions: sessions, shells: shellRows,
                                     filed: sidebarState.terminalProjects, titles: [:])
         return Set(ProjectTabs.terminalIDs(tabs))
+    }
+
+    /// Every project's stored split.
+    private var storedSplits: [String: ProjectSplit] {
+        Dictionary(uniqueKeysWithValues: sidebarState.projectsWithSplits.compactMap { project in
+            sidebarState.split(for: project).map { (project, $0) }
+        })
     }
 
     func liveSplitMembers(in project: String) -> [String] {
@@ -931,7 +951,9 @@ final class AppModel {
         case .split:
             if let project = currentProject { showSplit(project) }
         case .agent, .terminal:
-            splitProject = nil   // a member's own tab shows it full-size
+            // A member's own tab shows it full-size: say so, or the selection would open its split.
+            splitProject = nil
+            fullSizeRequest = tab.id
             focus(tab.id)
         case .app:
             guard let ref = openAppRef(forTab: tab.id) else { return }
