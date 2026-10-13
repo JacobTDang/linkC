@@ -153,7 +153,7 @@ public struct VerificationRunner: TaskVerifier {
     }
 
     private static func lookupFailure(_ branch: String, _ error: Error) -> String {
-        "couldn't find the checkout for \(branch): \(error.localizedDescription)"
+        "couldn't find the checkout for \(branch): \(describe(error))"
     }
 
     /// Runs synchronous git work off the calling thread. `gate`/`verify` are `async`, and a

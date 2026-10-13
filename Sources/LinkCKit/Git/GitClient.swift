@@ -12,7 +12,8 @@ public protocol GitInspecting: Sendable {
     /// Which of `paths` differ between the two commits.
     func changedFiles(_ paths: [String], from: String, to: String, in workspace: URL) throws -> [String]
     func fileExists(_ path: String, at rev: String, in workspace: URL) throws -> Bool
-    /// Returns the worktree path checking out `branch`, or nil if no worktree has it checked out.
+    /// The checkout that has `branch` (a name or a full `refs/heads/` ref) checked out, or nil when none
+    /// does. Throws when the only checkout holding it is missing its folder.
     func worktree(holding branch: String, in workspace: URL) throws -> URL?
 }
 
@@ -137,7 +138,9 @@ public struct GitClient: GitInspecting {
     public func worktree(holding branch: String, in workspace: URL) throws -> URL? {
         let expectedRef = branch.hasPrefix("refs/heads/") ? branch : "refs/heads/\(branch)"
         let text = try output(["worktree", "list", "--porcelain"], in: workspace)
-        // Records are blank-line separated; each starts with its `worktree <path>` line.
+        // Records are blank-line separated; each starts with its `worktree <path>` line. A stale record
+        // (folder gone) can sit beside a live one for the same branch (`worktree add -f`): prefer the live.
+        var missing: String?
         for record in text.components(separatedBy: "\n\n") {
             var path: String?
             var ref: String?
@@ -149,9 +152,14 @@ public struct GitClient: GitInspecting {
             }
             guard ref == expectedRef, let path else { continue }
             if prunable || !FileManager.default.fileExists(atPath: path) {
-                throw LinkCError.process("the worktree for \(branch) at \(path) is missing — run git worktree prune")
+                missing = path
+                continue
             }
             return URL(fileURLWithPath: path)
+        }
+        if let missing {
+            throw LinkCError.process(
+                "the worktree for \(branch) at \(missing) is missing — restore its folder, or run git worktree prune if it was deleted")
         }
         return nil
     }
