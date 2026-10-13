@@ -180,6 +180,13 @@ private struct TabChip: View {
         /// Opens the window: centred on the point (screen coordinates), or beside the panel for nil.
         let tearOff: (CGPoint?) -> Void
         let bringBack: () -> Void
+
+        /// The chip's menu item, and the same action for VoiceOver.
+        var toggleTitle: LocalizedStringKey { isTornOff ? "Bring back" : "Open in Window" }
+
+        func toggle() {
+            if isTornOff { bringBack() } else { tearOff(nil) }
+        }
     }
 
     let tab: ProjectTab
@@ -208,16 +215,18 @@ private struct TabChip: View {
             content(labelHitTests: false, windowActions: windowActions)
                 .background {
                     DragOutSource(payload: dragPayload, onClick: onSelect,
-                                  onDraggedOut: { windowActions.tearOff($0) })
+                                  onDraggedOut: { windowActions.tearOff($0) }, toolTip: tab.title)
                 }
                 .background(fill.allowsHitTesting(false))
                 .contextMenu {
-                    if windowActions.isTornOff {
-                        Button("Bring back", action: windowActions.bringBack)
-                    } else {
-                        Button("Open in Window") { windowActions.tearOff(nil) }
-                    }
+                    Button(windowActions.toggleTitle, action: windowActions.toggle)
                 }
+                // The press is an AppKit view VoiceOver can't act on, so the chip says what it does.
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+                .accessibilityAction(.default, onSelect)
+                .accessibilityAction(named: windowActions.toggleTitle, windowActions.toggle)
         } else {
             content(labelHitTests: true, windowActions: nil)
                 .background(fill)

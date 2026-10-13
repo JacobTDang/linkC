@@ -1,4 +1,5 @@
 import AppKit
+import LinkCKit
 import SwiftUI
 
 /// An AppKit drag source for a tab chip. SwiftUI's `.draggable` never says where a drag ended, so a
@@ -10,14 +11,14 @@ import SwiftUI
 struct DragOutSource: NSViewRepresentable {
     /// What a drop target reads. Copied for each drag: an item belongs to one pasteboard.
     let payload: NSPasteboardItem
-    /// A press and release with less than `dragThreshold` of movement.
+    /// A press and release with less than `TearOffRules.dragThreshold` of movement.
     let onClick: () -> Void
-    /// The drag was accepted by nothing and let go outside the window it started in; the point is in
-    /// screen coordinates (bottom-left origin).
+    /// The drag was accepted by nothing and let go outside the window it started in; the point is where
+    /// the cursor was, in screen coordinates (bottom-left origin).
     let onDraggedOut: (CGPoint) -> Void
-
-    /// How far the mouse moves, in points, before a press becomes a drag.
-    static let dragThreshold: CGFloat = 3
+    /// What the pointer shows after a moment over the chip. An AppKit tooltip belongs to the view under
+    /// the cursor, so SwiftUI's `.help` on the chip can't reach through this view.
+    let toolTip: String?
 
     func makeNSView(context: Context) -> SourceView {
         let view = SourceView()
@@ -31,25 +32,7 @@ struct DragOutSource: NSViewRepresentable {
         view.payload = payload
         view.onClick = onClick
         view.onDraggedOut = onDraggedOut
-    }
-
-    static func isDrag(from start: CGPoint, to point: CGPoint) -> Bool {
-        hypot(point.x - start.x, point.y - start.y) >= dragThreshold
-    }
-
-    /// Copying and moving are for targets in linkC; nothing outside takes the drag.
-    static func sourceOperationMask(for context: NSDraggingContext) -> NSDragOperation {
-        switch context {
-        case .withinApplication: [.copy, .move]
-        case .outsideApplication: []
-        @unknown default: []
-        }
-    }
-
-    /// A tear-off is a drag that nothing took and that ended outside the window it began in. Inside it,
-    /// a drag no target accepted does nothing.
-    static func tearsOff(endedAt point: CGPoint, operation: NSDragOperation, from windowFrame: CGRect) -> Bool {
-        operation.isEmpty && !windowFrame.contains(point)
+        view.toolTip = toolTip
     }
 
     @MainActor
@@ -69,11 +52,16 @@ struct DragOutSource: NSViewRepresentable {
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
         override func mouseDown(with event: NSEvent) {
+            // Control-click is a secondary click: it opens the chip's menu, and is neither a click nor a drag.
+            if event.modifierFlags.contains(.control) {
+                rightMouseDown(with: event)
+                return
+            }
             pressLocation = event.locationInWindow
         }
 
         override func mouseDragged(with event: NSEvent) {
-            guard let start = pressLocation, DragOutSource.isDrag(from: start, to: event.locationInWindow),
+            guard let start = pressLocation, TearOffRules.isDrag(from: start, to: event.locationInWindow),
                   let window else { return }
             pressLocation = nil
             sourceWindowFrame = window.frame
@@ -89,7 +77,7 @@ struct DragOutSource: NSViewRepresentable {
         }
 
         func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-            DragOutSource.sourceOperationMask(for: context)
+            TearOffRules.sourceOperationMask(for: context)
         }
 
         /// Outside the window nothing will take the drag, so the image stays where it was let go and the
@@ -98,9 +86,15 @@ struct DragOutSource: NSViewRepresentable {
             session.animatesToStartingPositionsOnCancelOrFail = sourceWindowFrame.contains(screenPoint)
         }
 
+        /// `endedAt` reports where the drag image ended, which is not the cursor; the cursor decides whether
+        /// the drag left the panel, and is where the new window goes. Esc ends a drag with a key event, not
+        /// the mouse-up, and that is a cancel.
         func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-            guard DragOutSource.tearsOff(endedAt: screenPoint, operation: operation, from: sourceWindowFrame) else { return }
-            onDraggedOut(screenPoint)
+            let cursor = NSEvent.mouseLocation
+            let releasedByMouse = NSApp.currentEvent?.type == .leftMouseUp
+            guard TearOffRules.tearsOff(endedAt: cursor, operation: operation, from: sourceWindowFrame,
+                                        releasedByMouse: releasedByMouse) else { return }
+            onDraggedOut(cursor)
         }
 
         private func copyOfPayload() -> NSPasteboardItem {
@@ -118,9 +112,15 @@ struct DragOutSource: NSViewRepresentable {
         /// so its bounds are rendered from the window's content view.
         private func dragImage() -> NSImage {
             let image = NSImage(size: bounds.size)
-            guard let content = window?.contentView else { return image }
+            guard let content = window?.contentView else {
+                NSLog("[linkC] drag-out: the chip has no window content to draw, so the drag image is blank")
+                return image
+            }
             let area = content.convert(bounds, from: self)
-            guard let rep = content.bitmapImageRepForCachingDisplay(in: area) else { return image }
+            guard let rep = content.bitmapImageRepForCachingDisplay(in: area) else {
+                NSLog("[linkC] drag-out: no bitmap for the chip's %@ area, so the drag image is blank", NSStringFromRect(area))
+                return image
+            }
             content.cacheDisplay(in: area, to: rep)
             image.addRepresentation(rep)
             return image

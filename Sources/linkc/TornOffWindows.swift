@@ -70,20 +70,10 @@ private final class ItemWindow: NSWindow {
     /// ⌘W closes the window like its close button does. The menus SwiftUI builds for linkC's scene (App,
     /// Edit, View, Window, Help) have no Close item, so nothing else would answer the shortcut.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard Self.isClose(modifiers: event.modifierFlags, keyCode: event.keyCode,
-                           typed: event.charactersIgnoringModifiers) else { return super.performKeyEquivalent(with: event) }
+        guard TearOffRules.isClose(modifiers: event.modifierFlags, keyCode: event.keyCode,
+                                   typed: event.charactersIgnoringModifiers) else { return super.performKeyEquivalent(with: event) }
         performClose(nil)
         return true
-    }
-
-    /// ⌘ and no other of the four modifiers: Caps Lock and Fn are in `.deviceIndependentFlagsMask` too, and
-    /// must not stop the shortcut. The key is the letter w on a Latin layout (Dvorak included), and the
-    /// physical W key (code 13) on a layout whose letters are not Latin.
-    private static func isClose(modifiers: NSEvent.ModifierFlags, keyCode: UInt16, typed: String?) -> Bool {
-        guard modifiers.intersection([.command, .shift, .option, .control]) == .command else { return false }
-        if typed == "w" { return true }
-        let notLatin = typed?.unicodeScalars.allSatisfy { !$0.isASCII } ?? false
-        return notLatin && keyCode == 13
     }
 }
 
@@ -180,8 +170,9 @@ final class TornOffWindows: NSObject, NSWindowDelegate {
         }
         // The last window is gone and linkC would stay the active app with nothing on screen and the
         // keyboard still its own: hide it so the previous app gets the keyboard back. Not while the panel
-        // shows, and not when linkC isn't active, where hiding would take focus from the app in use.
-        if wanted == .accessory, !model.panelVisible, NSApp.isActive { NSApp.hide(nil) }
+        // shows, not when linkC isn't active (hiding would take focus from the app in use), and not over a
+        // modal dialog, which would then run unseen.
+        if wanted == .accessory, !model.panelVisible, NSApp.isActive, NSApp.modalWindow == nil { NSApp.hide(nil) }
     }
 
     // MARK: - Opening and closing
