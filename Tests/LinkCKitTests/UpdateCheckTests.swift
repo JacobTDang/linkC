@@ -159,7 +159,7 @@ final class UpdateSwapTests: XCTestCase {
     /// in it neither runs a command nor breaks the script.
     func testTheLogHeaderQuotesTheDistPath() throws {
         let script = UpdateSwap.script(pid: 1, distPath: #"/d/a"b$(touch pwned).app"#, installPath: "/Applications/linkC.app")
-        let header = try XCTUnwrap(script.split(separator: "\n").first { $0.hasPrefix("echo \"== ") })
+        let header = try XCTUnwrap(script.split(separator: "\n").first { $0.hasPrefix("printf '== ") })
         let sandbox = try Sandbox()
         let out = try sandbox.run(String(header), stubs: [:])
         XCTAssertTrue(out.contains(#"/d/a"b$(touch pwned).app"#), out)

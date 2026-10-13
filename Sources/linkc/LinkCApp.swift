@@ -106,10 +106,10 @@ final class AppModel {
         get { errorFlash.text }
         set { errorFlash.show(newValue) }
     }
-    /// Whether the menu-bar panel is currently on screen. Feeds the coordinator's watch probe
-    /// and gates the usage-refresh timer — no panel, no polling.
     /// An update notice waiting for the panel to open (see `start()`).
     private var pendingUpdateNotice: String?
+    /// Whether the menu-bar panel is currently on screen. Feeds the coordinator's watch probe
+    /// and gates the usage-refresh timer — no panel, no polling.
     var panelVisible = false {
         willSet {
             // Hiding the panel takes the open terminal off screen: record it as seen first.

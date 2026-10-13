@@ -76,11 +76,12 @@ public enum UpdateSwap {
         let failed = shellQuoted(
             "The update couldn't be installed, so the previous build is still running. Details: \(logPath)")
         let unmoved = shellQuoted(
-            "The update was staged but couldn't replace the installed app. Details: \(logPath)")
+            "The update couldn't replace the installed app, which was already removed. The new build is at "
+            + "\(installPath).update; move it into place by hand. Details: \(logPath)")
         return """
         #!/bin/sh
         command exec >>\(log) 2>&1 || exec >/dev/null 2>&1
-        echo "== $(date) update from" \(dist)
+        printf '== %s update from %s\\n' "$(date)" \(dist)
         while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
         rm -rf \(stage)
         identity=-
@@ -91,7 +92,7 @@ public enum UpdateSwap {
         fi
         if [ "$identity" = - ]; then
           case "$(codesign -dvv \(install) 2>&1)" in
-            \(authority)) echo \(downgraded) > \(notice) ;;
+            \(authority)) printf '%s\\n' \(downgraded) > \(notice) ;;
           esac
         fi
         echo "signing with: $identity"
@@ -102,12 +103,12 @@ public enum UpdateSwap {
           if rm -rf \(install) && mv \(stage) \(install); then
             echo "installed"
           else
-            echo \(unmoved) > \(notice)
+            printf '%s\\n' \(unmoved) > \(notice)
             echo "failed: the staged update couldn't replace the installed app"
           fi
         else
           rm -rf \(stage)
-          echo \(failed) > \(notice)
+          printf '%s\\n' \(failed) > \(notice)
           echo "failed: the previous build stays"
         fi
         open \(install)
@@ -124,13 +125,14 @@ public enum UpdateSwap {
             let text = try String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
             notice = text.isEmpty ? nil : text
         } catch {
-            notice = "The last update left a notice linkC couldn't read: \(error.localizedDescription). Details: \(logURL.path)"
+            notice = "The last update left a notice linkC couldn't read (\(error.localizedDescription)) Details: \(logURL.path)"
         }
         do {
             try FileManager.default.removeItem(at: url)
         } catch {
             // Left in place it would show on every launch; say why it couldn't go.
-            notice = (notice ?? "") + " (linkC couldn't remove \(url.path): \(error.localizedDescription))"
+            let removal = "linkC couldn't remove \(url.path): \(error.localizedDescription)"
+            notice = notice.map { "\($0) (\(removal))" } ?? removal
         }
         return notice
     }
