@@ -22,6 +22,47 @@ public struct TornOffFrame: Equatable, Codable, Sendable {
     }
 }
 
+extension TornOffItem {
+    /// The size a new window for this item opens at: a terminal alone, or a grid.
+    public var defaultSize: CGSize {
+        switch self {
+        case .terminal: CGSize(width: 720, height: 460)
+        case .split: CGSize(width: 960, height: 600)
+        }
+    }
+}
+
+extension TornOffFrame {
+    /// The space left between a window opened beside the panel and the panel.
+    public static let panelGap = 24.0
+
+    /// A window of `size` centred on `point`, moved the least that keeps it inside `bounds` (a
+    /// screen's visible frame). One larger than `bounds` shrinks to it.
+    public static func placed(size: CGSize, centredOn point: CGPoint, within bounds: CGRect) -> TornOffFrame {
+        fitted(origin: CGPoint(x: point.x - size.width / 2, y: point.y - size.height / 2), size: size, within: bounds)
+    }
+
+    /// A window of `size` beside `panel`, its top edge level with the panel's: to the right, or to the
+    /// left when the right has no room for it. Where neither side fits, it sits on the right edge of
+    /// `bounds`, over the panel.
+    public static func placed(size: CGSize, beside panel: CGRect, within bounds: CGRect) -> TornOffFrame {
+        let y = panel.maxY - size.height
+        let right = panel.maxX + panelGap
+        let left = panel.minX - panelGap - size.width
+        let x = right + size.width <= bounds.maxX || left < bounds.minX ? right : left
+        return fitted(origin: CGPoint(x: x, y: y), size: size, within: bounds)
+    }
+
+    private static func fitted(origin: CGPoint, size: CGSize, within bounds: CGRect) -> TornOffFrame {
+        let w = min(size.width, bounds.width)
+        let h = min(size.height, bounds.height)
+        return TornOffFrame(
+            x: min(max(origin.x, bounds.minX), bounds.maxX - w),
+            y: min(max(origin.y, bounds.minY), bounds.maxY - h),
+            w: w, h: h)
+    }
+}
+
 public struct TornOffWindow: Equatable, Codable, Sendable {
     public let item: TornOffItem
     public var frame: TornOffFrame

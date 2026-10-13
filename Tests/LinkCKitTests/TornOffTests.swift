@@ -54,4 +54,59 @@ final class TornOffTests: XCTestCase {
         let data = try JSONEncoder().encode(torn.windows)
         XCTAssertEqual(try JSONDecoder().decode([TornOffWindow].self, from: data), torn.windows)
     }
+
+    // MARK: Placing a new window
+
+    private let screen = CGRect(x: 0, y: 0, width: 1600, height: 900)
+
+    func testADefaultSizeForEachKindOfItem() {
+        XCTAssertEqual(TornOffItem.terminal("A").defaultSize, CGSize(width: 720, height: 460))
+        XCTAssertEqual(TornOffItem.split("/p").defaultSize, CGSize(width: 960, height: 600))
+    }
+
+    func testAWindowIsCentredOnThePoint() {
+        let placed = TornOffFrame.placed(size: CGSize(width: 720, height: 460), centredOn: CGPoint(x: 800, y: 450), within: screen)
+        XCTAssertEqual(placed, TornOffFrame(x: 440, y: 220, w: 720, h: 460))
+    }
+
+    func testAWindowDroppedNearAnEdgeIsPulledBackOntoTheScreen() {
+        let size = CGSize(width: 720, height: 460)
+        XCTAssertEqual(TornOffFrame.placed(size: size, centredOn: CGPoint(x: 1590, y: 450), within: screen),
+                       TornOffFrame(x: 880, y: 220, w: 720, h: 460), "right edge")
+        XCTAssertEqual(TornOffFrame.placed(size: size, centredOn: CGPoint(x: 5, y: 5), within: screen),
+                       TornOffFrame(x: 0, y: 0, w: 720, h: 460), "bottom left corner")
+        XCTAssertEqual(TornOffFrame.placed(size: size, centredOn: CGPoint(x: 800, y: 899), within: screen),
+                       TornOffFrame(x: 440, y: 440, w: 720, h: 460), "top edge")
+    }
+
+    /// The visible frame of a second screen can start at any offset, negative ones included.
+    func testPlacingWithinAScreenThatDoesNotStartAtTheOrigin() {
+        let left = CGRect(x: -1440, y: 100, width: 1440, height: 800)
+        let placed = TornOffFrame.placed(size: CGSize(width: 960, height: 600), centredOn: CGPoint(x: -20, y: 150), within: left)
+        XCTAssertEqual(placed, TornOffFrame(x: -960, y: 100, w: 960, h: 600))
+    }
+
+    func testAWindowLargerThanTheScreenShrinksToIt() {
+        let small = CGRect(x: 0, y: 0, width: 800, height: 500)
+        let placed = TornOffFrame.placed(size: CGSize(width: 960, height: 600), centredOn: CGPoint(x: 400, y: 250), within: small)
+        XCTAssertEqual(placed, TornOffFrame(x: 0, y: 0, w: 800, h: 500))
+    }
+
+    func testAWindowOpensBesideThePanelWithAGap() {
+        let panel = CGRect(x: 100, y: 300, width: 500, height: 520)
+        let placed = TornOffFrame.placed(size: CGSize(width: 720, height: 460), beside: panel, within: screen)
+        XCTAssertEqual(placed, TornOffFrame(x: 624, y: 360, w: 720, h: 460), "24 pt right of the panel, top edges level")
+    }
+
+    func testAWindowGoesLeftOfAPanelThatLeavesNoRoomOnTheRight() {
+        let panel = CGRect(x: 1100, y: 300, width: 480, height: 580)
+        let placed = TornOffFrame.placed(size: CGSize(width: 720, height: 460), beside: panel, within: screen)
+        XCTAssertEqual(placed, TornOffFrame(x: 356, y: 420, w: 720, h: 460))
+    }
+
+    func testAWindowWithRoomOnNeitherSideOfThePanelIsClampedOnScreen() {
+        let panel = CGRect(x: 300, y: 100, width: 1000, height: 700)
+        let placed = TornOffFrame.placed(size: CGSize(width: 720, height: 460), beside: panel, within: screen)
+        XCTAssertEqual(placed, TornOffFrame(x: 880, y: 340, w: 720, h: 460))
+    }
 }
