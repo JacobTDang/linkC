@@ -34,6 +34,24 @@ public struct BoardViewport: Equatable, Sendable {
         BoardViewport(originX: originX - dx / zoom, originY: originY - dy / zoom, zoom: zoom, lens: lens)
     }
 
+    /// An arrow key's pan, in screen points.
+    public static let arrowStep = 48.0
+    /// A ⇧-arrow pan, as a share of the visible width or height.
+    public static let arrowPage = 0.8
+
+    /// The view moved the way an arrow points: → shows what is further right. A step is
+    /// `arrowStep` screen points; a page is `arrowPage` of the canvas's `width` (← →) or `height` (↑ ↓).
+    public func panned(_ pan: BoardPan, width: Double, height: Double) -> BoardViewport {
+        let across = pan.direction == .left || pan.direction == .right
+        let distance = pan.page ? Self.arrowPage * (across ? width : height) : Self.arrowStep
+        switch pan.direction {
+        case .left: return panned(byScreenDX: distance, dy: 0)
+        case .right: return panned(byScreenDX: -distance, dy: 0)
+        case .up: return panned(byScreenDX: 0, dy: distance)
+        case .down: return panned(byScreenDX: 0, dy: -distance)
+        }
+    }
+
     /// Zoom by `factor`, keeping the canvas point under `pointer` fixed.
     public func zoomed(by factor: Double, aroundScreen pointer: CGPoint) -> BoardViewport {
         let anchor = toCanvas(pointer)
@@ -46,9 +64,13 @@ public struct BoardViewport: Equatable, Sendable {
                   w: Int((width / zoom).rounded(.up)), h: Int((height / zoom).rounded(.up)))
     }
 
+    /// The screen points `fitting` leaves around the content, which the Board's scroll bar also
+    /// pads its track with; one value, so a fitted view never shows a bar.
+    public static let edgeMargin = 48.0
+
     /// The viewport that shows all of `bounds` with `margin` screen points around it, never
     /// zoomed in past 100%, looking through `lens`.
-    public static func fitting(_ bounds: BoardRect, width: Double, height: Double, margin: Double = 48, lens: BoardLens = .all) -> BoardViewport {
+    public static func fitting(_ bounds: BoardRect, width: Double, height: Double, margin: Double = edgeMargin, lens: BoardLens = .all) -> BoardViewport {
         let usableWidth = max(1, width - 2 * margin)
         let usableHeight = max(1, height - 2 * margin)
         let zoom = min(1.0, min(usableWidth / Double(max(1, bounds.w)), usableHeight / Double(max(1, bounds.h))))

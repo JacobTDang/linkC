@@ -51,4 +51,22 @@ final class BoardViewportTests: XCTestCase {
         XCTAssertEqual(viewport.zoomed(by: 1.5, aroundScreen: CGPoint(x: 10, y: 10)).lens, .control)
         XCTAssertEqual(BoardViewport.fitting(BoardRect(x: 0, y: 0, w: 100, h: 100), width: 400, height: 300, lens: .data).lens, .data)
     }
+
+    /// → shows what is further right: the origin moves right by the step in canvas points.
+    func testArrowPansAStepInEachDirectionAtAnyZoom() {
+        let viewport = BoardViewport(originX: 100, originY: 50, zoom: 2)
+        let step = BoardViewport.arrowStep / 2
+        XCTAssertEqual(viewport.panned(BoardPan(.right), width: 800, height: 400).originX, 100 + step)
+        XCTAssertEqual(viewport.panned(BoardPan(.left), width: 800, height: 400).originX, 100 - step)
+        XCTAssertEqual(viewport.panned(BoardPan(.down), width: 800, height: 400).originY, 50 + step)
+        XCTAssertEqual(viewport.panned(BoardPan(.up), width: 800, height: 400).originY, 50 - step)
+        XCTAssertEqual(viewport.panned(BoardPan(.right), width: 800, height: 400).originY, 50, "a sideways pan keeps the height")
+    }
+
+    /// ⇧ pans by most of the visible width (← →) or height (↑ ↓).
+    func testShiftArrowPansAPage() {
+        let viewport = BoardViewport(originX: 0, originY: 0, zoom: 2)
+        XCTAssertEqual(viewport.panned(BoardPan(.right, page: true), width: 800, height: 400).originX, 0.8 * 800 / 2, accuracy: 0.001)
+        XCTAssertEqual(viewport.panned(BoardPan(.up, page: true), width: 800, height: 400).originY, -0.8 * 400 / 2, accuracy: 0.001)
+    }
 }
