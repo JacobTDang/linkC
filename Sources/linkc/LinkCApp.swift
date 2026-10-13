@@ -108,15 +108,16 @@ final class AppModel {
     }
     /// An update notice waiting for the panel to open (see `start()`).
     private var pendingUpdateNotice: String?
-    /// Whether the menu-bar panel is currently on screen. Feeds the coordinator's watch probe
-    /// and gates the usage-refresh timer — no panel, no polling.
+    /// Whether the menu-bar panel itself is currently on screen — not a torn-off window. Feeds
+    /// `onScreenSessionId` and the coordinator's watch probe, and gates the usage-refresh timer — no
+    /// panel, no polling. The coordinator's sweep follows the panel or any window: `syncSweepVisibility()`.
     var panelVisible = false {
         willSet {
             // Hiding the panel takes the open terminal off screen: record it as seen first.
             if !newValue { markOnScreenSeen() }
         }
         didSet {
-            coordinator?.setPanelVisible(panelVisible)
+            syncSweepVisibility()
             updateUsageTimer()
             if !panelVisible {
                 flushStateToDisk()
@@ -225,7 +226,6 @@ final class AppModel {
                 await self?.sampleShells()
                 self?.sampleSidebar()
             }
-            coordinator.setPanelVisible(panelVisible)
             self.coordinator = coordinator
             self.mcpServers = MCPServerService(claudePath: preflight.claudePath)
             self.skills = SkillsService(claudePath: preflight.claudePath)
@@ -238,6 +238,8 @@ final class AppModel {
             self.shells?.restoreActiveShells()
             // Restore has run: a window whose terminal or split did not come back must not open.
             pruneTornOff()
+            // Windows restored and kept, or a panel open already, keep the sweep running.
+            syncSweepVisibility()
             // A filing is dropped only when its terminal is truly dismissed — keep it for a live
             // terminal, and for one still offered back in Earlier, so a terminal that had exited by
             // quit time, or whose folder was missing and so was skipped above, doesn't lose it.
@@ -663,9 +665,20 @@ final class AppModel {
     /// only for the length of `select(_:)`'s focus.
     @ObservationIgnored private var fullSizeRequest: String?
 
-    /// The torn-off window that is key, or nil when none is. Set by the window controller as a window
-    /// becomes or stops being key; see `keyWindowSessionId`.
-    var keyWindowItem: TornOffItem?
+    /// The torn-off window that is key, or nil when none is. Written only by `setKeyWindowItem(_:)`; see
+    /// `keyWindowSessionId`.
+    private(set) var keyWindowItem: TornOffItem?
+
+    /// The window controller reports the key torn-off window from became-key, and nil from resign-key. The
+    /// window that stops being key was on screen until now, so its terminal is marked seen first —
+    /// straight away, not through `markOnScreenSeen()`'s `NSApp.isActive` gate: resign-key can arrive after
+    /// the app has already deactivated.
+    func setKeyWindowItem(_ item: TornOffItem?) {
+        guard item != keyWindowItem else { return }
+        markSeen(keyWindowSessionId, at: Date())
+        keyWindowItem = item
+    }
+
     /// Brings a torn-off window forward. Set by the window controller.
     @ObservationIgnored var onRaiseWindow: ((TornOffItem) -> Void)?
     /// The menu-bar panel's frame in screen points, where a window opens beside it. Set by the panel's
@@ -872,11 +885,16 @@ final class AppModel {
     /// it is also selected, keeping the grid on screen. Only the selection moves, as
     /// `repairSplitSelection()` moves it: this also runs for a pane that took the keyboard by itself, so
     /// it never activates the app or adopts a worker. The user's own click goes on to `pickSplitPane(_:in:)`.
-    /// A split in a torn-off window leaves the panel's selection alone.
+    /// A split in a torn-off window leaves the panel's selection alone. `project` is standardized here,
+    /// like in every split operation below, so it compares with `splitProject` and the windows' keys.
     func focusInSplit(_ id: String, in project: String) {
-        guard let split = sidebarState.split(for: project), split.members.contains(id) else { return }
-        if project == splitProject, selectedId != id { coordinator?.terminals.select(id) }
-        sidebarState.setSplit(split.focusing(id), for: project)
+        let key = ProjectTabs.standardized(project)
+        guard let split = sidebarState.split(for: key), split.members.contains(id) else { return }
+        let next = split.focusing(id)
+        // The pane a key window shows is about to change; the panel's own change is marked by the selection.
+        if next != split { markOnScreenSeen() }
+        if key == splitProject, selectedId != id { coordinator?.terminals.select(id) }
+        sidebarState.setSplit(next, for: key)
     }
 
     /// The user clicked a pane: it is opened as a tab is (`focus(_:)`), so a worker becomes theirs and
@@ -884,11 +902,12 @@ final class AppModel {
     /// In a torn-off window the panel's selection stays: the pane takes the split's focus and is
     /// acknowledged, nothing more.
     func pickSplitPane(_ id: String, in project: String) {
-        guard sidebarState.split(for: project)?.members.contains(id) == true else { return }
-        if project == splitProject {
+        let key = ProjectTabs.standardized(project)
+        guard sidebarState.split(for: key)?.members.contains(id) == true else { return }
+        if key == splitProject {
             focus(id)
         } else {
-            focusInSplit(id, in: project)
+            focusInSplit(id, in: key)
             coordinator?.acknowledgeSession(id)
         }
     }
@@ -905,17 +924,18 @@ final class AppModel {
     /// window changes only the stored split: the panel's selection stays, and the window closes if the
     /// split is no longer active.
     func removeFromSplit(_ id: String, in project: String) {
-        guard let split = sidebarState.split(for: project) else { return }
+        let key = ProjectTabs.standardized(project)
+        guard let split = sidebarState.split(for: key) else { return }
         markOnScreenSeen()   // the pane leaving the grid was on screen until now
         let next = split.removing(id)
         if next.isViable {
-            sidebarState.setSplit(next, for: project)
+            sidebarState.setSplit(next, for: key)
         } else {
-            sidebarState.clearSplit(for: project)
+            sidebarState.clearSplit(for: key)
         }
         defer { pruneTornOff() }
-        guard project == splitProject else { return }
-        let repair = next.repair(selected: selectedId, liveIDs: splittableIDs(in: project))
+        guard key == splitProject else { return }
+        let repair = next.repair(selected: selectedId, liveIDs: splittableIDs(in: key))
         // Focus first, while the grid still covers whatever the selection fell back to: cleared first,
         // the fallback would read as on screen and be marked seen as the selection leaves it.
         if let target = repair.select { focus(target) }
@@ -929,12 +949,16 @@ final class AppModel {
     /// A terminal dropped on itself does nothing. A split in a torn-off window is stored but not
     /// shown: the window already shows it, and the panel's selection stays.
     func dropTerminal(_ id: String, onto target: String, edge: SplitEdge, in project: String) {
+        let key = ProjectTabs.standardized(project)
         do {
             let next = try ProjectSplit.dropping(
-                id, onto: target, edge: edge, into: sidebarState.split(for: project), splittable: splittableIDs(in: project))
+                id, onto: target, edge: edge, into: sidebarState.split(for: key), splittable: splittableIDs(in: key))
             lastError = nil
-            sidebarState.setSplit(next, for: project)
-            if project == splitProject || !tornOff.contains(.split(ProjectTabs.standardized(project))) { showSplit(project) }
+            // The drop can move the dropped terminal into a window and change the pane a key window
+            // shows: whatever is on screen now was seen until this store.
+            markOnScreenSeen()
+            sidebarState.setSplit(next, for: key)
+            if key == splitProject || !tornOff.contains(.split(key)) { showSplit(key) }
         } catch ProjectSplit.Refusal.onItself {
             return
         } catch ProjectSplit.Refusal.notSplittable {
@@ -952,7 +976,9 @@ final class AppModel {
     func dissolveSplit(_ project: String) {
         let key = ProjectTabs.standardized(project)
         let split = sidebarState.split(for: key)
+        markOnScreenSeen()   // a window showing the split closes with it
         sidebarState.clearSplit(for: key)
+        pruneTornOff()
         guard splitProject == key else { return }
         // Focus first, while the grid still covers a fallback selection, so it isn't marked seen.
         if let target = split?.repair(selected: selectedId, liveIDs: splittableIDs(in: key)).select { focus(target) }

@@ -48,6 +48,27 @@ final class TornOffTests: XCTestCase {
         XCTAssertNil(torn.host(of: "C", splits: splits) { _ in ["A", "B"] })
     }
 
+    /// Asked for every sidebar row, so the splits (a filesystem call per key) are built only when a
+    /// split window could hold the terminal.
+    func testTheSplitsAreReadOnlyWhenASplitWindowIsOpen() {
+        var reads = 0
+        func splits() -> [String: ProjectSplit] {
+            reads += 1
+            return ["/p": ProjectSplit(members: ["A", "B"])]
+        }
+        let terminals = TornOff().adding(.terminal("A"), frame: frame)
+        XCTAssertEqual(terminals.host(of: "A", splits: splits()) { _ in ["A", "B"] }, .terminal("A"))
+        XCTAssertNil(terminals.host(of: "B", splits: splits()) { _ in ["A", "B"] })
+        XCTAssertEqual(reads, 0, "only terminal windows are open: the splits are never built")
+
+        let withSplit = terminals.adding(.split("/p"), frame: frame)
+        XCTAssertEqual(withSplit.host(of: "B", splits: splits()) { _ in ["A", "B"] }, .split("/p"))
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(withSplit.host(of: "A", splits: splits()) { _ in ["A", "B"] }, .terminal("A"),
+                       "its own window answers before the splits are read")
+        XCTAssertEqual(reads, 1)
+    }
+
     func testPruningClosesWhatIsGone() {
         let torn = TornOff().adding(.terminal("A"), frame: frame).adding(.terminal("GONE"), frame: frame)
             .adding(.split("/p"), frame: frame).adding(.split("/dead"), frame: frame)

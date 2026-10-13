@@ -2,26 +2,42 @@ import AppKit
 import LinkCKit
 
 /// Terminals and splits that live in their own windows. The windows belong to the window controller:
-/// it follows `tornOff`, opens and closes them, and reports the key one through `keyWindowItem`.
+/// it follows `tornOff`, opens and closes them, and reports the key one through `setKeyWindowItem(_:)`.
 /// Writers are `tearOff`, `bringBack`, `setFrame` and `pruneTornOff()` — never a view body.
 extension AppModel {
     var tornOff: TornOff { sidebarState.tornOff }
 
-    /// The window that holds terminal `id`'s live view, or nil for the panel. Asked often, so it does
-    /// no work at all while nothing is torn off.
+    /// The window that holds terminal `id`'s live view, or nil for the panel. Asked for every sidebar
+    /// row, so it does no work while nothing is torn off, and builds the stored splits only when a split
+    /// window is open.
     func host(of id: String) -> TornOffItem? {
         guard !tornOff.isEmpty else { return nil }
         return tornOff.host(of: id, splits: storedSplits(), liveIDs: { splittableIDs(in: $0) })
     }
 
-    /// The terminal the key torn-off window is showing: its own, or its split's focused live pane. nil
-    /// once that window is gone, whether or not the controller has reported it yet.
+    /// The terminal the key torn-off window is showing: its own, or its split's focused live pane — when
+    /// that pane lives in the split's window, not in a window of its own, where the split shows only a
+    /// note. nil once that window is gone, whether or not the controller has reported it yet.
     var keyWindowSessionId: String? {
         guard let item = keyWindowItem, tornOff.contains(item) else { return nil }
         switch item {
-        case .terminal(let id): return id
-        case .split(let project): return sidebarState.split(for: project)?.focusedLive(in: splittableIDs(in: project))
+        case .terminal(let id):
+            return id
+        case .split(let project):
+            guard let id = sidebarState.split(for: project)?.focusedLive(in: splittableIDs(in: project)),
+                  host(of: id) == item else { return nil }
+            return id
         }
+    }
+
+    /// The coordinator's sweep runs its app-side sampling (`sampleShells()`, `sampleSidebar()`) while
+    /// the panel is open or any torn-off window is. `panelVisible` itself still means the panel only:
+    /// `onScreenSessionId`, `isWatching` and the usage timer depend on that. Without the windows
+    /// counted, a hidden panel stops the sweep for good: an ended terminal's window never closes, the key
+    /// window's session is never marked seen and shell titles go stale. Called wherever either side
+    /// changes: `panelVisible`, `tearOff`, `bringBack`, `pruneTornOff()` and `start()`.
+    func syncSweepVisibility() {
+        coordinator?.setPanelVisible(panelVisible || !tornOff.isEmpty)
     }
 
     /// Every live terminal: the sessions and the shell terminals.
@@ -38,6 +54,7 @@ extension AppModel {
     /// there is none. An item already in a window brings it forward instead. A terminal that has
     /// ended, or a split with fewer than two running terminals, is refused and the error bar says why.
     func tearOff(_ item: TornOffItem, at point: CGPoint?) {
+        let item = standardized(item)
         switch item {
         case .terminal(let id):
             guard liveTerminalIDs.contains(id) else {
@@ -55,22 +72,39 @@ extension AppModel {
             return
         }
         guard let frame = newWindowFrame(for: item, at: point) else { return }
+        markOnScreenSeen()   // what the panel shows now is about to leave it
         sidebarState.setTornOff(tornOff.adding(item, frame: frame))
+        syncSweepVisibility()
     }
 
-    /// Puts `item` back in the panel: its window closes, the session keeps running.
+    /// Puts `item` back in the panel: its window closes, the session keeps running. Also the way a
+    /// window closes on the user's behalf, so any other window whose terminal has ended closes with it.
     func bringBack(_ item: TornOffItem) {
+        let item = standardized(item)
+        guard tornOff.contains(item) else { return }
+        markOnScreenSeen()   // the window may be the key one: what it showed was on screen until now
         sidebarState.setTornOff(tornOff.removing(item))
+        pruneTornOff()
+        syncSweepVisibility()
     }
 
     func setFrame(_ item: TornOffItem, _ frame: TornOffFrame) {
         sidebarState.setTornOff(tornOff.framing(item, to: frame))
     }
 
-    /// Brings `item`'s window forward. For a split, `id` first becomes the pane that has the focus.
+    /// Brings `item`'s window forward. For a split, `id` first becomes the pane that has the focus. An
+    /// item that isn't open does nothing: a "Show window" button can outlive its window.
     func raise(_ item: TornOffItem, focusing id: String?) {
+        let item = standardized(item)
+        guard tornOff.contains(item) else { return }
         if case .split(let project) = item, let id { focusInSplit(id, in: project) }
         onRaiseWindow?(item)
+    }
+
+    /// Windows are keyed by canonical project path, the form `host(of:)` and `pruneTornOff()` compare.
+    private func standardized(_ item: TornOffItem) -> TornOffItem {
+        guard case .split(let project) = item else { return item }
+        return .split(ProjectTabs.standardized(project))
     }
 
     /// Where a new window for `item` opens, on the screen holding `point` — or holding the panel when

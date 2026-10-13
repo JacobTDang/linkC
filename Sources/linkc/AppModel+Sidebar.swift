@@ -2,8 +2,9 @@ import AppKit
 import LinkCKit
 
 /// The sidebar's live inputs. Reads only — the writers are `sampleSidebar()` (once a second while
-/// the panel is visible, from the coordinator's sweep, and once as it opens) and `markOnScreenSeen()` (just before the
-/// selection, the open screen, or the panel's visibility changes) — never a view body.
+/// the panel is visible or a torn-off window is open, from the coordinator's sweep, and once as the panel
+/// opens) and `markOnScreenSeen()` (just before the selection, the open screen, what a window shows, or the
+/// panel's visibility changes) — never a view body.
 extension AppModel {
     /// The session whose terminal is actually on screen: selected, no screen layered over it,
     /// panel visible. While a split shows, only a selected pane counts: after a pane ends, the
@@ -123,7 +124,8 @@ extension AppModel {
         return (rows > 0 || supabaseNeedsLogin || !cloudErrors.isEmpty) ? rows : nil
     }
 
-    /// Once a second while the panel is visible, and once as it opens: keep a showing split's
+    /// Once a second while the panel is visible or a torn-off window is open (`syncSweepVisibility()`),
+    /// and once as the panel opens: keep a showing split's
     /// selection on its panes, forget ended sessions, drop split members that are gone, mark what is
     /// on screen as seen, keep the project order, expand projects that just turned coral, and publish
     /// the sidebar's non-observable inputs. The sidebar re-renders on the publish only when one of
@@ -196,18 +198,20 @@ extension AppModel {
             }
         }
         sidebarState.setTornOff(result.kept)
+        syncSweepVisibility()
     }
 
     /// Mark the on-screen session seen, and the one in the key torn-off window while linkC is the
-    /// active app. Runs with `sampleSidebar()`, and just before the selection, the open screen, or the
-    /// panel's visibility changes, so a turn that finished while the user watched never reads as
-    /// unseen afterwards.
+    /// active app. Runs with `sampleSidebar()`, and just before the selection, the open screen, what a
+    /// window shows (its focused pane, its split, its existence), or the panel's visibility changes, so a
+    /// turn that finished while the user watched never reads as unseen afterwards.
     func markOnScreenSeen(at now: Date = Date()) {
         markSeen(onScreenSessionId, at: now)
         if NSApp.isActive { markSeen(keyWindowSessionId, at: now) }
     }
 
-    private func markSeen(_ id: String?, at now: Date) {
+    /// Marks session `id` seen; nil or an id that isn't a session does nothing.
+    func markSeen(_ id: String?, at now: Date) {
         guard let id, let session = sessions.first(where: { $0.id == id }) else { return }
         attention.markSeen(session, at: now)
     }

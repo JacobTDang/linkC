@@ -23,6 +23,10 @@ public struct TornOffFrame: Equatable, Codable, Sendable {
 }
 
 extension TornOffItem {
+    var isSplit: Bool {
+        if case .split = self { true } else { false }
+    }
+
     /// The size a new window for this item opens at: a terminal alone, or a grid.
     public var defaultSize: CGSize {
         switch self {
@@ -109,9 +113,13 @@ public struct TornOff: Equatable, Sendable {
     }
 
     /// The window that holds terminal `id`'s live view, or nil for the panel. `splits` are the stored
-    /// splits by canonical project path; `liveIDs` gives a project's live terminals.
-    public func host(of id: String, splits: [String: ProjectSplit], liveIDs: (String) -> Set<String>) -> TornOffItem? {
+    /// splits by canonical project path, read only when a split window is open — the sidebar asks for
+    /// every row, and building them costs a filesystem call per project. `liveIDs` gives a project's
+    /// live terminals.
+    public func host(of id: String, splits: @autoclosure () -> [String: ProjectSplit], liveIDs: (String) -> Set<String>) -> TornOffItem? {
         if contains(.terminal(id)) { return .terminal(id) }
+        guard windows.contains(where: { $0.item.isSplit }) else { return nil }
+        let splits = splits()
         // A terminal belongs to one project, so at most one split window can hold it live; the first
         // one in window order wins should that ever not hold.
         for window in windows {

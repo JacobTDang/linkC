@@ -225,7 +225,8 @@ public final class AppCoordinator {
     /// nothing. Internal: the relay writes it (see `AppCoordinator+Relay.swift`).
     var relayWork = RelayWork()
 
-    /// Whether the menu-bar panel is on screen. Set through `setPanelVisible`.
+    /// Whether the app has something on screen that needs its own sampling: the menu-bar panel, or a
+    /// window that shows live terminals. The app decides which, and sets it through `setPanelVisible`.
     public private(set) var panelVisible = false
     /// The app's own sampling that only matters while the panel is on screen (terminals, sidebar).
     /// Runs on every tick while `panelVisible`, after the sessions are sampled, and once on its own
@@ -398,9 +399,9 @@ public final class AppCoordinator {
         ticker.start()
     }
 
-    /// Tells the coordinator whether the panel is on screen. Showing it gives the panel's own
-    /// sampling one look at once, so the panel never opens on data that is seconds old, and holds
-    /// the one-second cadence while it stays open. The session sweep and the relay do not run on
+    /// Tells the coordinator whether the panel, or a window that needs the same sampling, is on screen.
+    /// Showing it gives the panel's own sampling one look at once, so the panel never opens on data
+    /// that is seconds old, and holds the one-second cadence while it stays open. The session sweep and the relay do not run on
     /// show: the app sets this before the window appears, so a full pass here would run on the
     /// main thread in the middle of the opening animation. The sleep in progress is cut short and
     /// chosen again instead, so that pass follows within a second.
