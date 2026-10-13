@@ -35,6 +35,13 @@ final class TornOffTests: XCTestCase {
         XCTAssertNil(host("Z"))
     }
 
+    /// A live terminal of the project that isn't one of the split's panes stays in the panel.
+    func testALiveNonMemberHasNoGridHost() {
+        let splits = ["/p": ProjectSplit(members: ["A", "B", "C"])]
+        let torn = TornOff().adding(.split("/p"), frame: frame)
+        XCTAssertNil(torn.host(of: "D", splits: splits) { _ in ["A", "B", "C", "D"] })
+    }
+
     func testAMemberThatIsNotLiveHasNoGridHost() {
         let splits = ["/p": ProjectSplit(members: ["A", "B", "C"])]
         let torn = TornOff().adding(.split("/p"), frame: frame)

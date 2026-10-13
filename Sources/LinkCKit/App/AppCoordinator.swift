@@ -1018,7 +1018,8 @@ public final class AppCoordinator {
             // for this agent's last limit — not that the session itself is broken. Its own
             // recorded cooldown is the authority on whether that is still true; once the
             // cooldown has ended, recover on its own rather than waiting for a person to click
-            // the tab (`focusSession` is the only other place that clears `.error`). This runs
+            // the tab or its torn-off window (`acknowledgeSession` is the only other place that
+            // clears `.error`). This runs
             // for every agent kind, including Claude, whose own state otherwise comes from hook
             // events that never touch this mark.
             if let current = store.session(id: session.id), current.state == .error {

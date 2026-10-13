@@ -112,6 +112,8 @@ public struct TornOff: Equatable, Sendable {
     /// splits by canonical project path; `liveIDs` gives a project's live terminals.
     public func host(of id: String, splits: [String: ProjectSplit], liveIDs: (String) -> Set<String>) -> TornOffItem? {
         if contains(.terminal(id)) { return .terminal(id) }
+        // A terminal belongs to one project, so at most one split window can hold it live; the first
+        // one in window order wins should that ever not hold.
         for window in windows {
             guard case .split(let project) = window.item, let split = splits[project],
                   split.members.contains(id) else { continue }

@@ -213,6 +213,10 @@ public final class SidebarState {
             break
         }
         tornOff = readableWindows.reduce(TornOff()) { $0.adding($1.item, frame: $1.frame) }
+        let duplicateWindows = readableWindows.count != tornOff.windows.count
+        if duplicateWindows {
+            NSLog("[linkC] the stored torn-off windows listed an item twice — kept the first")
+        }
 
         let changed = stored.projectOrder != projectOrder
             || stored.expandOverrides != expandOverrides
@@ -222,6 +226,7 @@ public final class SidebarState {
             || droppedSplits
             || Set(readableSplits.keys) != Set(splitsByProject.keys)
             || droppedWindows
+            || duplicateWindows
         if changed {
             save()
         }

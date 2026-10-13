@@ -258,7 +258,9 @@ final class SidebarStateTests: XCTestCase {
     func testAFileWithoutWindowsLoadsNone() {
         let json = #"{"projectOrder":["/a"],"expandOverrides":{},"openSections":[]}"#
         defaults.set(Data(json.utf8), forKey: SidebarState.key)
-        XCTAssertTrue(SidebarState(defaults: defaults).tornOff.isEmpty)
+        let state = SidebarState(defaults: defaults)
+        XCTAssertTrue(state.tornOff.isEmpty)
+        XCTAssertEqual(state.projectOrder, ["/a"], "the file itself still loads")
     }
 
     /// One unreadable entry costs only itself, and the file is rewritten without it.

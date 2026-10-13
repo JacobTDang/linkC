@@ -1034,7 +1034,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     }
 
     /// A torn-off window opens a session the way its tab does, but the panel's selection stays put:
-    /// the worker becomes the user's, the app comes forward, a finished non-Claude session reads as seen.
+    /// the worker becomes the user's and a finished non-Claude session reads as seen (bringing the app forward
+    /// needs a running NSApp, which tests don't have).
     func testAcknowledgingASessionOpensItWithoutSelectingIt() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-ack-\(UUID().uuidString)")
         let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
