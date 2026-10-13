@@ -38,7 +38,19 @@ struct WindowedNote: View {
 
     private var compactBody: some View {
         ViewThatFits(in: .horizontal) {
-            // Full layout: heading and both links on one line.
+            // Room enough: the panel's own note, smaller.
+            VStack(spacing: 4) {
+                Text("Open in its own window")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+                HStack(spacing: 10) {
+                    QuietLink("Show window", size: 10) { model.raise(item, focusing: nil) }
+                    QuietLink("Bring back", size: 10) { model.bringBack(item) }
+                }
+            }
+            .lineLimit(1)
+
+            // Narrower: a short heading with both links beside it.
             HStack(spacing: 8) {
                 Text("In window")
                     .font(.system(size: 11))

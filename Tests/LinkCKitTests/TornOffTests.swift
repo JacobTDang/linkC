@@ -232,4 +232,28 @@ final class TornOffTests: XCTestCase {
         XCTAssertEqual(TornOffItem.splitTitle(project: "/Users/me/Projects/linkC"), "linkC \u{2014} Split")
         XCTAssertEqual(TornOffItem.splitTitle(project: "/Users/me/Projects/linkC/"), "linkC \u{2014} Split")
     }
+
+    /// The batch answer is the single answer for every id, from one read of the splits.
+    func testHostsAgreesWithHostForEveryIdAndReadsTheSplitsOnce() {
+        let splits = ["/p": ProjectSplit(members: ["A", "B", "C"]), "/q": ProjectSplit(members: ["X", "Y"])]
+        let live: [String: Set<String>] = ["/p": ["A", "B", "C", "D"], "/q": ["X"]]
+        let torn = TornOff().adding(.split("/p"), frame: frame).adding(.terminal("B"), frame: frame)
+            .adding(.split("/q"), frame: frame)
+        var reads = 0
+        let ids = ["A", "B", "C", "D", "X", "Y", "Z"]
+        let batch = torn.hosts(of: ids, splits: { reads += 1; return splits }()) { live[$0] ?? [] }
+        XCTAssertEqual(reads, 1)
+        for id in ids {
+            XCTAssertEqual(batch[id], torn.host(of: id, splits: splits) { live[$0] ?? [] }, id)
+        }
+        XCTAssertEqual(batch.count, 3, "only ids that live in a window: A, B, C")
+    }
+
+    func testHostsReadsNoSplitsWithoutASplitWindow() {
+        var reads = 0
+        let torn = TornOff().adding(.terminal("A"), frame: frame)
+        let batch = torn.hosts(of: ["A", "B"], splits: { reads += 1; return [:] }()) { _ in [] }
+        XCTAssertEqual(batch, ["A": TornOffItem.terminal("A")])
+        XCTAssertEqual(reads, 0)
+    }
 }

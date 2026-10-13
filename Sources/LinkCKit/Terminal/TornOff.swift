@@ -150,18 +150,35 @@ public struct TornOff: Equatable, Sendable {
     /// every row, and building them costs a filesystem call per project. `liveIDs` gives a project's
     /// live terminals.
     public func host(of id: String, splits: @autoclosure () -> [String: ProjectSplit], liveIDs: (String) -> Set<String>) -> TornOffItem? {
-        if contains(.terminal(id)) { return .terminal(id) }
-        guard windows.contains(where: { $0.item.isSplit }) else { return nil }
+        hosts(of: [id], splits: splits(), liveIDs: liveIDs)[id]
+    }
+
+    /// `host(of:)` for many terminals at once — a grid asks for every pane — reading the splits once
+    /// and each split window's live terminals once. Holds only the ids that live in a window.
+    public func hosts(of ids: [String], splits: @autoclosure () -> [String: ProjectSplit],
+                      liveIDs: (String) -> Set<String>) -> [String: TornOffItem] {
+        var result: [String: TornOffItem] = [:]
+        var remaining: [String] = []
+        for id in ids {
+            if contains(.terminal(id)) { result[id] = .terminal(id) } else { remaining.append(id) }
+        }
+        guard !remaining.isEmpty, windows.contains(where: { $0.item.isSplit }) else { return result }
         let splits = splits()
         // A terminal belongs to one project, so at most one split window can hold it live; the first
         // one in window order wins should that ever not hold.
         for window in windows {
-            guard case .split(let project) = window.item, let split = splits[project],
-                  split.members.contains(id) else { continue }
+            guard case .split(let project) = window.item, let split = splits[project] else { continue }
+            let members = remaining.filter { split.members.contains($0) }
+            guard !members.isEmpty else { continue }
             let live = liveIDs(project)
-            if live.contains(id), split.isActive(liveIDs: live) { return window.item }
+            guard split.isActive(liveIDs: live) else { continue }
+            for id in members where live.contains(id) {
+                result[id] = window.item
+            }
+            remaining.removeAll { result[$0] != nil }
+            if remaining.isEmpty { break }
         }
-        return nil
+        return result
     }
 
     /// What the open windows (`open`, by item) must do to match these entries: the entries with no window

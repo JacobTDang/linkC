@@ -111,7 +111,8 @@ private struct SplitCell: View {
                               onClick: { [weak model] in Task { @MainActor in model?.pickSplitPane(id, in: project) } })
                 .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
                 .overlay {
-                    // When fewer than two live panes remain, this window is about to be pruned closed, so an empty cell shows nothing briefly.
+                    // A window grid's pane hosted by the panel (nil) shows nothing: that only happens once
+                    // the split has fewer than two live panes, and the next prune closes this window.
                     if !hostedHere, let elsewhere = pane.hostedIn {
                         WindowedNote(model: model, item: elsewhere, compact: true)
                     }
