@@ -212,8 +212,8 @@ public final class AppCoordinator {
     /// to the hook server's status-line path. See `SettingsComposer.statusLineCommand`.
     private let statusLines: StatusLineFeed
     private var consumerTask: Task<Void, Never>?
-    /// The one loop behind every periodic sample: the sessions, the relay and, while the panel is
-    /// visible, the app's own sampling (`panelSweep`). Its spacing follows `TickCadence`.
+    /// The one loop behind every periodic sample: the sessions, the relay and, while `panelVisible`,
+    /// the app's own sampling (`panelSweep`). Its spacing follows `TickCadence`.
     private var sweepTicker: SweepTicker?
     /// Wakes `sweepTicker` when a workspace's inbox file is replaced, so a new delegation never
     /// waits out the slow interval. A burst of writes still makes one pass: the ticker holds
@@ -225,11 +225,12 @@ public final class AppCoordinator {
     /// nothing. Internal: the relay writes it (see `AppCoordinator+Relay.swift`).
     var relayWork = RelayWork()
 
-    /// Whether the menu-bar panel is on screen. Set through `setPanelVisible`.
+    /// Whether the app has something on screen that needs its own sampling: the menu-bar panel, or a
+    /// window that shows live terminals. The app decides which, and sets it through `setPanelVisible`.
     public private(set) var panelVisible = false
-    /// The app's own sampling that only matters while the panel is on screen (terminals, sidebar).
-    /// Runs on every tick while `panelVisible`, after the sessions are sampled, and once on its own
-    /// when the panel is shown (see `setPanelVisible`).
+    /// The app's own sampling that only matters while the panel is visible or a torn-off window is open
+    /// (terminals, sidebar). Runs on every tick while `panelVisible`, after the sessions are sampled, and
+    /// once on its own when `panelVisible` turns true (see `setPanelVisible`).
     public var panelSweep: (@MainActor () async -> Void)?
 
     /// Designated initializer — all collaborators injected (used by tests).
@@ -398,12 +399,12 @@ public final class AppCoordinator {
         ticker.start()
     }
 
-    /// Tells the coordinator whether the panel is on screen. Showing it gives the panel's own
-    /// sampling one look at once, so the panel never opens on data that is seconds old, and holds
-    /// the one-second cadence while it stays open. The session sweep and the relay do not run on
-    /// show: the app sets this before the window appears, so a full pass here would run on the
-    /// main thread in the middle of the opening animation. The sleep in progress is cut short and
-    /// chosen again instead, so that pass follows within a second.
+    /// Tells the coordinator whether the panel, or a window that needs the same sampling, is on screen.
+    /// Showing it gives the panel's own sampling one look at once, so the panel never opens on data
+    /// that is seconds old, and holds the one-second cadence while it stays open. The session sweep
+    /// and the relay do not run on show: the app sets this before the window appears, so a full pass
+    /// here would run on the main thread in the middle of the opening animation. The sleep in progress
+    /// is cut short and chosen again instead, so that pass follows within a second.
     public func setPanelVisible(_ visible: Bool) {
         guard visible != panelVisible else { return }
         panelVisible = visible
@@ -425,8 +426,8 @@ public final class AppCoordinator {
     }
 
     /// One pass of the sweep: keep the inbox watches and the relay's notes on the workspaces that
-    /// have a live session, sample the sessions and run the relay, then the app's panel-only
-    /// sampling if the panel is on screen. The watches come first, so a write after them wakes
+    /// have a live session, sample the sessions and run the relay, then the app's own sampling
+    /// while `panelVisible`. The watches come first, so a write after them wakes
     /// the next pass and one before them is read by this one.
     private func sweepTick() async {
         let workspaces = Set(store.sessions.filter { $0.state != .ended }.map(\.cwd))
@@ -966,6 +967,12 @@ public final class AppCoordinator {
     public func focusSession(_ id: String) {
         terminals.select(id)
         onSessionFocused?(id)
+        acknowledgeSession(id)
+    }
+
+    /// Opens a session the way clicking its tab does, minus the selection: a torn-off window shows it
+    /// while the panel keeps what it had open.
+    public func acknowledgeSession(_ id: String) {
         // Opening a worker's terminal makes it the user's: they are using it now.
         adoptWorker(id)
         NSApp?.activate(ignoringOtherApps: true)
@@ -1012,7 +1019,8 @@ public final class AppCoordinator {
             // for this agent's last limit — not that the session itself is broken. Its own
             // recorded cooldown is the authority on whether that is still true; once the
             // cooldown has ended, recover on its own rather than waiting for a person to click
-            // the tab (`focusSession` is the only other place that clears `.error`). This runs
+            // the tab or its torn-off window (`acknowledgeSession` is the only other place that
+            // clears `.error`). This runs
             // for every agent kind, including Claude, whose own state otherwise comes from hook
             // events that never touch this mark.
             if let current = store.session(id: session.id), current.state == .error {

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import LinkCKit
 
 /// The Chrome-style strip above the right pane: the project's Board, pinned, then its Split when it
@@ -42,6 +43,7 @@ struct ProjectTabStrip: View {
                         HStack(spacing: 2) {
                             ForEach(sessions) { tab in
                                 TabChip(tab: tab, isSelected: tab.id == selected, width: width,
+                                        windowActions: windowActions(for: tab),
                                         onSelect: { model.select(tab) }, onClose: { requestClose(tab) })
                             }
                         }
@@ -56,7 +58,7 @@ struct ProjectTabStrip: View {
                     .dropDestination(for: LinkCTerminalDrag.self) { items, _ in
                         guard let project = model.splitProject, let drag = items.first, drag.fromPane,
                               model.liveSplitMembers(in: project).contains(drag.id) else { return false }
-                        model.removeFromSplit(drag.id)
+                        model.removeFromSplit(drag.id, in: project)
                         return true
                     }
                 }
@@ -116,6 +118,25 @@ struct ProjectTabStrip: View {
         }
     }
 
+    /// What a chip can open in its own window: a session or terminal, or the project's Split. nil for
+    /// the Board and apps, which have no window of their own. The closures run later, from AppKit.
+    private func windowActions(for tab: ProjectTab) -> TabChip.WindowActions? {
+        let item: TornOffItem
+        switch tab.kind {
+        case .agent, .terminal:
+            item = .terminal(tab.id)
+        case .split:
+            guard let project = model.currentProject else { return nil }
+            item = .split(ProjectTabs.standardized(project))
+        case .board, .app:
+            return nil
+        }
+        return TabChip.WindowActions(
+            isTornOff: model.tornOff.contains(item),
+            tearOff: { [weak model] point in model?.tearOff(item, at: point) },
+            bringBack: { [weak model] in model?.bringBack(item) })
+    }
+
     private func handle(_ command: TabCommand) {
         let tabs = model.projectTabs
         switch command {
@@ -150,38 +171,100 @@ func AppsMenuSection(model: AppModel, project: String) -> some View {
     }
 }
 
-/// One tab.
+/// One tab. A session, terminal or Split chip is also an AppKit drag source (`DragOutSource`) that
+/// opens in a window when dragged out of the panel; the Board and apps just select.
 private struct TabChip: View {
+    /// What a chip does with its own window.
+    struct WindowActions {
+        let isTornOff: Bool
+        /// Opens the window: centred on the point (screen coordinates), or beside the panel for nil.
+        let tearOff: (CGPoint?) -> Void
+        let bringBack: () -> Void
+
+        /// The chip's menu item, and the same action for VoiceOver.
+        var toggleTitle: LocalizedStringKey { isTornOff ? "Bring back" : "Open in Window" }
+
+        func toggle() {
+            if isTornOff { bringBack() } else { tearOff(nil) }
+        }
+    }
+
     let tab: ProjectTab
     let isSelected: Bool
     let width: CGFloat?
+    var windowActions: WindowActions?
     let onSelect: () -> Void
     let onClose: (() -> Void)?
 
     @State private var hovering = false
 
+    /// The type of a Split chip's drag. Nothing accepts it, so only dragging out does anything.
+    private static let splitTabType = NSPasteboard.PasteboardType("com.linkc.split-tab")
+
     var body: some View {
+        interactive
+            .onHover { hovering = $0 }
+    }
+
+    @ViewBuilder
+    private var interactive: some View {
+        if let windowActions {
+            // The source sits behind the chip: the label doesn't hit-test, so a press on it reaches the
+            // source, and the × above stays a button.
+            content(labelHitTests: false, windowActions: windowActions)
+                .background {
+                    DragOutSource(payload: dragPayload, onClick: onSelect,
+                                  onDraggedOut: { windowActions.tearOff($0) }, toolTip: tab.title)
+                }
+                .background(fill.allowsHitTesting(false))
+                .contextMenu {
+                    Button(windowActions.toggleTitle, action: windowActions.toggle)
+                }
+                // The press is an AppKit view VoiceOver can't act on, so the chip says what it does.
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+                .accessibilityAction(.default, onSelect)
+                .accessibilityAction(named: windowActions.toggleTitle, windowActions.toggle)
+        } else {
+            content(labelHitTests: true, windowActions: nil)
+                .background(fill)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onSelect)
+                .help(tab.title)
+        }
+    }
+
+    private func content(labelHitTests: Bool, windowActions: WindowActions?) -> some View {
         HStack(spacing: 6) {
-            switch tab.kind {
-            case .board:
-                Image(systemName: "square.grid.2x2").font(.system(size: 10))
-            case .agent(let kind):
-                AgentLogoView(agent: kind)
-            case .terminal:
-                Image(systemName: "terminal").font(.system(size: 9))
-            case .app:
-                Image(systemName: "globe").font(.system(size: 9))
-            case .split:
-                Image(systemName: "square.split.2x2").font(.system(size: 10))
+            HStack(spacing: 6) {
+                switch tab.kind {
+                case .board:
+                    Image(systemName: "square.grid.2x2").font(.system(size: 10))
+                case .agent(let kind):
+                    AgentLogoView(agent: kind)
+                case .terminal:
+                    Image(systemName: "terminal").font(.system(size: 9))
+                case .app:
+                    Image(systemName: "globe").font(.system(size: 9))
+                case .split:
+                    Image(systemName: "square.split.2x2").font(.system(size: 10))
+                }
+                if let activity = tab.activity {
+                    ActivityLabel(text: activity.text, isWorking: activity.isWorking, size: 11.5)
+                } else {
+                    Text(tab.title)
+                        .font(.system(size: 11.5))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                if windowActions?.isTornOff == true {
+                    Image(systemName: "macwindow")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.textTertiary)
+                }
             }
-            if let activity = tab.activity {
-                ActivityLabel(text: activity.text, isWorking: activity.isWorking, size: 11.5)
-            } else {
-                Text(tab.title)
-                    .font(.system(size: 11.5))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
+            .allowsHitTesting(labelHitTests)
             if let onClose {
                 Spacer(minLength: 0)
                 Button(action: onClose) {
@@ -195,29 +278,31 @@ private struct TabChip: View {
         .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
         .padding(.horizontal, 10)
         .frame(width: width, height: 28, alignment: .leading)
-        .background(
-            UnevenRoundedRectangle(topLeadingRadius: 8, topTrailingRadius: 8)
-                .fill(isSelected ? Color.white.opacity(0.08) : (hovering ? Theme.hover : .clear)))
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
-        .modifier(TerminalChipDrag(tab: tab))
-        .onHover { hovering = $0 }
-        .help(tab.title)
     }
-}
 
-/// A session or terminal tab can be dragged onto a terminal's edge to split with it; the Board, an
-/// app and the Split tab itself have nothing to drop.
-private struct TerminalChipDrag: ViewModifier {
-    let tab: ProjectTab
+    private var fill: some View {
+        UnevenRoundedRectangle(topLeadingRadius: 8, topTrailingRadius: 8)
+            .fill(isSelected ? Color.white.opacity(0.08) : (hovering ? Theme.hover : .clear))
+    }
 
-    func body(content: Content) -> some View {
+    /// A session or terminal chip carries what the panel's split edges, the strip and the sidebar
+    /// accept, so it can also be dropped on a terminal's edge to split with it.
+    private var dragPayload: NSPasteboardItem {
+        let item = NSPasteboardItem()
         switch tab.kind {
         case .agent, .terminal:
-            content.draggable(LinkCTerminalDrag(id: tab.id))
-        case .board, .app, .split:
-            content
+            do {
+                let data = try JSONEncoder().encode(LinkCTerminalDrag(id: tab.id))
+                item.setData(data, forType: NSPasteboard.PasteboardType(UTType.linkcTerminal.identifier))
+            } catch {
+                preconditionFailure("A terminal drag always encodes: \(error)")
+            }
+        case .split:
+            item.setString(tab.id, forType: Self.splitTabType)
+        case .board, .app:
+            preconditionFailure("Only a session, terminal or Split chip drags.")
         }
+        return item
     }
 }
 

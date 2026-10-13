@@ -6,14 +6,16 @@ extension View {
     /// Lets a linkC terminal be dropped on this terminal's edges to split with it. While a drag
     /// hovers, the half of the pane the drop would land on is outlined. The dragged terminal is only
     /// known once it is dropped, so a drop that can't be honoured is reported then, in the error bar.
-    func terminalDropTarget(model: AppModel, target: String?) -> some View {
-        modifier(TerminalDropTargetModifier(model: model, target: target))
+    /// `project` is the one the split would belong to: nil when the terminal dropped on has no project.
+    func terminalDropTarget(model: AppModel, target: String?, project: String?) -> some View {
+        modifier(TerminalDropTargetModifier(model: model, target: target, project: project))
     }
 }
 
 private struct TerminalDropTargetModifier: ViewModifier {
     let model: AppModel
     let target: String?
+    let project: String?
     @State private var hover = SplitDropHover()
     @State private var size = CGSize.zero
 
@@ -24,7 +26,7 @@ private struct TerminalDropTargetModifier: ViewModifier {
                 EdgeHighlight(edge: hover.edge, size: size).allowsHitTesting(false)
             }
             .onDrop(of: [.linkcTerminal], delegate: TerminalDropDelegate(
-                model: model, target: target, size: size, hover: $hover))
+                model: model, target: target, project: project, size: size, hover: $hover))
     }
 }
 
@@ -61,6 +63,7 @@ private struct EdgeHighlight: View {
 private struct TerminalDropDelegate: DropDelegate {
     let model: AppModel
     let target: String?
+    let project: String?
     let size: CGSize
     @Binding var hover: SplitDropHover
 
@@ -84,11 +87,16 @@ private struct TerminalDropDelegate: DropDelegate {
         apply { $0.dropped() }
         guard let target, let provider = info.itemProviders(for: [.linkcTerminal]).first else { return false }
         let model = model
+        let project = project
         _ = provider.loadTransferable(type: LinkCTerminalDrag.self) { result in
             Task { @MainActor in
                 switch result {
                 case .success(let drag):
-                    model.dropTerminal(drag.id, onto: target, edge: edge)
+                    guard let project else {
+                        model.surface(error: "Couldn't split: the terminal you dropped on has ended.")
+                        return
+                    }
+                    model.dropTerminal(drag.id, onto: target, edge: edge, in: project)
                 case .failure(let error):
                     model.surface(error: "Couldn't read the dragged terminal: \(error.localizedDescription)")
                 }

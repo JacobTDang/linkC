@@ -19,6 +19,7 @@ public final class SidebarState {
         var terminalProjects: [String: String]?
         var openApps: [String: [OpenApp]]?
         var splits: StoredSplits?
+        var windows: StoredWindows?
     }
 
     /// One project's stored split. An entry that doesn't decode keeps the error instead of failing the
@@ -39,6 +40,24 @@ public final class SidebarState {
         func encode(to encoder: Encoder) throws { try entries.get().encode(to: encoder) }
     }
 
+    /// One stored torn-off window. An entry that doesn't decode keeps the error, like `SplitEntry`, so one
+    /// bad window can't take the rest of the list with it.
+    private struct WindowEntry: Codable {
+        let window: Result<TornOffWindow, Error>
+        init(_ window: TornOffWindow) { self.window = .success(window) }
+        init(from decoder: Decoder) throws { window = Result { try TornOffWindow(from: decoder) } }
+        func encode(to encoder: Encoder) throws { try window.get().encode(to: encoder) }
+    }
+
+    /// The stored `windows` field. A value of the wrong type keeps the error too: it costs the windows,
+    /// not the rest of the sidebar.
+    private struct StoredWindows: Codable {
+        let entries: Result<[WindowEntry], Error>
+        init(_ windows: [TornOffWindow]) { entries = .success(windows.map(WindowEntry.init)) }
+        init(from decoder: Decoder) throws { entries = Result { try [WindowEntry](from: decoder) } }
+        func encode(to encoder: Encoder) throws { try entries.get().encode(to: encoder) }
+    }
+
     static let key = "sidebarState"
 
     public private(set) var projectOrder: [String]
@@ -54,6 +73,8 @@ public final class SidebarState {
     public private(set) var terminalProjects: [String: String] = [:]
     private var openAppsByProject: [String: [OpenApp]] = [:]
     private var splitsByProject: [String: ProjectSplit] = [:]
+    /// The torn-off windows, in the order they opened.
+    public private(set) var tornOff = TornOff()
     private let defaults: UserDefaults
 
     private static func canonicalViewportKey(_ key: String) -> String {
@@ -172,6 +193,37 @@ public final class SidebarState {
         }
         splitsByProject = Self.mergeCanonical(readableSplits, canonicalize: ProjectPath.canonical)
 
+        var readableWindows: [TornOffWindow] = []
+        var droppedWindows = false
+        switch stored.windows?.entries {
+        case .success(let entries)?:
+            for entry in entries {
+                switch entry.window {
+                case .success(let window):
+                    readableWindows.append(window)
+                case .failure(let error):
+                    NSLog("[linkC] a stored torn-off window is unreadable — dropped: %@", String(describing: error))
+                    droppedWindows = true
+                }
+            }
+        case .failure(let error)?:
+            NSLog("[linkC] the stored torn-off windows are unreadable — all dropped: %@", String(describing: error))
+            droppedWindows = true
+        case nil:
+            break
+        }
+        // A split window is keyed by canonical project path, like the splits and the prune that looks it up.
+        let canonicalWindows = readableWindows.map { window -> TornOffWindow in
+            guard case .split(let project) = window.item else { return window }
+            return TornOffWindow(item: .split(ProjectPath.canonical(project)), frame: window.frame)
+        }
+        let recanonicalizedWindows = canonicalWindows != readableWindows
+        tornOff = canonicalWindows.reduce(TornOff()) { $0.adding($1.item, frame: $1.frame) }
+        let duplicateWindows = canonicalWindows.count != tornOff.windows.count
+        if duplicateWindows {
+            NSLog("[linkC] the stored torn-off windows listed an item twice — kept the first")
+        }
+
         let changed = stored.projectOrder != projectOrder
             || stored.expandOverrides != expandOverrides
             || (stored.boardViewports ?? [:]) != boardViewports
@@ -179,6 +231,9 @@ public final class SidebarState {
             || (stored.openApps ?? [:]) != openAppsByProject
             || droppedSplits
             || Set(readableSplits.keys) != Set(splitsByProject.keys)
+            || droppedWindows
+            || recanonicalizedWindows
+            || duplicateWindows
         if changed {
             save()
         }
@@ -292,7 +347,7 @@ public final class SidebarState {
     }
 
     private func save() {
-        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections, boardViewports: boardViewports.isEmpty ? nil : boardViewports, terminalProjects: terminalProjects.isEmpty ? nil : terminalProjects, openApps: openAppsByProject.isEmpty ? nil : openAppsByProject, splits: splitsByProject.isEmpty ? nil : StoredSplits(splitsByProject))
+        let stored = Stored(projectOrder: projectOrder, expandOverrides: expandOverrides, openSections: openSections, boardViewports: boardViewports.isEmpty ? nil : boardViewports, terminalProjects: terminalProjects.isEmpty ? nil : terminalProjects, openApps: openAppsByProject.isEmpty ? nil : openAppsByProject, splits: splitsByProject.isEmpty ? nil : StoredSplits(splitsByProject), windows: tornOff.isEmpty ? nil : StoredWindows(tornOff.windows))
         do {
             defaults.set(try JSONEncoder().encode(stored), forKey: Self.key)
         } catch {
@@ -354,4 +409,10 @@ public final class SidebarState {
 
     /// The canonical paths of every project with a stored split.
     public var projectsWithSplits: [String] { splitsByProject.keys.sorted() }
+
+    public func setTornOff(_ tornOff: TornOff) {
+        guard self.tornOff != tornOff else { return }
+        self.tornOff = tornOff
+        save()
+    }
 }

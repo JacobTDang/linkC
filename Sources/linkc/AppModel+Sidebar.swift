@@ -1,16 +1,19 @@
-import Foundation
+import AppKit
 import LinkCKit
 
 /// The sidebar's live inputs. Reads only — the writers are `sampleSidebar()` (once a second while
-/// the panel is visible, from the coordinator's sweep, and once as it opens) and `markOnScreenSeen()` (just before the
-/// selection, the open screen, or the panel's visibility changes) — never a view body.
+/// the panel is visible or a torn-off window is open, from the coordinator's sweep, and once as the panel
+/// opens) and `markOnScreenSeen()` (just before the selection, the open screen, what a window shows, or the
+/// panel's visibility changes) — never a view body.
 extension AppModel {
     /// The session whose terminal is actually on screen: selected, no screen layered over it,
     /// panel visible. While a split shows, only a selected pane counts: after a pane ends, the
     /// manager's fallback selection sits behind the grid until `repairSplitSelection()` moves off it.
+    /// A selection that lives in a torn-off window is not in the panel: the panel shows a note there.
     var onScreenSessionId: String? {
         guard panelVisible, activeScreen == nil, let id = selectedId else { return nil }
         if let splitProject, !(sidebarState.split(for: splitProject)?.members.contains(id) ?? false) { return nil }
+        if host(of: id) != nil { return nil }
         return id
     }
 
@@ -121,17 +124,19 @@ extension AppModel {
         return (rows > 0 || supabaseNeedsLogin || !cloudErrors.isEmpty) ? rows : nil
     }
 
-    /// Once a second while the panel is visible, and once as it opens: keep a showing split's
-    /// selection on its panes, forget ended sessions, drop split members that are gone, mark what is
-    /// on screen as seen, keep the project order, expand projects that just turned coral, and publish
-    /// the sidebar's non-observable inputs. The sidebar re-renders on the publish only when one of
-    /// them changed — a quiet second re-renders nothing.
+    /// Once a second while the panel is visible or a torn-off window is open (`syncSweepVisibility()`),
+    /// and once as the panel opens: keep a showing split's selection on its panes, forget ended
+    /// sessions, drop split members that are gone, mark what is on screen as seen, keep the project
+    /// order, expand projects that just turned coral, and publish the sidebar's non-observable inputs.
+    /// The sidebar re-renders on the publish only when one of them changed — a quiet second
+    /// re-renders nothing.
     func sampleSidebar() {
         let now = Date()
         repairSplitSelection()
         attention.retain(only: Set(sessions.map(\.id)))
         markOnScreenSeen(at: now)
         pruneSplits()
+        pruneTornOff()
         // Filed paths are canonical already: `SidebarState` canonicalizes them as it files them.
         let filedPaths = Set(sidebarState.terminalProjects.values).sorted()
         sidebarState.noteProjects(ProjectGroup.group(sessions: sessions).map(\.workspacePath) + filedPaths)
@@ -177,11 +182,41 @@ extension AppModel {
         }
     }
 
-    /// Mark the on-screen session seen. Runs with `sampleSidebar()`, and just before the
-    /// selection, the open screen, or the panel's visibility changes, so a turn that finished
-    /// while the user watched never reads as unseen afterwards.
+    /// A torn-off window stays open only while what it shows is live: a terminal that ended closes its
+    /// window, and so does a split with fewer than two live terminals left. Same guard as `pruneSplits()`:
+    /// without both coordinators nothing is live, so nothing can be judged gone. Each window closed is
+    /// logged, and the saved state is written only when one did.
+    func pruneTornOff() {
+        guard coordinator != nil, shells != nil, !tornOff.isEmpty else { return }
+        // Only the splits in a window are judged: each costs a filesystem call per live terminal list.
+        let splitWindows = tornOff.windows.compactMap { window -> String? in
+            if case .split(let project) = window.item { project } else { nil }
+        }
+        let activeSplits = Set(splitWindows.filter(splitIsActive))
+        let result = tornOff.pruned(liveTerminals: liveTerminalIDs, activeSplits: activeSplits)
+        guard !result.closed.isEmpty else { return }
+        for item in result.closed {
+            switch item {
+            case .terminal(let id): NSLog("[linkC] window closed: its terminal %@ is no longer live", id)
+            case .split(let project): NSLog("[linkC] window closed: the split for %@ has fewer than two live terminals", project)
+            }
+        }
+        sidebarState.setTornOff(result.kept)
+        syncSweepVisibility()
+    }
+
+    /// Mark the on-screen session seen, and the one in the key torn-off window while linkC is the
+    /// active app. Runs with `sampleSidebar()`, and just before the selection, the open screen, what a
+    /// window shows (its focused pane, its split, its existence), or the panel's visibility changes, so a
+    /// turn that finished while the user watched never reads as unseen afterwards.
     func markOnScreenSeen(at now: Date = Date()) {
-        guard let id = onScreenSessionId, let session = sessions.first(where: { $0.id == id }) else { return }
+        markSeen(onScreenSessionId, at: now)
+        if NSApp.isActive { markSeen(keyWindowSessionId, at: now) }
+    }
+
+    /// Marks session `id` seen; nil or an id that isn't a session does nothing.
+    func markSeen(_ id: String?, at now: Date) {
+        guard let id, let session = sessions.first(where: { $0.id == id }) else { return }
         attention.markSeen(session, at: now)
     }
 

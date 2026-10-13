@@ -8,9 +8,12 @@ struct LinkCApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     // The status item and panel are built by the AppDelegate/StatusPanelController, not by
-    // SwiftUI. This scene exists only to satisfy `App`; an accessory app never shows it.
+    // SwiftUI. This scene exists only to satisfy `App`; an accessory app never shows it. While a
+    // torn-off window makes linkC a regular app, its App menu would offer "Settings…" (⌘,) and open
+    // this empty scene: the command group removes the item and its shortcut.
     var body: some Scene {
         Settings { EmptyView() }
+            .commands { CommandGroup(replacing: .appSettings) {} }
     }
 }
 
@@ -18,6 +21,7 @@ struct LinkCApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private var panelController: StatusPanelController?
+    private var tornOffWindows: TornOffWindows?
     private var hotKey: GlobalHotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -27,7 +31,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey = GlobalHotKey { [weak self] in self?.panelController?.togglePanel() }
         applyHotKeyPreference()
         observeHotKeyPreference()
-        Task { await model.start() }
+        Task {
+            await model.start()
+            // A failed start-up leaves nothing live, and the panel shows why: no windows to open.
+            guard model.setupError == nil else { return }
+            // Start-up has restored the terminals and pruned the windows whose terminal or split did
+            // not come back, so only live ones open.
+            tornOffWindows = TornOffWindows(model: model)
+        }
     }
 
     /// Re-registers the global shortcut whenever the preference changes — the same
@@ -58,8 +69,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Guard against losing running sessions: quitting linkC ends the claude processes it hosts.
+    /// Closing the last torn-off window must not quit the menu-bar app.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let reply = terminateReply()
+        // Quitting is not the user closing the windows: they stay saved and reopen on the next launch.
+        if reply == .terminateNow { tornOffWindows?.prepareForQuit() }
+        return reply
+    }
+
+    /// Guard against losing running sessions: quitting linkC ends the claude processes it hosts.
+    private func terminateReply() -> NSApplication.TerminateReply {
         // Tapping "Install & restart" already consented to exactly this quit — the swap
         // helper is waiting on our exit, so the warning would only stall it.
         if model.updateInProgress { return .terminateNow }
@@ -108,15 +129,16 @@ final class AppModel {
     }
     /// An update notice waiting for the panel to open (see `start()`).
     private var pendingUpdateNotice: String?
-    /// Whether the menu-bar panel is currently on screen. Feeds the coordinator's watch probe
-    /// and gates the usage-refresh timer — no panel, no polling.
+    /// Whether the menu-bar panel itself is currently on screen — not a torn-off window. Feeds
+    /// `onScreenSessionId` and the coordinator's watch probe, and gates the usage-refresh timer — no
+    /// panel, no polling. The coordinator's sweep follows the panel or any window: `syncSweepVisibility()`.
     var panelVisible = false {
         willSet {
             // Hiding the panel takes the open terminal off screen: record it as seen first.
             if !newValue { markOnScreenSeen() }
         }
         didSet {
-            coordinator?.setPanelVisible(panelVisible)
+            syncSweepVisibility()
             updateUsageTimer()
             if !panelVisible {
                 flushStateToDisk()
@@ -206,8 +228,11 @@ final class AppModel {
                 terminals: terminals,
                 modelSettings: { prefs.agentModels },
                 isWatching: { [weak self] id in
-                    guard let self else { return false }
-                    return self.panelVisible && NSApp.isActive && terminals.selectedId == id
+                    guard let self, NSApp.isActive else { return false }
+                    // The panel watches what it shows: a terminal that lives in a window is watched only
+                    // while that window is the key one.
+                    let inPanel = self.panelVisible && terminals.selectedId == id && self.host(of: id) == nil
+                    return inPanel || self.keyWindowSessionId == id
                 }
             )
             // A notification click reaches `focusSession` directly — never through `focus(_:)`
@@ -222,7 +247,6 @@ final class AppModel {
                 await self?.sampleShells()
                 self?.sampleSidebar()
             }
-            coordinator.setPanelVisible(panelVisible)
             self.coordinator = coordinator
             self.mcpServers = MCPServerService(claudePath: preflight.claudePath)
             self.skills = SkillsService(claudePath: preflight.claudePath)
@@ -233,6 +257,10 @@ final class AppModel {
             // nothing left to stop them — catch those before anything else starts.
             appGroupLedger.stopLeftovers()
             self.shells?.restoreActiveShells()
+            // Restore has run: a window whose terminal or split did not come back must not open.
+            pruneTornOff()
+            // Windows restored and kept, or a panel open already, keep the sweep running.
+            syncSweepVisibility()
             // A filing is dropped only when its terminal is truly dismissed — keep it for a live
             // terminal, and for one still offered back in Earlier, so a terminal that had exited by
             // quit time, or whose folder was missing and so was skipped above, doesn't lose it.
@@ -658,6 +686,26 @@ final class AppModel {
     /// only for the length of `select(_:)`'s focus.
     @ObservationIgnored private var fullSizeRequest: String?
 
+    /// The torn-off window that is key, or nil when none is. Written only by `setKeyWindowItem(_:)`; see
+    /// `keyWindowSessionId`.
+    private(set) var keyWindowItem: TornOffItem?
+
+    /// The window controller reports the key torn-off window from became-key, and nil from resign-key. The
+    /// window that stops being key was on screen until now, so its terminal is marked seen first —
+    /// straight away, not through `markOnScreenSeen()`'s `NSApp.isActive` gate: resign-key can arrive after
+    /// the app has already deactivated.
+    func setKeyWindowItem(_ item: TornOffItem?) {
+        guard item != keyWindowItem else { return }
+        markSeen(keyWindowSessionId, at: Date())
+        keyWindowItem = item
+    }
+
+    /// Brings a torn-off window forward. Set by the window controller.
+    @ObservationIgnored var onRaiseWindow: ((TornOffItem) -> Void)?
+    /// The menu-bar panel's frame in screen points, where a window opens beside it. Set by the panel's
+    /// controller; nil when there is no panel to be beside.
+    @ObservationIgnored var panelFrame: () -> CGRect? = { nil }
+
     /// The apps each project can open: its own `.linkc/app.json`, then the ones registered in
     /// Settings. Reads the manifest fresh (on a short TTL) each time it's asked, so an edit to
     /// app.json takes effect without a restart.
@@ -778,12 +826,17 @@ final class AppModel {
             splits: splits, liveIDs: { self.splittableIDs(in: $0) })
         if let showing, let id = selectedId, let split = splits[showing] {
             // The split's focus follows whatever was selected.
+            if split.focusing(id) != split { markOnScreenSeen() }
             sidebarState.setSplit(split.focusing(id), for: showing)
         }
         if splitProject != showing { splitProject = showing }
         boardProject = nil
         appTab = nil
         activeScreen = nil
+        // What was opened lives in a window: the panel shows its note, and the window comes forward.
+        if let opened, opened == selectedId, let window = host(of: opened) {
+            raise(window, focusing: opened)
+        }
     }
 
     /// The terminals that may sit in `project`'s split: its sessions and the shell terminals filed
@@ -795,7 +848,7 @@ final class AppModel {
     }
 
     /// Every project's stored split, by canonical project path.
-    private func storedSplits() -> [String: ProjectSplit] {
+    func storedSplits() -> [String: ProjectSplit] {
         Dictionary(uniqueKeysWithValues: sidebarState.projectsWithSplits.compactMap { project in
             sidebarState.split(for: project).map { (project, $0) }
         })
@@ -849,66 +902,100 @@ final class AppModel {
         activeScreen = nil
     }
 
-    /// A pane in the showing split got the keyboard (a click inside it, or a pane taking it over
-    /// when the focused one ended): remember it as the split's focus and select it, keeping the grid
-    /// on screen. Only the selection moves, as `repairSplitSelection()` moves it: this also runs for
-    /// a pane that took the keyboard by itself, so it never activates the app or adopts a worker.
-    /// The user's own click goes on to `pickSplitPane(_:)`.
-    func focusInSplit(_ id: String) {
-        guard let project = splitProject, let split = sidebarState.split(for: project), split.members.contains(id) else { return }
-        if selectedId != id { coordinator?.terminals.select(id) }
-        sidebarState.setSplit(split.focusing(id), for: project)
+    /// Whether `key` (a standardized project path) is the grid the panel itself shows. A split in a torn-off
+    /// window is not, even when it is also `splitProject`: the panel keeps that route and shows a note, and
+    /// nothing done in the window may move the panel's selection or screen.
+    private func isPanelGrid(_ key: String) -> Bool {
+        key == splitProject && !tornOff.contains(.split(key))
+    }
+
+    /// A pane in `project`'s split got the keyboard (a click inside it, or a pane taking it over
+    /// when the focused one ended): remember it as the split's focus. In the split the panel is showing,
+    /// it is also selected, keeping the grid on screen. Only the selection moves, as
+    /// `repairSplitSelection()` moves it: this also runs for a pane that took the keyboard by itself, so
+    /// it never activates the app or adopts a worker. The user's own click goes on to `pickSplitPane(_:in:)`.
+    /// A split in a torn-off window leaves the panel's selection alone. `project` is standardized here,
+    /// like in every split operation below, so it compares with `splitProject` and the windows' keys.
+    func focusInSplit(_ id: String, in project: String) {
+        let key = ProjectTabs.standardized(project)
+        guard let split = sidebarState.split(for: key), split.members.contains(id) else { return }
+        let next = split.focusing(id)
+        // The pane a key window shows is about to change; the panel's own change is marked by the selection.
+        if next != split { markOnScreenSeen() }
+        if isPanelGrid(key), selectedId != id { coordinator?.terminals.select(id) }
+        sidebarState.setSplit(next, for: key)
     }
 
     /// The user clicked a pane: it is opened as a tab is (`focus(_:)`), so a worker becomes theirs and
     /// an agent waiting on them reads as seen. `showSelection()` keeps the grid and moves its focus.
-    func pickSplitPane(_ id: String) {
-        guard let project = splitProject, sidebarState.split(for: project)?.members.contains(id) == true else { return }
-        focus(id)
+    /// In a torn-off window the panel's selection stays: the pane takes the split's focus and is
+    /// acknowledged, nothing more.
+    func pickSplitPane(_ id: String, in project: String) {
+        let key = ProjectTabs.standardized(project)
+        guard sidebarState.split(for: key)?.members.contains(id) == true else { return }
+        if isPanelGrid(key) {
+            focus(id)
+        } else {
+            focusInSplit(id, in: key)
+            coordinator?.acknowledgeSession(id)
+        }
     }
 
-    /// A click on a pane's title row: the pane gets the keyboard, as a click inside its terminal gives it.
-    func clickSplitPane(_ id: String) {
-        pickSplitPane(id)
-        if let view = terminalSession(id)?.terminalView { view.window?.makeFirstResponder(view) }
+    /// A click on a pane's title row, in the grid `grid` draws (a torn-off window's item, nil for the
+    /// panel): the pane gets the keyboard, as a click inside its terminal gives it. A pane whose terminal
+    /// lives in another host shows a note in this grid, and its live view is not here to take the keyboard.
+    func clickSplitPane(_ id: String, in project: String, grid: TornOffItem?) {
+        pickSplitPane(id, in: project)
+        guard host(of: id) == grid, let view = terminalSession(id)?.terminalView else { return }
+        view.window?.makeFirstResponder(view)
     }
 
-    /// Takes `id` out of the current project's split; the session keeps running. Fewer than two
+    /// Takes `id` out of `project`'s split; the session keeps running. Fewer than two
     /// panes left forgets the split; fewer than two live ones (one just ended) only ends the grid
-    /// until the next prune forgets it. Whatever pane is left shows on its own.
-    func removeFromSplit(_ id: String) {
-        guard let project = currentProject, let split = sidebarState.split(for: project) else { return }
+    /// until the next prune forgets it. Whatever pane is left shows on its own. A split in a torn-off
+    /// window changes only the stored split: the panel's selection stays, and the window closes if the
+    /// split is no longer active.
+    func removeFromSplit(_ id: String, in project: String) {
+        let key = ProjectTabs.standardized(project)
+        guard let split = sidebarState.split(for: key) else { return }
         markOnScreenSeen()   // the pane leaving the grid was on screen until now
         let next = split.removing(id)
         if next.isViable {
-            sidebarState.setSplit(next, for: project)
+            sidebarState.setSplit(next, for: key)
         } else {
-            sidebarState.clearSplit(for: project)
+            sidebarState.clearSplit(for: key)
         }
-        guard splitProject != nil else { return }
-        let repair = next.repair(selected: selectedId, liveIDs: splittableIDs(in: project))
+        defer { pruneTornOff() }
+        guard isPanelGrid(key) else {
+            // The prune closes the window of a split that is no longer active; the panel's route leaves it
+            // now too, rather than showing its placeholder until the next repair.
+            if splitProject == key, !next.isActive(liveIDs: splittableIDs(in: key)) { splitProject = nil }
+            return
+        }
+        let repair = next.repair(selected: selectedId, liveIDs: splittableIDs(in: key))
         // Focus first, while the grid still covers whatever the selection fell back to: cleared first,
         // the fallback would read as on screen and be marked seen as the selection leaves it.
         if let target = repair.select { focus(target) }
         if !repair.keepsGrid { splitProject = nil }
     }
 
-    /// `id` dragged onto `edge` of the terminal `target` in the current project: starts the project's
+    /// `id` dragged onto `edge` of the terminal `target` in `project`: starts the project's
     /// split if `target` isn't in one, else adds `id` to it or moves it within, then shows the split.
     /// A terminal that isn't one of the project's, a ninth pane, or a drop outside a split that is showing is
     /// refused and the error bar says why.
-    /// A terminal dropped on itself does nothing.
-    func dropTerminal(_ id: String, onto target: String, edge: SplitEdge) {
-        guard let project = currentProject else {
-            lastError = "Couldn't split: the terminal you dropped on has ended."
-            return
-        }
+    /// A terminal dropped on itself does nothing. A split in a torn-off window is stored but not
+    /// shown: the window already shows it, and the panel's selection stays.
+    func dropTerminal(_ id: String, onto target: String, edge: SplitEdge, in project: String) {
+        let key = ProjectTabs.standardized(project)
         do {
             let next = try ProjectSplit.dropping(
-                id, onto: target, edge: edge, into: sidebarState.split(for: project), splittable: splittableIDs(in: project))
+                id, onto: target, edge: edge, into: sidebarState.split(for: key), splittable: splittableIDs(in: key))
             lastError = nil
-            sidebarState.setSplit(next, for: project)
-            showSplit(project)
+            // The drop can move the dropped terminal into a window and change the pane a key window
+            // shows: whatever is on screen now was seen until this store.
+            markOnScreenSeen()
+            sidebarState.setSplit(next, for: key)
+            if !tornOff.contains(.split(key)) { showSplit(key) }
         } catch ProjectSplit.Refusal.onItself {
             return
         } catch ProjectSplit.Refusal.notSplittable {
@@ -926,7 +1013,9 @@ final class AppModel {
     func dissolveSplit(_ project: String) {
         let key = ProjectTabs.standardized(project)
         let split = sidebarState.split(for: key)
+        markOnScreenSeen()   // a window showing the split closes with it
         sidebarState.clearSplit(for: key)
+        pruneTornOff()
         guard splitProject == key else { return }
         // Focus first, while the grid still covers a fallback selection, so it isn't marked seen.
         if let target = split?.repair(selected: selectedId, liveIDs: splittableIDs(in: key)).select { focus(target) }
@@ -1200,8 +1289,9 @@ final class AppModel {
         appProcesses = [:]
         healthTimer?.invalidate()
         healthTimer = nil
-        // Terminals are only sampled while the panel is open, so one that changed folder or agent
-        // since then would be remembered as it was. Take the last look before the snapshot below.
+        // Terminals are only sampled while the panel is visible or a torn-off window is open, so one that
+        // changed folder or agent since then would be remembered as it was. Take the last look before
+        // the snapshot below.
         shells?.sampleDirectories()
         shells?.sampleAgents()
         // Boards, sessions and shells all flush together — a quit within the Board's 600 ms

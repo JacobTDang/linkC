@@ -78,6 +78,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         super.init()
         setupStatusItem()
         setupPanel()
+        model.panelFrame = { [weak self] in self?.panel.frame }
         syncFromModel()      // seed the button title + lastSelectedId
         observeModel()
     }
@@ -121,14 +122,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        let effect = NSVisualEffectView()
-        // .popover, not .hudWindow: the softer mid-grey dark glass (what dark-mode menus
-        // use) rather than the near-black HUD tint.
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.isEmphasized = true
-        effect.appearance = NSAppearance(named: .darkAqua)   // dark glass even in Light Mode
+        let effect = NSVisualEffectView.linkCGlass()
         effect.wantsLayer = true
         effect.layer?.cornerRadius = Theme.panelRadius
         effect.layer?.masksToBounds = true
@@ -406,7 +400,8 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     private func focusTerminalIfNeeded() {
         guard model.selectedId != nil else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.panel.isVisible,
+            // A terminal that lives in a window has no live view in the panel to take the keyboard.
+            guard let self, self.panel.isVisible, let id = self.model.selectedId, self.model.host(of: id) == nil,
                   let terminalView = self.model.selectedTerminal?.terminalView else { return }
             self.panel.makeFirstResponder(terminalView)
         }
@@ -415,7 +410,8 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
-        // Cmd-W: mirror hide() so the coordinator's watch probe stays correct.
+        // Nothing in linkC closes the panel (the menus SwiftUI builds have no Close item, so ⌘W does not), but
+        // if something does, mirror hide() so the coordinator's watch probe stays correct.
         model.panelVisible = false
         model.flushStateToDisk()
     }
@@ -433,6 +429,21 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     func windowDidChangeScreen(_ notification: Notification) {
         notePanelMoved()
+    }
+}
+
+extension NSVisualEffectView {
+    /// The dark frosted glass behind the panel and the torn-off windows.
+    static func linkCGlass() -> NSVisualEffectView {
+        let effect = NSVisualEffectView()
+        // .popover, not .hudWindow: the softer mid-grey dark glass (what dark-mode menus
+        // use) rather than the near-black HUD tint.
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.isEmphasized = true
+        effect.appearance = NSAppearance(named: .darkAqua)   // dark glass even in Light Mode
+        return effect
     }
 }
 

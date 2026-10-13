@@ -108,8 +108,12 @@ private struct RightPane: View {
                 VStack(spacing: 0) {
                     ProjectTabStrip(model: model, onBack: showsBack ? { model.goBack() } : nil)
                     if let split = model.splitProject {
-                        SplitPane(model: model, project: split)
-                            .id(split)
+                        if model.tornOff.contains(.split(split)) {
+                            WindowedNote(model: model, item: .split(split))
+                        } else {
+                            SplitPane(model: model, project: split, host: nil)
+                                .id(split)
+                        }
                     } else if let board = model.boardProject {
                         BoardPane(model: model, path: board)
                             .id(board)
@@ -171,17 +175,25 @@ private struct TerminalPane: View {
         }
     }
 
-    private var terminal: some View {
+    /// The terminal's live view lives in one host. When a window holds it (its own, or its split's),
+    /// the panel shows a note, hands `TerminalContainer` no session so it never takes the view, and
+    /// drops nothing onto it.
+    @ViewBuilder private var terminal: some View {
+        let host = model.selectedId.flatMap { model.host(of: $0) }
+        let session = host == nil ? model.selectedTerminal : nil
         ZStack {
-            TerminalContainer(session: model.selectedTerminal)
+            TerminalContainer(session: session)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
-            if model.selectedTerminal == nil {
+            if let host {
+                WindowedNote(model: model, item: host)
+            } else if session == nil {
                 Text("Select a session")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textTertiary)
             }
         }
-        .terminalDropTarget(model: model, target: model.selectedTerminal == nil ? nil : model.selectedId)
+        .terminalDropTarget(model: model, target: session == nil ? nil : model.selectedId,
+                            project: model.currentProject)
     }
 
     /// Re-resolve the opened agent so a completion arriving mid-read fills the body in.
