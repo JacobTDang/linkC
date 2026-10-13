@@ -247,6 +247,45 @@ final class SidebarStateTests: XCTestCase {
         }
     }
 
+    func testTornOffWindowsRoundTrip() {
+        let frame = TornOffFrame(x: 1, y: 2, w: 720, h: 460)
+        let state = SidebarState(defaults: defaults)
+        state.setTornOff(TornOff().adding(.terminal("A"), frame: frame).adding(.split("/p"), frame: frame))
+        XCTAssertEqual(SidebarState(defaults: defaults).tornOff.windows.map(\.item), [.terminal("A"), .split("/p")])
+        XCTAssertEqual(SidebarState(defaults: defaults).tornOff.frame(of: .terminal("A")), frame)
+    }
+
+    func testAFileWithoutWindowsLoadsNone() {
+        let json = #"{"projectOrder":["/a"],"expandOverrides":{},"openSections":[]}"#
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        XCTAssertTrue(SidebarState(defaults: defaults).tornOff.isEmpty)
+    }
+
+    /// One unreadable entry costs only itself, and the file is rewritten without it.
+    func testAnUnreadableWindowEntryIsDroppedAndRewritten() throws {
+        let good = #"{"item":{"terminal":{"_0":"A"}},"frame":{"x":1,"y":2,"w":3,"h":4}}"#
+        let json = #"{"projectOrder":["/a"],"expandOverrides":{},"openSections":[],"windows":[\#(good),{"item":42}]}"#
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        let state = SidebarState(defaults: defaults)
+        XCTAssertEqual(state.tornOff.windows.map(\.item), [.terminal("A")])
+        XCTAssertEqual(state.projectOrder, ["/a"], "the rest of the state still loads")
+        XCTAssertEqual((try storedObject()["windows"] as? [Any])?.count, 1, "the bad entry is rewritten out of the file")
+    }
+
+    /// A `windows` value of the wrong type costs the windows, not the rest of the sidebar state.
+    func testAWindowsFieldOfTheWrongTypeLoadsTheRestOfTheState() throws {
+        for windows in ["42", #""text""#, #"{"item":1}"#] {
+            let json = #"{"projectOrder":["/a"],"expandOverrides":{"/a":true},"openSections":["more"],"windows":\#(windows)}"#
+            defaults.set(Data(json.utf8), forKey: SidebarState.key)
+            let state = SidebarState(defaults: defaults)
+            XCTAssertEqual(state.projectOrder, ["/a"], "windows: \(windows)")
+            XCTAssertEqual(state.expandOverrides, ["/a": true], "windows: \(windows)")
+            XCTAssertTrue(state.isOpen(.more), "windows: \(windows)")
+            XCTAssertTrue(state.tornOff.isEmpty, "windows: \(windows)")
+            XCTAssertNil(try storedObject()["windows"], "the unreadable field is rewritten out of the file; windows: \(windows)")
+        }
+    }
+
     /// The projects holding a split in the saved file, read back without going through `SidebarState`.
     private func storedSplitProjects() throws -> [String] {
         ((try storedObject()["splits"] as? [String: Any]) ?? [:]).keys.sorted()
