@@ -124,6 +124,18 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
         liveMembers(in: liveIDs).count >= 2
     }
 
+    /// The project whose split opens when terminal `id` is opened from outside its tab strip (a
+    /// sidebar row, a notification): the one whose split holds `id` live and is active. `liveIDs`
+    /// gives a project's live terminals. nil when no active split holds it.
+    public static func project(opening id: String, in splits: [String: ProjectSplit],
+                               liveIDs: (String) -> Set<String>) -> String? {
+        splits.first { project, split in
+            guard split.members.contains(id) else { return false }
+            let live = liveIDs(project)
+            return live.contains(id) && split.isActive(liveIDs: live)
+        }?.key
+    }
+
     /// Whether it can still be a grid: two or more members, live or not. Below that there is nothing
     /// worth keeping.
     public var isViable: Bool { members.count >= 2 }

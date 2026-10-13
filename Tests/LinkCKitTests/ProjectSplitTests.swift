@@ -260,4 +260,21 @@ final class ProjectSplitTests: XCTestCase {
     func testADecodedSplitWithNoFocusKeepsNone() throws {
         XCTAssertNil(try decode(#"{"members":["A","B"]}"#).focused)
     }
+
+    /// Opening a terminal from outside its tab strip (a sidebar row, a notification) shows the
+    /// split that holds it, when that split is showing two or more live panes.
+    func testOpeningATerminalFindsTheActiveSplitHoldingIt() {
+        let splits = ["/a": ProjectSplit(members: ["A1", "A2"]), "/b": ProjectSplit(members: ["B1", "B2", "B3"])]
+        let live: [String: Set<String>] = ["/a": ["A1", "A2"], "/b": ["B1", "B3"]]
+        let find = { (id: String) in ProjectSplit.project(opening: id, in: splits) { live[$0] ?? [] } }
+        XCTAssertEqual(find("A2"), "/a")
+        XCTAssertEqual(find("B3"), "/b")
+        XCTAssertNil(find("B2"), "a member that isn't live has no pane to open")
+        XCTAssertNil(find("C1"), "not in any split")
+    }
+
+    func testASplitWithFewerThanTwoLivePanesIsNotOpened() {
+        let splits = ["/a": ProjectSplit(members: ["A1", "A2"])]
+        XCTAssertNil(ProjectSplit.project(opening: "A1", in: splits) { _ in ["A1"] })
+    }
 }
