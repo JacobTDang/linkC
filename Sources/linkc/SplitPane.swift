@@ -123,6 +123,7 @@ private struct SplitCell: View {
                         .animation(Theme.hoverEase, value: isFocused)
                         .allowsHitTesting(false)
                 }
+                // The target stays on a note cell on purpose: a drop only rearranges the grid.
                 .terminalDropTarget(model: model, target: id, project: project)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

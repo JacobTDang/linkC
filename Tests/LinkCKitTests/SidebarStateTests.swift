@@ -274,6 +274,49 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual((try storedObject()["windows"] as? [Any])?.count, 1, "the bad entry is rewritten out of the file")
     }
 
+    /// Two entries for one item are one window: the first one's frame stays, and the file is rewritten
+    /// without the other.
+    func testDuplicateStoredWindowsLoadOnceAndTheFileIsRewrittenWithoutTheDuplicate() throws {
+        let first = #"{"item":{"terminal":{"_0":"A"}},"frame":{"x":1,"y":2,"w":3,"h":4}}"#
+        let second = #"{"item":{"terminal":{"_0":"A"}},"frame":{"x":5,"y":6,"w":7,"h":8}}"#
+        let json = #"{"projectOrder":["/a"],"expandOverrides":{},"openSections":[],"windows":[\#(first),\#(second)]}"#
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        let state = SidebarState(defaults: defaults)
+        XCTAssertEqual(state.tornOff.windows.map(\.item), [.terminal("A")])
+        XCTAssertEqual(state.tornOff.frame(of: .terminal("A")), TornOffFrame(x: 1, y: 2, w: 3, h: 4))
+        XCTAssertEqual((try storedObject()["windows"] as? [Any])?.count, 1, "the duplicate is rewritten out of the file")
+    }
+
+    /// A split window is stored by project path. One saved under a spelling that is not the canonical one
+    /// (a symlink) loads under the canonical one, where `projectsWithSplits` and the prune look for it, and
+    /// the file is rewritten with it. The same folder under two spellings is one window.
+    func testAStoredSplitWindowPathLoadsCanonicalAndIsRewritten() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("linkc-sidebar-windows-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let realFolder = tempDir.appendingPathComponent("Proj")
+        try FileManager.default.createDirectory(at: realFolder, withIntermediateDirectories: true)
+        let symlink = tempDir.appendingPathComponent("link_to_proj")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: realFolder)
+        let canonical = ProjectPath.canonical(realFolder.path)
+        XCTAssertNotEqual(symlink.path, canonical, "the test needs a spelling that is not canonical")
+
+        func window(_ project: String, x: Int) -> String {
+            #"{"item":{"split":{"_0":"\#(project)"}},"frame":{"x":\#(x),"y":2,"w":3,"h":4}}"#
+        }
+        let json = #"{"projectOrder":[],"expandOverrides":{},"openSections":[],"windows":[\#(window(symlink.path, x: 1)),\#(window(canonical, x: 9))]}"#
+        defaults.set(Data(json.utf8), forKey: SidebarState.key)
+        let state = SidebarState(defaults: defaults)
+
+        XCTAssertEqual(state.tornOff.windows.map(\.item), [.split(canonical)])
+        XCTAssertEqual(state.tornOff.frame(of: .split(canonical)), TornOffFrame(x: 1, y: 2, w: 3, h: 4), "the first spelling's frame stays")
+        let stored = try XCTUnwrap(try storedObject()["windows"] as? [[String: Any]])
+        XCTAssertEqual(stored.count, 1)
+        let storedItem = try XCTUnwrap(stored.first?["item"] as? [String: Any])
+        let storedSplit = try XCTUnwrap(storedItem["split"] as? [String: Any])
+        XCTAssertEqual(storedSplit["_0"] as? String, canonical, "the file holds the canonical path")
+    }
+
     /// A `windows` value of the wrong type costs the windows, not the rest of the sidebar state.
     func testAWindowsFieldOfTheWrongTypeLoadsTheRestOfTheState() throws {
         for windows in ["42", #""text""#, #"{"item":1}"#] {

@@ -212,8 +212,14 @@ public final class SidebarState {
         case nil:
             break
         }
-        tornOff = readableWindows.reduce(TornOff()) { $0.adding($1.item, frame: $1.frame) }
-        let duplicateWindows = readableWindows.count != tornOff.windows.count
+        // A split window is keyed by canonical project path, like the splits and the prune that looks it up.
+        let canonicalWindows = readableWindows.map { window -> TornOffWindow in
+            guard case .split(let project) = window.item else { return window }
+            return TornOffWindow(item: .split(ProjectPath.canonical(project)), frame: window.frame)
+        }
+        let recanonicalizedWindows = canonicalWindows != readableWindows
+        tornOff = canonicalWindows.reduce(TornOff()) { $0.adding($1.item, frame: $1.frame) }
+        let duplicateWindows = canonicalWindows.count != tornOff.windows.count
         if duplicateWindows {
             NSLog("[linkC] the stored torn-off windows listed an item twice — kept the first")
         }
@@ -226,6 +232,7 @@ public final class SidebarState {
             || droppedSplits
             || Set(readableSplits.keys) != Set(splitsByProject.keys)
             || droppedWindows
+            || recanonicalizedWindows
             || duplicateWindows
         if changed {
             save()

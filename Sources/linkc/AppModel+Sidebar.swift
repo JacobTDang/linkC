@@ -188,7 +188,11 @@ extension AppModel {
     /// logged, and the saved state is written only when one did.
     func pruneTornOff() {
         guard coordinator != nil, shells != nil, !tornOff.isEmpty else { return }
-        let activeSplits = Set(sidebarState.projectsWithSplits.filter(splitIsActive))
+        // Only the splits in a window are judged: each costs a filesystem call per live terminal list.
+        let splitWindows = tornOff.windows.compactMap { window -> String? in
+            if case .split(let project) = window.item { project } else { nil }
+        }
+        let activeSplits = Set(splitWindows.filter(splitIsActive))
         let result = tornOff.pruned(liveTerminals: liveTerminalIDs, activeSplits: activeSplits)
         guard !result.closed.isEmpty else { return }
         for item in result.closed {

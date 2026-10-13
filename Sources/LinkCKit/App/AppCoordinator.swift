@@ -228,9 +228,9 @@ public final class AppCoordinator {
     /// Whether the app has something on screen that needs its own sampling: the menu-bar panel, or a
     /// window that shows live terminals. The app decides which, and sets it through `setPanelVisible`.
     public private(set) var panelVisible = false
-    /// The app's own sampling that only matters while the panel is on screen (terminals, sidebar).
-    /// Runs on every tick while `panelVisible`, after the sessions are sampled, and once on its own
-    /// when the panel is shown (see `setPanelVisible`).
+    /// The app's own sampling that only matters while the panel is visible or a torn-off window is open
+    /// (terminals, sidebar). Runs on every tick while `panelVisible`, after the sessions are sampled, and
+    /// once on its own when the panel is shown (see `setPanelVisible`).
     public var panelSweep: (@MainActor () async -> Void)?
 
     /// Designated initializer — all collaborators injected (used by tests).

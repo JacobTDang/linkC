@@ -902,6 +902,13 @@ final class AppModel {
         activeScreen = nil
     }
 
+    /// Whether `key` (a standardized project path) is the grid the panel itself shows. A split in a torn-off
+    /// window is not, even when it is also `splitProject`: the panel keeps that route and shows a note, and
+    /// nothing done in the window may move the panel's selection or screen.
+    private func isPanelGrid(_ key: String) -> Bool {
+        key == splitProject && !tornOff.contains(.split(key))
+    }
+
     /// A pane in `project`'s split got the keyboard (a click inside it, or a pane taking it over
     /// when the focused one ended): remember it as the split's focus. In the split the panel is showing,
     /// it is also selected, keeping the grid on screen. Only the selection moves, as
@@ -915,7 +922,7 @@ final class AppModel {
         let next = split.focusing(id)
         // The pane a key window shows is about to change; the panel's own change is marked by the selection.
         if next != split { markOnScreenSeen() }
-        if key == splitProject, selectedId != id { coordinator?.terminals.select(id) }
+        if isPanelGrid(key), selectedId != id { coordinator?.terminals.select(id) }
         sidebarState.setSplit(next, for: key)
     }
 
@@ -926,7 +933,7 @@ final class AppModel {
     func pickSplitPane(_ id: String, in project: String) {
         let key = ProjectTabs.standardized(project)
         guard sidebarState.split(for: key)?.members.contains(id) == true else { return }
-        if key == splitProject {
+        if isPanelGrid(key) {
             focus(id)
         } else {
             focusInSplit(id, in: key)
@@ -959,7 +966,7 @@ final class AppModel {
             sidebarState.clearSplit(for: key)
         }
         defer { pruneTornOff() }
-        guard key == splitProject else { return }
+        guard isPanelGrid(key) else { return }
         let repair = next.repair(selected: selectedId, liveIDs: splittableIDs(in: key))
         // Focus first, while the grid still covers whatever the selection fell back to: cleared first,
         // the fallback would read as on screen and be marked seen as the selection leaves it.
@@ -983,7 +990,7 @@ final class AppModel {
             // shows: whatever is on screen now was seen until this store.
             markOnScreenSeen()
             sidebarState.setSplit(next, for: key)
-            if key == splitProject || !tornOff.contains(.split(key)) { showSplit(key) }
+            if !tornOff.contains(.split(key)) { showSplit(key) }
         } catch ProjectSplit.Refusal.onItself {
             return
         } catch ProjectSplit.Refusal.notSplittable {
