@@ -966,6 +966,12 @@ public final class AppCoordinator {
     public func focusSession(_ id: String) {
         terminals.select(id)
         onSessionFocused?(id)
+        acknowledgeSession(id)
+    }
+
+    /// Opens a session the way clicking its tab does, minus the selection: a torn-off window shows it
+    /// while the panel keeps what it had open.
+    public func acknowledgeSession(_ id: String) {
         // Opening a worker's terminal makes it the user's: they are using it now.
         adoptWorker(id)
         NSApp?.activate(ignoringOtherApps: true)

@@ -1033,6 +1033,43 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.store.session(id: "A1")?.state.bucket, .idle)
     }
 
+    /// A torn-off window opens a session the way its tab does, but the panel's selection stays put:
+    /// the worker becomes the user's, the app comes forward, a finished non-Claude session reads as seen.
+    func testAcknowledgingASessionOpensItWithoutSelectingIt() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-ack-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        let worker = try coordinator.newSession(cwd: cwd.path, agent: .codex, asWorker: true)
+        let bystander = try coordinator.newSession(cwd: cwd.path, agent: .codex, asWorker: true)
+        defer {
+            coordinator.stopSession(worker.id)
+            coordinator.stopSession(bystander.id)
+            coordinator.shutdown()
+        }
+        _ = coordinator.store.create(cwd: "/tmp", title: "AGY Session", id: "A1", agentKind: .agy)
+        _ = coordinator.terminals.makeSession(id: "A1", cwd: "/tmp", title: "AGY Session", agentKind: .agy)
+        coordinator.store.updateState(id: "A1", to: .finished)
+        XCTAssertEqual(coordinator.store.session(id: "A1")?.state.bucket, .needsYou)
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, true)
+
+        coordinator.terminals.select(bystander.id)
+        var focused: [String] = []
+        coordinator.onSessionFocused = { focused.append($0) }
+
+        coordinator.acknowledgeSession(worker.id)
+        coordinator.acknowledgeSession("A1")
+
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, false, "the worker is adopted in the store")
+        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, false,
+                       "and in the manifest")
+        XCTAssertEqual(coordinator.store.session(id: "A1")?.state, .ready)
+        XCTAssertEqual(coordinator.terminals.selectedId, bystander.id, "the selection did not move")
+        XCTAssertTrue(focused.isEmpty, "acknowledging is not focusing: onSessionFocused stays quiet")
+    }
+
     /// A notification click calls `focusSession` directly, never `AppModel.focus` — the only
     /// place that clears an open Board/screen. `onSessionFocused` is the seam that lets the UI
     /// layer react to a focus however it happened, so a notification click can't leave a stale
