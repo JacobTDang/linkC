@@ -33,7 +33,8 @@ public struct VerificationRunner: TaskVerifier {
     /// against any project in the workspace.
     private static let harnessProtectedPaths = ["Package.swift", "*.xcodeproj/project.pbxproj"]
 
-    public func gate(_ v: Verification, in workspace: URL) async -> Verdict {
+    public func gate(_ v: Verification, in root: URL) async -> Verdict {
+        let workspace = await checkout(holding: v.branch, in: root)
         let before = await offGitThread { self.checkout(v.baseSha, label: "base ", in: workspace) }
         if let problem = before.problem {
             return .notRun(reason: "gate failed: \(problem)")
@@ -64,7 +65,8 @@ public struct VerificationRunner: TaskVerifier {
         }
     }
 
-    public func verify(_ v: Verification, sha: String, in workspace: URL) async -> Verdict {
+    public func verify(_ v: Verification, sha: String, in root: URL) async -> Verdict {
+        let workspace = await checkout(holding: v.branch, in: root)
         let before = await offGitThread { self.checkout(sha, label: "", in: workspace) }
         if let problem = before.problem {
             return .notRun(reason: problem)
@@ -129,6 +131,21 @@ public struct VerificationRunner: TaskVerifier {
             return CheckoutStatus(problem: nil, untracked: status.untracked)
         } catch {
             return CheckoutStatus(problem: Self.describe(error), untracked: [])
+        }
+    }
+
+    /// The checkout a task's branch lives in: the git worktree that has it checked out, so parallel
+    /// work kept in `.worktrees/` is gated and verified where its commits are, else the project root.
+    /// A failed lookup is logged and falls back to the root, whose HEAD check then reports the mismatch.
+    private func checkout(holding branch: String, in root: URL) async -> URL {
+        await offGitThread {
+            do {
+                return try self.git.worktree(holding: branch, in: root) ?? root
+            } catch {
+                NSLog("[linkC verify] couldn't find the worktree for %@ in %@ — using the project root: %@",
+                      branch, root.path, String(describing: error))
+                return root
+            }
         }
     }
 

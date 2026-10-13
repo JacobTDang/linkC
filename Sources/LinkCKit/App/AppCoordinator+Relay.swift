@@ -705,26 +705,13 @@ extension AppCoordinator {
         verificationsInFlight[norm] = next.id
         let verifier = self.verifier
         let workspace = URL(fileURLWithPath: norm)
-        let branch: String
-        switch run {
-        case .gate(let verification): branch = verification.branch
-        case .verify(let verification, _): branch = verification.branch
-        }
-        let git = GitClient()
-        let checkout: URL
-        do {
-            checkout = try git.worktree(holding: branch, in: workspace) ?? workspace
-        } catch {
-            NSLog("[linkC relay] launchVerifications: failed to resolve worktree for branch %@ in %@ — %@", branch, norm, String(describing: error))
-            checkout = workspace
-        }
         Task { [weak self] in
             let verdict: Verdict
             switch run {
             case .gate(let verification):
-                verdict = await verifier.gate(verification, in: checkout)
+                verdict = await verifier.gate(verification, in: workspace)
             case .verify(let verification, let sha):
-                verdict = await verifier.verify(verification, sha: sha, in: checkout)
+                verdict = await verifier.verify(verification, sha: sha, in: workspace)
             }
             self?.finishVerification(of: next, verdict: verdict, workspacePath: norm)
         }

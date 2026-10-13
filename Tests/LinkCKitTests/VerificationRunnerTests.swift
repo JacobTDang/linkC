@@ -9,6 +9,9 @@ final class ScriptedGit: GitInspecting, @unchecked Sendable {
     var ancestor = true
     var changed: [String] = []
     var error: Error?
+    /// The checkout each branch is checked out in (`git worktree list`); a branch missing here has none.
+    var worktrees: [String: URL] = [:]
+    var worktreeError: Error?
     /// The `paths` argument of every `changedFiles` call, in order — lets a test assert what
     /// was protected, not just whether the check passed.
     private(set) var changedFilesCalls: [[String]] = []
@@ -32,7 +35,10 @@ final class ScriptedGit: GitInspecting, @unchecked Sendable {
         return changed
     }
     func fileExists(_ path: String, at rev: String, in workspace: URL) throws -> Bool { true }
-    func worktree(holding branch: String, in workspace: URL) throws -> URL? { nil }
+    func worktree(holding branch: String, in workspace: URL) throws -> URL? {
+        if let worktreeError { throw worktreeError }
+        return worktrees[branch]
+    }
 }
 
 /// Records each command and returns one scripted result.
@@ -81,6 +87,38 @@ final class VerificationRunnerTests: XCTestCase {
         XCTAssertEqual(verdict.exitStatus, 1)
         XCTAssertEqual(verdict.sha, base)
         XCTAssertEqual(command.calls, [CommandStub.Call(executable: "/bin/zsh", args: ["-l", "-c", "run-tests"], cwd: workspace, timeout: 5)])
+    }
+
+    /// Parallel work keeps its branch in a git worktree: the gate checks and runs there, not in the
+    /// project root the task was delegated from.
+    func testGateRunsInTheWorktreeHoldingTheBranch() async {
+        let checkout = URL(fileURLWithPath: "/tmp/linkc-verify-worktree")
+        let git = ScriptedGit(heads: [base])
+        git.worktrees = ["task/x": checkout]
+        let command = exits(1)
+        let verdict = await runner(git, command).gate(verification, in: workspace)
+        XCTAssertTrue(verdict.passed)
+        XCTAssertEqual(command.calls.map(\.cwd), [checkout])
+    }
+
+    func testVerifyRunsInTheWorktreeHoldingTheBranch() async {
+        let checkout = URL(fileURLWithPath: "/tmp/linkc-verify-worktree")
+        let git = ScriptedGit(heads: [head])
+        git.worktrees = ["task/x": checkout]
+        let command = exits(0)
+        let verdict = await runner(git, command).verify(verification, sha: head, in: workspace)
+        XCTAssertTrue(verdict.passed, verdict.reason ?? "")
+        XCTAssertEqual(command.calls.map(\.cwd), [checkout])
+    }
+
+    /// A worktree lookup that fails is logged and falls back to the root, whose own HEAD check then
+    /// reports what is wrong.
+    func testAWorktreeLookupThatFailsFallsBackToTheRoot() async {
+        let git = ScriptedGit(heads: [base])
+        git.worktreeError = LinkCError.process("git worktree list failed")
+        let command = exits(1)
+        _ = await runner(git, command).gate(verification, in: workspace)
+        XCTAssertEqual(command.calls.map(\.cwd), [workspace])
     }
 
     func testGateRefusesWhenTestsAlreadyPass() async {
