@@ -2,9 +2,9 @@ import AppKit
 import LinkCKit
 import SwiftUI
 
-/// An AppKit drag source for a tab chip. SwiftUI's `.draggable` never says where a drag ended, so a
-/// chip can't use it to tear off: here `draggingSession(_:endedAt:operation:)` reports the release
-/// point, and a drag nothing accepted that ended outside the panel calls `onDraggedOut` with it.
+/// An AppKit drag source for a tab chip. SwiftUI's `.draggable` never says when a drag ended, so a
+/// chip can't use it to tear off: here `draggingSession(_:endedAt:operation:)` says so, and a drag
+/// nothing accepted that was let go with the cursor outside the panel calls `onDraggedOut` with that point.
 ///
 /// Put it behind the chip (`.background`) with the chip's own content not hit-testing, so it gets the
 /// mouse. It handles a click itself, so the chip needs no tap gesture of its own.
@@ -32,7 +32,8 @@ struct DragOutSource: NSViewRepresentable {
         view.payload = payload
         view.onClick = onClick
         view.onDraggedOut = onDraggedOut
-        view.toolTip = toolTip
+        // Reassigning restarts a tooltip that is showing, and a working chip updates every second.
+        if view.toolTip != toolTip { view.toolTip = toolTip }
     }
 
     @MainActor
@@ -81,17 +82,18 @@ struct DragOutSource: NSViewRepresentable {
         }
 
         /// Outside the window nothing will take the drag, so the image stays where it was let go and the
-        /// new window opens there; inside it slides back to the chip when no target takes it.
+        /// new window opens there; inside it slides back to the chip when no target takes it. The cursor
+        /// decides, as it does for the tear-off: the point AppKit passes is the drag image's.
         func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
-            session.animatesToStartingPositionsOnCancelOrFail = sourceWindowFrame.contains(screenPoint)
+            session.animatesToStartingPositionsOnCancelOrFail = sourceWindowFrame.contains(NSEvent.mouseLocation)
         }
 
         /// `endedAt` reports where the drag image ended, which is not the cursor; the cursor decides whether
-        /// the drag left the panel, and is where the new window goes. Esc ends a drag with a key event, not
-        /// the mouse-up, and that is a cancel.
+        /// the drag left the panel, and is where the new window goes. Esc ends a drag with the button still
+        /// down, and that is a cancel.
         func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
             let cursor = NSEvent.mouseLocation
-            let releasedByMouse = NSApp.currentEvent?.type == .leftMouseUp
+            let releasedByMouse = NSEvent.pressedMouseButtons & 1 == 0
             guard TearOffRules.tearsOff(endedAt: cursor, operation: operation, from: sourceWindowFrame,
                                         releasedByMouse: releasedByMouse) else { return }
             onDraggedOut(cursor)

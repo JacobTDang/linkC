@@ -966,7 +966,12 @@ final class AppModel {
             sidebarState.clearSplit(for: key)
         }
         defer { pruneTornOff() }
-        guard isPanelGrid(key) else { return }
+        guard isPanelGrid(key) else {
+            // The prune closes the window of a split that is no longer active; the panel's route leaves it
+            // now too, rather than showing its placeholder until the next repair.
+            if splitProject == key, !next.isActive(liveIDs: splittableIDs(in: key)) { splitProject = nil }
+            return
+        }
         let repair = next.repair(selected: selectedId, liveIDs: splittableIDs(in: key))
         // Focus first, while the grid still covers whatever the selection fell back to: cleared first,
         // the fallback would read as on screen and be marked seen as the selection leaves it.

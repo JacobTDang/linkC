@@ -93,6 +93,11 @@ final class TearOffRulesTests: XCTestCase {
         XCTAssertFalse(isClose(.command, keyCode: 12, typed: "q"))
     }
 
+    func testALatinWOnAnotherKeyCloses() {
+        // Dvorak puts w where a QWERTY board has the comma key.
+        XCTAssertTrue(isClose(.command, keyCode: 43, typed: "w"))
+    }
+
     func testOnALayoutWithoutLatinLettersThePhysicalWKeyCloses() {
         XCTAssertTrue(isClose(.command, keyCode: 13, typed: "ц"))
         XCTAssertFalse(isClose(.command, keyCode: 12, typed: "й"), "another physical key")

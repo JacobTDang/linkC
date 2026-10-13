@@ -204,7 +204,6 @@ private struct TabChip: View {
     var body: some View {
         interactive
             .onHover { hovering = $0 }
-            .help(tab.title)
     }
 
     @ViewBuilder
@@ -232,6 +231,7 @@ private struct TabChip: View {
                 .background(fill)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onSelect)
+                .help(tab.title)
         }
     }
 
