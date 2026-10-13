@@ -32,10 +32,23 @@ public struct BoardScrollbar: Equatable, Sendable {
     }
 
     /// The thumb in points along a track `track` points long: at least `minLength` long (so it can
-    /// be grabbed) and kept on the track.
+    /// be grabbed) and kept on the track. A lengthened thumb travels `track - length`, and starts at
+    /// the view's place along that travel.
     public func thumb(inTrack track: Double, minLength: Double) -> (start: Double, length: Double) {
         let length = min(track, max(minLength, track * thumbLength))
-        return (min(max(track * thumbStart, 0), track - length), length)
+        let travel = track - length
+        guard travel > 0, thumbLength < 1 else { return (0, length) }
+        let start = min(max(thumbStart / (1 - thumbLength) * travel, 0), travel)
+        return (start, length)
+    }
+
+    /// The view's `originX` that puts a drawn thumb at `start` along a track `track` points long.
+    public func originX(drawnThumbStart start: Double, inTrack track: Double, minLength: Double) -> Double {
+        let length = min(track, max(minLength, track * thumbLength))
+        let travel = track - length
+        guard travel > 0 else { return minX }
+        let fraction = min(max(start / travel, 0), 1)
+        return minX + fraction * (1 - thumbLength) * span
     }
 
     /// The view's `originX` that puts the thumb's left end at `start` along the track, kept on it.
