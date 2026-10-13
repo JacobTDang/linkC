@@ -124,6 +124,32 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
         liveMembers(in: liveIDs).count >= 2
     }
 
+    /// The project whose split opens when terminal `id` is opened from outside its tab strip (a
+    /// sidebar row, a notification): the one whose split holds `id` live and is active. `liveIDs`
+    /// gives a project's live terminals. nil when no active split holds it.
+    public static func project(opening id: String, in splits: [String: ProjectSplit],
+                               liveIDs: (String) -> Set<String>) -> String? {
+        // Sorted, so the answer never depends on dictionary order; a terminal is live in one project anyway.
+        splits.keys.sorted().first { project in
+            guard let split = splits[project], split.members.contains(id) else { return false }
+            let live = liveIDs(project)
+            return live.contains(id) && split.isActive(liveIDs: live)
+        }
+    }
+
+    /// Which project's split shows once `selected` is the selected terminal. `current` is the split
+    /// showing now; `opened` is what the user just opened (a sidebar row, a notification), nil when
+    /// the selection moved by itself. A member of the showing split keeps it. Otherwise the split
+    /// holding `selected` opens, but only when the user opened `selected` itself — not a terminal
+    /// that turned out to select nothing — and not from its own tab chip (`fullSize`).
+    public static func showing(selected: String?, opened: String?, current: String?, fullSize: Bool,
+                               splits: [String: ProjectSplit], liveIDs: (String) -> Set<String>) -> String? {
+        guard let selected else { return nil }
+        if let current, splits[current]?.members.contains(selected) == true { return current }
+        guard !fullSize, opened == selected else { return nil }
+        return project(opening: selected, in: splits, liveIDs: liveIDs)
+    }
+
     /// Whether it can still be a grid: two or more members, live or not. Below that there is nothing
     /// worth keeping.
     public var isViable: Bool { members.count >= 2 }

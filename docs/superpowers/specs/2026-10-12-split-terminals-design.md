@@ -29,6 +29,7 @@ Tearing a terminal or a grid off into its own window is a separate, later piece.
   - When fewer than two panes are left, the Split tab disappears and the remaining terminal shows on its own.
 - **Ended sessions:** a session that ends, or that linkC closes (an idle worker, #49), drops out of the grid and the grid reflows.
 - **Single tabs still work:** each session's own tab still shows it full-size. Going back to Split shows the grid.
+- **Opening a member:** opening a session or shell terminal from anywhere outside the tab strip shows the Split tab with that pane focused, when it is a live pane of an active split. That covers its sidebar row, its notification, the project dashboard, and a screen's Open. Its own tab chip, and ⌘-digit or ⌃Tab to it, still show it full-size. Opening something that turns out to select nothing (a session that has ended) never opens a split.
 - **Persistence:** each project's split is kept across relaunch. Members are stored by linkC session id, and a split's members are the project's live terminals.
   - Members are kept across relaunch: the sessions linkC relaunches at start-up keep their ids and rejoin.
   - A member that ends drops out of the split, as "Ended sessions" says. It no longer counts toward the cap of 8.
