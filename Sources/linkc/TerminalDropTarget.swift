@@ -14,17 +14,17 @@ extension View {
 private struct TerminalDropTargetModifier: ViewModifier {
     let model: AppModel
     let target: String?
-    @State private var hovered: SplitEdge?
+    @State private var hover = SplitDropHover()
     @State private var size = CGSize.zero
 
     func body(content: Content) -> some View {
         content
             .onGeometryChange(for: CGSize.self, of: \.size) { size = $0 }
             .overlay(alignment: .topLeading) {
-                EdgeHighlight(edge: hovered, size: size).allowsHitTesting(false)
+                EdgeHighlight(edge: hover.edge, size: size).allowsHitTesting(false)
             }
             .onDrop(of: [.linkcTerminal], delegate: TerminalDropDelegate(
-                model: model, target: target, size: size, hovered: $hovered))
+                model: model, target: target, size: size, hover: $hover))
     }
 }
 
@@ -62,27 +62,26 @@ private struct TerminalDropDelegate: DropDelegate {
     let model: AppModel
     let target: String?
     let size: CGSize
-    @Binding var hovered: SplitEdge?
+    @Binding var hover: SplitDropHover
 
     func validateDrop(info: DropInfo) -> Bool {
         target != nil && info.hasItemsConforming(to: [.linkcTerminal])
     }
 
     func dropEntered(info: DropInfo) {
-        hovered = SplitLayout.edge(at: info.location, in: size)
+        apply { $0.entered(SplitLayout.edge(at: info.location, in: size)) }
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        let edge = SplitLayout.edge(at: info.location, in: size)
-        if hovered != edge { hovered = edge }
+        apply { $0.updated(SplitLayout.edge(at: info.location, in: size)) }
         return DropProposal(operation: .copy)
     }
 
-    func dropExited(info: DropInfo) { hovered = nil }
+    func dropExited(info: DropInfo) { apply { $0.exited() } }
 
     func performDrop(info: DropInfo) -> Bool {
         let edge = SplitLayout.edge(at: info.location, in: size)
-        hovered = nil
+        apply { $0.dropped() }
         guard let target, let provider = info.itemProviders(for: [.linkcTerminal]).first else { return false }
         let model = model
         _ = provider.loadTransferable(type: LinkCTerminalDrag.self) { result in
@@ -96,5 +95,12 @@ private struct TerminalDropDelegate: DropDelegate {
             }
         }
         return true
+    }
+
+    /// Writes the hover back only when `event` changed it: a drag reports its position many times a second.
+    private func apply(_ event: (inout SplitDropHover) -> Void) {
+        var next = hover
+        event(&next)
+        if next != hover { hover = next }
     }
 }
