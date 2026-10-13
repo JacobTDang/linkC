@@ -74,7 +74,7 @@ struct BoardScrollBarView: View {
     private func dragged(_ value: DragGesture.Value, bar: BoardScrollbar, track: CGFloat) {
         guard track > 0 else { return }
         if let drag {
-            viewport.originX = drag.bar.originX(thumbStart: Double((value.location.x - drag.grab) / track))
+            viewport.originX = drag.bar.originX(drawnThumbStart: value.location.x - drag.grab, inTrack: Double(track), minLength: Double(Self.minThumb))
             return
         }
         let x = value.startLocation.x

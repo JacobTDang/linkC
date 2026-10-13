@@ -169,4 +169,55 @@ final class BoardScrollbarTests: XCTestCase {
         let fresh = try XCTUnwrap(BoardScrollbar.horizontal(viewport: viewport, content: content, width: 800, margin: 48))
         XCTAssertEqual(fresh.thumb(inTrack: track, minLength: 24).start, 559, accuracy: 1, "a fresh track draws it far from the pointer at 450")
     }
+
+    /// A thumb drawn longer than its share (the 24 pt minimum) travels the track minus its drawn
+    /// length, so its drawn position is the view's place along that shorter travel.
+    func testALengthenedThumbIsPlacedAlongItsOwnTravel() {
+        let bar = BoardScrollbar(minX: 0, span: 100_000, thumbStart: 0.4955, thumbLength: 0.009)
+        let thumb = bar.thumb(inTrack: 800, minLength: 24)
+        XCTAssertEqual(thumb.length, 24)
+        XCTAssertEqual(thumb.start, 0.4955 / (1 - 0.009) * (800 - 24), accuracy: 1e-6)
+    }
+
+    /// Grabbing a lengthened thumb and moving it never jumps the view: a drawn start maps back to the
+    /// origin that drew it, all along the travel and at both ends.
+    func testADrawnThumbStartMapsBackToTheOriginThatDrewIt() {
+        let span = 100_096.0, tl = 800.0 / span, minX = -48.0
+        for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let origin = minX + fraction * (1 - tl) * span
+            let bar = BoardScrollbar(minX: minX, span: span, thumbStart: (origin - minX) / span, thumbLength: tl)
+            let drawn = bar.thumb(inTrack: 800, minLength: 24)
+            XCTAssertEqual(bar.originX(drawnThumbStart: drawn.start, inTrack: 800, minLength: 24), origin,
+                           accuracy: 1e-6, "at \(fraction) of the travel")
+        }
+    }
+
+    /// A pointer step moves the view by the matching share of its travel, never by the jump the
+    /// thumb's true length would give.
+    func testOnePointOfDragMovesTheViewByOnePointOfTravel() {
+        let span = 100_096.0, tl = 800.0 / span
+        let bar = BoardScrollbar(minX: -48, span: span, thumbStart: 1 - tl, thumbLength: tl)
+        let start = bar.thumb(inTrack: 800, minLength: 24).start
+        let atEnd = bar.originX(drawnThumbStart: start, inTrack: 800, minLength: 24)
+        let oneLeft = bar.originX(drawnThumbStart: start - 1, inTrack: 800, minLength: 24)
+        XCTAssertEqual(atEnd - oneLeft, (1 - tl) * span / (800 - 24), accuracy: 1e-6)
+    }
+
+    /// A thumb at its natural length maps exactly as the track fraction does.
+    func testANaturalLengthThumbMapsAsItsTrackFraction() {
+        let bar = BoardScrollbar(minX: -48, span: 2096, thumbStart: 0.2, thumbLength: 800.0 / 2096)
+        for start in [0.0, 100, 250, 400] {
+            XCTAssertEqual(bar.originX(drawnThumbStart: start, inTrack: 800, minLength: 24),
+                           bar.originX(thumbStart: start / 800), accuracy: 1e-9)
+        }
+    }
+
+    /// Dragged past either end, the view stops at that end; a thumb that fills the track has no travel.
+    func testADrawnThumbStartIsKeptOnTheTrack() {
+        let span = 100_096.0, tl = 800.0 / span
+        let bar = BoardScrollbar(minX: -48, span: span, thumbStart: 0.5, thumbLength: tl)
+        XCTAssertEqual(bar.originX(drawnThumbStart: -50, inTrack: 800, minLength: 24), -48, accuracy: 1e-9)
+        XCTAssertEqual(bar.originX(drawnThumbStart: 5000, inTrack: 800, minLength: 24), -48 + (1 - tl) * span, accuracy: 1e-6)
+        XCTAssertEqual(bar.originX(drawnThumbStart: 3, inTrack: 20, minLength: 24), -48, accuracy: 1e-9)
+    }
 }
