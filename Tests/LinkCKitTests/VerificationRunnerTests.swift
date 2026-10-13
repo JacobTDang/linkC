@@ -32,6 +32,7 @@ final class ScriptedGit: GitInspecting, @unchecked Sendable {
         return changed
     }
     func fileExists(_ path: String, at rev: String, in workspace: URL) throws -> Bool { true }
+    func worktree(holding branch: String, in workspace: URL) throws -> URL? { nil }
 }
 
 /// Records each command and returns one scripted result.

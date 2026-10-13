@@ -113,4 +113,36 @@ final class GitClientTests: XCTestCase {
             XCTAssertEqual(error.localizedDescription, "git rev-parse timed out after 1s")
         }
     }
+
+    func testWorktreeHoldingBranch() throws {
+        let wtDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-wt-\(UUID().uuidString)")
+        defer {
+            _ = try? runGit(["worktree", "remove", "--force", wtDir.path], in: repo)
+            try? FileManager.default.removeItem(at: wtDir)
+        }
+        try runGit(["worktree", "add", wtDir.path, "-b", "feature/worktree-branch"], in: repo)
+
+        // 1. Branch checked out in a linked worktree
+        let foundWt = try git.worktree(holding: "feature/worktree-branch", in: repo)
+        XCTAssertNotNil(foundWt)
+        if let foundWt {
+            XCTAssertEqual(ProjectPath.canonical(foundWt.path), ProjectPath.canonical(wtDir.path))
+        }
+
+        // 2. Root's own branch returns the root directory
+        let foundRoot = try git.worktree(holding: "main", in: repo)
+        XCTAssertNotNil(foundRoot)
+        if let foundRoot {
+            XCTAssertEqual(ProjectPath.canonical(foundRoot.path), ProjectPath.canonical(repo.path))
+        }
+
+        // 3. Branch with no worktree returns nil
+        try runGit(["branch", "unlinked-branch"], in: repo)
+        let unlinked = try git.worktree(holding: "unlinked-branch", in: repo)
+        XCTAssertNil(unlinked)
+
+        // 4. Non-existent branch returns nil
+        let nonExistent = try git.worktree(holding: "does-not-exist", in: repo)
+        XCTAssertNil(nonExistent)
+    }
 }

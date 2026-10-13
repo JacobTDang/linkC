@@ -12,6 +12,8 @@ public protocol GitInspecting: Sendable {
     /// Which of `paths` differ between the two commits.
     func changedFiles(_ paths: [String], from: String, to: String, in workspace: URL) throws -> [String]
     func fileExists(_ path: String, at rev: String, in workspace: URL) throws -> Bool
+    /// Returns the worktree path checking out `branch`, or nil if no worktree has it checked out.
+    func worktree(holding branch: String, in workspace: URL) throws -> URL?
 }
 
 extension GitInspecting {
@@ -127,6 +129,25 @@ public struct GitClient: GitInspecting {
         // `cat-file -e` exits 128 for a missing path — the same status as a real error.
         // `ls-tree` exits 0 and prints nothing.
         !(try output(["ls-tree", "--name-only", rev, "--", path], in: workspace)).isEmpty
+    }
+
+    public func worktree(holding branch: String, in workspace: URL) throws -> URL? {
+        let expectedRef = "refs/heads/\(branch)"
+        let text = try output(["worktree", "list", "--porcelain"], in: workspace)
+        var currentPath: String?
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.hasPrefix("worktree ") {
+                currentPath = String(line.dropFirst("worktree ".count))
+            } else if line.hasPrefix("branch ") {
+                let ref = String(line.dropFirst("branch ".count))
+                if ref == expectedRef, let currentPath {
+                    return URL(fileURLWithPath: currentPath)
+                }
+            } else if line.isEmpty {
+                currentPath = nil
+            }
+        }
+        return nil
     }
 
     private func git(_ args: [String], in workspace: URL) throws -> ProcessResult {

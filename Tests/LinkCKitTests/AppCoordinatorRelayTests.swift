@@ -1929,6 +1929,39 @@ final class AppCoordinatorRelayTests: XCTestCase {
     }
 
     @MainActor
+    func testGateInWorktreeHoldingBranch() async throws {
+        // Create a real git repo with a linked worktree
+        try runGit(["init", "-q", "-b", "main"], in: tempDir)
+        let check = tempDir.appendingPathComponent("check.sh")
+        try "#!/bin/sh\nexit 1\n".write(to: check, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: check.path)
+        try runGit(["add", "check.sh"], in: tempDir)
+        try runGit(["commit", "-q", "-m", "initial"], in: tempDir)
+
+        let wtDir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-relay-wt-\(UUID().uuidString)")
+        defer {
+            _ = try? runGit(["worktree", "remove", "--force", wtDir.path], in: tempDir)
+            try? FileManager.default.removeItem(at: wtDir)
+        }
+        try runGit(["worktree", "add", wtDir.path, "-b", "task/worktree-branch"], in: tempDir)
+
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let verifier = ScriptedVerifier(gate: .fixture(passed: true, sha: base40, exit: 1))
+        let coordinator = makeCoordinator(verifier: verifier)
+        defer { coordinator.shutdown() }
+
+        let verification = Verification(branch: "task/worktree-branch", baseSha: base40, command: "./check.sh", testPaths: ["check.sh"])
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Make check pass", files: [], verification: verification)
+
+        coordinator.launchVerifications(workspacePath: ws, inboxStore: inbox)
+
+        let queued = try await waitUntil { (try? inbox.task(id: task.id))?.state == .queued }
+        XCTAssertTrue(queued)
+        XCTAssertEqual(verifier.calls, ["gate \(wtDir.lastPathComponent)"])
+    }
+
+    @MainActor
     func testGateRefusalCancelsWithOneLine() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
