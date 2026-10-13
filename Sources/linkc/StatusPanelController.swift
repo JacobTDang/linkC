@@ -410,7 +410,8 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
-        // Cmd-W: mirror hide() so the coordinator's watch probe stays correct.
+        // Nothing in linkC closes the panel (the menus SwiftUI builds have no Close item, so ⌘W does not), but
+        // if something does, mirror hide() so the coordinator's watch probe stays correct.
         model.panelVisible = false
         model.flushStateToDisk()
     }

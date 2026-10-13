@@ -8,9 +8,12 @@ struct LinkCApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     // The status item and panel are built by the AppDelegate/StatusPanelController, not by
-    // SwiftUI. This scene exists only to satisfy `App`; an accessory app never shows it.
+    // SwiftUI. This scene exists only to satisfy `App`; an accessory app never shows it. While a
+    // torn-off window makes linkC a regular app, its App menu would offer "Settings…" (⌘,) and open
+    // this empty scene: the command group removes the item and its shortcut.
     var body: some Scene {
         Settings { EmptyView() }
+            .commands { CommandGroup(replacing: .appSettings) {} }
     }
 }
 
@@ -66,8 +69,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Guard against losing running sessions: quitting linkC ends the claude processes it hosts.
+    /// Closing the last torn-off window must not quit the menu-bar app.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let reply = terminateReply()
+        // Quitting is not the user closing the windows: they stay saved and reopen on the next launch.
+        if reply == .terminateNow { tornOffWindows?.prepareForQuit() }
+        return reply
+    }
+
+    /// Guard against losing running sessions: quitting linkC ends the claude processes it hosts.
+    private func terminateReply() -> NSApplication.TerminateReply {
         // Tapping "Install & restart" already consented to exactly this quit — the swap
         // helper is waiting on our exit, so the warning would only stall it.
         if model.updateInProgress { return .terminateNow }
