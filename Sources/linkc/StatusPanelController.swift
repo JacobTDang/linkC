@@ -78,6 +78,7 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         super.init()
         setupStatusItem()
         setupPanel()
+        model.panelFrame = { [weak self] in self?.panel.frame }
         syncFromModel()      // seed the button title + lastSelectedId
         observeModel()
     }

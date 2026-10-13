@@ -29,7 +29,7 @@ struct SplitPane: View {
                     .foregroundStyle(Theme.textTertiary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case 1:
-                SplitCell(model: model, pane: panes[0], isFocused: true)
+                SplitCell(model: model, project: project, pane: panes[0], isFocused: true)
             default:
                 // Rows are keyed by position, not by their first member, so a row that widens keeps
                 // its cells; a cell is rebuilt only when its member moves to another row.
@@ -37,7 +37,7 @@ struct SplitPane: View {
                     ForEach(Array(SplitLayout.rowRanges(for: panes.count).enumerated()), id: \.offset) { _, range in
                         HStack(spacing: 6) {
                             ForEach(panes[range]) { pane in
-                                SplitCell(model: model, pane: pane, isFocused: pane.id == focused)
+                                SplitCell(model: model, project: project, pane: pane, isFocused: pane.id == focused)
                             }
                         }
                     }
@@ -59,6 +59,7 @@ private struct SplitPaneItem: Identifiable {
 
 private struct SplitCell: View {
     let model: AppModel
+    let project: String
     let pane: SplitPaneItem
     let isFocused: Bool
     @State private var hovering = false
@@ -77,7 +78,7 @@ private struct SplitCell: View {
                 if let dot = pane.dot {
                     StateDotView(dot: dot)
                 }
-                Button { model.removeFromSplit(id) } label: { RowGlyph(systemName: "xmark") }
+                Button { model.removeFromSplit(id, in: project) } label: { RowGlyph(systemName: "xmark") }
                     .buttonStyle(.plain)
                     .opacity(hovering ? 1 : 0)
                     .animation(Theme.hoverEase, value: hovering)
@@ -85,7 +86,7 @@ private struct SplitCell: View {
             }
             .padding(.horizontal, 4)
             .contentShape(Rectangle())
-            .onTapGesture { model.clickSplitPane(id) }
+            .onTapGesture { model.clickSplitPane(id, in: project) }
             .draggable(LinkCTerminalDrag(id: id, fromPane: true))
             // Focus reports from inside AppKit's first-responder change, which can run during a
             // view update: hand it to the main actor instead of writing state from there. The weak
@@ -93,8 +94,8 @@ private struct SplitCell: View {
             // that takes the keyboard reports focus, one that took it by itself included, so that only
             // moves the selection; a click is the user's pick and opens the pane as a tab would.
             TerminalContainer(session: session, takesFocus: isFocused,
-                              onFocus: { [weak model] in Task { @MainActor in model?.focusInSplit(id) } },
-                              onClick: { [weak model] in Task { @MainActor in model?.pickSplitPane(id) } })
+                              onFocus: { [weak model] in Task { @MainActor in model?.focusInSplit(id, in: project) } },
+                              onClick: { [weak model] in Task { @MainActor in model?.pickSplitPane(id, in: project) } })
                 .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous)
@@ -102,7 +103,7 @@ private struct SplitCell: View {
                         .animation(Theme.hoverEase, value: isFocused)
                         .allowsHitTesting(false)
                 }
-                .terminalDropTarget(model: model, target: id)
+                .terminalDropTarget(model: model, target: id, project: project)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onHover { hovering = $0 }

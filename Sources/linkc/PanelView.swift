@@ -181,7 +181,8 @@ private struct TerminalPane: View {
                     .foregroundStyle(Theme.textTertiary)
             }
         }
-        .terminalDropTarget(model: model, target: model.selectedTerminal == nil ? nil : model.selectedId)
+        .terminalDropTarget(model: model, target: model.selectedTerminal == nil ? nil : model.selectedId,
+                            project: model.currentProject)
     }
 
     /// Re-resolve the opened agent so a completion arriving mid-read fills the body in.

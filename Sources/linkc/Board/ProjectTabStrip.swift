@@ -56,7 +56,7 @@ struct ProjectTabStrip: View {
                     .dropDestination(for: LinkCTerminalDrag.self) { items, _ in
                         guard let project = model.splitProject, let drag = items.first, drag.fromPane,
                               model.liveSplitMembers(in: project).contains(drag.id) else { return false }
-                        model.removeFromSplit(drag.id)
+                        model.removeFromSplit(drag.id, in: project)
                         return true
                     }
                 }
