@@ -22,9 +22,10 @@ struct SplitPane: View {
         // own inputs do not change when the signal publishes, so it would skip its body.
         let _ = model.sidebarSignal.signal
         let state = model.splitPaneState(in: project)
+        let hosts = model.hosts(of: state.members)
         let panes = state.members.map {
             SplitPaneItem(id: $0, title: model.splitPaneTitle($0, titles: state.titles), dot: model.splitPaneDot($0),
-                          host: model.host(of: $0))
+                          hostedIn: hosts[$0])
         }
         let focused = state.focused
         Group {
@@ -62,7 +63,7 @@ private struct SplitPaneItem: Identifiable {
     let title: String
     let dot: ProjectDot?
     /// The window that holds this terminal's live view, nil for the panel.
-    let host: TornOffItem?
+    let hostedIn: TornOffItem?
 }
 
 private struct SplitCell: View {
@@ -77,7 +78,7 @@ private struct SplitCell: View {
     var body: some View {
         let id = pane.id
         // Only the grid that is the terminal's host takes its view; any other shows where it lives.
-        let hostedHere = pane.host == grid
+        let hostedHere = pane.hostedIn == grid
         let session = hostedHere ? model.terminalSession(id) : nil
         VStack(spacing: 4) {
             HStack(spacing: 6) {
@@ -110,7 +111,8 @@ private struct SplitCell: View {
                               onClick: { [weak model] in Task { @MainActor in model?.pickSplitPane(id, in: project) } })
                 .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
                 .overlay {
-                    if !hostedHere, let elsewhere = pane.host {
+                    // When fewer than two live panes remain, this window is about to be pruned closed, so an empty cell shows nothing briefly.
+                    if !hostedHere, let elsewhere = pane.hostedIn {
                         WindowedNote(model: model, item: elsewhere, compact: true)
                     }
                 }

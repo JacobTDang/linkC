@@ -813,6 +813,7 @@ final class AppModel {
             splits: splits, liveIDs: { self.splittableIDs(in: $0) })
         if let showing, let id = selectedId, let split = splits[showing] {
             // The split's focus follows whatever was selected.
+            if split.focusing(id) != split { markOnScreenSeen() }
             sidebarState.setSplit(split.focusing(id), for: showing)
         }
         if splitProject != showing { splitProject = showing }
@@ -1263,8 +1264,9 @@ final class AppModel {
         appProcesses = [:]
         healthTimer?.invalidate()
         healthTimer = nil
-        // Terminals are only sampled while the panel is open, so one that changed folder or agent
-        // since then would be remembered as it was. Take the last look before the snapshot below.
+        // Terminals are only sampled while the panel is visible or a torn-off window is open, so one that
+        // changed folder or agent since then would be remembered as it was. Take the last look before
+        // the snapshot below.
         shells?.sampleDirectories()
         shells?.sampleAgents()
         // Boards, sessions and shells all flush together — a quit within the Board's 600 ms

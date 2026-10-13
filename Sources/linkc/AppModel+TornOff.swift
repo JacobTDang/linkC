@@ -7,12 +7,42 @@ import LinkCKit
 extension AppModel {
     var tornOff: TornOff { sidebarState.tornOff }
 
+    /// The windows that hold the live views of `ids`, containing only the ids that live in a window.
+    /// Fast return when nothing is torn off, and builds the stored splits and live-ID sets once.
+    func hosts(of ids: [String]) -> [String: TornOffItem] {
+        guard !tornOff.isEmpty, !ids.isEmpty else { return [:] }
+        var remaining = Set(ids)
+        var result: [String: TornOffItem] = [:]
+        for id in remaining {
+            if tornOff.contains(.terminal(id)) {
+                result[id] = .terminal(id)
+            }
+        }
+        remaining.subtract(result.keys)
+        guard !remaining.isEmpty, tornOff.windows.contains(where: {
+            if case .split = $0.item { true } else { false }
+        }) else { return result }
+        let splits = storedSplits()
+        for window in tornOff.windows {
+            guard case .split(let project) = window.item, let split = splits[project] else { continue }
+            let candidates = remaining.intersection(split.members)
+            guard !candidates.isEmpty else { continue }
+            let live = splittableIDs(in: project)
+            guard split.isActive(liveIDs: live) else { continue }
+            for id in candidates where live.contains(id) {
+                result[id] = window.item
+                remaining.remove(id)
+            }
+            if remaining.isEmpty { break }
+        }
+        return result
+    }
+
     /// The window that holds terminal `id`'s live view, or nil for the panel. Asked for every sidebar
     /// row, so it does no work while nothing is torn off, and builds the stored splits only when a split
     /// window is open.
     func host(of id: String) -> TornOffItem? {
-        guard !tornOff.isEmpty else { return nil }
-        return tornOff.host(of: id, splits: storedSplits(), liveIDs: { splittableIDs(in: $0) })
+        hosts(of: [id])[id]
     }
 
     /// The terminal the key torn-off window is showing: its own, or its split's focused live pane — when
