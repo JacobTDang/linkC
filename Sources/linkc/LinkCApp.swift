@@ -181,7 +181,7 @@ final class AppModel {
     func surface(error message: String) { lastError = message }
     /// Refreshes usage while the panel is visible; hook events cover the rest of the time.
     @ObservationIgnored private var usageTimer: Timer?
-    @ObservationIgnored private var usageTicks = 0
+    @ObservationIgnored private var refreshSchedule = RefreshSchedule.panel
     /// Health checks run on their OWN timer, deliberately independent of `panelVisible`:
     /// an outage that starts and ends while the panel is closed would otherwise never
     /// notify, making the alert only ever restate a row the user is already looking at.
@@ -1248,34 +1248,35 @@ final class AppModel {
         return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
 
+    private func runRefreshes(_ due: [PanelRefresh]) {
+        for refresh in due {
+            switch refresh {
+            case .sessions:
+                usage.refreshAllSessions()
+            case .servers:
+                refreshServers()
+            case .window:
+                usage.refreshWindow()
+            case .updateCheck:
+                checkForUpdate()
+            case .cloud:
+                refreshCloud()
+            case .codexUsage:
+                refreshCodexUsage()
+            case .health:
+                checkHealth()
+            }
+        }
+    }
+
     private func updateUsageTimer() {
         if panelVisible, usageTimer == nil {
-            // First tick immediately so the panel never opens on stale zeros.
-            usage.refreshAllSessions()
-            usage.refreshWindow()
-            refreshServers()
-            refreshCodexUsage()
-            checkForUpdate()
-            refreshCloud()
-            checkHealth()
-            usageTicks = 0
+            // Showing the panel now runs only what has gone stale, and the first show runs everything.
+            runRefreshes(refreshSchedule.takeDue(at: Date(), showing: true))
             usageTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    self.usage.refreshAllSessions()
-                    self.usageTicks += 1
-                    // The global sweep is heavier — every 30s is live enough for a footer,
-                    // and enough for noticing a fresh build too.
-                    if self.usageTicks % 6 == 0 {
-                        self.usage.refreshWindow()
-                        self.checkForUpdate()
-                    }
-                    // Cloud is slowest and rate-limited: every 120s is plenty.
-                    if self.usageTicks % 24 == 0 { self.refreshCloud() }
-                    // Docker state drifts slowly; every 15s keeps SERVERS honest cheaply.
-                    if self.usageTicks % 3 == 0 { self.refreshServers() }
-                    // Codex writes its snapshot every turn; five minutes is live enough to read it.
-                    if self.usageTicks % 60 == 0 { self.refreshCodexUsage() }
+                    self.runRefreshes(self.refreshSchedule.takeDue(at: Date(), showing: false))
                 }
             }
         } else if !panelVisible {
