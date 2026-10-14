@@ -34,20 +34,23 @@ public enum PanelRefresh: CaseIterable, Hashable, Sendable {
 /// Each refresh runs at its own interval from when it last ran, so a panel that comes and goes (another
 /// Space, the app hidden) costs no more than one left open, and still reaches its slow refreshes.
 public struct RefreshSchedule: Sendable {
-    /// A timer tick can fire slightly early.
-    private static let tolerance: TimeInterval = 0.5
+    /// Half the panel's 5 s tick. A busy main thread runs one tick's refreshes late while the next tick
+    /// still fires on time, so a run can land up to a tick early against the last one; without the slack
+    /// it would wait a whole extra tick.
+    private static let tolerance: TimeInterval = 2.5
     private var lastRun: [PanelRefresh: Date] = [:]
 
     public static var panel: RefreshSchedule { RefreshSchedule() }
 
     /// The refreshes due at `now`, in declaration order, recorded as run at `now`. A refresh is due when it
-    /// has never run, or its interval has passed since it last did. `showing` is true when the panel has
-    /// just come on screen.
+    /// has never run, its interval has passed since it last did, or the clock has been set back past its
+    /// last run. `showing` is true when the panel has just come on screen.
     public mutating func takeDue(at now: Date, showing: Bool) -> [PanelRefresh] {
         let due = PanelRefresh.allCases.filter { refresh in
             guard showing || !refresh.isShowOnly else { return false }
             guard let previous = lastRun[refresh] else { return true }
-            return now.timeIntervalSince(previous) >= refresh.interval - Self.tolerance
+            let elapsed = now.timeIntervalSince(previous)
+            return elapsed < 0 || elapsed >= refresh.interval - Self.tolerance
         }
         for refresh in due { lastRun[refresh] = now }
         return due

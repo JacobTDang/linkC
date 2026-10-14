@@ -427,7 +427,7 @@ final class AppModel {
         Task { await oracle.loadDetail(for: id, force: force) }
     }
 
-    /// Cloud calls are slow and rate-limited — refresh on panel open + every ~120s,
+    /// Cloud calls are slow and rate-limited — at most every ~120s while the panel is on screen,
     /// never the local 15s loop.
     private func refreshCloud() {
         if let oracle, oracle.ociPath != nil {

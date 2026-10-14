@@ -80,6 +80,20 @@ final class RefreshScheduleTests: XCTestCase {
         XCTAssertTrue(schedule.takeDue(at: at(70), showing: true).contains(.health))
     }
 
+    func testATickThatRunsLateDoesNotPushTheNextRunAWholeIntervalBack() {
+        // A busy main thread runs one tick's refreshes late; the timer's next tick still fires on time.
+        var schedule = RefreshSchedule.panel
+        _ = schedule.takeDue(at: start, showing: true)
+        XCTAssertTrue(schedule.takeDue(at: at(6.5), showing: false).contains(.sessions))
+        XCTAssertTrue(schedule.takeDue(at: at(10), showing: false).contains(.sessions))
+    }
+
+    func testAClockSetBackStillRefreshes() {
+        var schedule = RefreshSchedule.panel
+        _ = schedule.takeDue(at: start, showing: true)
+        XCTAssertEqual(Set(schedule.takeDue(at: at(-3600), showing: false)), Set(PanelRefresh.allCases).subtracting([.health]))
+    }
+
     func testTheResultFollowsTheDeclarationOrder() {
         var schedule = RefreshSchedule.panel
         XCTAssertEqual(schedule.takeDue(at: start, showing: true), PanelRefresh.allCases)

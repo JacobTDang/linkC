@@ -75,7 +75,7 @@ public enum OracleInstances {
 /// Oracle compute status through the `oci` CLI. linkC never holds cloud credentials —
 /// the CLI owns auth via `~/.oci/config`, the same trust model as docker and claude.
 /// Cloud cadence is gentle by design (calls take 1–3s and are rate-limited): callers
-/// refresh on panel open plus every ~120s, never the local 15s loop.
+/// refresh at most every ~120s while the panel is on screen, never the local 15s loop.
 @MainActor
 @Observable
 public final class OracleService {
