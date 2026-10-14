@@ -1,9 +1,9 @@
 import Foundation
 
-/// Coordinates whether the status panel counts as on screen.
-///
-/// A panel leaves the screen in ways that never pass through `hide()` (another Space,
-/// the app hidden), and SwiftUI's `onAppear` fires for a window that was never shown.
+/// Whether the menu-bar panel is on screen: its window ordered in on the active Space, with no hide
+/// fading it out. The window decides, not the code that shows and hides it: a panel leaves the screen
+/// in ways that never pass through `hide()` (another Space, the app hidden), and SwiftUI's `onAppear`
+/// fires for a window that was never shown.
 @MainActor
 public final class PanelPresence {
     private let isOrderedIn: () -> Bool
@@ -25,26 +25,27 @@ public final class PanelPresence {
         self.publish = publish
     }
 
-    /// Clears the hide-in-flight flag and sets present to true.
-    /// This happens before the window orders in.
+    /// linkC is about to show the panel. It counts as present before the window orders in, and wins
+    /// over a hide still fading out.
     public func willPresent() {
         hideInFlight = false
         updatePresence(to: true)
     }
 
-    /// Sets hide-in-flight and sets present to false.
+    /// linkC is hiding the panel. It stops counting as present at once, though the window stays
+    /// ordered in while it fades.
     public func willHide() {
         hideInFlight = true
         updatePresence(to: false)
     }
 
-    /// Clears hide-in-flight, then reconciles.
+    /// The hide's window is ordered out.
     public func didFinishHide() {
         hideInFlight = false
         reconcile()
     }
 
-    /// Reconciles to `isOrderedIn() && isOnActiveSpace() && !hideInFlight`.
+    /// The window was ordered in or out, or the active Space changed.
     public func windowStateChanged() {
         reconcile()
     }

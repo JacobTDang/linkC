@@ -281,13 +281,14 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// A session was selected. If the panel is open, raise it + focus its terminal; if hidden (a
-    /// programmatic focus, e.g. a notification click), open it to reveal the session. Only the
+    /// A session was selected. If the panel is on screen, raise it + focus its terminal; if not (a
+    /// programmatic focus, e.g. a notification click, or the panel left on another Space), open it
+    /// to reveal the session. Only the
     /// nil→selected transition widens for the split — switching between sessions must not resize
     /// (in narrow mode the sidebar itself is the switcher and a resize would swap it away).
     private func selectionDidChange(from previous: String?, to id: String?) {
         guard id != nil else { return }
-        if panel.isVisible {
+        if presence.isPresent {
             panel.makeKeyAndOrderFront(nil)   // raise on programmatic focus
             focusTerminalIfNeeded()
             if previous == nil { ensureSplitWidth() }
@@ -453,8 +454,8 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         // Nothing in linkC closes the panel (the menus SwiftUI builds have no Close item, so ⌘W does not), but
-        // if something does, mirror hide() so the coordinator's watch probe stays correct.
-        model.panelVisible = false
+        // if something does, it leaves the screen like a hide; the next present() clears that.
+        presence.willHide()
         model.flushStateToDisk()
     }
 
