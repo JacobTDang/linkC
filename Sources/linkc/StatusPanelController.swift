@@ -39,13 +39,17 @@ final class StatusPanel: NSPanel {
 ///
 /// Placement: a compact rectangle stuck in the screen's top-right corner. One consistent size
 /// regardless of selection: the user's dragged size (persisted) or a small, short default. Movable
-/// (drag the top) and resizable (drag edges), always clamped fully on-screen. `AppModel` stays the
-/// source of truth — this controller mirrors show/hide into `panelVisible`.
+/// (drag the top) and resizable (drag edges), always clamped fully on-screen. The window decides
+/// `panelVisible`, through `PanelPresence`.
 @MainActor
 final class StatusPanelController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private let statusItem: NSStatusItem
     private var panel: StatusPanel!
+    private var presence: PanelPresence!
+    private var visibleObservation: NSKeyValueObservation?
+    private var spaceObserver: (any NSObjectProtocol)?
+    private var occlusionObserver: (any NSObjectProtocol)?
 
     /// The selection value the panel width currently reflects. Guards the selection handler so
     /// that unrelated model changes (e.g. running/waiting counts) don't re-trigger it — only a
@@ -137,12 +141,50 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         panel.contentView = effect
         panel.delegate = self
         self.panel = panel
+
+        let model = self.model
+        let presence = PanelPresence(
+            isOrderedIn: { panel.isVisible },
+            isOnActiveSpace: { panel.isOnActiveSpace },
+            publish: { model.panelVisible = $0 }
+        )
+        self.presence = presence
+
+        // The controller lives as long as the app, so these observers are never removed.
+        // KVO reports a passing ordered-out inside makeKeyAndOrderFront; after the hop the window has settled.
+        visibleObservation = panel.observe(\.isVisible, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.presence.windowStateChanged()
+                }
+            }
+        }
+
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.presence.windowStateChanged()
+            }
+        }
+
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.presence.windowStateChanged()
+            }
+        }
     }
 
     // MARK: - Toggle / show / hide
 
     @objc func togglePanel() {
-        if panel.isVisible {
+        if presence.isPresent {
             hide()
         } else {
             present(activating: true)
@@ -160,11 +202,16 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         placedDisplayID = displayID
         if rememberedPanelScreenID() == nil, let displayID { savePanelScreen(displayID) }
         let wasVisible = panel.isVisible
-        model.panelVisible = true
+        presence.willPresent()
         if activating { NSApp.activate(ignoringOtherApps: true) }
         if wasVisible || reduceMotion {
-            panel.alphaValue = 1
-            panel.setFrame(target, display: false)
+            // Through a zero-length animation, which replaces a hide's fade still running; a direct
+            // setFrame would let that fade's move finish and leave the panel off its anchor.
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                panel.animator().alphaValue = 1
+                panel.animator().setFrame(target, display: false)
+            }
             panel.makeKeyAndOrderFront(nil)
         } else {
             panel.alphaValue = 0
@@ -181,9 +228,10 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     }
 
     func hide() {
-        model.panelVisible = false
+        presence.willHide()
         guard panel.isVisible, !reduceMotion else {
             panel.orderOut(nil)
+            presence.didFinishHide()
             panel.alphaValue = 1
             return
         }
@@ -198,8 +246,9 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 // A present() during the fade wins: it already re-showed the panel at full alpha.
-                guard !self.model.panelVisible else { return }
+                guard !self.presence.isPresent else { return }
                 self.panel.orderOut(nil)
+                self.presence.didFinishHide()
                 self.panel.alphaValue = 1
                 self.panel.setFrame(resting, display: false)
             }
@@ -239,13 +288,14 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// A session was selected. If the panel is open, raise it + focus its terminal; if hidden (a
-    /// programmatic focus, e.g. a notification click), open it to reveal the session. Only the
-    /// nil→selected transition widens for the split — switching between sessions must not resize
-    /// (in narrow mode the sidebar itself is the switcher and a resize would swap it away).
+    /// A session was selected. If the panel is on screen, raise it + focus its terminal; if not (a
+    /// programmatic focus, e.g. a notification click, or the panel left on another Space), open it to
+    /// reveal the session. Only the nil→selected transition widens for the split — switching between
+    /// sessions must not resize (in narrow mode the sidebar itself is the switcher and a resize would
+    /// swap it away).
     private func selectionDidChange(from previous: String?, to id: String?) {
         guard id != nil else { return }
-        if panel.isVisible {
+        if presence.isPresent {
             panel.makeKeyAndOrderFront(nil)   // raise on programmatic focus
             focusTerminalIfNeeded()
             if previous == nil { ensureSplitWidth() }
@@ -411,8 +461,9 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         // Nothing in linkC closes the panel (the menus SwiftUI builds have no Close item, so ⌘W does not), but
-        // if something does, mirror hide() so the coordinator's watch probe stays correct.
-        model.panelVisible = false
+        // if something does, it leaves the screen like a hide, held off screen by the hide-in-flight flag until
+        // the next present() clears it.
+        presence.willHide()
         model.flushStateToDisk()
     }
 
