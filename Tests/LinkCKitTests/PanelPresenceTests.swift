@@ -89,6 +89,28 @@ final class PanelPresenceTests: XCTestCase {
         XCTAssertFalse(presence.isPresent)
     }
 
+    func testAFinishedHideNoLongerHoldsThePanelBack() {
+        // The app unhidden after a hide: nothing called present(), and the window is ordered in again.
+        let (panel, presence) = shown()
+        presence.willHide()
+        panel.orderedIn = false
+        presence.didFinishHide()
+        panel.orderedIn = true
+        presence.windowStateChanged()
+        XCTAssertEqual(panel.published, [true, false, true])
+    }
+
+    func testPresentingAPanelLeftOnAnotherSpaceIsPresent() {
+        let (panel, presence) = shown()
+        panel.onActiveSpace = false
+        presence.windowStateChanged()
+        presence.willPresent()   // the window moves to the active Space
+        panel.onActiveSpace = true
+        presence.windowStateChanged()
+        XCTAssertEqual(panel.published, [true, false, true])
+        XCTAssertTrue(presence.isPresent)
+    }
+
     func testPresentingDuringAHideFadeWins() {
         let (panel, presence) = shown()
         presence.willHide()

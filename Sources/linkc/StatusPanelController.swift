@@ -144,12 +144,14 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
         let model = self.model
         let presence = PanelPresence(
-            isOrderedIn: { [unowned panel] in panel.isVisible },
-            isOnActiveSpace: { [unowned panel] in panel.isOnActiveSpace },
-            publish: { [weak model] in model?.panelVisible = $0 }
+            isOrderedIn: { panel.isVisible },
+            isOnActiveSpace: { panel.isOnActiveSpace },
+            publish: { model.panelVisible = $0 }
         )
         self.presence = presence
 
+        // The controller lives as long as the app, so these observers are never removed.
+        // KVO reports a passing ordered-out inside makeKeyAndOrderFront; after the hop the window has settled.
         visibleObservation = panel.observe(\.isVisible, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -203,8 +205,13 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
         presence.willPresent()
         if activating { NSApp.activate(ignoringOtherApps: true) }
         if wasVisible || reduceMotion {
-            panel.alphaValue = 1
-            panel.setFrame(target, display: false)
+            // Through a zero-length animation, which replaces a hide's fade still running; a direct
+            // setFrame would let that fade's move finish and leave the panel off its anchor.
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                panel.animator().alphaValue = 1
+                panel.animator().setFrame(target, display: false)
+            }
             panel.makeKeyAndOrderFront(nil)
         } else {
             panel.alphaValue = 0
@@ -282,10 +289,10 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
     }
 
     /// A session was selected. If the panel is on screen, raise it + focus its terminal; if not (a
-    /// programmatic focus, e.g. a notification click, or the panel left on another Space), open it
-    /// to reveal the session. Only the
-    /// nil→selected transition widens for the split — switching between sessions must not resize
-    /// (in narrow mode the sidebar itself is the switcher and a resize would swap it away).
+    /// programmatic focus, e.g. a notification click, or the panel left on another Space), open it to
+    /// reveal the session. Only the nil→selected transition widens for the split — switching between
+    /// sessions must not resize (in narrow mode the sidebar itself is the switcher and a resize would
+    /// swap it away).
     private func selectionDidChange(from previous: String?, to id: String?) {
         guard id != nil else { return }
         if presence.isPresent {
@@ -454,7 +461,8 @@ final class StatusPanelController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         // Nothing in linkC closes the panel (the menus SwiftUI builds have no Close item, so ⌘W does not), but
-        // if something does, it leaves the screen like a hide; the next present() clears that.
+        // if something does, it leaves the screen like a hide, held off screen by the hide-in-flight flag until
+        // the next present() clears it.
         presence.willHide()
         model.flushStateToDisk()
     }
