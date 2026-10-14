@@ -61,8 +61,6 @@ struct PanelView: View {
         // otherwise — the panel is coral everywhere, including its toggles.
         .tint(Theme.accent)
         .environment(\.panelVisible, model.panelVisible)
-        .onAppear { model.panelVisible = true }
-        .onDisappear { model.panelVisible = false }
     }
 }
 
