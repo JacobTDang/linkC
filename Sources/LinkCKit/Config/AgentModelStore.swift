@@ -48,7 +48,8 @@ public struct AgentModelStore: Sendable {
             return .seeded
         }
         do {
-            return try parseLenient(data).settings
+            // A file saved before an agent existed still gives that agent its seeded tiers.
+            return try parseLenient(data).settings.fillingInAgents(from: .seeded)
         } catch {
             NSLog("linkC: models.json at %@ is corrupt, using the seeded mapping — %@",
                   fileURL.path, String(describing: error))
