@@ -303,4 +303,107 @@ final class ProjectSplitTests: XCTestCase {
         XCTAssertNil(showing("A1", nil, nil, false), "a selection that moved by itself opens no split")
         XCTAssertNil(showing(nil, "A1", "/a", false))
     }
+
+    // MARK: - Pane sizes
+
+    /// `members` with sizes made for them: the first boundary dragged 60 pt to the right.
+    private func sized(_ members: [String], focused: String? = nil) -> ProjectSplit {
+        let sizes = SplitSizes.even(for: members.count).resizingColumns(inRow: 0, divider: 0, by: 60, rowWidth: 600)
+        return ProjectSplit(members: members, focused: focused).resized(sizes)
+    }
+
+    func testResizingSetsTheSizesAndNothingElse() {
+        let sizes = SplitSizes.even(for: 2).resizingColumns(inRow: 0, divider: 0, by: 60, rowWidth: 600)
+        let split = ProjectSplit(members: ["A", "B"], focused: "A").resized(sizes)
+        XCTAssertEqual(split.sizes, sizes)
+        XCTAssertEqual(split.members, ["A", "B"])
+        XCTAssertEqual(split.focused, "A")
+    }
+
+    func testANewSplitIsEven() {
+        XCTAssertNil(ProjectSplit(members: ["A", "B"]).sizes)
+    }
+
+    func testATerminalJoiningClearsTheSizes() throws {
+        XCTAssertNil(try sized(["A", "B"]).adding("C", onto: "B", edge: .right).sizes)
+    }
+
+    func testAMemberMovingKeepsTheSizes() throws {
+        let split = sized(["A", "B", "C"])
+        XCTAssertEqual(try split.adding("A", onto: "C", edge: .right).sizes, split.sizes)
+    }
+
+    func testAMemberDroppedOnItselfKeepsTheSplit() throws {
+        let split = sized(["A", "B"])
+        XCTAssertEqual(try split.adding("B", onto: "B", edge: .left), split)
+    }
+
+    func testANewSplitFromADropHasNoSizes() throws {
+        XCTAssertNil(try ProjectSplit.dropping("B", onto: "A", edge: .left, into: nil, splittable: project).sizes)
+    }
+
+    func testRemovingAMemberClearsTheSizes() {
+        XCTAssertNil(sized(["A", "B", "C"]).removing("B").sizes)
+    }
+
+    func testRemovingANonMemberChangesNothing() {
+        let split = sized(["A", "B"])
+        XCTAssertEqual(split.removing("Z"), split)
+    }
+
+    func testPruningThatRemovesAMemberClearsTheSizes() {
+        XCTAssertNil(sized(["A", "B", "C"]).pruned(keeping: ["A", "B"]).sizes)
+    }
+
+    func testPruningThatKeepsEveryMemberKeepsTheSizes() {
+        let split = sized(["A", "B", "C"])
+        XCTAssertEqual(split.pruned(keeping: ["A", "B", "C", "D"]).sizes, split.sizes)
+    }
+
+    func testFocusingKeepsTheSizes() {
+        let split = sized(["A", "B"], focused: "A")
+        XCTAssertEqual(split.focusing("B").sizes, split.sizes)
+    }
+
+    /// Sizes made for three panes don't fit a grid showing two, a member still relaunching for example:
+    /// that grid is even, and the stored sizes stay for when the member is back.
+    func testTheGridShowsStoredSizesOnlyForTheirPaneCount() {
+        let split = sized(["A", "B", "C"])
+        XCTAssertEqual(split.gridSizes(paneCount: 3), split.sizes)
+        XCTAssertEqual(split.gridSizes(paneCount: 2), SplitSizes.even(for: 2))
+        XCTAssertEqual(ProjectSplit(members: ["A", "B"]).gridSizes(paneCount: 2), SplitSizes.even(for: 2))
+    }
+
+    func testSizesRoundTripWithTheSplit() throws {
+        let split = sized(["A", "B", "C"], focused: "B")
+        XCTAssertEqual(try JSONDecoder().decode(ProjectSplit.self, from: JSONEncoder().encode(split)), split)
+    }
+
+    /// A split with no sizes is stored without the key, so an older build reads the file as before.
+    func testASplitWithoutSizesStoresNoSizesKey() throws {
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ProjectSplit(members: ["A", "B"])))
+        XCTAssertNil((object as? [String: Any])?["sizes"])
+    }
+
+    func testASplitStoredBeforeSizesDecodesEven() throws {
+        XCTAssertNil(try decode(#"{"members":["A","B"],"focused":"A"}"#).sizes)
+    }
+
+    func testStoredSizesDecode() throws {
+        let split = try decode(#"{"members":["A","B"],"sizes":{"paneCount":2,"rows":[1],"columns":[[0.4,0.6]]}}"#)
+        XCTAssertEqual(split.sizes?.columns, [[0.4, 0.6]])
+    }
+
+    func testUnreadableSizesDecodeEvenAndKeepTheSplit() throws {
+        let split = try decode(#"{"members":["A","B"],"focused":"A","sizes":{"paneCount":2,"rows":[1],"columns":[[0.6,0.6]]}}"#)
+        XCTAssertEqual(split.members, ["A", "B"])
+        XCTAssertEqual(split.focused, "A")
+        XCTAssertNil(split.sizes)
+    }
+
+    func testRepairingTheMembersClearsTheSizes() throws {
+        let split = try decode(#"{"members":["A","B","A"],"sizes":{"paneCount":3,"rows":[0.5,0.5],"columns":[[0.5,0.5],[1]]}}"#)
+        XCTAssertEqual(split.members, ["A", "B"])
+        XCTAssertNil(split.sizes)
+    }
 }
