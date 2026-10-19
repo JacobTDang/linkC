@@ -20,11 +20,8 @@ struct SplitPane: View {
     let model: AppModel
     let project: String
     let host: TornOffItem?
-    /// The sizes a handle drag is making: shown live, and stored in the split once, when the drag ends.
-    @State private var dragged: SplitSizes?
-    /// The sizes the drag started from. Each step applies the drag's whole translation to these, so the
-    /// boundary stays under the pointer.
-    @State private var dragStart: SplitSizes?
+    /// The handle drag in progress: shown live, and stored in the split once, when the drag ends.
+    @State private var drag: SplitDrag?
 
     /// The space between two panes, and between the rows. Each one is a resize handle.
     fileprivate static let gap: CGFloat = 6
@@ -45,7 +42,7 @@ struct SplitPane: View {
         }
         let focused = state.focused
         // A drag that outlived its grid (a pane ended mid-drag) fits no grid on screen and is not shown.
-        let live = dragged.flatMap { $0.fits(paneCount: panes.count) ? $0 : nil }
+        let live = drag?.sizes(forPanes: panes.count)
         Group {
             switch panes.count {
             case 0:
@@ -105,18 +102,16 @@ struct SplitPane: View {
         }
     }
 
-    /// One step of a handle drag: `resize` applied to the sizes the drag started from (`shown` on its first step).
+    /// One step of a handle drag over the grid showing `shown` (see `SplitDrag.step`).
     private func dragStep(from shown: SplitSizes, _ resize: (SplitSizes) -> SplitSizes) {
-        let start = dragStart ?? shown
-        dragStart = start
-        dragged = resize(start)
+        drag = SplitDrag.step(drag, over: shown, resize)
     }
 
-    /// The drag ended: the split keeps the sizes it made, written once rather than on every step.
+    /// The drag ended, or its handle went away mid-drag: the split keeps the sizes it made, written once
+    /// rather than on every step. `resizeSplit` refuses, and logs, sizes made for a grid that has changed.
     private func endDrag() {
-        if let made = dragged { model.resizeSplit(made, in: project) }
-        dragged = nil
-        dragStart = nil
+        if let made = drag?.current { model.resizeSplit(made, in: project) }
+        drag = nil
     }
 }
 
@@ -211,7 +206,7 @@ private struct ResizeHandle: View {
     let onDoubleClick: () -> Void
     @State private var hovering = false
     @State private var dragging = false
-    /// Whether this handle pushed the resize cursor, so it pops only its own.
+    /// Whether this handle has pushed the resize cursor, so it never pops one it didn't push.
     @State private var pushedCursor = false
 
     var body: some View {
@@ -220,7 +215,8 @@ private struct ResizeHandle: View {
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
             .gesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .named(space))
+                // Past a click's jitter, so a double-click evens the panes rather than resizing them first.
+                DragGesture(minimumDistance: 3, coordinateSpace: .named(space))
                     .onChanged { value in
                         dragging = true
                         onDrag(Double(axis == .horizontal ? value.translation.width : value.translation.height))
@@ -231,7 +227,15 @@ private struct ResizeHandle: View {
                     })
             .onTapGesture(count: 2, perform: onDoubleClick)
             .onChange(of: hovering || dragging) { _, wanted in showCursor(wanted) }
-            .onDisappear { showCursor(false) }
+            .onDisappear {
+                // SwiftUI doesn't end a gesture whose view goes away (its pane ended): end the drag here,
+                // or its sizes would linger.
+                if dragging {
+                    dragging = false
+                    onEnd()
+                }
+                showCursor(false)
+            }
     }
 
     private func showCursor(_ show: Bool) {

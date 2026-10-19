@@ -958,7 +958,10 @@ final class AppModel {
     /// on screen; they are not stored, and that is logged.
     func resizeSplit(_ sizes: SplitSizes, in project: String) {
         let key = ProjectTabs.standardized(project)
-        guard let split = sidebarState.split(for: key) else { return }
+        guard let split = sidebarState.split(for: key) else {
+            NSLog("[linkC] pane sizes not stored: %@ has no split now", key)
+            return
+        }
         let panes = split.liveMembers(in: splittableIDs(in: key)).count
         guard sizes.fits(paneCount: panes) else {
             NSLog("[linkC] pane sizes for %ld panes not stored: %@'s split shows %ld now", sizes.paneCount, key, panes)
