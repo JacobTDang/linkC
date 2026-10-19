@@ -962,12 +962,12 @@ final class AppModel {
             NSLog("[linkC] pane sizes not stored: %@ has no split now", key)
             return
         }
-        let panes = split.liveMembers(in: splittableIDs(in: key)).count
-        guard sizes.fits(paneCount: panes) else {
-            NSLog("[linkC] pane sizes for %ld panes not stored: %@'s split shows %ld now", sizes.paneCount, key, panes)
+        guard let next = split.resized(sizes, liveIDs: splittableIDs(in: key)) else {
+            NSLog("[linkC] pane sizes for %ld panes not stored: %@'s split shows another number of panes now",
+                  sizes.paneCount, key)
             return
         }
-        sidebarState.setSplit(split.resized(sizes), for: key)
+        sidebarState.setSplit(next, for: key)
     }
 
     /// Takes `id` out of `project`'s split; the session keeps running. Fewer than two

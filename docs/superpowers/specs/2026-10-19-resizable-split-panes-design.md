@@ -1,7 +1,7 @@
 # Resizable Split Panes
 
 **Date:** 2026-10-19
-**Status:** Approved design, not yet implemented
+**Status:** Implemented (branch feat/resizable-split-panes)
 
 ## 1. Problem
 

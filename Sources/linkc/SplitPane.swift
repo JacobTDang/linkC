@@ -206,6 +206,9 @@ private struct ResizeHandle: View {
     let onDoubleClick: () -> Void
     @State private var hovering = false
     @State private var dragging = false
+    /// True while the drag gesture runs. SwiftUI resets it when the gesture ends or is cancelled, and a
+    /// cancelled gesture never reaches `onEnded`.
+    @GestureState private var inDrag = false
     /// Whether this handle has pushed the resize cursor, so it never pops one it didn't push.
     @State private var pushedCursor = false
 
@@ -217,6 +220,7 @@ private struct ResizeHandle: View {
             .gesture(
                 // Past a click's jitter, so a double-click evens the panes rather than resizing them first.
                 DragGesture(minimumDistance: 3, coordinateSpace: .named(space))
+                    .updating($inDrag) { _, running, _ in running = true }
                     .onChanged { value in
                         dragging = true
                         onDrag(Double(axis == .horizontal ? value.translation.width : value.translation.height))
@@ -227,6 +231,14 @@ private struct ResizeHandle: View {
                     })
             .onTapGesture(count: 2, perform: onDoubleClick)
             .onChange(of: hovering || dragging) { _, wanted in showCursor(wanted) }
+            .onChange(of: inDrag) { _, running in
+                // A cancelled gesture ends its drag here. After a normal end `onEnded` has cleared
+                // `dragging` (or will, and then finds nothing left to store), so the split is written once.
+                if !running, dragging {
+                    dragging = false
+                    onEnd()
+                }
+            }
             .onDisappear {
                 // SwiftUI doesn't end a gesture whose view goes away (its pane ended): end the drag here,
                 // or its sizes would linger.

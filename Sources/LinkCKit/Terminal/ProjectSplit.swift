@@ -132,6 +132,13 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
         ProjectSplit(members: members, focused: focused, sizes: sizes)
     }
 
+    /// The split with its panes sized by `sizes`, when they were made for the grid its `liveIDs` show.
+    /// nil when that grid has changed since (a pane ended mid-drag): those sizes fit no grid on screen.
+    public func resized(_ sizes: SplitSizes, liveIDs: Set<String>) -> ProjectSplit? {
+        guard sizes.fits(paneCount: liveMembers(in: liveIDs).count) else { return nil }
+        return resized(sizes)
+    }
+
     /// The sizes a grid of `paneCount` live panes shows: the stored ones when they were made for that
     /// many panes, else even. Sizes that don't fit stay stored for when the missing member is back.
     public func gridSizes(paneCount: Int) -> SplitSizes {
