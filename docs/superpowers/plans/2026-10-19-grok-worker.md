@@ -654,7 +654,7 @@ Append to `TerminalSessionAgentTests`:
     }
 ```
 
-Append to `TerminalTests`, after `testScrubbedEnvironmentDropsClaudeCodeMarkers`:
+Append to `TerminalSessionTests` (in `Tests/LinkCKitTests/TerminalTests.swift`), after `testScrubbedEnvironmentDropsClaudeCodeMarkers`:
 
 ```swift
     func testScrubbedEnvironmentDropsAGrokTerminalsMarks() {
@@ -672,7 +672,7 @@ Append to `TerminalTests`, after `testScrubbedEnvironmentDropsClaudeCodeMarkers`
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `swift test --filter "LinkCKitTests.(AppCoordinatorIntegrationTests|TerminalSessionAgentTests|TerminalTests)"`
+Run: `swift test --filter "LinkCKitTests.(AppCoordinatorIntegrationTests|TerminalSessionAgentTests|TerminalSessionTests)"`
 Expected: the five Grok launch tests fail (no `--model` on an untiered launch, no Grok variables, no refusal), `testAGrokSessionRunningCursorsCLIStaysGrok` fails with `.cursor`, and `testScrubbedEnvironmentDropsAGrokTerminalsMarks` keeps both variables. The other new tests already pass.
 
 - [ ] **Step 3: Implement**
@@ -779,7 +779,7 @@ In the same file, replace `scrubbedEnvironment` and add one sentence to its doc 
 
 - [ ] **Step 4: Run the tests**
 
-Run: `swift test --filter "LinkCKitTests.(AppCoordinatorIntegrationTests|TerminalSessionAgentTests|TerminalTests|AppCoordinatorRelayTests)"`
+Run: `swift test --filter "LinkCKitTests.(AppCoordinatorIntegrationTests|TerminalSessionAgentTests|TerminalSessionTests|AppCoordinatorRelayTests)"`
 Expected: all pass, including the existing Codex launch tests (`testACodexSessionIsLaunchedNamingItsSession`, `testASessionSpawnedWithNoTierIsNotPinned`).
 
 - [ ] **Step 5: Commit**
@@ -802,7 +802,7 @@ Cursor's CLI loads Cursor's registration (`LINKC_AGENT=cursor`) and passes its M
 
 **Interfaces:**
 - Consumes: `AgentKind.grok`, `AgentKind.workerEnvironmentKey` (Task 1).
-- Produces: `ProcessSnooper.environmentVariable(_ name: String, inAncestorsOf pid: pid_t, maxDepth: Int = 8) -> String?`; `public enum AncestorWorkerCache`; `MCPServer.WorkerResolver = @Sendable () -> String?`; `MCPServer.init(..., sessionResolver:, workerResolver: = { AncestorWorkerCache.value }, usageReaders:, ...)`.
+- Produces: `ProcessSnooper.environmentVariable(_ name: String, inAncestorsOf pid: pid_t, maxDepth: Int = 8) -> String?`, and an internal overload adding `parentOf: (pid_t) -> pid_t?` and `variableOf: (String, pid_t) -> String?` that tests drive; `public enum AncestorWorkerCache`; `MCPServer.WorkerResolver = @Sendable () -> String?`; `MCPServer.init(..., sessionResolver:, workerResolver: = { AncestorWorkerCache.value }, usageReaders:, ...)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -812,24 +812,34 @@ Create `Tests/LinkCKitTests/ProcessSnooperAncestorEnvironmentTests.swift`:
 import XCTest
 @testable import LinkCKit
 
+/// The ancestor walk over a made-up process tree: the kernel hides an Apple binary's environment
+/// (a test's own `/bin/sh` reads as empty), so the walk is tested through its two lookups.
 final class ProcessSnooperAncestorEnvironmentTests: XCTestCase {
-    /// A child of a shell started with a variable finds it in that shell's real environment —
-    /// how linkC's tool server finds a mark its CLI never passed down.
-    func testAVariableIsFoundInAnAncestorsEnvironment() throws {
-        let shell = Process()
-        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-        shell.arguments = ["-c", "/bin/sleep 30 & echo $!; wait"]
-        shell.environment = ["PATH": "/usr/bin:/bin", "LINKC_TEST_ANCESTOR_MARK": "found-it"]
-        let out = Pipe()
-        shell.standardOutput = out
-        try shell.run()
-        defer { shell.terminate() }
-        let line = String(decoding: out.fileHandleForReading.availableData, as: UTF8.self)
-        let sleeper = try XCTUnwrap(pid_t(line.trimmingCharacters(in: .whitespacesAndNewlines)), line)
-        defer { kill(sleeper, SIGTERM) }
+    /// 40 → 30 → 20 → 10 → launchd.
+    private let parents: [pid_t: pid_t] = [40: 30, 30: 20, 20: 10, 10: 1]
 
-        XCTAssertEqual(ProcessSnooper.environmentVariable("LINKC_TEST_ANCESTOR_MARK", inAncestorsOf: sleeper), "found-it")
-        XCTAssertNil(ProcessSnooper.environmentVariable("LINKC_TEST_MARK_NOBODY_SET", inAncestorsOf: sleeper))
+    private func walk(_ environments: [pid_t: [String: String]], from pid: pid_t = 40, maxDepth: Int = 8) -> String? {
+        ProcessSnooper.environmentVariable("MARK", inAncestorsOf: pid, maxDepth: maxDepth,
+                                           parentOf: { self.parents[$0] },
+                                           variableOf: { name, pid in environments[pid]?[name] })
+    }
+
+    func testTheNearestAncestorCarryingTheVariableWins() {
+        XCTAssertEqual(walk([20: ["MARK": "near"], 10: ["MARK": "far"]]), "near")
+    }
+
+    func testTheProcessItselfIsNotItsOwnAncestor() {
+        XCTAssertNil(walk([40: ["MARK": "mine"]]))
+    }
+
+    func testAnEmptyValueIsPassedOver() {
+        XCTAssertEqual(walk([30: ["MARK": ""], 10: ["MARK": "far"]]), "far")
+    }
+
+    func testTheWalkStopsBeforeLaunchdAndAtItsDepth() {
+        XCTAssertNil(walk([1: ["MARK": "launchd"]]))
+        XCTAssertNil(walk([10: ["MARK": "far"]], maxDepth: 2))
+        XCTAssertEqual(walk([10: ["MARK": "far"]], maxDepth: 3), "far")
     }
 }
 ```
@@ -915,7 +925,7 @@ Append to `MCPServerTaskTests`:
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `swift build --build-tests 2>&1 | grep -m3 error:`
-Expected: `extra argument 'workerResolver' in call` and `type 'ProcessSnooper' has no member 'environmentVariable(_:inAncestorsOf:)'`.
+Expected: `extra argument 'workerResolver' in call`, and `ProcessSnooper.environmentVariable` has no `inAncestorsOf:` overload.
 
 - [ ] **Step 3: Implement**
 
@@ -927,11 +937,21 @@ Expected: `extra argument 'workerResolver' in call` and `type 'ProcessSnooper' h
     /// an MCP server spawned without the variable in its own `environment` can still recover it
     /// from an ancestor (Codex's or Cursor's CLI process) that did not pass it down.
     public static func environmentVariable(_ name: String, inAncestorsOf pid: pid_t, maxDepth: Int = 8) -> String? {
+        environmentVariable(name, inAncestorsOf: pid, maxDepth: maxDepth,
+                            parentOf: { parentPid(of: $0) }, variableOf: { environmentVariable($0, ofProcess: $1) })
+    }
+
+    /// The walk itself, over any process tree. The kernel hides an Apple binary's environment
+    /// from other processes, so tests drive the walk through these two lookups instead.
+    static func environmentVariable(
+        _ name: String, inAncestorsOf pid: pid_t, maxDepth: Int,
+        parentOf: (pid_t) -> pid_t?, variableOf: (String, pid_t) -> String?
+    ) -> String? {
         guard pid > 0, maxDepth > 0 else { return nil }
         var current = pid
         for _ in 0..<maxDepth {
-            guard let parent = parentPid(of: current), parent > 1 else { return nil }
-            if let value = environmentVariable(name, ofProcess: parent), !value.isEmpty {
+            guard let parent = parentOf(current), parent > 1 else { return nil }
+            if let value = variableOf(name, parent), !value.isEmpty {
                 return value
             }
             current = parent
