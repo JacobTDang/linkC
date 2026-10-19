@@ -1,7 +1,7 @@
 # Grok Worker: Grok on the Cursor Plan, as Its Own Agent
 
 **Date:** 2026-10-17
-**Status:** Approved design, not yet implemented
+**Status:** Implemented (branch `feat/grok-worker`)
 
 ## 1. Problem
 
@@ -56,7 +56,7 @@ linkC creates `~/.cursor-grok` before the first launch. If it cannot, the launch
 
 Every terminal inherits linkC's own environment, and `open` forwards the caller's. So linkC strips `LINKC_WORKER`, and a `CURSOR_CONFIG_DIR` pointing at a `.cursor-grok` folder, from what its terminals inherit, as it already strips Claude Code's session markers. Otherwise linkC opened from a Grok terminal would run every Cursor session as Grok. A `CURSOR_CONFIG_DIR` the user set for their own Cursor is kept.
 
-Every Grok launch names a model. A new Grok session from the menu uses the default tier's model; a delegated task uses its tier's model; a continued or resumed session uses the default tier's model. If no model resolves, the launch refuses with the same message delegation uses (`no model configured for grok tier <tier> — set it in linkC settings`). It never falls back to whatever the CLI's own default is — on a fresh `~/.cursor-grok` that would be Cursor's Auto, not Grok.
+Every Grok launch names a model. A new Grok session from the menu uses the default tier's model; a delegated task uses its tier's model; a continued or resumed session uses the default tier's model. Only a tier that was asked for is recorded on the session, so a Grok session the user opened is, like any other agent's, never handed a delegated task. If no model resolves, the launch refuses with the same message delegation uses (`no model configured for grok tier <tier> — set it in linkC settings`). It never falls back to whatever the CLI's own default is — on a fresh `~/.cursor-grok` that would be Cursor's Auto, not Grok.
 
 ### 5.3 Identity
 
