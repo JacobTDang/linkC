@@ -52,6 +52,21 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.text.contains(task.shortId))
     }
 
+    /// A Grok worker's tool server loads Cursor's registration; in the terminal linkC marked as
+    /// Grok it is still the task's assignee.
+    func testAGrokWorkerStartsItsOwnTask() throws {
+        let task = try inbox.createTask(from: .claude, to: .grok, tier: .standard, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
+        let grok = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "cursor"],
+                             ancestorResolver: { _ in nil }, sessionResolver: { nil },
+                             workerResolver: { "grok" }, usageReaders: [:])
+
+        let res = try mcpCall(grok, "linkc_start_task", ["task_id": task.id])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started)
+    }
+
     func testStartTaskOnQueuedTaskIsAnError() throws {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         let res = try mcpCall(server(as: .codex), "linkc_start_task", ["task_id": task.id])
