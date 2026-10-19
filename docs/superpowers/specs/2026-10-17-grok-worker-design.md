@@ -54,15 +54,15 @@ The terminal environment adds two variables to `LINKC_SESSION`:
 
 linkC creates `~/.cursor-grok` before the first launch. If it cannot, the launch fails with an error naming the path.
 
+Every terminal inherits linkC's own environment, and `open` forwards the caller's. So linkC strips `LINKC_WORKER`, and a `CURSOR_CONFIG_DIR` pointing at a `.cursor-grok` folder, from what its terminals inherit, as it already strips Claude Code's session markers. Otherwise linkC opened from a Grok terminal would run every Cursor session as Grok. A `CURSOR_CONFIG_DIR` the user set for their own Cursor is kept.
+
 Every Grok launch names a model. A new Grok session from the menu uses the default tier's model; a delegated task uses its tier's model; a continued or resumed session uses the default tier's model. If no model resolves, the launch refuses with the same message delegation uses (`no model configured for grok tier <tier> — set it in linkC settings`). It never falls back to whatever the CLI's own default is — on a fresh `~/.cursor-grok` that would be Cursor's Auto, not Grok.
 
 ### 5.3 Identity
 
-Because the MCP registration is shared (§4), `LINKC_AGENT=cursor` reaches a Grok worker's tool server. `MCPServer.resolveCaller` therefore gains a first step: `LINKC_WORKER`, read from the server's own environment, else from the nearest ancestor's real environment — the same two-step lookup `LINKC_SESSION` already uses (`ProcessSnooper.environmentVariable(_:ofProcess:)`).
+Because the MCP registration is shared (§4), `LINKC_AGENT=cursor` reaches a Grok worker's tool server. Cursor's CLI hands its MCP servers only the registration's own `env` block (checked on a live `cursor-agent`: its `linkc-mcp` child has `LINKC_AGENT` but not the terminal's `LINKC_SESSION`), so the mark is read from the server's own environment, else from the nearest ancestor's real environment — the lookup `LINKC_SESSION` already uses.
 
-New order: `LINKC_WORKER` → explicit `agent`/`from` argument → `LINKC_AGENT` → ancestor process → `.shell`.
-
-`LINKC_WORKER` comes before the explicit argument because linkC set it on the terminal it launched, while a Grok model running inside Cursor's CLI may well call itself `cursor`. `targetAgentTools` (`linkc_switch_model`, `linkc_get_models`) keep reading `agent` as a target, not an identity. A `LINKC_WORKER` value that is not an agent kind is logged to stderr and skipped.
+`MCPServer.resolveCaller` keeps its order — explicit `agent`/`from` argument → `LINKC_AGENT` → ancestor process → `.shell` — and then applies one rule: a caller that resolved as `.cursor` inside a terminal marked `LINKC_WORKER=grok` is `.grok`. Whichever step said Cursor, the mark wins, because a Grok model running inside Cursor's CLI may well call itself `cursor`. Any other identity is left alone, so a Claude or Codex process started from inside a Grok terminal is still itself. `targetAgentTools` (`linkc_switch_model`, `linkc_get_models`) keep reading `agent` as a target, not an identity. A `LINKC_WORKER` value other than `grok` is logged to stderr and ignored.
 
 ### 5.4 Process detection
 
@@ -122,7 +122,7 @@ Unit tests in LinkCKit, written first:
 
 - `AgentKind.grok` properties, and the launch arguments and environment: Cursor's flags, `--model`, `CURSOR_CONFIG_DIR`, `LINKC_WORKER`, for new, continue and resume.
 - A Grok launch with no resolvable model refuses.
-- `resolveCaller`: `LINKC_WORKER=grok` wins over `LINKC_AGENT=cursor` and over an explicit `agent: "cursor"`; found in an ancestor's environment; an unknown value is skipped.
+- `resolveCaller`: inside a terminal marked `LINKC_WORKER=grok`, a caller resolved as Cursor — from `LINKC_AGENT`, an explicit `agent: "cursor"`, or the ancestor process — is Grok; any other identity is untouched; the mark is read from an ancestor's environment when the server's own lacks it; an unknown value is ignored.
 - A `.grok` session whose foreground detects as `.cursor` stays `.grok`; a `.shell` session running `cursor-agent` still becomes `.cursor`.
 - Tiers: the seeded Grok mapping; `load` fills Grok into a saved file without it and leaves a saved Grok mapping alone.
 - Delegation to `grok` on each tier, and the default tier.
