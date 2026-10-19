@@ -2,6 +2,9 @@ import XCTest
 @testable import LinkCKit
 
 final class AgentDescriptorTests: XCTestCase {
+    /// Codex's flags in every linkC launch: no approvals or sandbox, and no startup update check.
+    private let codexFlags = ["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]
+
     func testPillTextForAllCases() {
         XCTAssertEqual(AgentKind.claude.pillText, "CLAUDE")
         XCTAssertEqual(AgentKind.agy.pillText, "AGY")
@@ -51,7 +54,6 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(cursorResume, ["agent", "--yolo", "--trust", "--approve-mcps", "--resume"])
 
         // Codex
-        let codexFlags = ["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]
         let codexNew = AgentDescriptor.arguments(for: .codex, mode: .new)
         XCTAssertEqual(codexNew, codexFlags)
         let codexContinue = AgentDescriptor.arguments(for: .codex, mode: .continueLast)
@@ -69,7 +71,6 @@ final class AgentDescriptorTests: XCTestCase {
     /// session to that server through a config override instead, placed before `resume` like
     /// every other flag. No other agent needs it.
     func testCodexNamesItsSessionToLinkCsToolServer() {
-        let codexFlags = ["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]
         let override = ["-c", #"mcp_servers.linkc-multiplier.env.LINKC_SESSION="S-1""#]
         XCTAssertEqual(AgentDescriptor.arguments(for: .codex, mode: .new, sessionId: "S-1"),
                        codexFlags + override)
@@ -85,8 +86,7 @@ final class AgentDescriptorTests: XCTestCase {
     func testCodexSkipsItsStartupUpdateCheck() {
         for mode in [LaunchMode.new, .continueLast, .resume] {
             let args = AgentDescriptor.arguments(for: .codex, mode: mode, sessionId: "S-1")
-            XCTAssertEqual(Array(args.prefix(3)),
-                           ["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"], "\(mode)")
+            XCTAssertEqual(Array(args.prefix(3)), codexFlags, "\(mode)")
         }
     }
 
