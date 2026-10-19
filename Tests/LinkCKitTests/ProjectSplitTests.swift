@@ -325,7 +325,7 @@ final class ProjectSplitTests: XCTestCase {
     func testResizingForTheLiveGridTakesOnlySizesThatFitIt() {
         let sizes = SplitSizes.even(for: 2).resizingColumns(inRow: 0, divider: 0, by: 60, rowWidth: 600)
         let split = ProjectSplit(members: ["A", "B", "C"], focused: "A")
-        XCTAssertEqual(split.resized(sizes, liveIDs: ["A", "B"]), split.resized(sizes), "C isn't live: the grid shows two panes")
+        XCTAssertEqual(split.resized(sizes, liveIDs: ["A", "B", "Z"]), split.resized(sizes), "C isn't live and Z isn't a member: the grid shows two panes")
         XCTAssertNil(split.resized(sizes, liveIDs: ["A", "B", "C"]), "made for two panes, the grid shows three")
     }
 
