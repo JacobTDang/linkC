@@ -112,4 +112,9 @@ final class AgentDescriptorTests: XCTestCase {
             XCTAssertEqual(AgentDescriptor.environment(for: kind, home: home), [:], "\(kind)")
         }
     }
+
+    func testPeersAreEveryAgentButAShell() {
+        XCTAssertEqual(AgentKind.peers, [.claude, .agy, .cursor, .codex, .grok])
+        XCTAssertEqual(AgentKind.peerList, "claude, agy, cursor, codex, grok")
+    }
 }

@@ -1261,6 +1261,51 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(copy.toAgent, .agy, "Uninstalled .codex must be skipped; .agy must be selected")
     }
 
+    /// A capped agent's task can move to Grok when Grok is the one installed peer left.
+    @MainActor
+    func testACappedTaskCanRerouteToGrok() async throws {
+        let ws = tempDir.path
+        let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
+        if !FileManager.default.fileExists(atPath: scriptURL.path) {
+            try? "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n".write(to: scriptURL, atomically: true, encoding: .utf8)
+            var attrs = (try? FileManager.default.attributesOfItem(atPath: scriptURL.path)) ?? [:]
+            attrs[.posixPermissions] = 0o755
+            try? FileManager.default.setAttributes(attrs, ofItemAtPath: scriptURL.path)
+        }
+        let settingsDir = tempDir.appendingPathComponent("settings_grok_reroute_test")
+        try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+        let coordinator = AppCoordinator(
+            terminals: TerminalSessionManager(),
+            hookServer: HookServer.forTesting(),
+            notifications: NotificationManager(sink: RecordingSink(), now: { Date() }),
+            claudePath: scriptURL.path,
+            settingsDir: settingsDir,
+            userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
+            manifestDir: tempDir.appendingPathComponent("manifest_grok_reroute_test"),
+            agentPathResolver: { kind in kind == .grok ? scriptURL.path : nil },
+            userHome: tempDir.appendingPathComponent("home"),
+            modelSettings: { .seeded },
+            isWatching: { _ in false }
+        )
+        defer { coordinator.shutdown() }
+
+        let inbox = InboxStore(workspaceRoot: ws)
+        let claudeSession = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: claudeSession.id, to: Self.turnOver)
+        let task = try inbox.createTask(from: .cursor, to: .claude, prompt: "Deploy service mesh", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: claudeSession.id)
+
+        coordinator.terminals.sendInput(sessionId: claudeSession.id, text: "Rate limit reached\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: claudeSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: claudeSession.id))
+        let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        XCTAssertEqual(copy.toAgent, .grok)
+    }
+
     /// Test 9: checkLimitsAndReroute ignores ended sessions.
     @MainActor
     func testCheckLimitsAndRerouteIgnoredWhenSessionIsEnded() async throws {
@@ -2625,6 +2670,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         var models = AgentModelSettings.seeded
         models.setModel("", for: .codex, tier: .light)
         models.setModel("", for: .agy, tier: .light)
+        models.setModel("", for: .grok, tier: .light)
         let coordinator = makeCoordinator(models: models)
         defer { coordinator.shutdown() }
 
@@ -2660,6 +2706,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         var models = AgentModelSettings.seeded
         models.setModel("", for: .codex, tier: .light)
         models.setModel("", for: .agy, tier: .light)
+        models.setModel("", for: .grok, tier: .light)
         let coordinator = makeCoordinator(models: models)
         defer { coordinator.shutdown() }
 
@@ -2714,6 +2761,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         models.setModel("", for: .codex, tier: .standard)
         models.setModel("", for: .agy, tier: .standard)
         models.setModel("", for: .cursor, tier: .standard)
+        models.setModel("", for: .grok, tier: .standard)
         let coordinator = makeCoordinator(models: models)
         defer { coordinator.shutdown() }
 

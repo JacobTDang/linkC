@@ -662,6 +662,26 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.text.contains("/model grok-4.7-low"), res.text)
     }
 
+    func testAnUnknownAgentErrorNamesGrok() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task", ["to": "gork", "prompt": "x"])
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("Supported agents: claude, agy, cursor, codex, grok."), res.text)
+    }
+
+    func testACappedTargetOffersGrokInstead() throws {
+        try inbox.recordLimit(agent: .codex, reason: "quota", cooldown: 1800)
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task", ["to": "codex", "prompt": "x"])
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("Alternative available peer agents: claude, agy, cursor, grok."), res.text)
+    }
+
+    func testGetModelsWithNoAgentListsGrok() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_get_models")
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("## Grok (via Cursor)"), res.text)
+        XCTAssertTrue(res.text.contains("grok-4.7-medium — default"), res.text)
+    }
+
     func testGetModelsReportsTheConfiguredMapping() throws {
         var models = AgentModelSettings.seeded
         models.setModel("gpt-7-nova", for: .codex, tier: .deep)
