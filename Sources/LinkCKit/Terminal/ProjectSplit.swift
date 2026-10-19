@@ -67,7 +67,7 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
 
     /// `id` dropped on `edge` of the member `target`. A member already in the split moves; a new one
     /// joins, unless the split is full. The dropped terminal gets the focus, unless it is dropped on itself,
-    /// which returns the split unchanged.
+    /// which returns the split unchanged. A move keeps the sizes; a join evens the grid out.
     public func adding(_ id: String, onto target: String, edge: SplitEdge) throws -> ProjectSplit {
         guard let targetIndex = members.firstIndex(of: target) else { throw Refusal.targetNotInSplit }
         guard id != target else { return self }

@@ -342,6 +342,19 @@ final class ProjectSplitTests: XCTestCase {
         XCTAssertNil(try ProjectSplit.dropping("B", onto: "A", edge: .left, into: nil, splittable: project).sizes)
     }
 
+    func testADropThatMovesAMemberKeepsTheSizes() throws {
+        let existing = sized(["A", "B", "C"])
+        let split = try ProjectSplit.dropping("A", onto: "C", edge: .right, into: existing, splittable: project)
+        XCTAssertEqual(split.members, ["B", "C", "A"])
+        XCTAssertEqual(split.sizes, existing.sizes)
+    }
+
+    func testADropThatAddsATerminalClearsTheSizes() throws {
+        let split = try ProjectSplit.dropping("D", onto: "C", edge: .right, into: sized(["A", "B", "C"]), splittable: project)
+        XCTAssertEqual(split.members, ["A", "B", "C", "D"])
+        XCTAssertNil(split.sizes)
+    }
+
     func testRemovingAMemberClearsTheSizes() {
         XCTAssertNil(sized(["A", "B", "C"]).removing("B").sizes)
     }
