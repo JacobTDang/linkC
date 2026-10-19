@@ -2,6 +2,9 @@ import XCTest
 @testable import LinkCKit
 
 final class AgentDescriptorTests: XCTestCase {
+    /// Codex's flags in every linkC launch: no approvals or sandbox, and no startup update check.
+    private let codexFlags = ["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"]
+
     func testPillTextForAllCases() {
         XCTAssertEqual(AgentKind.claude.pillText, "CLAUDE")
         XCTAssertEqual(AgentKind.agy.pillText, "AGY")
@@ -52,11 +55,11 @@ final class AgentDescriptorTests: XCTestCase {
 
         // Codex
         let codexNew = AgentDescriptor.arguments(for: .codex, mode: .new)
-        XCTAssertEqual(codexNew, ["--dangerously-bypass-approvals-and-sandbox"])
+        XCTAssertEqual(codexNew, codexFlags)
         let codexContinue = AgentDescriptor.arguments(for: .codex, mode: .continueLast)
-        XCTAssertEqual(codexContinue, ["--dangerously-bypass-approvals-and-sandbox", "resume", "--last"])
+        XCTAssertEqual(codexContinue, codexFlags + ["resume", "--last"])
         let codexResume = AgentDescriptor.arguments(for: .codex, mode: .resume)
-        XCTAssertEqual(codexResume, ["--dangerously-bypass-approvals-and-sandbox", "resume"])
+        XCTAssertEqual(codexResume, codexFlags + ["resume"])
 
         // Shell
         let shellNew = AgentDescriptor.arguments(for: .shell, mode: .new)
@@ -70,10 +73,21 @@ final class AgentDescriptorTests: XCTestCase {
     func testCodexNamesItsSessionToLinkCsToolServer() {
         let override = ["-c", #"mcp_servers.linkc-multiplier.env.LINKC_SESSION="S-1""#]
         XCTAssertEqual(AgentDescriptor.arguments(for: .codex, mode: .new, sessionId: "S-1"),
-                       ["--dangerously-bypass-approvals-and-sandbox"] + override)
+                       codexFlags + override)
         XCTAssertEqual(AgentDescriptor.arguments(for: .codex, mode: .continueLast, sessionId: "S-1"),
-                       ["--dangerously-bypass-approvals-and-sandbox"] + override + ["resume", "--last"])
+                       codexFlags + override + ["resume", "--last"])
         XCTAssertEqual(AgentDescriptor.arguments(for: .agy, mode: .new, sessionId: "S-1"), ["--dangerously-skip-permissions"])
+    }
+
+    /// Codex opens on an "update available" prompt when a newer release is out. linkC types a
+    /// worker's task into the terminal once it is ready, and the Enter that ends it chose "Update
+    /// now": Codex updated itself and exited before the task began (0.163.0, 2026-10-19). Every
+    /// Codex session linkC starts skips that check, in every launch mode.
+    func testCodexSkipsItsStartupUpdateCheck() {
+        for mode in [LaunchMode.new, .continueLast, .resume] {
+            let args = AgentDescriptor.arguments(for: .codex, mode: mode, sessionId: "S-1")
+            XCTAssertEqual(Array(args.prefix(3)), codexFlags, "\(mode)")
+        }
     }
 
     func testExecutableResolutionForKnownBinaries() {

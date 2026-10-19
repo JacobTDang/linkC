@@ -136,7 +136,7 @@ final class TerminalSessionAgentTests: XCTestCase {
         XCTAssertEqual(agyArgs, ["--dangerously-skip-permissions", "--continue"])
 
         let codexArgs = AgentDescriptor.arguments(for: .codex, mode: .continueLast)
-        XCTAssertEqual(codexArgs, ["--dangerously-bypass-approvals-and-sandbox", "resume", "--last"])
+        XCTAssertEqual(codexArgs, ["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false", "resume", "--last"])
 
         let claudeArgs = AgentDescriptor.arguments(for: .claude, mode: .continueLast)
         XCTAssertEqual(claudeArgs, ["--dangerously-skip-permissions", "--continue"])
