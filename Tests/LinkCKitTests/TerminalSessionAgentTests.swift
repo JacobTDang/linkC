@@ -206,4 +206,38 @@ final class TerminalSessionAgentTests: XCTestCase {
         XCTAssertFalse(ProcessSnooper.hasChildProcesses(of: -1))
         XCTAssertFalse(ProcessSnooper.hasChildProcesses(of: 0))
     }
+
+    /// A Grok worker runs Cursor's CLI, so its foreground process reads as Cursor; it is still Grok.
+    func testAGrokSessionRunningCursorsCLIStaysGrok() throws {
+        let session = TerminalSession(id: "grok", cwd: "/tmp", title: "grok", agentKind: .grok)
+        try session.start(executable: "/bin/cat", args: [], env: [:])
+        defer { session.terminate() }
+        session.agentProbe = AgentProbe(inTree: { _ in .cursor }, atOrUnder: { _ in .cursor },
+                                        foregroundGroup: { _ in 42 }, now: Date.init)
+
+        XCTAssertEqual(session.sampleForegroundAgent(fresh: true), .grok)
+        XCTAssertEqual(session.agentKind, .grok)
+    }
+
+    /// Only a session launched as Grok is kept as Grok: Cursor's CLI typed into a plain terminal is Cursor.
+    func testAShellRunningCursorsCLIStillBecomesCursor() throws {
+        let session = TerminalSession(id: "sh", cwd: "/tmp", title: "sh", agentKind: .shell)
+        try session.start(executable: "/bin/cat", args: [], env: [:])
+        defer { session.terminate() }
+        session.agentProbe = AgentProbe(inTree: { _ in .cursor }, atOrUnder: { _ in .cursor },
+                                        foregroundGroup: { _ in 42 }, now: Date.init)
+
+        XCTAssertEqual(session.sampleForegroundAgent(fresh: true), .cursor)
+    }
+
+    /// A Grok session that has an agent other than Cursor in front reads as that agent, as any session does.
+    func testAGrokSessionRunningAnotherAgentReadsAsThatAgent() throws {
+        let session = TerminalSession(id: "grok2", cwd: "/tmp", title: "grok", agentKind: .grok)
+        try session.start(executable: "/bin/cat", args: [], env: [:])
+        defer { session.terminate() }
+        session.agentProbe = AgentProbe(inTree: { _ in .codex }, atOrUnder: { _ in .codex },
+                                        foregroundGroup: { _ in 42 }, now: Date.init)
+
+        XCTAssertEqual(session.sampleForegroundAgent(fresh: true), .codex)
+    }
 }

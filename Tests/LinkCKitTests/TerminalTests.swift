@@ -153,6 +153,18 @@ final class TerminalSessionTests: XCTestCase {
             ["PATH": "/usr/bin", "HOME": "/Users/x"]
         )
     }
+
+    func testScrubbedEnvironmentDropsAGrokTerminalsMarks() {
+        // linkC opened from a Grok terminal (`open` forwards the caller's environment) must not
+        // hand Grok's mark or Grok's Cursor folder to every session it spawns.
+        let base = ["HOME": "/Users/x", "LINKC_WORKER": "grok", "CURSOR_CONFIG_DIR": "/Users/x/.cursor-grok"]
+        XCTAssertEqual(TerminalSession.scrubbedEnvironment(base), ["HOME": "/Users/x"])
+    }
+
+    func testScrubbedEnvironmentKeepsTheUsersOwnCursorFolder() {
+        let base = ["HOME": "/Users/x", "CURSOR_CONFIG_DIR": "/Users/x/my-cursor"]
+        XCTAssertEqual(TerminalSession.scrubbedEnvironment(base), base)
+    }
 }
 
 /// The preview cleaner turns raw terminal rows into home-card content: chrome rows — box-drawing

@@ -51,7 +51,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         settingsDir: URL = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-test-\(UUID().uuidString)"),
         manifestDir: URL? = nil,
         models: AgentModelSettings = .seeded,
-        defaults: UserDefaults? = nil
+        defaults: UserDefaults? = nil,
+        userHome: URL? = nil
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -62,8 +63,9 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             // pty's own kernel echo doubles every injected frame (once from the kernel, once from
             // `cat`'s own copy-through), which a real agent never exhibits.
             // It also records its own argv, one argument per line, in `argv-<LINKC_SESSION>` beside
-            // itself, so a test can check exactly what linkC launched.
-            let scriptContent = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv-$LINKC_SESSION\"\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
+            // itself, and the two variables a Grok terminal adds in `env-<LINKC_SESSION>`, so a
+            // test can check exactly what linkC launched.
+            let scriptContent = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv-$LINKC_SESSION\"\nprintf 'CURSOR_CONFIG_DIR=%s\\nLINKC_WORKER=%s\\n' \"$CURSOR_CONFIG_DIR\" \"$LINKC_WORKER\" > \"$(dirname \"$0\")/env-$LINKC_SESSION\"\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
             try? scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
             var attrs = (try? FileManager.default.attributesOfItem(atPath: scriptURL.path)) ?? [:]
             attrs[.posixPermissions] = 0o755
@@ -78,6 +80,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             userSettingsURL: FileManager.default.temporaryDirectory.appendingPathComponent("no-such-settings.json"),
             manifestDir: manifestDir ?? settingsDir,
             agentPathResolver: { _ in scriptURL.path },
+            userHome: userHome,
             defaults: defaults,
             modelSettings: { models },
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
@@ -105,6 +108,19 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     }
 
     /// Polls until `predicate` holds (or times out). Used to await async event propagation.
+    /// The lines the mock agent wrote to `<name>-<session id>` when it started, polled for up to
+    /// five seconds until there are `count` of them.
+    private func launchedLines(_ name: String, of session: Session, count: Int) -> [String] {
+        let file = tempDir.appendingPathComponent("\(name)-\(session.id)")
+        var lines: [String] = []
+        let deadline = Date().addingTimeInterval(5)
+        while lines.count < count, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            lines = ((try? String(contentsOf: file, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        }
+        return lines
+    }
+
     private func waitUntil(_ predicate: () -> Bool, iterations: Int = TestWait.polls) async throws -> Bool {
         for _ in 0..<iterations {
             if predicate() { return true }
@@ -1257,6 +1273,101 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
 
         XCTAssertNil(session.modelTier)
         XCTAssertNil(session.model)
+    }
+
+    /// A Grok worker runs Cursor's CLI pinned to its tier's Grok model, in its own Cursor folder,
+    /// marked as Grok for linkC's tool server.
+    @MainActor
+    func testAGrokSessionLaunchesCursorsCLIOnItsTierInItsOwnFolder() throws {
+        let home = tempDir.appendingPathComponent("home")
+        let coordinator = makeCoordinator(userHome: home)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .grok, mode: .new, tier: .deep)
+
+        XCTAssertEqual(session.agentKind, .grok)
+        XCTAssertEqual(session.model, "grok-4.7-xhigh")
+        XCTAssertEqual(session.modelTier, .deep)
+        let folder = home.appendingPathComponent(".cursor-grok")
+        XCTAssertEqual(launchedLines("argv", of: session, count: 6),
+                       ["agent", "--yolo", "--trust", "--approve-mcps", "--model", "grok-4.7-xhigh"])
+        XCTAssertEqual(launchedLines("env", of: session, count: 2),
+                       ["CURSOR_CONFIG_DIR=\(folder.path)", "LINKC_WORKER=grok"])
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue, "linkC makes Grok's folder before the first launch")
+    }
+
+    /// With no tier, a Grok session still names its model — on a fresh `~/.cursor-grok`, Cursor's
+    /// own default is Auto, not Grok. Continuing a Grok chat takes the default tier the same way.
+    @MainActor
+    func testAGrokSessionWithNoTierRunsOnItsDefaultTier() throws {
+        let coordinator = makeCoordinator(userHome: tempDir.appendingPathComponent("home"))
+        defer { coordinator.shutdown() }
+
+        let fresh = try coordinator.newSession(cwd: tempDir.path, agent: .grok, mode: .new)
+        XCTAssertEqual(fresh.model, "grok-4.7-medium")
+        XCTAssertEqual(fresh.modelTier, .standard)
+        XCTAssertEqual(launchedLines("argv", of: fresh, count: 6),
+                       ["agent", "--yolo", "--trust", "--approve-mcps", "--model", "grok-4.7-medium"])
+
+        let continued = try coordinator.newSession(cwd: tempDir.path, agent: .grok, mode: .continueLast)
+        XCTAssertEqual(launchedLines("argv", of: continued, count: 7),
+                       ["agent", "--yolo", "--trust", "--approve-mcps", "--continue", "--model", "grok-4.7-medium"])
+    }
+
+    @MainActor
+    func testAGrokSessionWithNoModelForItsTierIsRefused() throws {
+        var models = AgentModelSettings.seeded
+        models.setModel("", for: .grok, tier: .standard)
+        let coordinator = makeCoordinator(models: models, userHome: tempDir.appendingPathComponent("home"))
+        defer { coordinator.shutdown() }
+
+        XCTAssertThrowsError(try coordinator.newSession(cwd: tempDir.path, agent: .grok, mode: .new)) { error in
+            XCTAssertTrue(String(describing: error).contains("no model configured for grok tier standard — set it in linkC settings"),
+                          String(describing: error))
+        }
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "a refused launch leaves no session behind")
+    }
+
+    /// Without its own folder, Grok's `--model` would become the user's own Cursor default, so a
+    /// folder linkC cannot make stops the launch.
+    @MainActor
+    func testAGrokSessionWhoseFolderCannotBeMadeIsRefused() throws {
+        let notAFolder = tempDir.appendingPathComponent("home-is-a-file")
+        try Data("x".utf8).write(to: notAFolder)
+        let coordinator = makeCoordinator(userHome: notAFolder)
+        defer { coordinator.shutdown() }
+
+        XCTAssertThrowsError(try coordinator.newSession(cwd: tempDir.path, agent: .grok, mode: .new)) { error in
+            XCTAssertTrue(String(describing: error).contains(".cursor-grok"), String(describing: error))
+        }
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "a failed launch leaves no session behind")
+    }
+
+    @MainActor
+    func testAGrokSessionWithNoHomeFolderIsRefused() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        XCTAssertThrowsError(try coordinator.newSession(cwd: tempDir.path, agent: .grok, mode: .new)) { error in
+            XCTAssertTrue(String(describing: error).contains("Grok needs a home folder"), String(describing: error))
+        }
+        XCTAssertTrue(coordinator.store.sessions.isEmpty)
+    }
+
+    @MainActor
+    func testOnlyAGrokSessionGetsGrokEnvironment() throws {
+        let home = tempDir.appendingPathComponent("home")
+        let coordinator = makeCoordinator(userHome: home)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .codex, mode: .new)
+
+        let env = launchedLines("env", of: session, count: 2)
+        XCTAssertEqual(env.last, "LINKC_WORKER=")
+        XCTAssertFalse(env.contains("CURSOR_CONFIG_DIR=\(home.appendingPathComponent(".cursor-grok").path)"), "\(env)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".cursor-grok").path))
     }
 
     /// For Codex, `.continueLast`/`.resume` argv starts with the `resume` subcommand, so
