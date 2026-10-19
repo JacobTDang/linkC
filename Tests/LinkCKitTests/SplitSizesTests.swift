@@ -120,6 +120,8 @@ final class SplitSizesTests: XCTestCase {
             #"{"paneCount":2,"rows":[1],"columns":[[1.2,-0.2]]}"#,                      // a share that is not positive
             #"{"paneCount":2,"rows":[1],"columns":[[0,1]]}"#,                           // a share of nothing
             #"{"paneCount":2,"rows":[1],"columns":[[0.6,0.6]]}"#,                       // shares adding up to 1.2
+            #"{"paneCount":2,"rows":[1],"columns":[[0.5,0.5015]]}"#,                    // just past the tolerance
+            #"{"paneCount":4,"rows":[0.7,0.7],"columns":[[0.5,0.5],[0.5,0.5]]}"#,       // row heights adding up to 1.4
             #"{"paneCount":1,"rows":[],"columns":[]}"#,                                 // no grid
             #"{"paneCount":9,"rows":[0.5,0.5],"columns":[[0.25,0.25,0.25,0.25],[0.25,0.25,0.25,0.25]]}"#,  // more than the most panes
         ]
