@@ -858,12 +858,15 @@ final class AppModel {
         sidebarState.split(for: project)?.liveMembers(in: splittableIDs(in: project)) ?? []
     }
 
-    /// What the Split tab renders: the live members in grid order, the one with the keyboard, and the
-    /// live titles. One tab-list build and one title resolve, however many panes there are.
-    func splitPaneState(in project: String) -> (members: [String], focused: String?, titles: [String: String]) {
-        guard let split = sidebarState.split(for: project) else { return ([], nil, [:]) }
+    /// What the Split tab renders: the live members in grid order, the one with the keyboard, the live
+    /// titles, and the sizes the grid shows (even unless the stored ones fit the live panes). One tab-list
+    /// build and one title resolve, however many panes there are.
+    func splitPaneState(in project: String)
+        -> (members: [String], focused: String?, titles: [String: String], sizes: SplitSizes) {
+        guard let split = sidebarState.split(for: project) else { return ([], nil, [:], SplitSizes.even(for: 0)) }
         let live = splittableIDs(in: project)
-        return (split.liveMembers(in: live), split.focusedLive(in: live), sessionTitles)
+        let members = split.liveMembers(in: live)
+        return (members, split.focusedLive(in: live), sessionTitles, split.gridSizes(paneCount: members.count))
     }
 
     func focusedSplitMember(in project: String) -> String? {
@@ -948,6 +951,20 @@ final class AppModel {
         pickSplitPane(id, in: project)
         guard host(of: id) == grid, let view = terminalSession(id)?.terminalView else { return }
         view.window?.makeFirstResponder(view)
+    }
+
+    /// The user let go of a resize handle in `project`'s grid: the split keeps `sizes` until a terminal
+    /// joins or leaves it. Sizes made for a grid that changed during the drag (a pane ended) fit no grid
+    /// on screen; they are not stored, and that is logged.
+    func resizeSplit(_ sizes: SplitSizes, in project: String) {
+        let key = ProjectTabs.standardized(project)
+        guard let split = sidebarState.split(for: key) else { return }
+        let panes = split.liveMembers(in: splittableIDs(in: key)).count
+        guard sizes.fits(paneCount: panes) else {
+            NSLog("[linkC] pane sizes for %ld panes not stored: %@'s split shows %ld now", sizes.paneCount, key, panes)
+            return
+        }
+        sidebarState.setSplit(split.resized(sizes), for: key)
     }
 
     /// Takes `id` out of `project`'s split; the session keeps running. Fewer than two
