@@ -60,6 +60,12 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
     /// The variable linkC sets on a terminal whose agent runs on another agent's CLI. Grok runs
     /// Cursor's, so this is how linkC's tool server tells a Grok worker from Cursor.
     public static let workerEnvironmentKey = "LINKC_WORKER"
+
+    /// Every agent that can take a task: all but a plain shell, in declaration order.
+    public static var peers: [AgentKind] { allCases.filter { $0 != .shell } }
+
+    /// `peers` as text, for tool descriptions and errors: "claude, agy, cursor, codex, grok".
+    public static var peerList: String { peers.map(\.rawValue).joined(separator: ", ") }
 }
 
 /// Metadata and argument specifications for AI CLI agents.
