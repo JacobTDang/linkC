@@ -1237,7 +1237,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
 
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .codex, mode: .new)
 
-        let expected = ["--dangerously-bypass-approvals-and-sandbox", "-c", "mcp_servers.linkc-multiplier.env.LINKC_SESSION=\"\(session.id)\""]
+        let expected = ["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false",
+                        "-c", "mcp_servers.linkc-multiplier.env.LINKC_SESSION=\"\(session.id)\""]
         let argvFile = tempDir.appendingPathComponent("argv-\(session.id)")
         var argv: [String] = []
         let deadline = Date().addingTimeInterval(5)

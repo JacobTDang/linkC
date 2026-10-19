@@ -105,7 +105,10 @@ public struct AgentDescriptor: Sendable {
                 kind: .codex,
                 binaryName: "codex",
                 defaultCandidatePaths: ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"],
-                yoloFlags: ["--dangerously-bypass-approvals-and-sandbox"],
+                // Without the update check: when a newer release is out, Codex opens on an
+                // "update available" prompt, and the first text linkC types into the session — a
+                // worker's task — chose "Update now", so Codex updated itself and exited.
+                yoloFlags: ["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"],
                 continueArgs: ["resume", "--last"],
                 resumeArgs: ["resume"]
             )
