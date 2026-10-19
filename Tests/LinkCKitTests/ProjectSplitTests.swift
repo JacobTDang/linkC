@@ -320,6 +320,15 @@ final class ProjectSplitTests: XCTestCase {
         XCTAssertEqual(split.focused, "A")
     }
 
+    /// Sizes made for the grid on screen are stored; sizes made before the grid changed (a pane ended
+    /// mid-drag) are refused rather than stored for a grid nobody resized.
+    func testResizingForTheLiveGridTakesOnlySizesThatFitIt() {
+        let sizes = SplitSizes.even(for: 2).resizingColumns(inRow: 0, divider: 0, by: 60, rowWidth: 600)
+        let split = ProjectSplit(members: ["A", "B", "C"], focused: "A")
+        XCTAssertEqual(split.resized(sizes, liveIDs: ["A", "B"]), split.resized(sizes), "C isn't live: the grid shows two panes")
+        XCTAssertNil(split.resized(sizes, liveIDs: ["A", "B", "C"]), "made for two panes, the grid shows three")
+    }
+
     func testANewSplitIsEven() {
         XCTAssertNil(ProjectSplit(members: ["A", "B"]).sizes)
     }
