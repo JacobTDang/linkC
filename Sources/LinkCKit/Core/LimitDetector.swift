@@ -113,7 +113,8 @@ public struct LimitDetector: Sendable {
         case .claude: return claudeRules
         case .codex: return codexRules
         case .agy: return agyRules
-        case .cursor: return cursorRules
+        // Grok runs Cursor's CLI, so a Grok terminal shows Cursor's caps.
+        case .cursor, .grok: return cursorRules
         case .shell: return []
         }
     }
