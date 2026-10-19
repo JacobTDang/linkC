@@ -265,6 +265,14 @@ final class LimitDetectorTests: XCTestCase {
         XCTAssertNotNil(LimitDetector.detectLimit(inOutput: "Rate limit " + "reached. Try again later.", agent: .cursor))
     }
 
+    /// Grok runs Cursor's CLI, so Cursor's caps are what a Grok terminal shows.
+    func testGrokIsLimitedByCursorsCaps() {
+        let cap = LimitDetector.detectLimit(inOutput: "Error: You've hit your " + "usage limit", agent: .grok)
+        XCTAssertEqual(cap?.agent, .grok)
+        XCTAssertEqual(cap?.cooldown, 6 * 3600)
+        XCTAssertNotNil(LimitDetector.detectLimit(inOutput: "Rate limit " + "reached. Try again later.", agent: .grok))
+    }
+
     // MARK: - Normal Output & Isolation Tests
 
     func testNormalOutputReturnsNil() {

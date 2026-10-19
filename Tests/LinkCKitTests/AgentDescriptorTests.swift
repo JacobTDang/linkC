@@ -82,4 +82,34 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertNotNil(zsh)
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: zsh!))
     }
+
+    /// Grok runs on the Cursor plan through Cursor's own CLI: same binary, same flags.
+    func testGrokIsItsOwnAgentRunningCursorsCLI() {
+        XCTAssertEqual(AgentKind.grok.pillText, "GROK")
+        XCTAssertEqual(AgentKind.grok.displayName, "Grok (via Cursor)")
+        XCTAssertEqual(AgentKind.grok.shortName, "Grok")
+        XCTAssertEqual(AgentKind.grok.brandColorHex, "#E5E5EA")
+        let grok = AgentDescriptor.descriptor(for: .grok)
+        let cursor = AgentDescriptor.descriptor(for: .cursor)
+        XCTAssertEqual(grok.kind, .grok)
+        XCTAssertEqual(grok.binaryName, cursor.binaryName)
+        XCTAssertEqual(grok.defaultCandidatePaths, cursor.defaultCandidatePaths)
+        for mode in [LaunchMode.new, .continueLast, .resume] {
+            XCTAssertEqual(AgentDescriptor.arguments(for: .grok, mode: mode, sessionId: "S-1"),
+                           AgentDescriptor.arguments(for: .cursor, mode: mode, sessionId: "S-1"), "\(mode)")
+        }
+    }
+
+    /// Only Grok gets its own Cursor folder and the mark that tells linkC's tool server it is Grok.
+    func testOnlyGrokGetsItsOwnCursorFolderAndWorkerMark() {
+        let home = URL(fileURLWithPath: "/Users/someone")
+        XCTAssertEqual(AgentKind.workerEnvironmentKey, "LINKC_WORKER")
+        XCTAssertEqual(AgentDescriptor.grokConfigFolderName, ".cursor-grok")
+        XCTAssertEqual(AgentDescriptor.grokConfigDirectory(home: home).path, "/Users/someone/.cursor-grok")
+        XCTAssertEqual(AgentDescriptor.environment(for: .grok, home: home),
+                       ["CURSOR_CONFIG_DIR": "/Users/someone/.cursor-grok", "LINKC_WORKER": "grok"])
+        for kind in AgentKind.allCases where kind != .grok {
+            XCTAssertEqual(AgentDescriptor.environment(for: kind, home: home), [:], "\(kind)")
+        }
+    }
 }
