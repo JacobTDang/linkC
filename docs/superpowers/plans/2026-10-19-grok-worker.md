@@ -1200,9 +1200,15 @@ Append to `AppCoordinatorRelayTests`, after `testCheckLimitsAndRerouteSkipsUnins
     }
 ```
 
+Grok is now a peer with a model for every tier, so four existing tests that rule out every peer by name must rule out Grok too, or they stop testing what they say:
+
+- `AppCoordinatorRelayTests.testATieredTaskWithNoCapablePeerIsLeftAloneOnReroute` and `testASessionClearsErrorOnceItsCooldownEndsWithoutAFocusClick`: after `models.setModel("", for: .agy, tier: .light)`, add `models.setModel("", for: .grok, tier: .light)`.
+- `AppCoordinatorRelayTests.testACooldownIsNotReArmedOnEveryTick`: after `models.setModel("", for: .cursor, tier: .standard)`, add `models.setModel("", for: .grok, tier: .standard)`.
+- `MCPServerTests.testDelegateTaskAllPeersLimitedReportsNone`: after the Cursor `recordLimit`, add `try inboxStore.recordLimit(agent: .grok, reason: "Usage cap", cooldown: 600)`.
+
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `swift test --filter "LinkCKitTests.(AgentDescriptorTests|MCPServerTaskTests|MCPServerModelTests|AppCoordinatorRelayTests)"`
+Run: `swift test --filter "LinkCKitTests.(AgentDescriptorTests|MCPServerTaskTests|MCPServerModelTests|AppCoordinatorRelayTests|MCPServerTests)"`
 Expected: the eight new tests fail — `peers` does not exist yet (compile error), and once it does, the lists and descriptions lack Grok and the reroute finds no candidate.
 
 - [ ] **Step 3: Implement**
