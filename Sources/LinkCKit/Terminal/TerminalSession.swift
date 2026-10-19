@@ -82,7 +82,9 @@ public final class TerminalSession {
             now: probe.now(),
             probe: { probe.inTree(pid) }
         )
-        agentKind = detected ?? initialAgentKind
+        let live = detected ?? initialAgentKind
+        // A Grok worker runs Cursor's CLI, so its process reads as Cursor; it is still Grok.
+        agentKind = (initialAgentKind == .grok && live == .cursor) ? .grok : live
         return agentKind
     }
 
@@ -148,9 +150,16 @@ public final class TerminalSession {
     /// running inside a claude session (launched from a terminal there, or via `open`, which
     /// forwards the caller's environment) — passing CLAUDECODE/CLAUDE_CODE_* through would make
     /// every spawned claude treat itself as a child session: transcript saving off, nested-
-    /// session warnings. Sessions get a clean slate; the explicit `env` overlay still wins.
+    /// session warnings. A Grok terminal's mark and Cursor folder go too, or every Cursor session
+    /// would run as Grok; a Cursor folder the user chose is kept. Sessions get a clean slate; the
+    /// explicit `env` overlay still wins.
     static func scrubbedEnvironment(_ base: [String: String]) -> [String: String] {
-        base.filter { key, _ in key != "CLAUDECODE" && !key.hasPrefix("CLAUDE_CODE_") }
+        base.filter { key, value in
+            key != "CLAUDECODE" && !key.hasPrefix("CLAUDE_CODE_")
+                && key != AgentKind.workerEnvironmentKey
+                && !(key == "CURSOR_CONFIG_DIR"
+                     && URL(fileURLWithPath: value).lastPathComponent == AgentDescriptor.grokConfigFolderName)
+        }
     }
 
     /// Launch `executable` in the PTY. Inherits the app's environment (scrubbed of Claude Code
