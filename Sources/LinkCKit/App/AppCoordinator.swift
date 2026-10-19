@@ -825,8 +825,10 @@ public final class AppCoordinator {
 
     /// The model a launch pins, and the tier it came from. A tier with no model leaves a session
     /// unpinned — except Grok, which always names its model: on a fresh `~/.cursor-grok`, Cursor's
-    /// own default is Auto, not Grok. With no tier, Grok takes its default one; a tier with no
-    /// model refuses the launch rather than run on whatever Cursor would pick.
+    /// own default is Auto, not Grok. With no tier, Grok runs on its default tier's model but
+    /// records no tier, so a Grok session the user opened is, like any other, never handed a
+    /// delegated task (`Session.canCarry`). A tier with no model refuses the launch rather than
+    /// run on whatever Cursor would pick.
     private func launchModel(for agent: AgentKind, tier: ModelTier?) throws -> (model: String?, tier: ModelTier?) {
         guard agent == .grok else {
             let model = tier.flatMap { resolvedModel(for: agent, tier: $0) }
@@ -837,7 +839,7 @@ public final class AppCoordinator {
         guard let model = settings.model(for: .grok, tier: grokTier) else {
             throw LinkCError.process("no model configured for grok tier \(grokTier.rawValue) — set it in linkC settings")
         }
-        return (model, grokTier)
+        return (model, tier)
     }
 
     /// What a Grok terminal adds to `LINKC_SESSION`: its own Cursor folder, made here if missing,

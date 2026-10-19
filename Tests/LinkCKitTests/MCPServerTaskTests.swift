@@ -639,6 +639,16 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertEqual(task.tier, .standard)
     }
 
+    /// Grok and Cursor are capped apart: Cursor's cap on one model says nothing about another, so a
+    /// capped Grok leaves Cursor free to take work.
+    func testACappedGrokLeavesCursorFree() throws {
+        try inbox.recordLimit(agent: .grok, reason: "Cursor usage cap", cooldown: 6 * 3600)
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                              ["to": "cursor", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertEqual(try XCTUnwrap(inbox.openTasks().first).toAgent, .cursor)
+    }
+
     func testDelegateToGrokRecordsAnExplicitTier() throws {
         let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
                               ["to": "grok", "prompt": "Design the cache", "tier": "deep"])

@@ -101,6 +101,13 @@ final class MCPServerIdentityTests: XCTestCase {
         XCTAssertEqual(caller.pid, 77)
     }
 
+    /// An empty mark in the server's own environment says nothing; the ancestor's mark decides,
+    /// as the ancestor walk itself passes over empty values.
+    func testAnEmptyMarkInTheServersOwnEnvironmentFallsBackToTheAncestors() {
+        let server = serverInGrokTerminal(environment: ["LINKC_AGENT": "cursor", "LINKC_WORKER": ""], worker: "grok")
+        XCTAssertEqual(server.resolveCaller([:]).agent, .grok)
+    }
+
     func testTheMarkIsReadFromTheServersOwnEnvironmentFirst() {
         let server = serverInGrokTerminal(environment: ["LINKC_AGENT": "cursor", "LINKC_WORKER": "grok"], worker: nil)
         XCTAssertEqual(server.resolveCaller([:]).agent, .grok)

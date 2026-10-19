@@ -107,7 +107,6 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
     }
 
-    /// Polls until `predicate` holds (or times out). Used to await async event propagation.
     /// The lines the mock agent wrote to `<name>-<session id>` when it started, polled for up to
     /// five seconds until there are `count` of them.
     private func launchedLines(_ name: String, of session: Session, count: Int) -> [String] {
@@ -121,6 +120,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         return lines
     }
 
+    /// Polls until `predicate` holds (or times out). Used to await async event propagation.
     private func waitUntil(_ predicate: () -> Bool, iterations: Int = TestWait.polls) async throws -> Bool {
         for _ in 0..<iterations {
             if predicate() { return true }
@@ -1299,7 +1299,9 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
     }
 
     /// With no tier, a Grok session still names its model — on a fresh `~/.cursor-grok`, Cursor's
-    /// own default is Auto, not Grok. Continuing a Grok chat takes the default tier the same way.
+    /// own default is Auto, not Grok. Continuing or resuming a Grok chat takes the default tier the
+    /// same way. No tier was asked for, so none is recorded: like a Claude, Codex or agy session the
+    /// user opened, it is never handed a delegated task meant for a tier.
     @MainActor
     func testAGrokSessionWithNoTierRunsOnItsDefaultTier() throws {
         let coordinator = makeCoordinator(userHome: tempDir.appendingPathComponent("home"))
@@ -1307,13 +1309,17 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
 
         let fresh = try coordinator.newSession(cwd: tempDir.path, agent: .grok, mode: .new)
         XCTAssertEqual(fresh.model, "grok-4.7-medium")
-        XCTAssertEqual(fresh.modelTier, .standard)
+        XCTAssertNil(fresh.modelTier, "a tier the user never asked for must not make their session a task carrier")
         XCTAssertEqual(launchedLines("argv", of: fresh, count: 6),
                        ["agent", "--yolo", "--trust", "--approve-mcps", "--model", "grok-4.7-medium"])
 
         let continued = try coordinator.newSession(cwd: tempDir.path, agent: .grok, mode: .continueLast)
         XCTAssertEqual(launchedLines("argv", of: continued, count: 7),
                        ["agent", "--yolo", "--trust", "--approve-mcps", "--continue", "--model", "grok-4.7-medium"])
+
+        let resumed = try coordinator.newSession(cwd: tempDir.path, agent: .grok, mode: .resume)
+        XCTAssertEqual(launchedLines("argv", of: resumed, count: 7),
+                       ["agent", "--yolo", "--trust", "--approve-mcps", "--resume", "--model", "grok-4.7-medium"])
     }
 
     @MainActor

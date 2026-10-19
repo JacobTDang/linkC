@@ -56,11 +56,10 @@ public enum AncestorSessionCache {
 public enum AncestorWorkerCache {
     /// Under XCTest, a test that injected no `workerResolver` reads no real process: it is simply
     /// not in a worker terminal. A test of the worker path injects its own resolver.
-    nonisolated(unsafe) static var walk: @Sendable () -> String? = {
+    public static let value: String? = {
         if AncestorSessionCache.isRunningUnderXCTest { return nil }
         return ProcessSnooper.environmentVariable(AgentKind.workerEnvironmentKey, inAncestorsOf: getpid())
-    }
-    public static let value: String? = walk()
+    }()
 }
 
 /// Wraps a usage reader so its real read never runs on the caller's thread: the first call
@@ -329,7 +328,8 @@ public final class MCPServer: Sendable {
     /// Cursor's CLI: that CLI hands its MCP servers Cursor's registration, and the model inside may
     /// call itself cursor, so the mark decides. A mark other than `grok` is reported and ignored.
     private func cursorWorker() -> AgentKind? {
-        guard let raw = environment[AgentKind.workerEnvironmentKey] ?? workerResolver() else { return nil }
+        let own = environment[AgentKind.workerEnvironmentKey].flatMap { $0.isEmpty ? nil : $0 }
+        guard let raw = own ?? workerResolver() else { return nil }
         guard raw.lowercased() == AgentKind.grok.rawValue else {
             FileHandle.standardError.write(Data(
                 "linkc-mcp: ignoring \(AgentKind.workerEnvironmentKey)=\(raw) — only grok runs on Cursor's CLI\n".utf8))
