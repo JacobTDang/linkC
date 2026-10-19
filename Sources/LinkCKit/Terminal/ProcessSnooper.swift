@@ -236,19 +236,34 @@ public struct ProcessSnooper: Sendable {
     }
 
     /// Walks *up* from `pid` (exclusive) through at most `maxDepth` parents and returns the first
-    /// `LINKC_SESSION` found in an ancestor's real environment (via `KERN_PROCARGS2`), not ours —
+    /// non-empty `name` found in an ancestor's real environment (via `KERN_PROCARGS2`), not ours —
     /// an MCP server spawned without the variable in its own `environment` can still recover it
-    /// from a session-bearing ancestor (e.g. Codex's CLI process) that did not pass it down.
-    public static func sessionId(inAncestorsOf pid: pid_t, maxDepth: Int = 8) -> String? {
+    /// from an ancestor (Codex's or Cursor's CLI process) that did not pass it down.
+    public static func environmentVariable(_ name: String, inAncestorsOf pid: pid_t, maxDepth: Int = 8) -> String? {
+        environmentVariable(name, inAncestorsOf: pid, maxDepth: maxDepth,
+                            parentOf: { parentPid(of: $0) }, variableOf: { environmentVariable($0, ofProcess: $1) })
+    }
+
+    /// The walk itself, over any process tree. The kernel hides an Apple binary's environment
+    /// from other processes, so tests drive the walk through these two lookups instead.
+    static func environmentVariable(
+        _ name: String, inAncestorsOf pid: pid_t, maxDepth: Int,
+        parentOf: (pid_t) -> pid_t?, variableOf: (String, pid_t) -> String?
+    ) -> String? {
         guard pid > 0, maxDepth > 0 else { return nil }
         var current = pid
         for _ in 0..<maxDepth {
-            guard let parent = parentPid(of: current), parent > 1 else { return nil }
-            if let session = environmentVariable("LINKC_SESSION", ofProcess: parent), !session.isEmpty {
-                return session
+            guard let parent = parentOf(current), parent > 1 else { return nil }
+            if let value = variableOf(name, parent), !value.isEmpty {
+                return value
             }
             current = parent
         }
         return nil
+    }
+
+    /// `LINKC_SESSION` from the nearest ancestor that carries one.
+    public static func sessionId(inAncestorsOf pid: pid_t, maxDepth: Int = 8) -> String? {
+        environmentVariable("LINKC_SESSION", inAncestorsOf: pid, maxDepth: maxDepth)
     }
 }

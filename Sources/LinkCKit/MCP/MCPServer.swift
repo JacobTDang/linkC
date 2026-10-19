@@ -50,6 +50,19 @@ public enum AncestorSessionCache {
     public static let value: String? = walk()
 }
 
+/// `LINKC_WORKER` from the nearest ancestor that carries it, read at most once per process like
+/// `AncestorSessionCache`: Cursor's CLI passes its MCP servers only the registration's own `env`
+/// block, so the mark linkC set on a Grok terminal never reaches `environment` directly.
+public enum AncestorWorkerCache {
+    /// Under XCTest, a test that injected no `workerResolver` reads no real process: it is simply
+    /// not in a worker terminal. A test of the worker path injects its own resolver.
+    nonisolated(unsafe) static var walk: @Sendable () -> String? = {
+        if AncestorSessionCache.isRunningUnderXCTest { return nil }
+        return ProcessSnooper.environmentVariable(AgentKind.workerEnvironmentKey, inAncestorsOf: getpid())
+    }
+    public static let value: String? = walk()
+}
+
 /// Wraps a usage reader so its real read never runs on the caller's thread: the first call
 /// kicks off a background read and returns "not read yet" immediately, and every call after
 /// that returns whatever the most recent background read produced while triggering another one
@@ -132,6 +145,7 @@ public final class MCPServer: Sendable {
     public typealias AncestorResolver = @Sendable (_ pid: pid_t) -> (agent: AgentKind, pid: pid_t)?
     public typealias ModelSettingsProvider = @Sendable () -> AgentModelSettings
     public typealias SessionResolver = @Sendable () -> String?
+    public typealias WorkerResolver = @Sendable () -> String?
     public typealias UsageReader = @Sendable () -> AgentUsage
 
     /// How `linkc_close_worker` waits for linkC's answer to its request: it polls the task every
@@ -165,6 +179,9 @@ public final class MCPServer: Sendable {
     /// The default resolver reads `AncestorSessionCache`, so the real ancestor walk runs at most
     /// once per process; an injected resolver (every test) bypasses that cache entirely.
     public let sessionResolver: SessionResolver
+    /// Falls back to an ancestor's real environment when ours has no `LINKC_WORKER`; see
+    /// `AncestorWorkerCache`. Only `resolveCaller` reads it.
+    public let workerResolver: WorkerResolver
     /// Read fresh on every call, never cached: `linkc-mcp` builds one `MCPServer` for the life
     /// of the CLI process, so a stored value would freeze the mapping at startup and make the
     /// "set it in linkC settings" refusal a lie — an edit would never take effect. Mirrors how
@@ -228,6 +245,7 @@ public final class MCPServer: Sendable {
         ancestorResolver: @escaping AncestorResolver = { ProcessSnooper.detectAgent(inAncestorsOf: $0) },
         modelSettings: @escaping ModelSettingsProvider = { AgentModelStore.applicationSupport.load() },
         sessionResolver: @escaping SessionResolver = { AncestorSessionCache.value },
+        workerResolver: @escaping WorkerResolver = { AncestorWorkerCache.value },
         usageReaders: [AgentKind: UsageReader] = MCPServer.defaultUsageReaders(),
         warnCapableAgents: Set<AgentKind> = MCPServer.defaultWarnCapableAgents,
         closeAnswerWait: CloseAnswerWait = .standard
@@ -240,6 +258,7 @@ public final class MCPServer: Sendable {
         self.ancestorResolver = ancestorResolver
         self.modelSettings = modelSettings
         self.sessionResolver = sessionResolver
+        self.workerResolver = workerResolver
         self.usageReaders = usageReaders
         self.warnCapableAgents = warnCapableAgents
         self.closeAnswerWait = closeAnswerWait
@@ -281,8 +300,15 @@ public final class MCPServer: Sendable {
     /// cannot warn regardless.
     public static let defaultWarnCapableAgents: Set<AgentKind> = [.codex, .claude]
 
-    /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified).
+    /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified),
+    /// then a caller that resolved as Cursor inside a terminal linkC marked as Grok is Grok.
     func resolveCaller(_ args: [String: Any]) -> MCPCaller {
+        let caller = resolveCallerIgnoringWorker(args)
+        guard caller.agent == .cursor, let worker = cursorWorker() else { return caller }
+        return MCPCaller(agent: worker, pid: caller.pid)
+    }
+
+    private func resolveCallerIgnoringWorker(_ args: [String: Any]) -> MCPCaller {
         let explicitPid = (args["pid"] as? Int).map { pid_t($0) }
         if let s = (args["agent"] as? String) ?? (args["from"] as? String),
            let kind = AgentKind(rawValue: s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
@@ -296,6 +322,19 @@ public final class MCPServer: Sendable {
             return MCPCaller(agent: found.agent, pid: explicitPid ?? found.pid)
         }
         return MCPCaller(agent: .shell, pid: explicitPid ?? getppid())
+    }
+
+    /// The worker linkC launched on Cursor's CLI in this terminal, if it marked one. Grok runs
+    /// Cursor's CLI: that CLI hands its MCP servers Cursor's registration, and the model inside may
+    /// call itself cursor, so the mark decides. A mark other than `grok` is reported and ignored.
+    private func cursorWorker() -> AgentKind? {
+        guard let raw = environment[AgentKind.workerEnvironmentKey] ?? workerResolver() else { return nil }
+        guard raw.lowercased() == AgentKind.grok.rawValue else {
+            FileHandle.standardError.write(Data(
+                "linkc-mcp: ignoring \(AgentKind.workerEnvironmentKey)=\(raw) — only grok runs on Cursor's CLI\n".utf8))
+            return nil
+        }
+        return .grok
     }
 
     /// The caller's linkC session: `LINKC_SESSION` env → `sessionResolver` (an ancestor's real
