@@ -121,4 +121,45 @@ final class AgentModelStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: store.path)), originalBytes,
                        "a file we have no permission to read is never replaced under the user")
     }
+
+    func testGrokIsSeededOnGrok47WithStandardAsItsDefault() {
+        let seeded = AgentModelSettings.seeded
+        XCTAssertEqual(seeded.model(for: .grok, tier: .light), "grok-4.7-low")
+        XCTAssertEqual(seeded.model(for: .grok, tier: .standard), "grok-4.7-medium")
+        XCTAssertEqual(seeded.model(for: .grok, tier: .deep), "grok-4.7-xhigh")
+        XCTAssertEqual(seeded.defaultTier(for: .grok), .standard)
+    }
+
+    /// A models.json saved before Grok existed names no Grok tiers. Loading it must still give
+    /// Grok its seeded models, or every delegation to Grok would be refused.
+    func testAFileSavedBeforeGrokExistedLoadsGrokFromTheSeed() throws {
+        let store = AgentModelStore(directory: dir)
+        let json = """
+        {"models":{"codex":{"light":"gpt-5.6-luna","standard":"gpt-5.6-sol","deep":"gpt-9-testonly"}},
+         "defaultTiers":{"codex":"deep"}}
+        """
+        try json.write(toFile: store.path, atomically: true, encoding: .utf8)
+
+        let settings = store.load()
+        XCTAssertEqual(settings.model(for: .grok, tier: .standard), "grok-4.7-medium")
+        XCTAssertEqual(settings.defaultTier(for: .grok), .standard)
+        XCTAssertEqual(settings.model(for: .codex, tier: .deep), "gpt-9-testonly", "an agent the file names keeps the file's models")
+        XCTAssertEqual(settings.defaultTier(for: .codex), .deep)
+    }
+
+    /// An agent the file does name keeps exactly what the file says: an emptied tier stays
+    /// empty instead of being refilled from the seed.
+    func testASavedGrokMappingIsNotRefilledFromTheSeed() throws {
+        let store = AgentModelStore(directory: dir)
+        let json = """
+        {"models":{"grok":{"light":"","standard":"grok-4.7-high-fast"}},"defaultTiers":{"grok":"light"}}
+        """
+        try json.write(toFile: store.path, atomically: true, encoding: .utf8)
+
+        let settings = store.load()
+        XCTAssertNil(settings.model(for: .grok, tier: .light))
+        XCTAssertEqual(settings.model(for: .grok, tier: .standard), "grok-4.7-high-fast")
+        XCTAssertNil(settings.model(for: .grok, tier: .deep))
+        XCTAssertEqual(settings.defaultTier(for: .grok), .light)
+    }
 }

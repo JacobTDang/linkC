@@ -615,6 +615,38 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertNil(task.tier)
     }
 
+    func testDelegateToGrokTakesItsDefaultTier() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                              ["to": "grok", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        let task = try XCTUnwrap(inbox.openTasks().first)
+        XCTAssertEqual(task.toAgent, .grok)
+        XCTAssertEqual(task.tier, .standard)
+    }
+
+    func testDelegateToGrokRecordsAnExplicitTier() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                              ["to": "grok", "prompt": "Design the cache", "tier": "deep"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertEqual(try XCTUnwrap(inbox.openTasks().first).tier, .deep)
+    }
+
+    func testGetModelsReportsGrokTiers() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_get_models", ["agent": "grok"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("grok-4.7-low"), res.text)
+        XCTAssertTrue(res.text.contains("grok-4.7-medium — default"), res.text)
+        XCTAssertTrue(res.text.contains("grok-4.7-xhigh"), res.text)
+        XCTAssertFalse(res.text.contains("cannot be pinned"), res.text)
+    }
+
+    func testSwitchingGrokToAConfiguredModelIsQueued() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_switch_model",
+                              ["agent": "grok", "model": "grok-4.7-low"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("/model grok-4.7-low"), res.text)
+    }
+
     func testGetModelsReportsTheConfiguredMapping() throws {
         var models = AgentModelSettings.seeded
         models.setModel("gpt-7-nova", for: .codex, tier: .deep)
