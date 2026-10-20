@@ -278,6 +278,7 @@ struct LauncherMenu: View {
                 Button("New Claude session…") { model.newSession(agent: .claude, mode: .new) }
                 Button("New Antigravity (agy) session…") { model.newSession(agent: .agy, mode: .new) }
                 Button("New Cursor Agent session…") { model.newSession(agent: .cursor, mode: .new) }
+                Button("New Grok session…") { model.newSession(agent: .grok, mode: .new) }
                 Button("New Codex session…") { model.newSession(agent: .codex, mode: .new) }
             }
             Section("Terminal") {
@@ -288,12 +289,14 @@ struct LauncherMenu: View {
                 Button("Claude") { model.newSession(agent: .claude, mode: .continueLast) }
                 Button("Antigravity (agy)") { model.newSession(agent: .agy, mode: .continueLast) }
                 Button("Cursor Agent") { model.newSession(agent: .cursor, mode: .continueLast) }
+                Button("Grok") { model.newSession(agent: .grok, mode: .continueLast) }
                 Button("Codex") { model.newSession(agent: .codex, mode: .continueLast) }
             }
             Menu("Resume…") {
                 Button("Claude") { model.newSession(agent: .claude, mode: .resume) }
                 Button("Antigravity (agy)") { model.newSession(agent: .agy, mode: .resume) }
                 Button("Cursor Agent") { model.newSession(agent: .cursor, mode: .resume) }
+                Button("Grok") { model.newSession(agent: .grok, mode: .resume) }
                 Button("Codex") { model.newSession(agent: .codex, mode: .resume) }
             }
             Divider()

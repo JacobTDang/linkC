@@ -73,4 +73,66 @@ final class MCPServerIdentityTests: XCTestCase {
         XCTAssertEqual(rec.pid, getppid())
         XCTAssertEqual(rec.goal, "(idle)")
     }
+
+    /// A tool server in a terminal linkC marked as Grok, whose CLI loaded Cursor's registration.
+    private func serverInGrokTerminal(environment: [String: String] = ["LINKC_AGENT": "cursor"],
+                                      worker: String? = "grok",
+                                      ancestor: (agent: AgentKind, pid: pid_t)? = nil) -> MCPServer {
+        MCPServer(workspaceRoot: tempDir.path, environment: environment,
+                  ancestorResolver: { _ in ancestor }, sessionResolver: { nil }, workerResolver: { worker })
+    }
+
+    func testCursorsRegistrationInsideAGrokTerminalIsGrok() {
+        let caller = serverInGrokTerminal().resolveCaller([:])
+        XCTAssertEqual(caller.agent, .grok)
+        XCTAssertEqual(caller.pid, getppid())
+    }
+
+    /// A Grok model running in Cursor's CLI may well call itself cursor; the terminal's mark wins.
+    func testAGrokModelThatCallsItselfCursorIsGrok() {
+        let caller = serverInGrokTerminal().resolveCaller(["agent": "cursor", "pid": 5])
+        XCTAssertEqual(caller.agent, .grok)
+        XCTAssertEqual(caller.pid, 5)
+    }
+
+    func testACursorProcessFoundAboveAGrokServerIsGrok() {
+        let caller = serverInGrokTerminal(environment: [:], ancestor: (.cursor, 77)).resolveCaller([:])
+        XCTAssertEqual(caller.agent, .grok)
+        XCTAssertEqual(caller.pid, 77)
+    }
+
+    /// An empty mark in the server's own environment says nothing; the ancestor's mark decides,
+    /// as the ancestor walk itself passes over empty values.
+    func testAnEmptyMarkInTheServersOwnEnvironmentFallsBackToTheAncestors() {
+        let server = serverInGrokTerminal(environment: ["LINKC_AGENT": "cursor", "LINKC_WORKER": ""], worker: "grok")
+        XCTAssertEqual(server.resolveCaller([:]).agent, .grok)
+    }
+
+    func testTheMarkIsReadFromTheServersOwnEnvironmentFirst() {
+        let server = serverInGrokTerminal(environment: ["LINKC_AGENT": "cursor", "LINKC_WORKER": "grok"], worker: nil)
+        XCTAssertEqual(server.resolveCaller([:]).agent, .grok)
+    }
+
+    /// Another agent started from inside a Grok terminal is still itself.
+    func testTheMarkLeavesEveryOtherAgentAlone() {
+        XCTAssertEqual(serverInGrokTerminal(environment: ["LINKC_AGENT": "codex"]).resolveCaller([:]).agent, .codex)
+        XCTAssertEqual(serverInGrokTerminal().resolveCaller(["agent": "agy"]).agent, .agy)
+    }
+
+    func testAMarkThatIsNotGrokIsIgnored() {
+        XCTAssertEqual(serverInGrokTerminal(worker: "bogus").resolveCaller([:]).agent, .cursor)
+        XCTAssertEqual(serverInGrokTerminal(worker: "codex").resolveCaller([:]).agent, .cursor)
+    }
+
+    func testOutsideAGrokTerminalCursorIsCursor() {
+        XCTAssertEqual(serverInGrokTerminal(worker: nil).resolveCaller([:]).agent, .cursor)
+    }
+
+    /// The default resolver reads no real process under XCTest: a test that never injected one is
+    /// simply not in a Grok terminal.
+    func testTheDefaultWorkerResolverReadsNoRealProcessUnderXCTest() {
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "cursor"],
+                               ancestorResolver: { _ in nil }, sessionResolver: { nil })
+        XCTAssertEqual(server.resolveCaller([:]).agent, .cursor)
+    }
 }

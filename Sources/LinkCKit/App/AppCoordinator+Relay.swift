@@ -950,7 +950,7 @@ extension AppCoordinator {
         }
 
         // Candidates: installed, not limited, not this agent; prefer ones already active here.
-        let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor]
+        let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor, .grok]
         var candidates = supportedPeers.filter { candidate in
             guard candidate != session.agentKind && candidate != currentTask?.fromAgent else { return false }
             do {

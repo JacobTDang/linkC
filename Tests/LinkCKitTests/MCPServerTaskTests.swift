@@ -52,6 +52,21 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertTrue(res.text.contains(task.shortId))
     }
 
+    /// A Grok worker's tool server loads Cursor's registration; in the terminal linkC marked as
+    /// Grok it is still the task's assignee.
+    func testAGrokWorkerStartsItsOwnTask() throws {
+        let task = try inbox.createTask(from: .claude, to: .grok, tier: .standard, prompt: "Build", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
+        let grok = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "cursor"],
+                             ancestorResolver: { _ in nil }, sessionResolver: { nil },
+                             workerResolver: { "grok" }, usageReaders: [:])
+
+        let res = try mcpCall(grok, "linkc_start_task", ["task_id": task.id])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started)
+    }
+
     func testStartTaskOnQueuedTaskIsAnError() throws {
         let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Build", files: [])
         let res = try mcpCall(server(as: .codex), "linkc_start_task", ["task_id": task.id])
@@ -613,6 +628,68 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertFalse(res.isError, res.text)
         let task = try XCTUnwrap(inbox.openTasks().first)
         XCTAssertNil(task.tier)
+    }
+
+    func testDelegateToGrokTakesItsDefaultTier() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                              ["to": "grok", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        let task = try XCTUnwrap(inbox.openTasks().first)
+        XCTAssertEqual(task.toAgent, .grok)
+        XCTAssertEqual(task.tier, .standard)
+    }
+
+    /// Grok and Cursor are capped apart: Cursor's cap on one model says nothing about another, so a
+    /// capped Grok leaves Cursor free to take work.
+    func testACappedGrokLeavesCursorFree() throws {
+        try inbox.recordLimit(agent: .grok, reason: "Cursor usage cap", cooldown: 6 * 3600)
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                              ["to": "cursor", "prompt": "Rename a file"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertEqual(try XCTUnwrap(inbox.openTasks().first).toAgent, .cursor)
+    }
+
+    func testDelegateToGrokRecordsAnExplicitTier() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                              ["to": "grok", "prompt": "Design the cache", "tier": "deep"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertEqual(try XCTUnwrap(inbox.openTasks().first).tier, .deep)
+    }
+
+    func testGetModelsReportsGrokTiers() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_get_models", ["agent": "grok"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("grok-4.7-low"), res.text)
+        XCTAssertTrue(res.text.contains("grok-4.7-medium — default"), res.text)
+        XCTAssertTrue(res.text.contains("grok-4.7-xhigh"), res.text)
+        XCTAssertFalse(res.text.contains("cannot be pinned"), res.text)
+    }
+
+    func testSwitchingGrokToAConfiguredModelIsQueued() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_switch_model",
+                              ["agent": "grok", "model": "grok-4.7-low"])
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("/model grok-4.7-low"), res.text)
+    }
+
+    func testAnUnknownAgentErrorNamesGrok() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task", ["to": "gork", "prompt": "x"])
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("Supported agents: claude, agy, cursor, codex, grok."), res.text)
+    }
+
+    func testACappedTargetOffersGrokInstead() throws {
+        try inbox.recordLimit(agent: .codex, reason: "quota", cooldown: 1800)
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task", ["to": "codex", "prompt": "x"])
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("Alternative available peer agents: claude, agy, cursor, grok."), res.text)
+    }
+
+    func testGetModelsWithNoAgentListsGrok() throws {
+        let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_get_models")
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertTrue(res.text.contains("## Grok (via Cursor)"), res.text)
+        XCTAssertTrue(res.text.contains("grok-4.7-medium — default"), res.text)
     }
 
     func testGetModelsReportsTheConfiguredMapping() throws {

@@ -55,7 +55,7 @@ struct SettingsScreen: View {
                     }
 
                     SectionHeader(title: "MODELS").padding(.top, 6)
-                    ForEach([AgentKind.claude, .codex, .agy], id: \.self) { agent in
+                    ForEach([AgentKind.claude, .codex, .agy, .grok], id: \.self) { agent in
                         SettingRow(
                             title: agent.displayName,
                             detail: "Which model each tier launches. A renamed model can be typed in."

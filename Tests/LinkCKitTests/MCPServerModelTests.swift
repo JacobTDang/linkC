@@ -409,6 +409,38 @@ final class MCPServerModelTests: XCTestCase {
         XCTAssertTrue(text.contains("## Active Rate Limits"), "Expected the active-limits section: \(text)")
     }
 
+    func testEveryToolThatListsAgentsNamesGrok() throws {
+        let req = Data(#"{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}"#.utf8)
+        let resJson = try JSONSerialization.jsonObject(with: try XCTUnwrap(server.handleMessage(req))) as? [String: Any]
+        let tools = try XCTUnwrap((resJson?["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        func description(_ tool: String, _ property: String) -> String {
+            let schema = tools.first { $0["name"] as? String == tool }?["inputSchema"] as? [String: Any]
+            let properties = schema?["properties"] as? [String: Any]
+            return (properties?[property] as? [String: Any])?["description"] as? String ?? ""
+        }
+        for (tool, property) in [("linkc_delegate_task", "to"), ("linkc_send_message", "to"),
+                                 ("linkc_switch_model", "agent"), ("linkc_get_models", "agent"),
+                                 ("linkc_broadcast_intent", "agent")] {
+            XCTAssertTrue(description(tool, property).contains("grok"), "\(tool).\(property): \(description(tool, property))")
+        }
+        let delegate = tools.first { $0["name"] as? String == "linkc_delegate_task" }?["description"] as? String ?? ""
+        XCTAssertTrue(delegate.contains("grok"), delegate)
+    }
+
+    func testTheUsageReportHasAGrokSection() throws {
+        let req = Data(#"{"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "linkc_get_usage_status"}}"#.utf8)
+        let resJson = try JSONSerialization.jsonObject(with: try XCTUnwrap(server.handleMessage(req))) as? [String: Any]
+        let content = (resJson?["result"] as? [String: Any])?["content"] as? [[String: Any]]
+        let text = content?.first?["text"] as? String ?? ""
+        XCTAssertTrue(text.contains("## Grok (via Cursor)"), text)
+    }
+
+    func testGroksDefaultUsageReaderSaysWhyItHasNoFigures() throws {
+        let usage = try XCTUnwrap(MCPServer.defaultUsageReaders()[.grok])()
+        XCTAssertEqual(usage.agent, .grok)
+        XCTAssertEqual(usage.unavailableReason, "Grok runs on the Cursor plan, which writes no local session records")
+    }
+
     // MARK: - AppCoordinator.switchModel
 
     private final class MockNotificationSink: NotificationSink, @unchecked Sendable {

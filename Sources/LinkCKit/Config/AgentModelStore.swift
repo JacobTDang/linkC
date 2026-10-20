@@ -7,7 +7,8 @@ import Foundation
 /// ```
 /// Two processes read this: the app, to launch a session with `--model`, and `linkc-mcp`, to
 /// refuse a delegation whose tier has no model. A missing file means "nothing configured yet"
-/// and `load` quietly returns the seeded mapping.
+/// and `load` quietly returns the seeded mapping. An agent the file never names — one added
+/// after the file was saved — takes its seeded tiers too.
 ///
 /// The schema decodes leniently, so a file a newer build wrote never looks broken to an older
 /// one: a top-level key this build doesn't know about is kept verbatim and carried forward by
@@ -48,7 +49,8 @@ public struct AgentModelStore: Sendable {
             return .seeded
         }
         do {
-            return try parseLenient(data).settings
+            // A file saved before an agent existed still gives that agent its seeded tiers.
+            return try parseLenient(data).settings.fillingInAgents(from: .seeded)
         } catch {
             NSLog("linkC: models.json at %@ is corrupt, using the seeded mapping — %@",
                   fileURL.path, String(describing: error))

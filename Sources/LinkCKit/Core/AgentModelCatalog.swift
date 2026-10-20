@@ -42,6 +42,12 @@ public enum AgentModelCatalog: Sendable {
             return [
                 AgentModelInfo(id: "default", displayName: "Cursor Default", isFreeOrSubscription: true, isDefault: true)
             ]
+        case .grok:
+            return [
+                AgentModelInfo(id: "grok-4.7-medium", displayName: "Grok 4.7 Medium", isFreeOrSubscription: true, isDefault: true),
+                AgentModelInfo(id: "grok-4.7-low", displayName: "Grok 4.7 Low", isFreeOrSubscription: true, isDefault: false),
+                AgentModelInfo(id: "grok-4.7-xhigh", displayName: "Grok 4.7 Extra High", isFreeOrSubscription: true, isDefault: false)
+            ]
         case .shell:
             return []
         }

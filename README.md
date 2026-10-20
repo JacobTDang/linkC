@@ -1,14 +1,15 @@
 # linkC
 
 linkC is a macOS menu-bar app for running AI coding agents side by side. It runs Claude Code,
-Codex, Antigravity and Cursor Agent in one panel, shows at a glance which ones are working and
-which need you, and lets them hand tasks and messages to each other.
+Codex, Antigravity, Cursor Agent and Grok in one panel, shows at a glance which ones are working
+and which need you, and lets them hand tasks and messages to each other.
 
 ![Four pixel mascots, one for each agent: Claude Code, Codex, Antigravity and Cursor. They go into the linkC panel. Claude gives a task to Antigravity. Codex reaches its usage limit, and its task moves to Cursor. Then the Board shows a card for an arrow](docs/images/linkc.gif)
 
 A few terms used throughout this README:
 
-- **Agent** — an AI coding CLI: Claude Code, Codex, Antigravity or Cursor Agent.
+- **Agent** — an AI coding CLI: Claude Code, Codex, Antigravity, Cursor Agent, or Grok (which runs
+  through Cursor Agent).
 - **Session** — one agent running in a linkC terminal.
 - **Terminal** — a plain shell, for a dev server or anything else.
 - **Project** — the folder a session or terminal runs in.
@@ -150,7 +151,7 @@ handed off the task.
 The **Usage** section shows what each agent has left, including its 5-hour and 7-day windows
 where the agent reports one. linkC reads Claude Code's 5-hour and 7-day limits from the status line it adds to each Claude
 Code session, and Codex usage from session files under `~/.codex/sessions` — none of it leaves
-your machine. Cursor Agent and Antigravity don't keep local usage records, so linkC can
+your machine. Cursor Agent, Grok and Antigravity don't keep local usage records, so linkC can
 only show a limit for them once the limit message actually appears in the terminal.
 
 ### App tabs
@@ -192,13 +193,15 @@ is active, and that session's tab is selected. Click a notification to jump to i
 | Codex | `codex` | linkC reads the terminal screen every second while the panel is open or work is in flight, every five seconds otherwise. |
 | Antigravity | `agy` | linkC reads the terminal screen every second while the panel is open or work is in flight, every five seconds otherwise. |
 | Cursor Agent | `cursor` | linkC reads the terminal screen every second while the panel is open or work is in flight, every five seconds otherwise. |
+| Grok | `cursor` | Cursor Agent on a Grok 4.7 model, in its own settings folder (`~/.cursor-grok`). linkC reads the terminal screen as it does for Cursor Agent. |
 
 ## Requirements
 
 - macOS 14 or later.
 - Claude Code, with `claude` on your PATH — linkC won't start without it.
 - Optional: Codex (`codex`), Antigravity (`agy`) and Cursor Agent (`cursor`). linkC can only
-  start an agent whose command is installed.
+  start an agent whose command is installed. Grok needs Cursor Agent and a Cursor plan that
+  includes Grok 4.7; it uses Cursor's existing login.
 - Optional: Docker for the **Servers** section, and the `oci` CLI for Oracle Cloud.
 
 ## Install and run

@@ -13,7 +13,7 @@ public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
     public var claudeSessionId: String?
     public let cwd: String
     public let title: String
-    /// The agent running in this session (e.g. claude, agy, cursor, codex). Defaults to .claude.
+    /// The agent running in this session (e.g. claude, agy, cursor, codex, grok). Defaults to .claude.
     public var agentKind: AgentKind
     /// Whether the session was actively running when linkC quit or shut down.
     public var wasActiveOnQuit: Bool

@@ -36,7 +36,8 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
     /// request rather than refusing up front, so every codex id below was confirmed by running
     /// `codex exec --model <id>` and watching it answer. `gpt-6-sol` and `gpt-6-luna` were tried
     /// first and rejected with HTTP 400; the working spellings are `gpt-5.6-sol` and
-    /// `gpt-5.6-luna`. `agy models` lists the agy ids verbatim. An empty entry means that tier
+    /// `gpt-5.6-luna`. `agy models` lists the agy ids verbatim. The grok ids are read verbatim from
+    /// `cursor-agent models` (2026-10-17); Grok runs on the Cursor plan. An empty entry means that tier
     /// is unconfigured and delegation refuses loudly. All are editable in settings.
     public static let seeded = AgentModelSettings(
         models: [
@@ -44,12 +45,14 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             AgentKind.codex.rawValue: ["light": "gpt-5.6-luna", "standard": "gpt-5.6-sol", "deep": "gpt-6-astra"],
             AgentKind.agy.rawValue: [
                 "light": "gemini-3.8-flash-low", "standard": "gemini-3.8-flash-medium", "deep": "gemini-3.1-pro-high"
-            ]
+            ],
+            AgentKind.grok.rawValue: ["light": "grok-4.7-low", "standard": "grok-4.7-medium", "deep": "grok-4.7-xhigh"]
         ],
         defaultTiers: [
             AgentKind.claude.rawValue: ModelTier.standard.rawValue,
             AgentKind.codex.rawValue: ModelTier.standard.rawValue,
-            AgentKind.agy.rawValue: ModelTier.standard.rawValue
+            AgentKind.agy.rawValue: ModelTier.standard.rawValue,
+            AgentKind.grok.rawValue: ModelTier.standard.rawValue
         ]
     )
 
@@ -85,6 +88,20 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             guard let id = model(for: agent, tier: tier) else { continue }
             guard seen.insert(id.lowercased()).inserted else { continue }
             result.append(id)
+        }
+        return result
+    }
+
+    /// `self`, plus `seed`'s mapping for every agent `self` never mentions — how a file saved
+    /// before an agent existed picks that agent up. An agent `self` does mention keeps exactly
+    /// what it has, emptied tiers included.
+    public func fillingInAgents(from seed: AgentModelSettings) -> AgentModelSettings {
+        var result = self
+        for (agent, tiers) in seed.models where result.models[agent] == nil {
+            result.models[agent] = tiers
+            if result.defaultTiers[agent] == nil, let tier = seed.defaultTiers[agent] {
+                result.defaultTiers[agent] = tier
+            }
         }
         return result
     }

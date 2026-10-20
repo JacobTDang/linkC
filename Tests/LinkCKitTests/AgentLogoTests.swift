@@ -20,9 +20,9 @@ final class AgentLogoTests: XCTestCase {
         }
     }
 
-    /// Only Cursor's mark is one colour (the file draws in `currentColor`); the rest are drawn as
-    /// they are.
-    func testOnlyCursorIsTintedByTheApp() {
-        XCTAssertEqual(AgentKind.allCases.filter { $0.logo?.isTemplate == true }, [.cursor])
+    /// Cursor's and Grok's marks are one colour (the files draw in `currentColor`); the rest are
+    /// drawn as they are.
+    func testOnlyCursorAndGrokAreTintedByTheApp() {
+        XCTAssertEqual(AgentKind.allCases.filter { $0.logo?.isTemplate == true }, [.cursor, .grok])
     }
 }

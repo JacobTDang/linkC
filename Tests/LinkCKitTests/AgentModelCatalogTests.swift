@@ -168,4 +168,10 @@ final class AgentModelCatalogTests: XCTestCase {
         XCTAssertTrue(decoded.isFreeOrSubscription)
         XCTAssertFalse(decoded.isDefault)
     }
+
+    func testGrokSuggestsItsGrok47Tiers() {
+        XCTAssertEqual(AgentModelCatalog.models(for: .grok).map(\.id), ["grok-4.7-medium", "grok-4.7-low", "grok-4.7-xhigh"])
+        XCTAssertEqual(AgentModelCatalog.defaultModel(for: .grok).id, "grok-4.7-medium")
+        XCTAssertTrue(AgentModelCatalog.isFreeOrSubscription(model: "grok-4.7-low", for: .grok))
+    }
 }
