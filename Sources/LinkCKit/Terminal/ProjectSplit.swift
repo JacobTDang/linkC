@@ -1,9 +1,11 @@
 import Foundation
 
-/// A project's split: the terminals shown together in its Split tab, in grid order, and which one
-/// has the keyboard. Members are linkC terminal ids (session ids or shell terminal ids) and are the
-/// project's live terminals: one that ends drops out. A session linkC relaunches at start-up keeps its
-/// id and so rejoins; one restored later from Earlier is a new session, not in the split. Pure value type.
+/// A project's split: the terminals shown together in its Split tab, in grid order, which one has the
+/// keyboard, and the sizes of its panes once the user has resized them. Members are linkC terminal ids
+/// (session ids or shell terminal ids) and are the project's live terminals: one that ends drops out. A
+/// session linkC relaunches at start-up keeps its id and so rejoins; one restored later from Earlier is a
+/// new session, not in the split. The sizes belong to positions: a member moving keeps them, and a
+/// terminal joining or leaving evens the grid out. Pure value type.
 public struct ProjectSplit: Codable, Equatable, Sendable {
     public enum Refusal: Error, Equatable {
         /// The split already holds `SplitLayout.maxPanes` terminals.
@@ -21,17 +23,21 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
 
     public private(set) var members: [String]
     public private(set) var focused: String?
+    /// How the grid divides its space; nil is even.
+    public private(set) var sizes: SplitSizes?
 
-    public init(members: [String] = [], focused: String? = nil) {
+    public init(members: [String] = [], focused: String? = nil, sizes: SplitSizes? = nil) {
         self.members = members
         self.focused = focused
+        self.sizes = sizes
     }
 
-    private enum CodingKeys: String, CodingKey { case members, focused }
+    private enum CodingKeys: String, CodingKey { case members, focused, sizes }
 
     /// A stored split is repaired as it is read: duplicate members would put one terminal in two
     /// cells, more than `SplitLayout.maxPanes` would not fit the grid, and a focus that names no member
-    /// would leave no pane with the keyboard. Anything repaired is logged.
+    /// would leave no pane with the keyboard. Sizes that don't describe a grid, or that were made for
+    /// members the repair changed, are dropped and the grid evens out. Anything repaired is logged.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let stored = try container.decode([String].self, forKey: .members)
@@ -44,13 +50,24 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
             NSLog("[linkC] a stored split had duplicate or surplus members, or a focus outside them — repaired from %@ (focused %@) to %@ (focused %@)",
                   stored.joined(separator: ","), storedFocus ?? "none", members.joined(separator: ","), focused ?? "none")
         }
+        var sizes: SplitSizes?
+        do {
+            sizes = try container.decodeIfPresent(SplitSizes.self, forKey: .sizes)
+        } catch {
+            NSLog("[linkC] a stored split's pane sizes were unreadable, so its grid evens out: %@", "\(error)")
+        }
+        if sizes != nil, members != stored {
+            NSLog("[linkC] a stored split's members were repaired, so its pane sizes are dropped and its grid evens out")
+            sizes = nil
+        }
         self.members = members
         self.focused = focused
+        self.sizes = sizes
     }
 
     /// `id` dropped on `edge` of the member `target`. A member already in the split moves; a new one
     /// joins, unless the split is full. The dropped terminal gets the focus, unless it is dropped on itself,
-    /// which returns the split unchanged.
+    /// which returns the split unchanged. A move keeps the sizes; a join evens the grid out.
     public func adding(_ id: String, onto target: String, edge: SplitEdge) throws -> ProjectSplit {
         guard let targetIndex = members.firstIndex(of: target) else { throw Refusal.targetNotInSplit }
         guard id != target else { return self }
@@ -60,7 +77,8 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
         if let source { next.remove(at: source) }
         let index = SplitLayout.insertionIndex(droppingOn: targetIndex, edge: edge, movingFrom: source)
         next.insert(id, at: index)
-        return ProjectSplit(members: next, focused: id)
+        // Sizes belong to positions: a member moving keeps them; one joining reshapes the grid and evens it.
+        return ProjectSplit(members: next, focused: id, sizes: source == nil ? nil : sizes)
     }
 
     /// The split a drop of `id` on `edge` of `target` leaves. Both terminals must be in `splittable`,
@@ -87,26 +105,45 @@ public struct ProjectSplit: Codable, Equatable, Sendable {
     }
 
     /// `id` taken out. A focused member hands the focus to the one that takes its place, or to the
-    /// one before it when it was last.
+    /// one before it when it was last. The grid reshapes, so it evens out.
     public func removing(_ id: String) -> ProjectSplit {
         guard let index = members.firstIndex(of: id) else { return self }
         var next = members
         next.remove(at: index)
         var focus = focused
         if focused == id { focus = next.isEmpty ? nil : next[min(index, next.count - 1)] }
-        return ProjectSplit(members: next, focused: focus)
+        return ProjectSplit(members: next, focused: focus, sizes: nil)
     }
 
     public func focusing(_ id: String) -> ProjectSplit {
         guard members.contains(id) else { return self }
-        return ProjectSplit(members: members, focused: id)
+        return ProjectSplit(members: members, focused: id, sizes: sizes)
     }
 
-    /// Only the members in `ids` — the project's live terminals.
+    /// Only the members in `ids` — the project's live terminals. The sizes stay only when every member does.
     public func pruned(keeping ids: Set<String>) -> ProjectSplit {
         let kept = members.filter { ids.contains($0) }
         let focus = focused.flatMap { kept.contains($0) ? $0 : nil } ?? kept.first
-        return ProjectSplit(members: kept, focused: focus)
+        return ProjectSplit(members: kept, focused: focus, sizes: kept == members ? sizes : nil)
+    }
+
+    /// The split with its panes sized by `sizes`, until a terminal joins or leaves it.
+    public func resized(_ sizes: SplitSizes) -> ProjectSplit {
+        ProjectSplit(members: members, focused: focused, sizes: sizes)
+    }
+
+    /// The split with its panes sized by `sizes`, when they were made for the grid its `liveIDs` show.
+    /// nil when that grid has changed since (a pane ended mid-drag): those sizes fit no grid on screen.
+    public func resized(_ sizes: SplitSizes, liveIDs: Set<String>) -> ProjectSplit? {
+        guard sizes.fits(paneCount: liveMembers(in: liveIDs).count) else { return nil }
+        return resized(sizes)
+    }
+
+    /// The sizes a grid of `paneCount` live panes shows: the stored ones when they were made for that
+    /// many panes, else even. Sizes that don't fit stay stored for when the missing member is back.
+    public func gridSizes(paneCount: Int) -> SplitSizes {
+        if let sizes, sizes.fits(paneCount: paneCount) { return sizes }
+        return .even(for: paneCount)
     }
 
     public func liveMembers(in liveIDs: Set<String>) -> [String] {

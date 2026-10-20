@@ -197,6 +197,12 @@ final class SidebarStateTests: XCTestCase {
         XCTAssertEqual(reloaded.projectsWithSplits, [ProjectPath.canonical("/tmp")])
     }
 
+    func testASplitsSizesSurviveARelaunch() {
+        let sizes = SplitSizes.even(for: 2).resizingColumns(inRow: 0, divider: 0, by: 60, rowWidth: 600)
+        SidebarState(defaults: defaults).setSplit(ProjectSplit(members: ["A", "B"], focused: "B").resized(sizes), for: "/tmp")
+        XCTAssertEqual(SidebarState(defaults: defaults).split(for: "/tmp")?.sizes, sizes)
+    }
+
     func testClearingASplitForgetsIt() {
         let state = SidebarState(defaults: defaults)
         state.setSplit(ProjectSplit(members: ["A", "B"]), for: "/tmp")
