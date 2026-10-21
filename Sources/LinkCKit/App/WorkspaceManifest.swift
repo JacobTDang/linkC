@@ -171,7 +171,7 @@ public final class WorkspaceManifest {
         save()
     }
 
-    /// The user opened this worker: record it as theirs. No-op for an unknown id or no change.
+    /// The user typed into this worker: record it as theirs. No-op for an unknown id or no change.
     public func markAdopted(linkcId: String) {
         guard let i = entries.firstIndex(where: { $0.linkcId == linkcId }), entries[i].isWorker else { return }
         entries[i].isWorker = false

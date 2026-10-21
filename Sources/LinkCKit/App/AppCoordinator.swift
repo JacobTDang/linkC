@@ -1011,8 +1011,6 @@ public final class AppCoordinator {
     /// Opens a session the way clicking its tab does, minus the selection: a torn-off window shows it
     /// while the panel keeps what it had open.
     public func acknowledgeSession(_ id: String) {
-        // Opening a worker's terminal makes it the user's: they are using it now.
-        adoptWorker(id)
         NSApp?.activate(ignoringOtherApps: true)
         if let s = store.session(id: id), s.agentKind != .claude, s.state.bucket == .needsYou {
             store.updateState(id: id, to: .ready)
