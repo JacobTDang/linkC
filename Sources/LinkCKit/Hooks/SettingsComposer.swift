@@ -4,9 +4,8 @@ import Foundation
 /// Deep-merges the user's global + project settings with linkC's hooks so a linkC
 /// session behaves identically to a normal one, plus reports its lifecycle.
 public enum SettingsComposer {
-    /// The Claude Code events that get exactly one linkC hook entry, with no matcher.
+    /// The Claude Code events that get exactly one linkC http hook entry, with no matcher.
     private static let singleEntryEvents: [(claudeEvent: String, kind: HookEventKind)] = [
-        ("SessionStart", .sessionStart),
         ("UserPromptSubmit", .userPromptSubmit),
         ("Stop", .stop),
         ("StopFailure", .stopFailure),   // API-error turn end — without it, sessions stick at "working"
@@ -23,6 +22,9 @@ public enum SettingsComposer {
         for (claudeEvent, kind) in singleEntryEvents {
             hooks[claudeEvent] = [matcherBlock(matcher: nil, kind: kind, port: port, token: token)]
         }
+        // Claude Code never sends an http SessionStart hook; a new session's start is how linkC
+        // learns it is ready for a task.
+        hooks["SessionStart"] = [["hooks": [["type": "command", "command": sessionStartCommand(port: port, token: token)]]]]
         // Notification fans out to two matchers depending on why Claude is idle.
         hooks["Notification"] = [
             matcherBlock(matcher: "permission_prompt", kind: .notificationPermission, port: port, token: token),
@@ -73,6 +75,19 @@ public enum SettingsComposer {
     /// its footer; Esc itself still works.
     public static func statusLine(reportingTo file: URL) -> [String: Any] {
         ["type": "command", "command": statusLineCommand(writingTo: file)]
+    }
+
+    /// linkC's SessionStart hook: `curl` posts the CLI's hook input (its stdin) to the hook server with the
+    /// same headers an `http` hook carries. It prints nothing, because the CLI adds a SessionStart hook's
+    /// output to the conversation, and it fails with curl's error on stderr when the server does not answer.
+    static func sessionStartCommand(port: UInt16, token: String) -> String {
+        "/usr/bin/curl -sS -f -o /dev/null --max-time 5"
+            + " -H 'Content-Type: application/json'"
+            + " -H " + shellQuoted("X-LinkC-Event: \(HookEventKind.sessionStart.rawValue)")
+            + " -H " + shellQuoted("X-LinkC-Token: \(token)")
+            + #" -H "X-LinkC-Session: $LINKC_SESSION""#
+            + " --data-binary @- "
+            + shellQuoted("http://127.0.0.1:\(port)/hook")
     }
 
     /// Claude starts a status line as `/bin/sh -c <command>` for each refresh and pipes one line of
