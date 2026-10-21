@@ -450,7 +450,7 @@ public final class LinkCTerminalView: LocalProcessTerminalView {
         super.init(frame: frame)
     }
 
-    required init?(coder: NSCoder) {
+    public required init?(coder: NSCoder) {
         Self.installScrollWheelOverride
         super.init(coder: coder)
     }
@@ -468,10 +468,10 @@ public final class LinkCTerminalView: LocalProcessTerminalView {
             preconditionFailure("LinkCTerminalView inherits no scrollWheel(with:) to override")
         }
         let swiftTerm = unsafeBitCast(method_getImplementation(inherited), to: ScrollWheelIMP.self)
-        let override: @convention(block) (LinkCTerminalView, NSEvent) -> Void = { view, event in
+        let wheelAsOwnInput: @convention(block) (LinkCTerminalView, NSEvent) -> Void = { view, event in
             view.sendingOwnInput { swiftTerm(view, selector, event) }
         }
-        guard class_addMethod(LinkCTerminalView.self, selector, imp_implementationWithBlock(override),
+        guard class_addMethod(LinkCTerminalView.self, selector, imp_implementationWithBlock(wheelAsOwnInput),
                               method_getTypeEncoding(inherited)) else {
             preconditionFailure("LinkCTerminalView already defines scrollWheel(with:)")
         }

@@ -578,7 +578,7 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_close_worker",
-                "description": "Close the terminal session of the worker that carried a task you delegated, to free it before it closes by itself about a minute after it goes idle. linkC closes it only if it is a worker linkC launched, the session is idle, and it holds no other open task and waits on none it delegated; a session the user opened or took over, and the one on screen, are never closed. Otherwise you get the reason.",
+                "description": "Close the terminal session of the worker that carried a task you delegated, to free it before it closes by itself about a minute after it goes idle. linkC closes it only if it is a worker linkC launched, the session is idle, and it holds no other open task and waits on none it delegated; a session the user started or took over by typing into it, and the one selected in the panel, are never closed. Otherwise you get the reason.",
                 "inputSchema": [
                     "type": "object",
                     "properties": ["task_id": ["type": "string", "description": "A task you delegated; its reported or ended state is required"]],

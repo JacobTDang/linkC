@@ -916,7 +916,7 @@ final class AppModel {
     /// when the focused one ended): remember it as the split's focus. In the split the panel is showing,
     /// it is also selected, keeping the grid on screen. Only the selection moves, as
     /// `repairSplitSelection()` moves it: this also runs for a pane that took the keyboard by itself, so
-    /// it never activates the app or adopts a worker. The user's own click goes on to `pickSplitPane(_:in:)`.
+    /// it never activates the app. The user's own click goes on to `pickSplitPane(_:in:)`.
     /// A split in a torn-off window leaves the panel's selection alone. `project` is standardized here,
     /// like in every split operation below, so it compares with `splitProject` and the windows' keys.
     func focusInSplit(_ id: String, in project: String) {
@@ -929,8 +929,8 @@ final class AppModel {
         sidebarState.setSplit(next, for: key)
     }
 
-    /// The user clicked a pane: it is opened as a tab is (`focus(_:)`), so a worker becomes theirs and
-    /// an agent waiting on them reads as seen. `showSelection()` keeps the grid and moves its focus.
+    /// The user clicked a pane: it is opened as a tab is (`focus(_:)`), so an agent waiting on them
+    /// reads as seen. `showSelection()` keeps the grid and moves its focus.
     /// In a torn-off window the panel's selection stays: the pane takes the split's focus and is
     /// acknowledged, nothing more.
     func pickSplitPane(_ id: String, in project: String) {
