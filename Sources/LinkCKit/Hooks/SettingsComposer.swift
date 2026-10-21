@@ -23,8 +23,12 @@ public enum SettingsComposer {
             hooks[claudeEvent] = [matcherBlock(matcher: nil, kind: kind, port: port, token: token)]
         }
         // Claude Code never sends an http SessionStart hook; a new session's start is how linkC
-        // learns it is ready for a task.
-        hooks["SessionStart"] = [["hooks": [["type": "command", "command": sessionStartCommand(port: port, token: token)]]]]
+        // learns it is ready for a task. Not after a compaction: that can come mid-turn, while the
+        // session is still busy.
+        hooks["SessionStart"] = [[
+            "matcher": "startup|resume|clear",
+            "hooks": [["type": "command", "command": sessionStartCommand(port: port, token: token)]],
+        ]]
         // Notification fans out to two matchers depending on why Claude is idle.
         hooks["Notification"] = [
             matcherBlock(matcher: "permission_prompt", kind: .notificationPermission, port: port, token: token),
@@ -80,8 +84,9 @@ public enum SettingsComposer {
     /// linkC's SessionStart hook: `curl` posts the CLI's hook input (its stdin) to the hook server with the
     /// same headers an `http` hook carries. It prints nothing, because the CLI adds a SessionStart hook's
     /// output to the conversation, and it fails with curl's error on stderr when the server does not answer.
+    /// It ignores any proxy in the session's environment, which curl would otherwise use even for 127.0.0.1.
     static func sessionStartCommand(port: UInt16, token: String) -> String {
-        "/usr/bin/curl -sS -f -o /dev/null --max-time 5"
+        "/usr/bin/curl -sS -f -o /dev/null --max-time 5 --noproxy '*'"
             + " -H 'Content-Type: application/json'"
             + " -H " + shellQuoted("X-LinkC-Event: \(HookEventKind.sessionStart.rawValue)")
             + " -H " + shellQuoted("X-LinkC-Token: \(token)")
