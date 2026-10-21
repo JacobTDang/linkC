@@ -3563,9 +3563,9 @@ final class AppCoordinatorRelayTests: XCTestCase {
             coordinator.shutdown()
         }
         let (worker, mine, task) = try workerWithRequest(coordinator, inbox: inbox, by: .delegator)
-        coordinator.focusSession(worker.id)
+        coordinator.terminals.session(id: worker.id)?.terminalView.send(txt: "x")
         coordinator.terminals.select(mine.id)
-        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, false, "focusing adopts the worker")
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, false, "typing into it adopts the worker")
 
         coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
 
@@ -3777,7 +3777,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             coordinator.shutdown()
         }
         let (worker, mine, task) = try reportedWorker(coordinator, inbox: inbox)
-        coordinator.focusSession(worker.id)
+        coordinator.terminals.session(id: worker.id)?.terminalView.send(txt: "x")   // the user types into it
         coordinator.terminals.select(mine.id)
 
         let res = try mcpCall(closeServer(coordinator, workspace: ws), "linkc_close_worker", ["task_id": task.id])
