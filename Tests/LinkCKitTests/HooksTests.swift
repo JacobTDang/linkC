@@ -162,7 +162,6 @@ final class SettingsComposerTests: XCTestCase {
     func testLinkcHooksSingleEntryEventsPointAtTheGivenPort() throws {
         let hooks = SettingsComposer.linkcHooks(port: 9, token: "tok-test")
         let singleEntryEvents: [(key: String, kind: HookEventKind)] = [
-            ("SessionStart", .sessionStart),
             ("UserPromptSubmit", .userPromptSubmit),
             ("Stop", .stop),
             ("SessionEnd", .sessionEnd),
@@ -183,6 +182,21 @@ final class SettingsComposerTests: XCTestCase {
             let entryHeaders = try XCTUnwrap(entries[0]["headers"] as? [String: String])
             XCTAssertEqual(entryHeaders["X-LinkC-Event"], kind.rawValue)
         }
+    }
+
+    /// Claude Code never sends an `http` SessionStart hook, so SessionStart is the one linkC hook that
+    /// is a command (`SessionStartCommandLiveTests` runs it).
+    func testSessionStartIsACommandHook() throws {
+        let hooks = SettingsComposer.linkcHooks(port: 9, token: "tok-test")
+
+        let blocks = try XCTUnwrap(hooks["SessionStart"] as? [[String: Any]])
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertNil(blocks[0]["matcher"])
+        let entries = try XCTUnwrap(blocks[0]["hooks"] as? [[String: Any]])
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0]["type"] as? String, "command")
+        XCTAssertNil(entries[0]["url"])
+        XCTAssertNotNil(entries[0]["command"] as? String)
     }
 
     func testComposeAppendsLinkcStopHookToExistingUserStopHookAndPreservesModel() throws {
