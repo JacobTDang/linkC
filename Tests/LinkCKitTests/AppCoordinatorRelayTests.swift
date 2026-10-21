@@ -3786,6 +3786,27 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNotNil(coordinator.store.session(id: worker.id), "an adopted worker stays")
     }
 
+    /// The user's report: a worker they only opened (its tab, a split pane) and then left could no longer
+    /// be closed by the agent that delegated to it. Opening is not typing: it stays closable.
+    @MainActor
+    func testTheCloseToolClosesAWorkerTheUserOnlyOpened() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let (worker, mine, task) = try reportedWorker(coordinator, inbox: inbox)
+        coordinator.focusSession(worker.id)
+        coordinator.terminals.select(mine.id)
+
+        let res = try mcpCall(closeServer(coordinator, workspace: ws), "linkc_close_worker", ["task_id": task.id])
+
+        XCTAssertFalse(res.isError, res.text)
+        XCTAssertNil(coordinator.store.session(id: worker.id), "the worker is closed")
+    }
+
     @MainActor
     func testTheCloseToolRefusesABusyWorker() throws {
         let ws = (tempDir.path as NSString).standardizingPath
