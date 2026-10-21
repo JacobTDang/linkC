@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import LinkCKit
 
@@ -1049,9 +1050,9 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.store.session(id: "A1")?.state.bucket, .idle)
     }
 
-    /// A torn-off window opens a session the way its tab does, but the panel's selection stays put:
-    /// the worker becomes the user's and a finished non-Claude session reads as seen (bringing the app forward
-    /// needs a running NSApp, which tests don't have).
+    /// A torn-off window opens a session the way its tab does, but the panel's selection stays put: the
+    /// worker stays a worker (opening is not typing) and a finished non-Claude session reads as seen
+    /// (bringing the app forward needs a running NSApp, which tests don't have).
     func testAcknowledgingASessionOpensItWithoutSelectingIt() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-ack-\(UUID().uuidString)")
         let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
@@ -1079,9 +1080,9 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         coordinator.acknowledgeSession(worker.id)
         coordinator.acknowledgeSession("A1")
 
-        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, false, "the worker is adopted in the store")
-        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, false,
-                       "and in the manifest")
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, true, "opening a worker leaves it a worker")
+        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, true,
+                       "in the manifest too")
         XCTAssertEqual(coordinator.store.session(id: "A1")?.state, .ready)
         XCTAssertEqual(coordinator.terminals.selectedId, bystander.id, "the selection did not move")
         XCTAssertTrue(focused.isEmpty, "acknowledging is not focusing: onSessionFocused stays quiet")
@@ -1417,8 +1418,10 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == "L1" }?.claudeSessionId, "conv-1")
     }
 
-    /// Opening a worker's terminal makes it the user's, in memory and on disk.
-    func testOpeningAWorkerMakesItTheUsers() throws {
+    /// Opening a worker's terminal (its tab, a notification, a split pane) is only looking at it: it stays a
+    /// worker, in memory and on disk, so the agent that delegated to it can still close it. Only typing
+    /// into it makes it the user's.
+    func testOpeningAWorkerLeavesItAWorker() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-adopt-\(UUID().uuidString)")
         let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
@@ -1427,17 +1430,37 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
         let worker = try coordinator.newSession(cwd: cwd.path, agent: .codex, asWorker: true)
         defer { coordinator.stopSession(worker.id) }
-        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, true)
-        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, true)
 
         coordinator.focusSession(worker.id)
+        coordinator.acknowledgeSession(worker.id)
 
-        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, false)
-        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, false)
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, true)
+        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, true)
     }
 
-    /// A worker can land on screen without being opened (the fallback when the one on screen
-    /// closes). Typing into it is the user using it: it becomes theirs, in memory and on disk.
+    /// A full-screen program with no mouse reporting (agy's TUI) gets the scroll wheel as arrow keys from
+    /// the terminal. Scrolling to read it is not the user typing: the worker stays a worker.
+    func testScrollingOverAFullScreenProgramLeavesAWorkerAWorker() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-adopt-scroll-\(UUID().uuidString)")
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cwd) }
+
+        let coordinator = makeCoordinator(sink: RecordingSink(), settingsDir: dir, manifestDir: dir)
+        let worker = try coordinator.newSession(cwd: cwd.path, agent: .codex, asWorker: true)
+        defer { coordinator.stopSession(worker.id) }
+        let view = try XCTUnwrap(coordinator.terminals.session(id: worker.id)?.terminalView)
+        view.feed(text: "\u{1b}[?1049h")   // the program switches to the alternate screen, as agy does
+        XCTAssertTrue(view.getTerminal().isCurrentBufferAlternate, "the scroll below must reach the arrow-key path")
+
+        let wheel = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0))
+        view.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: wheel)))
+
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.isWorker, true)
+        XCTAssertEqual(WorkspaceManifest(directory: dir).entries.first { $0.linkcId == worker.id }?.isWorker, true)
+    }
+
+    /// Typing into a worker is the user using it: it becomes theirs, in memory and on disk.
     func testTypingIntoAWorkerMakesItTheUsers() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-adopt-typing-\(UUID().uuidString)")
         let cwd = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-cwd-\(UUID().uuidString)")

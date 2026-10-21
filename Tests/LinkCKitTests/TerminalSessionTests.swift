@@ -384,6 +384,24 @@ extension TerminalSessionTests {
         XCTAssertEqual(reports, 1)
     }
 
+    /// Over a full-screen program with no mouse reporting (agy's TUI) the wheel still reaches the program,
+    /// as arrow keys; it is only not reported as the user typing.
+    func testTheWheelStillReachesAFullScreenProgramButIsNotUserInput() async throws {
+        let session = TerminalSession(id: "test-wheel", cwd: "/tmp", title: "cat")
+        try session.start(executable: "/bin/cat", args: [], env: [:])
+        defer { session.terminate() }
+        var reports = 0
+        session.onUserInput = { reports += 1 }
+        session.terminalView.feed(text: "\u{1b}[?1049h")   // the program switches to the alternate screen
+
+        let wheel = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: 1, wheel2: 0, wheel3: 0))
+        session.terminalView.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: wheel)))
+
+        let echoed = await waitForOutput(session: session, containing: "[A", timeout: 3.0)
+        XCTAssertTrue(echoed, "the up arrow never reached the program: \(session.recentOutput(lines: 10))")
+        XCTAssertEqual(reports, 0, "scrolling is not the user typing")
+    }
+
     func testManagerRetainsTerminatingSessionUntilChildIsReaped() async throws {
         let manager = TerminalSessionManager()
         var session: TerminalSession? = manager.makeSession(

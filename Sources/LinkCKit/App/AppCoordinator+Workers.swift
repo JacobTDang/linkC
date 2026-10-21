@@ -27,10 +27,8 @@ extension AppCoordinator {
             $0.isWorker && $0.cwd == norm
         }
         for id in WorkerReaper.closable(sessions: workers, tasks: tasks, lastTypedAt: lastInjectionAt, now: now()) {
-            // Only opening a worker or typing into it clears `isWorker`, but a worker can land on
-            // screen another way (a relaunch, or the fallback that hands the selection to the newest
-            // terminal when the one on screen closes) and be only watched. Never close the one the
-            // user is actually looking at.
+            // Only typing into a worker clears `isWorker`, so a worker the user opens or watches
+            // stays a worker; the reaper still never closes the one on screen.
             guard id != terminals.selectedId else { continue }
             NSLog("[linkC relay] closing finished worker %@ in %@", id, workspacePath)
             stopSession(id)

@@ -134,8 +134,9 @@ once it has been idle for a minute since its task ended, unless another task for
 agent is waiting for it, and after ten idle minutes at the latest. The delegating agent can close it
 sooner with `linkc_close_worker`, and the worker can close itself when it reports with
 `close_session`. linkC closes a worker only when it is idle, holds no other open task, and waits on
-none it delegated. Sessions you open never close by themselves, a worker becomes yours when you
-open it or type into it, and the session on screen is never closed.
+none it delegated. Sessions you start yourself never close by themselves, a worker becomes yours
+only when you type or paste into it (opening, clicking or scrolling it does not), and the session
+selected in the panel is never closed.
 
 When an agent hits its usage limit, its current task moves to another available agent — never
 back to the one that gave it — and the limited agent rests until it actually recovers. linkC
