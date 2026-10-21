@@ -43,11 +43,11 @@ final class SessionStartCommandLiveTests: XCTestCase {
 
     /// Runs `script` the way the CLI runs a command hook: `/bin/sh -c`, the hook input on stdin, and
     /// the session's environment, which carries `LINKC_SESSION`.
-    private func run(_ script: String, linkcSession: String) throws -> Run {
+    private func run(_ script: String, linkcSession: String, environment: [String: String] = [:]) throws -> Run {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", script]
-        process.environment = ["LINKC_SESSION": linkcSession, "PATH": "/usr/bin:/bin"]
+        process.environment = ["LINKC_SESSION": linkcSession, "PATH": "/usr/bin:/bin"].merging(environment) { _, extra in extra }
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
         process.standardInput = stdin
         process.standardOutput = stdout
@@ -79,6 +79,24 @@ final class SessionStartCommandLiveTests: XCTestCase {
         XCTAssertEqual(event.kind, .sessionStart)
         XCTAssertEqual(event.linkcSessionId, "L1", "the session comes from the environment the CLI runs the hook in")
         XCTAssertEqual(event.claudeSessionId, "conv-9", "the CLI's hook input reaches the server as the body")
+    }
+
+    /// The session inherits the user's environment, proxy settings included, and curl honors them even
+    /// for 127.0.0.1: the post to linkC must go straight to the local server.
+    func testTheCommandIgnoresAProxyInTheEnvironment() throws {
+        let server = HookServer.forTesting()
+        server.requiredToken = "tok-live"
+        let events = EventBox()
+        server.onEvent = { events.record($0) }
+        try server.start()
+        defer { server.stop() }
+
+        let deadProxy = "http://127.0.0.1:9"
+        let result = try run(try sessionStartCommand(port: server.port, token: "tok-live"), linkcSession: "L1",
+                             environment: ["http_proxy": deadProxy, "HTTP_PROXY": deadProxy, "all_proxy": deadProxy])
+
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertEqual(events.all.map(\.kind), [.sessionStart])
     }
 
     /// The CLI adds what a SessionStart hook prints to the conversation as context, so the command

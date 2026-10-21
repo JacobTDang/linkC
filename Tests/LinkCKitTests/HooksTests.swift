@@ -185,13 +185,14 @@ final class SettingsComposerTests: XCTestCase {
     }
 
     /// Claude Code never sends an `http` SessionStart hook, so SessionStart is the one linkC hook that
-    /// is a command (`SessionStartCommandLiveTests` runs it).
+    /// is a command (`SessionStartCommandLiveTests` runs it). It fires on a start, a resume and a clear,
+    /// never after a compaction: that can come mid-turn, and the session is not ready then.
     func testSessionStartIsACommandHook() throws {
         let hooks = SettingsComposer.linkcHooks(port: 9, token: "tok-test")
 
         let blocks = try XCTUnwrap(hooks["SessionStart"] as? [[String: Any]])
         XCTAssertEqual(blocks.count, 1)
-        XCTAssertNil(blocks[0]["matcher"])
+        XCTAssertEqual(blocks[0]["matcher"] as? String, "startup|resume|clear")
         let entries = try XCTUnwrap(blocks[0]["hooks"] as? [[String: Any]])
         XCTAssertEqual(entries.count, 1)
         XCTAssertEqual(entries[0]["type"] as? String, "command")
