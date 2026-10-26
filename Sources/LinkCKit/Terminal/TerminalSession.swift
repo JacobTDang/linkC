@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ObjectiveC
 import SwiftTerm
 import os
 
@@ -21,7 +22,8 @@ public final class TerminalSession {
     /// killed by `terminate()`. Carries the exit code (nil when the exit was an IO error).
     public var onTerminated: ((Int32?) -> Void)?
     /// Fired on the main actor when the user types or pastes into the terminal. Not for what linkC
-    /// injects with `sendInput`, nor for the terminal's own replies to the program in it.
+    /// injects with `sendInput`, nor for the terminal's own replies to the program in it, nor
+    /// for the arrow keys the scroll wheel becomes over a full-screen program.
     public var onUserInput: (() -> Void)?
     /// Separate from the client's exit callback so the manager can keep this object — and
     /// SwiftTerm's waitpid monitor — alive until the exit has actually been observed.
@@ -443,9 +445,42 @@ public final class LinkCTerminalView: LocalProcessTerminalView {
     private var synchronizedOutput = SynchronizedOutputFilter()
     private weak var observedWindow: NSWindow?
 
+    public override init(frame: NSRect) {
+        Self.installScrollWheelOverride
+        super.init(frame: frame)
+    }
+
+    public required init?(coder: NSCoder) {
+        Self.installScrollWheelOverride
+        super.init(coder: coder)
+    }
+
+    private typealias ScrollWheelIMP = @convention(c) (AnyObject, Selector, NSEvent) -> Void
+
+    /// Over a full-screen program with no mouse reporting the terminal turns the wheel into arrow keys
+    /// (SwiftTerm's alternate-screen scrolling). That is the user reading, not typing, so those keys go
+    /// out as the terminal's own and never make a worker the user's. SwiftTerm's `scrollWheel(with:)` is
+    /// `public`, not `open`, so Swift cannot override it here: the override is added to this class at
+    /// run time instead, once, and calls SwiftTerm's.
+    private static let installScrollWheelOverride: Void = {
+        let selector = #selector(NSResponder.scrollWheel(with:))
+        guard let inherited = class_getInstanceMethod(LinkCTerminalView.self, selector) else {
+            preconditionFailure("LinkCTerminalView inherits no scrollWheel(with:) to override")
+        }
+        let swiftTerm = unsafeBitCast(method_getImplementation(inherited), to: ScrollWheelIMP.self)
+        let wheelAsOwnInput: @convention(block) (LinkCTerminalView, NSEvent) -> Void = { view, event in
+            view.sendingOwnInput { swiftTerm(view, selector, event) }
+        }
+        guard class_addMethod(LinkCTerminalView.self, selector, imp_implementationWithBlock(wheelAsOwnInput),
+                              method_getTypeEncoding(inherited)) else {
+            preconditionFailure("LinkCTerminalView already defines scrollWheel(with:)")
+        }
+    }()
+
     /// Fired when the user types or pastes into the terminal. Everything the view sends to the
-    /// program is either that, text linkC injects (`sendingOwnInput`), or the terminal's own reply
-    /// to the program's query (a device report, a focus or mouse report), and only the first counts.
+    /// program is either that, text linkC injects (`sendingOwnInput`), the terminal's own reply
+    /// to the program's query (a device report, a focus or mouse report), or the arrow keys the
+    /// scroll wheel becomes over a full-screen program, and only the first counts.
     var onUserInput: (() -> Void)?
     /// How many of linkC's own sends are in progress: the view is main-actor only, and a send is
     /// synchronous, so the depth says whether the send now reaching the delegate is the user's.

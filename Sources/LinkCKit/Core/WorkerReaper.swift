@@ -71,7 +71,7 @@ public enum WorkerReaper {
         if let reason = CloseRequest.refusal(for: task, among: tasks) { return .refuse(reason) }
         guard let session else { return .alreadyClosed }
         guard session.isWorker else {
-            return .refuse("that session is not a worker linkC launched for a task (a session you opened, or one you took over by opening it), and linkC never closes those.")
+            return .refuse("that session is not a worker linkC launched for a task (a session you started yourself, or one you took over by typing into it), and linkC never closes those.")
         }
         guard !onScreen else {
             return .refuse("it is open on screen, and linkC never closes the session on screen.")
