@@ -205,7 +205,8 @@ final class ProcessSnooperTests: XCTestCase {
     /// The `linkc` command finds the agent it runs under among its ancestors, by the same rule.
     func testAnAgentStartedThroughALinkIsFoundAboveItsChildren() throws {
         let process = Process()
-        process.executableURL = try link(named: "claude", to: "/bin/sh")
+        // Not /bin/sh: macOS's sh runs bash in its own place, so the path it was started by is gone.
+        process.executableURL = try link(named: "claude", to: "/bin/bash")
         process.arguments = ["-c", "sleep 30 & echo $!; wait"]
         let output = Pipe()
         process.standardOutput = output
