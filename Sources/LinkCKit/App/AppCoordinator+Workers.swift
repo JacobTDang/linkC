@@ -22,6 +22,7 @@ extension AppCoordinator {
             return false
         }
         if answerCloseRequests(tasks: tasks, inboxStore: inboxStore) { return true }
+        // With no session here, there is nothing to reap; close requests above may still come from an outside delegator.
         guard store.sessions.contains(where: { $0.cwd == norm }) else { return false }
         let workers = store.sessions.filter {
             $0.isWorker && $0.cwd == norm

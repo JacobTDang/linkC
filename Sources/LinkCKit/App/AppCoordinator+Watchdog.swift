@@ -114,6 +114,7 @@ extension AppCoordinator {
                     return
                 }
             } catch {
+                if isRelayLockTimeout(error) { return }
                 NSLog("[linkC relay] noteUndeliveredNotice: task %@ — %@", taskId, String(describing: error))
             }
         }

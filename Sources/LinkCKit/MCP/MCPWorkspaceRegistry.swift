@@ -125,7 +125,7 @@ public struct MCPWorkspaceRegistry: Sendable {
         do {
             guard try Data(contentsOf: url) == data else { return }
             try FileManager.default.removeItem(at: url)
-        } catch CocoaError.fileNoSuchFile {
+        } catch CocoaError.fileNoSuchFile, CocoaError.fileReadNoSuchFile {
             return
         } catch {
             NSLog("[linkC] MCP workspace registry: could not remove %@ — %@", url.path, String(describing: error))

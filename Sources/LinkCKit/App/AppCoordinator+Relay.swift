@@ -1036,7 +1036,8 @@ extension AppCoordinator {
                       currentTask.shortId, target.displayName, hop + 1, match.matchedPattern, evidence)
                 tellDelegator()
                 _ = try inboxStore.createTask(
-                    from: currentTask.fromAgent, to: target, tier: currentTask.tier, prompt: currentTask.prompt,
+                    from: currentTask.fromAgent, to: target, fromSessionId: currentTask.fromSessionId,
+                    tier: currentTask.tier, prompt: currentTask.prompt,
                     files: currentTask.files, hop: hop + 1, force: true,
                     verification: currentTask.verification, gate: currentTask.gate
                 )
