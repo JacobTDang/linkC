@@ -77,12 +77,15 @@ final class LinkCCommandTests: XCTestCase {
     }
 
     /// The outside world, with a fake linkC that answers (or not) the first time the command waits.
+    /// `seen` is the request as linkC found it then: a command that gets no answer withdraws its request
+    /// before it returns, so a test reads what was sent here.
     private final class World: @unchecked Sendable {
         var clock = Date(timeIntervalSince1970: 1_800_000_000)
         var running = true
         var launched = false
         var answer: OpenResult?
         var caller: (agent: AgentKind, sessionId: String?)?
+        var seen: OpenRequest?
     }
 
     private func environment(_ world: World) -> LinkCCommand.Environment {
@@ -96,7 +99,9 @@ final class LinkCCommandTests: XCTestCase {
             now: { world.clock },
             sleep: { seconds in
                 world.clock += seconds
-                if let answer = world.answer, let request = store.pending().first {
+                guard let request = store.pending().first else { return }
+                if world.seen == nil { world.seen = request }
+                if let answer = world.answer {
                     try? store.answer(request.id, with: answer)
                 }
             }
@@ -117,7 +122,7 @@ final class LinkCCommandTests: XCTestCase {
         let world = World()
         _ = LinkCCommand.run(try open(["agy", "--tier", "light", "say", "hi"]), in: environment(world))
 
-        let sent = try XCTUnwrap(store.pending().first)
+        let sent = try XCTUnwrap(world.seen)
         XCTAssertEqual(sent.agent, .agy)
         XCTAssertEqual(sent.folder, ProjectPath.canonical(root.path))
         XCTAssertEqual(sent.prompt, "say hi")
@@ -163,7 +168,7 @@ final class LinkCCommandTests: XCTestCase {
         world.caller = (.claude, "S7")
         _ = LinkCCommand.run(try open(["codex", "--task", "carry", "this"]), in: environment(world))
 
-        let sent = try XCTUnwrap(store.pending().first)
+        let sent = try XCTUnwrap(world.seen)
         XCTAssertEqual(sent.task, OpenRequest.TaskOrigin(fromAgent: .claude, fromSessionId: "S7"))
     }
 
@@ -173,7 +178,8 @@ final class LinkCCommandTests: XCTestCase {
 
         XCTAssertEqual(outcome.status, 1)
         XCTAssertEqual(outcome.output, "linkc: --task is for an agent handing off work; run without --task to open your own session.")
-        XCTAssertTrue(store.pending().isEmpty, "nothing was asked of linkC")
+        XCTAssertNil(world.seen, "nothing was asked of linkC")
+        XCTAssertTrue(store.pending().isEmpty)
     }
 
     func testAnAnswerThatCantBeReadIsAnError() throws {
