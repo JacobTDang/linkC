@@ -99,10 +99,25 @@ extension AppCoordinator {
 
     /// Tells the user once that a message cannot reach its agent — blocked on a prompt, busy past
     /// the threshold, or no session of that kind alive. Task briefs are excluded: they spawn.
-    func noteUndeliveredNotice(_ message: PendingMessage, workspacePath: String) {
+    func noteUndeliveredNotice(_ message: PendingMessage, workspacePath: String, inboxStore: InboxStore) {
         guard message.kind != .task,
               now().timeIntervalSince(message.createdAt) > Self.noticeCannotLandThreshold,
               !(undeliveredNoticesReported[workspacePath]?.contains(message.id) ?? false) else { return }
+        // A task's own notice for a delegator that was never a linkC session (an agent started in a shell or
+        // another terminal app) has nowhere to land by design: that delegator follows the task with
+        // linkc_get_task. Nothing to warn about; remember it so it isn't looked up again.
+        if let taskId = message.taskId {
+            do {
+                if let task = try inboxStore.task(id: taskId, timeout: Self.relayLockTimeout),
+                   task.fromSessionId == nil, task.fromAgent == message.toAgent {
+                    undeliveredNoticesReported[workspacePath, default: []].insert(message.id)
+                    return
+                }
+            } catch {
+                if isRelayLockTimeout(error) { return }
+                NSLog("[linkC relay] noteUndeliveredNotice: task %@ — %@", taskId, String(describing: error))
+            }
+        }
         undeliveredNoticesReported[workspacePath, default: []].insert(message.id)
         notifications.post(
             title: "linkC: \(message.toAgent.displayName) has not seen a notice",
