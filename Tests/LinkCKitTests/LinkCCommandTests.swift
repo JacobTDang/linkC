@@ -197,4 +197,75 @@ final class LinkCCommandTests: XCTestCase {
         XCTAssertEqual(outcome.status, 1)
         XCTAssertTrue(outcome.output.hasPrefix("linkc: linkC's answer could not be read"), outcome.output)
     }
+
+    // MARK: - Arguments, edge cases
+
+    /// Help is an option: before the prompt and before `--`. After them, `-h` is a prompt word and
+    /// `--help` an unknown option, so a hand-off like "fix the -h flag" is never read as a help request.
+    func testHelpIsOnlyAnOptionBeforeThePrompt() throws {
+        XCTAssertEqual(try LinkCCommand.parse(["-h"]), .help)
+        XCTAssertEqual(try open(["codex", "--", "-h"]).prompt, "-h")
+        XCTAssertEqual(try open(["codex", "fix", "the", "-h", "flag"]).prompt, "fix the -h flag")
+        XCTAssertNotNil(usageError(["codex", "fix", "--help"]), "an unknown option after the prompt")
+    }
+
+    /// A prompt of only spaces is no prompt: `--task "$UNSET"` must not hand off nothing.
+    func testABlankPromptIsNoPrompt() throws {
+        XCTAssertNil(try open(["codex", ""]).prompt)
+        XCTAssertNil(try open(["codex", "  "]).prompt)
+        XCTAssertNotNil(usageError(["codex", "--task", ""]))
+        XCTAssertNotNil(usageError(["codex", "--task", "   "]))
+        XCTAssertEqual(try open(["codex", "  say hi  "]).prompt, "say hi")
+    }
+
+    /// Before the agent any dash-word is an option; after it, single-dash words are prompt words.
+    func testSingleDashWordsAfterTheAgentArePromptWords() throws {
+        XCTAssertEqual(try open(["codex", "fix", "-1", "-v"]).prompt, "fix -1 -v")
+        XCTAssertNotNil(usageError(["-v", "codex"]))
+        XCTAssertNotNil(usageError(["codex", "fix", "--verbose"]))
+        XCTAssertNotNil(usageError(["codex", "--tier", "--task", "x"]), "--task is not a tier")
+    }
+
+    // MARK: - Running, edge cases
+
+    /// linkC finds the request on its first look: it is written before linkC is started.
+    func testTheRequestIsWrittenBeforeLinkCIsStarted() throws {
+        let world = World()
+        world.running = false
+        world.answer = .opened(sessionId: "S1", message: "ok")
+        var env = environment(world)
+        var pendingAtLaunch: [OpenRequest] = []
+        env.launchLinkC = { [store] in pendingAtLaunch = store.pending() }
+        _ = LinkCCommand.run(try open(["codex"]), in: env)
+
+        XCTAssertEqual(pendingAtLaunch.count, 1)
+    }
+
+    /// A linkC that could not be started must never open the window later: the request is withdrawn.
+    func testALaunchFailureWithdrawsTheRequest() throws {
+        let world = World()
+        world.running = false
+        var env = environment(world)
+        env.launchLinkC = { throw LinkCCommand.LaunchError(status: 1) }
+        let outcome = LinkCCommand.run(try open(["codex"]), in: env)
+
+        XCTAssertEqual(outcome.status, 1)
+        XCTAssertTrue(outcome.output.hasPrefix("linkc: linkC is not running and could not be started"), outcome.output)
+        XCTAssertTrue(store.pending().isEmpty)
+    }
+
+    /// A clock that never moves (a wall clock stepped back, a broken one) can't keep the command waiting
+    /// forever: it gives up after as many polls as the timeout allows.
+    func testAFrozenClockStillTimesOut() throws {
+        let world = World()
+        var env = environment(world)
+        var polls = 0
+        env.sleep = { _ in polls += 1 }
+        let outcome = LinkCCommand.run(try open(["codex"]), in: env)
+
+        XCTAssertEqual(outcome.status, 1)
+        XCTAssertTrue(outcome.output.hasPrefix("linkc: linkC did not answer within 20 seconds"), outcome.output)
+        XCTAssertLessThanOrEqual(polls, 201)
+        XCTAssertTrue(store.pending().isEmpty)
+    }
 }

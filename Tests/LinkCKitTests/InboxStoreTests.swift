@@ -748,4 +748,12 @@ final class InboxStoreTests: XCTestCase {
         let task = try store.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
         XCTAssertNil(try store.task(id: task.id)?.targetSessionId)
     }
+
+    /// Asking again for the same work pinned to the same session is the same task.
+    func testTheSameTaskPinnedToTheSameSessionIsNotDuplicated() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let first = try store.createTask(from: .claude, to: .codex, targetSessionId: "S1", prompt: "carry", files: [])
+        let again = try store.createTask(from: .claude, to: .codex, targetSessionId: "S1", prompt: "carry", files: [])
+        XCTAssertEqual(first.id, again.id)
+    }
 }

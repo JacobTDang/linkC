@@ -83,4 +83,71 @@ final class OpenRequestStoreTests: XCTestCase {
         let mode = try FileManager.default.attributesOfItem(atPath: store.directory.path)[.posixPermissions] as? Int
         XCTAssertEqual(mode, 0o700)
     }
+
+    /// An answer nobody collects (the command was killed, or gave up first) is cleaned up once it is old.
+    func testOldAnswersAreRemovedAndFreshOnesKept() throws {
+        try store.submit(request("OLD"))
+        try store.answer("OLD", with: .refused("no"))
+        try store.submit(request("NEW"))
+        try store.answer("NEW", with: .refused("no"))
+        let oldFile = store.directory.appendingPathComponent("OLD.result.json")
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-600)], ofItemAtPath: oldFile.path)
+
+        store.removeStaleResults(olderThan: 300, now: now)
+
+        XCTAssertNil(try store.result(for: "OLD"))
+        XCTAssertNotNil(try store.result(for: "NEW"))
+    }
+
+    /// An answer that can't be read is removed as it is reported, so it isn't read again.
+    func testAnUnreadableResultIsRemovedAsItThrows() throws {
+        try store.prepare()
+        let file = store.directory.appendingPathComponent("R1.result.json")
+        try Data("not json".utf8).write(to: file)
+
+        XCTAssertThrowsError(try store.result(for: "R1"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    /// A folder that already existed with looser permissions is made private too.
+    func testAnExistingFolderIsMadePrivate() throws {
+        try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o755])
+        try store.prepare()
+        let mode = try FileManager.default.attributesOfItem(atPath: store.directory.path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o700)
+    }
+
+    /// A request whose file name does not match its id could be answered under one name and never
+    /// cleared under the other: it is refused (removed and logged).
+    func testARequestWhoseFileNameDoesNotMatchItsIdIsRemoved() throws {
+        try store.submit(request("R1"))
+        let renamed = store.directory.appendingPathComponent("OTHER.json")
+        try FileManager.default.moveItem(at: store.directory.appendingPathComponent("R1.json"), to: renamed)
+
+        XCTAssertTrue(store.pending().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: renamed.path))
+    }
+
+    /// Two requests made within the same second still come oldest first.
+    func testRequestsWithinOneSecondKeepTheirOrder() throws {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        try store.submit(OpenRequest(id: "SECOND", agent: .codex, folder: "/tmp/p", prompt: nil, tier: nil, task: nil,
+                                     createdAt: base.addingTimeInterval(0.7)))
+        try store.submit(OpenRequest(id: "FIRST", agent: .codex, folder: "/tmp/p", prompt: nil, tier: nil, task: nil,
+                                     createdAt: base.addingTimeInterval(0.2)))
+
+        XCTAssertEqual(store.pending().map(\.id), ["FIRST", "SECOND"])
+    }
+
+    /// The temporary file an atomic write makes is never mistaken for a request.
+    func testAnAtomicWritesTemporaryFileIsLeftAlone() throws {
+        try store.prepare()
+        let temporary = store.directory.appendingPathComponent("R1.json.sb-1234-abcd")
+        try Data("partial".utf8).write(to: temporary)
+
+        XCTAssertTrue(store.pending().isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: temporary.path))
+    }
 }

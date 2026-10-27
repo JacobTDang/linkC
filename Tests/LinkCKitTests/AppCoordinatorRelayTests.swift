@@ -4270,6 +4270,23 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(after.cancelReason, "its session ended before the task was delivered")
         XCTAssertTrue(coordinator.store.sessions.isEmpty, "no session was launched for it")
     }
+
+    /// The pinned session still listed but ended (its terminal gone) counts as gone too.
+    @MainActor
+    func testAPinnedTaskWhoseSessionIsListedAsEndedExpires() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        _ = coordinator.store.create(cwd: ws, title: "ended", id: "ENDED", agentKind: .codex)
+        coordinator.store.updateState(id: "ENDED", to: .ended)
+        let task = try inbox.createTask(from: .claude, to: .codex, targetSessionId: "ENDED", prompt: "carry", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .expired)
+        XCTAssertEqual(coordinator.store.sessions.map(\.id), ["ENDED"], "no session was launched for it")
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.
