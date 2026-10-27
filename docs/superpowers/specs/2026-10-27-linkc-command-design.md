@@ -32,9 +32,9 @@ linkc --help
 - `prompt` is the remaining words, joined with spaces, so quoting is optional. Without a prompt, the agent opens empty. `--task` needs a prompt.
 - `--tier` picks the model tier. The default is that agent's default tier in **Settings > Models**.
 - On success the command prints `Opened Codex in a linkC window (money-printer).` and exits 0.
-- On failure it prints a reason to stderr and exits 1. Failures include:
-  - an unknown agent or option;
-  - `--task` without a prompt, or not run by an agent;
+- A usage error (an unknown agent or option, or `--task` without a prompt) prints the reason and the usage to stderr and exits 2.
+- On any other failure it prints a reason to stderr and exits 1. Failures include:
+  - `--task` not run by an agent;
   - linkC not answering within 20 seconds;
   - linkC's own refusal, such as no model set for that tier, or a folder that is gone.
 
