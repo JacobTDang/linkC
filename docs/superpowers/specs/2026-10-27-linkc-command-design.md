@@ -30,7 +30,7 @@ linkc --help
 
 - `<agent>` is one of `claude`, `codex`, `agy`, `cursor` or `grok`.
 - `prompt` is the remaining words, joined with spaces, so quoting is optional. Without a prompt, the agent opens empty. `--task` needs a prompt.
-- `--tier` picks the model tier. The default is that agent's default tier in **Settings > Models**.
+- `--tier` picks the model tier. Without it, your own session opens as one opened in linkC's panel does (unpinned, so it is never handed a delegated task), and a `--task` worker gets the agent's default tier in **Settings > Models**, as delegation does.
 - On success the command prints `Opened Codex in a linkC window (money-printer).` and exits 0.
 - A usage error (an unknown agent or option, or `--task` without a prompt) prints the reason and the usage to stderr and exits 2.
 - On any other failure it prints a reason to stderr and exits 1. Failures include:
