@@ -20,8 +20,9 @@ let environment = LinkCCommand.Environment(
     folder: FileManager.default.currentDirectoryPath,
     caller: {
         // The agent this command runs under: its parent, or an ancestor above the shell an agent's tool starts.
-        guard let found = ProcessSnooper.detectAgent(inAncestorsOf: getpid()) else { return nil }
-        return (found.agent, ProcessInfo.processInfo.environment["LINKC_SESSION"])
+        LinkCCommand.caller(detected: ProcessSnooper.detectAgent(inAncestorsOf: getpid())?.agent,
+                            environment: ProcessInfo.processInfo.environment,
+                            ancestorSession: { ProcessSnooper.sessionId(inAncestorsOf: getpid()) })
     },
     isLinkCRunning: { !NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).isEmpty },
     launchLinkC: {

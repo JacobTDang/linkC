@@ -150,6 +150,8 @@ agy, cursor or grok in a new linkC window, in the folder you ran it from, with t
 Exiting the agent closes the window. `--tier light|standard|deep` picks the model tier. An agent can
 add `--task` to hand the prompt off as a task: the new session is a worker it can follow with
 `linkc_get_task` and close with `linkc_close_worker`. If linkC isn't running, the command starts it.
+The task is recorded in the folder you run the command from, so an agent hands work off from the
+folder it started in: that is the folder its `linkc_get_task` reads.
 
 When an agent hits its usage limit, its current task moves to another available agent — never
 back to the one that gave it — and the limited agent rests until it actually recovers. linkC

@@ -90,6 +90,20 @@ public enum LinkCCommand {
         return .open(Invocation(agent: agent, tier: tier, task: task, prompt: prompt))
     }
 
+    /// The agent the command runs under and its linkC session. `detected` is the agent found among the
+    /// command's ancestors. Grok runs Cursor's CLI, so the `LINKC_WORKER=grok` mark linkC gives a Grok
+    /// terminal makes a Cursor process Grok, as linkC's tool server reads it. The session is
+    /// `LINKC_SESSION`, else the nearest ancestor's (an agent that doesn't pass its environment to its tools).
+    public static func caller(detected: AgentKind?, environment: [String: String],
+                              ancestorSession: () -> String?) -> (agent: AgentKind, sessionId: String?)? {
+        guard var agent = detected else { return nil }
+        if agent == .cursor, environment[AgentKind.workerEnvironmentKey]?.lowercased() == AgentKind.grok.rawValue {
+            agent = .grok
+        }
+        let own = environment["LINKC_SESSION"].flatMap { $0.isEmpty ? nil : $0 }
+        return (agent, own ?? ancestorSession())
+    }
+
     /// What running the command needs from the outside world.
     public struct Environment {
         public var store: OpenRequestStore

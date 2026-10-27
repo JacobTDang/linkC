@@ -54,9 +54,20 @@ extension AppCoordinator {
         if request.task != nil, request.prompt == nil {
             return .refused("a task needs a prompt")
         }
+        let tier: ModelTier?
+        if let requested = request.tier {
+            guard request.agent != .cursor else { return .refused("cursor cannot be pinned to a model") }
+            tier = requested
+        } else {
+            // Cursor was never tiered.
+            tier = request.agent == .cursor ? nil : defaultTier(for: request.agent)
+        }
+        if let tier, resolvedModel(for: request.agent, tier: tier) == nil {
+            return .refused("no model configured for \(request.agent.rawValue) tier \(tier.rawValue) — set it in linkC's Settings > Models")
+        }
         let session: Session
         do {
-            session = try newSession(cwd: folder, agent: request.agent, tier: request.tier, select: false,
+            session = try newSession(cwd: folder, agent: request.agent, tier: tier, select: false,
                                      asWorker: request.task != nil)
         } catch {
             return .refused("\(request.agent.displayName) could not start: \(error)")
@@ -86,9 +97,10 @@ extension AppCoordinator {
     }
 
     /// Types each waiting prompt into its session once the agent is ready for it: idle, paste negotiated
-    /// and settled, outside the injection gap. The same readiness a task brief waits for. A prompt whose
-    /// session ended is dropped and logged; one whose agent times out or whose input does not reach
-    /// its terminal is also reported to the user.
+    /// and settled, outside the injection gap. The same readiness a task brief waits for. A prompt is also
+    /// dropped when the user types into the session first. A prompt whose session ended is dropped and
+    /// logged; one whose agent times out or whose input does not reach its terminal is also reported to
+    /// the user.
     func typeOpeningPrompts() {
         for (id, prompt) in openingPrompts {
             guard let session = store.session(id: id), session.state != .ended,

@@ -702,6 +702,11 @@ public final class AppCoordinator {
         modelSettings().tier(forModel: model, agent: agent)
     }
 
+    /// `agent`'s default tier in Settings > Models: the tier a session opened without one gets.
+    func defaultTier(for agent: AgentKind) -> ModelTier {
+        modelSettings().defaultTier(for: agent)
+    }
+
     /// Records that linkC just typed `text` into `sessionId`'s terminal. Every call the coordinator
     /// makes to inject text into a session must call this right alongside `terminals.sendInput`.
     /// `startsWork` is for text that hands the session something to do; see the batch overload.
@@ -774,7 +779,12 @@ public final class AppCoordinator {
             }
             // A worker the user types into is theirs, on screen or not.
             terminal.onUserInput = { [weak self] in
-                self?.adoptWorker(session.id)
+                guard let self else { return }
+                // Typing makes the composer the user's: a `linkc` prompt still waiting is not pasted after it.
+                if openingPrompts.removeValue(forKey: session.id) != nil {
+                    NSLog("[linkC] the linkc prompt for %@ was dropped: the user typed first", session.id)
+                }
+                adoptWorker(session.id)
             }
 
             let executable: String

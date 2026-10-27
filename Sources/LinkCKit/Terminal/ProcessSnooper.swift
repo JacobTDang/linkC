@@ -11,7 +11,7 @@ public struct ProcessSnooper: Sendable {
 
         let lastComponent = (trimmed as NSString).lastPathComponent
         switch lastComponent {
-        case "claude":
+        case "claude", "claude.exe":
             return .claude
         case "agy":
             return .agy
@@ -20,6 +20,9 @@ public struct ProcessSnooper: Sendable {
         case "codex":
             return .codex
         default:
+            if trimmed.contains("/claude/versions/") {
+                return .claude
+            }
             if trimmed.contains("cursor-agent") {
                 return .cursor
             }
@@ -27,16 +30,39 @@ public struct ProcessSnooper: Sendable {
         }
     }
 
-    /// Queries the Darwin kernel for child processes of `ppid` and returns the first detected `AgentKind`.
-    /// The agent a terminal runs, whether the terminal's own process IS the agent (linkC launches
-    /// agent CLIs directly) or the agent runs beneath it (a shell, a wrapper script).
-    public static func detectAgent(atOrUnder pid: pid_t) -> AgentKind? {
+    /// The agent `pid` is, by its executable as the kernel reports it (`proc_pidpath`), else by the
+    /// path it was started by: the exec path saved in its `KERN_PROCARGS2` buffer, the first
+    /// NUL-terminated string after the leading `Int32` argc. That path is the one given to `exec`, so
+    /// an agent started through its link (`/opt/homebrew/bin/claude`) is found even when the real
+    /// file has another name or is gone.
+    static func detectAgent(ofProcess pid: pid_t) -> AgentKind? {
         guard pid > 0 else { return nil }
         var pathBuffer = [CChar](repeating: 0, count: 4096)
         if proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count)) > 0 {
             let path = pathBuffer.withUnsafeBufferPointer { $0.baseAddress.map { String(cString: $0) } ?? "" }
             if let agent = detectAgent(inPath: path) { return agent }
         }
+        if let buffer = procArgs2Buffer(for: pid) {
+            let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
+            var offset = MemoryLayout<Int32>.size
+            let (execPath, next) = cString(in: buffer, startingAt: offset)
+            if let agent = detectAgent(inPath: execPath) { return agent }
+            if argc > 0 {
+                offset = next
+                while offset < buffer.count && buffer[offset] == 0 { offset += 1 }
+                let (arg0, _) = cString(in: buffer, startingAt: offset)
+                if let agent = detectAgent(inPath: arg0) { return agent }
+            }
+        }
+        return nil
+    }
+
+    /// Queries the Darwin kernel for child processes of `ppid` and returns the first detected `AgentKind`.
+    /// The agent a terminal runs, whether the terminal's own process IS the agent (linkC launches
+    /// agent CLIs directly) or the agent runs beneath it (a shell, a wrapper script).
+    public static func detectAgent(atOrUnder pid: pid_t) -> AgentKind? {
+        guard pid > 0 else { return nil }
+        if let agent = detectAgent(ofProcess: pid) { return agent }
         return detectAgent(inProcessTreeOf: pid)
     }
 
@@ -54,24 +80,16 @@ public struct ProcessSnooper: Sendable {
         guard bytesReturned > 0 else { return nil }
         let count = Int(bytesReturned) / MemoryLayout<pid_t>.stride
 
-        var pathBuffer = [CChar](repeating: 0, count: 4096)
-
         for i in 0..<count {
             let childPid = childPids[i]
             guard childPid > 0 else { continue }
 
-            let pathLen = proc_pidpath(childPid, &pathBuffer, UInt32(pathBuffer.count))
-            if pathLen > 0 {
-                let path = pathBuffer.withUnsafeBufferPointer { ptr in
-                    ptr.baseAddress.map { String(cString: $0) } ?? ""
-                }
-                if let agent = detectAgent(inPath: path) {
-                    return agent
-                }
-                // Recursively check grandchildren (e.g. wrapper script -> node -> agent)
-                if let grandChildAgent = detectAgent(inProcessTreeOf: childPid) {
-                    return grandChildAgent
-                }
+            if let agent = detectAgent(ofProcess: childPid) {
+                return agent
+            }
+            // Recursively check grandchildren (e.g. wrapper script -> node -> agent)
+            if let grandChildAgent = detectAgent(inProcessTreeOf: childPid) {
+                return grandChildAgent
             }
         }
 
@@ -158,17 +176,10 @@ public struct ProcessSnooper: Sendable {
     public static func detectAgent(inAncestorsOf pid: pid_t, maxDepth: Int = 8) -> (agent: AgentKind, pid: pid_t)? {
         guard pid > 0, maxDepth > 0 else { return nil }
         var current = pid
-        var pathBuffer = [CChar](repeating: 0, count: 4096)
         for _ in 0..<maxDepth {
             guard let parent = parentPid(of: current), parent > 1 else { return nil }
-            let len = proc_pidpath(parent, &pathBuffer, UInt32(pathBuffer.count))
-            if len > 0 {
-                let path = pathBuffer.withUnsafeBufferPointer { ptr in
-                    ptr.baseAddress.map { String(cString: $0) } ?? ""
-                }
-                if let agent = detectAgent(inPath: path) {
-                    return (agent, parent)
-                }
+            if let agent = detectAgent(ofProcess: parent) {
+                return (agent, parent)
             }
             current = parent
         }
