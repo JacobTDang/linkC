@@ -268,4 +268,47 @@ final class LinkCCommandTests: XCTestCase {
         XCTAssertLessThanOrEqual(polls, 201)
         XCTAssertTrue(store.pending().isEmpty)
     }
+
+    /// A zero poll interval (a broken environment) doesn't crash the command: it reads once and gives up.
+    func testAZeroPollIntervalReadsOnceAndGivesUp() throws {
+        let world = World()
+        var env = environment(world)
+        env.pollInterval = 0
+        var polls = 0
+        env.sleep = { _ in polls += 1 }
+        let outcome = LinkCCommand.run(try open(["codex"]), in: env)
+
+        XCTAssertEqual(outcome.status, 1)
+        XCTAssertTrue(outcome.output.hasPrefix("linkc: linkC did not answer"), outcome.output)
+        XCTAssertEqual(polls, 0)
+    }
+
+    /// Giving up, the command can fail both to withdraw its request and to read an answer that landed
+    /// meanwhile. It says both: the request left behind may still open a window.
+    func testGivingUpReportsAFailedWithdrawWithAnAnswerThatCantBeRead() throws {
+        let world = World()
+        var env = environment(world)
+        env.pollInterval = 10
+        env.sleep = { seconds in world.clock += seconds }
+        let store = self.store
+        let deadline = world.clock.addingTimeInterval(env.timeout)
+        var planted = false
+        // The command reads the clock right after its last look for an answer: the answer lands then,
+        // and the folder turns read-only, so the withdraw fails.
+        env.now = {
+            if world.clock >= deadline, !planted, let request = store.pending().first {
+                planted = true
+                try? Data("not json".utf8).write(to: store.directory.appendingPathComponent("\(request.id).result.json"))
+                try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: store.directory.path)
+            }
+            return world.clock
+        }
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: store.directory.path) }
+        let outcome = LinkCCommand.run(try open(["codex"]), in: env)
+
+        XCTAssertTrue(planted, "the command never gave up")
+        XCTAssertEqual(outcome.status, 1)
+        XCTAssertTrue(outcome.output.hasPrefix("linkc: linkC's answer could not be read"), outcome.output)
+        XCTAssertTrue(outcome.output.contains("the request could not be withdrawn"), outcome.output)
+    }
 }
