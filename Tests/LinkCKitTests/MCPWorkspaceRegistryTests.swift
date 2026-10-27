@@ -105,9 +105,35 @@ final class MCPWorkspaceRegistryTests: XCTestCase {
         XCTAssertEqual(registry.liveWorkspaces(), [])
     }
 
-    /// A server counts while the process with its pid is the very one that registered. Its start time
-    /// tells it apart from a later process given the same pid, and it still holds after the server's
-    /// own binary was deleted (a rebuild replacing the app bundle).
+    /// An entry that can't be read right now (an I/O error, not a corrupt file) says nothing about its
+    /// server: it is kept for a later read.
+    func testAnEntryThatCannotBeReadIsKept() throws {
+        try registry.register(workspace: try folder("project"), pid: 101, startedAt: someStart)
+        let entry = entries.appendingPathComponent("101.json")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: entry.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: entry.path) }
+
+        XCTAssertEqual(registry.liveWorkspaces(isRunning: { _ in false }), [])
+        XCTAssertEqual(try entryFiles(), ["101.json"])
+    }
+
+    /// A new server given a gone server's pid can write its entry while linkC checks the old one: the
+    /// new entry is kept.
+    func testAnEntryReplacedWhileItIsCheckedIsKept() throws {
+        let old = try folder("old"), new = try folder("new")
+        try registry.register(workspace: old, pid: 101, startedAt: someStart)
+        let later = MCPWorkspaceRegistry.ProcessStart(seconds: someStart.seconds + 60, microseconds: 0)
+
+        XCTAssertEqual(registry.liveWorkspaces(isRunning: { server in
+            if server.startedAt == someStart { try? registry.register(workspace: new, pid: 101, startedAt: later) }
+            return false
+        }), [])
+
+        XCTAssertEqual(registry.liveWorkspaces(isRunning: { $0.startedAt == later }), [ProjectPath.canonical(new)])
+    }
+
+    /// A server counts while the process with its pid is the very one that registered: its start time
+    /// tells it apart from a later process given the same pid.
     func testAServerIsRunningExactlyWhileItsOwnProcessIs() throws {
         let sleeper = Process()
         sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")

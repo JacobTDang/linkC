@@ -466,4 +466,46 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
 
         XCTAssertTrue(sink.deliveries.filter { $0.body.contains("waiting") }.isEmpty)
     }
+
+    /// A delegator that is a linkC session has a session for its task's notices: one that can't land
+    /// there is warned about.
+    @MainActor
+    func testANoticeForADelegatorThatIsALinkCSessionIsWarnedAbout() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+        let task = try inbox.createTask(from: .claude, to: .codex, fromSessionId: "GONE", prompt: "carry", files: [])
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        _ = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: task.id, body: "Task done")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        clock.advance(6 * 60)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(sink.deliveries.filter { $0.body.contains("waiting") }.count, 1)
+    }
+
+    /// Only the delegator's own notices are exempt: a task's notice to its assignee is warned about even
+    /// when the delegator is outside linkC.
+    @MainActor
+    func testATasksNoticeToItsAssigneeIsWarnedAboutWhenTheDelegatorIsOutsideLinkC() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        _ = try inbox.enqueue(from: .claude, to: .codex, kind: .completion, taskId: task.id, body: "cancelled: stop work on it")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        clock.advance(6 * 60)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(sink.deliveries.filter { $0.body.contains("waiting") }.count, 1)
+    }
 }

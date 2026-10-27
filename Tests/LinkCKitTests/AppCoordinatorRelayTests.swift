@@ -2464,6 +2464,32 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(AppCoordinator.deliveryFrame(for: copy).contains("Work on branch"))
     }
 
+    /// A rerouted copy keeps its delegator's session, so the copy's notices still go to that session
+    /// and a delegator that is a linkC session is not taken for one outside linkC.
+    @MainActor
+    func testARerouteCopyKeepsItsDelegatorsSession() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = try makeLimitedClaudeCoordinator(banner: "Rate limit reached. Please try again later.")
+        defer { coordinator.shutdown() }
+
+        let source = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: source.id, to: Self.turnOver)
+        let peer = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: peer.id, to: .working) // busy, so the copy waits in the queue
+        let original = try inbox.createTask(from: .cursor, to: .claude, fromSessionId: "DELEGATOR", prompt: "Carry on", files: [])
+        try inbox.markTaskDelivered(taskId: original.id, sessionId: source.id)
+
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: source.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady, "the mock agent never printed its banner")
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: source.id))
+
+        let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        XCTAssertEqual(copy.fromSessionId, "DELEGATOR")
+    }
+
     /// Only a hand-edited inbox holds a gating task with no verification. It is cancelled with
     /// one line and never blocks the other runs in its workspace.
     @MainActor
