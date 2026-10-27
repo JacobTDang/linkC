@@ -21,8 +21,32 @@ public struct MCPWorkspaceRegistry: Sendable {
         return MCPWorkspaceRegistry(directory: dir)
     }
 
+    /// When a process started, as the kernel records it. With its pid it names one process: a pid is
+    /// reused, but never with the same start time.
+    public struct ProcessStart: Codable, Equatable, Sendable {
+        public let seconds: Int64
+        public let microseconds: Int32
+
+        public init(seconds: Int64, microseconds: Int32) {
+            self.seconds = seconds
+            self.microseconds = microseconds
+        }
+    }
+
+    /// A registered server: its pid and when its process started.
+    public struct Server: Codable, Equatable, Sendable {
+        public let pid: Int32
+        public let startedAt: ProcessStart
+
+        public init(pid: Int32, startedAt: ProcessStart) {
+            self.pid = pid
+            self.startedAt = startedAt
+        }
+    }
+
     private struct Entry: Codable {
         let pid: Int32
+        let startedAt: ProcessStart
         let workspace: String
     }
 
@@ -30,22 +54,35 @@ public struct MCPWorkspaceRegistry: Sendable {
         directory.appendingPathComponent("\(pid).json", isDirectory: false)
     }
 
-    /// Records that the server with `pid` serves `workspace`, until `unregister(pid:)`.
-    public func register(workspace: String, pid: Int32) throws {
+    /// Records that the server process serves `workspace`, until `unregister(pid:)`.
+    public func register(workspace: String, pid: Int32, startedAt: ProcessStart) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(Entry(pid: pid, workspace: workspace)).write(to: entryURL(pid: pid), options: .atomic)
+        try JSONEncoder().encode(Entry(pid: pid, startedAt: startedAt, workspace: workspace))
+            .write(to: entryURL(pid: pid), options: .atomic)
     }
 
-    /// Removes the server's entry. A server that never registered has nothing to remove.
+    /// Registers the calling process. Its kernel start time keeps the entry tied to this process even
+    /// if its executable is replaced or its pid is later reused.
+    public func registerCurrentProcess(workspace: String) throws {
+        let pid = getpid()
+        guard let startedAt = Self.startTime(of: pid) else {
+            throw LinkCError.server("the start time of pid \(pid) could not be read")
+        }
+        try register(workspace: workspace, pid: pid, startedAt: startedAt)
+    }
+
+    /// Removes the entry; an entry already gone (linkC removed it) is fine.
     public func unregister(pid: Int32) throws {
-        let url = entryURL(pid: pid)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        try FileManager.default.removeItem(at: url)
+        do {
+            try FileManager.default.removeItem(at: entryURL(pid: pid))
+        } catch CocoaError.fileNoSuchFile {
+            return
+        }
     }
 
     /// The canonical folders of the servers still running. The entry of a server that is gone (killed
-    /// before it could unregister) is removed; an entry that can't be read is logged and removed.
-    public func liveWorkspaces(isRunning: (Int32) -> Bool = MCPWorkspaceRegistry.isMCPServerRunning) -> Set<String> {
+    /// before it could unregister) is removed; corrupt entries are logged and removed.
+    public func liveWorkspaces(isRunning: (Server) -> Bool = MCPWorkspaceRegistry.isRunning) -> Set<String> {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let names: [String]
         do {
@@ -57,16 +94,25 @@ public struct MCPWorkspaceRegistry: Sendable {
         var folders: Set<String> = []
         for name in names where name.hasSuffix(".json") {
             let url = directory.appendingPathComponent(name, isDirectory: false)
-            let entry: Entry
+            let data: Data
             do {
-                entry = try JSONDecoder().decode(Entry.self, from: Data(contentsOf: url))
+                data = try Data(contentsOf: url)
+            } catch CocoaError.fileReadNoSuchFile {
+                continue
             } catch {
-                NSLog("[linkC] MCP workspace registry: entry %@ can't be read, removing it — %@", name, String(describing: error))
-                remove(url)
+                NSLog("[linkC] MCP workspace registry: entry %@ can't be read — %@", name, String(describing: error))
                 continue
             }
-            guard isRunning(entry.pid) else {
-                remove(url)
+            let entry: Entry
+            do {
+                entry = try JSONDecoder().decode(Entry.self, from: data)
+            } catch {
+                NSLog("[linkC] MCP workspace registry: entry %@ is corrupt, removing it — %@", name, String(describing: error))
+                remove(url, ifStill: data)
+                continue
+            }
+            guard isRunning(Server(pid: entry.pid, startedAt: entry.startedAt)) else {
+                remove(url, ifStill: data)
                 continue
             }
             folders.insert(ProjectPath.canonical(entry.workspace))
@@ -74,21 +120,28 @@ public struct MCPWorkspaceRegistry: Sendable {
         return folders
     }
 
-    private func remove(_ url: URL) {
+    /// Removes only the entry that was inspected; a replacement for a process reusing the pid stays.
+    private func remove(_ url: URL, ifStill data: Data) {
         do {
+            guard try Data(contentsOf: url) == data else { return }
             try FileManager.default.removeItem(at: url)
+        } catch CocoaError.fileNoSuchFile {
+            return
         } catch {
             NSLog("[linkC] MCP workspace registry: could not remove %@ — %@", url.path, String(describing: error))
         }
     }
 
-    /// Whether `pid` is a running `linkc-mcp`. After a server dies its pid can be handed to an unrelated
-    /// process, so the executable is checked as well as the pid.
-    public static func isMCPServerRunning(_ pid: Int32) -> Bool {
-        guard pid > 0, kill(pid, 0) == 0 || errno == EPERM else { return false }
-        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
-        let path = buffer.withUnsafeBufferPointer { $0.baseAddress.map { String(cString: $0) } ?? "" }
-        return (path as NSString).lastPathComponent == "linkc-mcp"
+    /// When `pid` started, as recorded by the kernel.
+    public static func startTime(of pid: Int32) -> ProcessStart? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return ProcessStart(seconds: Int64(info.pbi_start_tvsec), microseconds: Int32(info.pbi_start_tvusec))
+    }
+
+    /// Whether the process that registered this server is still running.
+    public static func isRunning(_ server: Server) -> Bool {
+        startTime(of: server.pid) == server.startedAt
     }
 }

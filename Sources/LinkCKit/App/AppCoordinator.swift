@@ -217,8 +217,8 @@ public final class AppCoordinator {
     private var sweepTicker: SweepTicker?
     /// Wakes `sweepTicker` when a workspace's inbox file is replaced, so a new delegation never
     /// waits out the slow interval. A burst of writes still makes one pass: the ticker holds
-    /// woken passes `TickCadence.minimumWakeGap` apart. Watches the workspaces that have a live
-    /// session: the only ones the relay works on.
+    /// woken passes `TickCadence.minimumWakeGap` apart. Watches the workspaces the relay works on:
+    /// those with a live session or a running linkC MCP server.
     private var inboxWatcher: InboxWatcher?
     private let sweepClock: any Clock<Duration>
     /// The folders where linkC's MCP server runs (`MCPWorkspaceRegistry`), served even with no session there.
@@ -440,7 +440,7 @@ public final class AppCoordinator {
     /// session's sampling covers it. The watches come first, so a write after them wakes the next pass
     /// and one before them is read by this one.
     private func sweepTick() async {
-        let sessionFolders = Set(store.sessions.filter { $0.state != .ended }.map(\.cwd))
+        let sessionFolders = Set(store.sessions.filter { $0.state != .ended }.map { ProjectPath.canonical($0.cwd) })
         let serverOnlyFolders = mcpWorkspaces().subtracting(sessionFolders)
         let workspaces = sessionFolders.union(serverOnlyFolders)
         relayWork.retain(only: workspaces)
