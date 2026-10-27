@@ -4164,6 +4164,24 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertEqual(try inbox.task(id: reported.id)?.state, .done, "the pass must see the other process's write and settle the task")
     }
+
+    /// A delegator outside linkC can ask to close its worker in a folder where linkC has no session left:
+    /// the request is still answered (the worker is already gone), not left pending.
+    @MainActor
+    func testACloseRequestIsAnsweredInAFolderWithNoSessionLeft() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: "GONE")
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        _ = try inbox.requestClose(taskId: task.id, by: .delegator)
+
+        coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertFalse(try closeRequest(inbox, task).isPending, "the request was never answered")
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.

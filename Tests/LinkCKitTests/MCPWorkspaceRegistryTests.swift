@@ -7,6 +7,8 @@ final class MCPWorkspaceRegistryTests: XCTestCase {
     private var root: URL!
     private var entries: URL { root.appendingPathComponent("mcp-workspaces", isDirectory: true) }
     private var registry: MCPWorkspaceRegistry { MCPWorkspaceRegistry(directory: entries) }
+    /// A start time for the made-up pids below; the injected check ignores it.
+    private let someStart = MCPWorkspaceRegistry.ProcessStart(seconds: 1_800_000_000, microseconds: 0)
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-mcp-registry-\(UUID().uuidString)", isDirectory: true)
@@ -29,46 +31,47 @@ final class MCPWorkspaceRegistryTests: XCTestCase {
 
     func testARunningServersFolderIsListed() throws {
         let project = try folder("project")
-        try registry.register(workspace: project, pid: 101)
+        try registry.register(workspace: project, pid: 101, startedAt: someStart)
 
-        XCTAssertEqual(registry.liveWorkspaces(isRunning: { $0 == 101 }), [ProjectPath.canonical(project)])
+        XCTAssertEqual(registry.liveWorkspaces(isRunning: { $0.pid == 101 }), [ProjectPath.canonical(project)])
     }
 
     /// A server killed before it could unregister leaves its entry behind: it is not listed, and the
     /// entry is removed so it is not read again.
     func testAServerThatIsGoneIsNotListedAndItsEntryIsRemoved() throws {
         let gone = try folder("gone"), running = try folder("running")
-        try registry.register(workspace: gone, pid: 101)
-        try registry.register(workspace: running, pid: 102)
+        try registry.register(workspace: gone, pid: 101, startedAt: someStart)
+        try registry.register(workspace: running, pid: 102, startedAt: someStart)
 
-        XCTAssertEqual(registry.liveWorkspaces(isRunning: { $0 == 102 }), [ProjectPath.canonical(running)])
+        XCTAssertEqual(registry.liveWorkspaces(isRunning: { $0.pid == 102 }), [ProjectPath.canonical(running)])
         XCTAssertEqual(try entryFiles(), ["102.json"])
     }
 
     func testUnregisteringRemovesTheEntry() throws {
-        try registry.register(workspace: try folder("project"), pid: 101)
+        try registry.register(workspace: try folder("project"), pid: 101, startedAt: someStart)
         try registry.unregister(pid: 101)
 
         XCTAssertEqual(registry.liveWorkspaces(isRunning: { _ in true }), [])
         XCTAssertEqual(try entryFiles(), [])
     }
 
+    /// linkC may have removed the entry already (it read the server as gone): nothing to remove is fine.
     func testUnregisteringAServerThatNeverRegisteredIsFine() throws {
         XCTAssertNoThrow(try registry.unregister(pid: 404))
     }
 
     func testTwoServersInOneFolderListItOnce() throws {
         let project = try folder("project")
-        try registry.register(workspace: project, pid: 101)
-        try registry.register(workspace: project, pid: 102)
+        try registry.register(workspace: project, pid: 101, startedAt: someStart)
+        try registry.register(workspace: project, pid: 102, startedAt: someStart)
 
         XCTAssertEqual(registry.liveWorkspaces(isRunning: { _ in true }), [ProjectPath.canonical(project)])
     }
 
-    /// An entry that can't be read names no folder: it is removed (and logged), and the others still count.
-    func testAnUnreadableEntryIsRemovedAndTheOthersListed() throws {
+    /// An entry that can't be decoded names no folder: it is removed (and logged), and the others still count.
+    func testAnUndecodableEntryIsRemovedAndTheOthersListed() throws {
         let project = try folder("project")
-        try registry.register(workspace: project, pid: 101)
+        try registry.register(workspace: project, pid: 101, startedAt: someStart)
         try Data("not json".utf8).write(to: entries.appendingPathComponent("999.json"))
 
         XCTAssertEqual(registry.liveWorkspaces(isRunning: { _ in true }), [ProjectPath.canonical(project)])
@@ -81,7 +84,7 @@ final class MCPWorkspaceRegistryTests: XCTestCase {
         let real = try folder("real")
         let link = root.appendingPathComponent("link").path
         try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: real)
-        try registry.register(workspace: link, pid: 101)
+        try registry.register(workspace: link, pid: 101, startedAt: someStart)
 
         XCTAssertEqual(registry.liveWorkspaces(isRunning: { _ in true }), [ProjectPath.canonical(real)])
     }
@@ -90,14 +93,36 @@ final class MCPWorkspaceRegistryTests: XCTestCase {
         XCTAssertEqual(registry.liveWorkspaces(isRunning: { _ in true }), [])
     }
 
-    /// A pid can be reused by an unrelated process after a server dies: only a live `linkc-mcp` counts.
-    func testOnlyALiveLinkCMCPServerCountsAsRunning() throws {
-        XCTAssertFalse(MCPWorkspaceRegistry.isMCPServerRunning(getpid()), "the test runner is alive but is not linkc-mcp")
+    /// The real check, end to end: the current process registers its folder and is listed by the
+    /// default liveness check, then unregisters.
+    func testTheCurrentProcessRegistersAndIsListedByTheRealCheck() throws {
+        let project = try folder("project")
+        try registry.registerCurrentProcess(workspace: project)
 
-        let finished = Process()
-        finished.executableURL = URL(fileURLWithPath: "/usr/bin/true")
-        try finished.run()
-        finished.waitUntilExit()
-        XCTAssertFalse(MCPWorkspaceRegistry.isMCPServerRunning(finished.processIdentifier), "a process that exited")
+        XCTAssertEqual(registry.liveWorkspaces(), [ProjectPath.canonical(project)])
+
+        try registry.unregister(pid: getpid())
+        XCTAssertEqual(registry.liveWorkspaces(), [])
+    }
+
+    /// A server counts while the process with its pid is the very one that registered. Its start time
+    /// tells it apart from a later process given the same pid, and it still holds after the server's
+    /// own binary was deleted (a rebuild replacing the app bundle).
+    func testAServerIsRunningExactlyWhileItsOwnProcessIs() throws {
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["30"]
+        try sleeper.run()
+        defer { if sleeper.isRunning { sleeper.terminate() } }
+        let pid = sleeper.processIdentifier
+        let started = try XCTUnwrap(MCPWorkspaceRegistry.startTime(of: pid))
+
+        XCTAssertTrue(MCPWorkspaceRegistry.isRunning(.init(pid: pid, startedAt: started)))
+        let earlier = MCPWorkspaceRegistry.ProcessStart(seconds: started.seconds - 1, microseconds: started.microseconds)
+        XCTAssertFalse(MCPWorkspaceRegistry.isRunning(.init(pid: pid, startedAt: earlier)), "another process given the same pid")
+
+        sleeper.terminate()
+        sleeper.waitUntilExit()
+        XCTAssertFalse(MCPWorkspaceRegistry.isRunning(.init(pid: pid, startedAt: started)), "the process exited")
     }
 }

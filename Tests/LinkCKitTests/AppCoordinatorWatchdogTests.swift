@@ -444,4 +444,26 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
         XCTAssertFalse(coordinator.undeliveredNoticesReported[norm]?.contains(message.id) ?? false,
                        "a delivered notice must be evicted, not remembered forever")
     }
+
+    /// A delegator outside linkC (an agent started in a shell, or in another terminal app) has no session
+    /// for its task's notices by design: it follows the task with linkc_get_task. The user is not warned.
+    @MainActor
+    func testANoticeForADelegatorOutsideLinkCIsNotWarnedAbout() async throws {
+        let ws = tempDir.path
+        let clock = ControllableClock()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink, now: { clock.now() })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+        // No fromSessionId: the delegator was never a linkC session.
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+        _ = try inbox.enqueue(from: .codex, to: .claude, kind: .completion, taskId: task.id, body: "Task done")
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        clock.advance(6 * 60)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertTrue(sink.deliveries.filter { $0.body.contains("waiting") }.isEmpty)
+    }
 }

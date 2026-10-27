@@ -68,6 +68,32 @@ final class AppCoordinatorTickerTests: XCTestCase {
         XCTAssertTrue(served, "linkC never served the folder: no worker was launched for its task")
     }
 
+    /// A task queued in a server-only folder after linkC's first pass is served too: the folder's inbox
+    /// is watched like a session's, so the write wakes a pass.
+    func testATaskQueuedLaterInAFolderWhereOnlyAnMCPServerRunsWakesAPass() async throws {
+        let outside = tempDir.appendingPathComponent("outside-later", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let folder = ProjectPath.canonical(outside.path)
+        let coordinator = try makeCoordinator(mcpWorkspaces: { [folder] })
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        try coordinator.start()
+        // The first pass (woken at start) starts watching the folder; it has to have run before the write.
+        let slept = try await waitUntil { !clock.pendingSleeps.isEmpty }
+        XCTAssertTrue(slept, "the first pass never finished")
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "nothing was queued yet")
+
+        _ = try InboxStore(workspaceRoot: folder).createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        clock.advance(by: TickCadence.minimumWakeGap)
+
+        let served = try await waitUntil {
+            coordinator.store.sessions.contains { $0.cwd == folder && $0.agentKind == .codex && $0.isWorker }
+        }
+        XCTAssertTrue(served, "the inbox write never woke a pass for the folder")
+    }
+
     private struct NullSink: NotificationSink {
         func deliver(id: String, title: String, body: String) {}
     }
