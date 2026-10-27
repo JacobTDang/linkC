@@ -382,7 +382,8 @@ public final class InboxStore: Sendable {
     /// `gating`; linkC delivers it only after confirming its tests fail at base. Given the gate
     /// it already passed (a rerouted copy), it starts `queued` and keeps that gate. Refuses when
     /// another assignee holds an open lease on any of the files unless `force`. Idempotent for
-    /// an identical assignee, prompt, and base.
+    /// an identical assignee, prompt, base and session pin; the same work pinned to another session
+    /// is a new task.
     public func createTask(
         from: AgentKind,
         to: AgentKind,

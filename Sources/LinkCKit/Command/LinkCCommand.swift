@@ -5,13 +5,16 @@ import Foundation
 /// outside world injected; the executable only wires the real one in.
 public enum LinkCCommand {
     public static let usage = """
-        Usage: linkc <agent> [--tier light|standard|deep] [--task] [prompt ...]
+        Usage: linkc <agent> [--tier light|standard|deep] [--task] [--] [prompt ...]
 
         Opens <agent> in a new linkC window, in the current folder, with the prompt typed in.
           <agent>   claude, codex, agy, cursor or grok
           --tier    the model tier (default: the agent's default in linkC's Settings > Models)
           --task    for an agent handing off work: the new session carries the prompt as a task
                     the calling agent can follow (linkc_get_task) and close (linkc_close_worker)
+          --        the rest is the prompt, even words that start with -
+          -h, --help
+                    show this help
         """
 
     /// The agents the command opens: every kind but the shell.
@@ -39,7 +42,6 @@ public enum LinkCCommand {
     }
 
     public static func parse(_ arguments: [String]) throws -> Parsed {
-        if arguments.contains("--help") || arguments.contains("-h") { return .help }
         let names = agents.map(\.rawValue).joined(separator: ", ")
         var agent: AgentKind?
         var tier: ModelTier?
@@ -52,6 +54,13 @@ public enum LinkCCommand {
             if argument == "--" {
                 words.append(contentsOf: arguments[index...])
                 break
+            }
+            if argument == "--help" || argument == "-h" {
+                if words.isEmpty { return .help }
+                if argument == "-h" {
+                    words.append(argument)
+                    continue
+                }
             }
             if argument == "--task" {
                 task = true
@@ -74,7 +83,8 @@ public enum LinkCCommand {
             }
         }
         guard let agent else { throw UsageError(description: "name an agent: \(names)") }
-        let prompt = words.isEmpty ? nil : words.joined(separator: " ")
+        let text = words.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = text.isEmpty ? nil : text
         if task && prompt == nil { throw UsageError(description: "--task needs a prompt: the work to hand off") }
         return .open(Invocation(agent: agent, tier: tier, task: task, prompt: prompt))
     }
@@ -127,10 +137,27 @@ public enum LinkCCommand {
             do {
                 try env.launchLinkC()
             } catch {
-                return (1, "linkc: linkC is not running and could not be started — \(error)")
+                var message = "linkc: linkC is not running and could not be started — \(error)"
+                do {
+                    try env.store.withdraw(request.id)
+                } catch {
+                    message += " (and the request could not be withdrawn — \(error))"
+                }
+                return (1, message)
             }
         }
+        func finish(_ answer: OpenResult) -> (status: Int32, output: String) {
+            do {
+                try env.store.removeResult(for: request.id)
+            } catch {
+                let note = " (its answer file could not be removed — \(error))"
+                return answer.ok ? (0, answer.message + note) : (1, "linkc: " + answer.message + note)
+            }
+            return answer.ok ? (0, answer.message) : (1, "linkc: \(answer.message)")
+        }
         let deadline = env.now().addingTimeInterval(env.timeout)
+        let pollLimit = Int(env.timeout / env.pollInterval) + 1
+        var polls = 0
         while true {
             let answer: OpenResult?
             do {
@@ -139,22 +166,29 @@ public enum LinkCCommand {
                 return (1, "linkc: linkC's answer could not be read — \(error)")
             }
             if let answer {
-                do {
-                    try env.store.removeResult(for: request.id)
-                } catch {
-                    return (1, "linkc: \(answer.message) (its answer file could not be removed — \(error))")
-                }
-                return answer.ok ? (0, answer.message) : (1, "linkc: \(answer.message)")
+                return finish(answer)
             }
-            if env.now() >= deadline {
+            if env.now() >= deadline || polls >= pollLimit {
+                var withdrawalError: Error?
                 do {
                     try env.store.withdraw(request.id)
                 } catch {
-                    return (1, "linkc: linkC did not answer within \(Int(env.timeout)) seconds, and the request could not be withdrawn — \(error)")
+                    withdrawalError = error
+                }
+                do {
+                    if let answer = try env.store.result(for: request.id) {
+                        return finish(answer)
+                    }
+                } catch {
+                    return (1, "linkc: linkC's answer could not be read — \(error)")
+                }
+                if let withdrawalError {
+                    return (1, "linkc: linkC did not answer within \(Int(env.timeout)) seconds, and the request could not be withdrawn — \(withdrawalError)")
                 }
                 return (1, "linkc: linkC did not answer within \(Int(env.timeout)) seconds. Is it running?")
             }
             env.sleep(env.pollInterval)
+            polls += 1
         }
     }
 }

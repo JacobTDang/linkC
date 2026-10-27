@@ -292,7 +292,6 @@ extension AppCoordinator {
         for task in queued {
             let candidates = store.sessions.filter {
                 $0.cwd == norm && $0.state != .ended && $0.canCarry(task)
-                    && (task.targetSessionId == nil || $0.id == task.targetSessionId)
             }
             if candidates.isEmpty {
                 // A pinned task goes to its own session or nowhere: never to another, and no session is
@@ -309,6 +308,9 @@ extension AppCoordinator {
                             if isRelayLockTimeout(error) { return true }
                             NSLog("[linkC relay] dispatchTasks: task %@ pinned session gone — %@", task.shortId, String(describing: error))
                         }
+                    } else {
+                        NSLog("[linkC relay] dispatchTasks: task %@ is pinned to session %@, which cannot carry it — waiting",
+                              task.shortId, target)
                     }
                     continue
                 }

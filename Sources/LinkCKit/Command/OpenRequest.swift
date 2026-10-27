@@ -83,13 +83,13 @@ public struct OpenRequestStore: Sendable {
 
     private static var encoder: JSONEncoder {
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .millisecondsSince1970
         return encoder
     }
 
     private static var decoder: JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .millisecondsSince1970
         return decoder
     }
 
@@ -97,6 +97,7 @@ public struct OpenRequestStore: Sendable {
     public func prepare() throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
     }
 
     public func submit(_ request: OpenRequest) throws {
@@ -104,8 +105,8 @@ public struct OpenRequestStore: Sendable {
         try Self.encoder.encode(request).write(to: requestURL(request.id), options: .atomic)
     }
 
-    /// The requests not answered yet, oldest first. A request that can't be read is logged and removed:
-    /// it could never be answered.
+    /// The valid requests not answered yet, oldest first. An I/O failure keeps a request for a later
+    /// read; a corrupt or misnamed request can never be answered correctly and is removed.
     public func pending() -> [OpenRequest] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let names: [String]
@@ -118,18 +119,41 @@ public struct OpenRequestStore: Sendable {
         var requests: [OpenRequest] = []
         for name in names where name.hasSuffix(".json") && !name.hasSuffix(Self.resultSuffix) {
             let url = directory.appendingPathComponent(name, isDirectory: false)
+            let data: Data
             do {
-                requests.append(try Self.decoder.decode(OpenRequest.self, from: Data(contentsOf: url)))
+                data = try Data(contentsOf: url)
+            } catch CocoaError.fileReadNoSuchFile {
+                continue
             } catch {
-                NSLog("[linkC] open request %@ can't be read, removing it — %@", name, String(describing: error))
-                do {
-                    try FileManager.default.removeItem(at: url)
-                } catch {
-                    NSLog("[linkC] open request %@ could not be removed — %@", name, String(describing: error))
-                }
+                NSLog("[linkC] open request %@ can't be read — %@", name, String(describing: error))
+                continue
             }
+            let request: OpenRequest
+            do {
+                request = try Self.decoder.decode(OpenRequest.self, from: data)
+            } catch {
+                NSLog("[linkC] open request %@ is corrupt, removing it — %@", name, String(describing: error))
+                removeRequestFile(url, named: name)
+                continue
+            }
+            guard request.id == String(name.dropLast(".json".count)) else {
+                NSLog("[linkC] open request %@ has id %@, removing it", name, request.id)
+                removeRequestFile(url, named: name)
+                continue
+            }
+            requests.append(request)
         }
         return requests.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private func removeRequestFile(_ url: URL, named name: String) {
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch CocoaError.fileNoSuchFile {
+            return
+        } catch {
+            NSLog("[linkC] open request %@ could not be removed — %@", name, String(describing: error))
+        }
     }
 
     /// Writes the answer to `id` and removes the request.
@@ -142,20 +166,70 @@ public struct OpenRequestStore: Sendable {
     /// The answer to `id`, nil while there is none.
     public func result(for id: String) throws -> OpenResult? {
         let url = resultURL(id)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try Self.decoder.decode(OpenResult.self, from: Data(contentsOf: url))
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch CocoaError.fileReadNoSuchFile {
+            return nil
+        }
+        do {
+            return try Self.decoder.decode(OpenResult.self, from: data)
+        } catch {
+            let decodingError = error
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                NSLog("[linkC] open result %@ could not be removed — %@", id, String(describing: error))
+            }
+            throw decodingError
+        }
     }
 
     public func removeResult(for id: String) throws {
-        let url = resultURL(id)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        try FileManager.default.removeItem(at: url)
+        do {
+            try FileManager.default.removeItem(at: resultURL(id))
+        } catch CocoaError.fileNoSuchFile {
+            return
+        }
     }
 
     /// Removes the request `id`, answered or given up on. Nothing to remove is fine.
     public func withdraw(_ id: String) throws {
-        let url = requestURL(id)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        try FileManager.default.removeItem(at: url)
+        do {
+            try FileManager.default.removeItem(at: requestURL(id))
+        } catch CocoaError.fileNoSuchFile {
+            return
+        }
+    }
+
+    /// Removes answers nobody collected because the command was killed or gave up before reading them.
+    /// linkC calls this as it answers requests.
+    public func removeStaleResults(olderThan age: TimeInterval, now: Date = Date()) {
+        let urls: [URL]
+        do {
+            urls = try FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.contentModificationDateKey]
+            )
+        } catch {
+            NSLog("[linkC] open results in %@ can't be listed — %@", directory.path, String(describing: error))
+            return
+        }
+        let cutoff = now.addingTimeInterval(-age)
+        for url in urls where url.lastPathComponent.hasSuffix(Self.resultSuffix) {
+            let modified: Date
+            do {
+                modified = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantFuture
+            } catch {
+                continue
+            }
+            guard modified < cutoff else { continue }
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch CocoaError.fileNoSuchFile {
+                continue
+            } catch {
+                NSLog("[linkC] stale open result %@ could not be removed — %@", url.lastPathComponent, String(describing: error))
+            }
+        }
     }
 }
