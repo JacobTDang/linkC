@@ -225,7 +225,9 @@ public final class AppCoordinator {
     private let mcpWorkspaces: @MainActor @Sendable () -> Set<String>
     /// Where the `linkc` command leaves its requests; nil turns the command off.
     let openRequests: OpenRequestStore?
+    /// Wakes a pass when the `linkc` command leaves a request.
     private var openRequestWatcher: FolderWatcher?
+    /// Prompts the `linkc` command asked for, by session id, waiting for their agent to be ready (`typeOpeningPrompts`).
     var openingPrompts: [String: OpeningPrompt] = [:]
     /// What the last relay pass found in each workspace, so choosing the next interval reads
     /// nothing. Internal: the relay writes it (see `AppCoordinator+Relay.swift`).

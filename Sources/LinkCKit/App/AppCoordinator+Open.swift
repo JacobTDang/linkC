@@ -13,12 +13,20 @@ extension AppCoordinator {
     /// How long an answer waits for its command before linkC removes it: the command was killed, or gave up.
     static let openAnswerMaxAge: TimeInterval = 300
 
-    /// Answers every request the `linkc` command left: opens its session, or says why not, then clears old answers.
+    /// Answers every request the `linkc` command left: withdraws it before acting on it, opens its
+    /// session or says why not, then clears old answers.
     func handleOpenRequests() {
         guard let openRequests else { return }
         let pending = openRequests.pending()
         guard !pending.isEmpty else { return }
         for request in pending {
+            // Withdrawn before it is acted on, so a request whose answer can't be written is never opened twice.
+            do {
+                try openRequests.withdraw(request.id)
+            } catch {
+                NSLog("[linkC] open request %@ could not be withdrawn, so it is not opened — %@", request.id, String(describing: error))
+                continue
+            }
             let result = open(request)
             do {
                 try openRequests.answer(request.id, with: result)
@@ -39,9 +47,10 @@ extension AppCoordinator {
         guard request.agent != .shell else { return .refused("a shell is not an agent") }
         let folder = ProjectPath.canonical(request.folder)
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue else {
+        guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory) else {
             return .refused("the folder \(request.folder) does not exist")
         }
+        guard isDirectory.boolValue else { return .refused("\(request.folder) is not a folder") }
         if request.task != nil, request.prompt == nil {
             return .refused("a task needs a prompt")
         }
@@ -52,9 +61,10 @@ extension AppCoordinator {
         } catch {
             return .refused("\(request.agent.displayName) could not start: \(error)")
         }
+        var task: TaskRecord?
         if let origin = request.task, let prompt = request.prompt {
             do {
-                _ = try InboxStore(workspaceRoot: folder).createTask(
+                task = try InboxStore(workspaceRoot: folder).createTask(
                     from: origin.fromAgent, to: request.agent, fromSessionId: origin.fromSessionId,
                     targetSessionId: session.id, prompt: prompt, files: [])
             } catch {
@@ -66,12 +76,19 @@ extension AppCoordinator {
         }
         onCommandSessionOpened?(session.id)
         let name = URL(fileURLWithPath: folder).lastPathComponent
+        if let task {
+            return .opened(
+                sessionId: session.id,
+                message: "Opened \(request.agent.displayName) in a linkC window (\(name)), carrying task \(task.shortId). Follow it with linkc_get_task and close the worker with linkc_close_worker."
+            )
+        }
         return .opened(sessionId: session.id, message: "Opened \(request.agent.displayName) in a linkC window (\(name)).")
     }
 
     /// Types each waiting prompt into its session once the agent is ready for it: idle, paste negotiated
     /// and settled, outside the injection gap. The same readiness a task brief waits for. A prompt whose
-    /// session ended, or whose agent is not ready within `pasteNegotiationTimeout`, is dropped and logged.
+    /// session ended is dropped and logged; one whose agent times out or whose input does not reach
+    /// its terminal is also reported to the user.
     func typeOpeningPrompts() {
         for (id, prompt) in openingPrompts {
             guard let session = store.session(id: id), session.state != .ended,
@@ -87,6 +104,10 @@ extension AppCoordinator {
                     openingPrompts[id] = nil
                     NSLog("[linkC] the linkc prompt for %@ was not typed: %@ was not ready for it within %.0fs",
                           id, session.agentKind.displayName, Self.pasteNegotiationTimeout)
+                    notifications.post(
+                        title: "linkC: your prompt was not typed",
+                        body: "\(session.agentKind.displayName) was not ready for it within \(Int(Self.pasteNegotiationTimeout / 60)) minutes. Paste it in yourself."
+                    )
                 }
                 continue
             }
@@ -96,6 +117,10 @@ extension AppCoordinator {
                 store.updateState(id: id, to: .working)
             } else {
                 NSLog("[linkC] the linkc prompt for %@ did not reach its terminal", id)
+                notifications.post(
+                    title: "linkC: your prompt was not typed",
+                    body: "It did not reach \(session.agentKind.displayName)'s terminal. Paste it in yourself."
+                )
             }
         }
     }
