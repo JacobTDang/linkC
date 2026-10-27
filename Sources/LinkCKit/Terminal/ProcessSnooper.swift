@@ -42,19 +42,8 @@ public struct ProcessSnooper: Sendable {
             let path = pathBuffer.withUnsafeBufferPointer { $0.baseAddress.map { String(cString: $0) } ?? "" }
             if let agent = detectAgent(inPath: path) { return agent }
         }
-        if let buffer = procArgs2Buffer(for: pid) {
-            let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
-            var offset = MemoryLayout<Int32>.size
-            let (execPath, next) = cString(in: buffer, startingAt: offset)
-            if let agent = detectAgent(inPath: execPath) { return agent }
-            if argc > 0 {
-                offset = next
-                while offset < buffer.count && buffer[offset] == 0 { offset += 1 }
-                let (arg0, _) = cString(in: buffer, startingAt: offset)
-                if let agent = detectAgent(inPath: arg0) { return agent }
-            }
-        }
-        return nil
+        guard let buffer = procArgs2Buffer(for: pid) else { return nil }
+        return detectAgent(inPath: cString(in: buffer, startingAt: MemoryLayout<Int32>.size).value)
     }
 
     /// Queries the Darwin kernel for child processes of `ppid` and returns the first detected `AgentKind`.
