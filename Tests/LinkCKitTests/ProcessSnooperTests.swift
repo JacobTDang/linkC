@@ -170,4 +170,53 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertEqual(ProcessSnooper.detectAgent(atOrUnder: process.processIdentifier), .agy)
         XCTAssertNil(ProcessSnooper.detectAgent(atOrUnder: pid_t(Int32.max)))
     }
+
+    /// How Claude Code is installed today: npm's `claude` links to `bin/claude.exe`, and the native
+    /// installer keeps one binary per version under `claude/versions/`. The kernel reports the real file.
+    func testDetectAgentInPathKnowsClaudesInstalledBinaries() {
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"), .claude)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/user/.local/share/claude/versions/2.1.306"), .claude)
+        XCTAssertNil(ProcessSnooper.detectAgent(inPath: "/Users/user/.local/share/other/versions/2.1.306"))
+    }
+
+    /// A link with a temporary folder of its own, removed when the test ends.
+    private func link(named name: String, to target: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-snooper-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let link = dir.appendingPathComponent(name)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: URL(fileURLWithPath: target))
+        return link
+    }
+
+    /// The kernel names a process's binary by its real file, and names none once an update replaced
+    /// that file. The path it was started by (an agent's link, like `/opt/homebrew/bin/claude`) still
+    /// says which agent it is.
+    func testAProcessStartedThroughALinkNamedForAnAgentIsThatAgent() throws {
+        let process = Process()
+        process.executableURL = try link(named: "claude", to: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+        defer { process.terminate(); process.waitUntilExit() }
+
+        XCTAssertEqual(ProcessSnooper.detectAgent(atOrUnder: process.processIdentifier), .claude)
+    }
+
+    /// The `linkc` command finds the agent it runs under among its ancestors, by the same rule.
+    func testAnAgentStartedThroughALinkIsFoundAboveItsChildren() throws {
+        let process = Process()
+        process.executableURL = try link(named: "claude", to: "/bin/sh")
+        process.arguments = ["-c", "sleep 30 & echo $!; wait"]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        defer { process.terminate(); process.waitUntilExit() }
+        let line = String(decoding: output.fileHandleForReading.availableData, as: UTF8.self)
+        let child = try XCTUnwrap(Int32(line.trimmingCharacters(in: .whitespacesAndNewlines)), line)
+        defer { kill(child, SIGTERM) }
+
+        let found = ProcessSnooper.detectAgent(inAncestorsOf: child)
+        XCTAssertEqual(found?.agent, .claude)
+        XCTAssertEqual(found?.pid, process.processIdentifier)
+    }
 }

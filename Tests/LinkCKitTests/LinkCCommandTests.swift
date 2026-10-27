@@ -311,4 +311,31 @@ final class LinkCCommandTests: XCTestCase {
         XCTAssertTrue(outcome.output.hasPrefix("linkc: linkC's answer could not be read"), outcome.output)
         XCTAssertTrue(outcome.output.contains("the request could not be withdrawn"), outcome.output)
     }
+
+    // MARK: - The calling agent
+
+    func testTheCallerIsTheAgentFoundAboveWithItsSession() {
+        let caller = LinkCCommand.caller(detected: .claude, environment: ["LINKC_SESSION": "S1"], ancestorSession: { "S2" })
+        XCTAssertEqual(caller?.agent, .claude)
+        XCTAssertEqual(caller?.sessionId, "S1")
+    }
+
+    func testNoAgentAboveIsNoCaller() {
+        XCTAssertNil(LinkCCommand.caller(detected: nil, environment: ["LINKC_SESSION": "S1"], ancestorSession: { "S2" }))
+    }
+
+    /// Grok runs Cursor's CLI: the mark linkC gives a Grok terminal makes its Cursor process Grok.
+    func testACursorProcessMarkedAsGrokIsGrok() {
+        XCTAssertEqual(LinkCCommand.caller(detected: .cursor, environment: ["LINKC_WORKER": "grok"], ancestorSession: { nil })?.agent, .grok)
+        XCTAssertEqual(LinkCCommand.caller(detected: .cursor, environment: [:], ancestorSession: { nil })?.agent, .cursor)
+        XCTAssertEqual(LinkCCommand.caller(detected: .codex, environment: ["LINKC_WORKER": "grok"], ancestorSession: { nil })?.agent, .codex)
+    }
+
+    /// With no `LINKC_SESSION` of its own (an agent that doesn't pass its environment to its tools),
+    /// the session is the nearest ancestor's.
+    func testTheSessionFallsBackToTheNearestAncestors() {
+        XCTAssertEqual(LinkCCommand.caller(detected: .codex, environment: [:], ancestorSession: { "S2" })?.sessionId, "S2")
+        XCTAssertEqual(LinkCCommand.caller(detected: .codex, environment: ["LINKC_SESSION": ""], ancestorSession: { "S2" })?.sessionId, "S2")
+        XCTAssertNil(LinkCCommand.caller(detected: .codex, environment: [:], ancestorSession: { nil })?.sessionId)
+    }
 }
