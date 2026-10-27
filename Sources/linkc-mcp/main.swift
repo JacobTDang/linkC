@@ -30,6 +30,15 @@ if args.contains("--help") || args.contains("-h") {
 
 let cwd = FileManager.default.currentDirectoryPath
 let server = MCPServer(workspaceRoot: cwd)
+// linkC serves this folder while this server runs, even when no linkC session works in it: an agent
+// started by hand (in a shell, or in another terminal app) can queue tasks here too.
+let registry = MCPWorkspaceRegistry.applicationSupport
+let serverPid = getpid()
+do {
+    try registry.register(workspace: cwd, pid: serverPid)
+} catch {
+    FileHandle.standardError.write(Data("linkc-mcp: could not register \(cwd) with linkC, so linkC serves tasks queued here only while it has a session in this folder — \(error)\n".utf8))
+}
 
 // MCP stdio server loop: reads lines or Content-Length headers from stdin
 let stdin = FileHandle.standardInput
@@ -65,4 +74,10 @@ while true {
             stdout.write(Data([0x0A])) // \n
         }
     }
+}
+
+do {
+    try registry.unregister(pid: serverPid)
+} catch {
+    FileHandle.standardError.write(Data("linkc-mcp: could not unregister \(cwd) from linkC — \(error)\n".utf8))
 }

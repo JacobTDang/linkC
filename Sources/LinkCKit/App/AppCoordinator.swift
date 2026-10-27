@@ -221,6 +221,8 @@ public final class AppCoordinator {
     /// session: the only ones the relay works on.
     private var inboxWatcher: InboxWatcher?
     private let sweepClock: any Clock<Duration>
+    /// The folders where linkC's MCP server runs (`MCPWorkspaceRegistry`), served even with no session there.
+    private let mcpWorkspaces: @MainActor @Sendable () -> Set<String>
     /// What the last relay pass found in each workspace, so choosing the next interval reads
     /// nothing. Internal: the relay writes it (see `AppCoordinator+Relay.swift`).
     var relayWork = RelayWork()
@@ -254,6 +256,7 @@ public final class AppCoordinator {
         turnEndQuietPeriod: TimeInterval = 5.0,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
         sweepClock: any Clock<Duration> = ContinuousClock(),
+        mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -275,6 +278,7 @@ public final class AppCoordinator {
         self.turnEndDebounce = TurnEndDebounce(quietPeriod: turnEndQuietPeriod)
         self.now = now
         self.sweepClock = sweepClock
+        self.mcpWorkspaces = mcpWorkspaces
         self.isWatching = isWatching
         self.statusLines = StatusLineFeed(
             directory: settingsDir.appendingPathComponent("status-lines", isDirectory: true),
@@ -307,6 +311,7 @@ public final class AppCoordinator {
             defaults: .standard,
             modelSettings: modelSettings,
             usageReaders: MCPServer.defaultUsageReaders(),
+            mcpWorkspaces: { MCPWorkspaceRegistry.applicationSupport.liveWorkspaces() },
             isWatching: isWatching
         )
     }
@@ -397,6 +402,7 @@ public final class AppCoordinator {
         )
         sweepTicker = ticker
         ticker.start()
+        if !mcpWorkspaces().isEmpty { ticker.wake() }
     }
 
     /// Tells the coordinator whether the panel, or a window that needs the same sampling, is on screen.
@@ -425,15 +431,22 @@ public final class AppCoordinator {
         )
     }
 
-    /// One pass of the sweep: keep the inbox watches and the relay's notes on the workspaces that
-    /// have a live session, sample the sessions and run the relay, then the app's own sampling
-    /// while `panelVisible`. The watches come first, so a write after them wakes
-    /// the next pass and one before them is read by this one.
+    /// One pass of the sweep: keep the inbox watches and the relay's notes on the workspaces that have a
+    /// live session or a running linkC MCP server, sample the sessions and run the relay, then the app's
+    /// own sampling while `panelVisible`. A folder with only an MCP server is one where an agent started
+    /// outside linkC (a shell, another terminal app) can queue tasks: its relay runs here, since no
+    /// session's sampling covers it. The watches come first, so a write after them wakes the next pass
+    /// and one before them is read by this one.
     private func sweepTick() async {
-        let workspaces = Set(store.sessions.filter { $0.state != .ended }.map(\.cwd))
+        let sessionFolders = Set(store.sessions.filter { $0.state != .ended }.map(\.cwd))
+        let serverOnlyFolders = mcpWorkspaces().subtracting(sessionFolders)
+        let workspaces = sessionFolders.union(serverOnlyFolders)
         relayWork.retain(only: workspaces)
         inboxWatcher?.watch(workspaces: workspaces)
         sampleAgentStates()
+        for folder in serverOnlyFolders.sorted() {
+            processPendingMessages(workspacePath: folder)
+        }
         if panelVisible { await panelSweep?() }
     }
 
