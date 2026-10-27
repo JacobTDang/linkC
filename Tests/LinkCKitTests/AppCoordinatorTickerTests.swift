@@ -22,7 +22,8 @@ final class AppCoordinatorTickerTests: XCTestCase {
 
     private func makeCoordinator(
         injectionGap: TimeInterval = AppCoordinator.injectionGap,
-        mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] }
+        mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
+        openRequests: OpenRequestStore? = nil
     ) throws -> AppCoordinator {
         let script = tempDir.appendingPathComponent("mock_agent.sh")
         try "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
@@ -43,6 +44,7 @@ final class AppCoordinatorTickerTests: XCTestCase {
             injectionGap: injectionGap,
             sweepClock: clock,
             mcpWorkspaces: mcpWorkspaces,
+            openRequests: openRequests,
             isWatching: { _ in false }
         )
     }
@@ -92,6 +94,45 @@ final class AppCoordinatorTickerTests: XCTestCase {
             coordinator.store.sessions.contains { $0.cwd == folder && $0.agentKind == .codex && $0.isWorker }
         }
         XCTAssertTrue(served, "the inbox write never woke a pass for the folder")
+    }
+
+    /// The sweep answers the `linkc` command: a request waiting when linkC starts (the command launched
+    /// it) opens its session at once, not an idle interval later.
+    func testTheSweepAnswersARequestFromTheLinkCCommand() async throws {
+        let requests = OpenRequestStore(directory: tempDir.appendingPathComponent("open-requests"))
+        let coordinator = try makeCoordinator(openRequests: requests)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let sent = OpenRequest(agent: .codex, folder: ProjectPath.canonical(tempDir.path), prompt: nil, tier: nil, task: nil)
+        try requests.submit(sent)
+
+        try coordinator.start()
+
+        let answered = try await waitUntil { (try? requests.result(for: sent.id)) != nil }
+        XCTAssertTrue(answered, "the sweep never answered the request")
+        XCTAssertEqual(coordinator.store.sessions.first?.agentKind, .codex)
+    }
+
+    /// A request left while linkC runs wakes a pass: the request folder is watched.
+    func testARequestLeftWhileLinkCRunsWakesAPass() async throws {
+        let requests = OpenRequestStore(directory: tempDir.appendingPathComponent("open-requests"))
+        let coordinator = try makeCoordinator(openRequests: requests)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        try coordinator.start()
+        let slept = try await waitUntil { !clock.pendingSleeps.isEmpty }
+        XCTAssertTrue(slept, "the ticker never began its first sleep")
+
+        let sent = OpenRequest(agent: .codex, folder: ProjectPath.canonical(tempDir.path), prompt: nil, tier: nil, task: nil)
+        try requests.submit(sent)
+        clock.advance(by: TickCadence.minimumWakeGap)
+
+        let answered = try await waitUntil { (try? requests.result(for: sent.id)) != nil }
+        XCTAssertTrue(answered, "the request never woke a pass")
     }
 
     private struct NullSink: NotificationSink {
