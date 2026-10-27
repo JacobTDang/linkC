@@ -20,7 +20,10 @@ final class AppCoordinatorTickerTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func makeCoordinator(injectionGap: TimeInterval = AppCoordinator.injectionGap) throws -> AppCoordinator {
+    private func makeCoordinator(
+        injectionGap: TimeInterval = AppCoordinator.injectionGap,
+        mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] }
+    ) throws -> AppCoordinator {
         let script = tempDir.appendingPathComponent("mock_agent.sh")
         try "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
             .write(to: script, atomically: true, encoding: .utf8)
@@ -39,8 +42,30 @@ final class AppCoordinatorTickerTests: XCTestCase {
             deliverySettle: 0,
             injectionGap: injectionGap,
             sweepClock: clock,
+            mcpWorkspaces: mcpWorkspaces,
             isWatching: { _ in false }
         )
+    }
+
+    /// A folder where linkC has no session of its own but its MCP server runs (an agent started by hand
+    /// in a shell, or in another terminal app) is served too: a task queued there gets a worker.
+    func testATaskInAFolderWhereOnlyAnMCPServerRunsGetsAWorker() async throws {
+        let outside = tempDir.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let folder = ProjectPath.canonical(outside.path)
+        let coordinator = try makeCoordinator(mcpWorkspaces: { [folder] })
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        _ = try InboxStore(workspaceRoot: folder).createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+
+        try coordinator.start()
+
+        let served = try await waitUntil {
+            coordinator.store.sessions.contains { $0.cwd == folder && $0.agentKind == .codex && $0.isWorker }
+        }
+        XCTAssertTrue(served, "linkC never served the folder: no worker was launched for its task")
     }
 
     private struct NullSink: NotificationSink {
