@@ -78,7 +78,7 @@ A request that is more than 60 seconds old when linkC reads it is dropped, with 
 
 - `TaskRecord` gains an optional `targetSessionId`. Inbox files written before this change decode it as nil.
 - `dispatchTasks` delivers a task that has a `targetSessionId` only to that session, once it is idle and accepts paste. It never delivers the task anywhere else, and it never launches a session for it.
-- If the target session has ended before delivery, the task fails with "its session ended before the task was delivered".
+- If the target session has ended before delivery, the task expires with the reason "its session ended before the task was delivered". A queued task may only become delivered, cancelled or expired.
 
 ## 9. Who is asking (`--task`)
 
@@ -112,7 +112,7 @@ Unit tests in LinkCKit, written first:
 - **Dispatch:**
   - a pinned task is delivered only to its target, even when another idle session of that kind exists;
   - it never spawns a session;
-  - a target that ended fails the task.
+  - a target that ended expires the task.
 
 App target (checked by build and by reading): the coordinator's "opened" callback tears the session off into a window and brings linkC forward.
 
