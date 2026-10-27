@@ -219,7 +219,10 @@ public struct OpenRequestStore: Sendable {
             let modified: Date
             do {
                 modified = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantFuture
+            } catch CocoaError.fileReadNoSuchFile, CocoaError.fileNoSuchFile {
+                continue
             } catch {
+                NSLog("[linkC] open result %@ can't be dated — %@", url.lastPathComponent, String(describing: error))
                 continue
             }
             guard modified < cutoff else { continue }

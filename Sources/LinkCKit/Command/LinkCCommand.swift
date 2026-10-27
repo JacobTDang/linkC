@@ -156,7 +156,8 @@ public enum LinkCCommand {
             return answer.ok ? (0, answer.message) : (1, "linkc: \(answer.message)")
         }
         let deadline = env.now().addingTimeInterval(env.timeout)
-        let pollLimit = Int(env.timeout / env.pollInterval) + 1
+        // No interval leaves no time to wait: one look, then give up.
+        let pollLimit = env.pollInterval > 0 ? Int(env.timeout / env.pollInterval) + 1 : 0
         var polls = 0
         while true {
             let answer: OpenResult?
@@ -180,7 +181,8 @@ public enum LinkCCommand {
                         return finish(answer)
                     }
                 } catch {
-                    return (1, "linkc: linkC's answer could not be read — \(error)")
+                    let note = withdrawalError.map { " (and the request could not be withdrawn — \($0))" } ?? ""
+                    return (1, "linkc: linkC's answer could not be read — \(error)\(note)")
                 }
                 if let withdrawalError {
                     return (1, "linkc: linkC did not answer within \(Int(env.timeout)) seconds, and the request could not be withdrawn — \(withdrawalError)")
