@@ -780,8 +780,9 @@ public final class AppCoordinator {
             // A worker the user types into is theirs, on screen or not.
             terminal.onUserInput = { [weak self] in
                 guard let self else { return }
-                // Typing into the agent's composer makes it the user's: a `linkc` prompt still waiting is not
-                // pasted after it. Keys pressed while the agent starts answer its own questions, so the prompt waits.
+                // Typing into the agent's composer makes it the user's: a `linkc` prompt still waiting is
+                // not pasted after it. Keys pressed while the agent starts answer its own questions, so the
+                // prompt waits.
                 if let state = store.session(id: session.id)?.state, isIdle(state),
                    openingPrompts.removeValue(forKey: session.id) != nil {
                     NSLog("[linkC] the linkc prompt for %@ was dropped: the user typed first", session.id)

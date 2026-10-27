@@ -93,8 +93,9 @@ public enum LinkCCommand {
 
     /// The agent the command runs under and its linkC session. `detected` is the agent found among the
     /// command's ancestors. Grok runs Cursor's CLI, so the `LINKC_WORKER=grok` mark linkC gives a Grok
-    /// terminal makes a Cursor process Grok, as linkC's tool server reads it from its own environment. The session is
-    /// `LINKC_SESSION`, else the nearest ancestor's (an agent that doesn't pass its environment to its tools).
+    /// terminal makes a Cursor process Grok, as linkC's tool server reads it from its own environment.
+    /// The session is `LINKC_SESSION`, else the nearest ancestor's (an agent that doesn't pass its
+    /// environment to its tools).
     public static func caller(detected: AgentKind?, environment: [String: String],
                               ancestorSession: () -> String?) -> (agent: AgentKind, sessionId: String?)? {
         guard var agent = detected else { return nil }

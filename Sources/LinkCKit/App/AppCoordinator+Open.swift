@@ -101,9 +101,9 @@ extension AppCoordinator {
 
     /// Types each waiting prompt into its session once the agent is ready for it: idle, paste negotiated
     /// and settled, outside the injection gap. The same readiness a task brief waits for. A prompt is also
-    /// dropped, and the user told, when they type into the agent's ready composer first. A prompt whose session ended is dropped and
-    /// logged; one whose agent times out or whose input does not reach its terminal is also reported to
-    /// the user.
+    /// dropped, and the user told, when they type into the agent's ready composer first. A prompt whose
+    /// session ended is dropped and logged; one whose agent times out or whose input does not reach its
+    /// terminal is also reported to the user.
     func typeOpeningPrompts() {
         for (id, prompt) in openingPrompts {
             guard let session = store.session(id: id), session.state != .ended,
