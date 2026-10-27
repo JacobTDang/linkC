@@ -9,7 +9,8 @@ public enum LinkCCommand {
 
         Opens <agent> in a new linkC window, in the current folder, with the prompt typed in.
           <agent>   claude, codex, agy, cursor or grok
-          --tier    the model tier (default: the agent's default in linkC's Settings > Models)
+          --tier    the model tier (default: unpinned, as linkC's panel opens it; with --task, the agent's
+                    default tier in linkC's Settings > Models)
           --task    for an agent handing off work: the new session carries the prompt as a task
                     the calling agent can follow (linkc_get_task) and close (linkc_close_worker)
           --        the rest is the prompt, even words that start with -
@@ -92,7 +93,7 @@ public enum LinkCCommand {
 
     /// The agent the command runs under and its linkC session. `detected` is the agent found among the
     /// command's ancestors. Grok runs Cursor's CLI, so the `LINKC_WORKER=grok` mark linkC gives a Grok
-    /// terminal makes a Cursor process Grok, as linkC's tool server reads it. The session is
+    /// terminal makes a Cursor process Grok, as linkC's tool server reads it from its own environment. The session is
     /// `LINKC_SESSION`, else the nearest ancestor's (an agent that doesn't pass its environment to its tools).
     public static func caller(detected: AgentKind?, environment: [String: String],
                               ancestorSession: () -> String?) -> (agent: AgentKind, sessionId: String?)? {

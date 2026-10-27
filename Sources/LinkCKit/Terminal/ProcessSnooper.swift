@@ -161,7 +161,7 @@ public struct ProcessSnooper: Sendable {
     }
 
     /// Walks *up* from `pid` (exclusive) through at most `maxDepth` parents and returns the first
-    /// ancestor whose executable is a known AI CLI, with that ancestor's pid.
+    /// ancestor that is a known AI CLI (`detectAgent(ofProcess:)`), with that ancestor's pid.
     public static func detectAgent(inAncestorsOf pid: pid_t, maxDepth: Int = 8) -> (agent: AgentKind, pid: pid_t)? {
         guard pid > 0, maxDepth > 0 else { return nil }
         var current = pid

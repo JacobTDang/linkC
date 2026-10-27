@@ -22,8 +22,9 @@ struct AgentProbe {
 }
 
 /// Decides when a terminal's process tree has to be walked again to see which agent is running in
-/// it. The walk is a `proc_listpids` and a `proc_pidpath` per process, and a busy shell makes it
-/// wider, so the answer is kept until something suggests it changed: the terminal's foreground
+/// it. The walk is a `proc_listpids`, a `proc_pidpath` per process, and a read of the process's start
+/// path (`KERN_PROCARGS2`) for each one that path doesn't name. A busy shell makes it wider, so the
+/// answer is kept until something suggests it changed: the terminal's foreground
 /// process group moved (a new command, or the agent starting or exiting), or a while has passed
 /// (a wrapper that execs another agent keeps its pid, and so its process group).
 struct ForegroundAgentSampler {

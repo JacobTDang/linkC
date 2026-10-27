@@ -58,9 +58,12 @@ extension AppCoordinator {
         if let requested = request.tier {
             guard request.agent != .cursor else { return .refused("cursor cannot be pinned to a model") }
             tier = requested
+        } else if request.task != nil, request.agent != .cursor {
+            // A worker is pinned as delegation pins it. The user's own session opens as the panel opens
+            // one: unpinned, so the relay never hands it a delegated task. Cursor was never tiered.
+            tier = defaultTier(for: request.agent)
         } else {
-            // Cursor was never tiered.
-            tier = request.agent == .cursor ? nil : defaultTier(for: request.agent)
+            tier = nil
         }
         if let tier, resolvedModel(for: request.agent, tier: tier) == nil {
             return .refused("no model configured for \(request.agent.rawValue) tier \(tier.rawValue) — set it in linkC's Settings > Models")
@@ -98,7 +101,7 @@ extension AppCoordinator {
 
     /// Types each waiting prompt into its session once the agent is ready for it: idle, paste negotiated
     /// and settled, outside the injection gap. The same readiness a task brief waits for. A prompt is also
-    /// dropped when the user types into the session first. A prompt whose session ended is dropped and
+    /// dropped, and the user told, when they type into the agent's ready composer first. A prompt whose session ended is dropped and
     /// logged; one whose agent times out or whose input does not reach its terminal is also reported to
     /// the user.
     func typeOpeningPrompts() {
