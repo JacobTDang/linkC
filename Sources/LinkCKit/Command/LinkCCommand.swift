@@ -18,7 +18,7 @@ public enum LinkCCommand {
         """
 
     /// The agents the command opens: every kind but the shell.
-    static let agents: [AgentKind] = AgentKind.allCases.filter { $0 != .shell }
+    static let agents: [AgentKind] = [.claude, .codex, .agy, .cursor, .grok]
 
     public struct Invocation: Equatable, Sendable {
         public let agent: AgentKind
@@ -38,6 +38,7 @@ public enum LinkCCommand {
 
     public struct LaunchError: Error, CustomStringConvertible {
         public let status: Int32
+        public init(status: Int32) { self.status = status }
         public var description: String { "`open` exited with status \(status)" }
     }
 

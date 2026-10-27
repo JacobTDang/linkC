@@ -143,6 +143,14 @@ can delegate too: linkC serves every folder where its MCP server runs, not only 
 own sessions. A Claude started outside linkC in Desktop, Documents or Downloads can make macOS ask
 once whether linkC may access that protected folder, since linkC then watches it.
 
+### Opening an agent from a terminal
+
+`linkc <agent> "prompt"` (installed by `build-app.sh` at `~/.local/bin/linkc`) opens claude, codex,
+agy, cursor or grok in a new linkC window, in the folder you ran it from, with the prompt typed in.
+Exiting the agent closes the window. `--tier light|standard|deep` picks the model tier. An agent can
+add `--task` to hand the prompt off as a task: the new session is a worker it can follow with
+`linkc_get_task` and close with `linkc_close_worker`. If linkC isn't running, the command starts it.
+
 When an agent hits its usage limit, its current task moves to another available agent — never
 back to the one that gave it — and the limited agent rests until it actually recovers. linkC
 prefers real evidence over a guess: an already-known reset time from the agent's own usage
