@@ -731,4 +731,21 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertTrue(tracker.shouldLog(path: "/a/inbox.json", mtime: t2), "a new mtime is a real change — logs again")
         XCTAssertTrue(tracker.shouldLog(path: "/b/inbox.json", mtime: t1), "a different path is tracked independently")
     }
+
+    /// The same work handed to two sessions opened with `linkc --task` is two tasks, one pinned to each.
+    func testTheSameTaskPinnedToAnotherSessionIsANewTask() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let first = try store.createTask(from: .claude, to: .codex, targetSessionId: "S1", prompt: "carry", files: [])
+        let second = try store.createTask(from: .claude, to: .codex, targetSessionId: "S2", prompt: "carry", files: [])
+
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(first.targetSessionId, "S1")
+        XCTAssertEqual(second.targetSessionId, "S2")
+    }
+
+    func testATaskCreatedWithoutAPinIsUnpinned() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let task = try store.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        XCTAssertNil(try store.task(id: task.id)?.targetSessionId)
+    }
 }
