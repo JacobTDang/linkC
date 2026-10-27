@@ -402,6 +402,8 @@ public final class AppCoordinator {
         )
         sweepTicker = ticker
         ticker.start()
+        // The ticker sleeps before its first pass. A folder where only an MCP server runs may already
+        // hold tasks queued while linkC was not running: serve them now, not an idle interval later.
         if !mcpWorkspaces().isEmpty { ticker.wake() }
     }
 
