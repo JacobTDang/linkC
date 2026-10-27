@@ -223,6 +223,12 @@ public final class AppCoordinator {
     private let sweepClock: any Clock<Duration>
     /// The folders where linkC's MCP server runs (`MCPWorkspaceRegistry`), served even with no session there.
     private let mcpWorkspaces: @MainActor @Sendable () -> Set<String>
+    /// Where the `linkc` command leaves its requests; nil turns the command off.
+    let openRequests: OpenRequestStore?
+    /// Wakes a pass when the `linkc` command leaves a request.
+    private var openRequestWatcher: FolderWatcher?
+    /// Prompts the `linkc` command asked for, by session id, waiting for their agent to be ready (`typeOpeningPrompts`).
+    var openingPrompts: [String: OpeningPrompt] = [:]
     /// What the last relay pass found in each workspace, so choosing the next interval reads
     /// nothing. Internal: the relay writes it (see `AppCoordinator+Relay.swift`).
     var relayWork = RelayWork()
@@ -234,6 +240,8 @@ public final class AppCoordinator {
     /// (terminals, sidebar). Runs on every tick while `panelVisible`, after the sessions are sampled, and
     /// once on its own when `panelVisible` turns true (see `setPanelVisible`).
     public var panelSweep: (@MainActor () async -> Void)?
+    /// Told the id of a session the `linkc` command opened, so the app can give it a window.
+    public var onCommandSessionOpened: ((String) -> Void)?
 
     /// Designated initializer — all collaborators injected (used by tests).
     public init(
@@ -257,6 +265,7 @@ public final class AppCoordinator {
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
         sweepClock: any Clock<Duration> = ContinuousClock(),
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
+        openRequests: OpenRequestStore? = nil,
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -279,6 +288,7 @@ public final class AppCoordinator {
         self.now = now
         self.sweepClock = sweepClock
         self.mcpWorkspaces = mcpWorkspaces
+        self.openRequests = openRequests
         self.isWatching = isWatching
         self.statusLines = StatusLineFeed(
             directory: settingsDir.appendingPathComponent("status-lines", isDirectory: true),
@@ -312,6 +322,7 @@ public final class AppCoordinator {
             modelSettings: modelSettings,
             usageReaders: MCPServer.defaultUsageReaders(),
             mcpWorkspaces: { MCPWorkspaceRegistry.applicationSupport.liveWorkspaces() },
+            openRequests: .applicationSupport,
             isWatching: isWatching
         )
     }
@@ -402,9 +413,22 @@ public final class AppCoordinator {
         )
         sweepTicker = ticker
         ticker.start()
-        // The ticker sleeps before its first pass. A folder where only an MCP server runs may already
-        // hold tasks queued while linkC was not running: serve them now, not an idle interval later.
-        if !mcpWorkspaces().isEmpty { ticker.wake() }
+        if let openRequests {
+            do {
+                try openRequests.prepare()
+                openRequestWatcher = try FolderWatcher(directory: openRequests.directory) { [weak self] in
+                    Task { @MainActor in self?.sweepTicker?.wake() }
+                }
+            } catch {
+                NSLog("[linkC] the linkc command's request folder %@ can't be watched; requests are read on each sweep — %@",
+                      openRequests.directory.path, String(describing: error))
+            }
+        }
+        // The ticker sleeps before its first pass. A folder where only an MCP server runs may already hold
+        // tasks queued while linkC was not running, and the `linkc` command may have left a request (it can
+        // be what launched linkC): serve them now, not an idle interval later. The request folder is read
+        // after its watcher is set up, so a request left in between wakes a pass too.
+        if !mcpWorkspaces().isEmpty || openRequests.map({ !$0.pending().isEmpty }) == true { ticker.wake() }
     }
 
     /// Tells the coordinator whether the panel, or a window that needs the same sampling, is on screen.
@@ -429,7 +453,7 @@ public final class AppCoordinator {
         TickCadence.interval(
             panelVisible: panelVisible,
             sessionStates: store.sessions.map(\.state),
-            hasRelayWork: !relayWork.isEmpty
+            hasRelayWork: !relayWork.isEmpty || !openingPrompts.isEmpty
         )
     }
 
@@ -449,6 +473,8 @@ public final class AppCoordinator {
         for folder in serverOnlyFolders.sorted() {
             processPendingMessages(workspacePath: folder)
         }
+        handleOpenRequests()
+        typeOpeningPrompts()
         if panelVisible { await panelSweep?() }
     }
 
@@ -486,6 +512,8 @@ public final class AppCoordinator {
         sweepTicker = nil
         inboxWatcher?.stop()
         inboxWatcher = nil
+        openRequestWatcher?.stop()
+        openRequestWatcher = nil
         hookServer.stop()
         statusLines.sweep()
     }
@@ -674,6 +702,11 @@ public final class AppCoordinator {
         modelSettings().tier(forModel: model, agent: agent)
     }
 
+    /// `agent`'s default tier in Settings > Models: the tier a session opened without one gets.
+    func defaultTier(for agent: AgentKind) -> ModelTier {
+        modelSettings().defaultTier(for: agent)
+    }
+
     /// Records that linkC just typed `text` into `sessionId`'s terminal. Every call the coordinator
     /// makes to inject text into a session must call this right alongside `terminals.sendInput`.
     /// `startsWork` is for text that hands the session something to do; see the batch overload.
@@ -746,7 +779,17 @@ public final class AppCoordinator {
             }
             // A worker the user types into is theirs, on screen or not.
             terminal.onUserInput = { [weak self] in
-                self?.adoptWorker(session.id)
+                guard let self else { return }
+                // Typing into the agent's composer makes it the user's: a `linkc` prompt still waiting is
+                // not pasted after it. Keys pressed while the agent starts answer its own questions, so the
+                // prompt waits.
+                if let state = store.session(id: session.id)?.state, isIdle(state),
+                   openingPrompts.removeValue(forKey: session.id) != nil {
+                    NSLog("[linkC] the linkc prompt for %@ was dropped: the user typed first", session.id)
+                    notifications.post(title: "linkC: your prompt was not typed",
+                                       body: "You typed into \(session.agentKind.displayName) first. Paste it in yourself if you still want it.")
+                }
+                adoptWorker(session.id)
             }
 
             let executable: String

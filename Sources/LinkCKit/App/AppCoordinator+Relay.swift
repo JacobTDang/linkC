@@ -294,6 +294,26 @@ extension AppCoordinator {
                 $0.cwd == norm && $0.state != .ended && $0.canCarry(task)
             }
             if candidates.isEmpty {
+                // A pinned task goes to its own session or nowhere: never to another, and no session is
+                // launched for it. With its session gone before delivery there is nothing to deliver to.
+                if let target = task.targetSessionId {
+                    if store.session(id: target).map({ $0.state == .ended }) ?? true {
+                        let reason = "its session ended before the task was delivered"
+                        do {
+                            try inboxStore.expireTaskAndNotify(
+                                taskId: task.id, reason: reason, notifyBody: "expired — \(reason)", timeout: Self.relayLockTimeout
+                            )
+                            logTaskEnded(task, as: "expired", reason: reason)
+                        } catch {
+                            if isRelayLockTimeout(error) { return true }
+                            NSLog("[linkC relay] dispatchTasks: task %@ pinned session gone — %@", task.shortId, String(describing: error))
+                        }
+                    } else {
+                        NSLog("[linkC relay] dispatchTasks: task %@ is pinned to session %@, which cannot carry it — waiting",
+                              task.shortId, target)
+                    }
+                    continue
+                }
                 // A tiered task whose tier no longer resolves to a model (settings edited while
                 // the task sat queued) must not spawn an unpinned session — that session could
                 // never satisfy `$0.modelTier == task.tier` above, so the next tick would spawn

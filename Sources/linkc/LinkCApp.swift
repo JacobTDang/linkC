@@ -241,6 +241,10 @@ final class AppModel {
             coordinator.onSessionFocused = { [weak self] id in
                 self?.showSelection(opening: id)
             }
+            // A session the `linkc` command opened gets its own window; opening it brings linkC forward.
+            coordinator.onCommandSessionOpened = { [weak self] id in
+                self?.tearOff(.terminal(id), at: nil)
+            }
             try coordinator.start()
             coordinator.usageTracker = usage
             coordinator.panelSweep = { [weak self] in
