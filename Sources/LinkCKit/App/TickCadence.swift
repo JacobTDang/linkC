@@ -67,7 +67,7 @@ struct RelayWork {
         contended.insert(workspace)
     }
 
-    /// Forgets workspaces that no longer have a live session: nothing relays for them any more.
+    /// Forgets workspaces that no longer have a live session or a running linkC MCP server.
     mutating func retain(only workspaces: Set<String>) {
         openTasks.formIntersection(workspaces)
         queuedMessages.formIntersection(workspaces)

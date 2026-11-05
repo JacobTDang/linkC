@@ -13,7 +13,6 @@ extension AppCoordinator {
         // Like every relay phase: a store read would recreate a deleted workspace on disk.
         guard workspaceExists(workspacePath) else { return false }
         let norm = ProjectPath.canonical(workspacePath)
-        guard store.sessions.contains(where: { $0.cwd == norm }) else { return false }
         let tasks: [TaskRecord]
         do {
             tasks = try inboxStore.load(timeout: Self.relayLockTimeout).tasks
@@ -23,6 +22,8 @@ extension AppCoordinator {
             return false
         }
         if answerCloseRequests(tasks: tasks, inboxStore: inboxStore) { return true }
+        // With no session here, there is nothing to reap; close requests above may still come from an outside delegator.
+        guard store.sessions.contains(where: { $0.cwd == norm }) else { return false }
         let workers = store.sessions.filter {
             $0.isWorker && $0.cwd == norm
         }

@@ -138,6 +138,11 @@ none it delegated. Sessions you start yourself never close by themselves, a work
 only when you type or paste into it (opening, clicking or scrolling it does not), and the session
 selected in the panel is never closed.
 
+An agent you start yourself, typed into a linkC shell terminal or running in another terminal app,
+can delegate too: linkC serves every folder where its MCP server runs, not only the folders of its
+own sessions. A Claude started outside linkC in Desktop, Documents or Downloads can make macOS ask
+once whether linkC may access that protected folder, since linkC then watches it.
+
 When an agent hits its usage limit, its current task moves to another available agent — never
 back to the one that gave it — and the limited agent rests until it actually recovers. linkC
 prefers real evidence over a guess: an already-known reset time from the agent's own usage

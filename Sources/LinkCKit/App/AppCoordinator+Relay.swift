@@ -477,7 +477,7 @@ extension AppCoordinator {
                 // completion line, a stuck notice, a peer note, a command — waits for a session to
                 // exist instead, and the user is told when it has waited too long.
                 guard message.kind == .task else {
-                    noteUndeliveredNotice(message, workspacePath: norm)
+                    noteUndeliveredNotice(message, workspacePath: norm, inboxStore: inboxStore)
                     continue
                 }
                 let goal: String? = message.kind == .task ? message.prompt : nil
@@ -491,7 +491,7 @@ extension AppCoordinator {
                 continue
             }
             guard let session = target, isIdle(session.state) else {
-                noteUndeliveredNotice(message, workspacePath: norm)
+                noteUndeliveredNotice(message, workspacePath: norm, inboxStore: inboxStore)
                 continue
             }
 
@@ -1036,7 +1036,8 @@ extension AppCoordinator {
                       currentTask.shortId, target.displayName, hop + 1, match.matchedPattern, evidence)
                 tellDelegator()
                 _ = try inboxStore.createTask(
-                    from: currentTask.fromAgent, to: target, tier: currentTask.tier, prompt: currentTask.prompt,
+                    from: currentTask.fromAgent, to: target, fromSessionId: currentTask.fromSessionId,
+                    tier: currentTask.tier, prompt: currentTask.prompt,
                     files: currentTask.files, hop: hop + 1, force: true,
                     verification: currentTask.verification, gate: currentTask.gate
                 )
