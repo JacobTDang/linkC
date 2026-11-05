@@ -352,4 +352,22 @@ final class WorkerReaperTests: XCTestCase {
             return XCTFail("an undelivered task has no worker")
         }
     }
+
+    // MARK: - Pinned tasks
+
+    /// A task pinned to one session can be carried by that session only.
+    func testOnlyItsOwnSessionCanCarryAPinnedTask() {
+        let pinned = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "p", targetSessionId: "X")
+        XCTAssertTrue(session("X", .ready, idleFor: 0).canCarry(pinned))
+        XCTAssertFalse(session("W", .ready, idleFor: 0).canCarry(pinned))
+    }
+
+    /// A finished worker is kept for a queued task it could take, but never for one pinned to another
+    /// session: that task will never be its.
+    func testAQueuedTaskPinnedToAnotherSessionDoesNotKeepAFinishedWorker() {
+        let pinnedElsewhere = TaskRecord(fromAgent: .claude, toAgent: .codex, prompt: "p", state: .queued,
+                                         createdAt: now, targetSessionId: "X")
+        let tasks = [task(.done, assignee: "W", endedAgo: 120), pinnedElsewhere]
+        XCTAssertEqual(closable([session("W", .finished, idleFor: 2)], tasks: tasks), ["W"])
+    }
 }

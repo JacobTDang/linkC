@@ -4208,6 +4208,85 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertFalse(try closeRequest(inbox, task).isPending, "the request was never answered")
     }
+
+    // MARK: - Pinned tasks (`linkc --task`)
+
+    /// A task pinned to a session goes to that session, even while another idle session of the same
+    /// agent, first in line, could carry it.
+    @MainActor
+    func testAPinnedTaskIsDeliveredOnlyToItsSession() async throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let other = try coordinator.newSession(cwd: ws, agent: .codex)
+        let pinned = try coordinator.newSession(cwd: ws, agent: .codex)
+        for session in [other, pinned] {
+            coordinator.store.updateState(id: session.id, to: .ready)
+            try await waitForPasteReady(coordinator, sessionId: session.id)
+        }
+        let task = try inbox.createTask(from: .claude, to: .codex, targetSessionId: pinned.id, prompt: "carry", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.assigneeSessionId, pinned.id)
+    }
+
+    /// A pinned task waits for its own session and never launches one.
+    @MainActor
+    func testAPinnedTaskWaitsForItsBusySessionAndLaunchesNone() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let pinned = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: pinned.id, to: .working)
+        let task = try inbox.createTask(from: .claude, to: .codex, targetSessionId: pinned.id, prompt: "carry", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(coordinator.store.sessions.map(\.id), [pinned.id], "no session was launched for it")
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
+    }
+
+    @MainActor
+    func testAPinnedTaskWhoseSessionEndedExpires() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let task = try inbox.createTask(from: .claude, to: .codex, targetSessionId: "GONE", prompt: "carry", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        let after = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(after.state, .expired)
+        XCTAssertEqual(after.cancelReason, "its session ended before the task was delivered")
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "no session was launched for it")
+    }
+
+    /// The pinned session still listed but ended (its terminal gone) counts as gone too.
+    @MainActor
+    func testAPinnedTaskWhoseSessionIsListedAsEndedExpires() throws {
+        let ws = (tempDir.path as NSString).standardizingPath
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        _ = coordinator.store.create(cwd: ws, title: "ended", id: "ENDED", agentKind: .codex)
+        coordinator.store.updateState(id: "ENDED", to: .ended)
+        let task = try inbox.createTask(from: .claude, to: .codex, targetSessionId: "ENDED", prompt: "carry", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .expired)
+        XCTAssertEqual(coordinator.store.sessions.map(\.id), ["ENDED"], "no session was launched for it")
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.

@@ -165,6 +165,9 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     /// would make every task row written before it unreadable and take the inbox with it. An
     /// older build ignores the key on a row that has one.
     public var closeRequest: CloseRequest?
+    /// The one session this task may be delivered to: the session the `linkc --task` command opened for
+    /// it. nil: any session of `toAgent` that can carry it. Optional for the same reason as `tier`.
+    public var targetSessionId: String?
 
     public var shortId: String { String(id.prefix(8)) }
 
@@ -192,7 +195,8 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         verification: Verification? = nil,
         gate: Verdict? = nil,
         verdict: Verdict? = nil,
-        closeRequest: CloseRequest? = nil
+        closeRequest: CloseRequest? = nil,
+        targetSessionId: String? = nil
     ) {
         self.id = id
         self.fromAgent = fromAgent
@@ -218,6 +222,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.gate = gate
         self.verdict = verdict
         self.closeRequest = closeRequest
+        self.targetSessionId = targetSessionId
     }
 }
 

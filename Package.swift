@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "linkc", targets: ["linkc"]),
         .executable(name: "linkc-mcp", targets: ["linkc-mcp"]),
+        .executable(name: "linkc-cli", targets: ["linkc-cli"]),
         .library(name: "LinkCKit", targets: ["LinkCKit"]),
     ],
     dependencies: [
@@ -25,6 +26,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "linkc-mcp",
+            dependencies: ["LinkCKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
+            name: "linkc-cli",
             dependencies: ["LinkCKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
