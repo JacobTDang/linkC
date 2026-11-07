@@ -208,4 +208,85 @@ final class WebhookQueueTests: XCTestCase {
         queue.enqueue(event(2))
         try await until("the next message goes") { transport.requests.count == 2 }
     }
+
+    /// A cancelled queue is done for good: it takes nothing more.
+    func testACancelledQueueTakesNothingMore() async throws {
+        let clock = ManualClock(), transport = ScriptedWebhookTransport()
+        let queue = makeQueue(transport, clock)
+        queue.cancel()
+        queue.enqueue(event(1))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    /// A request still in flight when its queue is cancelled (its webhook was replaced) is answered into
+    /// nothing: no status, no stop, no notice for the webhook that replaced it.
+    func testAnAnswerAfterCancelChangesNothing() async throws {
+        let clock = ManualClock(), transport = GatedWebhookTransport()
+        let queue = WebhookQueue(name: "default", url: url, transport: transport, clock: clock, wallClock: { Date() })
+        var stopped: [Int] = []
+        var statuses: [WebhookStatus] = []
+        queue.onStopped = { stopped.append($0) }
+        queue.enqueue(event(1))
+        try await until("the request is in flight") { transport.requests == 1 }
+        queue.onStatus = { statuses.append($0) }
+
+        queue.cancel()
+        transport.release(with: WebhookResponse(status: 404))
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(stopped, [])
+        XCTAssertEqual(statuses, [])
+        XCTAssertFalse(queue.isStopped)
+    }
+
+    /// Discord's global limit, passed on by another queue, holds this one too.
+    func testAPauseHoldsTheNextRequest() async throws {
+        let clock = ManualClock(), transport = ScriptedWebhookTransport()
+        let queue = makeQueue(transport, clock)
+        defer { queue.cancel() }
+        queue.pause(for: .seconds(3))
+        queue.enqueue(event(1))
+        try await until("the request waits") { !clock.pendingSleeps.isEmpty }
+        XCTAssertEqual(clock.pendingSleeps.first?.requested, .seconds(3))
+        XCTAssertTrue(transport.requests.isEmpty)
+        clock.advance(by: .seconds(3))
+        try await until("the request goes") { transport.requests.count == 1 }
+    }
+
+    /// A redirect is not Discord's answer, and the transport follows none: a retry would get the same.
+    func testARedirectIsDroppedNotRetried() async throws {
+        let clock = ManualClock(), transport = ScriptedWebhookTransport([.success(WebhookResponse(status: 301))])
+        let queue = makeQueue(transport, clock)
+        defer { queue.cancel() }
+        queue.enqueue(event(1))
+        try await until("failed with the redirect") {
+            if case .failed(let text, _) = queue.status { return text.contains("301") }
+            return false
+        }
+        XCTAssertTrue(clock.pendingSleeps.isEmpty, "a redirect is not retried")
+        XCTAssertEqual(transport.requests.count, 1)
+    }
+
+    /// The events of a message linkC had to drop are counted in the next message, never lost silently.
+    func testADroppedMessagesEventsAreCountedInTheNext() async throws {
+        let clock = ManualClock()
+        let transport = ScriptedWebhookTransport([.success(WebhookResponse(status: 400))])
+        let queue = makeQueue(transport, clock)
+        defer { queue.cancel() }
+        queue.enqueue(event(1))
+        queue.enqueue(event(2))
+        try await until("the 400") { transport.requests.count == 1 }
+        try await until("failed") {
+            if case .failed = queue.status { return true }
+            return false
+        }
+
+        queue.enqueue(event(3))
+        try await until("the next message") { transport.requests.count == 2 }
+        XCTAssertEqual(transport.requests[1].json["content"] as? String,
+                       "2 earlier events were not posted (Discord was rate limiting).")
+        XCTAssertEqual(transport.requests[1].embedTitles, ["event 3"])
+    }
 }
+

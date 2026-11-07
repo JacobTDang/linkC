@@ -66,4 +66,18 @@ final class WebhookPacerTests: XCTestCase {
     func testA429ThatGivesNoWaitWaitsFiveSeconds() {
         XCTAssertEqual(DiscordRateLimit.read(WebhookResponse(status: 429)).retryAfter, .seconds(5))
     }
+
+    /// Numbers from the network are untrusted: a huge or infinite wait is clamped to an hour, never a crash.
+    func testAnAbsurdWaitIsClampedToAnHour() {
+        let huge = Data(#"{"retry_after":1e30}"#.utf8)
+        XCTAssertEqual(DiscordRateLimit.read(WebhookResponse(status: 429, body: huge)).retryAfter, .seconds(3600))
+        XCTAssertEqual(DiscordRateLimit.read(WebhookResponse(status: 429, headers: ["Retry-After": "inf"])).retryAfter,
+                       .seconds(3600))
+        XCTAssertEqual(DiscordRateLimit.read(WebhookResponse(
+            status: 204, headers: ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset-After": "nan"])).exhaustedFor,
+            .seconds(3600))
+        XCTAssertEqual(DiscordRateLimit.read(WebhookResponse(status: 429, headers: ["Retry-After": "-4"])).retryAfter,
+                       .zero)
+    }
 }
+
