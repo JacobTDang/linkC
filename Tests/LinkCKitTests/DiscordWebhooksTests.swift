@@ -42,27 +42,62 @@ final class DiscordWebhooksTests: XCTestCase {
         XCTAssertEqual(try webhook("  \(alpha)\n").url.absoluteString, alpha, "whitespace from a paste is trimmed")
     }
 
+    /// Each shape is refused by the check meant for it, with that check's reason.
     func testOtherShapesAreRefusedWithTheReason() {
-        let refused = [
-            "http://discord.com/api/webhooks/42/token",
-            "https://evil.com/api/webhooks/42/token",
-            "https://discord.com.evil.com/api/webhooks/42/token",
-            "https://discord.com:8443/api/webhooks/42/token",
-            "https://discord.com/api/webhooks/abc/token",
-            "https://discord.com/api/webhooks/42",
-            "https://discord.com/api/webhooks/42/",
-            "https://discord.com/api/webhooks/42/token/extra",
-            "https://discord.com/api/webhooks/42/token?wait=true",
-            "https://discord.com/api/v10/webhooks/42/token",
-            "not a url",
+        let shape = "looks like https://discord.com/api/webhooks/<id>/<token>"
+        let refused: [(text: String, reason: String)] = [
+            ("", "not a URL"),
+            ("https://discord.com/api/webhooks/42/tok en", "the webhook token is missing or malformed"),
+            ("http://discord.com/api/webhooks/42/token", "starts with https://"),
+            ("https://evil.com/api/webhooks/42/token", "is on discord.com"),
+            ("https://discord.com.evil.com/api/webhooks/42/token", "is on discord.com"),
+            ("https://discord.com@evil.com/api/webhooks/42/token", "is on discord.com"),
+            ("https://x@discord.com/api/webhooks/42/token", shape),
+            ("https://x:y@discord.com/api/webhooks/42/token", shape),
+            ("https://discord.com:8443/api/webhooks/42/token", shape),
+            ("https://discord.com/api/webhooks/42/token?wait=true", shape),
+            ("https://discord.com/api/webhooks/42/token#top", shape),
+            ("https://discord.com/api/webhooks/%34%32/token", shape),
+            ("https://discord.com/%61pi/webhooks/42/token", shape),
+            ("https://discord.com/api/webhooks/42", shape),
+            ("https://discord.com/api/webhooks/42/token/extra", shape),
+            ("https://discord.com/api/v10/webhooks/42/token", shape),
+            ("https://discord.com/api/webhooks/abc/token", "the webhook id is a number"),
+            ("https://discord.com/api/webhooks/４２/token", "the webhook id is a number"),
+            ("https://discord.com/api/webhooks/42/", "the webhook token is missing or malformed"),
         ]
-        for text in refused {
+        for (text, reason) in refused {
             guard case .failure(let refusal) = DiscordWebhookURL.parse(text) else {
                 XCTFail("accepted \(text)")
                 continue
             }
-            XCTAssertFalse(refusal.description.isEmpty, text)
+            XCTAssertTrue(refusal.description.contains(reason), "\(text): \(refusal.description)")
         }
+    }
+
+    /// One webhook has one spelling, so it gets one queue and one rate limit: the host is lowercased
+    /// and the token kept as it is.
+    func testTheStoredURLIsRebuiltFromItsParts() throws {
+        XCTAssertEqual(try webhook("https://DISCORD.com/api/webhooks/42/AbC").url.absoluteString,
+                       "https://discord.com/api/webhooks/42/AbC")
+    }
+
+    /// A webhook printed anywhere (a log line, a test failure) shows its id, never its token.
+    func testAWebhookPrintsItsIdNeverItsToken() throws {
+        let set = try webhook(alpha)
+        XCTAssertEqual("\(set)", "webhook 123456789012345678")
+        XCTAssertFalse(String(describing: DiscordWebhookState.set(set)).contains("AbC-def_GHI"))
+        XCTAssertFalse(String(describing: DiscordRoute.webhook(account: "default", set)).contains("AbC-def_GHI"))
+    }
+
+    /// Errors read well wherever they are shown through `localizedDescription` (Settings, the status line).
+    func testErrorsKeepTheirReasonThroughLocalizedDescription() {
+        guard case .failure(let refusal) = DiscordWebhookURL.parse("http://discord.com/api/webhooks/42/token") else {
+            return XCTFail("accepted")
+        }
+        XCTAssertEqual(refusal.localizedDescription, refusal.description)
+        XCTAssertTrue(KeychainSecretStore.Failure(status: errSecItemNotFound).localizedDescription
+            .contains("Keychain error -25300"))
     }
 
     func testAWebhookIsKeptInTheSecretStoreAndOnlyItsProjectInPreferences() throws {
@@ -142,5 +177,70 @@ final class DiscordWebhooksTests: XCTestCase {
         let defaults = InMemoryUserDefaults()
         preferences(defaults).discordProjects = ["/p/alpha"]
         XCTAssertEqual(preferences(defaults).discordProjects, ["/p/alpha"])
+    }
+
+    /// Settings may hand over a folder through a symlink: the project is kept, and matched, in its
+    /// canonical form.
+    func testAProjectIsKeptInItsCanonicalForm() throws {
+        let real = root.appendingPathComponent("real", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        let link = root.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let (webhooks, _, preferences) = make()
+
+        try webhooks.set(alpha, for: link.path)
+
+        XCTAssertEqual(preferences.discordProjects, [ProjectPath.canonical(real.path)])
+        XCTAssertEqual(webhooks.route(event(project: ProjectPath.canonical(real.path))),
+                       .webhook(account: ProjectPath.canonical(real.path), try webhook(alpha)))
+        try webhooks.remove(link.path)
+        XCTAssertEqual(preferences.discordProjects, [])
+    }
+
+    /// A project listed but not read yet is missing, never silently not set.
+    func testAListedProjectNotReadYetIsMissing() {
+        let (webhooks, _, preferences) = make()
+        preferences.discordProjects = ["/p/alpha"]
+        XCTAssertEqual(webhooks.state(for: "/p/alpha"), .missing)
+        XCTAssertEqual(webhooks.state(for: "/p/beta"), .notSet)
+    }
+
+    func testAStoredValueThatIsNotAWebhookIsUnreadable() throws {
+        let secrets = InMemorySecretStore()
+        try secrets.setSecret("https://evil.com/api/webhooks/42/token", service: DiscordWebhooks.service,
+                              account: DiscordWebhooks.defaultAccount)
+        let (webhooks, _, _) = make(secrets)
+        guard case .unreadable(let reason) = webhooks.state(for: DiscordWebhooks.defaultAccount) else {
+            return XCTFail("read as \(webhooks.state(for: DiscordWebhooks.defaultAccount))")
+        }
+        XCTAssertTrue(reason.contains("not valid"), reason)
+    }
+
+    func testAnUnreadableProjectWebhookNeverFallsBack() throws {
+        let (webhooks, secrets, _) = make()
+        try webhooks.set(fallback, for: DiscordWebhooks.defaultAccount)
+        try webhooks.set(alpha, for: "/p/alpha")
+        secrets.failure = NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "locked"])
+        webhooks.reload()
+
+        guard case .none(let reason?) = webhooks.route(event(project: "/p/alpha")) else {
+            return XCTFail("posted somewhere")
+        }
+        XCTAssertTrue(reason.contains("locked"), reason)
+    }
+
+    func testTheWebhooksAreReadAgainAtTheNextLaunch() throws {
+        let defaults = InMemoryUserDefaults(), secrets = InMemorySecretStore()
+        try DiscordWebhooks(secrets: secrets, preferences: preferences(defaults)).set(alpha, for: "/p/alpha")
+        let relaunched = DiscordWebhooks(secrets: secrets, preferences: preferences(defaults))
+        XCTAssertEqual(relaunched.state(for: "/p/alpha"), .set(try webhook(alpha)))
+    }
+
+    /// The project list is the routing table: one stored with the wrong type is kept aside, not lost.
+    func testAProjectListOfTheWrongTypeIsKeptAside() {
+        let defaults = InMemoryUserDefaults()
+        defaults.set("not a list", forKey: "discordWebhookProjects")
+        XCTAssertEqual(preferences(defaults).discordProjects, [])
+        XCTAssertEqual(defaults.object(forKey: "discordWebhookProjects.unreadable") as? String, "not a list")
     }
 }
