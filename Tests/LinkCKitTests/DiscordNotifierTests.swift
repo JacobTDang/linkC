@@ -174,7 +174,145 @@ final class DiscordNotifierTests: XCTestCase {
 
     func testATestWithNoWebhookSaysSo() {
         let (notifier, _) = make(ScriptedWebhookTransport())
-        XCTAssertThrowsError(try notifier.sendTest(to: DiscordWebhooks.defaultAccount))
+        defer { notifier.shutdown() }
+        XCTAssertThrowsError(try notifier.sendTest(to: DiscordWebhooks.defaultAccount)) { error in
+            XCTAssertEqual(error.localizedDescription, "No webhook is set.")
+        }
+    }
+
+    /// A test for a webhook that can't be used says why, as Settings shows it.
+    func testATestWithAMissingWebhookSaysWhy() throws {
+        let secrets = InMemorySecretStore()
+        let (notifier, _) = make(ScriptedWebhookTransport(), secrets: secrets)
+        defer { notifier.shutdown() }
+        try notifier.set(alphaURL, for: alpha)
+        try secrets.deleteSecret(service: DiscordWebhooks.service, account: alpha)
+        notifier.webhooks.reload()
+        XCTAssertThrowsError(try notifier.sendTest(to: alpha)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("missing"), error.localizedDescription)
+        }
+    }
+
+    /// Send test goes through the webhook's own queue: it keeps its place behind the events already
+    /// waiting, and the window they used.
+    func testATestGoesThroughTheLiveQueue() async throws {
+        let clock = ManualClock(), transport = ScriptedWebhookTransport()
+        let (notifier, _) = make(transport, clock: clock)
+        defer { notifier.shutdown() }
+        try notifier.set(defaultURL, for: DiscordWebhooks.defaultAccount)
+        for n in 1...5 {
+            notifier.post(event("e\(n)", project: nil))
+            try await until("request \(n)") { transport.requests.count == n }
+        }
+
+        try notifier.sendTest(to: DiscordWebhooks.defaultAccount)
+        try await until("the test waits for the window") { !clock.pendingSleeps.isEmpty }
+        XCTAssertEqual(transport.requests.count, 5)
+        clock.advance(by: .seconds(2))
+        try await until("the test goes") { transport.requests.count == 6 }
+        XCTAssertEqual(transport.requests[5].embedTitles, ["linkC is connected"])
+    }
+
+    /// Setting a webhook to the URL it already has keeps its queue and the window it used.
+    func testSettingTheSameURLKeepsTheQueue() async throws {
+        let clock = ManualClock(), transport = ScriptedWebhookTransport()
+        let (notifier, _) = make(transport, clock: clock)
+        defer { notifier.shutdown() }
+        try notifier.set(defaultURL, for: DiscordWebhooks.defaultAccount)
+        for n in 1...5 {
+            notifier.post(event("e\(n)", project: nil))
+            try await until("request \(n)") { transport.requests.count == n }
+        }
+
+        try notifier.set(defaultURL, for: DiscordWebhooks.defaultAccount)
+        notifier.post(event("e6", project: nil))
+        try await until("the sixth waits for the window") { !clock.pendingSleeps.isEmpty }
+        XCTAssertEqual(transport.requests.count, 5)
+    }
+
+    /// A webhook moved to a new URL leaves nothing posting to the old one.
+    func testANewURLRetiresTheOldQueue() async throws {
+        let clock = ManualClock()
+        let transport = ScriptedWebhookTransport([.success(WebhookResponse(status: 500))])
+        let (notifier, _) = make(transport, clock: clock)
+        defer { notifier.shutdown() }
+        try notifier.set(alphaURL, for: alpha)
+        notifier.post(event("for alpha", project: alpha))
+        try await until("the 500") { transport.requests.count == 1 }
+        try await until("the retry waits") { !clock.pendingSleeps.isEmpty }
+
+        try notifier.set(defaultURL, for: alpha)
+        clock.advance(by: .seconds(2))
+        notifier.post(event("again", project: alpha))
+        try await until("the new URL gets it") { transport.requests.count == 2 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(transport.requests.map(\.url.absoluteString), [alphaURL, defaultURL])
+    }
+
+    /// Discord's global limit is per IP: a webhook set up while it runs waits out the rest of it.
+    func testAWebhookSetDuringAGlobalPauseWaitsToo() async throws {
+        let clock = ManualClock()
+        let transport = ScriptedWebhookTransport([.success(WebhookResponse(
+            status: 429, body: Data(#"{"retry_after":3,"global":true}"#.utf8)))])
+        let (notifier, _) = make(transport, clock: clock)
+        defer { notifier.shutdown() }
+        try notifier.set(alphaURL, for: alpha)
+        notifier.post(event("for alpha", project: alpha))
+        try await until("the global 429") { transport.requests.count == 1 }
+        try await until("alpha waits") { clock.pendingSleeps.count == 1 }
+
+        try notifier.set(defaultURL, for: DiscordWebhooks.defaultAccount)
+        notifier.post(event("for the default", project: nil))
+        try await until("the new webhook waits too") { clock.pendingSleeps.count == 2 }
+        XCTAssertEqual(transport.requests.count, 1)
+    }
+
+    /// Removing a webhook drops what was still waiting for it.
+    func testRemovingAWebhookDropsItsWaitingEvents() async throws {
+        let clock = ManualClock(), transport = ScriptedWebhookTransport()
+        let (notifier, _) = make(transport, clock: clock)
+        defer { notifier.shutdown() }
+        try notifier.set(alphaURL, for: alpha)
+        for n in 1...5 {
+            notifier.post(event("e\(n)", project: alpha))
+            try await until("request \(n)") { transport.requests.count == n }
+        }
+        notifier.post(event("e6", project: alpha))
+        try await until("the sixth waits") { !clock.pendingSleeps.isEmpty }
+
+        try notifier.remove(alpha)
+        clock.advance(by: .seconds(2))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(transport.requests.count, 5)
+    }
+
+    /// Another account still on the URL keeps its queue when one account is removed.
+    func testRemovingOneOfTwoAccountsOnAURLKeepsItsQueue() async throws {
+        let clock = ManualClock(), transport = ScriptedWebhookTransport()
+        let (notifier, _) = make(transport, clock: clock)
+        defer { notifier.shutdown() }
+        try notifier.set(defaultURL, for: DiscordWebhooks.defaultAccount)
+        try notifier.set(defaultURL, for: alpha)
+        for n in 1...5 {
+            notifier.post(event("e\(n)", project: nil))
+            try await until("request \(n)") { transport.requests.count == n }
+        }
+
+        try notifier.remove(alpha)
+        notifier.post(event("e6", project: nil))
+        try await until("the sixth still waits for the window it shares") { !clock.pendingSleeps.isEmpty }
+        XCTAssertEqual(transport.requests.count, 5)
+    }
+
+    /// After shutdown nothing is posted, even if an event still arrives.
+    func testNothingIsPostedAfterShutdown() async throws {
+        let transport = ScriptedWebhookTransport()
+        let (notifier, _) = make(transport)
+        try notifier.set(defaultURL, for: DiscordWebhooks.defaultAccount)
+        notifier.shutdown()
+        notifier.post(event("late", project: nil))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(transport.requests.isEmpty)
     }
 
     func testStatusLabels() {
