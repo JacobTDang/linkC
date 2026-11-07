@@ -1,0 +1,40 @@
+
+
+                                       ┃                                                 ┃
+                                       ┃  Model opencode/no-such-model-xyz is not valid  ┃
+                                       ┃                                                 ┃
+
+
+
+
+
+
+
+                                                            ▄
+                           █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+                           █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+                           ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+
+
+         ┃
+         ┃  Ask anything... "Fix broken tests"
+         ┃
+         ┃  Build auto · Qwen3.8 27B (local, 32k) Ollama (local)
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         tab agents  ctrl+p commands
+
+
+
+             ● Tip Create opencode.json for server settings, and tui.json for TUI
+
+
+
+
+
+
+
+
+
+  /private/tmp/agent-0501/-Users-user_name-Projects-linkC/65d23432-9669-4f94-      1.18.19
+  979d-931668e62d0c/scratchpad/capture/repo-92:main
+
