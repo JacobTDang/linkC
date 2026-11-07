@@ -132,6 +132,7 @@ public enum BoardTech {
         "cursor": .cursor,
         "antigravity": .agy,
         "agy": .agy,
+        "opencode": .opencode,
     ]
 
     /// `component.tech`, or nil when it is unset or empty — "no tech" either way, for inference
@@ -141,7 +142,7 @@ public enum BoardTech {
         return tech
     }
 
-    /// An agent's logo for a component named like an agent (claude, codex, cursor, antigravity, agy).
+    /// An agent's logo for a component named like an agent (claude, codex, cursor, antigravity, agy, opencode).
     /// A tech overrides the name: inference from the name — agent names included — applies only
     /// when `tech` is nil or empty; an explicit `tech` that names no agent means no agent logo,
     /// never a fall back to the name. `agent(for:)` is what the app checks first, before `resolve`.

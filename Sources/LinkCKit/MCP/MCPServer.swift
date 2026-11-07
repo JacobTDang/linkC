@@ -208,7 +208,7 @@ public final class MCPServer: Sendable {
     public static let targetAgentTools: Set<String> = ["linkc_switch_model", "linkc_get_models"]
 
     public static let unidentifiedCallerMessage =
-        "Cannot identify calling agent; pass agent: \"claude\" | \"agy\" | \"cursor\" | \"codex\" | \"grok\"."
+        "Cannot identify calling agent; pass agent: \"claude\" | \"agy\" | \"cursor\" | \"codex\" | \"grok\" | \"opencode\"."
 
     /// `linkc_edit_board`'s `steps` schema description: the only place an agent can discover the
     /// step grammar, so it names every verb's fields exactly, one short line each, matching
@@ -287,7 +287,8 @@ public final class MCPServer: Sendable {
             .claude: claude,
             .agy: { .unavailable(.agy, reason: "agy writes no local session records") },
             .cursor: { .unavailable(.cursor, reason: "cursor writes no local session records") },
-            .grok: { .unavailable(.grok, reason: "Grok runs on the Cursor plan, which writes no local session records") }
+            .grok: { .unavailable(.grok, reason: "Grok runs on the Cursor plan, which writes no local session records") },
+            .opencode: { .unavailable(.opencode, reason: "OpenCode's free models publish no quota locally") }
         ]
     }
 
@@ -1065,7 +1066,7 @@ public final class MCPServer: Sendable {
                     }
                     targetAgents = [a]
                 } else {
-                    targetAgents = [.claude, .codex, .agy, .cursor, .grok]
+                    targetAgents = [.claude, .codex, .agy, .cursor, .grok, .opencode]
                 }
 
                 let settings = modelSettings()
@@ -1110,7 +1111,7 @@ public final class MCPServer: Sendable {
                 let now = Date()
                 var text = "# Agent Usage\n\n"
 
-                for agent in [AgentKind.codex, .claude, .agy, .cursor, .grok] {
+                for agent in [AgentKind.codex, .claude, .agy, .cursor, .grok, .opencode] {
                     let usage = usageReaders[agent]?() ?? .unavailable(agent, reason: "no usage reader configured for this agent")
                     text += Self.renderUsageSection(usage, now: now)
                 }
