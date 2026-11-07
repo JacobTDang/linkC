@@ -101,9 +101,6 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
                 continue
             }
             await deliver(body)
-            if !pending.isEmpty {
-                try? await Task.sleep(for: .milliseconds(20))
-            }
         }
     }
 
