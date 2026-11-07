@@ -133,6 +133,88 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         XCTAssertTrue(coordinator.store.sessions.isEmpty, "a refused launch leaves no session behind")
     }
 
+    /// Records every listing linkC asks for and answers with `listing`, or throws `failure`.
+    final class SessionLister: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _calls: [(executable: String, folder: String)] = []
+        let listing: String
+        let failure: Error?
+        init(listing: String = "", failure: Error? = nil) { self.listing = listing; self.failure = failure }
+        var calls: [(executable: String, folder: String)] { lock.lock(); defer { lock.unlock() }; return _calls }
+        func list(_ executable: String, _ folder: String) throws -> String {
+            lock.lock(); _calls.append((executable, folder)); lock.unlock()
+            if let failure { throw failure }
+            return listing
+        }
+    }
+
+    private func listing(id: String, in folder: String) -> String {
+        #"[{"id":"\#(id)","title":"t","updated":1794071408175,"created":1794071353260,"projectId":"p","directory":"\#(folder)"}]"#
+    }
+
+    private func waitUntil(_ predicate: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while !predicate(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+        return predicate()
+    }
+
+    /// A continued OpenCode session keeps the model it last ran on, so linkC records none for it. The
+    /// default tier's model still goes in its config, for a folder where no session ran.
+    func testContinuingOpensThisFoldersOwnSession() throws {
+        let coordinator = try makeCoordinator()
+        defer { coordinator.shutdown() }
+        let lister = SessionLister(listing: listing(id: "ses_here", in: ProjectPath.canonical(tempDir.path)))
+        coordinator.openCodeSessionList = { try lister.list($0, $1) }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
+
+        XCTAssertEqual(launchedLines("argv", of: session, count: 4), ["--standalone", "--auto", "--session", "ses_here"])
+        XCTAssertNil(session.model, "a continued session runs on its own last model, which linkC does not know")
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/big-pickle")
+        XCTAssertEqual(lister.calls.map(\.executable), [stubAgent.path])
+        XCTAssertEqual(lister.calls.map(\.folder), [session.cwd], "the listing runs in the session's own folder")
+    }
+
+    func testContinuingWhereNoSessionRanStartsANewOne() throws {
+        let coordinator = try makeCoordinator()
+        defer { coordinator.shutdown() }
+        let lister = SessionLister(listing: listing(id: "ses_elsewhere", in: "/somewhere/else"))
+        coordinator.openCodeSessionList = { try lister.list($0, $1) }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
+
+        XCTAssertEqual(launchedLines("argv", of: session, count: 2), ["--standalone", "--auto"])
+    }
+
+    /// Continuing must never quietly become a new conversation.
+    func testAListingThatFailsEndsTheSessionAndSaysWhy() throws {
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+        let lister = SessionLister(failure: LinkCError.process("opencode session list exited 1: no database"))
+        coordinator.openCodeSessionList = { try lister.list($0, $1) }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
+
+        XCTAssertTrue(waitUntil { coordinator.store.session(id: session.id) == nil }, "the session is ended")
+        let notice = try XCTUnwrap(sink.deliveries.first { $0.title == "linkC: OpenCode could not continue" })
+        XCTAssertTrue(notice.body.contains("no database"), notice.body)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("argv-\(session.id)").path),
+                       "OpenCode never started")
+    }
+
+    func testANewSessionNeverLists() throws {
+        let coordinator = try makeCoordinator()
+        defer { coordinator.shutdown() }
+        let lister = SessionLister()
+        coordinator.openCodeSessionList = { try lister.list($0, $1) }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new)
+
+        XCTAssertEqual(launchedLines("argv", of: session, count: 2).count, 2)
+        XCTAssertTrue(lister.calls.isEmpty)
+    }
+
     func testOnlyAnOpenCodeTerminalGetsOpenCodesVariables() throws {
         try XCTSkipIf(ProcessInfo.processInfo.environment["OPENCODE_CONFIG_CONTENT"] != nil
                       || ProcessInfo.processInfo.environment["OPENCODE_DISABLE_AUTOUPDATE"] != nil, "run from inside OpenCode")

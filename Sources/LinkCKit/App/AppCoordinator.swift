@@ -87,6 +87,11 @@ public final class AppCoordinator {
     /// coordinator can't see. Invoked on the main actor.
     private let isWatching: @MainActor @Sendable (String) -> Bool
     let agentPathResolver: (@Sendable (AgentKind) -> String?)?
+    /// Lists OpenCode's sessions as `opencode session list --format json --standalone` run in a
+    /// folder prints them. A seam, so a test can play the listing; the real one runs off the main thread.
+    var openCodeSessionList: @Sendable (_ executable: String, _ folder: String) async throws -> String = {
+        try await AppCoordinator.listOpenCodeSessions(executable: $0, folder: $1)
+    }
     /// Runs task gates and verifications off the main actor; injected so tests can script verdicts.
     let verifier: any TaskVerifier
     /// Workspaces with a verification run in flight, mapped to the task id running there — at
@@ -214,7 +219,7 @@ public final class AppCoordinator {
     private var consumerTask: Task<Void, Never>?
     /// The one loop behind every periodic sample: the sessions, the relay and, while `panelVisible`,
     /// the app's own sampling (`panelSweep`). Its spacing follows `TickCadence`.
-    private var sweepTicker: SweepTicker?
+    var sweepTicker: SweepTicker?
     /// Wakes `sweepTicker` when a workspace's inbox file is replaced, so a new delegation never
     /// waits out the slow interval. A burst of writes still makes one pass: the ticker holds
     /// woken passes `TickCadence.minimumWakeGap` apart. Watches the workspaces the relay works on:
@@ -608,7 +613,7 @@ public final class AppCoordinator {
     /// Remove a session everywhere it leaves state behind: the store, its terminal (dropped,
     /// not killed — the process is already dead here), its per-session settings file, its
     /// notification dedupe entry, and its usage-tracker dictionaries. Idempotent.
-    private func cleanup(sessionId: String) {
+    func cleanup(sessionId: String) {
         let wasWorker = store.session(id: sessionId)?.isWorker ?? false
         store.remove(id: sessionId)
         terminals.remove(sessionId)
@@ -768,8 +773,9 @@ public final class AppCoordinator {
             throw LinkCError.process("a tier can only pin a new session; \(mode) reuses an existing session's model")
         }
         let (model, modelTier) = try launchModel(for: agent, tier: tier)
+        // A continued OpenCode session keeps the model it last ran on, which linkC does not know.
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
-                                   model: model, modelTier: modelTier,
+                                   model: agent == .opencode && mode == .continueLast ? nil : model, modelTier: modelTier,
                                    claudeSessionId: resumeId, isWorker: asWorker)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent, select: false)
@@ -857,11 +863,17 @@ public final class AppCoordinator {
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
             }
 
-            try terminal.start(
-                executable: executable,
-                args: args,
-                env: env
-            )
+            if agent == .opencode, mode == .continueLast {
+                // OpenCode's own `--continue` can open another folder's session. This folder's is
+                // found first; the terminal starts when the listing is back.
+                continueOpenCode(session: session, terminal: terminal, executable: executable, args: args, env: env)
+            } else {
+                try terminal.start(
+                    executable: executable,
+                    args: args,
+                    env: env
+                )
+            }
             if select { terminals.select(session.id) }
             // Record the now-live session so it survives a quit/crash and can be restored.
             manifest.upsert(RestorableSession(
