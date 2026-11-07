@@ -19,6 +19,22 @@ final class CodexScreenTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("codex-0.163-working-limit-warning")), "Working")
     }
 
+    /// A status row with both a tip and a limit warning row under it still reads as working.
+    func testAStatusRowWithBothATipAndALimitWarningReadsAsWorking() throws {
+        var rows = try screen("codex-0.159-working-tip-under-status")
+        let box = try XCTUnwrap(rows.firstIndex { $0.contains("Ask Codex to do anything") })
+        rows.insert("                                        ⚠ 5h limit: 27% left · resets at 5:51 AM · /status", at: box)
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+    }
+
+    /// A finished turn with a limit warning row above the input box still reads as not working.
+    func testAFinishedTurnWithALimitWarningStillReadsAsNotWorking() throws {
+        var rows = try screen("codex-0.159-turn-finished")
+        let box = try XCTUnwrap(rows.firstIndex { $0.contains("Ask Codex to do anything") })
+        rows.insert("                                        ⚠ 5h limit: 27% left · resets at 5:51 AM · /status", at: box)
+        XCTAssertNil(TerminalPreview.liveActivity(from: rows))
+    }
+
     /// The tip fixture with its tip row wrapped onto `continuations` further rows, indented under
     /// the tip's text the way Codex indents a wrapped detail. At the panel's narrow widths a tip
     /// does not fit one row.

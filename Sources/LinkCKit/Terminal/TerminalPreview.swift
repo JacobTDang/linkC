@@ -146,8 +146,8 @@ public enum TerminalPreview {
                 // sits right above the input box, and is gone once the turn ends. Messages queued
                 // mid-turn sit between the two, under a "Messages to be submitted after next tool
                 // call" header, so the status row is then the one above that header. A detail
-                // under the status row (a tip, once the turn has run a while) sits between them
-                // too, and is skipped the same way.
+                // or warning under the status row (a tip or limit warning) sits between them too,
+                // and is skipped the same way.
                 let queueHeader = above.firstIndex { $0.contains("Messages to be submitted after next tool call") }
                 let firstDetail = queueHeader.map { $0 + 1 } ?? 0
                 let statusIndex = firstDetail + statusDetailRowCount(in: aboveRaw[firstDetail...])
@@ -311,13 +311,15 @@ public enum TerminalPreview {
         return text.contains("esc to interrupt") && !text.contains("esc to interrupt)")
     }
 
-    /// How many rows are skipped under Codex's status row.
-    private static let maxStatusDetailRows = 3
+    /// How many rows are skipped under Codex's status row: detail rows, a limit warning, and any
+    /// wrapped continuation rows.
+    private static let maxStatusDetailRows = 4
 
-    /// Whether `row` is a detail under Codex's status row: a "└" row. The queued-message rows
-    /// ("↳") and every bulleted row are ordinary content.
+    /// Whether `row` is a detail or warning under Codex's status row: a "└" detail row or a "⚠"
+    /// warning row. The queued-message rows ("↳") and every bulleted row are ordinary content.
     private static func isStatusDetail(_ row: String) -> Bool {
-        row.drop { $0 == " " }.first == "└"
+        guard let first = row.drop(while: { $0 == " " }).first else { return false }
+        return first == "└" || first == "⚠"
     }
 
     /// Whether `row` continues the "└" row above it: a detail wrapped at a narrow width is indented
