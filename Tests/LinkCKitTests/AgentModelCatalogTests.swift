@@ -152,6 +152,12 @@ final class AgentModelCatalogTests: XCTestCase {
         XCTAssertEqual(AgentModelCatalog.launchArguments(model: "default", for: .cursor), ["--model", "default"])
     }
 
+    /// OpenCode 2.2.5's TUI has no `--model` flag; its model goes in its inline config instead.
+    func testOpenCodeTakesNoModelArgument() {
+        XCTAssertEqual(AgentModelCatalog.launchArguments(model: "opencode/big-pickle", for: .opencode), [])
+        XCTAssertEqual(AgentModelCatalog.launchArguments(model: "gpt-5.6-sol", for: .codex), ["--model", "gpt-5.6-sol"])
+    }
+
     func testCodableAndIdentifiableAgentModelInfo() throws {
         let original = AgentModelInfo(id: "custom-id", displayName: "Custom Model", isFreeOrSubscription: true, isDefault: false)
         XCTAssertEqual(original.id, "custom-id")

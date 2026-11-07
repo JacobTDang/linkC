@@ -71,6 +71,11 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
 
     /// `peers` as text, for tool descriptions and errors: "claude, agy, cursor, codex, grok, opencode".
     public static var peerList: String { peers.map(\.rawValue).joined(separator: ", ") }
+
+    /// Agents every launch names a model for, a tier or not, because their CLI's own default is not
+    /// theirs: Grok's Cursor defaults to Auto, and OpenCode runs a session whose model it does not
+    /// know on whatever it picks, which may be the user's local model.
+    public static let alwaysNamesModel: Set<AgentKind> = [.grok, .opencode]
 }
 
 /// Metadata and argument specifications for AI CLI agents.
@@ -153,8 +158,10 @@ public struct AgentDescriptor: Sendable {
                     "/usr/local/bin/opencode",
                     home.appendingPathComponent(".opencode/bin/opencode")
                 ],
-                // Every permission approved that the config does not deny.
-                yoloFlags: ["--auto"],
+                // A private server for this session, so its environment — the model and linkC's tools in
+                // `OPENCODE_CONFIG_CONTENT`, `LINKC_SESSION` — reaches it; the shared background service has
+                // the environment of whatever started it. Every permission approved that the config does not deny.
+                yoloFlags: ["--standalone", "--auto"],
                 // OpenCode's own `--continue` takes the newest session of the whole project — every
                 // worktree of a repo is one project — and moves into that session's folder. linkC
                 // passes `--session <id>` for this folder's own session instead (AppCoordinator+OpenCode).

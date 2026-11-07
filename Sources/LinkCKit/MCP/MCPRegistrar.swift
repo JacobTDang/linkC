@@ -93,9 +93,10 @@ public struct MCPRegistrar: Sendable {
     }
 
     /// `OPENCODE_CONFIG_CONTENT` for a terminal linkC starts OpenCode in: `inherited` — a value
-    /// already in linkC's own environment — with linkC's server added to its `mcp` table. One line.
+    /// already in linkC's own environment — with linkC's server added to its `mcp` table and, when
+    /// given, `model` as the session's model. One line.
     /// Throws when `inherited` is not a JSON object.
-    public static func openCodeConfigContent(inherited: String?, binaryPath: String) throws -> String {
+    public static func openCodeConfigContent(inherited: String?, binaryPath: String, model: String?) throws -> String {
         let source = "\(AgentDescriptor.openCodeConfigContentKey) in linkC's environment"
         var root: [String: Any] = [:]
         if let inherited, !inherited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -113,6 +114,7 @@ public struct MCPRegistrar: Sendable {
         var mcp = try mcpTable(in: root, of: source)
         mcp[serverName] = openCodeEntry(binaryPath: binaryPath)
         root["mcp"] = mcp
+        if let model { root["model"] = model }
         let data = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys, .withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
     }

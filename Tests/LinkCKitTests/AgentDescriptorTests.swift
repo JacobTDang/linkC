@@ -132,7 +132,7 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(AgentKind.peerList, "claude, agy, cursor, codex, grok, opencode")
     }
 
-    /// OpenCode runs its own binary with every permission approved. It never gets `--continue`:
+    /// OpenCode runs its own binary, on a private server of its own, with every permission approved. It never gets `--continue`:
     /// that takes the newest session of the whole project, in whatever folder it ran.
     func testOpenCodeIsItsOwnAgentWithEveryPermissionApproved() {
         XCTAssertEqual(AgentKind.opencode.pillText, "OPENCODE")
@@ -146,7 +146,7 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(opencode.defaultCandidatePaths,
                        ["/opt/homebrew/bin/opencode", "/usr/local/bin/opencode", "\(home)/.opencode/bin/opencode"])
         for mode in [LaunchMode.new, .continueLast, .resume] {
-            XCTAssertEqual(AgentDescriptor.arguments(for: .opencode, mode: mode, sessionId: "S-1"), ["--auto"], "\(mode)")
+            XCTAssertEqual(AgentDescriptor.arguments(for: .opencode, mode: mode, sessionId: "S-1"), ["--standalone", "--auto"], "\(mode)")
         }
     }
 

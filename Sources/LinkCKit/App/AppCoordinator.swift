@@ -798,6 +798,9 @@ public final class AppCoordinator {
             if agent == .grok {
                 env.merge(try grokEnvironment()) { _, grok in grok }
             }
+            if agent == .opencode {
+                env.merge(try openCodeEnvironment(model: model)) { _, openCode in openCode }
+            }
 
             if agent == .claude {
                 // An explicit trust file wins; otherwise the user's home. With neither, nothing is written.
@@ -882,20 +885,20 @@ public final class AppCoordinator {
     }
 
     /// The model a launch pins, and the tier it came from. A tier with no model leaves a session
-    /// unpinned — except Grok, which always names its model: on a fresh `~/.cursor-grok`, Cursor's
-    /// own default is Auto, not Grok. With no tier, Grok runs on its default tier's model but
+    /// unpinned — except Grok and OpenCode, which always name their model: on a fresh `~/.cursor-grok`,
+    /// Cursor's own default is Auto, not Grok. With no tier, Grok runs on its default tier's model but
     /// records no tier, so a Grok session the user opened is, like any other, never handed a
     /// delegated task (`Session.canCarry`). A tier with no model refuses the launch rather than
     /// run on whatever Cursor would pick.
     private func launchModel(for agent: AgentKind, tier: ModelTier?) throws -> (model: String?, tier: ModelTier?) {
-        guard agent == .grok else {
+        guard AgentKind.alwaysNamesModel.contains(agent) else {
             let model = tier.flatMap { resolvedModel(for: agent, tier: $0) }
             return (model, model == nil ? nil : tier)
         }
         let settings = modelSettings()
-        let grokTier = tier ?? settings.defaultTier(for: .grok)
-        guard let model = settings.model(for: .grok, tier: grokTier) else {
-            throw LinkCError.process("no model configured for grok tier \(grokTier.rawValue) — set it in linkC settings")
+        let launchTier = tier ?? settings.defaultTier(for: agent)
+        guard let model = settings.model(for: agent, tier: launchTier) else {
+            throw LinkCError.process("no model configured for \(agent.rawValue) tier \(launchTier.rawValue) — set it in linkC settings")
         }
         return (model, tier)
     }

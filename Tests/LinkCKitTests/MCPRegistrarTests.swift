@@ -357,7 +357,7 @@ final class MCPRegistrarTests: XCTestCase {
     }
 
     func testTheInlineConfigCarriesLinkCsServer() throws {
-        let content = try MCPRegistrar.openCodeConfigContent(inherited: nil, binaryPath: "/bin/linkc-mcp")
+        let content = try MCPRegistrar.openCodeConfigContent(inherited: nil, binaryPath: "/bin/linkc-mcp", model: nil)
         XCTAssertFalse(content.contains("\n"), "one line, so it passes through an environment variable as is")
         let entry = try XCTUnwrap(try inlineEntries(content)["linkc-multiplier"] as? [String: Any])
         XCTAssertEqual(entry["command"] as? [String], ["/bin/linkc-mcp"])
@@ -366,7 +366,7 @@ final class MCPRegistrarTests: XCTestCase {
 
     func testTheInlineConfigKeepsWhatWasAlreadyInTheEnvironment() throws {
         let inherited = #"{"model":"opencode/big-pickle","mcp":{"other":{"type":"remote","url":"https://example.com/mcp"}}}"#
-        let content = try MCPRegistrar.openCodeConfigContent(inherited: inherited, binaryPath: "/bin/linkc-mcp")
+        let content = try MCPRegistrar.openCodeConfigContent(inherited: inherited, binaryPath: "/bin/linkc-mcp", model: nil)
         let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
         XCTAssertEqual(root["model"] as? String, "opencode/big-pickle")
         XCTAssertNotNil(try inlineEntries(content)["other"])
@@ -374,13 +374,27 @@ final class MCPRegistrarTests: XCTestCase {
     }
 
     func testABlankInheritedConfigIsNone() throws {
-        let content = try MCPRegistrar.openCodeConfigContent(inherited: "  ", binaryPath: "/bin/linkc-mcp")
+        let content = try MCPRegistrar.openCodeConfigContent(inherited: "  ", binaryPath: "/bin/linkc-mcp", model: nil)
         XCTAssertNotNil(try inlineEntries(content)["linkc-multiplier"])
     }
 
     func testAnInheritedConfigThatIsNotAJSONObjectIsRefused() {
-        XCTAssertThrowsError(try MCPRegistrar.openCodeConfigContent(inherited: "model=x", binaryPath: "/bin/linkc-mcp")) { error in
+        XCTAssertThrowsError(try MCPRegistrar.openCodeConfigContent(inherited: "model=x", binaryPath: "/bin/linkc-mcp", model: nil)) { error in
             XCTAssertTrue(String(describing: error).contains("OPENCODE_CONFIG_CONTENT"), "\(error)")
         }
+    }
+
+    func testTheInlineConfigNamesTheSessionsModel() throws {
+        let inherited = #"{"model":"ollama/qwen3.8:27b-32k"}"#
+        let content = try MCPRegistrar.openCodeConfigContent(inherited: inherited, binaryPath: "/bin/linkc-mcp", model: "opencode/big-pickle")
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
+        XCTAssertEqual(root["model"] as? String, "opencode/big-pickle", "the session's model wins over an inherited one")
+    }
+
+    func testWithNoModelTheInlineConfigLeavesTheModelAlone() throws {
+        let inherited = #"{"model":"ollama/qwen3.8:27b-32k"}"#
+        let content = try MCPRegistrar.openCodeConfigContent(inherited: inherited, binaryPath: "/bin/linkc-mcp", model: nil)
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
+        XCTAssertEqual(root["model"] as? String, "ollama/qwen3.8:27b-32k")
     }
 }
