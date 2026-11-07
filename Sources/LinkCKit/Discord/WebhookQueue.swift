@@ -34,6 +34,7 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
     private var pending: [LinkCEvent] = []
     private var dropped = 0
     private var runner: Task<Void, Never>?
+    private var cancelled = false
 
     private(set) var status: WebhookStatus = .idle {
         didSet { if status != oldValue { onStatus?(status) } }
@@ -59,9 +60,9 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
         return false
     }
 
-    /// Queues `event` for the next message. A stopped webhook takes nothing.
+    /// Queues `event` for the next message. A stopped or cancelled webhook takes nothing.
     func enqueue(_ event: LinkCEvent) {
-        guard !isStopped else { return }
+        guard !cancelled, !isStopped else { return }
         pending.append(event)
         if pending.count > Self.maxPending {
             let excess = pending.count - Self.maxPending
@@ -77,19 +78,24 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
         pacer.block(until: clock.now.advanced(by: duration))
     }
 
-    /// Stops sending, for good: the queue is being replaced or linkC is quitting.
+    /// Stops sending, for good: the queue is being replaced, or linkC is quitting. A request still in
+    /// flight is answered into nothing: no status, no stop, no global pause.
     func cancel() {
+        cancelled = true
+        pending.removeAll()
+        dropped = 0
         runner?.cancel()
         runner = nil
     }
 
     private func drain() async {
         defer { runner = nil }
-        while !pending.isEmpty, !isStopped, !Task.isCancelled {
+        while !cancelled, !pending.isEmpty, !isStopped, !Task.isCancelled {
             await waitForTurn()
-            guard !Task.isCancelled, !isStopped, !pending.isEmpty else { return }
+            guard !cancelled, !Task.isCancelled, !isStopped, !pending.isEmpty else { return }
             // Packed now, as it goes: everything that arrived during the wait rides along.
             let (payload, taken) = DiscordMessage.batch(pending, dropped: dropped)
+            let carried = taken + dropped
             pending.removeFirst(taken)
             dropped = 0
             let body: Data
@@ -98,25 +104,31 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
             } catch {
                 NSLog("[linkC discord] %@: a message could not be encoded — %@", name, error.localizedDescription)
                 status = .failed("a message could not be encoded: \(error.localizedDescription)", at: wallClock())
+                dropped += carried
                 continue
             }
-            await deliver(body)
+            await deliver(body, carrying: carried)
         }
     }
 
     /// Sends one message until Discord takes it, refuses it, stops the webhook, or the retries run out
     /// (spec §4.4).
-    private func deliver(_ body: Data) async {
+    private func deliver(_ body: Data, carrying carried: Int) async {
         var failures = 0
-        while !Task.isCancelled {
+        while !cancelled, !Task.isCancelled {
             await waitForTurn()
-            guard !Task.isCancelled else { return }
+            guard !cancelled, !Task.isCancelled else { return }
             pacer.recordSend(at: clock.now)
             let response: WebhookResponse
             do {
                 response = try await transport.post(body, to: url)
+                guard !cancelled else { return }
             } catch {
-                guard !Task.isCancelled, await retry(&failures, because: "no answer: \(error.localizedDescription)") else { return }
+                guard !cancelled else { return }
+                guard !Task.isCancelled, await retry(&failures, because: "no answer: \(error.localizedDescription)") else {
+                    if !cancelled { dropped += carried }
+                    return
+                }
                 continue
             }
             let limits = DiscordRateLimit.read(response)
@@ -134,17 +146,26 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
             case 401, 403, 404:
                 pending.removeAll()
                 dropped = 0
-                NSLog("[linkC discord] %@: Discord answered %d, so this webhook is stopped", name, response.status)
+                NSLog("[linkC discord] %@: Discord answered %ld, so this webhook is stopped", name, response.status)
                 status = .stopped(status: response.status)
                 onStopped?(response.status)
                 return
+            case 300..<400:
+                NSLog("[linkC discord] %@: Discord answered %ld, a redirect, which linkC does not follow", name, response.status)
+                status = .failed("Discord answered \(response.status), a redirect, which linkC does not follow", at: wallClock())
+                dropped += carried
+                return
             case 400..<500:
                 let detail = String(decoding: response.body.prefix(500), as: UTF8.self)
-                NSLog("[linkC discord] %@: Discord refused a message (%d) — %@", name, response.status, detail)
+                NSLog("[linkC discord] %@: Discord refused a message (%ld) — %@", name, response.status, detail)
                 status = .failed("Discord refused a message (\(response.status)): \(detail)", at: wallClock())
+                dropped += carried
                 return
             default:
-                guard await retry(&failures, because: "Discord answered \(response.status)") else { return }
+                guard await retry(&failures, because: "Discord answered \(response.status)") else {
+                    if !cancelled { dropped += carried }
+                    return
+                }
             }
         }
     }
@@ -152,7 +173,7 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
     /// Waits out the next retry delay. False once every delay was used: the message is dropped.
     private func retry(_ failures: inout Int, because reason: String) async -> Bool {
         guard failures < Self.retryDelays.count else {
-            NSLog("[linkC discord] %@: a message was dropped after %d retries — %@", name, failures, reason)
+            NSLog("[linkC discord] %@: a message was dropped after %ld retries — %@", name, failures, reason)
             status = .failed("a message was dropped after \(failures) retries: \(reason)", at: wallClock())
             return false
         }

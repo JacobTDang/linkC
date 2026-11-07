@@ -55,6 +55,10 @@ struct DiscordRateLimit: Equatable {
     /// The wait for a 429 that gives none: an odd answer, so a long, safe one.
     static let defaultRetryAfter: Duration = .seconds(5)
 
+    /// The longest wait linkC takes from a response: numbers from the network are untrusted, and an
+    /// absurd one would hold the queue for good (or overflow).
+    static let longestWait: TimeInterval = 3600
+
     static func read(_ response: WebhookResponse) -> DiscordRateLimit {
         var limit = DiscordRateLimit()
         if response.headers["x-ratelimit-remaining"] == "0",
@@ -74,6 +78,7 @@ struct DiscordRateLimit: Equatable {
     }
 
     private static func duration(seconds: Double) -> Duration {
-        .milliseconds(Int((max(0, seconds) * 1000).rounded()))
+        let clamped = seconds.isNaN ? longestWait : min(max(seconds, 0), longestWait)
+        return .milliseconds(Int((clamped * 1000).rounded()))
     }
 }
