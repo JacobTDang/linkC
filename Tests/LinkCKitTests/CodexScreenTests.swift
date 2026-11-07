@@ -13,6 +13,12 @@ final class CodexScreenTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("codex-0.159-working-tip-under-status")), "Working")
     }
 
+    /// In Codex 0.163, a right-aligned limit warning row can sit between the status row and the
+    /// input box while a turn runs.
+    func testAStatusRowWithALimitWarningUnderItStillReadsAsWorking() throws {
+        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("codex-0.163-working-limit-warning")), "Working")
+    }
+
     /// The tip fixture with its tip row wrapped onto `continuations` further rows, indented under
     /// the tip's text the way Codex indents a wrapped detail. At the panel's narrow widths a tip
     /// does not fit one row.
