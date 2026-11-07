@@ -19,6 +19,8 @@ public struct ProcessSnooper: Sendable {
             return .cursor
         case "codex":
             return .codex
+        case "opencode":
+            return .opencode
         default:
             if trimmed.contains("/claude/versions/") {
                 return .claude

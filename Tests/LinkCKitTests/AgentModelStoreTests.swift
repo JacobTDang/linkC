@@ -162,4 +162,27 @@ final class AgentModelStoreTests: XCTestCase {
         XCTAssertNil(settings.model(for: .grok, tier: .deep))
         XCTAssertEqual(settings.defaultTier(for: .grok), .light)
     }
+
+    func testOpenCodeIsSeededOnFreeModelsWithStandardAsItsDefault() {
+        let seeded = AgentModelSettings.seeded
+        XCTAssertEqual(seeded.model(for: .opencode, tier: .light), "opencode/deepseek-v4.1-flash-free")
+        XCTAssertEqual(seeded.model(for: .opencode, tier: .standard), "opencode/big-pickle")
+        XCTAssertEqual(seeded.model(for: .opencode, tier: .deep), "opencode/crouton-alpha-free")
+        XCTAssertEqual(seeded.defaultTier(for: .opencode), .standard)
+    }
+
+    /// A models.json saved before OpenCode existed names no OpenCode tiers. Loading it must still
+    /// give OpenCode its seeded models, or every delegation to OpenCode would be refused.
+    func testAFileSavedBeforeOpenCodeExistedLoadsOpenCodeFromTheSeed() throws {
+        let store = AgentModelStore(directory: dir)
+        let json = """
+        {"models":{"grok":{"light":"grok-4.7-low","standard":"grok-4.7-medium","deep":"grok-4.7-xhigh"}},
+         "defaultTiers":{"grok":"standard"}}
+        """
+        try json.write(toFile: store.path, atomically: true, encoding: .utf8)
+
+        let settings = store.load()
+        XCTAssertEqual(settings.model(for: .opencode, tier: .standard), "opencode/big-pickle")
+        XCTAssertEqual(settings.defaultTier(for: .opencode), .standard)
+    }
 }

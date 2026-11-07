@@ -56,7 +56,7 @@ public enum UsageRows {
     }
 
     /// Fixed, so the section never reshuffles as numbers change.
-    public static let order: [AgentKind] = [.claude, .codex, .cursor, .grok, .agy]
+    public static let order: [AgentKind] = [.claude, .codex, .cursor, .grok, .opencode, .agy]
 
     /// Claude's reason before any of its sessions has reported through the status line.
     public static let claudeNoReadingReason = "no reading yet — a Claude session reports after its first reply"
@@ -68,6 +68,8 @@ public enum UsageRows {
             return "Cursor publishes no quota locally — only a cap linkC sees in its terminal"
         case .grok:
             return "Grok runs on the Cursor plan, which publishes no quota locally — only a cap linkC sees in its terminal"
+        case .opencode:
+            return "OpenCode's free models publish no quota locally — only a cap linkC sees in its terminal"
         case .agy:
             return "agy keeps its quota on the server — only a cap linkC sees in its terminal"
         default:
@@ -109,7 +111,7 @@ public enum UsageRows {
             case .codex:
                 usage = codex
                 notReadReason = "not read yet"
-            case .cursor, .grok, .agy, .shell:
+            case .cursor, .grok, .opencode, .agy, .shell:
                 unknown.append(UnknownUsage(agent: agent, reason: silentSourceReason(agent)))
                 continue
             }

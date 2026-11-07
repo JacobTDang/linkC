@@ -27,6 +27,13 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertNil(ProcessSnooper.detectAgent(inPath: ""))
     }
 
+    /// Homebrew links `opencode` to a versioned Cellar binary; the installer puts it in ~/.opencode/bin.
+    func testOpenCodeIsDetectedByItsLinkAndItsRealBinary() {
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/opencode"), .opencode)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/Cellar/opencode/1.18.19/bin/opencode"), .opencode)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/someone/.opencode/bin/opencode"), .opencode)
+    }
+
     func testProcessTreeInspectionReturnsNilForEmptyChildren() {
         // PID 0 (kernel task) or invalid negative PID has no child agent
         XCTAssertNil(ProcessSnooper.detectAgent(inProcessTreeOf: -1))

@@ -108,6 +108,15 @@ public struct LimitDetector: Sendable {
         )
     ]
 
+    /// OpenCode's free-tier cap, in the words its own retry code gives it (read from the 1.18.19
+    /// binary: "Free usage exceeded, subscribe to Go", under a "Free limit reached" title). Its
+    /// 429 and overload messages are left out: OpenCode retries those by itself, and one retry
+    /// would bench it for the whole cooldown.
+    private static let openCodeRules: [LimitRule] = [
+        LimitRule(canonicalPattern: "OpenCode free usage exceeded", regexPattern: "\\bfree usage exceeded\\b"),
+        LimitRule(canonicalPattern: "OpenCode free limit reached", regexPattern: "\\bfree limit reached\\b")
+    ]
+
     private static func rules(for agent: AgentKind) -> [LimitRule] {
         switch agent {
         case .claude: return claudeRules
@@ -115,6 +124,7 @@ public struct LimitDetector: Sendable {
         case .agy: return agyRules
         // Grok runs Cursor's CLI, so a Grok terminal shows Cursor's caps.
         case .cursor, .grok: return cursorRules
+        case .opencode: return openCodeRules
         case .shell: return []
         }
     }

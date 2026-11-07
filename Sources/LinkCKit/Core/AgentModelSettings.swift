@@ -38,7 +38,8 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
     /// first and rejected with HTTP 400; the working spellings are `gpt-5.6-sol` and
     /// `gpt-5.6-luna`. `agy models` lists the agy ids verbatim. The grok ids are read verbatim from
     /// `cursor-agent models` (2026-10-17); Grok runs on the Cursor plan. An empty entry means that tier
-    /// is unconfigured and delegation refuses loudly. All are editable in settings.
+    /// is unconfigured and delegation refuses loudly. All are editable in settings. The opencode ids are
+    /// OpenCode's free models as `opencode models` lists them; each answered a live prompt (2026-11-07).
     public static let seeded = AgentModelSettings(
         models: [
             AgentKind.claude.rawValue: ["light": "haiku", "standard": "sonnet", "deep": "opus"],
@@ -46,13 +47,17 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             AgentKind.agy.rawValue: [
                 "light": "gemini-3.8-flash-low", "standard": "gemini-3.8-flash-medium", "deep": "gemini-3.1-pro-high"
             ],
-            AgentKind.grok.rawValue: ["light": "grok-4.7-low", "standard": "grok-4.7-medium", "deep": "grok-4.7-xhigh"]
+            AgentKind.grok.rawValue: ["light": "grok-4.7-low", "standard": "grok-4.7-medium", "deep": "grok-4.7-xhigh"],
+            AgentKind.opencode.rawValue: [
+                "light": "opencode/deepseek-v4.1-flash-free", "standard": "opencode/big-pickle", "deep": "opencode/crouton-alpha-free"
+            ]
         ],
         defaultTiers: [
             AgentKind.claude.rawValue: ModelTier.standard.rawValue,
             AgentKind.codex.rawValue: ModelTier.standard.rawValue,
             AgentKind.agy.rawValue: ModelTier.standard.rawValue,
-            AgentKind.grok.rawValue: ModelTier.standard.rawValue
+            AgentKind.grok.rawValue: ModelTier.standard.rawValue,
+            AgentKind.opencode.rawValue: ModelTier.standard.rawValue
         ]
     )
 

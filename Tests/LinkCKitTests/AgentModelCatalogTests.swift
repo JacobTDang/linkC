@@ -174,4 +174,10 @@ final class AgentModelCatalogTests: XCTestCase {
         XCTAssertEqual(AgentModelCatalog.defaultModel(for: .grok).id, "grok-4.7-medium")
         XCTAssertTrue(AgentModelCatalog.isFreeOrSubscription(model: "grok-4.7-low", for: .grok))
     }
+
+    func testOpenCodeSuggestsItsFreeTiers() {
+        XCTAssertEqual(AgentModelCatalog.models(for: .opencode).map(\.id),
+                       ["opencode/big-pickle", "opencode/deepseek-v4.1-flash-free", "opencode/crouton-alpha-free"])
+        XCTAssertEqual(AgentModelCatalog.defaultModel(for: .opencode).id, "opencode/big-pickle")
+    }
 }

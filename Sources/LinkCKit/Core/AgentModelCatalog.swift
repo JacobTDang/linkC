@@ -48,6 +48,12 @@ public enum AgentModelCatalog: Sendable {
                 AgentModelInfo(id: "grok-4.7-low", displayName: "Grok 4.7 Low", isFreeOrSubscription: true, isDefault: false),
                 AgentModelInfo(id: "grok-4.7-xhigh", displayName: "Grok 4.7 Extra High", isFreeOrSubscription: true, isDefault: false)
             ]
+        case .opencode:
+            return [
+                AgentModelInfo(id: "opencode/big-pickle", displayName: "Big Pickle", isFreeOrSubscription: true, isDefault: true),
+                AgentModelInfo(id: "opencode/deepseek-v4.1-flash-free", displayName: "DeepSeek V4.1 Flash Free", isFreeOrSubscription: true, isDefault: false),
+                AgentModelInfo(id: "opencode/crouton-alpha-free", displayName: "Crouton Alpha Free", isFreeOrSubscription: true, isDefault: false)
+            ]
         case .shell:
             return []
         }
