@@ -22,6 +22,7 @@ OpenCode reaches a set of free models (DeepSeek V4.1 Flash, Big Pickle, Crouton 
 - Switching a running OpenCode session's model (§5.9).
 - OpenCode usage figures. The free models publish no quota.
 - A Resume… picker for OpenCode. OpenCode has no picker flag; its own `/sessions` picker is one command away inside it.
+- Catching, on screen, a model OpenCode refused: 2.2.5 shows nothing (§4.1). Delegation checks the model first (§5.8); a session opened from the menu on a withdrawn default-tier model runs on whatever OpenCode picks, which its footer shows.
 
 ## 4. What OpenCode does (verified 2026-11-07, OpenCode 1.18.19 at `/opt/homebrew/bin/opencode`)
 
@@ -42,6 +43,19 @@ OpenCode reaches a set of free models (DeepSeek V4.1 Flash, Big Pickle, Crouton 
 - OpenCode's retry code reports a free-tier cap as `Free usage exceeded, subscribe to Go`, with a `Free limit reached` action title. This was read from the 1.18.19 binary; no live cap was seen.
 - OpenCode's installer puts the binary in `~/.opencode/bin`.
 
+### 4.1 OpenCode 2.2.5 (verified 2026-11-07)
+
+OpenCode updated itself to 2.2.5 through Homebrew the same day (its own auto-update, run from a session in the home folder). linkC targets 2.2.5. What changed from the above:
+
+- The TUI's flags are `--standalone`, `--server`, `--auto`, `--continue`/`-c`, `--session`/`-s` ("Session ID to continue, or to create if it does not exist") and `--prompt`. There is no `--model`: given one, OpenCode prints its help and exits. `opencode run` and `opencode mini` still take `--model`.
+- Sessions run in a shared background service (`opencode serve --service`) unless `--standalone` is given, which starts a private `opencode serve --stdio` as the TUI's child. With `--standalone`, `OPENCODE_CONFIG_CONTENT` applies to that session: `{"model": "opencode/big-pickle", "mcp": {…}}` put Big Pickle in the footer and loaded the inline server beside the user's own. The MCP servers are children of the private server, and the stand-in server saw the terminal's `LINKC_SESSION`. A free model given a real task brief called `linkc_start_task` and `linkc_complete_task` as before. Quitting the TUI leaves no private server behind.
+- The config's `model` applies to a new session only. `--session <id>` reopens the session on the model it last ran on, whatever the config says.
+- An unknown model id in the config shows no notice within 8 s: the session silently runs on another model.
+- `OPENCODE_DISABLE_AUTOUPDATE` and `OPENCODE_CONFIG_CONTENT` are still read.
+- The working footer is unchanged: an 8-glyph bar of `⬝`/`■`, then the interrupt hint and context size; the folder path once the turn ends. At 46 columns the first seconds of a turn show the bar with no hint (`⬝⬝⬝⬝⬝⬝⬝⬝shift+tab agents  ctrl+p commands`). A Braille spinner row (`⠋ Thinking`) sits right above the input box, and the session title row at the top of the screen carries a Braille spinner while a turn runs.
+- `opencode models` and `opencode session list --format json` print what 1.18.19 printed (same ids; same `id`, `directory`, `updated` fields, newest first). Both take `--standalone`, which keeps them from starting the shared background service when it is not running; `opencode models --standalone` takes about 1.4 s, `opencode session list --format json --standalone` about 0.6 s.
+- The binary is still a native `opencode` executable (`/opt/homebrew/Cellar/opencode/2.2.5/bin/opencode`), and the TUI is the terminal's foreground process.
+
 ## 5. Design
 
 ### 5.1 A new agent kind
@@ -59,20 +73,22 @@ OpenCode reaches a set of free models (DeepSeek V4.1 Flash, Big Pickle, Crouton 
 
 ### 5.2 Launch
 
-`AgentDescriptor` for `.opencode`: binary `opencode`, candidates `/opt/homebrew/bin/opencode`, `/usr/local/bin/opencode`, `~/.opencode/bin/opencode`; flags `--auto`; no continue or resume arguments (§5.3).
+`AgentDescriptor` for `.opencode`: binary `opencode`, candidates `/opt/homebrew/bin/opencode`, `/usr/local/bin/opencode`, `~/.opencode/bin/opencode`; flags `--standalone --auto`; no continue or resume arguments (§5.3). `--standalone` gives each linkC session its own OpenCode server, so the session's environment — its model, linkC's tools, `LINKC_SESSION` — reaches it; the shared background service has the environment of whatever started it.
 
 The terminal environment adds to `LINKC_SESSION`:
 
 - `OPENCODE_DISABLE_AUTOUPDATE=1`, so the update dialog never takes the first text linkC types.
-- `OPENCODE_CONFIG_CONTENT` carrying linkC's MCP server (§5.4).
+- `OPENCODE_CONFIG_CONTENT` carrying the session's model and linkC's MCP server (§5.4). OpenCode 2.2.5's TUI has no `--model` flag (§4.1), so the model goes here, never in the arguments.
 
-Every OpenCode launch names a model, as Grok's does. A session from the menu or `linkc opencode` without `--tier` runs on the default tier's model and records no tier, so it is never handed a delegated task. A delegated task, or `--tier`, uses its tier's model and records the tier. A continued session uses the default tier's model. With no model for the tier, the launch refuses: `no model configured for opencode tier <tier> — set it in linkC settings`. It never falls back to OpenCode's own default.
+Every OpenCode launch names a model, as Grok's does. A session from the menu or `linkc opencode` without `--tier` runs on the default tier's model and records no tier, so it is never handed a delegated task. A delegated task, or `--tier`, uses its tier's model and records the tier. With no model for the tier, the launch refuses: `no model configured for opencode tier <tier> — set it in linkC settings`. It never leaves the model to OpenCode's own default.
+
+A continued session keeps the model it last ran on (§4.1), so linkC records no model for it. The default tier's model still goes in its config, for when no session ran in the folder and a new one starts.
 
 Menus: OpenCode is under New and Continue last, not under Resume….
 
 ### 5.3 Continuing a session
 
-linkC continues an OpenCode session in its own folder only. For `.continueLast` — the menu item, and every restore after a quit — linkC runs `opencode session list --format json` in the session's folder, takes the newest entry whose `directory` is that folder (both canonicalized with `ProjectPath.canonical`), and launches with `--session <id>`. With no such entry, the session starts new. If the listing fails, or its output does not parse, the launch fails with that error; it does not start a new session in its place.
+linkC continues an OpenCode session in its own folder only. For `.continueLast` — the menu item, and every restore after a quit — linkC runs `opencode session list --format json --standalone` in the session's folder, takes the newest entry whose `directory` is that folder (both canonicalized with `ProjectPath.canonical`), and launches with `--session <id>`. With no such entry, the session starts new. If the listing fails, or its output does not parse, the launch fails with that error; it does not start a new session in its place.
 
 The listing runs off the main thread, through `ProcessRunner`; the session is launched when it returns. `RelaunchPlan` already lets at most one entry per folder and agent continue, so two restored OpenCode sessions never land on one conversation.
 
@@ -95,7 +111,7 @@ Every other key in the file is kept. The file is written atomically, with sorted
 
 **Fail loud on a file that cannot be read.** An existing file that is not a JSON object — comments, trailing commas, a half-written file — is not touched; registration throws, naming the path. `registerAll` already collects each client's failure and reports them together. The shared JSON writer (`registerServer`, used for Claude, Cursor, agy and Codex's `mcp.json`) gets the same guard: today it reads an unparseable file as empty and overwrites it. An empty or whitespace-only file is read as `{}`, since there is nothing in it to lose.
 
-**Injection at launch.** Each OpenCode terminal linkC starts also gets `OPENCODE_CONFIG_CONTENT` with the same `linkc-multiplier` entry, so linkC's own sessions have the tools even when registration failed. The entry carries no session id: the MCP server inherits `LINKC_SESSION` from OpenCode (§4), so the same text is right in every terminal. If linkC's own environment already holds an `OPENCODE_CONFIG_CONTENT`, linkC merges its entry into that JSON; if that JSON does not parse as an object, the launch fails naming the variable.
+**Injection at launch.** Each OpenCode terminal linkC starts also gets `OPENCODE_CONFIG_CONTENT` with the same `linkc-multiplier` entry and the session's `model`, so linkC's own sessions have the tools even when registration failed. The entry carries no session id: the MCP server inherits `LINKC_SESSION` from OpenCode (§4), so the same text is right in every terminal. If linkC's own environment already holds an `OPENCODE_CONFIG_CONTENT`, linkC merges its entry into that JSON; if that JSON does not parse as an object, the launch fails naming the variable.
 
 ### 5.5 Identity
 
@@ -111,12 +127,12 @@ OpenCode sets `OPENCODE=1`, `OPENCODE_PID` and `AGENT=1` on every start, overwri
 
 OpenCode is screen-read, like every agent but Claude.
 
-- **Working:** the row under the input box shows OpenCode's progress bar followed by `esc interrupt`. Only that shape counts — a run of `⬝`/`■` glyphs, then the hint — so prose that mentions the phrase does not. The phrase is the Braille spinner row's text above the box when there is one, else `Working`.
-- **Done:** the hint is gone; `TurnEndDebounce` ends the turn as for the other agents.
-- **Watchdog:** the working row counts as a live row, so its animated bar and the ticking context size are not read as progress.
-- **Rejected model:** OpenCode's `Model <id> is not valid` toast, on any OpenCode session, posts one notification per session — `OpenCode rejected <id> and is running on its own default model` — and logs the screen rows.
+- **Working:** the row under the input box opens with OpenCode's 8-glyph progress bar of `⬝`/`■`. The bar alone decides, since a narrow screen can show it with no hint after it (§4.1); prose that mentions the hint does not count. The phrase is the Braille spinner row's text just above the box when there is one, else `Working`.
+- **Done:** the bar is gone; `TurnEndDebounce` ends the turn as for the other agents.
+- **Not the generic scan:** OpenCode's input box carries none of the prompt markers the generic scan stops at, so an OpenCode screen is read only by these rules, and a finished turn's output above the box is never taken for a running one.
+- **Watchdog:** the bar row counts as a live row, so its animation and the ticking context size are not read as progress.
 
-The rules are tested against screens captured from the real TUI: idle, three working stages, done, and the toast.
+The rules are tested against screens captured from the real TUI, 2.2.5 and 1.18.19, at 92 and 46 columns: idle, working stages, done.
 
 ### 5.8 Tiers
 
@@ -130,7 +146,7 @@ The rules are tested against screens captured from the real TUI: idle, three wor
 
 Ids are stored whole, provider included, so any id `opencode models` lists can go in a tier (`ollama/qwen3.8:27b-32k` among them). `AgentModelStore.load` fills OpenCode into a saved `models.json` that does not mention it, as it did for Grok. Settings > Models shows OpenCode's tiers and default tier after Grok. `AgentModelCatalog.models(for: .opencode)` lists the three seeds. `linkc_get_models` reports OpenCode's tiers.
 
-**A removed model is refused at delegation.** Free models are offered for a limited time (Pulse Alpha Free was withdrawn on 2026-11-06), and OpenCode replaces an unknown id with its default (§4). So `linkc_delegate_task(to: "opencode")` resolves the task's tier — the one asked for, else the default — and runs `opencode models` inside `linkc-mcp`. When the id is not listed, it refuses: `opencode/<id> (opencode tier <tier>) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings`. When `opencode models` fails, delegation refuses with its error. The check runs in `linkc-mcp`, never on linkC's main thread. Two other paths start an OpenCode worker without passing through `linkc_delegate_task` — a task linkC reroutes to OpenCode off a capped agent, and a message to OpenCode with no session to take it — and are not checked; the on-screen toast (§5.7) still reports a rejected model on them.
+**A removed model is refused at delegation.** Free models are offered for a limited time (Pulse Alpha Free was withdrawn on 2026-11-06), and OpenCode replaces an unknown id with its default (§4). So `linkc_delegate_task(to: "opencode")` resolves the task's tier — the one asked for, else the default — and runs `opencode models --standalone` in the workspace, inside `linkc-mcp`. When the id is not listed, it refuses: `opencode/<id> (opencode tier <tier>) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings`. When `opencode models` fails, delegation refuses with its error. The check runs in `linkc-mcp`, never on linkC's main thread. Two other paths start an OpenCode worker without passing through `linkc_delegate_task` — a task linkC reroutes to OpenCode off a capped agent, and a message to OpenCode with no session to take it — and are not checked.
 
 ### 5.9 Model switching
 
@@ -176,18 +192,17 @@ Switches with a `default:` branch are checked by hand. The plan greps for `.grok
 - `opencode models` or `opencode session list` failing: the delegation or the continue fails with its error.
 - `opencode.json` that is not a JSON object: registration reports it and leaves the file untouched.
 - An `OPENCODE_CONFIG_CONTENT` in linkC's environment that does not parse: the launch fails naming it.
-- A model rejected on screen: a notification, as in §5.7.
 
 ## 8. Testing
 
 Unit tests in LinkCKit, each written first and shown to fail with its change reverted:
 
-- `AgentKind.opencode` properties; launch arguments and environment for new and continued sessions: `--auto`, `--model`, `--session`, `OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_CONFIG_CONTENT`, the merge into an inherited value, and its refusal of one that does not parse.
+- `AgentKind.opencode` properties; launch arguments and environment for new and continued sessions: `--standalone --auto`, no `--model`, `--session`, `OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_CONFIG_CONTENT` with the model and linkC's server, the merge into an inherited value, and its refusal of one that does not parse.
 - An OpenCode launch with no resolvable model refuses.
 - Continue: the newest session in exactly this folder is chosen; a session in another folder of the same project is not; none starts a new session; a failing or unparseable listing fails the launch.
 - Registration: a new file; an existing file keeps every other key; an unchanged entry is not rewritten; a file that is not a JSON object is refused and left byte-for-byte; the shared writer refuses the same way; an empty file is read as `{}`.
 - `detectAgent(inPath:)` for OpenCode's link and its Cellar path; `resolveCaller` with `LINKC_AGENT=opencode`.
-- Screen state from the captured screens: idle reads idle, each working stage reads working, done reads done, prose mentioning the hint reads idle, the toast is found and names the id.
+- Screen state from the captured screens: idle reads idle, each working stage reads working (the narrow bar with no hint included), done reads done, output and prose above a finished turn's box read idle.
 - Tiers: the seeded mapping; `load` fills OpenCode into a saved file without it and leaves a saved OpenCode mapping alone.
 - Delegation: refused when the tier's id is not listed, refused when listing fails, accepted when listed — through a fake model lister.
 - `linkc_switch_model` refuses for OpenCode; `linkc_get_models` reports its tiers and the note.

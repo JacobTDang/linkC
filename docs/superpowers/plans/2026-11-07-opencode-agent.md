@@ -4,7 +4,7 @@
 
 **Goal:** linkC runs OpenCode, on OpenCode's free models, as an agent like the others: menu, `linkc opencode`, delegation, tiers, tools, screen state, limits, usage row.
 
-**Architecture:** A new `AgentKind.opencode` that launches `opencode --auto --model <provider/model>`. linkC's MCP server reaches it two ways: registered in `~/.config/opencode/opencode.json`, and injected per launch through `OPENCODE_CONFIG_CONTENT`. Session state is read off OpenCode's screen by a dedicated reader (`OpenCodeScreen`). "Continue" opens the folder's own session with `--session <id>`, found by `opencode session list` off the main thread. `linkc-mcp` refuses delegation to a tier whose model `opencode models` no longer lists.
+**Architecture:** A new `AgentKind.opencode` that launches `opencode --standalone --auto` (OpenCode 2.2.5, spec §4.1), with the session's model in `OPENCODE_CONFIG_CONTENT` — the TUI has no model flag. linkC's MCP server reaches it two ways: registered in `~/.config/opencode/opencode.json`, and injected per launch through `OPENCODE_CONFIG_CONTENT`. Session state is read off OpenCode's screen by a dedicated reader (`OpenCodeScreen`). "Continue" opens the folder's own session with `--session <id>`, found by `opencode session list --standalone` off the main thread. `linkc-mcp` refuses delegation to a tier whose model `opencode models --standalone` no longer lists.
 
 **Tech Stack:** Swift 6 (strict concurrency), SwiftPM, XCTest, SwiftUI app target `linkc`, library `LinkCKit`.
 
@@ -772,17 +772,58 @@ git commit -m "feat(mcp): register linkC with OpenCode, and never overwrite a co
 
 ### Task 4: Launching OpenCode on its tier's model, with linkC's tools inline
 
+OpenCode 2.2.5 (installed; spec §4.1) has no `--model` flag on its TUI and runs sessions in a shared background service unless `--standalone` is given. So linkC launches `opencode --standalone --auto` and passes the model inside `OPENCODE_CONFIG_CONTENT`, next to linkC's MCP server.
+
 **Files:**
-- Modify: `Sources/LinkCKit/Core/AgentKind.swift` (`alwaysNamesModel`)
+- Modify: `Sources/LinkCKit/Core/AgentKind.swift` (`alwaysNamesModel`; OpenCode's `yoloFlags`)
+- Modify: `Sources/LinkCKit/Core/AgentModelCatalog.swift` (`launchArguments(model:for:)`)
+- Modify: `Sources/LinkCKit/MCP/MCPRegistrar.swift` (`openCodeConfigContent` gains `model:`)
 - Modify: `Sources/LinkCKit/App/AppCoordinator.swift` (`launch`'s environment lines, `launchModel`)
 - Create: `Sources/LinkCKit/App/AppCoordinator+OpenCode.swift`
 - Create: `Tests/LinkCKitTests/AppCoordinatorOpenCodeTests.swift`
+- Modify: `Tests/LinkCKitTests/AgentDescriptorTests.swift`, `Tests/LinkCKitTests/AgentModelCatalogTests.swift`, `Tests/LinkCKitTests/MCPRegistrarTests.swift`
 
 **Interfaces:**
 - Consumes: `AgentDescriptor.environment(for: .opencode, home:)`, `AgentDescriptor.openCodeConfigContentKey` (Task 1); `MCPRegistrar.openCodeConfigContent(inherited:binaryPath:)` (Task 3).
-- Produces: `AgentKind.alwaysNamesModel: Set<AgentKind>`; `AppCoordinator.openCodeEnvironment() throws -> [String: String]` (internal, in `AppCoordinator+OpenCode.swift`); the test file's `makeCoordinator(models:sink:) throws -> AppCoordinator`, `launchedLines(_:of:count:)` and `RecordingSink`, which Tasks 5 and 6 extend.
+- Produces:
+  - `AgentKind.alwaysNamesModel: Set<AgentKind>` (`[.grok, .opencode]`)
+  - `AgentDescriptor.arguments(for: .opencode, mode: <any>, sessionId:) == ["--standalone", "--auto"]`
+  - `AgentModelCatalog.launchArguments(model:for: .opencode) == []`
+  - `MCPRegistrar.openCodeConfigContent(inherited: String?, binaryPath: String, model: String?) throws -> String` (the two-argument form is replaced)
+  - `AppCoordinator.openCodeEnvironment(model: String?) throws -> [String: String]` (internal, in `AppCoordinator+OpenCode.swift`)
+  - the test file's `makeCoordinator(models:sink:) throws -> AppCoordinator`, `launchedLines(_:of:count:)`, `openCodeConfig(of:) throws -> [String: Any]` and `RecordingSink`, which Task 5 extends.
 
 - [ ] **Step 1: Write the failing tests**
+
+`AgentDescriptorTests.swift`: in `testOpenCodeIsItsOwnAgentWithEveryPermissionApproved`, expect `["--standalone", "--auto"]` for every mode, and change its doc comment's first sentence to "OpenCode runs its own binary, on a private server of its own, with every permission approved."
+
+`AgentModelCatalogTests.swift`, add:
+
+```swift
+    /// OpenCode 2.2.5's TUI has no `--model` flag; its model goes in its inline config instead.
+    func testOpenCodeTakesNoModelArgument() {
+        XCTAssertEqual(AgentModelCatalog.launchArguments(model: "opencode/big-pickle", for: .opencode), [])
+        XCTAssertEqual(AgentModelCatalog.launchArguments(model: "gpt-5.6-sol", for: .codex), ["--model", "gpt-5.6-sol"])
+    }
+```
+
+`MCPRegistrarTests.swift`: change every `openCodeConfigContent(inherited:binaryPath:)` call to pass `model: nil`, and add:
+
+```swift
+    func testTheInlineConfigNamesTheSessionsModel() throws {
+        let inherited = #"{"model":"ollama/qwen3.8:27b-32k"}"#
+        let content = try MCPRegistrar.openCodeConfigContent(inherited: inherited, binaryPath: "/bin/linkc-mcp", model: "opencode/big-pickle")
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
+        XCTAssertEqual(root["model"] as? String, "opencode/big-pickle", "the session's model wins over an inherited one")
+    }
+
+    func testWithNoModelTheInlineConfigLeavesTheModelAlone() throws {
+        let inherited = #"{"model":"ollama/qwen3.8:27b-32k"}"#
+        let content = try MCPRegistrar.openCodeConfigContent(inherited: inherited, binaryPath: "/bin/linkc-mcp", model: nil)
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
+        XCTAssertEqual(root["model"] as? String, "ollama/qwen3.8:27b-32k")
+    }
+```
 
 Create `Tests/LinkCKitTests/AppCoordinatorOpenCodeTests.swift`:
 
@@ -821,7 +862,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
 
     /// The stand-in agent's path: it writes its argv to `argv-<LINKC_SESSION>` and the two
     /// variables an OpenCode terminal adds to `env-<LINKC_SESSION>`, then waits for input like a TUI.
-    private var stubAgent: URL { tempDir.appendingPathComponent("stub-opencode.sh") }
+    var stubAgent: URL { tempDir.appendingPathComponent("stub-opencode.sh") }
 
     func makeCoordinator(models: AgentModelSettings = .seeded, sink: NotificationSink = RecordingSink()) throws -> AppCoordinator {
         let script = "#!/bin/sh\n"
@@ -861,9 +902,19 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         return lines
     }
 
-    /// OpenCode replaces a missing model with the user's own default — for Jacob, a local model —
-    /// so even a session the user opens names its model: the default tier's. No tier was asked for,
-    /// so none is recorded, and the session is never handed a delegated task.
+    /// The inline config the session's OpenCode was started with.
+    func openCodeConfig(of session: Session) throws -> [String: Any] {
+        let env = launchedLines("env", of: session, count: 2)
+        XCTAssertEqual(env.first, "OPENCODE_DISABLE_AUTOUPDATE=1")
+        let prefix = "OPENCODE_CONFIG_CONTENT="
+        let line = try XCTUnwrap(env.last)
+        XCTAssertTrue(line.hasPrefix(prefix), line)
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(line.dropFirst(prefix.count).utf8)) as? [String: Any])
+    }
+
+    /// OpenCode would otherwise run on whatever it picks — for Jacob, possibly a local model — so even
+    /// a session the user opens names its model: the default tier's. No tier was asked for, so none
+    /// is recorded, and the session is never handed a delegated task.
     func testAnOpenCodeSessionOpenedWithNoTierRunsOnTheDefaultTiersModel() throws {
         let coordinator = try makeCoordinator()
         defer { coordinator.shutdown() }
@@ -873,7 +924,8 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         XCTAssertEqual(session.agentKind, .opencode)
         XCTAssertEqual(session.model, "opencode/big-pickle")
         XCTAssertNil(session.modelTier, "a tier the user never asked for must not make their session a task carrier")
-        XCTAssertEqual(launchedLines("argv", of: session, count: 3), ["--auto", "--model", "opencode/big-pickle"])
+        XCTAssertEqual(launchedLines("argv", of: session, count: 2), ["--standalone", "--auto"], "no --model: OpenCode 2.2.5 refuses it")
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/big-pickle")
     }
 
     func testAnOpenCodeSessionOnATierRunsOnThatTiersModel() throws {
@@ -884,22 +936,16 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
 
         XCTAssertEqual(session.model, "opencode/crouton-alpha-free")
         XCTAssertEqual(session.modelTier, .deep)
-        XCTAssertEqual(launchedLines("argv", of: session, count: 3), ["--auto", "--model", "opencode/crouton-alpha-free"])
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/crouton-alpha-free")
     }
 
-    func testAnOpenCodeTerminalHasNoUpdateDialogAndLinkCsToolsInline() throws {
+    func testAnOpenCodeTerminalHasLinkCsToolsInline() throws {
         let coordinator = try makeCoordinator()
         defer { coordinator.shutdown() }
 
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new)
 
-        let env = launchedLines("env", of: session, count: 2)
-        XCTAssertEqual(env.first, "OPENCODE_DISABLE_AUTOUPDATE=1")
-        let prefix = "OPENCODE_CONFIG_CONTENT="
-        let line = try XCTUnwrap(env.last)
-        XCTAssertTrue(line.hasPrefix(prefix), line)
-        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(line.dropFirst(prefix.count).utf8)) as? [String: Any])
-        let entry = try XCTUnwrap((root["mcp"] as? [String: Any])?["linkc-multiplier"] as? [String: Any])
+        let entry = try XCTUnwrap((try openCodeConfig(of: session)["mcp"] as? [String: Any])?["linkc-multiplier"] as? [String: Any])
         XCTAssertEqual(entry["command"] as? [String], [MCPRegistrar.defaultBinaryPath()])
         XCTAssertEqual(entry["environment"] as? [String: String], ["LINKC_AGENT": "opencode"])
     }
@@ -918,6 +964,8 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
     }
 
     func testOnlyAnOpenCodeTerminalGetsOpenCodesVariables() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["OPENCODE_CONFIG_CONTENT"] != nil
+                      || ProcessInfo.processInfo.environment["OPENCODE_DISABLE_AUTOUPDATE"] != nil, "run from inside OpenCode")
         let coordinator = try makeCoordinator()
         defer { coordinator.shutdown() }
 
@@ -929,33 +977,45 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
 }
 ```
 
-If the test process's own environment holds `OPENCODE_DISABLE_AUTOUPDATE` or `OPENCODE_CONFIG_CONTENT` (it does when the suite is run from inside an OpenCode terminal), the last test is wrong for that run only: `XCTSkipIf(ProcessInfo.processInfo.environment["OPENCODE_CONFIG_CONTENT"] != nil || ProcessInfo.processInfo.environment["OPENCODE_DISABLE_AUTOUPDATE"] != nil, "run from inside OpenCode")` at its top.
-
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `swift test --scratch-path $SP --filter AppCoordinatorOpenCodeTests`
-Expected: model nil instead of `opencode/big-pickle`; argv `["--auto"]`; env lines empty; no refusal.
+Run: `swift test --scratch-path $SP --filter 'AppCoordinatorOpenCodeTests|AgentDescriptorTests|AgentModelCatalogTests|MCPRegistrarTests'`
+Expected: compile error on `model:`; then argv `["--auto", "--model", …]`, no `OPENCODE_*` variables, no refusal.
 
 - [ ] **Step 3: Implement**
 
-`AgentKind.swift`, beside `peers`:
+`AgentKind.swift`:
+- In OpenCode's descriptor, `yoloFlags: ["--standalone", "--auto"]`, with the comment: "A private server for this session, so its environment — the model and linkC's tools in `OPENCODE_CONFIG_CONTENT`, `LINKC_SESSION` — reaches it; the shared background service has the environment of whatever started it. Every permission approved that the config does not deny."
+- Beside `peers`:
 
 ```swift
     /// Agents every launch names a model for, a tier or not, because their CLI's own default is not
-    /// theirs: Grok's Cursor defaults to Auto, and OpenCode replaces a missing or unknown model with
-    /// the user's own default, which may be a local model.
+    /// theirs: Grok's Cursor defaults to Auto, and OpenCode runs a session whose model it does not
+    /// know on whatever it picks, which may be the user's local model.
     public static let alwaysNamesModel: Set<AgentKind> = [.grok, .opencode]
 ```
+
+`AgentModelCatalog.swift`, `launchArguments(model:for:)`:
+
+```swift
+    /// Generates CLI launch arguments for specifying the model. OpenCode 2.2.5's TUI has no model
+    /// flag — it refuses one — so its model goes in its inline config (`MCPRegistrar.openCodeConfigContent`).
+    public static func launchArguments(model: String, for agent: AgentKind) -> [String] {
+        agent == .opencode ? [] : ["--model", model]
+    }
+```
+
+`MCPRegistrar.swift`: `openCodeConfigContent(inherited: String?, binaryPath: String, model: String?)` — after adding linkC's server to `mcp`, `if let model { root["model"] = model }`. Update its doc comment: "…with linkC's server added to its `mcp` table and, when given, `model` as the session's model."
 
 `AppCoordinator.swift`, in `launch`, right after the Grok environment lines:
 
 ```swift
             if agent == .opencode {
-                env.merge(try openCodeEnvironment()) { _, openCode in openCode }
+                env.merge(try openCodeEnvironment(model: model)) { _, openCode in openCode }
             }
 ```
 
-and `launchModel` becomes (doc comment adjusted to say "Grok and OpenCode" where it says "Grok"):
+and `launchModel` becomes (its doc comment says "Grok and OpenCode" where it says "Grok"):
 
 ```swift
     private func launchModel(for agent: AgentKind, tier: ModelTier?) throws -> (model: String?, tier: ModelTier?) {
@@ -979,29 +1039,47 @@ import Foundation
 
 /// What linkC does differently for OpenCode. See docs/superpowers/specs/2026-11-07-opencode-agent-design.md.
 extension AppCoordinator {
-    /// What an OpenCode terminal adds to `LINKC_SESSION`: no update dialog, and linkC's tool server
-    /// inline, so the tools are there even when registering in `opencode.json` failed. The inline
-    /// entry carries no session id: OpenCode hands its own environment, `LINKC_SESSION` included,
-    /// to the servers it starts. A value already in linkC's environment is merged into, not replaced.
-    func openCodeEnvironment() throws -> [String: String] {
+    /// What an OpenCode terminal adds to `LINKC_SESSION`: no update dialog, and an inline config
+    /// with the session's model — OpenCode's TUI takes no model flag — and linkC's tool server, so
+    /// the tools are there even when registering in `opencode.json` failed. The server entry carries
+    /// no session id: OpenCode hands its own environment, `LINKC_SESSION` included, to the servers
+    /// it starts. A value already in linkC's environment is merged into, not replaced.
+    func openCodeEnvironment(model: String?) throws -> [String: String] {
         var env = AgentDescriptor.environment(for: .opencode, home: FileManager.default.homeDirectoryForCurrentUser)
         env[AgentDescriptor.openCodeConfigContentKey] = try MCPRegistrar.openCodeConfigContent(
             inherited: ProcessInfo.processInfo.environment[AgentDescriptor.openCodeConfigContentKey],
-            binaryPath: MCPRegistrar.defaultBinaryPath())
+            binaryPath: MCPRegistrar.defaultBinaryPath(),
+            model: model)
         return env
     }
 }
 ```
 
+Check `grep -rn "launchArguments(model" Sources` and confirm no other caller needs OpenCode's model as a flag.
+
 - [ ] **Step 4: Run the tests to see them pass**
 
-Run: `swift test --scratch-path $SP --filter 'AppCoordinatorOpenCodeTests|AppCoordinatorIntegrationTests'`
+Run: `swift test --scratch-path $SP --filter 'AppCoordinatorOpenCodeTests|AppCoordinatorIntegrationTests|AgentDescriptorTests|AgentModelCatalogTests|MCPRegistrarTests'`
 Expected: pass, the Grok launch tests included.
 
-- [ ] **Step 5: Revert-proof, then commit**
+- [ ] **Step 5: Check the argv and config against the real OpenCode**
+
+In a scratch git repo with its own root commit (never the linkC repo), under the scratchpad folder, start exactly what the tests assert, with a harmless stand-in for linkC's server:
 
 ```bash
-git add Sources/LinkCKit/Core/AgentKind.swift Sources/LinkCKit/App/AppCoordinator.swift Sources/LinkCKit/App/AppCoordinator+OpenCode.swift Tests/LinkCKitTests/AppCoordinatorOpenCodeTests.swift
+tmux new-session -d -s argv4 -x 92 -y 40 -c <scratch repo> env OPENCODE_DISABLE_AUTOUPDATE=1 \
+  OPENCODE_CONFIG_CONTENT='{"model":"opencode/crouton-alpha-free","mcp":{"linkc-multiplier":{"type":"local","command":["/usr/bin/true"],"environment":{"LINKC_AGENT":"opencode"},"enabled":true}}}' \
+  /opt/homebrew/bin/opencode --standalone --auto
+# wait until the footer shows "Build", then:
+tmux capture-pane -p -t argv4 | grep -v '^\s*$' | tail -6; tmux kill-session -t argv4
+```
+
+Expected: the box footer names Crouton Alpha Free. Report the capture.
+
+- [ ] **Step 6: Revert-proof, then commit**
+
+```bash
+git add Sources/LinkCKit Tests/LinkCKitTests
 git commit -m "feat(opencode): launch OpenCode on its tier's model, with linkC's tools inline"
 ```
 
@@ -1011,13 +1089,13 @@ git commit -m "feat(opencode): launch OpenCode on its tier's model, with linkC's
 
 **Files:**
 - Create: `Sources/LinkCKit/App/OpenCodeSessions.swift`
-- Modify: `Sources/LinkCKit/App/AppCoordinator.swift` (one stored property, `launch`'s `terminal.start` call, `cleanup` and `sweepTicker` from `private` to internal)
+- Modify: `Sources/LinkCKit/App/AppCoordinator.swift` (one stored property; in `launch`, the model `store.create` records and the `terminal.start` call; `cleanup` and `sweepTicker` from `private` to internal)
 - Modify: `Sources/LinkCKit/App/AppCoordinator+OpenCode.swift`
 - Create: `Tests/LinkCKitTests/OpenCodeSessionsTests.swift`
 - Modify: `Tests/LinkCKitTests/AppCoordinatorOpenCodeTests.swift`
 
 **Interfaces:**
-- Consumes: Task 4's test harness and `openCodeEnvironment()`.
+- Consumes: Task 4's test harness (`makeCoordinator`, `launchedLines`, `openCodeConfig(of:)`, `stubAgent`, `RecordingSink`) and `openCodeEnvironment(model:)`.
 - Produces: `OpenCodeSessions.listArguments`, `OpenCodeSessions.newest(in:listing:) throws -> String?`; `AppCoordinator.openCodeSessionList: @Sendable (_ executable: String, _ folder: String) async throws -> String` (settable, internal).
 
 - [ ] **Step 1: Write the failing tests**
@@ -1048,24 +1126,28 @@ final class OpenCodeSessionsTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    /// `opencode session list --format json` output, in the fields OpenCode 1.18.19 prints.
+    /// `opencode session list --format json` output, in the fields OpenCode 2.2.5 (and 1.18.19) prints.
     private func listing(_ entries: [(id: String, directory: String, updated: Double)]) throws -> String {
         let objects: [[String: Any]] = entries.map {
             ["id": $0.id, "title": "a session", "updated": $0.updated, "created": $0.updated - 1000,
-             "projectId": "da0edcb81b85c2429e400a18ded1685e136223fc", "directory": $0.directory]
+             "projectId": "b6c90be0b9fdd46da66b8e571c85ff25336524ce", "directory": $0.directory]
         }
         return String(decoding: try JSONSerialization.data(withJSONObject: objects, options: .prettyPrinted), as: UTF8.self)
     }
 
+    func testTheArgumentsListThisProjectsSessionsWithoutStartingTheSharedService() {
+        XCTAssertEqual(OpenCodeSessions.listArguments, ["session", "list", "--format", "json", "--standalone"])
+    }
+
     func testTheNewestSessionInThisFolderIsChosen() throws {
-        let out = try listing([("ses_worktree", worktree, 1_794_035_903_000),
-                               ("ses_older", here, 1_794_035_801_000),
-                               ("ses_newer", here, 1_794_035_902_430)])
+        let out = try listing([("ses_worktree", worktree, 1_794_071_409_000),
+                               ("ses_older", here, 1_794_071_301_000),
+                               ("ses_newer", here, 1_794_071_408_175)])
         XCTAssertEqual(try OpenCodeSessions.newest(in: here, listing: out), "ses_newer")
     }
 
     func testASessionInAnotherFolderOfTheSameProjectIsNotChosen() throws {
-        let out = try listing([("ses_worktree", worktree, 1_794_035_903_000)])
+        let out = try listing([("ses_worktree", worktree, 1_794_071_409_000)])
         XCTAssertNil(try OpenCodeSessions.newest(in: here, listing: out))
     }
 
@@ -1107,7 +1189,7 @@ Add to `AppCoordinatorOpenCodeTests.swift`:
     }
 
     private func listing(id: String, in folder: String) -> String {
-        #"[{"id":"\#(id)","title":"t","updated":1794035902430,"created":1794035886912,"projectId":"p","directory":"\#(folder)"}]"#
+        #"[{"id":"\#(id)","title":"t","updated":1794071408175,"created":1794071353260,"projectId":"p","directory":"\#(folder)"}]"#
     }
 
     private func waitUntil(_ predicate: () -> Bool) -> Bool {
@@ -1116,6 +1198,8 @@ Add to `AppCoordinatorOpenCodeTests.swift`:
         return predicate()
     }
 
+    /// A continued OpenCode session keeps the model it last ran on, so linkC records none for it. The
+    /// default tier's model still goes in its config, for a folder where no session ran.
     func testContinuingOpensThisFoldersOwnSession() throws {
         let coordinator = try makeCoordinator()
         defer { coordinator.shutdown() }
@@ -1124,8 +1208,9 @@ Add to `AppCoordinatorOpenCodeTests.swift`:
 
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
 
-        XCTAssertEqual(launchedLines("argv", of: session, count: 5),
-                       ["--auto", "--session", "ses_here", "--model", "opencode/big-pickle"])
+        XCTAssertEqual(launchedLines("argv", of: session, count: 4), ["--standalone", "--auto", "--session", "ses_here"])
+        XCTAssertNil(session.model, "a continued session runs on its own last model, which linkC does not know")
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/big-pickle")
         XCTAssertEqual(lister.calls.map(\.executable), [stubAgent.path])
         XCTAssertEqual(lister.calls.map(\.folder), [session.cwd], "the listing runs in the session's own folder")
     }
@@ -1138,7 +1223,7 @@ Add to `AppCoordinatorOpenCodeTests.swift`:
 
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
 
-        XCTAssertEqual(launchedLines("argv", of: session, count: 3), ["--auto", "--model", "opencode/big-pickle"])
+        XCTAssertEqual(launchedLines("argv", of: session, count: 2), ["--standalone", "--auto"])
     }
 
     /// Continuing must never quietly become a new conversation.
@@ -1166,7 +1251,7 @@ Add to `AppCoordinatorOpenCodeTests.swift`:
 
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new)
 
-        XCTAssertEqual(launchedLines("argv", of: session, count: 3).count, 3)
+        XCTAssertEqual(launchedLines("argv", of: session, count: 2).count, 2)
         XCTAssertTrue(lister.calls.isEmpty)
     }
 ```
@@ -1190,8 +1275,9 @@ import Foundation
 /// project, and folders with no commits share one. linkC continues only a session that ran in the
 /// very folder it is opening.
 public enum OpenCodeSessions {
-    /// The arguments that list the sessions of the project `opencode` runs in.
-    public static let listArguments = ["session", "list", "--format", "json"]
+    /// The arguments that list the sessions of the project `opencode` runs in. `--standalone`, so
+    /// listing never starts OpenCode's shared background service when it is not running.
+    public static let listArguments = ["session", "list", "--format", "json", "--standalone"]
 
     private struct Entry: Decodable {
         let id: String
@@ -1220,17 +1306,18 @@ public enum OpenCodeSessions {
 ```
 
 `AppCoordinator.swift`:
-- Beside the other seams (near `agentPathResolver`), add:
+- Beside the other seams (near `agentPathResolver`):
 
 ```swift
-    /// Lists OpenCode's sessions as `opencode session list --format json` run in a folder prints
-    /// them. A seam, so a test can play the listing; the real one runs off the main thread.
+    /// Lists OpenCode's sessions as `opencode session list --format json --standalone` run in a
+    /// folder prints them. A seam, so a test can play the listing; the real one runs off the main thread.
     var openCodeSessionList: @Sendable (_ executable: String, _ folder: String) async throws -> String = {
         try await AppCoordinator.listOpenCodeSessions(executable: $0, folder: $1)
     }
 ```
 
 - `private func cleanup(sessionId:)` → `func cleanup(sessionId:)`; `private var sweepTicker` → `var sweepTicker`.
+- In `launch`, the `store.create(...)` call records `model: agent == .opencode && mode == .continueLast ? nil : model` (comment: "A continued OpenCode session keeps the model it last ran on, which linkC does not know."). The environment still gets `model`.
 - In `launch`, replace the `try terminal.start(executable: executable, args: args, env: env)` call with:
 
 ```swift
@@ -1275,15 +1362,15 @@ Add to `AppCoordinator+OpenCode.swift`:
         }
     }
 
-    /// `args` with `--session <id>` after OpenCode's flags and before the model, or unchanged
-    /// when there is no session to continue.
+    /// `args` with `--session <id>` after OpenCode's flags, or unchanged when there is no session
+    /// to continue.
     static func openCodeArguments(_ args: [String], continuing id: String?) -> [String] {
         guard let id else { return args }
         let flags = AgentDescriptor.descriptor(for: .opencode).yoloFlags
         return flags + ["--session", id] + args.dropFirst(flags.count)
     }
 
-    /// `opencode session list --format json`, run in `folder` off the main thread.
+    /// `opencode session list --format json --standalone`, run in `folder` off the main thread.
     nonisolated static func listOpenCodeSessions(executable: String, folder: String) async throws -> String {
         let result = try await LiveProcessRunner().runCapturing(
             executable, args: OpenCodeSessions.listArguments, cwd: URL(fileURLWithPath: folder),
@@ -1296,27 +1383,24 @@ Add to `AppCoordinator+OpenCode.swift`:
     }
 ```
 
-If `LiveProcessRunner` has no public `init()`, use whatever constructor its other callers use. If `notifications.post(title:body:)` has another label, use the one `launch`'s `onUserInput` already calls.
-
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `swift test --scratch-path $SP --filter 'OpenCodeSessionsTests|AppCoordinatorOpenCodeTests|AppCoordinatorIntegrationTests|RelaunchPlanTests'`
 Expected: pass.
 
-- [ ] **Step 5: Check the argv against the real OpenCode**
+- [ ] **Step 5: Check the argv and listing against the real OpenCode**
 
-In a scratch git repo with its own root commit (never the linkC repo), run OpenCode once to make a session, then launch exactly the argv the test asserts and confirm it reopens that conversation in that folder:
+In a scratch git repo with its own root commit (never the linkC repo), under the scratchpad folder:
 
 ```bash
-D=<scratchpad>/continue-check; mkdir -p $D && cd $D && git init -q && echo "$(date +%s%N)" > seed && git add seed && git commit -qm seed
 OPENCODE_DISABLE_AUTOUPDATE=1 opencode run --model opencode/deepseek-v4.1-flash-free "Reply with exactly the word OK."
-opencode session list --format json   # note the id
-tmux new-session -d -s cont -x 100 -y 32 -c $D env OPENCODE_DISABLE_AUTOUPDATE=1 /opt/homebrew/bin/opencode --auto --session <id> --model opencode/big-pickle
+opencode session list --format json --standalone   # note the id; the output is what OpenCodeSessions.newest parses
+tmux new-session -d -s cont -x 92 -y 40 -c <scratch repo> env OPENCODE_DISABLE_AUTOUPDATE=1 /opt/homebrew/bin/opencode --standalone --auto --session <id>
 # wait for the footer, then:
-tmux capture-pane -p -t cont | tail -12; tmux kill-session -t cont
+tmux capture-pane -p -t cont | grep -v '^\s*$' | tail -10; tmux kill-session -t cont
 ```
 
-Expected: the earlier "OK" exchange on screen, the footer naming Big Pickle and `$D`. Report the capture.
+Expected: the earlier "OK" exchange on screen, in this folder. Report both outputs.
 
 - [ ] **Step 6: Revert-proof, then commit**
 
@@ -1332,16 +1416,14 @@ git commit -m "feat(opencode): continue an OpenCode session in its own folder on
 **Files:**
 - Create: `Sources/LinkCKit/Terminal/OpenCodeScreen.swift`
 - Modify: `Sources/LinkCKit/Terminal/TerminalPreview.swift` (`visibleText` from `private` to internal; one early return in `liveActivity`; one line in `isLiveMarkerRow`)
-- Modify: `Sources/LinkCKit/Terminal/ScreenSnapshot.swift`
-- Modify: `Sources/LinkCKit/App/AppCoordinator.swift` (one stored property, one line in `sampleAgentStates`, one line in `cleanup`)
-- Modify: `Sources/LinkCKit/App/AppCoordinator+OpenCode.swift`
-- Fixtures (already captured from OpenCode 1.18.19, in `Tests/LinkCKitTests/Fixtures/`): `opencode-1.18.19-idle`, `-idle-narrow`, `-working`, `-working-context`, `-working-narrow`, `-working-thinking-narrow`, `-done`, `-done-narrow`, `-toast`, `-toast-narrow` (`.txt`; 92 and 46 columns, 40 rows)
+- Fixtures, captured from the real TUI (in `Tests/LinkCKitTests/Fixtures/`, 92 and 46 columns, 40 rows):
+  - OpenCode 2.2.5 (the installed version): `opencode-2.2.5-idle`, `-idle-narrow`, `-working`, `-working-thinking`, `-working-narrow`, `-working-narrow-no-hint`, `-done`, `-done-narrow` — add them to git in this task (they are in the working tree, untracked).
+  - OpenCode 1.18.19 (already committed): `opencode-1.18.19-idle`, `-idle-narrow`, `-working`, `-working-context`, `-working-narrow`, `-working-thinking-narrow`, `-done`, `-done-narrow`. Remove `opencode-1.18.19-toast.txt` and `opencode-1.18.19-toast-narrow.txt` with `git rm`: OpenCode 2.2.5 shows no such toast, and linkC does not read it.
 - Create: `Tests/LinkCKitTests/OpenCodeScreenTests.swift`
-- Modify: `Tests/LinkCKitTests/AppCoordinatorOpenCodeTests.swift`
 
 **Interfaces:**
-- Consumes: Task 4's test harness; `CodexScreenFixture.rows(_:)` and `.terminalInput(_:)` (any fixture name).
-- Produces: `OpenCodeScreen.turn(in:) -> OpenCodeScreen.Turn?`, `OpenCodeScreen.isProgressRow(_:)`, `OpenCodeScreen.rejectedModel(in:) -> String?`, `ScreenSnapshot.openCodeRejectedModel() -> String?`.
+- Consumes: `CodexScreenFixture.rows(_:)` (any fixture name).
+- Produces: `OpenCodeScreen.turn(in:) -> OpenCodeScreen.Turn?`, `OpenCodeScreen.isProgressRow(_:)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1351,49 +1433,57 @@ Create `Tests/LinkCKitTests/OpenCodeScreenTests.swift`:
 import XCTest
 @testable import LinkCKit
 
-/// OpenCode 1.18.19's screens, captured from the real TUI at 92 and 46 columns, read the way the
-/// once-a-second sweep reads them.
+/// OpenCode's screens, captured from the real TUI (2.2.5, and 1.18.19 before it) at 92 and 46
+/// columns, read the way the once-a-second sweep reads them.
 final class OpenCodeScreenTests: XCTestCase {
-    private func screen(_ name: String) throws -> [String] { try CodexScreenFixture.rows("opencode-1.18.19-\(name)") }
+    private func screen(_ name: String) throws -> [String] { try CodexScreenFixture.rows("opencode-\(name)") }
 
     func testAnIdleScreenReadsIdle() throws {
-        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("idle")))
-        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("idle-narrow")))
+        for name in ["2.2.5-idle", "2.2.5-idle-narrow", "1.18.19-idle", "1.18.19-idle-narrow"] {
+            XCTAssertNil(TerminalPreview.liveActivity(from: try screen(name)), name)
+        }
     }
 
     func testEveryWorkingStageReadsWorking() throws {
-        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("working")), "Working")
-        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("working-context")), "Working")
-        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("working-narrow")), "Working",
-                       "at 46 columns the hint wraps; the progress bar still opens the row")
+        for name in ["2.2.5-working", "2.2.5-working-narrow", "1.18.19-working", "1.18.19-working-context", "1.18.19-working-narrow"] {
+            XCTAssertEqual(TerminalPreview.liveActivity(from: try screen(name)), "Working", name)
+        }
+    }
+
+    /// At 46 columns, the first seconds of a 2.2.5 turn show the bar with no interrupt hint after it.
+    func testTheBarAloneSaysATurnRuns() throws {
+        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("2.2.5-working-narrow-no-hint")), "Working")
     }
 
     func testTheThinkingSpinnerNamesThePhrase() throws {
-        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("working-thinking-narrow")), "Thinking")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("2.2.5-working-thinking")), "Thinking")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("1.18.19-working-thinking-narrow")), "Thinking")
     }
 
     func testAFinishedTurnReadsIdle() throws {
-        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("done")))
-        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("done-narrow")))
+        for name in ["2.2.5-done", "2.2.5-done-narrow", "1.18.19-done", "1.18.19-done-narrow"] {
+            XCTAssertNil(TerminalPreview.liveActivity(from: try screen(name)), name)
+        }
     }
 
     /// OpenCode's input box carries none of the prompt markers the generic scan stops at, so a
     /// finished turn's output above it must not be read as a turn in progress.
     func testOutputAboveAFinishedTurnsInputBoxIsNotATurn() throws {
-        var rows = try screen("done")
+        var rows = try screen("2.2.5-done")
         let edge = try XCTUnwrap(rows.lastIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("╹") })
         rows.insert(contentsOf: ["     ~ Reading file...", "     Writing tests…", "     ⠋ Thinking", "     press esc " + "interrupt to stop"],
-                    at: edge - 5)
+                    at: edge - 3)
         XCTAssertNil(TerminalPreview.liveActivity(from: rows))
     }
 
     /// The bar animates and the context size ticks while a turn runs; neither is progress.
     func testTheProgressRowIsNotProgress() throws {
-        let rows = try screen("working")
-        let footer = try XCTUnwrap(rows.firstIndex { $0.contains("⬝") || $0.contains("■") })
-        XCTAssertTrue(TerminalPreview.isLiveMarkerRow(rows[footer]))
+        let rows = try screen("2.2.5-working")
+        let edge = try XCTUnwrap(rows.lastIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("╹") })
+        let footer = edge + 1
+        XCTAssertTrue(TerminalPreview.isLiveMarkerRow(rows[footer]), rows[footer])
         var redrawn = rows
-        redrawn[footer] = "   ■■⬝⬝⬝⬝⬝⬝  esc " + "interrupt                                     44.9K (23%)  ctrl+p commands"
+        redrawn[footer] = "   ■■⬝⬝⬝⬝⬝⬝  esc " + "interrupt                                     24.9K (13%)  ctrl+p commands"
         XCTAssertEqual(TerminalPreview.progressSignature(rows: rows), TerminalPreview.progressSignature(rows: redrawn))
     }
 
@@ -1403,63 +1493,13 @@ final class OpenCodeScreenTests: XCTestCase {
             XCTAssertNil(OpenCodeScreen.turn(in: try CodexScreenFixture.rows(name)), name)
         }
     }
-
-    func testTheRejectedModelToastNamesTheModel() throws {
-        XCTAssertEqual(OpenCodeScreen.rejectedModel(in: try screen("toast")), "opencode/no-such-model-xyz")
-        XCTAssertEqual(OpenCodeScreen.rejectedModel(in: try screen("toast-narrow")), "opencode/no-such-model-xyz",
-                       "a narrow toast wraps its last words onto the next row")
-        for name in ["idle", "working", "done", "done-narrow"] {
-            XCTAssertNil(OpenCodeScreen.rejectedModel(in: try screen(name)), name)
-        }
-    }
 }
-```
-
-Add to `AppCoordinatorOpenCodeTests.swift`:
-
-```swift
-    /// A session of `agent` whose never-started terminal shows `fixture`.
-    private func showing(_ fixture: String, as agent: AgentKind, in coordinator: AppCoordinator) throws -> String {
-        let id = UUID().uuidString
-        _ = coordinator.store.create(cwd: tempDir.path, title: "work", id: id, agentKind: agent)
-        coordinator.store.updateState(id: id, to: .ready)
-        let term = coordinator.terminals.makeSession(id: id, cwd: tempDir.path, title: "work", agentKind: agent)
-        term.terminalView.getTerminal().resize(cols: 92, rows: 40)
-        term.terminalView.feed(text: try CodexScreenFixture.terminalInput(fixture))
-        return id
-    }
-
-    /// OpenCode shows its toast for about two seconds, then runs on the user's own default model.
-    func testARejectedModelIsReportedOncePerSession() throws {
-        let sink = RecordingSink()
-        let coordinator = try makeCoordinator(sink: sink)
-        defer { coordinator.shutdown() }
-        _ = try showing("opencode-1.18.19-toast", as: .opencode, in: coordinator)
-
-        coordinator.sampleAgentStates()
-        coordinator.sampleAgentStates()
-
-        let notices = sink.deliveries.filter { $0.title == "linkC: OpenCode rejected opencode/no-such-model-xyz" }
-        XCTAssertEqual(notices.count, 1)
-        XCTAssertTrue(notices.first?.body.contains("its own default model") ?? false, notices.first?.body ?? "")
-    }
-
-    func testOnlyAnOpenCodeSessionIsCheckedForTheToast() throws {
-        let sink = RecordingSink()
-        let coordinator = try makeCoordinator(sink: sink)
-        defer { coordinator.shutdown() }
-        _ = try showing("opencode-1.18.19-toast", as: .codex, in: coordinator)
-
-        coordinator.sampleAgentStates()
-
-        XCTAssertFalse(sink.deliveries.contains { $0.title.contains("OpenCode rejected") })
-    }
 ```
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `swift test --scratch-path $SP --filter 'OpenCodeScreenTests|AppCoordinatorOpenCodeTests'`
-Expected: compile errors for `OpenCodeScreen`; once stubbed, the working fixtures read nil or the done fixture with output reads as working.
+Run: `swift test --scratch-path $SP --filter OpenCodeScreenTests`
+Expected: compile error for `OpenCodeScreen`; once stubbed to return nil, the working fixtures read nil and the done fixture with output above its box reads as working.
 
 - [ ] **Step 3: Implement**
 
@@ -1468,11 +1508,11 @@ Create `Sources/LinkCKit/Terminal/OpenCodeScreen.swift`:
 ```swift
 import Foundation
 
-/// OpenCode's TUI, read from its screen rows (OpenCode 1.18.19; `Fixtures/opencode-1.18.19-*.txt`).
+/// OpenCode's TUI, read from its screen rows (OpenCode 2.2.5 and 1.18.19; `Fixtures/opencode-*.txt`).
 /// Its input box ends on a heavy edge ("╹▀▀▀…") with a footer under it. While a turn runs, the
-/// footer opens with a progress bar of "⬝"/"■" glyphs and then the interrupt hint, which a narrow
-/// screen wraps onto a second row; once the turn ends, it shows the folder path. A Braille spinner
-/// row sits a few rows above the box while the model thinks.
+/// footer opens with an 8-glyph progress bar of "⬝"/"■" — followed by the interrupt hint, though a
+/// narrow screen can show the bar alone; once the turn ends, the footer shows the folder path. A
+/// Braille spinner row sits just above the box while the model thinks.
 enum OpenCodeScreen {
     enum Turn: Equatable {
         case idle
@@ -1504,41 +1544,20 @@ enum OpenCodeScreen {
         return rest.count >= 8 && rest.allSatisfy { $0 == "▀" }
     }
 
-    private static let progressRow = try! NSRegularExpression(pattern: "^[⬝■]{4,}\\s+esc\\b")
+    private static let progressBar = try! NSRegularExpression(pattern: "^[⬝■]{8}")
 
-    /// Whether `text` (a row's visible text) is OpenCode's working footer: the progress bar, then
-    /// the start of the interrupt hint.
+    /// Whether `text` (a row's visible text) is OpenCode's working footer: it opens with the
+    /// 8-glyph progress bar. The hint after it is not required — a narrow screen leaves it out.
     static func isProgressRow(_ text: String) -> Bool {
-        progressRow.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+        progressBar.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
-    /// The phrase on a Braille spinner row ("⠦ Thinking" gives "Thinking"); nil for any other row.
+    /// The phrase on a Braille spinner row ("⠋ Thinking" gives "Thinking"); nil for any other row.
     private static func spinnerPhrase(_ row: String) -> String? {
         let text = TerminalPreview.visibleText(row)
         guard let first = text.unicodeScalars.first, (0x2800...0x28FF).contains(first.value) else { return nil }
         let phrase = String(text.unicodeScalars.dropFirst()).trimmingCharacters(in: .whitespaces)
         return phrase.isEmpty ? nil : phrase
-    }
-
-    private static let rejection = try! NSRegularExpression(pattern: #"\bModel (\S+) is not valid\b"#)
-    private static let rejectionHead = try! NSRegularExpression(pattern: #"\bModel (\S+)$"#)
-
-    /// The model in OpenCode's "Model <id> is not valid" toast, which it shows for about two
-    /// seconds before running on the config's default model; nil when no such toast is on screen.
-    /// A narrow toast wraps "is not valid" onto the next row.
-    static func rejectedModel(in rows: [String]) -> String? {
-        let texts = rows.map(TerminalPreview.visibleText).filter { !$0.isEmpty }
-        for (index, text) in texts.enumerated() {
-            let range = NSRange(text.startIndex..., in: text)
-            if let match = rejection.firstMatch(in: text, range: range), let id = Range(match.range(at: 1), in: text) {
-                return String(text[id])
-            }
-            if index + 1 < texts.count, texts[index + 1].hasPrefix("is not valid"),
-               let match = rejectionHead.firstMatch(in: text, range: range), let id = Range(match.range(at: 1), in: text) {
-                return String(text[id])
-            }
-        }
-        return nil
     }
 }
 ```
@@ -1555,46 +1574,17 @@ enum OpenCodeScreen {
 
 - In `isLiveMarkerRow`, after `if isWorkingFooter(text) { return true }`: `if OpenCodeScreen.isProgressRow(text) { return true }`.
 
-`ScreenSnapshot.swift`:
-
-```swift
-    /// The model OpenCode's toast says it rejected, nil when the toast is not on screen.
-    public func openCodeRejectedModel() -> String? {
-        OpenCodeScreen.rejectedModel(in: rows)
-    }
-```
-
-`AppCoordinator.swift`:
-- Stored property beside `openCodeSessionList`: `var openCodeRejections: Set<String> = []`, doc comment "Sessions linkC has already told the user OpenCode rejected their model."
-- In `sampleAgentStates`, right after `checkLimitsAndReroute(for: session.id, screen: screen)`: `if session.agentKind == .opencode { noteRejectedOpenCodeModel(sessionId: session.id, screen: screen) }`
-- In `cleanup(sessionId:)`, beside the other per-session removals: `openCodeRejections.remove(sessionId)`
-
-`AppCoordinator+OpenCode.swift`:
-
-```swift
-    /// Tells the user, once per session, that OpenCode refused the model linkC launched it on.
-    /// OpenCode then runs on the config's default model, which may be a local one.
-    func noteRejectedOpenCodeModel(sessionId: String, screen: ScreenSnapshot) {
-        guard let model = screen.openCodeRejectedModel(),
-              let session = store.session(id: sessionId),
-              openCodeRejections.insert(sessionId).inserted else { return }
-        NSLog("[linkC] OpenCode rejected %@ in %@; its screen:\n%@",
-              model, session.title, screen.recentRows(12).joined(separator: "\n"))
-        notifications.post(title: "linkC: OpenCode rejected \(model)",
-                           body: "\(session.title): OpenCode is running on its own default model instead. Set the tier's model in linkC Settings > Models.")
-    }
-```
-
 - [ ] **Step 4: Run the tests to see them pass**
 
-Run: `swift test --scratch-path $SP --filter 'OpenCodeScreenTests|AppCoordinatorOpenCodeTests|CodexScreenTests|ScreenReadingTests|TerminalPreviewPatternTests|ScreenSweepCostTests'`
-Expected: pass.
+Run: `swift test --scratch-path $SP --filter 'OpenCodeScreenTests|CodexScreenTests|ScreenReadingTests|TerminalPreviewPatternTests|ScreenSweepCostTests|AppCoordinatorWatchdogTests'`
+Expected: pass. (If a suite named here does not exist, drop it from the filter.)
 
 - [ ] **Step 5: Revert-proof, then commit**
 
 ```bash
-git add Sources/LinkCKit/Terminal Sources/LinkCKit/App Tests/LinkCKitTests/OpenCodeScreenTests.swift Tests/LinkCKitTests/AppCoordinatorOpenCodeTests.swift Tests/LinkCKitTests/Fixtures/opencode-1.18.19-*.txt
-git commit -m "feat(opencode): read OpenCode's turn and its rejected-model toast off its screen"
+git add Sources/LinkCKit/Terminal Tests/LinkCKitTests/OpenCodeScreenTests.swift Tests/LinkCKitTests/Fixtures/opencode-2.2.5-*.txt
+git rm Tests/LinkCKitTests/Fixtures/opencode-1.18.19-toast.txt Tests/LinkCKitTests/Fixtures/opencode-1.18.19-toast-narrow.txt
+git commit -m "feat(opencode): read OpenCode's turn off its screen"
 ```
 
 ---
@@ -1644,8 +1634,8 @@ and add:
 
     private var openTasks: [TaskRecord] { (try? InboxStore(workspaceRoot: tempDir.path).openTasks()) ?? [] }
 
-    /// Free models are offered for a limited time, and OpenCode swaps an id it does not know for the
-    /// user's own default, so a delegation to a model it no longer lists is refused.
+    /// Free models are offered for a limited time, and OpenCode runs a session whose model it does
+    /// not know on whatever it picks, so a delegation to a model it no longer lists is refused.
     func testADelegationToAModelOpenCodeNoLongerListsIsRefused() throws {
         let lister = ModelLister(["opencode/deepseek-v4.1-flash-free"])
         let result = try call(makeServer(openCodeModels: { try lister.list($0) }), "linkc_delegate_task",
@@ -1681,6 +1671,10 @@ and add:
         XCTAssertFalse(result.isError, result.text)
     }
 
+    func testOpenCodesModelsAreListedWithoutStartingTheSharedService() {
+        XCTAssertEqual(MCPServer.openCodeModelsArguments, ["models", "--standalone"])
+    }
+
     func testOpenCodesModelCannotBeSwitchedInARunningSession() throws {
         let result = try call(makeServer(), "linkc_switch_model", ["agent": "opencode", "model": "opencode/big-pickle"])
         XCTAssertTrue(result.isError)
@@ -1708,13 +1702,17 @@ In `MCPServer.swift`:
 
 ```swift
     /// The models OpenCode offers in a folder, read on every OpenCode delegation: a free model can
-    /// go at any time, and OpenCode runs an id it does not know on the user's own default instead.
+    /// go at any time, and OpenCode runs a session whose model it does not know on whatever it picks.
     public let openCodeModels: OpenCodeModelLister
 ```
 
 Init: last parameter `openCodeModels: @escaping OpenCodeModelLister = { try MCPServer.listOpenCodeModels(in: $0) }`, stored as `self.openCodeModels = openCodeModels`.
 
 ```swift
+    /// `opencode models`, on a private server so listing never starts OpenCode's shared background
+    /// service when it is not running.
+    static let openCodeModelsArguments = ["models", "--standalone"]
+
     /// The models `opencode models` lists in `folder` — a project's own config can add providers.
     /// Throws when OpenCode is missing or the listing fails.
     public static func listOpenCodeModels(in folder: String) throws -> [String] {
@@ -1722,7 +1720,7 @@ Init: last parameter `openCodeModels: @escaping OpenCodeModelLister = { try MCPS
             throw LinkCError.process("Executable for \(AgentKind.opencode.pillText) not found")
         }
         let result = try LiveProcessRunner.runCapturingSync(
-            executable: executable, args: ["models"], cwd: URL(fileURLWithPath: folder),
+            executable: executable, args: openCodeModelsArguments, cwd: URL(fileURLWithPath: folder),
             env: AgentDescriptor.environment(for: .opencode, home: FileManager.default.homeDirectoryForCurrentUser),
             timeout: 60)
         guard result.status == 0 else {
@@ -1782,7 +1780,7 @@ Expected: pass.
 
 - [ ] **Step 5: Check the listing against the real OpenCode**
 
-From a scratch folder: `opencode models | head -3` and confirm `listOpenCodeModels`'s parsing matches (one `provider/model` id per line, no colour codes when piped). Report the lines.
+From a scratch folder under the scratchpad: `OPENCODE_DISABLE_AUTOUPDATE=1 opencode models --standalone | head -3` and confirm `listOpenCodeModels`'s parsing matches (one `provider/model` id per line, no colour codes when piped). Report the lines.
 
 - [ ] **Step 6: Revert-proof, then commit**
 
