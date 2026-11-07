@@ -135,7 +135,8 @@ final class WebhookQueueTests: XCTestCase {
         try await until("the batch waits for the window") { !clock.pendingSleeps.isEmpty }
 
         clock.advance(by: .seconds(2))
-        try await until("the batch goes") { transport.requests.count == 6 }
+        // The next batches follow at once, up to the window: wait for the first, not for a count.
+        try await until("the batch goes") { transport.requests.count >= 6 }
         XCTAssertEqual(transport.requests[5].json["content"] as? String,
                        "1 earlier event was not posted (Discord was rate limiting).")
         XCTAssertEqual(transport.requests[5].embedTitles.first, "event 101")
