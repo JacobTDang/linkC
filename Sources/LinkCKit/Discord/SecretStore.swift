@@ -64,3 +64,7 @@ public struct KeychainSecretStore: SecretStore {
         guard status == errSecSuccess || status == errSecItemNotFound else { throw Failure(status: status) }
     }
 }
+
+extension KeychainSecretStore.Failure: LocalizedError {
+    public var errorDescription: String? { description }
+}

@@ -17,7 +17,7 @@ public struct DiscordWebhookURL: Equatable, Sendable {
     public static func parse(_ text: String) -> Result<DiscordWebhookURL, Refusal> {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let shape = "a webhook URL looks like https://discord.com/api/webhooks/<id>/<token>"
-        guard let components = URLComponents(string: trimmed), let url = URL(string: trimmed) else {
+        guard let components = URLComponents(string: trimmed), URL(string: trimmed) != nil else {
             return .failure(Refusal(description: "that is not a URL: \(shape)"))
         }
         guard components.scheme == "https" else {
@@ -41,8 +41,23 @@ public struct DiscordWebhookURL: Equatable, Sendable {
         guard !token.isEmpty, token.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else {
             return .failure(Refusal(description: "the webhook token is missing or malformed: \(shape)"))
         }
-        return .success(DiscordWebhookURL(url: url, id: id))
+        guard !components.percentEncodedPath.contains("%") else {
+            return .failure(Refusal(description: shape))
+        }
+        guard let normalized = URL(string: "https://\(host)/api/webhooks/\(id)/\(token)") else {
+            return .failure(Refusal(description: shape))
+        }
+        return .success(DiscordWebhookURL(url: normalized, id: id))
     }
+}
+
+extension DiscordWebhookURL: CustomStringConvertible {
+    /// Its id only: the URL holds the token, which is a secret.
+    public var description: String { "webhook \(id)" }
+}
+
+extension DiscordWebhookURL.Refusal: LocalizedError {
+    public var errorDescription: String? { description }
 }
 
 /// One webhook as linkC last read it from the Keychain.
@@ -56,7 +71,7 @@ public enum DiscordWebhookState: Equatable, Sendable {
 }
 
 /// Where an event goes (spec §3).
-public enum DiscordRoute: Equatable {
+public enum DiscordRoute: Equatable, Sendable {
     case webhook(account: String, DiscordWebhookURL)
     /// Not posted: no webhook applies (`reason` nil), or the one that applies can't be used.
     case none(reason: String?)
@@ -86,7 +101,8 @@ public final class DiscordWebhooks {
     public var projects: [String] { preferences.discordProjects }
 
     public func state(for account: String) -> DiscordWebhookState {
-        states[account] ?? .notSet
+        if let state = states[account] { return state }
+        return preferences.discordProjects.contains(account) ? .missing : .notSet
     }
 
     /// Reads the default webhook and every listed project's again.
@@ -101,6 +117,7 @@ public final class DiscordWebhooks {
     /// Stores `text` for `account` (the default, or a canonical project folder) once it parses.
     @discardableResult
     public func set(_ text: String, for account: String) throws -> DiscordWebhookURL {
+        let account = account == Self.defaultAccount ? account : ProjectPath.canonical(account)
         let webhook = try DiscordWebhookURL.parse(text).get()
         try secrets.setSecret(webhook.url.absoluteString, service: Self.service, account: account)
         if account != Self.defaultAccount, !preferences.discordProjects.contains(account) {
@@ -111,6 +128,7 @@ public final class DiscordWebhooks {
     }
 
     public func remove(_ account: String) throws {
+        let account = account == Self.defaultAccount ? account : ProjectPath.canonical(account)
         try secrets.deleteSecret(service: Self.service, account: account)
         preferences.discordProjects.removeAll { $0 == account }
         states[account] = nil

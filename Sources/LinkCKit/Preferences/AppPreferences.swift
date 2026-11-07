@@ -57,6 +57,7 @@ public final class AppPreferences {
         static let linkCApps = "linkCApps"
         static let linkCAppsUnreadable = "linkCApps.unreadable"
         static let discordProjects = "discordWebhookProjects"
+        static let discordProjectsUnreadable = "discordWebhookProjects.unreadable"
     }
 
     public var hotKeyPreset: HotKeyPreset {
@@ -124,7 +125,14 @@ public final class AppPreferences {
                 NSLog("[linkC] the Settings apps are unreadable, starting with none — %@", String(describing: error))
             }
         }
-        self.discordProjects = defaults.object(forKey: Keys.discordProjects) as? [String] ?? []
+        let storedProjects = defaults.object(forKey: Keys.discordProjects)
+        if let storedProjects, !(storedProjects is [String]) {
+            // Kept aside rather than lost: the list is the routing table, and a project dropped from it
+            // would have its events posted to the default webhook.
+            defaults.set(storedProjects, forKey: Keys.discordProjectsUnreadable)
+            NSLog("[linkC] the Discord project list is unreadable, starting with none")
+        }
+        self.discordProjects = storedProjects as? [String] ?? []
         self.linkCApps = apps
     }
 }
