@@ -31,6 +31,7 @@ public struct URLSessionWebhookTransport: WebhookTransport {
     public init() {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 30
         session = URLSession(configuration: configuration, delegate: RedirectBlocker(), delegateQueue: nil)
     }
 
