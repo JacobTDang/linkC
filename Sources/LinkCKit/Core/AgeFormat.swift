@@ -35,4 +35,25 @@ public enum AgeFormat {
     public static func longSpan(from start: Date, to now: Date = Date()) -> String {
         longSpan(now.timeIntervalSince(start))
     }
+
+    /// Elapsed time for working indicators: "0s", "59s", "1m 00s", "3m 05s", "1h 00m", "1h 04m".
+    /// Negative intervals (start time in the future) clamp to "0s".
+    public static func elapsed(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds))
+        if s < 60 {
+            return "\(s)s"
+        } else if s < 3600 {
+            let m = s / 60
+            let remSec = s % 60
+            return String(format: "%dm %02ds", m, remSec)
+        } else {
+            let h = s / 3600
+            let remMin = (s % 3600) / 60
+            return String(format: "%dh %02dm", h, remMin)
+        }
+    }
+
+    public static func elapsed(from start: Date, to now: Date = Date()) -> String {
+        elapsed(now.timeIntervalSince(start))
+    }
 }

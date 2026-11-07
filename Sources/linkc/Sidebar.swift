@@ -442,6 +442,7 @@ private struct SessionRow: View {
                 }
             }
         }
+        .hairlineSweep(isWorking: row.status.tone == .working)
         .draggable(LinkCTerminalDrag(id: row.id))
     }
 }
@@ -467,8 +468,19 @@ private struct AgeTimelineSchedule: TimelineSchedule {
 
 private struct SessionStatusLabel: View {
     let status: SessionRowStatus
+    @Environment(\.panelVisible) private var panelVisible
 
     var body: some View {
+        HStack(spacing: 6) {
+            statusTextView
+            if status.marker != .none {
+                StatusDotView(marker: status.marker)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusTextView: some View {
         switch status.format {
         case .fixed(let text):
             Text(text)
@@ -482,16 +494,18 @@ private struct SessionStatusLabel: View {
                     .monospacedDigit()
                     .foregroundStyle(color(for: status.tone))
             }
+        case .elapsed:
+            TimelineView(.periodic(from: .now, by: panelVisible ? 1.0 : 3600.0)) { context in
+                Text(status.text(now: context.date))
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(color(for: status.tone))
+            }
         }
     }
 
     private func color(for tone: SessionRowStatus.Tone) -> Color {
-        switch tone {
-        case .quiet: return Theme.textTertiary
-        case .working: return Theme.statusRunning
-        case .attention: return Theme.accent
-        case .error: return Theme.statusError
-        }
+        tone == .error ? Theme.statusError : Theme.textTertiary
     }
 }
 
