@@ -90,8 +90,9 @@ public final class DiscordNotifier<C: Clock> where C.Duration == Duration {
     }
 
     /// What Settings shows for `account`'s webhook.
+    /// What Settings shows for `account`'s webhook. `account` is the default or a canonical folder from
+    /// `webhooks.projects`: this is read from a view body, so it touches no disk.
     public func status(for account: String) -> WebhookStatus {
-        let account = account == DiscordWebhooks.defaultAccount ? account : ProjectPath.canonical(account)
         switch webhooks.state(for: account) {
         case .set(let webhook): return queueStatus[webhook.url.absoluteString] ?? .idle
         case .notSet: return .idle
