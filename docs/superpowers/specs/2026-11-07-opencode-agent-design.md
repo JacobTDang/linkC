@@ -88,7 +88,7 @@ Menus: OpenCode is under New and Continue last, not under Resume….
 
 ### 5.3 Continuing a session
 
-linkC continues an OpenCode session in its own folder only. For `.continueLast` — the menu item, and every restore after a quit — linkC runs `opencode session list --format json --standalone` in the session's folder, takes the newest entry whose `directory` is that folder (both canonicalized with `ProjectPath.canonical`), and launches with `--session <id>`. With no such entry, the session starts new. If the listing fails, or its output does not parse, the launch fails with that error; it does not start a new session in its place.
+linkC continues an OpenCode session in its own folder only. For `.continueLast` — the menu item, and every restore after a quit — linkC runs `opencode session list --format json --standalone --max-count 10000` in the session's folder (OpenCode lists 100 sessions by default, across every worktree of the project; a listing that reaches the 10,000 asked for fails rather than risk missing this folder's session), takes the newest entry whose `directory` is that folder (both canonicalized with `ProjectPath.canonical`), and launches with `--session <id>`. With no such entry, the session starts new. If the listing fails, or its output does not parse, the launch fails with that error; it does not start a new session in its place.
 
 The listing runs off the main thread, through `ProcessRunner`; the session is launched when it returns. `RelaunchPlan` already lets at most one entry per folder and agent continue, so two restored OpenCode sessions never land on one conversation.
 
