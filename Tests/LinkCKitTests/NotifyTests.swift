@@ -163,10 +163,78 @@ final class NotificationManagerPostTests: XCTestCase {
     func testPostGenericAlertDeliversImmediately() {
         let sink = RecordingSink()
         let manager = NotificationManager(sink: sink, now: { Date(timeIntervalSince1970: 0) })
-        manager.post(title: "linkC: Swarm Rate Limited", body: "All candidates are rate limited.")
+        manager.post(title: "linkC: Swarm Rate Limited", body: "All candidates are rate limited.", project: nil)
         XCTAssertEqual(sink.deliveries.count, 1)
         XCTAssertEqual(sink.deliveries.first?.title, "linkC: Swarm Rate Limited")
         XCTAssertEqual(sink.deliveries.first?.body, "All candidates are rate limited.")
         XCTAssertTrue(sink.deliveries.first?.id.hasPrefix("alert:") ?? false)
+    }
+}
+
+// MARK: - NotificationManager events
+
+/// Every alert is also an event for Discord; Discord-only events and linkC's own notices are not
+/// macOS notifications and events respectively (spec 2026-11-05 §2).
+@MainActor
+final class NotificationManagerEventTests: XCTestCase {
+    private let at = Date(timeIntervalSince1970: 5)
+
+    private func make(_ sink: RecordingSink = RecordingSink()) -> (NotificationManager, Box) {
+        let manager = NotificationManager(sink: sink, now: { Date(timeIntervalSince1970: 5) })
+        let box = Box()
+        manager.onEvent = { box.events.append($0) }
+        return (manager, box)
+    }
+
+    private final class Box {
+        var events: [LinkCEvent] = []
+    }
+
+    func testAnAlertIsAlsoAnEventWithItsProject() {
+        let (manager, box) = make()
+        manager.post(title: "linkC: Codex Rate Limited", body: "limit", project: "/p/alpha")
+        XCTAssertEqual(box.events, [LinkCEvent(kind: .alert, tone: .needsYou, title: "Codex Rate Limited", body: "limit",
+                                               project: ProjectPath.canonical("/p/alpha"), at: at)])
+    }
+
+    func testASessionAlertIsAlsoAnEventAndACoalescedRepeatIsNot() {
+        let (manager, box) = make()
+        let session = Session(id: "L1", cwd: "/tmp", title: "api", state: .finished)
+        manager.post(session: session)
+        manager.post(session: session)
+        XCTAssertEqual(box.events, [LinkCEvent(kind: .sessionState, tone: .done, title: "Claude · api · finished", body: "",
+                                               project: ProjectPath.canonical("/tmp"), at: at)])
+    }
+
+    func testEachSessionStateHasItsTone() {
+        let (manager, box) = make()
+        for (id, state) in [("A", SessionState.waitingPermission), ("B", .waitingIdle), ("C", .error)] {
+            manager.post(session: Session(id: id, cwd: "/tmp", title: "api", state: state))
+        }
+        XCTAssertEqual(box.events.map(\.tone), [.needsYou, .needsYou, .failed])
+    }
+
+    func testAServiceAlertIsAnEventWithNoProject() {
+        let (manager, box) = make()
+        manager.postAlert(id: "alert:x", title: "api", body: "api is not responding", tone: .failed)
+        XCTAssertEqual(box.events, [LinkCEvent(kind: .service, tone: .failed, title: "api", body: "api is not responding",
+                                               project: nil, at: at)])
+    }
+
+    func testADiscordOnlyEventIsNoMacNotification() {
+        let sink = RecordingSink()
+        let (manager, box) = make(sink)
+        let event = LinkCEvent(kind: .task, tone: .done, title: "Task done", body: "", project: "/p", at: at)
+        manager.postEvent(event)
+        XCTAssertEqual(box.events, [event])
+        XCTAssertTrue(sink.deliveries.isEmpty)
+    }
+
+    func testALocalNotificationIsNeverAnEvent() {
+        let sink = RecordingSink()
+        let (manager, box) = make(sink)
+        manager.postLocal(title: "linkC stopped posting to Discord", body: "…")
+        XCTAssertEqual(sink.deliveries.count, 1)
+        XCTAssertTrue(box.events.isEmpty)
     }
 }
