@@ -1,8 +1,10 @@
 
 
-                                       ┃                                                 ┃
-                                       ┃  Model opencode/no-such-model-xyz is not valid  ┃
-                                       ┃                                                 ┃
+
+
+
+
+
 
 
 
@@ -17,15 +19,11 @@
 
 
          ┃
-         ┃  Ask anything... "Fix broken tests"
+         ┃  Ask anything… "What is the tech stack of this project?"
          ┃
-         ┃  Build auto · Qwen3.8 27B (local, 32k) Ollama (local)
+         ┃  Build auto · Big Pickle OpenCode
          ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-         tab agents  ctrl+p commands
-
-
-
-             ● Tip Create opencode.json for server settings, and tui.json for TUI
+         /…/65d23432-96…/scratchpad/v2-probe:main  shift+tab agents  ctrl+p commands
 
 
 
@@ -35,6 +33,8 @@
 
 
 
-  /private/tmp/agent-0501/-Users-user_name-Projects-linkC/65d23432-9669-4f94-      1.18.19
-  979d-931668e62d0c/scratchpad/capture/repo-92:main
+
+
+
+  ⊙ 6 MCP /mcps                                                                      2.2.5
 

@@ -1,0 +1,40 @@
+ ⠋ Lighthouse keeper story and w +
+
+  ┃
+  ┃  Write a 250-word story about a
+  ┃  lighthouse keeper to story.txt.
+  ┃  Then run wc -w story.txt and report the
+  ┃  count.
+  ┃
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4.1 Fla… · high
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝shift+tab agents  ctrl+p commands
+
