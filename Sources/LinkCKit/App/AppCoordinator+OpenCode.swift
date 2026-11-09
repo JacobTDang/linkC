@@ -33,7 +33,8 @@ extension AppCoordinator {
                 self.sweepTicker?.wake()
             } catch {
                 NSLog("[linkC] OpenCode could not continue in %@ — %@", folder, String(describing: error))
-                guard let self else { return }
+                // Closed while the listing ran: the user already ended it, so there is nothing to tell them.
+                guard let self, self.store.session(id: session.id) != nil else { return }
                 self.notifications.post(title: "linkC: OpenCode could not continue",
                                         body: "\(session.title): \(error)")
                 self.cleanup(sessionId: session.id)
@@ -49,15 +50,12 @@ extension AppCoordinator {
         return flags + ["--session", id] + args.dropFirst(flags.count)
     }
 
-    /// `opencode session list --format json --standalone`, run in `folder` off the main thread.
+    /// `opencode` run with `OpenCodeSessions.listArguments` in `folder`, off the main thread, through the
+    /// runner every other CLI call uses: a non-zero exit or a timeout throws, carrying OpenCode's stderr.
     nonisolated static func listOpenCodeSessions(executable: String, folder: String) async throws -> String {
-        let result = try await LiveProcessRunner().runCapturing(
+        try await LiveProcessRunner().run(
             executable, args: OpenCodeSessions.listArguments, cwd: URL(fileURLWithPath: folder),
             env: AgentDescriptor.environment(for: .opencode, home: FileManager.default.homeDirectoryForCurrentUser),
             timeout: 30)
-        guard result.status == 0 else {
-            throw LinkCError.process("`opencode session list` in \(folder) exited \(result.status): \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
-        }
-        return result.stdout
     }
 }

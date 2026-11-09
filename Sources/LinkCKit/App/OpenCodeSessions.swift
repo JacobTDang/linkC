@@ -7,9 +7,14 @@ import Foundation
 /// project, and folders with no commits share one. linkC continues only a session that ran in the
 /// very folder it is opening.
 public enum OpenCodeSessions {
+    /// How many sessions linkC asks OpenCode to list. OpenCode's own limit is 100, and the listing
+    /// spans every worktree of the project, so a folder's own session can sit past it.
+    public static let listLimit = 10_000
+
     /// The arguments that list the sessions of the project `opencode` runs in. `--standalone`, so
     /// listing never starts OpenCode's shared background service when it is not running.
-    public static let listArguments = ["session", "list", "--format", "json", "--standalone"]
+    /// `--max-count`, because OpenCode lists only the 100 newest sessions unless told otherwise.
+    public static let listArguments = ["session", "list", "--format", "json", "--standalone", "--max-count", String(listLimit)]
 
     private struct Entry: Decodable {
         let id: String
@@ -19,7 +24,9 @@ public enum OpenCodeSessions {
 
     /// The id of the newest session that ran in `folder`, from `opencode session list --format
     /// json` output; nil when none did. OpenCode prints nothing for a project with no sessions.
-    /// Throws on output that is not that listing.
+    /// Throws on output that is not that listing, and on a listing that holds `listLimit` sessions:
+    /// OpenCode stops there, so this folder's own session may be the one it left out, and carrying
+    /// on would start a new conversation in its place.
     public static func newest(in folder: String, listing: String) throws -> String? {
         guard !listing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let entries: [Entry]
@@ -27,6 +34,9 @@ public enum OpenCodeSessions {
             entries = try JSONDecoder().decode([Entry].self, from: Data(listing.utf8))
         } catch {
             throw LinkCError.parse("OpenCode's session list could not be read — \(error)")
+        }
+        guard entries.count < listLimit else {
+            throw LinkCError.parse("OpenCode listed \(listLimit) sessions, its limit as linkC asks for it, so this folder's own session may be missing from the list")
         }
         let target = ProjectPath.canonical(folder)
         return entries

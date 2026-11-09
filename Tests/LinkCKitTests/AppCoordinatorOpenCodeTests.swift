@@ -203,6 +203,46 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
                        "OpenCode never started")
     }
 
+    /// A listing that waits to be released and then fails, so a test can close the session while it runs.
+    final class HeldLister: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _entered = false, _released = false, _failed = false
+        var entered: Bool { lock.withLock { _entered } }
+        var failed: Bool { lock.withLock { _failed } }
+        func release() { lock.withLock { _released = true } }
+        private var released: Bool { lock.withLock { _released } }
+        private func markEntered() { lock.withLock { _entered = true } }
+        private func markFailed() { lock.withLock { _failed = true } }
+        func list(_ executable: String, _ folder: String) async throws -> String {
+            markEntered()
+            while !released { try await Task.sleep(nanoseconds: 5_000_000) }
+            markFailed()
+            throw LinkCError.process("opencode session list exited 1: no database")
+        }
+    }
+
+    /// The user closed the session while its listing ran. A listing that then fails has nobody to
+    /// tell: they already ended it.
+    func testAListingThatFailsAfterTheSessionWasClosedSaysNothing() throws {
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+        let lister = HeldLister()
+        coordinator.openCodeSessionList = { try await lister.list($0, $1) }
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
+        XCTAssertTrue(waitUntil { lister.entered }, "the listing is under way")
+
+        coordinator.stopSession(session.id)
+        lister.release()
+        XCTAssertTrue(waitUntil { lister.failed }, "the listing failed")
+
+        // The failure is handled on the main actor right after. Nothing marks that moment, so give
+        // it time: a notice would be delivered the instant it runs.
+        let settled = Date().addingTimeInterval(0.5)
+        while Date() < settled { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+        XCTAssertNil(sink.deliveries.first { $0.title == "linkC: OpenCode could not continue" })
+    }
+
     func testANewSessionNeverLists() throws {
         let coordinator = try makeCoordinator()
         defer { coordinator.shutdown() }

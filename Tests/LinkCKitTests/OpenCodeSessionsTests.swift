@@ -31,7 +31,28 @@ final class OpenCodeSessionsTests: XCTestCase {
     }
 
     func testTheArgumentsListThisProjectsSessionsWithoutStartingTheSharedService() {
-        XCTAssertEqual(OpenCodeSessions.listArguments, ["session", "list", "--format", "json", "--standalone"])
+        XCTAssertEqual(OpenCodeSessions.listArguments,
+                       ["session", "list", "--format", "json", "--standalone", "--max-count", "10000"])
+    }
+
+    /// `n` minimal listing entries, all in `folder`.
+    private func listing(count n: Int, in folder: String) -> String {
+        let objects = (0..<n).map { #"{"id":"ses_\#($0)","directory":"\#(folder)","updated":\#($0)}"# }
+        return "[" + objects.joined(separator: ",") + "]"
+    }
+
+    /// OpenCode lists 100 sessions unless asked for more, across every worktree of the project, so a
+    /// listing that fills the count linkC asked for may have cut this folder's own session off.
+    func testAListingThatFillsTheLimitThrowsRatherThanRiskMissingThisFoldersSession() {
+        let full = listing(count: OpenCodeSessions.listLimit, in: worktree)
+        XCTAssertThrowsError(try OpenCodeSessions.newest(in: here, listing: full)) { error in
+            XCTAssertTrue(String(describing: error).contains("\(OpenCodeSessions.listLimit) sessions"), String(describing: error))
+        }
+    }
+
+    func testAListingOneShortOfTheLimitIsRead() throws {
+        let short = listing(count: OpenCodeSessions.listLimit - 1, in: here)
+        XCTAssertEqual(try OpenCodeSessions.newest(in: here, listing: short), "ses_\(OpenCodeSessions.listLimit - 2)")
     }
 
     func testTheNewestSessionInThisFolderIsChosen() throws {
@@ -61,5 +82,46 @@ final class OpenCodeSessionsTests: XCTestCase {
     func testOutputThatIsNotTheListingThrows() {
         XCTAssertThrowsError(try OpenCodeSessions.newest(in: here, listing: "Error: no project found"))
         XCTAssertThrowsError(try OpenCodeSessions.newest(in: here, listing: #"{"id":"ses_x"}"#))
+    }
+
+    // MARK: - The real listing, run against a stand-in `opencode`
+
+    /// An executable shell script beside the recorded files, standing in for `opencode`.
+    private func stubOpenCode(_ body: String) throws -> URL {
+        let script = root.appendingPathComponent("stub-opencode.sh")
+        try ("#!/bin/sh\n" + body).write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        return script
+    }
+
+    /// A non-zero exit is OpenCode's failure to report, with its own words, not an empty listing.
+    func testAListingThatExitsNonZeroThrowsWithOpenCodesOwnWords() async throws {
+        let stub = try stubOpenCode("echo boom-marker-on-stderr >&2\nexit 1\n")
+
+        do {
+            let listing = try await AppCoordinator.listOpenCodeSessions(executable: stub.path, folder: here)
+            XCTFail("a failed listing returned \(listing.debugDescription)")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("boom-marker-on-stderr"), String(describing: error))
+        }
+    }
+
+    /// The listing runs `OpenCodeSessions.listArguments` in the session's folder and returns what
+    /// OpenCode printed.
+    func testTheListingRunsTheListArgumentsInTheFolderAndReturnsTheOutput() async throws {
+        let stub = try stubOpenCode("""
+            printf '%s\\n' "$@" > "$(dirname "$0")/argv"
+            pwd -P > "$(dirname "$0")/cwd"
+            printf '%s' '[{"id":"ses_x","directory":"/d","updated":1}]'
+            """)
+
+        let out = try await AppCoordinator.listOpenCodeSessions(executable: stub.path, folder: here)
+
+        XCTAssertEqual(out, #"[{"id":"ses_x","directory":"/d","updated":1}]"#)
+        let argv = try String(contentsOf: root.appendingPathComponent("argv"), encoding: .utf8)
+        XCTAssertEqual(argv.split(separator: "\n").map(String.init), OpenCodeSessions.listArguments)
+        let cwd = try String(contentsOf: root.appendingPathComponent("cwd"), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(ProjectPath.canonical(cwd), ProjectPath.canonical(here))
     }
 }
