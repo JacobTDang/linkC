@@ -58,8 +58,11 @@ A request goes out only when all three hold:
 
 ### 4.2 Batching
 
-- **When a request goes out**, the queue packs every waiting event into it, oldest first, up to Discord's limits: **10 embeds** and **6000 characters** across them. A burst of 30 events is 3 requests.
-- **Long fields are cut** to fit Discord's limits, with an ellipsis: title 256 characters, description 4096, footer 2048.
+- **When a request goes out**, the queue takes every waiting event, oldest first.
+- **One event** posts as one card (§5.1).
+- **Several events** post as one digest card (§5.2), up to **15** events a page.
+  - When more than 15 wait, they are split into pages there and then. Each page's headline carries `(1/3)` and so on, and the pages go out in order, one request each, ahead of any event that arrives meanwhile.
+  - Every page is built and checked against Discord's limits (§5) before the first is posted.
 
 ### 4.3 Bound
 
@@ -70,26 +73,71 @@ A request goes out only when all three hold:
 
 | Response | What linkC does |
 |---|---|
-| 2xx | done; record "last posted at" |
+| 200 with a JSON body whose `id` is not empty | done; record "last posted at". Only this counts as sent (§5) |
+| 204, an empty or non-JSON body, any other 2xx | not saved: retried like a 5xx below |
 | 429 | wait (§4.1), resend the same message |
 | 404, 401, 403 | the webhook is deleted or invalid: **stop**. Drop its queue, mark it stopped in Settings with the status code, and post one macOS notification. It stays stopped until its URL is edited or **Send test** succeeds. Discord asks clients not to reuse a 404 webhook, and repeated 401/403/429 responses get the IP banned. |
-| 400 | the message is malformed, which is a linkC bug: log the response body, drop that message, show the error in Settings |
+| 400, 413, any other 4xx | the message is malformed, which is a linkC bug, and retrying cannot fix it: log Discord's `code` and `message`, drop that message, show the error in Settings |
 | 5xx, timeout, no network | retry the same message after 2, 4, 8, 16 and 32 s: the first attempt plus five retries. If the last retry fails too, drop it, log it, and show the error in Settings |
 
-- **Logging never includes the webhook URL.** Logs name a webhook by "default" or by its project name.
+- **Logging never includes the webhook URL.** Logs name a webhook by "default" or by its project name. A transport error is reported by its type name (and a `URLError`'s code), never by its text, which can hold the URL.
 - **No retry loop on a stopped webhook.** A stopped webhook makes no requests at all.
 
-## 5. The message
+## 5. The message: the JD LLC house style
 
-One POST to the webhook URL with JSON:
-- `username: "linkC"`;
-- `allowed_mentions: { "parse": [] }`, so no text from a task or an agent can ping anyone;
-- `embeds`: one per event, each with:
-  - `title`;
-  - `description` (the body);
-  - `color`: green `0x3BA55C` for done, amber `0xFAA61A` for needs-you (permission, waiting, stuck, rate limited), red `0xED4245` for failed, errored, expired or stopped, grey `0x99AAB5` for the rest;
-  - `footer.text`: the project folder's name, or "linkC";
-  - `timestamp`: the event's `at`, ISO 8601.
+linkC posts in the JD LLC house style, the one every project on the user's Discord server uses (the user's `discord-webhook` skill, `references/house-style.md`). This section replaces the embed design of the first version of this spec. The user chose one digest card for a burst of events, and the Keychain for the URLs.
+
+**Transport:**
+- POST to the webhook URL with `with_components=true&wait=true` added as its query. Without `with_components`, Discord drops the components; without `wait`, a message Discord did not save still returns 204.
+- The body is `{"flags": …, "components": [one container], "allowed_mentions": {"parse": []}}`.
+  - It carries no `content`, `embeds` or `username`. The webhook's own name shows who posted, so Settings tells the user to name it "linkC".
+  - `flags` always holds IS_COMPONENTS_V2 (`1 << 15`). It also holds SUPPRESS_NOTIFICATIONS (`1 << 12`) when every event in the message is information (§5.3): those post silently. Nothing else goes in `flags`.
+
+**Limits, per message:**
+- 40 components, nested ones included;
+- 4000 text-display characters in total.
+
+A page that would pass a limit is an error found before posting, never text cut silently. Event text is bounded where it is built: a title is cut to 100 characters, a detail line to 120, and an event has at most 4 detail lines, each cut visibly with `…`. A page of 15 events stays under the limits.
+
+**Text:**
+- Text from agents, tasks and folders is markdown-escaped and kept on one line.
+- Times are Discord timestamps (`<t:UNIX:f>`, `<t:UNIX:R>`), so they show in the reader's time zone.
+- Plurals are right: "1 event", "2 events".
+
+### 5.1 One event
+
+One Container (type 17), its `accent_color` set by the event's tone (§5.3), holding in order:
+1. A text display: `## <emoji> <title>`.
+2. The event's detail, as text-display lines (at most 4).
+3. When events were dropped (§4.3): a line `⚠️ N earlier events were not posted (Discord was rate limiting).`
+4. A separator (type 14).
+5. A text display: `-# linkC · <project folder name> · <t:UNIX:f> (<t:UNIX:R>)`. With no project, it reads `-# linkC · <t:UNIX:f> (<t:UNIX:R>)`.
+
+### 5.2 A digest
+
+One Container, its colour that of the most serious event in it (failed, then needs you, then done, then information), holding:
+1. `## 📋 N linkC events`. A page of a split digest reads `## 📋 N linkC events (1/3)`.
+2. For each event, in order:
+   - one line: `<emoji> **<title>** · <project folder name>`;
+   - under it, the first detail line as subtext: `-# <detail>`.
+3. The dropped-events line, when there is one.
+4. A separator.
+5. `-# linkC · <t:UNIX:f> (<t:UNIX:R>)`, with the time of the newest event.
+
+### 5.3 Tones
+
+| Tone | Events | Colour | Emoji | Notifies |
+|---|---|---|---|---|
+| done | an agent finished, a task done | green `0x57F287` | ✅ | yes |
+| needs you | permission, waiting for input, stuck, rate limited, a notice that can't land | yellow `0xFEE75C` | ⚠️ | yes |
+| failed | an agent's error, a task failed or expired, a watched service down | red `0xED4245` | ❌ | yes |
+| information | a task delivered or cancelled, a worker closed, a service back up | blurple `0x5865F2` | 📋 | no (SUPPRESS_NOTIFICATIONS) |
+
+**Deliberate difference from the house style:** a 429's wait is clamped at an hour, not 60 seconds. linkC runs for days, so it can afford the real wait. Retrying before Discord's own `retry_after` would only earn more 429s, which Discord counts toward its ban.
+
+### 5.4 Live check
+
+One test posts a card of each tone and one digest to the user's `#bot-preview` channel through the real transport. It runs only when `DISCORD_PREVIEW_WEBHOOK_URL` is set, from `~/.config/jd-llc/discord-preview-webhook`, and is skipped otherwise. It asserts that each post was saved (Discord returned an id). Then someone looks at the channel before the work is called done: Discord accepting a message says nothing about how it reads.
 
 ## 6. Settings and the Keychain
 
