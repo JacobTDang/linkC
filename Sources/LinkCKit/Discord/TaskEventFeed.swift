@@ -35,9 +35,9 @@ struct TaskEventFeed {
         case .cancelled: ("cancelled", .info)
         default: (task.state.rawValue, .info)
         }
-        var lines = ["`\(task.shortId)` \(firstLine(of: task.prompt))"]
+        var lines = ["\(task.shortId) · \(firstLine(of: task.prompt))"]
         let outcome: String? = switch task.state {
-        case .done, .failed: task.report?.summary ?? task.cancelReason
+        case .done, .failed: task.report.map(\.summary).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 } ?? task.cancelReason
         case .expired, .cancelled: task.cancelReason
         default: nil
         }

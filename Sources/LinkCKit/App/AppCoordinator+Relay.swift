@@ -50,7 +50,9 @@ extension AppCoordinator {
         let inboxStore = InboxStore(workspaceRoot: norm)
         relayWork.beginPass(in: norm)
         pollPasteReadiness(workspacePath: norm)
-        reportTaskEvents(workspacePath: norm, inboxStore: inboxStore)
+        guard !reportTaskEvents(workspacePath: norm, inboxStore: inboxStore) else {
+            return logRelayLockContention(workspacePath: norm)
+        }
         guard !settleResolvableTasks(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
         }
@@ -100,23 +102,26 @@ extension AppCoordinator {
         }
     }
 
-    /// Posts the task changes in `workspacePath` since the last pass, for Discord only (spec §2.1). A read
-    /// that fails keeps the last snapshot, so the next pass compares again: nothing is lost or repeated.
-    func reportTaskEvents(workspacePath norm: String, inboxStore: InboxStore) {
+    /// Posts the task changes in `workspacePath` since the last pass, for Discord only (spec §2.1). A relay
+    /// phase: returns `true` when the inbox lock was still contended after `relayLockTimeout`, so the tick
+    /// stops there. A read that fails keeps the last snapshot, so the next pass compares again: nothing is
+    /// lost or repeated.
+    @discardableResult
+    func reportTaskEvents(workspacePath norm: String, inboxStore: InboxStore) -> Bool {
         // Like every relay phase: a store read would recreate a deleted workspace on disk.
-        guard workspaceExists(norm) else { return }
+        guard workspaceExists(norm) else { return false }
         let tasks: [TaskRecord]
         do {
             tasks = try inboxStore.load(timeout: Self.relayLockTimeout).tasks
         } catch {
-            if !isRelayLockTimeout(error) {
-                NSLog("[linkC relay] reportTaskEvents: tasks — %@", String(describing: error))
-            }
-            return
+            if isRelayLockTimeout(error) { return true }
+            NSLog("[linkC relay] reportTaskEvents: tasks — %@", String(describing: error))
+            return false
         }
         for event in taskEvents.events(in: norm, tasks: tasks, at: now()) {
             notifications.postEvent(event)
         }
+        return false
     }
 
     /// Logs once that this tick ended early because the inbox lock was still held by another

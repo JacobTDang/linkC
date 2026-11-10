@@ -58,7 +58,7 @@ extension AppCoordinator {
                 NSLog("[linkC relay] closing worker %@ on request for task %@", sessionId, task.shortId)
                 let agent = store.session(id: sessionId)?.agentKind
                 stopSession(sessionId)
-                postWorkerClosed(agent, in: norm, because: "Closed on request for task `\(task.shortId)`.")
+                postWorkerClosed(agent, in: norm, because: "Closed on request for task \(task.shortId).")
                 outcome = .closed(at: now())
             case .alreadyClosed:
                 outcome = .closed(at: now())
