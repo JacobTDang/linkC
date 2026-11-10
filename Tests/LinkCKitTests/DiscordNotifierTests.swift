@@ -58,8 +58,8 @@ final class DiscordNotifierTests: XCTestCase {
         notifier.post(event("for beta", project: "/p/beta"))
         try await until("the default's request") { transport.requests.count == 2 }
 
-        XCTAssertEqual(transport.requests.map(\.url.absoluteString), [alphaURL, defaultURL])
-        XCTAssertEqual(transport.requests.map(\.embedTitles), [["for alpha"], ["for beta"]])
+        XCTAssertEqual(transport.requests.map(\.url.absoluteString), [alphaURL, defaultURL].map { $0 + "?with_components=true&wait=true" })
+        XCTAssertEqual(transport.requests.map(\.headline), ["## 📋 for alpha", "## 📋 for beta"])
     }
 
     func testWithNoWebhookNothingIsSent() async throws {
@@ -142,7 +142,7 @@ final class DiscordNotifierTests: XCTestCase {
 
         try notifier.sendTest(to: alpha)
         try await until("the test goes") { transport.requests.count == 2 }
-        XCTAssertEqual(transport.requests[1].embedTitles, ["linkC is connected"])
+        XCTAssertEqual(transport.requests[1].headline, "## ✅ linkC is connected")
         try await until("posted") { notifier.status(for: alpha) == .posted(at: Date(timeIntervalSince1970: 1_000)) }
     }
 
@@ -210,7 +210,7 @@ final class DiscordNotifierTests: XCTestCase {
         XCTAssertEqual(transport.requests.count, 5)
         clock.advance(by: .seconds(2))
         try await until("the test goes") { transport.requests.count == 6 }
-        XCTAssertEqual(transport.requests[5].embedTitles, ["linkC is connected"])
+        XCTAssertEqual(transport.requests[5].headline, "## ✅ linkC is connected")
     }
 
     /// Setting a webhook to the URL it already has keeps its queue and the window it used.
@@ -246,7 +246,7 @@ final class DiscordNotifierTests: XCTestCase {
         notifier.post(event("again", project: alpha))
         try await until("the new URL gets it") { transport.requests.count == 2 }
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(transport.requests.map(\.url.absoluteString), [alphaURL, defaultURL])
+        XCTAssertEqual(transport.requests.map(\.url.absoluteString), [alphaURL, defaultURL].map { $0 + "?with_components=true&wait=true" })
     }
 
     /// Discord's global limit is per IP: a webhook set up while it runs waits out the rest of it.

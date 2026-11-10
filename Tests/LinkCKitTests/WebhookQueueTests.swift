@@ -64,8 +64,8 @@ final class WebhookQueueTests: XCTestCase {
 
     func testExhaustedHeadersHoldTheNextRequest() async throws {
         let clock = ManualClock()
-        let transport = ScriptedWebhookTransport([.success(WebhookResponse(
-            status: 204, headers: ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset-After": "1.5"]))])
+        let transport = ScriptedWebhookTransport([.success(.saved(
+            headers: ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset-After": "1.5"]))])
         let queue = makeQueue(transport, clock)
         defer { queue.cancel() }
         try await sendOneByOne(queue, transport, 1)
@@ -106,24 +106,59 @@ final class WebhookQueueTests: XCTestCase {
         try await until("the global limit is reported") { reported == [.seconds(2)] }
     }
 
-    func testThirtyWaitingEventsGoAsThreeMessagesOfTen() async throws {
+    func testThirtyWaitingEventsGoAsTwoDigestPages() async throws {
         let clock = ManualClock(), transport = ScriptedWebhookTransport()
         let queue = makeQueue(transport, clock)
         defer { queue.cancel() }
         for n in 0..<30 { queue.enqueue(event(n)) }
-        try await until("three messages") { transport.requests.count == 3 }
-        XCTAssertEqual(transport.requests.map(\.embedTitles.count), [10, 10, 10])
-        XCTAssertEqual(transport.requests[0].embedTitles.first, "event 0")
-        XCTAssertEqual(transport.requests[2].embedTitles.last, "event 29")
+        try await until("two pages") { transport.requests.count == 2 }
+        XCTAssertEqual(transport.requests.map(\.headline), ["## 📋 30 linkC events (1/2)", "## 📋 30 linkC events (2/2)"])
+        XCTAssertEqual(transport.requests[0].texts[1], "📋 **event 0**")
+        XCTAssertEqual(transport.requests[1].texts[15], "📋 **event 29**")
     }
 
-    func testTheCharacterLimitSplitsABatch() async throws {
+    /// A digest's pages go in order, ahead of an event that arrived while the first was in flight.
+    func testADigestsPagesGoAheadOfALaterEvent() async throws {
+        let clock = ManualClock(), transport = GatedWebhookTransport()
+        let queue = WebhookQueue(name: "default", url: url, transport: transport, clock: clock, wallClock: { Date() })
+        defer { queue.cancel() }
+        for n in 0..<20 { queue.enqueue(event(n)) }
+        try await until("page 1 is in flight") { transport.requests == 1 }
+        queue.enqueue(event(99))
+        transport.release(with: .saved())
+        try await until("page 2 is in flight") { transport.requests == 2 }
+        transport.release(with: .saved())
+        try await until("the later event is in flight") { transport.requests == 3 }
+        transport.release(with: .saved())
+        XCTAssertEqual(transport.recorded.map(\.headline),
+                       ["## 📋 20 linkC events (1/2)", "## 📋 20 linkC events (2/2)", "## 📋 event 99"])
+    }
+
+    /// Without `with_components` Discord drops the components; without `wait` an unsaved message looks sent.
+    func testEveryRequestAsksForComponentsAndASavedMessage() async throws {
         let clock = ManualClock(), transport = ScriptedWebhookTransport()
         let queue = makeQueue(transport, clock)
         defer { queue.cancel() }
-        for n in 0..<3 { queue.enqueue(event(n, body: String(repeating: "x", count: 2500))) }
-        try await until("two messages") { transport.requests.count == 2 }
-        XCTAssertEqual(transport.requests.map(\.embedTitles.count), [2, 1])
+        try await sendOneByOne(queue, transport, 1)
+        XCTAssertEqual(transport.requests.first?.url.absoluteString,
+                       "https://discord.com/api/webhooks/1/token?with_components=true&wait=true")
+    }
+
+    /// Only a saved message counts as sent: a 204, or a 200 without an id, is retried like a 5xx.
+    func testAnAnswerWithoutASavedMessageIsRetried() async throws {
+        for unsaved in [WebhookResponse(status: 204), WebhookResponse(status: 200, body: Data("{}".utf8))] {
+            let clock = ManualClock(), transport = ScriptedWebhookTransport([.success(unsaved)])
+            let queue = makeQueue(transport, clock)
+            defer { queue.cancel() }
+            queue.enqueue(event(1))
+            try await until("the retry wait after \(unsaved.status)") { !clock.pendingSleeps.isEmpty }
+            XCTAssertEqual(clock.pendingSleeps.first?.requested, .seconds(2))
+            XCTAssertEqual(queue.status, .waiting(until: wallNow.addingTimeInterval(2)))
+            clock.advance(by: .seconds(2))
+            try await until("the resend") { transport.requests.count == 2 }
+            XCTAssertEqual(transport.requests[1].body, transport.requests[0].body)
+            try await until("posted") { queue.status == .posted(at: self.wallNow) }
+        }
     }
 
     func testMoreThanAHundredWaitingDropsTheOldestAndSaysSo() async throws {
@@ -137,9 +172,9 @@ final class WebhookQueueTests: XCTestCase {
         clock.advance(by: .seconds(2))
         // The next batches follow at once, up to the window: wait for the first, not for a count.
         try await until("the batch goes") { transport.requests.count >= 6 }
-        XCTAssertEqual(transport.requests[5].json["content"] as? String,
-                       "1 earlier event was not posted (Discord was rate limiting).")
-        XCTAssertEqual(transport.requests[5].embedTitles.first, "event 101")
+        XCTAssertEqual(transport.requests[5].headline, "## 📋 100 linkC events (1/7)")
+        XCTAssertEqual(transport.requests[5].texts[1], "📋 **event 101**")
+        XCTAssertTrue(transport.requests[5].texts.contains("⚠️ 1 earlier event was not posted."))
     }
 
     func testA404StopsTheWebhookAndSendsNothingMore() async throws {
@@ -204,6 +239,7 @@ final class WebhookQueueTests: XCTestCase {
             return false
         }
         XCTAssertTrue(clock.pendingSleeps.isEmpty, "a 400 is not retried")
+        XCTAssertEqual(queue.status, .failed("Discord refused a message (400): code 50035, Invalid Form Body", at: wallNow))
 
         queue.enqueue(event(2))
         try await until("the next message goes") { transport.requests.count == 2 }
@@ -284,9 +320,8 @@ final class WebhookQueueTests: XCTestCase {
 
         queue.enqueue(event(3))
         try await until("the next message") { transport.requests.count == 2 }
-        XCTAssertEqual(transport.requests[1].json["content"] as? String,
-                       "2 earlier events were not posted (Discord was rate limiting).")
-        XCTAssertEqual(transport.requests[1].embedTitles, ["event 3"])
+        XCTAssertEqual(transport.requests[1].headline, "## 📋 event 3")
+        XCTAssertTrue(transport.requests[1].texts.contains("⚠️ 2 earlier events were not posted."))
     }
 }
 

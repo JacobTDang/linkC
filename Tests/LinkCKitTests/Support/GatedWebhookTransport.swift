@@ -6,15 +6,18 @@ import Foundation
 final class GatedWebhookTransport: WebhookTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var waiting: [CheckedContinuation<WebhookResponse, Never>] = []
-    private var count = 0
+    private var sent: [ScriptedWebhookTransport.Request] = []
 
     /// How many requests have been made, answered or not.
-    var requests: Int { lock.withLock { count } }
+    var requests: Int { lock.withLock { sent.count } }
+
+    /// Every request made, answered or not, oldest first.
+    var recorded: [ScriptedWebhookTransport.Request] { lock.withLock { sent } }
 
     func post(_ body: Data, to url: URL) async throws -> WebhookResponse {
         await withCheckedContinuation { continuation in
             lock.withLock {
-                count += 1
+                sent.append(ScriptedWebhookTransport.Request(url: url, body: body))
                 waiting.append(continuation)
             }
         }
