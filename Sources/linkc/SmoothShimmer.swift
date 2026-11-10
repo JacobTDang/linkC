@@ -120,14 +120,12 @@ struct HairlineSweepModifier: ViewModifier {
                 if shouldAnimate {
                     GeometryReader { geo in
                         let width = geo.size.width
-                        let bandWidth = max(width * 0.40, 20)
+                        let bandWidth = max(width * HairlineSweep.bandFraction, HairlineSweep.minimumBandWidth)
                         let travel = width + bandWidth
                         LinearGradient(
-                            stops: [
-                                .init(color: .clear, location: 0.0),
-                                .init(color: .white.opacity(0.70), location: 0.5),
-                                .init(color: .clear, location: 1.0)
-                            ],
+                            stops: HairlineSweep.stops.map { stop in
+                                .init(color: .white.opacity(stop.opacity), location: stop.location)
+                            },
                             startPoint: .leading,
                             endPoint: .trailing
                         )
@@ -159,7 +157,7 @@ struct HairlineSweepModifier: ViewModifier {
     private func startAnimation() {
         guard shouldAnimate else { return }
         phase = 0
-        withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: false)) {
+        withAnimation(.easeInOut(duration: HairlineSweep.period).repeatForever(autoreverses: false)) {
             phase = 1.0
         }
     }

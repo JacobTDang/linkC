@@ -20,7 +20,7 @@ Status today comes from `SessionAttention.status(...)` (`Sources/LinkCKit/Core/S
   - It reads "Ns" under a minute and "Nm SSs" under an hour (two-digit seconds).
   - It reads "Nh MMm" from an hour on (two-digit minutes).
 - **Ages keep today's formatting and update schedule** (`AgeTimelineSchedule`). Only the "done ·", "needs you ·" and "idle" prefixes go.
-- **No green** is used for a session's status any more. `Theme.statusRunning` may stay where other screens use it (the project dashboard); this spec does not change those.
+- **No green** is used for a session's status any more. `Theme.statusRunning` may stay where other screens use it (the project dashboard); this spec does not change those. The project dot and the split-pane header dot show a working session as a soft white dot with no glow; coral still means it wants you.
 - **Coral still marks attention, and only attention:**
   - `SessionRowStatus.isCoral` keeps its meaning (unseen done, needs you, error). The menu-bar tint and the project dot read it.
   - The coral *dot* replaces the coral *text*.

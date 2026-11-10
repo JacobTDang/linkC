@@ -45,7 +45,9 @@ public enum SessionReducer {
         // the state moves on, but the turn keeps its clock, so a turn already seen stays seen.
         let nudgeAfterTurn = old == .finished && s.state == .waitingIdle
         if s.state != old && !nudgeAfterTurn { s.stateChangedAt = now }
-        if startsTurn(from: old, to: s.state) { s.turnStartedAt = now }
+        if startsTurn(from: old, to: s.state) || (old == .waitingPermission && event.kind == .userPromptSubmit) {
+            s.turnStartedAt = now
+        }
         if let cid = event.claudeSessionId { s.claudeSessionId = cid }
         let entered = s.state.isNotifiable && s.state != old
         return (s, entered)

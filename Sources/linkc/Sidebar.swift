@@ -394,7 +394,7 @@ private struct ProjectRow: View {
 }
 
 /// The 6pt state dot beside a project in the sidebar, and beside a pane's title in a split: coral
-/// when something wants you, teal while it works, an empty slot when idle.
+/// when something wants you, soft white while it works, an empty slot when idle.
 struct StateDotView: View {
     let dot: ProjectDot
 
@@ -404,9 +404,8 @@ struct StateDotView: View {
             Color.clear.frame(width: 6, height: 6)
         case .working:
             Circle()
-                .fill(Theme.statusRunning)
+                .fill(Theme.statusWorking)
                 .frame(width: 6, height: 6)
-                .shadow(color: Theme.statusRunning.opacity(0.8), radius: 3)
         case .attention:
             Circle()
                 .fill(Theme.accent)
