@@ -121,8 +121,81 @@ final class MCPServerOpenCodeTests: XCTestCase {
         XCTAssertFalse(result.isError, result.text)
     }
 
-    func testOpenCodesModelsAreListedWithoutStartingTheSharedService() {
-        XCTAssertEqual(MCPServer.openCodeModelsArguments, ["models", "--standalone"])
+    // MARK: - The real listing, run against a stand-in `opencode`
+
+    /// An executable shell script in the test folder, standing in for `opencode`.
+    private func stubOpenCode(_ body: String) throws -> String {
+        let script = tempDir.appendingPathComponent("stub-opencode.sh")
+        try ("#!/bin/sh\n" + body).write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        return script.path
+    }
+
+    private func recorded(_ name: String) throws -> String {
+        try String(contentsOf: tempDir.appendingPathComponent(name), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// `opencode models --standalone`, so listing never starts OpenCode's shared background service,
+    /// in the folder it was asked about (a project's own config can add providers), with the
+    /// update dialog off.
+    func testTheListingRunsModelsStandaloneInTheFolderWithAutoUpdateOff() throws {
+        let stub = try stubOpenCode("""
+            printf '%s\\n' "$@" > "$(dirname "$0")/argv"
+            pwd -P > "$(dirname "$0")/cwd"
+            printf '%s' "$OPENCODE_DISABLE_AUTOUPDATE" > "$(dirname "$0")/autoupdate"
+            printf 'opencode/big-pickle\\n'
+            """)
+        let project = tempDir.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+        let models = try MCPServer.listOpenCodeModels(in: project.path, executable: stub, home: tempDir)
+
+        XCTAssertEqual(models, ["opencode/big-pickle"])
+        XCTAssertEqual(try recorded("argv").split(separator: "\n").map(String.init), ["models", "--standalone"])
+        XCTAssertEqual(ProjectPath.canonical(try recorded("cwd")), ProjectPath.canonical(project.path))
+        XCTAssertEqual(try recorded("autoupdate"), "1")
+    }
+
+    func testAFailedListingThrowsWithTheExitCodeAndOpenCodesOwnWords() throws {
+        let stub = try stubOpenCode("echo '  provider offline  ' >&2\nexit 3\n")
+        XCTAssertThrowsError(try MCPServer.listOpenCodeModels(in: tempDir.path, executable: stub, home: tempDir)) { error in
+            XCTAssertEqual(String(describing: error), "`opencode models` exited 3: provider offline")
+        }
+    }
+
+    func testAMissingOpenCodeThrows() {
+        XCTAssertThrowsError(try MCPServer.listOpenCodeModels(in: tempDir.path, executable: nil, home: tempDir)) { error in
+            XCTAssertTrue(String(describing: error).contains("not found"), "\(error)")
+        }
+        let absent = tempDir.appendingPathComponent("no-such-opencode").path
+        XCTAssertThrowsError(try MCPServer.listOpenCodeModels(in: tempDir.path, executable: absent, home: tempDir)) { error in
+            XCTAssertTrue(String(describing: error).contains(absent), "\(error)")
+        }
+    }
+
+    /// A listing with no models is not a listing of models without this one: the refusal that
+    /// follows must not blame the tier's model for it.
+    func testAListingWithNoModelsThrows() throws {
+        for body in ["exit 0\n", "printf '\\n  \\n\\r\\n'\n"] {
+            let stub = try stubOpenCode(body)
+            XCTAssertThrowsError(try MCPServer.listOpenCodeModels(in: tempDir.path, executable: stub, home: tempDir), body) { error in
+                XCTAssertEqual(String(describing: error), "`opencode models` listed no models")
+            }
+        }
+    }
+
+    func testAListingThatDoesNotAnswerInTimeSaysSoInSeconds() throws {
+        let stub = try stubOpenCode("sleep 30\n")
+        XCTAssertThrowsError(try MCPServer.listOpenCodeModels(in: tempDir.path, executable: stub, home: tempDir, timeout: 2)) { error in
+            XCTAssertEqual(String(describing: error), "`opencode models` did not answer within 2 seconds")
+        }
+    }
+
+    func testTheListingKeepsOnlyTheNonEmptyTrimmedLines() {
+        XCTAssertEqual(MCPServer.parseOpenCodeModels("opencode/big-pickle  \r\n\r\n  ollama/qwen3.8:27b-32k\n\n \nopencode/crouton-alpha-free"),
+                       ["opencode/big-pickle", "ollama/qwen3.8:27b-32k", "opencode/crouton-alpha-free"])
+        XCTAssertEqual(MCPServer.parseOpenCodeModels(""), [])
+        XCTAssertEqual(MCPServer.parseOpenCodeModels(" \n\r\n"), [])
     }
 
     func testOpenCodesModelCannotBeSwitchedInARunningSession() throws {

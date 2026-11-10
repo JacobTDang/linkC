@@ -312,19 +312,37 @@ public final class MCPServer: Sendable {
     static let openCodeModelsArguments = ["models", "--standalone"]
 
     /// The models `opencode models` lists in `folder` — a project's own config can add providers.
-    /// Throws when OpenCode is missing or the listing fails.
-    public static func listOpenCodeModels(in folder: String) throws -> [String] {
-        guard let executable = AgentDescriptor.resolveExecutable(for: .opencode) else {
+    /// Throws when OpenCode is missing, the listing fails or does not answer in time, or it lists
+    /// no models. `executable` is OpenCode's path, nil when it is not installed.
+    public static func listOpenCodeModels(
+        in folder: String,
+        executable: String? = AgentDescriptor.resolveExecutable(for: .opencode),
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        timeout: TimeInterval = 60
+    ) throws -> [String] {
+        guard let executable else {
             throw LinkCError.process("Executable for \(AgentKind.opencode.pillText) not found")
         }
-        let result = try LiveProcessRunner.runCapturingSync(
-            executable: executable, args: openCodeModelsArguments, cwd: URL(fileURLWithPath: folder),
-            env: AgentDescriptor.environment(for: .opencode, home: FileManager.default.homeDirectoryForCurrentUser),
-            timeout: 60)
+        let result: ProcessResult
+        do {
+            result = try LiveProcessRunner.runCapturingSync(
+                executable: executable, args: openCodeModelsArguments, cwd: URL(fileURLWithPath: folder),
+                env: AgentDescriptor.environment(for: .opencode, home: home),
+                timeout: timeout)
+        } catch ProcessRunnerError.timedOut(let seconds) {
+            throw LinkCError.process("`opencode models` did not answer within \(seconds) seconds")
+        }
         guard result.status == 0 else {
             throw LinkCError.process("`opencode models` exited \(result.status): \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
-        return result.stdout.split(whereSeparator: \.isNewline)
+        let models = parseOpenCodeModels(result.stdout)
+        guard !models.isEmpty else { throw LinkCError.process("`opencode models` listed no models") }
+        return models
+    }
+
+    /// The model ids in `opencode models`' output: its non-empty lines, trimmed.
+    static func parseOpenCodeModels(_ stdout: String) -> [String] {
+        stdout.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
     }
