@@ -116,6 +116,10 @@ public final class AppCoordinator {
     static let openCodeModelListingMaxAge: TimeInterval = 5
     /// A failed listing is kept longer, so a broken OpenCode is listed at most once a minute per folder.
     static let openCodeModelFailedListingMaxAge: TimeInterval = 60
+    /// How long the app waits for `opencode models`: less than the 20 s `linkc` waits for its open
+    /// request, so the command hears "could not check" rather than nothing. Public: it is read by the
+    /// public initializer's default `openCodeModels`.
+    public static let openCodeModelListingTimeout: TimeInterval = 10
     var openCodeModelCheckCount = 0
     /// OpenCode refusals already reported, one per queued task or message, so a pass that meets the
     /// same one again says nothing. Pruned by the dispatch passes to what is still queued.
@@ -305,7 +309,9 @@ public final class AppCoordinator {
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
         openRequests: OpenRequestStore? = nil,
         openCodeModels: @escaping OpenCodeModelLister = { folder in
-            try await Task.detached { try MCPServer.listOpenCodeModels(in: folder) }.value
+            try await Task.detached {
+                try MCPServer.listOpenCodeModels(in: folder, timeout: AppCoordinator.openCodeModelListingTimeout)
+            }.value
         },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
@@ -369,6 +375,8 @@ public final class AppCoordinator {
                 self.openCodeModelListings[norm] = OpenCodeModelListing(checkedAt: self.now(), result: result)
                 self.openCodeModelChecksInFlight.remove(norm)
                 self.openCodeModelCheckCount += 1
+                // The pass that was waiting for this answer need not wait out an idle interval.
+                self.sweepTicker?.wake()
             }
         }
         return .checking

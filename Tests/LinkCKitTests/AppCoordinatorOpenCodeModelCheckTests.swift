@@ -117,8 +117,8 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
         )
     }
 
-    private func waitUntil(_ predicate: @MainActor () -> Bool) async throws -> Bool {
-        for _ in 0..<TestWait.polls {
+    private func waitUntil(polls: Int = TestWait.polls, _ predicate: @MainActor () -> Bool) async throws -> Bool {
+        for _ in 0..<polls {
             if predicate() { return true }
             try await Task.sleep(for: .milliseconds(20))
         }
@@ -134,6 +134,43 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
     private func stopAll(_ coordinator: AppCoordinator) {
         coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
         coordinator.shutdown()
+    }
+
+    // MARK: - The listing's own limits
+
+    /// `linkc` waits for the app's answer to its open request, and gives up when that takes too long.
+    /// The app's own listing gives up sooner, so the command hears "could not check" and not silence.
+    func testTheAppGivesUpListingModelsBeforeTheCommandGivesUpWaiting() {
+        let command = LinkCCommand.Environment(
+            store: OpenRequestStore(directory: tempDir.appendingPathComponent("open-requests")), folder: folder,
+            caller: { nil }, isLinkCRunning: { true }, launchLinkC: {}, now: Date.init, sleep: { _ in })
+
+        XCTAssertLessThan(AppCoordinator.openCodeModelListingTimeout, command.timeout)
+    }
+
+    /// A listing that finishes wakes the sweep: the pass that waited for it need not wait out an idle
+    /// interval, which can be longer than the five seconds the answer is kept.
+    func testAFinishedListingWakesTheSweepForThePassThatWaitedForIt() async throws {
+        let clock = ManualClock()
+        let lister = ModelLister(.models(["opencode/big-pickle"]), held: true)
+        let watched = folder
+        let coordinator = makeCoordinator(lister: lister, sweepClock: clock, mcpWorkspaces: { [watched] })
+        defer { stopAll(coordinator) }
+        _ = try queueTask()
+        try coordinator.start()
+        let asked = try await waitUntil(polls: 250) { lister.calls > 0 }
+        XCTAssertTrue(asked, "the first pass never asked for the listing")
+        let asleep = try await waitUntil(polls: 250) { !clock.pendingSleeps.isEmpty }
+        XCTAssertTrue(asleep, "the first pass never finished")
+
+        lister.release()
+        try await waitForListing(coordinator)
+        clock.advance(by: TickCadence.minimumWakeGap)   // a woken pass waits out the gap since the last one
+
+        let served = try await waitUntil(polls: 250) {
+            coordinator.store.sessions.contains { $0.agentKind == .opencode && $0.isWorker }
+        }
+        XCTAssertTrue(served, "nothing woke the sweep when the listing finished, so no worker was started")
     }
 
     // MARK: - A limit reroute that waits for the listing
