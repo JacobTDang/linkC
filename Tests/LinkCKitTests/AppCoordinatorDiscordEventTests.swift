@@ -1,5 +1,19 @@
 import XCTest
+import os
 @testable import LinkCKit
+
+/// A clock a test sets by hand, for the reaper's grace periods.
+private final class SettableClock: Sendable {
+    private let box = OSAllocatedUnfairLock(initialState: Date())
+
+    func set(_ date: Date) {
+        box.withLock { $0 = date }
+    }
+
+    func now() -> Date {
+        box.withLock { $0 }
+    }
+}
 
 /// The coordinator's events for Discord: task changes, closed workers, and alerts with their folder.
 @MainActor
@@ -21,7 +35,7 @@ final class AppCoordinatorDiscordEventTests: XCTestCase {
         var events: [LinkCEvent] = []
     }
 
-    private func makeCoordinator() -> (AppCoordinator, Box) {
+    private func makeCoordinator(now: @escaping @MainActor @Sendable () -> Date = Date.init) -> (AppCoordinator, Box) {
         let script = tempDir.appendingPathComponent("mock_agent.sh")
         try? "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
             .write(to: script, atomically: true, encoding: .utf8)
@@ -39,6 +53,7 @@ final class AppCoordinatorDiscordEventTests: XCTestCase {
             agentPathResolver: { _ in script.path },
             deliverySettle: 0,
             injectionGap: 0,
+            now: now,
             isWatching: { _ in false }
         )
         let box = Box()
@@ -88,7 +103,47 @@ final class AppCoordinatorDiscordEventTests: XCTestCase {
         let closed = box.events.filter { $0.kind == .workerClosed }
         XCTAssertEqual(closed.map(\.title), ["Codex worker closed"])
         XCTAssertEqual(closed.first?.project, folder)
-        XCTAssertEqual(closed.first?.body, "Closed on request for task `\(task.shortId)`.")
+        XCTAssertEqual(closed.first?.body, "Closed on request for task \(task.shortId).")
+    }
+
+    func testAWorkerClosedForSittingIdleRaisesAnEvent() throws {
+        let clock = SettableClock()
+        let (coordinator, box) = makeCoordinator(now: clock.now)
+        defer { stopAll(coordinator) }
+        let inbox = InboxStore(workspaceRoot: folder)
+        let worker = try coordinator.newSession(cwd: folder, agent: .codex, asWorker: true)
+        let mine = try coordinator.newSession(cwd: folder, agent: .codex)
+        XCTAssertEqual(coordinator.terminals.selectedId, mine.id, "the worker is off screen, so linkC may close it")
+        coordinator.store.updateState(id: worker.id, to: .finished)
+
+        clock.set(Date().addingTimeInterval(WorkerReaper.idleGrace + 60))
+        coordinator.reapIdleWorkers(workspacePath: folder, inboxStore: inbox)
+
+        XCTAssertNil(coordinator.store.session(id: worker.id), "past the grace: closed")
+        let closed = box.events.filter { $0.kind == .workerClosed }
+        XCTAssertEqual(closed.map(\.title), ["Codex worker closed"])
+        XCTAssertEqual(closed.first?.project, folder)
+        XCTAssertEqual(closed.first?.body, "It sat idle after its work ended.")
+    }
+
+    /// Like every relay phase, a contended read ends the pass: one wait for the lock, not one per phase.
+    func testAContendedInboxEndsThePassAtTheTaskEvents() throws {
+        let (coordinator, _) = makeCoordinator()
+        defer { stopAll(coordinator) }
+        let inbox = InboxStore(workspaceRoot: folder)
+        _ = try inbox.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        let lockPath = (folder as NSString).appendingPathComponent(".linkc/.inbox.lock")
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        XCTAssertGreaterThan(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        defer { flock(fd, LOCK_UN); close(fd) }
+
+        XCTAssertTrue(coordinator.reportTaskEvents(workspacePath: folder, inboxStore: inbox),
+                      "a read that timed out on the lock says so")
+        let start = Date()
+        coordinator.processPendingMessages(workspacePath: folder)
+        XCTAssertLessThan(Date().timeIntervalSince(start), AppCoordinator.relayLockTimeout * 1.8,
+                          "the pass stopped after the first wait for the lock")
     }
 
     func testALocalNotificationRaisesNoEvent() {

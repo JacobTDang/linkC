@@ -40,9 +40,9 @@ final class TaskEventFeedTests: XCTestCase {
         ], at: at)
         XCTAssertEqual(events.map(\.tone), [.failed, .failed, .info])
         XCTAssertEqual(events.map(\.body), [
-            "`AAAA1111` fix the flaky test\ntests still red",
-            "`BBBB2222` fix the flaky test\nits lease lapsed",
-            "`CCCC3333` fix the flaky test\nnot needed",
+            "AAAA1111 · fix the flaky test\ntests still red",
+            "BBBB2222 · fix the flaky test\nits lease lapsed",
+            "CCCC3333 · fix the flaky test\nnot needed",
         ])
     }
 
@@ -51,7 +51,7 @@ final class TaskEventFeedTests: XCTestCase {
         _ = feed.events(in: folder, tasks: [], at: at)
         let events = feed.events(in: folder, tasks: [
             task("AAAA1111", .done, report: TaskReport(status: "done", summary: "fixed"))], at: at)
-        XCTAssertEqual(events.map(\.body), ["`AAAA1111` fix the flaky test\nfixed"])
+        XCTAssertEqual(events.map(\.body), ["AAAA1111 · fix the flaky test\nfixed"])
     }
 
     func testAnUnchangedTaskRaisesNothingAgain() {
@@ -81,6 +81,16 @@ final class TaskEventFeedTests: XCTestCase {
         var feed = TaskEventFeed()
         _ = feed.events(in: folder, tasks: [], at: at)
         let events = feed.events(in: folder, tasks: [task("AAAA1111", .delivered, prompt: String(repeating: "p", count: 300))], at: at)
-        XCTAssertEqual(events.first?.body, "`AAAA1111` " + String(repeating: "p", count: 119) + "…")
+        XCTAssertEqual(events.first?.body, "AAAA1111 · " + String(repeating: "p", count: 119) + "…")
+    }
+
+    /// An empty summary says nothing: the reason linkC recorded shows instead.
+    func testAnEmptySummaryShowsTheReasonInstead() {
+        var feed = TaskEventFeed()
+        _ = feed.events(in: folder, tasks: [], at: at)
+        let events = feed.events(in: folder, tasks: [
+            task("AAAA1111", .failed, report: TaskReport(status: "failed", summary: ""),
+                 cancelReason: "verification failed")], at: at)
+        XCTAssertEqual(events.map(\.body), ["AAAA1111 · fix the flaky test\nverification failed"])
     }
 }

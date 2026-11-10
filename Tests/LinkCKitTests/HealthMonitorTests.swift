@@ -56,12 +56,14 @@ final class HealthTransitionTests: XCTestCase {
         XCTAssertEqual(lost.count, 1)
         XCTAssertTrue(lost[0].body.contains("not responding"))
         XCTAssertEqual(lost[0].endpointId, "e1")
+        XCTAssertEqual(lost[0].tone, .failed)
 
         let up = HealthTransitions.changes(
             from: ["e1": down("refused")], to: ["e1": .ok(200, 0.1)], endpoints: [endpoint]
         )
         XCTAssertEqual(up.count, 1)
         XCTAssertTrue(up[0].body.contains("back"))
+        XCTAssertEqual(up[0].tone, .done)
     }
 
     func testStayingDownIsSilent() {
@@ -84,6 +86,7 @@ final class HealthTransitionTests: XCTestCase {
         )
         XCTAssertEqual(changes.count, 1)
         XCTAssertTrue(changes[0].body.contains("502"))
+        XCTAssertEqual(changes[0].tone, .needsYou)
     }
 }
 
