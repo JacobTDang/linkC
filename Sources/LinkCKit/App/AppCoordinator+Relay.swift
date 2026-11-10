@@ -327,6 +327,19 @@ extension AppCoordinator {
                 // frame typed into a booting TUI is lost — the worker never sees the task. The session
                 // stays `.starting` until its agent is really running: Claude's SessionStart hook, or
                 // `sampleAgentStates` for every other kind.
+                if task.toAgent == .opencode {
+                    let tier = task.tier ?? defaultTier(for: .opencode)
+                    switch openCodeModelAvailability(in: workspacePath, tier: tier) {
+                    case .checking:
+                        continue
+                    case .available:
+                        break
+                    case .unavailable(let reason):
+                        reportOpenCodeSpawnRefusal(reason, from: task.fromAgent, taskId: task.id,
+                                                   workspacePath: workspacePath, inboxStore: inboxStore)
+                        continue
+                    }
+                }
                 do {
                     _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier, asWorker: true)
                 } catch {
@@ -501,6 +514,19 @@ extension AppCoordinator {
                     continue
                 }
                 let goal: String? = message.kind == .task ? message.prompt : nil
+                if message.toAgent == .opencode {
+                    let tier = defaultTier(for: .opencode)
+                    switch openCodeModelAvailability(in: workspacePath, tier: tier) {
+                    case .checking:
+                        continue
+                    case .available:
+                        break
+                    case .unavailable(let reason):
+                        reportOpenCodeSpawnRefusal(reason, from: message.fromAgent, taskId: message.taskId,
+                                                   workspacePath: workspacePath, inboxStore: inboxStore)
+                        continue
+                    }
+                }
                 do {
                     _ = try spawnTeammate(in: workspacePath, agent: message.toAgent, goal: goal, asWorker: true)
                 } catch {
@@ -564,6 +590,20 @@ extension AppCoordinator {
             injectMessageBatch(batch, into: group.session)
         }
         return false
+    }
+
+    private func reportOpenCodeSpawnRefusal(
+        _ reason: String, from delegator: AgentKind, taskId: String?, workspacePath: String, inboxStore: InboxStore
+    ) {
+        let failure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
+        guard lastSpawnFailure != failure else { return }
+        lastSpawnFailure = failure
+        do {
+            _ = try inboxStore.enqueue(from: .opencode, to: delegator, kind: .notice, taskId: taskId, body: reason)
+        } catch {
+            NSLog("[linkC relay] OpenCode model refusal notice — %@", String(describing: error))
+        }
+        notifications.post(title: "linkC: OpenCode could not start", body: reason)
     }
 
     /// Whether a queued message is something a tick can act on: a brief spawns an agent, and any
@@ -882,8 +922,9 @@ extension AppCoordinator {
         // and neither shows on the screen.
         let injected = recentlyInjectedTexts(sessionId: sessionId)
         let held = limitHolds[sessionId]
+        let resumingOpenCodeCheck = pendingOpenCodeReroutes.contains(sessionId)
         let scan = LimitScan(screen: screen.fingerprint, agent: session.agentKind, injected: injected)
-        guard held != nil || limitScans[sessionId] != scan else { return false }
+        guard resumingOpenCodeCheck || held != nil || limitScans[sessionId] != scan else { return false }
         limitScans[sessionId] = scan
         let recentOutput = screen.recentOutput(lines: 50)
         // Everything linkC has typed into this session is excluded: a brief or notice can quote a
@@ -910,7 +951,7 @@ extension AppCoordinator {
         // record, no reroute. Only output that actually changed (the agent printed something
         // since) can count as a fresh hit. A reroute already held back was matched from a fresh hit.
         let outputSignature = String(recentOutput.hashValue)
-        if held == nil {
+        if held == nil && !resumingOpenCodeCheck {
             guard limitSignatures[sessionId] != outputSignature else { return false }
             limitSignatures[sessionId] = outputSignature
         }
@@ -938,7 +979,7 @@ extension AppCoordinator {
         // A busy worker keeps its task for now: the peer would start in a checkout the worker is
         // still using. The reroute goes ahead once the worker is quiet, or after `limitHoldCap`.
         let holdForTask = held.flatMap { $0.taskId == currentTask?.id ? $0 : nil }
-        if let currentTask, let busy = activity(of: session, screen: screen),
+        if !resumingOpenCodeCheck, let currentTask, let busy = activity(of: session, screen: screen),
            holdBack(match, task: currentTask, of: session, busy: busy, since: holdForTask, at: tickNow, inboxStore: inboxStore) {
             return false
         }
@@ -996,9 +1037,33 @@ extension AppCoordinator {
             let bActive = store.sessions.contains { $0.cwd == norm && $0.agentKind == b && $0.state != .ended }
             return aActive && !bActive
         }
+        var openCodeRefusal: String?
+        if candidates.first == .opencode, let currentTask {
+            let tier = currentTask.tier ?? defaultTier(for: .opencode)
+            switch openCodeModelAvailability(in: norm, tier: tier) {
+            case .checking:
+                // The next tick must reconsider the unchanged screen once the off-main listing
+                // finishes. This is not a busy-worker hold: no work moved and nothing was cancelled.
+                pendingOpenCodeReroutes.insert(sessionId)
+                return false
+            case .available:
+                pendingOpenCodeReroutes.remove(sessionId)
+                break
+            case .unavailable(let reason):
+                pendingOpenCodeReroutes.remove(sessionId)
+                candidates.removeFirst()
+                openCodeRefusal = reason
+            }
+        }
 
         let hop = currentTask?.hop ?? 0
         guard hop < 2, let target = candidates.first else {
+            if let currentTask, let openCodeRefusal {
+                reportOpenCodeSpawnRefusal(openCodeRefusal, from: currentTask.fromAgent, taskId: currentTask.id,
+                                           workspacePath: norm, inboxStore: inboxStore)
+                store.updateState(id: session.id, to: .error)
+                return true
+            }
             if let currentTask, let tier = currentTask.tier {
                 // No peer can serve this tier. Cancelling the task and announcing a reroute
                 // would be a lie — nothing was rerouted, and the hop copy could never be

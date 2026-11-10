@@ -1359,6 +1359,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             agentPathResolver: { kind in kind == .opencode ? scriptURL.path : nil },
             userHome: tempDir.appendingPathComponent("home"),
             modelSettings: { .seeded },
+            openCodeModels: { _ in ["opencode/big-pickle"] },
             isWatching: { _ in false }
         )
         defer { coordinator.shutdown() }

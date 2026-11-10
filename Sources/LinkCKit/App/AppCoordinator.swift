@@ -24,6 +24,14 @@ public enum LaunchMode: String, Sendable, CaseIterable {
 /// glue is covered by AppCoordinatorIntegrationTests via injected doubles.
 @MainActor
 public final class AppCoordinator {
+    public typealias OpenCodeModelLister = @Sendable (_ folder: String) async throws -> [String]
+
+    enum OpenCodeModelAvailability: Equatable {
+        case checking
+        case available
+        case unavailable(String)
+    }
+
     public let store = SessionStore()
     public let terminals: TerminalSessionManager
     /// Previous sessions that are no longer live — the sidebar's Earlier section.
@@ -87,6 +95,21 @@ public final class AppCoordinator {
     /// coordinator can't see. Invoked on the main actor.
     private let isWatching: @MainActor @Sendable (String) -> Bool
     let agentPathResolver: (@Sendable (AgentKind) -> String?)?
+    /// Lists models away from the main actor. Results are reused briefly so the once-per-second
+    /// relay never blocks on OpenCode, while withdrawn free models are noticed within seconds.
+    let openCodeModels: OpenCodeModelLister
+    private struct OpenCodeModelListing {
+        enum ListingResult {
+            case success([String])
+            case failure(String)
+        }
+        let checkedAt: Date
+        let result: ListingResult
+    }
+    private var openCodeModelListings: [String: OpenCodeModelListing] = [:]
+    private var openCodeModelChecksInFlight: Set<String> = []
+    static let openCodeModelListingMaxAge: TimeInterval = 5
+    var openCodeModelCheckCount = 0
     /// Lists OpenCode's sessions as `opencode session list --format json --standalone` run in a
     /// folder prints them. A seam, so a test can play the listing; the real one runs off the main thread.
     var openCodeSessionList: @Sendable (_ executable: String, _ folder: String) async throws -> String = {
@@ -154,6 +177,9 @@ public final class AppCoordinator {
     /// every tick so the hold can end as soon as the worker is quiet or the banner goes. Cleared by
     /// `cleanup`.
     var limitScans: [String: LimitScan] = [:]
+    /// Sessions whose unchanged limit screen must be reconsidered after an off-main OpenCode
+    /// model listing finishes. Consumed on the next check.
+    var pendingOpenCodeReroutes: Set<String> = []
     /// Per session: the reroute `checkLimitsAndReroute` is holding back because the worker is busy.
     /// Cleared by `cleanup`.
     var limitHolds: [String: LimitHold] = [:]
@@ -271,6 +297,9 @@ public final class AppCoordinator {
         sweepClock: any Clock<Duration> = ContinuousClock(),
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
         openRequests: OpenRequestStore? = nil,
+        openCodeModels: @escaping OpenCodeModelLister = { folder in
+            try await Task.detached { try MCPServer.listOpenCodeModels(in: folder) }.value
+        },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -294,6 +323,7 @@ public final class AppCoordinator {
         self.sweepClock = sweepClock
         self.mcpWorkspaces = mcpWorkspaces
         self.openRequests = openRequests
+        self.openCodeModels = openCodeModels
         self.isWatching = isWatching
         self.statusLines = StatusLineFeed(
             directory: settingsDir.appendingPathComponent("status-lines", isDirectory: true),
@@ -301,6 +331,38 @@ public final class AppCoordinator {
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.
         syncRestorables()
+    }
+
+    func openCodeModelAvailability(in folder: String, tier: ModelTier) -> OpenCodeModelAvailability {
+        guard let model = resolvedModel(for: .opencode, tier: tier) else {
+            return .unavailable("no model configured for opencode tier \(tier.rawValue) — set it in linkC's Settings > Models")
+        }
+        let norm = ProjectPath.canonical(folder)
+        if let listing = openCodeModelListings[norm],
+           now().timeIntervalSince(listing.checkedAt) <= Self.openCodeModelListingMaxAge {
+            switch listing.result {
+            case .success(let models):
+                guard models.contains(model) else {
+                    return .unavailable("\(model) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings")
+                }
+                return .available
+            case .failure(let reason):
+                return .unavailable("could not check opencode tier \(tier.rawValue)'s model \(model) against the models OpenCode lists — \(reason)")
+            }
+        }
+        if openCodeModelChecksInFlight.insert(norm).inserted {
+            let lister = openCodeModels
+            Task { [weak self] in
+                let result: OpenCodeModelListing.ListingResult
+                do { result = .success(try await lister(norm)) }
+                catch { result = .failure(String(describing: error)) }
+                guard let self else { return }
+                self.openCodeModelListings[norm] = OpenCodeModelListing(checkedAt: self.now(), result: result)
+                self.openCodeModelChecksInFlight.remove(norm)
+                self.openCodeModelCheckCount += 1
+            }
+        }
+        return .checking
     }
 
     /// Production initializer — builds the real hook server, notification center, and settings
