@@ -319,7 +319,7 @@ public enum TerminalPreview {
     /// warning row. The queued-message rows ("↳") and every bulleted row are ordinary content.
     private static func isStatusDetail(_ row: String) -> Bool {
         guard let first = row.drop(while: { $0 == " " }).first else { return false }
-        return first == "└" || first == "⚠"
+        return first == "└" || first.unicodeScalars.first == "\u{26A0}"
     }
 
     /// Whether `row` continues the "└" row above it: a detail wrapped at a narrow width is indented
@@ -329,9 +329,9 @@ public enum TerminalPreview {
     }
 
     /// How many of `rows` (nearest the input box first) lie under the status row: the "└" detail
-    /// rows and the continuation rows nearest the box that wrap them, up to `maxStatusDetailRows`.
-    /// Continuation rows count only when a "└" row sits above them, so an indented row that is
-    /// anything else is not skipped.
+    /// rows or "⚠" warning rows, and the continuation rows nearest the box that wrap them, up to
+    /// `maxStatusDetailRows`. Continuation rows count only when one of those sits above them, so an
+    /// indented row that is anything else is not skipped.
     private static func statusDetailRowCount(in rows: ArraySlice<String>) -> Int {
         var count = 0
         for (offset, row) in rows.prefix(maxStatusDetailRows).enumerated() {
