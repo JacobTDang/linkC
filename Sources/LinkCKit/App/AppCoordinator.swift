@@ -177,9 +177,6 @@ public final class AppCoordinator {
     /// every tick so the hold can end as soon as the worker is quiet or the banner goes. Cleared by
     /// `cleanup`.
     var limitScans: [String: LimitScan] = [:]
-    /// Sessions whose unchanged limit screen must be reconsidered after an off-main OpenCode
-    /// model listing finishes. Consumed on the next check.
-    var pendingOpenCodeReroutes: Set<String> = []
     /// Per session: the reroute `checkLimitsAndReroute` is holding back because the worker is busy.
     /// Cleared by `cleanup`.
     var limitHolds: [String: LimitHold] = [:]

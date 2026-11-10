@@ -922,9 +922,8 @@ extension AppCoordinator {
         // and neither shows on the screen.
         let injected = recentlyInjectedTexts(sessionId: sessionId)
         let held = limitHolds[sessionId]
-        let resumingOpenCodeCheck = pendingOpenCodeReroutes.contains(sessionId)
         let scan = LimitScan(screen: screen.fingerprint, agent: session.agentKind, injected: injected)
-        guard resumingOpenCodeCheck || held != nil || limitScans[sessionId] != scan else { return false }
+        guard held != nil || limitScans[sessionId] != scan else { return false }
         limitScans[sessionId] = scan
         let recentOutput = screen.recentOutput(lines: 50)
         // Everything linkC has typed into this session is excluded: a brief or notice can quote a
@@ -951,7 +950,7 @@ extension AppCoordinator {
         // record, no reroute. Only output that actually changed (the agent printed something
         // since) can count as a fresh hit. A reroute already held back was matched from a fresh hit.
         let outputSignature = String(recentOutput.hashValue)
-        if held == nil && !resumingOpenCodeCheck {
+        if held == nil {
             guard limitSignatures[sessionId] != outputSignature else { return false }
             limitSignatures[sessionId] = outputSignature
         }
@@ -979,7 +978,7 @@ extension AppCoordinator {
         // A busy worker keeps its task for now: the peer would start in a checkout the worker is
         // still using. The reroute goes ahead once the worker is quiet, or after `limitHoldCap`.
         let holdForTask = held.flatMap { $0.taskId == currentTask?.id ? $0 : nil }
-        if !resumingOpenCodeCheck, let currentTask, let busy = activity(of: session, screen: screen),
+        if let currentTask, let busy = activity(of: session, screen: screen),
            holdBack(match, task: currentTask, of: session, busy: busy, since: holdForTask, at: tickNow, inboxStore: inboxStore) {
             return false
         }
@@ -1042,15 +1041,15 @@ extension AppCoordinator {
             let tier = currentTask.tier ?? defaultTier(for: .opencode)
             switch openCodeModelAvailability(in: norm, tier: tier) {
             case .checking:
-                // The next tick must reconsider the unchanged screen once the off-main listing
-                // finishes. This is not a busy-worker hold: no work moved and nothing was cancelled.
-                pendingOpenCodeReroutes.insert(sessionId)
+                // OpenCode's models are still being listed off the main actor. Forget this screen's scan
+                // and signature so the next tick reads the unchanged screen again from the start;
+                // `recordLimit` keeps a live record as it is, so reading it twice records nothing new.
+                limitScans[sessionId] = nil
+                limitSignatures[sessionId] = nil
                 return false
             case .available:
-                pendingOpenCodeReroutes.remove(sessionId)
                 break
             case .unavailable(let reason):
-                pendingOpenCodeReroutes.remove(sessionId)
                 candidates.removeFirst()
                 openCodeRefusal = reason
             }
