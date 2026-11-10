@@ -75,6 +75,8 @@ final class AppCoordinatorDiscordEventTests: XCTestCase {
         defer { stopAll(coordinator) }
         let inbox = InboxStore(workspaceRoot: folder)
         let worker = try coordinator.newSession(cwd: folder, agent: .codex, asWorker: true)
+        let mine = try coordinator.newSession(cwd: folder, agent: .codex)
+        XCTAssertEqual(coordinator.terminals.selectedId, mine.id, "the worker is off screen, so linkC may close it")
         let task = try inbox.createTask(from: .claude, to: .codex, fromSessionId: "D", prompt: "carry", files: [])
         try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
         try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "did it"))
