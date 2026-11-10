@@ -58,7 +58,7 @@ A request goes out only when all three hold:
 
 ### 4.2 Batching
 
-- **When a request goes out**, the queue takes every waiting event, oldest first.
+- **When a request goes out**, the queue takes every waiting event, oldest first: it takes them after waiting for its turn (§4.1), so a burst that arrives during the wait goes in the same message.
 - **One event** posts as one card (§5.1).
 - **Several events** post as one digest card (§5.2), up to **15** events a page.
   - Pages are packed in order: an event joins the current page while it holds fewer than 15 and still fits Discord's limits (§5), else it starts the next. Each page's headline carries `(1/3)` and so on, and the pages go out in order, one request each, ahead of any event that arrives meanwhile.
@@ -112,7 +112,7 @@ One Container (type 17), its `accent_color` set by the event's tone (§5.3), hol
 2. The event's detail, as text-display lines (at most 4).
 3. When events were dropped (§4.3): a line `⚠️ N earlier events were not posted.`
 4. A separator (type 14).
-5. A text display: `-# linkC · <project folder name> · <t:UNIX:f> (<t:UNIX:R>)`. With no project, it reads `-# linkC · <t:UNIX:f> (<t:UNIX:R>)`.
+5. A text display: `-# <project folder name> · <t:UNIX:f> (<t:UNIX:R>)`. With no project, it reads `-# <t:UNIX:f> (<t:UNIX:R>)`. The webhook's own name ("linkC") already says who posted, so the footer does not repeat it.
 
 ### 5.2 A digest
 
@@ -123,7 +123,7 @@ One Container, its colour that of the most serious event in it (failed, then nee
    - under it, the first detail line as subtext: `-# <detail>`.
 3. The dropped-events line, on the first page only, when there is one.
 4. A separator.
-5. `-# linkC · <t:UNIX:f> (<t:UNIX:R>)`, with the time of the newest event on the page.
+5. `-# <t:UNIX:f> (<t:UNIX:R>)`, with the time of the newest event on the page.
 
 ### 5.3 Tones
 

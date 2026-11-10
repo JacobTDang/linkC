@@ -323,5 +323,51 @@ final class WebhookQueueTests: XCTestCase {
         XCTAssertEqual(transport.requests[1].headline, "## 📋 event 3")
         XCTAssertTrue(transport.requests[1].texts.contains("⚠️ 2 earlier events were not posted."))
     }
+
+    /// A request takes every event waiting when it goes out: a burst that lands while the queue waits for the
+    /// window rides in one digest, not a second message.
+    func testABurstDuringTheWaitGoesAsOneDigest() async throws {
+        let clock = ManualClock(), transport = ScriptedWebhookTransport()
+        let queue = makeQueue(transport, clock)
+        defer { queue.cancel() }
+        try await sendOneByOne(queue, transport, 5)
+        queue.enqueue(event(6))
+        try await until("the sixth waits for the window") { !clock.pendingSleeps.isEmpty }
+        queue.enqueue(event(7))
+        queue.enqueue(event(8))
+
+        clock.advance(by: .seconds(2))
+        try await until("the burst goes") { transport.requests.count == 6 }
+        XCTAssertEqual(transport.requests[5].headline, "## 📋 3 linkC events")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(transport.requests.count, 6, "one message for the burst")
+    }
+
+    /// A page Discord refuses is counted, and the digest's next page still goes.
+    func testARefusedPageIsCountedAndTheNextPageStillGoes() async throws {
+        let clock = ManualClock()
+        let transport = ScriptedWebhookTransport([.success(WebhookResponse(status: 400))])
+        let queue = makeQueue(transport, clock)
+        defer { queue.cancel() }
+        for n in 0..<20 { queue.enqueue(event(n)) }
+        try await until("both pages") { transport.requests.count == 2 }
+        XCTAssertEqual(transport.requests.map(\.headline), ["## 📋 20 linkC events (1/2)", "## 📋 20 linkC events (2/2)"])
+
+        queue.enqueue(event(99))
+        try await until("the next message") { transport.requests.count == 3 }
+        XCTAssertEqual(transport.requests[2].headline, "## 📋 event 99")
+        XCTAssertTrue(transport.requests[2].texts.contains("⚠️ 15 earlier events were not posted."))
+    }
+
+    /// A webhook that stops mid-digest sends none of the remaining pages.
+    func testAStopMidDigestSendsNoMorePages() async throws {
+        let clock = ManualClock(), transport = ScriptedWebhookTransport([.success(WebhookResponse(status: 404))])
+        let queue = makeQueue(transport, clock)
+        defer { queue.cancel() }
+        for n in 0..<20 { queue.enqueue(event(n)) }
+        try await until("stopped") { queue.status == .stopped(status: 404) }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(transport.requests.count, 1)
+    }
 }
 

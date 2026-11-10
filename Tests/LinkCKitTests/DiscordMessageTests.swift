@@ -50,13 +50,14 @@ final class DiscordMessageTests: XCTestCase {
 
     // MARK: - One event
 
+    /// The webhook's own name says linkC posted: the footer names only the folder and the time.
     func testOneEventIsOneCard() throws {
         let card = try only([event(body: "all green")])
         XCTAssertEqual(try lines(card), [
             "## ✅ Codex · money-printer · finished",
             "all green",
             "---",
-            "-# linkC · money-printer · \(stamp)",
+            "-# money-printer · \(stamp)",
         ])
         XCTAssertEqual(try accent(card), 0x57F287)
     }
@@ -76,7 +77,7 @@ final class DiscordMessageTests: XCTestCase {
         XCTAssertEqual(try lines(only([event(project: nil)])), [
             "## ✅ Codex · money-printer · finished",
             "---",
-            "-# linkC · \(stamp)",
+            "-# \(stamp)",
         ])
     }
 
@@ -103,7 +104,7 @@ final class DiscordMessageTests: XCTestCase {
             "## ✅ fix \\*all\\* the \\`bugs\\` \\@everyone",
             "line one\nline two",
             "---",
-            "-# linkC · my\\_project · \(stamp)",
+            "-# my\\_project · \(stamp)",
         ])
     }
 
@@ -113,7 +114,7 @@ final class DiscordMessageTests: XCTestCase {
         let shown = try lines(card)
         XCTAssertEqual(shown[0], "## ✅ " + String(repeating: "t", count: 99) + "…")
         XCTAssertEqual(shown[1], String(repeating: "b", count: 119) + "…")
-        XCTAssertEqual(shown[3], "-# linkC · " + String(repeating: "f", count: 49) + "… · \(stamp)")
+        XCTAssertEqual(shown[3], "-# " + String(repeating: "f", count: 49) + "… · \(stamp)")
     }
 
     /// A cut counts UTF-16 units, as Discord does, and never splits a character or an escape.
@@ -138,7 +139,7 @@ final class DiscordMessageTests: XCTestCase {
             "## ✅ Codex · money-printer · finished",
             "⚠️ 3 earlier events were not posted.",
             "---",
-            "-# linkC · money-printer · \(stamp)",
+            "-# money-printer · \(stamp)",
         ])
         XCTAssertEqual(try lines(only([event()], dropped: 1))[1], "⚠️ 1 earlier event was not posted.")
     }
@@ -157,7 +158,7 @@ final class DiscordMessageTests: XCTestCase {
             "❌ **second**",
             "📋 **third** · beta\n-# x",
             "---",
-            "-# linkC · <t:1800000060:f> (<t:1800000060:R>)",
+            "-# <t:1800000060:f> (<t:1800000060:R>)",
         ])
         XCTAssertEqual(try accent(digest), 0xED4245, "the most serious event sets the color")
         XCTAssertEqual(try json(digest)["flags"] as? Int, 1 << 15)
