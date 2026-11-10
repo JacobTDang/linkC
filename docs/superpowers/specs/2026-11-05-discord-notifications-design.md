@@ -61,13 +61,14 @@ A request goes out only when all three hold:
 - **When a request goes out**, the queue takes every waiting event, oldest first.
 - **One event** posts as one card (§5.1).
 - **Several events** post as one digest card (§5.2), up to **15** events a page.
-  - When more than 15 wait, they are split into pages there and then. Each page's headline carries `(1/3)` and so on, and the pages go out in order, one request each, ahead of any event that arrives meanwhile.
+  - Pages are packed in order: an event joins the current page while it holds fewer than 15 and still fits Discord's limits (§5), else it starts the next. Each page's headline carries `(1/3)` and so on, and the pages go out in order, one request each, ahead of any event that arrives meanwhile.
   - Every page is built and checked against Discord's limits (§5) before the first is posted.
+  - A page Discord refuses, or that runs out of retries, is dropped and counted (§4.3); the next page still goes.
 
 ### 4.3 Bound
 
 - **At most 100 waiting events per webhook.** Past that, the oldest are dropped.
-- **Dropped events are counted.** The next message carries one extra line: "N earlier events were not posted (Discord was rate limiting)."
+- **Dropped events are counted.** An event can be dropped here, or with a message Discord refused or never answered (§4.4). The next message carries one extra line: "⚠️ N earlier events were not posted." Settings says why.
 
 ### 4.4 Errors
 
@@ -97,10 +98,10 @@ linkC posts in the JD LLC house style, the one every project on the user's Disco
 - 40 components, nested ones included;
 - 4000 text-display characters in total.
 
-A page that would pass a limit is an error found before posting, never text cut silently. Event text is bounded where it is built: a title is cut to 100 characters, a detail line to 120, and an event has at most 4 detail lines, each cut visibly with `…`. A page of 15 events stays under the limits.
+A page that would pass a limit is an error found before posting, never text cut silently. Event text is bounded where it is built, each cut visibly with `…`: a title to 100 characters, a detail line to 120, a folder name to 50. An event has at most 4 detail lines; a longer body shows its first 3 and then `… N more lines`. Characters are counted in UTF-16 units, as Discord does, and the paging above keeps every page under the limits.
 
 **Text:**
-- Text from agents, tasks and folders is markdown-escaped and kept on one line.
+- Text from agents, tasks and folders is markdown-escaped and kept on one line. Events carry plain text; only the message builder adds markdown.
 - Times are Discord timestamps (`<t:UNIX:f>`, `<t:UNIX:R>`), so they show in the reader's time zone.
 - Plurals are right: "1 event", "2 events".
 
@@ -109,20 +110,20 @@ A page that would pass a limit is an error found before posting, never text cut 
 One Container (type 17), its `accent_color` set by the event's tone (§5.3), holding in order:
 1. A text display: `## <emoji> <title>`.
 2. The event's detail, as text-display lines (at most 4).
-3. When events were dropped (§4.3): a line `⚠️ N earlier events were not posted (Discord was rate limiting).`
+3. When events were dropped (§4.3): a line `⚠️ N earlier events were not posted.`
 4. A separator (type 14).
 5. A text display: `-# linkC · <project folder name> · <t:UNIX:f> (<t:UNIX:R>)`. With no project, it reads `-# linkC · <t:UNIX:f> (<t:UNIX:R>)`.
 
 ### 5.2 A digest
 
 One Container, its colour that of the most serious event in it (failed, then needs you, then done, then information), holding:
-1. `## 📋 N linkC events`. A page of a split digest reads `## 📋 N linkC events (1/3)`.
+1. `## 📋 N linkC events`, N counting the events on every page. A page of a split digest reads `## 📋 N linkC events (1/3)`.
 2. For each event, in order:
    - one line: `<emoji> **<title>** · <project folder name>`;
    - under it, the first detail line as subtext: `-# <detail>`.
-3. The dropped-events line, when there is one.
+3. The dropped-events line, on the first page only, when there is one.
 4. A separator.
-5. `-# linkC · <t:UNIX:f> (<t:UNIX:R>)`, with the time of the newest event.
+5. `-# linkC · <t:UNIX:f> (<t:UNIX:R>)`, with the time of the newest event on the page.
 
 ### 5.3 Tones
 
@@ -180,15 +181,17 @@ Every test goes through the seams: a scripted `WebhookTransport`, a manual clock
 - `Remaining: 0` with `Reset-After: 1.5` holds the next send 1.5 s;
 - a 429 with `retry_after: 0.7` resends the same body after 0.7 s;
 - a global 429 pauses another webhook's queue too;
-- 30 events become 3 requests of 10 embeds;
-- the 6000-character limit splits a batch;
+- 30 events become 2 digest pages of 15, `(1/2)` and `(2/2)`, and a later event waits behind both;
+- long events split pages at Discord's limits, and every page stays under them;
+- a 204, or a 200 without an `id`, is retried; every request asks for `with_components=true&wait=true`;
 - 101 waiting events drop the oldest, and the next message counts it;
 - a 404 stops the webhook, makes no further requests, and posts one macOS notification;
 - a 500 is retried on 2, 4, 8, 16, 32 s, then dropped and reported;
 - a 400 is dropped and reported at once.
 
 **The rest:**
-- **`DiscordMessage`:** `allowed_mentions` is empty; the colors per kind; the field cuts; an `@everyone` in a body does not ping.
+- **`DiscordMessage`:** one container and only `flags`, `components` and `allowed_mentions` (empty); each tone's color, emoji and silence; escaping and the visible cuts; the card and digest layouts line by line; a message over a limit is an error.
+- **Live:** the preview test of §5.4.
 - **`DiscordRouter`:** a project's webhook, the default for other projects and for events with no project, no fallback for a stopped or missing project webhook, and a subfolder not matching.
 - **`DiscordWebhookConfig`:** each accepted host and the rejected shapes (http, another host, a non-numeric id, extra path).
 - **`TaskEventFeed`:**

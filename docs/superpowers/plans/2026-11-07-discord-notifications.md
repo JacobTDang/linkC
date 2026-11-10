@@ -14,12 +14,13 @@
 - Outbound only: linkC never reads from Discord.
 - **Never log, show or notify a webhook URL.** Logs and messages name a webhook "default" or by its project folder's name. Transport errors are reported by their description only, never `String(describing:)` of a `URLError` (its `userInfo` holds the URL).
 - Sliding window: at most **5** requests per webhook in any **2 s**. Discord's `X-RateLimit-Remaining: 0` + `X-RateLimit-Reset-After`, and a 429's `retry_after`, can only make it stricter.
-- Message limits: **10** embeds; **6000** characters across embeds (UTF-16 units); title **256**, description **4096**, footer **2048**; cut with `…`.
+- The message is the JD LLC house style (spec §5, Task 7): one Components V2 container, at most **40** components and **4000** text characters (UTF-16 units); title **100**, detail line **120**, folder name **50**, at most **4** detail lines, digest pages of at most **15** events; cut with `…`. (Tasks 1-4 first built embeds; Task 7 replaces them.)
 - At most **100** waiting events per webhook; the oldest are dropped and counted.
 - Retries for 5xx, timeouts and no network: **2, 4, 8, 16, 32 s** (the first attempt plus five retries).
 - 404, 401, 403 stop the webhook; 400 (and any other 4xx but 429) drops the message.
-- `allowed_mentions: {"parse": []}` and `username: "linkC"` on every message.
-- Colors: done `0x3BA55C`, needs-you `0xFAA61A`, failed `0xED4245`, info `0x99AAB5`.
+- `allowed_mentions: {"parse": []}` on every message; no `content`, `embeds` or `username` (Settings tells the user to name the webhook "linkC").
+- Tones: done green `0x57F287` ✅, needs-you yellow `0xFEE75C` ⚠️, failed red `0xED4245` ❌, info blurple `0x5865F2` 📋 (info posts with SUPPRESS_NOTIFICATIONS).
+- Only a 200 whose JSON has a non-empty `id` counts as sent; every post adds `with_components=true&wait=true`.
 - Keychain: generic password, service `com.linkc.app.discord-webhook`, account `default` or the canonical project folder.
 - A project with its own webhook entry never falls back to the default.
 - Tests go through seams only: `ScriptedWebhookTransport`, `ManualClock`, `InMemorySecretStore`, `InMemoryUserDefaults`. No network, no Keychain.
@@ -2687,3 +2688,161 @@ deleted stops posting, and linkC tells you so.
   - Do not run the app or `build-app.sh`; the controller does.
 
 - [ ] **Step 5: Commit.** `feat(discord): Settings > Discord, the app's wiring, and the README`.
+
+### Task 7: Post in the JD LLC house style
+
+Runs after Task 5 and before Task 6.
+
+linkC posts its events to Discord webhooks (spec `docs/superpowers/specs/2026-11-05-discord-notifications-design.md`,
+§4.2, §4.4 and §5, amended for the house style). Today `DiscordMessage` builds embeds. This task replaces it with
+Components V2 cards and digests, and makes the queue count a message as sent only when Discord saved it.
+
+Read spec §4.2, §4.4 and §5 first. The tests are committed; do not modify any test file.
+
+#### Files
+
+- Rewrite: `Sources/LinkCKit/Discord/DiscordMessage.swift`
+- Modify: `Sources/LinkCKit/Discord/WebhookQueue.swift`
+- Modify: `Sources/LinkCKit/Discord/WebhookTransport.swift`
+- Tests (committed, read them): `Tests/LinkCKitTests/DiscordMessageTests.swift`, `WebhookQueueTests.swift`,
+  `DiscordNotifierTests.swift`, `WebhookTransportTests.swift`, `DiscordLivePreviewTests.swift`, and the support files
+  `Tests/LinkCKitTests/Support/ScriptedWebhookTransport.swift`, `GatedWebhookTransport.swift`.
+
+#### 1. `DiscordMessage` (internal `enum`, rewrite)
+
+Constants, with these exact names and values:
+
+```swift
+static let maxComponents = 40          // every component in a message, the container included
+static let maxTextCharacters = 4000    // all text displays' content together, in UTF-16 units
+static let maxEventsPerPage = 15
+static let maxTitle = 100
+static let maxDetailLine = 120
+static let maxDetailLines = 4
+static let maxFolderName = 50
+static let isComponentsV2 = 1 << 15
+static let suppressNotifications = 1 << 12
+```
+
+Types:
+
+```swift
+indirect enum Component: Equatable, Encodable {
+    case container(accentColor: Int, [Component])   // {"type":17,"accent_color":…,"components":[…]}
+    case text(String)                                // {"type":10,"content":…}
+    case separator                                   // {"type":14,"divider":true,"spacing":1}
+}
+
+struct Payload: Equatable, Encodable {
+    let flags: Int
+    let container: Component
+    // Encodes exactly {"flags": flags, "components": [container], "allowed_mentions": {"parse": []}}.
+    // No content, embeds or username.
+}
+
+struct Page: Equatable {
+    let payload: Payload
+    /// How many events this page carries (the dropped count is not one of them).
+    let eventCount: Int
+}
+
+struct OverLimit: Error, LocalizedError { let errorDescription: String? }
+```
+
+Functions:
+
+- `static func pages(_ events: [LinkCEvent], dropped: Int) throws -> [Page]`
+  - No events: `[]`.
+  - One event: one card (below).
+  - Several: digest pages (below), oldest first. Pack greedily: an event joins the current page while the page
+    holds fewer than `maxEventsPerPage` events and still fits both limits, measured with the longest headline suffix
+    it could get (for example `" (99/99)"`); otherwise it starts the next page.
+  - `dropped > 0`: the dropped line goes on the first page (or the card) only.
+  - Every page is checked with `check` before any is returned, so a bad later page posts nothing.
+- `static func check(_ payload: Payload) throws` — throws `OverLimit` when the message has more than
+  `maxComponents` components (nested included), more than `maxTextCharacters` text characters, or an empty text
+  display. The error names the count and the limit, for example "a message has 41 components; Discord allows 40".
+- `static func size(_ payload: Payload) -> (components: Int, characters: Int)`.
+- `static func encode(_ payload: Payload) throws -> Data` (JSONEncoder).
+- `static func escape(_ text: String, limit: Int) -> String` — whitespace runs (newlines included) become one
+  space and the ends are trimmed; each of `\ * _ ~ ` | < > [ ] ( ) # @` gets a backslash before it; the result is at
+  most `limit` UTF-16 units, cut with a trailing `…` that counts toward the limit. A cut never splits a character
+  or an escape (an escape and its character are one piece).
+- `static func postURL(for webhook: URL) -> URL` — the webhook URL with `with_components=true` and `wait=true`
+  appended to its query, keeping any query items it already has, in that order.
+
+Tone table (spec §5.3): done `0x57F287` ✅, needsYou `0xFEE75C` ⚠️, failed `0xED4245` ❌, info `0x5865F2` 📋.
+A message's flags are `isComponentsV2`, plus `suppressNotifications` when every event in it is `.info`.
+
+**Detail lines** of an event (from `body`): split on newlines, escape each line with `limit: maxDetailLine`, drop
+the empty ones. At most `maxDetailLines`: when there are more, show the first `maxDetailLines - 1` and then
+`"… N more lines"` (N = the lines left out; "1 more line" when N is 1).
+
+**Folder name**: the last path component of `event.project`, escaped with `limit: maxFolderName`.
+
+**Dropped line**: `"⚠️ 1 earlier event was not posted."`, `"⚠️ N earlier events were not posted."`.
+
+**Footer timestamp**: `<t:UNIX:f> (<t:UNIX:R>)`, UNIX = whole seconds of the date.
+
+**A card** (one event): one container, accent = the event's tone color, children in order:
+1. `.text("## <emoji> <escaped title, limit maxTitle>")`
+2. `.text(<detail lines joined by "\n">)`, only when there is at least one
+3. `.text(<dropped line>)`, only when `dropped > 0`
+4. `.separator`
+5. `.text("-# linkC · <folder> · <timestamp>")`, or `"-# linkC · <timestamp>"` with no project
+
+**A digest page**: one container, accent = the most serious tone on the page (failed, then needsYou, then done,
+then info), children in order:
+1. `.text("## 📋 <N> linkC events")` where N is the number of events across all pages; with more than one page,
+   `" (i/k)"` follows.
+2. One `.text` per event: `"<emoji> **<escaped title>**"`, then `" · <folder>"` when it has a project, then
+   `"\n-# <first detail line>"` when it has one.
+3. `.text(<dropped line>)` on the first page, when `dropped > 0`.
+4. `.separator`
+5. `.text("-# linkC · <timestamp of the newest event on this page>")`
+
+#### 2. `WebhookResponse.savedMessageID` (`WebhookTransport.swift`)
+
+```swift
+/// The id of the message Discord saved: only a 200 whose JSON object has a non-empty string `id` (spec §4.4).
+public var savedMessageID: String? { … }
+```
+
+#### 3. Transport errors by type, never by text (`WebhookTransport.swift`)
+
+`URLSessionWebhookTransport` reports a failed request as `Failure(errorDescription: Self.describe(error))`, where
+
+```swift
+/// A transport error by its type (and a URLError's code), never by its text, which can hold the URL.
+static func describe(_ error: Error) -> String
+```
+
+- a `URLError`: `"<words> (URLError <code>)"` with these words — `.timedOut` "the request timed out",
+  `.notConnectedToInternet` "no internet connection", `.networkConnectionLost` "the connection was lost",
+  `.cannotFindHost` "the host was not found", `.cannotConnectToHost` "could not connect"; any other code is just
+  `"URLError <code>"`. Example: `"the request timed out (URLError -1001)"`, `"URLError -1200"`.
+- any other error: its type name, `String(describing: type(of: error))`.
+
+#### 4. `WebhookQueue`
+
+- Posts to `DiscordMessage.postURL(for: url)` (compute it once in `init`). `url` stays the plain webhook URL.
+- When a request goes out it takes **every** waiting event (and the dropped count), builds `DiscordMessage.pages`,
+  and posts the pages in order, one request each, before any event that arrived meanwhile. A page that is dropped
+  (4xx, redirect, retries used up) adds its `eventCount` (plus the carried dropped count, for the first page) to
+  `dropped`, and the next page still goes. When the webhook stops (401, 403, 404) or the queue is cancelled, the
+  remaining pages are discarded like the rest of the queue.
+- If `pages` or `encode` throws: log it (`NSLog`, by the webhook's name, never the URL), set
+  `.failed("a message could not be built: <description>", at:)`, count every event it carried as dropped, and go on.
+- Success is `response.savedMessageID != nil` (only a 200 with an id). Any other 2xx — a 204, `{}`, a body that
+  is not JSON — is retried like a 5xx, with the reason `"Discord answered <status> without saving the message"`.
+- A 4xx (other than 401, 403, 404, 429) shows Discord's JSON `code` and `message`:
+  `"Discord refused a message (400): code 50035, Invalid Form Body"`; with no JSON body,
+  `"Discord refused a message (400)"`. Log the same text. Never log the request body.
+- Everything else is unchanged: the pacer, 429 handling, the global limit, stopping, the retry delays, cancel.
+
+#### Verify
+
+- `swift build --build-tests 2>&1 | grep -E "warning:|error:"` prints nothing.
+- `swift test --filter "DiscordMessageTests|WebhookQueueTests|DiscordNotifierTests|WebhookTransportTests|DiscordLivePreviewTests"` passes
+  (the live preview test is skipped without `DISCORD_PREVIEW_WEBHOOK_URL`).
+- `swift test 2>&1 | grep -E "Executed [0-9]+ tests" | sort -k2 -n | tail -1` shows 0 failures.
