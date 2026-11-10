@@ -15,6 +15,14 @@ enum CodexScreenFixture {
         return try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
     }
 
+    /// The name of every screen fixture in the test bundle: each `Fixtures/*.txt`, sorted.
+    static func allNames() -> [String] {
+        let bundle = Bundle.module
+        let urls = bundle.urls(forResourcesWithExtension: "txt", subdirectory: nil)
+            ?? bundle.urls(forResourcesWithExtension: "txt", subdirectory: "Fixtures") ?? []
+        return urls.map { $0.deletingPathExtension().lastPathComponent }.sorted()
+    }
+
     /// The rows a `ScreenSnapshot` of the frame holds: every row that has any content.
     static func rows(_ name: String) throws -> [String] {
         try lines(name).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }

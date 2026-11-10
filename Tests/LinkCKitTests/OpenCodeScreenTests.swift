@@ -89,9 +89,11 @@ final class OpenCodeScreenTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.progressSignature(rows: rows), TerminalPreview.progressSignature(rows: redrawn))
     }
 
+    /// Every screen fixture that is not OpenCode's, whatever agent it was captured from.
     func testOtherAgentsScreensAreNotOpenCodes() throws {
-        for name in ["codex-0.159-turn-finished", "codex-0.159-working-before-tip", "codex-0.159-working-narrow",
-                     "codex-0.159-waiting-for-startup", "codex-0.159-working-tip-under-status"] {
+        let others = CodexScreenFixture.allNames().filter { !$0.hasPrefix("opencode-") }
+        XCTAssertFalse(others.isEmpty, "no other agent's screens to check")
+        for name in others {
             XCTAssertNil(OpenCodeScreen.turn(in: try CodexScreenFixture.rows(name)), name)
         }
     }
