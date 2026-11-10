@@ -36,5 +36,3 @@
   scratchpad/
   capture/repo-
   46:main
-
-

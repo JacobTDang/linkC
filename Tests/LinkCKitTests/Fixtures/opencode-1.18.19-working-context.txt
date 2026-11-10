@@ -37,4 +37,3 @@
   ┃  Build auto · DeepSeek V4.1 Flash Free OpenCode
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
    ⬝⬝■■■■■■  esc interrupt                                    44.9K (22%)  ctrl+p commands
-

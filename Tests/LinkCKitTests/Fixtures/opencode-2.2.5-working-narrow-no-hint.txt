@@ -37,4 +37,3 @@
   ┃  Build · DeepSeek V4.1 Fla… · high
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
    ⬝⬝⬝⬝⬝⬝⬝⬝shift+tab agents  ctrl+p commands
-
