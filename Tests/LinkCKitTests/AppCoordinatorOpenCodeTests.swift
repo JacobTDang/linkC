@@ -104,9 +104,9 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
 
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new, tier: .deep)
 
-        XCTAssertEqual(session.model, "opencode/crouton-alpha-free")
+        XCTAssertEqual(session.model, "opencode/nemotron-3.5-super-vl-free")
         XCTAssertEqual(session.modelTier, .deep)
-        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/crouton-alpha-free")
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/nemotron-3.5-super-vl-free")
     }
 
     func testAnOpenCodeTerminalHasLinkCsToolsInline() throws {

@@ -24,7 +24,7 @@
 - No new dependencies.
 - `SettingsScreen.swift`, `AppPreferences.swift`, `NotificationManager.swift` and every `AppCoordinator*.swift` file are also changed on another branch: keep edits there to the lines this plan names.
 - Test text that an agent's limit rules or linkC's screen reader would match is split with `+` (for example `"Free usage " + "exceeded"`), as the existing tests do, so linkC does not read it off a developer's terminal.
-- Model ids are exactly: light `opencode/deepseek-v4.1-flash-free`, standard (default) `opencode/big-pickle`, deep `opencode/crouton-alpha-free`.
+- Model ids are exactly: light `opencode/deepseek-v4.1-flash-free`, standard (default) `opencode/big-pickle`, deep `opencode/nemotron-3.5-super-vl-free`.
 
 ---
 
@@ -91,7 +91,7 @@ In `AgentModelCatalogTests.swift`, add:
 ```swift
     func testOpenCodeSuggestsItsFreeTiers() {
         XCTAssertEqual(AgentModelCatalog.models(for: .opencode).map(\.id),
-                       ["opencode/big-pickle", "opencode/deepseek-v4.1-flash-free", "opencode/crouton-alpha-free"])
+                       ["opencode/big-pickle", "opencode/deepseek-v4.1-flash-free", "opencode/nemotron-3.5-super-vl-free"])
         XCTAssertEqual(AgentModelCatalog.defaultModel(for: .opencode).id, "opencode/big-pickle")
     }
 ```
@@ -103,7 +103,7 @@ In `AgentModelStoreTests.swift`, add:
         let seeded = AgentModelSettings.seeded
         XCTAssertEqual(seeded.model(for: .opencode, tier: .light), "opencode/deepseek-v4.1-flash-free")
         XCTAssertEqual(seeded.model(for: .opencode, tier: .standard), "opencode/big-pickle")
-        XCTAssertEqual(seeded.model(for: .opencode, tier: .deep), "opencode/crouton-alpha-free")
+        XCTAssertEqual(seeded.model(for: .opencode, tier: .deep), "opencode/nemotron-3.5-super-vl-free")
         XCTAssertEqual(seeded.defaultTier(for: .opencode), .standard)
     }
 
@@ -239,7 +239,7 @@ Replace `environment(for:home:)` and its doc comment with:
             return [
                 AgentModelInfo(id: "opencode/big-pickle", displayName: "Big Pickle", isFreeOrSubscription: true, isDefault: true),
                 AgentModelInfo(id: "opencode/deepseek-v4.1-flash-free", displayName: "DeepSeek V4.1 Flash Free", isFreeOrSubscription: true, isDefault: false),
-                AgentModelInfo(id: "opencode/crouton-alpha-free", displayName: "Crouton Alpha Free", isFreeOrSubscription: true, isDefault: false)
+                AgentModelInfo(id: "opencode/nemotron-3.5-super-vl-free", displayName: "Nemotron 3.5 Super VL Free", isFreeOrSubscription: true, isDefault: false)
             ]
 ```
 
@@ -247,7 +247,7 @@ Replace `environment(for:home:)` and its doc comment with:
 
 ```swift
             AgentKind.opencode.rawValue: [
-                "light": "opencode/deepseek-v4.1-flash-free", "standard": "opencode/big-pickle", "deep": "opencode/crouton-alpha-free"
+                "light": "opencode/deepseek-v4.1-flash-free", "standard": "opencode/big-pickle", "deep": "opencode/nemotron-3.5-super-vl-free"
             ]
 ```
 
@@ -369,7 +369,7 @@ final class MCPServerOpenCodeTests: XCTestCase {
         XCTAssertTrue(report.text.contains("## OpenCode\n"), report.text)
         XCTAssertTrue(report.text.contains("- **light**: opencode/deepseek-v4.1-flash-free\n"), report.text)
         XCTAssertTrue(report.text.contains("- **standard**: opencode/big-pickle — default\n"), report.text)
-        XCTAssertTrue(report.text.contains("- **deep**: opencode/crouton-alpha-free\n"), report.text)
+        XCTAssertTrue(report.text.contains("- **deep**: opencode/nemotron-3.5-super-vl-free\n"), report.text)
     }
 
     func testTheUsageReportHasAnOpenCodeSection() throws {
@@ -934,9 +934,9 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
 
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new, tier: .deep)
 
-        XCTAssertEqual(session.model, "opencode/crouton-alpha-free")
+        XCTAssertEqual(session.model, "opencode/nemotron-3.5-super-vl-free")
         XCTAssertEqual(session.modelTier, .deep)
-        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/crouton-alpha-free")
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/nemotron-3.5-super-vl-free")
     }
 
     func testAnOpenCodeTerminalHasLinkCsToolsInline() throws {
@@ -1068,13 +1068,13 @@ In a scratch git repo with its own root commit (never the linkC repo), under the
 
 ```bash
 tmux new-session -d -s argv4 -x 92 -y 40 -c <scratch repo> env OPENCODE_DISABLE_AUTOUPDATE=1 \
-  OPENCODE_CONFIG_CONTENT='{"model":"opencode/crouton-alpha-free","mcp":{"linkc-multiplier":{"type":"local","command":["/usr/bin/true"],"environment":{"LINKC_AGENT":"opencode"},"enabled":true}}}' \
+  OPENCODE_CONFIG_CONTENT='{"model":"opencode/nemotron-3.5-super-vl-free","mcp":{"linkc-multiplier":{"type":"local","command":["/usr/bin/true"],"environment":{"LINKC_AGENT":"opencode"},"enabled":true}}}' \
   /opt/homebrew/bin/opencode --standalone --auto
 # wait until the footer shows "Build", then:
 tmux capture-pane -p -t argv4 | grep -v '^\s*$' | tail -6; tmux kill-session -t argv4
 ```
 
-Expected: the box footer names Crouton Alpha Free. Report the capture.
+Expected: the box footer names Nemotron 3.5 Super VL Free. Report the capture.
 
 - [ ] **Step 6: Revert-proof, then commit**
 
@@ -1650,13 +1650,13 @@ and add:
         let result = try call(makeServer(openCodeModels: { try lister.list($0) }), "linkc_delegate_task",
                               ["to": "opencode", "prompt": "Add a test.", "tier": "deep"])
         XCTAssertTrue(result.isError)
-        XCTAssertTrue(result.text.contains("opencode/crouton-alpha-free"), result.text)
+        XCTAssertTrue(result.text.contains("opencode/nemotron-3.5-super-vl-free"), result.text)
         XCTAssertTrue(result.text.contains("offline"), result.text)
         XCTAssertTrue(openTasks.isEmpty)
     }
 
     func testADelegationToAListedModelIsQueuedAndListedInTheWorkspace() throws {
-        let lister = ModelLister(["opencode/big-pickle", "opencode/crouton-alpha-free"])
+        let lister = ModelLister(["opencode/big-pickle", "opencode/nemotron-3.5-super-vl-free"])
         let result = try call(makeServer(openCodeModels: { try lister.list($0) }), "linkc_delegate_task",
                               ["to": "opencode", "prompt": "Add a test.", "tier": "deep"])
         XCTAssertFalse(result.isError, result.text)

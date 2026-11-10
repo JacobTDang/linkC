@@ -69,7 +69,7 @@ final class MCPServerOpenCodeTests: XCTestCase {
         XCTAssertTrue(report.text.contains("## OpenCode\n"), report.text)
         XCTAssertTrue(report.text.contains("- **light**: opencode/deepseek-v4.1-flash-free\n"), report.text)
         XCTAssertTrue(report.text.contains("- **standard**: opencode/big-pickle — default\n"), report.text)
-        XCTAssertTrue(report.text.contains("- **deep**: opencode/crouton-alpha-free\n"), report.text)
+        XCTAssertTrue(report.text.contains("- **deep**: opencode/nemotron-3.5-super-vl-free\n"), report.text)
     }
 
     func testTheUsageReportHasAnOpenCodeSection() throws {
@@ -99,13 +99,13 @@ final class MCPServerOpenCodeTests: XCTestCase {
         let result = try call(makeServer(openCodeModels: { try lister.list($0) }), "linkc_delegate_task",
                               ["to": "opencode", "prompt": "Add a test.", "tier": "deep"])
         XCTAssertTrue(result.isError)
-        XCTAssertTrue(result.text.contains("opencode/crouton-alpha-free"), result.text)
+        XCTAssertTrue(result.text.contains("opencode/nemotron-3.5-super-vl-free"), result.text)
         XCTAssertTrue(result.text.contains("offline"), result.text)
         XCTAssertTrue(try openTasks().isEmpty)
     }
 
     func testADelegationToAListedModelIsQueuedAndListedInTheWorkspace() throws {
-        let lister = ModelLister(["opencode/big-pickle", "opencode/crouton-alpha-free"])
+        let lister = ModelLister(["opencode/big-pickle", "opencode/nemotron-3.5-super-vl-free"])
         let result = try call(makeServer(openCodeModels: { try lister.list($0) }), "linkc_delegate_task",
                               ["to": "opencode", "prompt": "Add a test.", "tier": "deep"])
         XCTAssertFalse(result.isError, result.text)
@@ -192,8 +192,8 @@ final class MCPServerOpenCodeTests: XCTestCase {
     }
 
     func testTheListingKeepsOnlyTheNonEmptyTrimmedLines() {
-        XCTAssertEqual(MCPServer.parseOpenCodeModels("opencode/big-pickle  \r\n\r\n  ollama/qwen3.8:27b-32k\n\n \nopencode/crouton-alpha-free"),
-                       ["opencode/big-pickle", "ollama/qwen3.8:27b-32k", "opencode/crouton-alpha-free"])
+        XCTAssertEqual(MCPServer.parseOpenCodeModels("opencode/big-pickle  \r\n\r\n  ollama/qwen3.8:27b-32k\n\n \nopencode/nemotron-3.5-super-vl-free"),
+                       ["opencode/big-pickle", "ollama/qwen3.8:27b-32k", "opencode/nemotron-3.5-super-vl-free"])
         XCTAssertEqual(MCPServer.parseOpenCodeModels(""), [])
         XCTAssertEqual(MCPServer.parseOpenCodeModels(" \n\r\n"), [])
     }

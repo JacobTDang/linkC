@@ -39,9 +39,8 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
     /// `gpt-5.6-luna`. `agy models` lists the agy ids verbatim. The grok ids are read verbatim from
     /// `cursor-agent models` (2026-10-17); Grok runs on the Cursor plan. An empty entry means that tier
     /// is unconfigured and delegation refuses loudly. All are editable in settings. The opencode ids are
-    /// OpenCode's free models as `opencode models` lists them; each answered a live prompt (2026-11-07).
-    /// Free models come and go: `opencode/crouton-alpha-free` was absent from `opencode models --standalone`
-    /// on 2026-11-09, so a delegation at the deep tier is refused until the tier is set to a listed model.
+    /// OpenCode's free models as `opencode models --standalone` listed them (2026-11-10).
+    /// Free models come and go, so every path that starts a tiered OpenCode worker checks the listing.
     public static let seeded = AgentModelSettings(
         models: [
             AgentKind.claude.rawValue: ["light": "haiku", "standard": "sonnet", "deep": "opus"],
@@ -51,7 +50,7 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             ],
             AgentKind.grok.rawValue: ["light": "grok-4.7-low", "standard": "grok-4.7-medium", "deep": "grok-4.7-xhigh"],
             AgentKind.opencode.rawValue: [
-                "light": "opencode/deepseek-v4.1-flash-free", "standard": "opencode/big-pickle", "deep": "opencode/crouton-alpha-free"
+                "light": "opencode/deepseek-v4.1-flash-free", "standard": "opencode/big-pickle", "deep": "opencode/nemotron-3.5-super-vl-free"
             ]
         ],
         defaultTiers: [

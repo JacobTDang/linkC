@@ -183,7 +183,8 @@ final class AgentModelCatalogTests: XCTestCase {
 
     func testOpenCodeSuggestsItsFreeTiers() {
         XCTAssertEqual(AgentModelCatalog.models(for: .opencode).map(\.id),
-                       ["opencode/big-pickle", "opencode/deepseek-v4.1-flash-free", "opencode/crouton-alpha-free"])
+                       ["opencode/big-pickle", "opencode/deepseek-v4.1-flash-free", "opencode/nemotron-3.5-super-vl-free"])
+        XCTAssertEqual(AgentModelCatalog.models(for: .opencode).last?.displayName, "Nemotron 3.5 Super VL Free")
         XCTAssertEqual(AgentModelCatalog.defaultModel(for: .opencode).id, "opencode/big-pickle")
     }
 }

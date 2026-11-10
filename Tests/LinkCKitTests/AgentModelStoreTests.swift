@@ -167,7 +167,7 @@ final class AgentModelStoreTests: XCTestCase {
         let seeded = AgentModelSettings.seeded
         XCTAssertEqual(seeded.model(for: .opencode, tier: .light), "opencode/deepseek-v4.1-flash-free")
         XCTAssertEqual(seeded.model(for: .opencode, tier: .standard), "opencode/big-pickle")
-        XCTAssertEqual(seeded.model(for: .opencode, tier: .deep), "opencode/crouton-alpha-free")
+        XCTAssertEqual(seeded.model(for: .opencode, tier: .deep), "opencode/nemotron-3.5-super-vl-free")
         XCTAssertEqual(seeded.defaultTier(for: .opencode), .standard)
     }
 

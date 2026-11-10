@@ -36,7 +36,7 @@ OpenCode reaches a set of free models (DeepSeek V4.1 Flash, Big Pickle, Crouton 
 - `/model <id>` is not a command. Typed into the TUI, it went to the model as a prompt.
 - `OPENCODE_CONFIG_CONTENT` (inline JSON config) is merged over `~/.config/opencode/opencode.json`: with an inline `mcp` entry, `opencode mcp list` showed the six servers from the file plus the inline one. Inline config has the higher precedence.
 - A local MCP server inherits OpenCode's environment plus its `environment` block: a stand-in server saw `LINKC_SESSION` from the terminal and `LINKC_AGENT` from the block.
-- OpenCode names MCP tools `<server>_<tool>`. Given linkC's real task brief, with a stand-in `linkc-multiplier` server, `deepseek-v4.1-flash-free`, `big-pickle` and `crouton-alpha-free` each called `linkc_start_task` with the task id, did the work, committed it, and called `linkc_complete_task` with `status: done`.
+- OpenCode names MCP tools `<server>_<tool>`. Given linkC's real task brief, with a stand-in `linkc-multiplier` server, the then-current free models each called `linkc_start_task` with the task id, did the work, committed it, and called `linkc_complete_task` with `status: done`.
 - `-c` continues the newest session of the OpenCode project, and moves to that session's folder. A project is the repo's root commit, so all worktrees of one repo are one project; folders with no commits share one global project. Launched in one folder, `-c` reopened a session from another folder of the same root commit.
 - `opencode session list --format json` lists the project's sessions with `id`, `directory`, `updated` (ms) and `projectId`, newest first (about 0.9 s). `opencode --session <id>` opens that session in its folder.
 - The foreground process is OpenCode's own binary (`/opt/homebrew/Cellar/opencode/1.18.19/bin/opencode`, through the `/opt/homebrew/bin/opencode` link); its MCP servers are its children.
@@ -142,7 +142,7 @@ The rules are tested against screens captured from the real TUI, 2.2.5 and 1.18.
 |---|---|
 | light | `opencode/deepseek-v4.1-flash-free` |
 | standard | `opencode/big-pickle` |
-| deep | `opencode/crouton-alpha-free` |
+| deep | `opencode/nemotron-3.5-super-vl-free` |
 
 Ids are stored whole, provider included, so any id `opencode models` lists can go in a tier (`ollama/qwen3.8:27b-32k` among them). `AgentModelStore.load` fills OpenCode into a saved `models.json` that does not mention it, as it did for Grok. Settings > Models shows OpenCode's tiers and default tier after Grok. `AgentModelCatalog.models(for: .opencode)` lists the three seeds. `linkc_get_models` reports OpenCode's tiers.
 

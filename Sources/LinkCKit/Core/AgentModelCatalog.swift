@@ -52,7 +52,7 @@ public enum AgentModelCatalog: Sendable {
             return [
                 AgentModelInfo(id: "opencode/big-pickle", displayName: "Big Pickle", isFreeOrSubscription: true, isDefault: true),
                 AgentModelInfo(id: "opencode/deepseek-v4.1-flash-free", displayName: "DeepSeek V4.1 Flash Free", isFreeOrSubscription: true, isDefault: false),
-                AgentModelInfo(id: "opencode/crouton-alpha-free", displayName: "Crouton Alpha Free", isFreeOrSubscription: true, isDefault: false)
+                AgentModelInfo(id: "opencode/nemotron-3.5-super-vl-free", displayName: "Nemotron 3.5 Super VL Free", isFreeOrSubscription: true, isDefault: false)
             ]
         case .shell:
             return []
