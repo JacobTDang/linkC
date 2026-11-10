@@ -16,7 +16,7 @@ Status today comes from `SessionAttention.status(...)` (`Sources/LinkCKit/Core/S
 | `.error` | "error" / "rate limited", red | unchanged | none |
 | `.ended` | "ended" | unchanged | none |
 
-- **The time spent** is counted from the moment the session entered `.working`, which is its `stateChangedAt`.
+- **The time spent** is counted from the turn's start (`turnStartedAt`), kept across an answered permission prompt.
   - It reads "Ns" under a minute and "Nm SSs" under an hour (two-digit seconds).
   - It reads "Nh MMm" from an hour on (two-digit minutes).
 - **Ages keep today's formatting and update schedule** (`AgeTimelineSchedule`). Only the "done ·", "needs you ·" and "idle" prefixes go.
@@ -60,7 +60,7 @@ Keep the decision in `SessionAttention.status(...)` and its tests, not in the vi
 ## 6. Testing
 
 - **`SessionAttentionTests`** gets the new table:
-  - working: `.elapsed(since: stateChangedAt)`, tone `.working`, no marker;
+  - working: `.elapsed(since: turnStartedAt)`, tone `.working`, no marker;
   - unseen done: age, `.dot`, coral;
   - needs you: age, `.pingDot`, coral;
   - idle and seen: age, no marker, quiet;

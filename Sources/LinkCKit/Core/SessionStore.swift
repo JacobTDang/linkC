@@ -21,6 +21,12 @@ public enum SessionReducer {
         }
     }
 
+    /// Whether moving from `old` to `new` marks the start of a turn: entering `.working` from any
+    /// state other than `.waitingPermission`.
+    public static func startsTurn(from old: SessionState, to new: SessionState) -> Bool {
+        new == .working && old != .working && old != .waitingPermission
+    }
+
     /// Apply an event to a session. Returns the updated session and whether it just
     /// *entered* a notifiable state (a transition, not a repeat). Real transitions stamp
     /// `stateChangedAt`; a re-asserted identical state keeps the original clock. One exception:
@@ -39,6 +45,7 @@ public enum SessionReducer {
         // the state moves on, but the turn keeps its clock, so a turn already seen stays seen.
         let nudgeAfterTurn = old == .finished && s.state == .waitingIdle
         if s.state != old && !nudgeAfterTurn { s.stateChangedAt = now }
+        if startsTurn(from: old, to: s.state) { s.turnStartedAt = now }
         if let cid = event.claudeSessionId { s.claudeSessionId = cid }
         let entered = s.state.isNotifiable && s.state != old
         return (s, entered)
@@ -86,9 +93,14 @@ public final class SessionStore {
     /// Directly update a session's state and record stateChangedAt on real transitions.
     public func updateState(id: String, to newState: SessionState) {
         guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
-        if sessions[idx].state != newState {
+        let old = sessions[idx].state
+        if old != newState {
+            let now = Date()
             sessions[idx].state = newState
-            sessions[idx].stateChangedAt = Date()
+            sessions[idx].stateChangedAt = now
+            if SessionReducer.startsTurn(from: old, to: newState) {
+                sessions[idx].turnStartedAt = now
+            }
         }
     }
 

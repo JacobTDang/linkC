@@ -1,8 +1,8 @@
 import Foundation
 import Observation
 
-/// What a session row says on its right, and a tone the sidebar colors it by. Coral means the
-/// session wants you: blocked on a prompt, an error, or a finished turn nobody has looked at yet.
+/// What a session row says on its right: its text, the weight the sidebar draws it with, and any coral dot.
+/// Coral means the session wants you: blocked on a prompt, an error, or a finished turn nobody has looked at yet.
 public struct SessionRowStatus: Equatable, Sendable {
     public enum Tone: Equatable, Sendable { case quiet, working, attention, error }
 
@@ -99,14 +99,14 @@ public final class SessionAttention {
 
     public func status(for session: Session, onScreen: Bool, rateLimited: Bool, now: Date = Date()) -> SessionRowStatus {
         Self.status(
-            state: session.state, stateChangedAt: session.stateChangedAt, lastSeen: lastSeen[session.id],
-            onScreen: onScreen, rateLimited: rateLimited, now: now)
+            state: session.state, stateChangedAt: session.stateChangedAt, turnStartedAt: session.turnStartedAt,
+            lastSeen: lastSeen[session.id], onScreen: onScreen, rateLimited: rateLimited, now: now)
     }
 
     /// The spec's state table. `lastSeen` is when the session was last on screen; `onScreen` is
     /// whether it is on screen right now.
     public nonisolated static func status(
-        state: SessionState, stateChangedAt: Date, lastSeen: Date?, onScreen: Bool, rateLimited: Bool, now: Date = Date()
+        state: SessionState, stateChangedAt: Date, turnStartedAt: Date? = nil, lastSeen: Date?, onScreen: Bool, rateLimited: Bool, now: Date = Date()
     ) -> SessionRowStatus {
         switch state {
         case .starting:
@@ -114,7 +114,7 @@ public final class SessionAttention {
         case .ready:
             return SessionRowStatus(format: .age(prefix: "", since: stateChangedAt), tone: .quiet, marker: .none, now: now)
         case .working:
-            return SessionRowStatus(format: .elapsed(since: stateChangedAt), tone: .working, marker: .none, now: now)
+            return SessionRowStatus(format: .elapsed(since: turnStartedAt ?? stateChangedAt), tone: .working, marker: .none, now: now)
         case .waitingPermission:
             return SessionRowStatus(format: .age(prefix: "", since: stateChangedAt), tone: .attention, marker: .pingDot, now: now)
         case .finished, .waitingIdle:

@@ -125,9 +125,7 @@ struct HairlineSweepModifier: ViewModifier {
                         LinearGradient(
                             stops: [
                                 .init(color: .clear, location: 0.0),
-                                .init(color: .clear, location: 0.3),
                                 .init(color: .white.opacity(0.70), location: 0.5),
-                                .init(color: .clear, location: 0.7),
                                 .init(color: .clear, location: 1.0)
                             ],
                             startPoint: .leading,

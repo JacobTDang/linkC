@@ -494,8 +494,8 @@ private struct SessionStatusLabel: View {
                     .monospacedDigit()
                     .foregroundStyle(color(for: status.tone))
             }
-        case .elapsed:
-            TimelineView(.periodic(from: .now, by: panelVisible ? 1.0 : 3600.0)) { context in
+        case .elapsed(let since):
+            TimelineView(.periodic(from: since, by: panelVisible ? 1.0 : 3600.0)) { context in
                 Text(status.text(now: context.date))
                     .font(.system(size: 11))
                     .monospacedDigit()
