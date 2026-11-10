@@ -50,6 +50,7 @@ extension AppCoordinator {
         let inboxStore = InboxStore(workspaceRoot: norm)
         relayWork.beginPass(in: norm)
         pollPasteReadiness(workspacePath: norm)
+        reportTaskEvents(workspacePath: norm, inboxStore: inboxStore)
         guard !settleResolvableTasks(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
         }
@@ -96,6 +97,25 @@ extension AppCoordinator {
     private func pollPasteReadiness(workspacePath: String) {
         for session in store.sessions where session.cwd == workspacePath && session.state != .ended {
             _ = terminals.session(id: session.id)?.acceptsPaste
+        }
+    }
+
+    /// Posts the task changes in `workspacePath` since the last pass, for Discord only (spec §2.1). A read
+    /// that fails keeps the last snapshot, so the next pass compares again: nothing is lost or repeated.
+    func reportTaskEvents(workspacePath norm: String, inboxStore: InboxStore) {
+        // Like every relay phase: a store read would recreate a deleted workspace on disk.
+        guard workspaceExists(norm) else { return }
+        let tasks: [TaskRecord]
+        do {
+            tasks = try inboxStore.load(timeout: Self.relayLockTimeout).tasks
+        } catch {
+            if !isRelayLockTimeout(error) {
+                NSLog("[linkC relay] reportTaskEvents: tasks — %@", String(describing: error))
+            }
+            return
+        }
+        for event in taskEvents.events(in: norm, tasks: tasks, at: now()) {
+            notifications.postEvent(event)
         }
     }
 
@@ -825,7 +845,8 @@ extension AppCoordinator {
         if notified > 0 {
             notifications.post(
                 title: "linkC: \(session.agentKind.displayName) turn ended",
-                body: "\(notified) task(s) still open without a report; \(open.first?.fromAgent.displayName ?? "the delegator") was told."
+                body: "\(notified) task(s) still open without a report; \(open.first?.fromAgent.displayName ?? "the delegator") was told.",
+                project: norm
             )
             processPendingMessages(workspacePath: norm)
         }
@@ -965,7 +986,8 @@ extension AppCoordinator {
             }
             self.notifications.post(
                 title: "linkC: \(session.agentKind.displayName) Rate Limited",
-                body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available."
+                body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available.",
+                project: session.cwd
             )
         }
 
@@ -1016,7 +1038,8 @@ extension AppCoordinator {
             store.updateState(id: session.id, to: .error)
             notifications.post(
                 title: "linkC: Swarm Rate Limited",
-                body: "All candidate agents in \(URL(fileURLWithPath: norm).lastPathComponent) are rate limited or the task has exhausted its reroute hops. Pausing auto-delegation."
+                body: "All candidate agents in \(URL(fileURLWithPath: norm).lastPathComponent) are rate limited or the task has exhausted its reroute hops. Pausing auto-delegation.",
+                project: norm
             )
             return true
         }

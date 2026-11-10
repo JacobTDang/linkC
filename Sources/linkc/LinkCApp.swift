@@ -298,7 +298,7 @@ final class AppModel {
             // user (a failed install, or grants about to be lost) is posted now, and shown again
             // in the error bar the next time the panel opens — the panel is hidden at launch.
             if let notice = UpdateSwap.takeNotice() {
-                coordinator.notify(id: "update", title: "linkC update", body: notice)
+                coordinator.postLocalNotification(title: "linkC update", body: notice)
                 if panelVisible { lastError = notice } else { pendingUpdateNotice = notice }
             }
         } catch {
@@ -408,7 +408,7 @@ final class AppModel {
             let changes = await self.health.check(endpoints)
             for change in changes {
                 self.coordinator?.notify(
-                    id: "health:\(change.endpointId)", title: change.title, body: change.body
+                    id: "health:\(change.endpointId)", title: change.title, body: change.body, tone: change.tone
                 )
             }
         }

@@ -91,7 +91,8 @@ extension AppCoordinator {
             let reasons = reported.map(\.rawValue).filter { seen.insert($0).inserted }
             notifications.post(
                 title: "linkC: \(reported.count) task(s) look stuck",
-                body: "\(reasons.joined(separator: "; ")). The delegating agent was told."
+                body: "\(reasons.joined(separator: "; ")). The delegating agent was told.",
+                project: workspacePath
             )
         }
         return false
@@ -121,7 +122,8 @@ extension AppCoordinator {
         undeliveredNoticesReported[workspacePath, default: []].insert(message.id)
         notifications.post(
             title: "linkC: \(message.toAgent.displayName) has not seen a notice",
-            body: "A message has been waiting 5m — no \(message.toAgent.displayName) session is free to take it."
+            body: "A message has been waiting 5m — no \(message.toAgent.displayName) session is free to take it.",
+            project: workspacePath
         )
     }
 }
