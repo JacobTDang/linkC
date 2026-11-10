@@ -137,7 +137,43 @@ final class DiscordWebhooksTests: XCTestCase {
         let toDefault = DiscordRoute.webhook(account: DiscordWebhooks.defaultAccount, try webhook(fallback))
         XCTAssertEqual(webhooks.route(event(project: "/p/beta")), toDefault)
         XCTAssertEqual(webhooks.route(event(project: nil)), toDefault)
-        XCTAssertEqual(webhooks.route(event(project: "/p/alpha/sub")), toDefault, "a subfolder is not its parent's project")
+        XCTAssertEqual(webhooks.route(event(project: "/p/alphabet")), toDefault, "a folder whose name starts the same is not inside it")
+    }
+
+    /// A project's webhook covers every folder inside it, its worktrees included (spec §3).
+    func testASubfolderOrWorktreeGoesToItsProjectsWebhook() throws {
+        let (webhooks, _, _) = make()
+        try webhooks.set(fallback, for: DiscordWebhooks.defaultAccount)
+        try webhooks.set(alpha, for: "/p/alpha")
+        let toAlpha = DiscordRoute.webhook(account: "/p/alpha", try webhook(alpha))
+        XCTAssertEqual(webhooks.route(event(project: "/p/alpha/.worktrees/feature")), toAlpha)
+        XCTAssertEqual(webhooks.route(event(project: "/p/alpha/sub/deeper")), toAlpha)
+    }
+
+    /// When listed folders nest, the nearest one above the event's folder wins.
+    func testTheNearestListedFolderWins() throws {
+        let (webhooks, _, _) = make()
+        let worktree = "https://discord.com/api/webhooks/555555555/wt-token"
+        try webhooks.set(alpha, for: "/p/alpha")
+        try webhooks.set(worktree, for: "/p/alpha/.worktrees/feature")
+        XCTAssertEqual(webhooks.route(event(project: "/p/alpha/.worktrees/feature/src")),
+                       .webhook(account: "/p/alpha/.worktrees/feature", try webhook(worktree)))
+        XCTAssertEqual(webhooks.route(event(project: "/p/alpha/.worktrees/other")),
+                       .webhook(account: "/p/alpha", try webhook(alpha)))
+    }
+
+    /// The nearest listed folder decides even when its webhook is missing: no fallback to a parent's or the default.
+    func testAMissingNearestWebhookFallsBackToNoOne() throws {
+        let (webhooks, secrets, _) = make()
+        try webhooks.set(fallback, for: DiscordWebhooks.defaultAccount)
+        try webhooks.set(alpha, for: "/p/alpha")
+        try webhooks.set("https://discord.com/api/webhooks/555555555/wt-token", for: "/p/alpha/.worktrees/feature")
+        try secrets.deleteSecret(service: DiscordWebhooks.service, account: "/p/alpha/.worktrees/feature")
+        webhooks.reload()
+        guard case .none(let reason?) = webhooks.route(event(project: "/p/alpha/.worktrees/feature/src")) else {
+            return XCTFail("the worktree's missing webhook must stop its events")
+        }
+        XCTAssertTrue(reason.contains("missing"), reason)
     }
 
     func testWithNoWebhookNothingIsPosted() {

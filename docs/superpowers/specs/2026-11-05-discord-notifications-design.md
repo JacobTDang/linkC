@@ -43,7 +43,7 @@ Tasks change state in linkC and in every `linkc-mcp` process, so linkC finds the
 - **The default webhook.** Every other event goes to the default webhook, including events with no project.
 - **No webhook.** With no webhook for it, an event is not posted, and nothing else happens.
 - **No fallback from a project's own webhook.** If a project's webhook is stopped (§4.4) or its Keychain item is missing (§6), the project's events are not posted at all. They never fall back to the default webhook, which could post one project's work into another project's server. Settings shows why.
-- **Matching a project.** A project's webhook covers its folder only, matched on the canonical path, not subfolders.
+- **Matching a project.** A project's webhook covers its folder and every folder inside it, its worktrees included (`linkC/.worktrees/x` posts to linkC's webhook). Folders are compared as canonical paths, by whole path components, so `/p/alphabet` is not inside `/p/alpha`. When listed folders nest, the nearest one above the event's folder wins, and the no-fallback rule above applies to it: a nested folder whose webhook is stopped or missing posts nothing, never to its parent's webhook or the default.
 
 ## 4. The queue
 
