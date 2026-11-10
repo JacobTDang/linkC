@@ -38,4 +38,3 @@ final class ShimmerPolicyTests: XCTestCase {
         XCTAssertEqual(HairlineSweep.period, 1.6)
     }
 }
-

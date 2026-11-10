@@ -244,4 +244,3 @@ final class SessionAttentionTests: XCTestCase {
         XCTAssertEqual(session.turnStartedAt, t0.addingTimeInterval(150))
     }
 }
-
