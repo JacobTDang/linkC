@@ -188,10 +188,14 @@ final class MCPRegistrarTests: XCTestCase {
         }
     }
 
-    /// Same failure mode as above, for the TOML writer used by Codex's config.
+    /// Same failure mode as above, for the TOML writer used by Codex's config. (A directory in
+    /// the destination no longer reaches the rename here either: reading it fails first, and
+    /// `testACodexConfigPathThatIsAFolderIsNamedAndLeftAlone` covers that.)
     func testRegisterTomlServerThrowsWhenTheRenameDestinationCannotBeReplaced() throws {
         let configFile = tempDir.appendingPathComponent("blocked.toml")
-        try FileManager.default.createDirectory(at: configFile, withIntermediateDirectories: true)
+        try "model = \"gpt-5\"\n".write(to: configFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: configFile.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: configFile.path) }
 
         XCTAssertThrowsError(try MCPRegistrar.registerTomlServer(configFile: configFile, binaryPath: "/usr/local/bin/linkc-mcp")) { error in
             XCTAssertTrue("\(error)".contains("errno"), "\(error)")
@@ -200,10 +204,9 @@ final class MCPRegistrarTests: XCTestCase {
 
     /// One client's config being unwritable must not just get logged — `registerAll` must
     /// surface it, naming which client failed, so `linkc-mcp --install` can exit non-zero
-    /// instead of claiming success. Occupies `~/.claude.json` with a directory so its
-    /// `rename(2)` deterministically fails with EISDIR, the same trick
-    /// `testRegisterServerThrowsWhenTheRenameDestinationCannotBeReplaced` uses, while every
-    /// other client's real path is left free to succeed.
+    /// instead of claiming success. Occupies `~/.claude.json` with a directory, which cannot be
+    /// read as the config, so that client deterministically fails while every other client's
+    /// real path is left free to succeed.
     func testRegisterAllThrowsNamingEveryClientWhoseConfigFailed() throws {
         try FileManager.default.createDirectory(
             at: tempDir.appendingPathComponent(".claude.json"), withIntermediateDirectories: true)
@@ -265,6 +268,106 @@ final class MCPRegistrarTests: XCTestCase {
 
         let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: configFile)) as? [String: Any])
         XCTAssertNotNil((root["mcpServers"] as? [String: Any])?["linkc-multiplier"])
+    }
+
+    // MARK: - The shared writer's file handling
+
+    private func mode(of file: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        return try XCTUnwrap((attributes[.posixPermissions] as? NSNumber)?.intValue)
+    }
+
+    /// Dotfile repos link `opencode.json` to a file they keep: registration updates that file and
+    /// leaves the link a link.
+    func testASymlinkedConfigStaysALinkAndItsTargetIsUpdated() throws {
+        let dotfiles = tempDir.appendingPathComponent("dotfiles")
+        try FileManager.default.createDirectory(at: dotfiles, withIntermediateDirectories: true)
+        let kept = dotfiles.appendingPathComponent("opencode.json")
+        try #"{"model":"ollama/qwen3.8:27b-32k"}"#.write(to: kept, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: openCodeFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: openCodeFile, withDestinationURL: kept)
+
+        try MCPRegistrar.registerOpenCodeServer(configFile: openCodeFile, binaryPath: "/bin/linkc-mcp")
+
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: openCodeFile.path), kept.path)
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: kept)) as? [String: Any])
+        XCTAssertEqual(root["model"] as? String, "ollama/qwen3.8:27b-32k")
+        XCTAssertNotNil((root["mcp"] as? [String: Any])?["linkc-multiplier"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dotfiles.path), ["opencode.json"], "no temporary file left beside it")
+    }
+
+    /// A config that holds provider keys is often private to its owner; the rewrite keeps it so.
+    func testAConfigKeepsItsFileModeThroughARegistration() throws {
+        try FileManager.default.createDirectory(at: openCodeFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"provider":{"x":{"options":{"apiKey":"secret"}}}}"#.write(to: openCodeFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: openCodeFile.path)
+
+        try MCPRegistrar.registerOpenCodeServer(configFile: openCodeFile, binaryPath: "/bin/linkc-mcp")
+
+        XCTAssertNotNil(try openCodeEntry(in: openCodeFile))
+        XCTAssertEqual(try mode(of: openCodeFile), 0o600)
+    }
+
+    /// A rename that fails must not leave its temporary file in the user's config folder.
+    func testAFailedRenameLeavesNoTemporaryFileBehind() throws {
+        let configFile = tempDir.appendingPathComponent("blocked.json")
+        try "{}".write(to: configFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: configFile.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: configFile.path) }
+
+        XCTAssertThrowsError(try MCPRegistrar.registerServer(configFile: configFile, binaryPath: "/bin/linkc-mcp")) { error in
+            XCTAssertTrue("\(error)".contains("errno"), "\(error)")
+        }
+
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: tempDir.path).filter { $0.contains(".tmp.") }
+        XCTAssertEqual(leftovers, [])
+    }
+
+    /// Codex's TOML config used to be read with `try?`: a file that is not UTF-8 read as empty and
+    /// was replaced by linkC's section alone.
+    func testACodexConfigThatIsNotUTF8IsLeftUntouchedAndNamed() throws {
+        let configFile = tempDir.appendingPathComponent("config.toml")
+        let bytes = Data([0x6D, 0x6F, 0x64, 0x65, 0x6C, 0x20, 0x3D, 0x20, 0x22, 0xFF, 0xFE, 0x22, 0x0A])
+        try bytes.write(to: configFile)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerTomlServer(configFile: configFile, binaryPath: "/bin/linkc-mcp")) { error in
+            XCTAssertTrue(String(describing: error).contains(configFile.path), "\(error)")
+        }
+        XCTAssertEqual(try Data(contentsOf: configFile), bytes)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: tempDir.path), ["config.toml"])
+    }
+
+    /// A config path that holds a folder cannot be read as the config either: the registration
+    /// names it and changes nothing.
+    func testACodexConfigPathThatIsAFolderIsNamedAndLeftAlone() throws {
+        let configFile = tempDir.appendingPathComponent("config.toml")
+        try FileManager.default.createDirectory(at: configFile, withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerTomlServer(configFile: configFile, binaryPath: "/bin/linkc-mcp")) { error in
+            let message = String(describing: error)
+            XCTAssertTrue(message.contains(configFile.path) && message.contains("cannot be read"), message)
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: tempDir.path), ["config.toml"])
+    }
+
+    /// The TOML writer goes through the same writer as the JSON ones: a linked or private
+    /// `config.toml` is updated in place, not swapped for a fresh file.
+    func testACodexConfigKeepsItsLinkAndItsModeThroughARegistration() throws {
+        let dotfiles = tempDir.appendingPathComponent("dotfiles")
+        try FileManager.default.createDirectory(at: dotfiles, withIntermediateDirectories: true)
+        let kept = dotfiles.appendingPathComponent("config.toml")
+        try "model = \"gpt-5\"\n".write(to: kept, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: kept.path)
+        let configFile = tempDir.appendingPathComponent("config.toml")
+        try FileManager.default.createSymbolicLink(at: configFile, withDestinationURL: kept)
+
+        try MCPRegistrar.registerTomlServer(configFile: configFile, binaryPath: "/bin/linkc-mcp")
+
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: configFile.path), kept.path)
+        XCTAssertEqual(try mode(of: kept), 0o600)
+        let content = try String(contentsOf: kept, encoding: .utf8)
+        XCTAssertTrue(content.contains("model = \"gpt-5\""))
+        XCTAssertTrue(content.contains("[mcp_servers.linkc-multiplier]"))
     }
 
     // MARK: - OpenCode

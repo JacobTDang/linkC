@@ -28,18 +28,64 @@ public struct MCPRegistrar: Sendable {
         return object
     }
 
-    /// Writes `data` to `configFile` through a temporary file beside it and one rename.
+    /// Writes `data` to `configFile` through a temporary file beside it and one rename. A config
+    /// that is a symlink (dotfile repos keep them that way) is written through to the file it
+    /// points at, so the link stays a link, and an existing file keeps its permissions — a config
+    /// holding provider keys is often private to its owner. A write or rename that fails removes
+    /// the temporary file and rethrows.
     private static func writeAtomically(_ data: Data, to configFile: URL) throws {
-        let parentDir = configFile.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: parentDir.path) {
-            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        let target = configFile.resolvingSymlinksInPath()
+        let parentDir = target.deletingLastPathComponent()
+        if !fm.fileExists(atPath: parentDir.path) {
+            try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
         }
-        let tmpFile = parentDir.appendingPathComponent("\(configFile.lastPathComponent).tmp.\(UUID().uuidString)")
-        try data.write(to: tmpFile, options: .atomic)
-        guard rename(tmpFile.path, configFile.path) == 0 else {
-            let failure = errno
-            throw LinkCError.server("Failed to rename \(tmpFile.path) to \(configFile.path): errno \(failure)")
+        let permissions = fm.fileExists(atPath: target.path)
+            ? try fm.attributesOfItem(atPath: target.path)[.posixPermissions]
+            : nil
+        let tmpFile = parentDir.appendingPathComponent("\(target.lastPathComponent).tmp.\(UUID().uuidString)")
+        do {
+            try data.write(to: tmpFile, options: .atomic)
+            if let permissions {
+                try fm.setAttributes([.posixPermissions: permissions], ofItemAtPath: tmpFile.path)
+            }
+            guard rename(tmpFile.path, target.path) == 0 else {
+                let failure = errno
+                throw LinkCError.server("Failed to rename \(tmpFile.path) to \(target.path): errno \(failure)")
+            }
+        } catch {
+            try discard(tmpFile, after: error)
         }
+    }
+
+    /// Removes the temporary file a failed write left and rethrows `failure`; when the file cannot
+    /// be removed either, the error says so, naming it.
+    private static func discard(_ tmpFile: URL, after failure: Error) throws -> Never {
+        if FileManager.default.fileExists(atPath: tmpFile.path) {
+            do {
+                try FileManager.default.removeItem(at: tmpFile)
+            } catch {
+                throw LinkCError.server("\(failure) — and \(tmpFile.path) could not be removed: \(error.localizedDescription)")
+            }
+        }
+        throw failure
+    }
+
+    /// The text of the UTF-8 file at `configFile`; empty when there is no such file. A file that
+    /// cannot be read, or is not UTF-8, throws naming it, so no caller replaces a file it could
+    /// not read.
+    private static func readText(at configFile: URL) throws -> String {
+        guard FileManager.default.fileExists(atPath: configFile.path) else { return "" }
+        let data: Data
+        do {
+            data = try Data(contentsOf: configFile)
+        } catch {
+            throw LinkCError.server("\(configFile.path) cannot be read, so it was left untouched — \(error.localizedDescription)")
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw LinkCError.server("\(configFile.path) is not UTF-8 text linkC can read, so it was left untouched")
+        }
+        return text
     }
 
     public static func registerServer(
@@ -126,17 +172,7 @@ public struct MCPRegistrar: Sendable {
         args: [String] = [],
         env: [String: String] = [:]
     ) throws {
-        let parentDir = configFile.deletingLastPathComponent()
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: parentDir.path) {
-            try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
-        }
-
-        var content = ""
-        if fm.fileExists(atPath: configFile.path),
-           let existing = try? String(contentsOf: configFile, encoding: .utf8) {
-            content = existing
-        }
+        var content = try readText(at: configFile)
 
         let header = "[mcp_servers.\(serverName)]"
         let argsToml: String
@@ -180,12 +216,7 @@ public struct MCPRegistrar: Sendable {
             content += section + "\n"
         }
 
-        let tmpFile = parentDir.appendingPathComponent("\(configFile.lastPathComponent).tmp.\(UUID().uuidString)")
-        try content.write(to: tmpFile, atomically: true, encoding: .utf8)
-        guard rename(tmpFile.path, configFile.path) == 0 else {
-            let failure = errno
-            throw LinkCError.server("Failed to rename \(tmpFile.path) to \(configFile.path): errno \(failure)")
-        }
+        try writeAtomically(Data(content.utf8), to: configFile)
     }
 
     public static func defaultBinaryPath() -> String {
