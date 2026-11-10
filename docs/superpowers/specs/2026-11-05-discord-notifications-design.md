@@ -47,7 +47,7 @@ Tasks change state in linkC and in every `linkc-mcp` process, so linkC finds the
 
 ## 4. The queue
 
-Each webhook URL has its own `WebhookQueue`, an actor. It sends one request at a time, in order.
+Each webhook URL has its own `WebhookQueue`, a main-actor class. It sends one request at a time, in order.
 
 ### 4.1 Pacing
 
@@ -77,7 +77,7 @@ A request goes out only when all three hold:
 | 200 with a JSON body whose `id` is not empty | done; record "last posted at". Only this counts as sent (§5) |
 | 204, an empty or non-JSON body, any other 2xx | not saved: retried like a 5xx below |
 | 429 | wait (§4.1), resend the same message |
-| 404, 401, 403 | the webhook is deleted or invalid: **stop**. Drop its queue, mark it stopped in Settings with the status code, and post one macOS notification. It stays stopped until its URL is edited or **Send test** succeeds. Discord asks clients not to reuse a 404 webhook, and repeated 401/403/429 responses get the IP banned. |
+| 404, 401, 403 | the webhook is deleted or invalid: **stop**. Drop its queue, mark it stopped in Settings with the status code, and post one macOS notification. It stays stopped until its URL is set again or **Send test** is pressed, which starts it fresh. Discord asks clients not to reuse a 404 webhook, and repeated 401/403/429 responses get the IP banned. |
 | 400, 413, any other 4xx | the message is malformed, which is a linkC bug, and retrying cannot fix it: log Discord's `code` and `message`, drop that message, show the error in Settings |
 | 5xx, timeout, no network | retry the same message after 2, 4, 8, 16 and 32 s: the first attempt plus five retries. If the last retry fails too, drop it, log it, and show the error in Settings |
 
@@ -143,11 +143,11 @@ One test posts a card of each tone and one digest to the user's `#bot-preview` c
 ## 6. Settings and the Keychain
 
 - **A DISCORD section** in the Settings screen, after WATCHED SERVICES:
-  - **Default webhook:** a secure field showing only whether one is set (`••••` and the webhook's id), with **Set**, **Send test** and **Remove**.
+  - **Default webhook:** its state ("Not set", or "Webhook <id>" and its status), with **set**/**change** (a secure field, cleared once stored), **test** and **remove**.
   - **Per project:** a list of project folders, each with its webhook, **Send test** and **Remove**, and **Add project** (a folder picker).
-  - **Status per webhook:** "Posted 2m ago", "Waiting: rate limited for 4s", "Stopped: webhook deleted (404)", or the last error.
+  - **Status per webhook:** "Not posted yet", "Posted 2m ago", "Waiting 4s for Discord", "Stopped: webhook deleted (404)", or "Failed: <the last error>".
 - **URL check.** A URL is accepted only if it is `https://` on `discord.com`, `discordapp.com`, `canary.discord.com` or `ptb.discord.com`, with the path `/api/webhooks/<numeric id>/<token>`. Anything else is refused in the field, with the reason.
-- **Send test** posts one embed, "linkC is connected", through the same queue. Its outcome shows in the status.
+- **Send test** posts one card, "linkC is connected", through the same queue. Its outcome shows in the status.
 - **Storage:**
   - Each URL is a Keychain generic password, service `com.linkc.app.discord-webhook`, account `default` or the canonical project folder.
   - The list of projects that have one is kept in `AppPreferences`; that list holds no URLs.

@@ -63,7 +63,7 @@ final class HealthTransitionTests: XCTestCase {
         )
         XCTAssertEqual(up.count, 1)
         XCTAssertTrue(up[0].body.contains("back"))
-        XCTAssertEqual(up[0].tone, .done)
+        XCTAssertEqual(up[0].tone, .info, "a service back up is information: it posts silently (spec §5.3)")
     }
 
     func testStayingDownIsSilent() {
