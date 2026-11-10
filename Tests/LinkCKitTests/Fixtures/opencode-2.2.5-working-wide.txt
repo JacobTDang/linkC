@@ -1,0 +1,44 @@
+ ⠹ New session                   +
+  ┃
+  ┃  Write a 200-word story about a lighthouse keeper to story.txt.                                                     New session - 2026-11-10T17:33:57.
+  ┃  Then run wc -w story.txt and report the count.                                                                     518Z
+  ┃
+                                                                                                                        Context
+     I'll write the story first, then count the words.                                                                  23,840 tokens
+                                                                                                                        12% used
+  ┃
+  ┃  # Wrote story.txt                                                                                                  ▼ MCP
+  ┃                                                                                                                     • agent-browser             Connected
+  ┃    1 Elias had kept the light for thirty-one years, and in that time he had learned the sea's habits the way a      • code-review-graph          Disabled
+  ┃      farmer learns weather. He knew when the swells would turn glassy and indifferent, and when they would rise     • context7                  Connected
+  ┃      up angry and white.                                                                                            • figma                     Connected
+  ┃    2                                                                                                                • firecrawl                 Connected
+  ┃    3 The lamp was his only company now. Every evening at dusk he climbed the hundred and twelve steps, oil can      • github                     Disabled
+  ┃      in hand, and cleaned the great lens until it shone like a polished coin. Then he lit the wick and watched      • jobs                      Connected
+  ┃      the beam sweep out across the black water, a slow finger of light feeling its way toward ships he would        • linkc-multiplier          Connected
+  ┃      never see.
+  ┃    4
+  ┃    5 Sometimes, on clear nights, a distant horn answered him. That was enough. He would stand at the gallery
+  ┃      railing with his tea going cold and imagine the men on deck squinting toward his shore, taking their
+  ┃      bearings, correcting their course by the one steady thing in a dark and shifting world.
+  ┃    6
+  ┃    7 When the storms came he did not sleep. He sat with the machinery and listened to the wind test the tower's
+  ┃      walls, and he kept the light turning, turning, turning, because somewhere out there a stranger was
+  ┃      trusting him to be awake.
+  ┃    8
+  ┃
+
+  ┃
+  ┃  $ wc -w story.txt                                                                                                    ⬖ Getting started                ✕
+  ┃
+  ┃  199 story.txt                                                                                                          OpenCode includes free models so
+  ┃                                                                                                                         you can start immediately.
+
+     ⠼ Thinking                                                                                                             Connect from 75+ providers to
+                                                                                                                            use other models, including
+  ┃                                                                                                                         Claude, GPT, Gemini etc
+  ┃
+  ┃                                                                                                                         Connect provider        /connect
+  ┃  Build auto · DeepSeek V4.1 Flash Free OpenCode · high
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝■■■■■■ esc interrupt                                                               23.8K (12%)  ctrl+p commands    /…/65d23432-9669…/scratchpad/wide:main

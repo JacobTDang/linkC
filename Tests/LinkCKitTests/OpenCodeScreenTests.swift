@@ -68,6 +68,15 @@ final class OpenCodeScreenTests: XCTestCase {
         }
     }
 
+    /// At 160 columns OpenCode 2.2.5 draws a side panel beside the transcript, on the same rows. The
+    /// bar under the box still decides the turn. The panel's own rows can sit between the thinking row
+    /// and the box, so a wide screen may name its phrase only as "Working".
+    func testAWideScreenWithItsSidePanelReadsTheSameWay() throws {
+        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("2.2.5-idle-wide")))
+        XCTAssertNotNil(TerminalPreview.liveActivity(from: try screen("2.2.5-working-wide")))
+        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("2.2.5-done-wide")))
+    }
+
     /// OpenCode's input box carries none of the prompt markers the generic scan stops at, so a
     /// finished turn's output above it must not be read as a turn in progress.
     func testOutputAboveAFinishedTurnsInputBoxIsNotATurn() throws {
