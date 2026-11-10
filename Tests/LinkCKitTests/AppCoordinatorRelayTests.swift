@@ -64,7 +64,10 @@ final class AppCoordinatorRelayTests: XCTestCase {
         turnEndQuietPeriod: TimeInterval = 0,
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
-        userHome: URL? = nil
+        userHome: URL? = nil,
+        openCodeModels: @escaping AppCoordinator.OpenCodeModelLister = { _ in
+            AgentModelSettings.seeded.models[AgentKind.opencode.rawValue]?.values.map { $0 } ?? []
+        }
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -104,6 +107,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             injectionGap: injectionGap,
             turnEndQuietPeriod: turnEndQuietPeriod,
             now: now,
+            openCodeModels: openCodeModels,
             isWatching: { _ in false }
         )
     }
@@ -867,6 +871,30 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(coordinator.lastSpawnFailure?.agent, .codex, "the failure is recorded, not swallowed")
     }
 
+    @MainActor
+    func testALegacyOpenCodeBriefDoesNotSpawnWhenItsTierModelIsNotListed() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        var seeded = Inbox(workspacePath: ws)
+        seeded.messages = [PendingMessage(
+            id: "legacy-opencode", fromAgent: .claude, toAgent: .opencode,
+            prompt: "Old style brief", status: .queued, kind: .task)]
+        try inbox.saveRaw(seeded)
+        let coordinator = makeCoordinator(openCodeModels: { _ in ["opencode/deepseek-v4.1-flash-free"] })
+        defer { coordinator.shutdown() }
+
+        coordinator.processPendingMessages(workspacePath: ws)
+        let checked = try await waitUntil { coordinator.openCodeModelCheckCount > 0 }
+        XCTAssertTrue(checked)
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertTrue(coordinator.store.sessions.isEmpty)
+        let failure = try XCTUnwrap(coordinator.lastSpawnFailure)
+        XCTAssertEqual(failure.agent, .opencode)
+        XCTAssertTrue(failure.error.contains("opencode/big-pickle"), failure.error)
+        XCTAssertTrue(failure.error.contains("is not among the models OpenCode lists"), failure.error)
+    }
+
     /// Test 3d: A message linkC relays into a terminal is echoed straight back by the CLI. When
     /// that message quotes a limit phrase — a completion line from a peer legitimately can — the
     /// echo must not be read as this agent hitting its limit, which recorded a cooldown and
@@ -1285,6 +1313,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             agentPathResolver: { kind in kind == .grok ? scriptURL.path : nil },
             userHome: tempDir.appendingPathComponent("home"),
             modelSettings: { .seeded },
+            openCodeModels: { _ in ["opencode/big-pickle"] },
             isWatching: { _ in false }
         )
         defer { coordinator.shutdown() }
@@ -1345,10 +1374,50 @@ final class AppCoordinatorRelayTests: XCTestCase {
             coordinator.terminals.session(id: claudeSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
         }
         XCTAssertTrue(outputReady)
+        let limitScreen = try XCTUnwrap(coordinator.terminals.session(id: claudeSession.id)?.screenSnapshot())
 
-        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: claudeSession.id))
-        let copy = try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: claudeSession.id, screen: limitScreen), "the listing starts off the main actor")
+        let checked = try await waitUntil { coordinator.openCodeModelCheckCount > 0 }
+        XCTAssertTrue(checked)
+        XCTAssertEqual(coordinator.openCodeModelAvailability(in: ws, tier: .standard), .available)
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: claudeSession.id, screen: limitScreen))
+        let copy = try XCTUnwrap(inbox.load().tasks.first { $0.hop == 1 })
         XCTAssertEqual(copy.toAgent, .opencode)
+    }
+
+    @MainActor
+    func testACappedTaskDoesNotRerouteToOpenCodeWhenItsTierModelIsNotListed() async throws {
+        let ws = tempDir.path
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(
+            sink: sink,
+            models: .seeded,
+            agentPathResolver: { kind in kind == .opencode ? "/usr/bin/true" : nil },
+            openCodeModels: { _ in ["opencode/deepseek-v4.1-flash-free"] })
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ws)
+        let source = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: source.id, to: Self.turnOver)
+        let task = try inbox.createTask(
+            from: .cursor, to: .claude, tier: .standard, prompt: "Deploy service mesh", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: source.id)
+        coordinator.terminals.sendInput(sessionId: source.id, text: "Rate limit reached\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: source.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+        let limitScreen = try XCTUnwrap(coordinator.terminals.session(id: source.id)?.screenSnapshot())
+
+        XCTAssertFalse(coordinator.checkLimitsAndReroute(for: source.id, screen: limitScreen), "the main actor waits without blocking")
+        let checked = try await waitUntil { coordinator.openCodeModelCheckCount > 0 }
+        XCTAssertTrue(checked)
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: source.id, screen: limitScreen))
+
+        XCTAssertNil(try inbox.load().tasks.first { $0.hop == 1 })
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "the original remains with its assignee")
+        let reason = "opencode/big-pickle (opencode tier standard) is not among the models OpenCode lists"
+        XCTAssertTrue(try inbox.load().messages.contains { $0.kind == .notice && $0.prompt.contains(reason) })
+        XCTAssertTrue(sink.deliveries.contains { $0.body.contains(reason) })
     }
 
     /// Test 9: checkLimitsAndReroute ignores ended sessions.
@@ -2779,6 +2848,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         models.setModel("", for: .codex, tier: .light)
         models.setModel("", for: .agy, tier: .light)
         models.setModel("", for: .grok, tier: .light)
+        models.setModel("", for: .opencode, tier: .light)
         let coordinator = makeCoordinator(models: models)
         defer { coordinator.shutdown() }
 
@@ -2834,6 +2904,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         models.setModel("", for: .agy, tier: .standard)
         models.setModel("", for: .cursor, tier: .standard)
         models.setModel("", for: .grok, tier: .standard)
+        models.setModel("", for: .opencode, tier: .standard)
         let coordinator = makeCoordinator(models: models)
         defer { coordinator.shutdown() }
 
