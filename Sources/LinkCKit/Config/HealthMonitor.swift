@@ -296,7 +296,7 @@ public struct HealthChange: Equatable, Sendable {
     public let endpointId: String
     public let title: String
     public let body: String
-    /// How the change reads in Discord: down is failed, degraded needs you, back up is done.
+    /// How the change reads in Discord: down is failed, degraded needs you, back up is information.
     public let tone: LinkCEvent.Tone
 }
 
@@ -336,7 +336,7 @@ public enum HealthTransitions {
                     endpointId: endpoint.id,
                     title: endpoint.label,
                     body: "\(endpoint.label) is back up",
-                    tone: .done
+                    tone: .info
                 )
             default:
                 // ok → ok (latency drift) and any other same-kind move: not an event.

@@ -154,10 +154,17 @@ public final class DiscordWebhooks {
             }
             switch DiscordWebhookURL.parse(text) {
             case .success(let webhook): return .set(webhook)
-            case .failure(let refusal): return .unreadable("the stored webhook is not valid: \(refusal)")
+            case .failure(let refusal):
+                return unreadable(account: account, reason: "the stored webhook is not valid: \(refusal)")
             }
         } catch {
-            return .unreadable("the Keychain could not be read: \(error.localizedDescription)")
+            return unreadable(account: account, reason: "the Keychain could not be read: \(error.localizedDescription)")
         }
+    }
+
+    private func unreadable(account: String, reason: String) -> DiscordWebhookState {
+        let name = account == Self.defaultAccount ? "default" : URL(fileURLWithPath: account).lastPathComponent
+        NSLog("[linkC discord] %@: %@", name, reason)
+        return .unreadable(reason)
     }
 }

@@ -127,8 +127,8 @@ public final class AppPreferences {
         }
         let storedProjects = defaults.object(forKey: Keys.discordProjects)
         if let storedProjects, !(storedProjects is [String]) {
-            // Kept aside rather than lost: the list is the routing table, and a project dropped from it
-            // would have its events posted to the default webhook.
+            // The list is kept aside under its own key so it can be recovered, and until the projects are set
+            // again in Settings their events go to the default webhook.
             defaults.set(storedProjects, forKey: Keys.discordProjectsUnreadable)
             NSLog("[linkC] the Discord project list is unreadable, starting with none")
         }
