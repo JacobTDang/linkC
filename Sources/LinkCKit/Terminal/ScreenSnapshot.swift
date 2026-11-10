@@ -45,11 +45,6 @@ public struct ScreenSnapshot: Sendable {
         TerminalPreview.liveActivity(from: rows, agent: agent)
     }
 
-    /// A screen without session metadata uses the generic reader.
-    public func liveActivity() -> String? {
-        TerminalPreview.genericLiveActivity(from: rows)
-    }
-
     /// Whether Codex's footer says terminals it started are still running.
     public func showsBackgroundTerminals() -> Bool {
         TerminalPreview.hasBackgroundTerminals(in: rows)

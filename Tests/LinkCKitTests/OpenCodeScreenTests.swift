@@ -8,24 +8,24 @@ final class OpenCodeScreenTests: XCTestCase {
 
     func testAnIdleScreenReadsIdle() throws {
         for name in ["2.2.5-idle", "2.2.5-idle-narrow", "1.18.19-idle", "1.18.19-idle-narrow"] {
-            XCTAssertNil(TerminalPreview.liveActivity(from: try screen(name)), name)
+            XCTAssertNil(TerminalPreview.liveActivity(from: try screen(name), agent: .opencode), name)
         }
     }
 
     func testEveryWorkingStageReadsWorking() throws {
         for name in ["2.2.5-working", "2.2.5-working-narrow", "1.18.19-working", "1.18.19-working-context", "1.18.19-working-narrow"] {
-            XCTAssertEqual(TerminalPreview.liveActivity(from: try screen(name)), "Working", name)
+            XCTAssertEqual(TerminalPreview.liveActivity(from: try screen(name), agent: .opencode), "Working", name)
         }
     }
 
     /// At 46 columns, the first seconds of a 2.2.5 turn show the bar with no interrupt hint after it.
     func testTheBarAloneSaysATurnRuns() throws {
-        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("2.2.5-working-narrow-no-hint")), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("2.2.5-working-narrow-no-hint"), agent: .opencode), "Working")
     }
 
     func testTheThinkingSpinnerNamesThePhrase() throws {
-        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("2.2.5-working-thinking")), "Thinking")
-        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("1.18.19-working-thinking-narrow")), "Thinking")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("2.2.5-working-thinking"), agent: .opencode), "Thinking")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("1.18.19-working-thinking-narrow"), agent: .opencode), "Thinking")
     }
 
     /// A tool call still pending is drawn inside the "┃" block with a spinner of its own. It is part
@@ -37,7 +37,7 @@ final class OpenCodeScreenTests: XCTestCase {
         for position in [thinking + 1, edge] {
             var rows = screen
             rows.insert("  ┃  ⠋ Writing command…", at: position)
-            XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Thinking", "tool call inserted at row \(position)")
+            XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .opencode), "Thinking", "tool call inserted at row \(position)")
         }
     }
 
@@ -47,7 +47,7 @@ final class OpenCodeScreenTests: XCTestCase {
         var rows = try screen("2.2.5-working-thinking")
         let edge = try XCTUnwrap(rows.lastIndex(where: OpenCodeScreen.isInputBoxEdge))
         rows.insert(contentsOf: Array(repeating: "  ┃  and then run the tests", count: 12), at: edge - 1)
-        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Thinking")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .opencode), "Thinking")
     }
 
     /// While a turn runs, the session title row at the top of the screen carries a Braille spinner.
@@ -58,13 +58,13 @@ final class OpenCodeScreenTests: XCTestCase {
         // A wider screen echoes the prompt in two rows, not four, which brings the title near the box.
         rows.removeAll { ["┃  Then run wc -w story.txt and report the", "┃  count."].contains($0.trimmingCharacters(in: .whitespaces)) }
         XCTAssertEqual(try XCTUnwrap(rows.lastIndex(where: OpenCodeScreen.isInputBoxEdge)), 9, "rows between the title and the box")
-        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
-        XCTAssertEqual(TerminalPreview.liveActivity(from: Array(rows.dropFirst())), "Working", "the same frame without the title row")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .opencode), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: Array(rows.dropFirst()), agent: .opencode), "Working", "the same frame without the title row")
     }
 
     func testAFinishedTurnReadsIdle() throws {
         for name in ["2.2.5-done", "2.2.5-done-narrow", "1.18.19-done", "1.18.19-done-narrow"] {
-            XCTAssertNil(TerminalPreview.liveActivity(from: try screen(name)), name)
+            XCTAssertNil(TerminalPreview.liveActivity(from: try screen(name), agent: .opencode), name)
         }
     }
 
@@ -72,9 +72,9 @@ final class OpenCodeScreenTests: XCTestCase {
     /// bar under the box still decides the turn. The panel's own rows can sit between the thinking row
     /// and the box, so a wide screen may name its phrase only as "Working".
     func testAWideScreenWithItsSidePanelReadsTheSameWay() throws {
-        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("2.2.5-idle-wide")))
-        XCTAssertNotNil(TerminalPreview.liveActivity(from: try screen("2.2.5-working-wide")))
-        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("2.2.5-done-wide")))
+        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("2.2.5-idle-wide"), agent: .opencode))
+        XCTAssertNotNil(TerminalPreview.liveActivity(from: try screen("2.2.5-working-wide"), agent: .opencode))
+        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("2.2.5-done-wide"), agent: .opencode))
     }
 
     /// OpenCode's input box carries none of the prompt markers the generic scan stops at, so a
@@ -84,7 +84,7 @@ final class OpenCodeScreenTests: XCTestCase {
         let edge = try XCTUnwrap(rows.lastIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("╹") })
         rows.insert(contentsOf: ["     ~ Reading file...", "     Writing tests…", "     ⠋ Thinking", "     press esc " + "interrupt to stop"],
                     at: edge - 3)
-        XCTAssertNil(TerminalPreview.liveActivity(from: rows))
+        XCTAssertNil(TerminalPreview.liveActivity(from: rows, agent: .opencode))
     }
 
     /// The bar animates and the context size ticks while a turn runs; neither is progress.

@@ -191,14 +191,14 @@ final class TerminalSessionAgentTests: XCTestCase {
             "Some earlier output",
             "⠋ Searching 31 websites"
         ]
-        let activity = TerminalPreview.liveActivity(from: rows)
+        let activity = TerminalPreview.liveActivity(from: rows, agent: .claude)
         XCTAssertEqual(activity, "Searching 31 websites")
 
         let actionRows = [
             "Building project",
             "Running tests"
         ]
-        let actionActivity = TerminalPreview.liveActivity(from: actionRows)
+        let actionActivity = TerminalPreview.liveActivity(from: actionRows, agent: .claude)
         XCTAssertEqual(actionActivity, "Running tests")
     }
 

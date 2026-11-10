@@ -435,12 +435,6 @@ public enum TerminalPreview {
         }
         return t
     }
-
-    /// Compatibility for the dedicated row-reader tests. Session code must pass its agent kind.
-    static func liveActivity(from rows: [String]) -> String? {
-        if let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
-        return genericLiveActivity(from: rows)
-    }
 }
 
 private extension NSRegularExpression {

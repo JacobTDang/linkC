@@ -64,15 +64,15 @@ final class ScreenReadingTests: XCTestCase {
 
         XCTAssertEqual(snapshot.recentOutput(lines: 15), term.recentOutput(lines: 15))
         XCTAssertEqual(snapshot.recentRows(12), term.recentScreenRows(12))
-        XCTAssertEqual(snapshot.liveActivity(), term.liveActivityLine())
-        XCTAssertEqual(snapshot.liveActivity(), "Percolating…")
+        XCTAssertEqual(snapshot.liveActivity(agent: .codex), term.liveActivityLine())
+        XCTAssertEqual(snapshot.liveActivity(agent: .codex), "Percolating…")
         XCTAssertEqual(snapshot.progressSignature(), term.screenSignature())
         XCTAssertEqual(snapshot.showsTrustPrompt(), term.showsTrustPrompt())
     }
 
     func testAScreenNeverStartedHasNoSignatureAndABlankOneDoes() {
         XCTAssertEqual(ScreenSnapshot.none.progressSignature(), "")
-        XCTAssertNil(ScreenSnapshot.none.liveActivity())
+        XCTAssertNil(ScreenSnapshot.none.liveActivity(agent: .claude))
         XCTAssertFalse(ScreenSnapshot.none.showsTrustPrompt())
         XCTAssertNotEqual(ScreenSnapshot(rows: []).progressSignature(), "", "a started terminal with nothing on it is not the same as no terminal")
     }

@@ -277,19 +277,19 @@ final class TerminalPreviewTests: XCTestCase {
             "Running build...",
             "✻ Sautéing… (12s · esc to interrupt)",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Sautéing…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .claude), "Sautéing…")
 
         let tokenRows = [
             "Output text",
             "✳ Boondoggling… (50s · ↓2.5k tokens · thinking with xhigh effort)",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: tokenRows), "Boondoggling…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: tokenRows, agent: .claude), "Boondoggling…")
 
         let commandRows = [
             "Building target...",
             "Running swift test… (3s · esc to interrupt)",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: commandRows), "Running swift test…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: commandRows, agent: .claude), "Running swift test…")
     }
 
     func testExtractsAgyAndOtherAgentSpinners() {
@@ -297,13 +297,13 @@ final class TerminalPreviewTests: XCTestCase {
             "Some output",
             "⠋ Thinking...",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Thinking...")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .agy), "Thinking...")
 
         let runningRows = [
             "Some output",
             "⠙ Running tests...",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: runningRows), "Running tests...")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: runningRows, agent: .agy), "Running tests...")
     }
 
     func testExtractsActionEllipsisActivity() {
@@ -311,12 +311,12 @@ final class TerminalPreviewTests: XCTestCase {
             "Preparing environment",
             "Writing Sources/LinkCKit/TerminalSession.swift…",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Writing Sources/LinkCKit/TerminalSession.swift…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .claude), "Writing Sources/LinkCKit/TerminalSession.swift…")
 
         let thinkingRows = [
             "Thinking…",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: thinkingRows), "Thinking…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: thinkingRows, agent: .claude), "Thinking…")
     }
 
     func testLiveActivityIgnoresBannersAndChrome() {
@@ -327,7 +327,7 @@ final class TerminalPreviewTests: XCTestCase {
             "Context left until auto-compact: 8%",
             "❯",
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: rows))
+        XCTAssertNil(TerminalPreview.liveActivity(from: rows, agent: .claude))
     }
 
     func testLiveActivityReturnsNilWhenIdlePromptPresentAtBottom() {
@@ -336,14 +336,14 @@ final class TerminalPreviewTests: XCTestCase {
             "Here is the final output from your request.",
             "❯"
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: rowsWithPastThinking), "Past activity above an idle prompt must return nil")
+        XCTAssertNil(TerminalPreview.liveActivity(from: rowsWithPastThinking, agent: .claude), "Past activity above an idle prompt must return nil")
 
         let rowsWithPromptSpace = [
             "Writing Sources/LinkCKit/TerminalSession.swift…",
             "Done writing file.",
             "❯ "
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: rowsWithPromptSpace))
+        XCTAssertNil(TerminalPreview.liveActivity(from: rowsWithPromptSpace, agent: .claude))
     }
 
     func testLiveActivityReturnsNilForCodexIdleStartupPrompt() {
@@ -357,7 +357,7 @@ final class TerminalPreviewTests: XCTestCase {
             "  › Ask Codex to do anything",
             "  ? for shortcuts"
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: codexStartupRows), "Codex startup idle prompt must return nil")
+        XCTAssertNil(TerminalPreview.liveActivity(from: codexStartupRows, agent: .codex), "Codex startup idle prompt must return nil")
     }
 
     /// Codex shows messages queued mid-turn between its status row and the input box — captured
@@ -373,7 +373,7 @@ final class TerminalPreviewTests: XCTestCase {
             "  GPT-5.6-Luna low · ~/Projects/linkC · Run sleep command",
             "  ← for agents · ? for shortcuts",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .codex), "Working")
     }
 
     /// Codex's status bullet pulses between "•" and "◦"; either reads as working.
@@ -384,7 +384,7 @@ final class TerminalPreviewTests: XCTestCase {
             "  GPT-5.6-Sol medium · ~/Projects/linkC · Build phase B1",
             "  ← for agents · ? for shortcuts",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .codex), "Working")
     }
 
     func testLiveActivityReturnsNilForClaudeIdleBoxPromptWithPastActivity() {
@@ -396,7 +396,7 @@ final class TerminalPreviewTests: XCTestCase {
             "╰───────────────────────────────────────╯",
             "  ? for shortcuts"
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: claudeIdleRows), "Claude idle boxed prompt must return nil even if past sautéing was in recent rows")
+        XCTAssertNil(TerminalPreview.liveActivity(from: claudeIdleRows, agent: .claude), "Claude idle boxed prompt must return nil even if past sautéing was in recent rows")
     }
 
     func testExtractsCursorBrailleSpinnerActivity() {
@@ -406,21 +406,21 @@ final class TerminalPreviewTests: XCTestCase {
             "  → Add a follow-up                               ctrl+c to stop",
             "  Auto                                            Run Everything"
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: workingRows1), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: workingRows1, agent: .cursor), "Working")
 
         let workingRows2 = [
             "what is 2+2",
             "⠠⠜ Working",
             "  → Add a follow-up                               ctrl+c to stop"
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: workingRows2), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: workingRows2, agent: .cursor), "Working")
 
         let runningRows = [
             "Running that now.",
             "⠀⠞ Running  23 tokens",
             "  → Add a follow-up                               ctrl+c to stop"
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: runningRows), "Running")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: runningRows, agent: .cursor), "Running")
     }
 
     func testLiveActivityReturnsNilForCursorIdleAndFinishedPrompts() {
@@ -432,7 +432,7 @@ final class TerminalPreviewTests: XCTestCase {
             "  Auto                                    Run Everything",
             "  ~/projects/linkC · main"
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: cursorStartupRows), "Cursor initial prompt must be idle")
+        XCTAssertNil(TerminalPreview.liveActivity(from: cursorStartupRows, agent: .cursor), "Cursor initial prompt must be idle")
 
         let cursorFinishedRows = [
             "echo hello",
@@ -441,7 +441,7 @@ final class TerminalPreviewTests: XCTestCase {
             "  Auto                                    Run Everything",
             "  ~/projects/linkC · main"
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: cursorFinishedRows), "Cursor prompt without 'ctrl+c to stop' must be idle")
+        XCTAssertNil(TerminalPreview.liveActivity(from: cursorFinishedRows, agent: .cursor), "Cursor prompt without 'ctrl+c to stop' must be idle")
     }
 
     // MARK: Real screens
@@ -467,7 +467,7 @@ final class TerminalPreviewTests: XCTestCase {
             rule,
             "esc to cancel                                                                Gemini 3.8 Flash · high",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: working), "Running command...")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: working, agent: .agy), "Running command...")
     }
 
     func testLiveActivityReadsAFinishedAgyTurnAsIdleDespiteTruncatedLinesAboveTheBox() {
@@ -486,7 +486,7 @@ final class TerminalPreviewTests: XCTestCase {
             rule,
             "? for shortcuts                                                              Gemini 3.8 Flash · high",
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: finished))
+        XCTAssertNil(TerminalPreview.liveActivity(from: finished, agent: .agy))
     }
 
     func testLiveActivityReadsClaudesSpinnerAboveTheInputBoxNotItsFooter() {
@@ -504,7 +504,7 @@ final class TerminalPreviewTests: XCTestCase {
             rule,
             "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: working), "Percolating…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: working, agent: .claude), "Percolating…")
     }
 
     func testLiveActivityReadsAFinishedClaudeTurnAsIdle() {
@@ -520,7 +520,7 @@ final class TerminalPreviewTests: XCTestCase {
             rule,
             "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: finished))
+        XCTAssertNil(TerminalPreview.liveActivity(from: finished, agent: .claude))
     }
 
     /// With a status line configured, Claude drops "esc to interrupt" from its footer, so the
@@ -535,14 +535,14 @@ final class TerminalPreviewTests: XCTestCase {
             "                                                                                           ◉ xhigh · /effort",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: thinking), "Bunning…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: thinking, agent: .claude), "Bunning…")
 
         let underABanner = [
             "✶ Bunning… (3s · thinking with xhigh effort)",
             "                                         You've used 92% of your weekly limit · resets 2pm (America/Chicago)",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: underABanner), "Bunning…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: underABanner, agent: .claude), "Bunning…")
 
         let countingTokens = [
             "  Waiting 12 seconds · 7s",
@@ -551,7 +551,7 @@ final class TerminalPreviewTests: XCTestCase {
             "✽ Bunning… (12s · ↓ 417 tokens)",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: countingTokens), "Bunning…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: countingTokens, agent: .claude), "Bunning…")
 
         // Constructed: Claude's todo list renders under the spinner row.
         let withTodos = [
@@ -560,7 +560,7 @@ final class TerminalPreviewTests: XCTestCase {
             "     ☐ Write the test",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: withTodos), "Bunning…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: withTodos, agent: .claude), "Bunning…")
     }
 
     /// A narrow pane cuts off the tail of the spinner row — same as `isStatusFurniture` already
@@ -574,7 +574,7 @@ final class TerminalPreviewTests: XCTestCase {
             "✳ Bunning… (12s · ↓ 417 toke",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: truncated), "Bunning…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: truncated, agent: .claude), "Bunning…")
     }
 
     /// The truncated-row allowance only covers glyphs that never lead ordinary prose or a
@@ -589,7 +589,7 @@ final class TerminalPreviewTests: XCTestCase {
             "· parsed 12 files… (12s · ↓ 417 toke",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: truncated))
+        XCTAssertNil(TerminalPreview.liveActivity(from: truncated, agent: .claude))
     }
 
     /// The unambiguous spinner glyphs ("✢ ✳ ✶ ✻ ✽") keep the truncated-row allowance: they never
@@ -602,7 +602,7 @@ final class TerminalPreviewTests: XCTestCase {
             "✳ Bunning… (12s · ↓ 417 toke",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: truncated), "Bunning…")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: truncated, agent: .claude), "Bunning…")
     }
 
     /// "·" and "*" also lead ordinary prose and markdown bullets, not just Claude's spinner. A
@@ -617,20 +617,20 @@ final class TerminalPreviewTests: XCTestCase {
             "* Loading… (3s) — finished, see the log above",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: finishedBullet))
+        XCTAssertNil(TerminalPreview.liveActivity(from: finishedBullet, agent: .claude))
 
         let midDotProse = [
             "· parsed 12 files… (2s) and wrote the report",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: midDotProse))
+        XCTAssertNil(TerminalPreview.liveActivity(from: midDotProse, agent: .claude))
 
         let markdownBulletList = [
             "* Verified the schema matches",
             "* Ran the migration… (4s) without errors",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: markdownBulletList))
+        XCTAssertNil(TerminalPreview.liveActivity(from: markdownBulletList, agent: .claude))
     }
 
     /// The nearest glyph-led row above the box decides: a finished turn's summary has no timer.
@@ -643,10 +643,10 @@ final class TerminalPreviewTests: XCTestCase {
             "✻ Brewed for 18s · done 4:40 PM",
             rule, "❯ ", rule, footer,
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: finished))
+        XCTAssertNil(TerminalPreview.liveActivity(from: finished, agent: .claude))
 
         let noSpinnerAtAll = ["⏺ done", rule, "❯ ", rule, footer]
-        XCTAssertNil(TerminalPreview.liveActivity(from: noSpinnerAtAll))
+        XCTAssertNil(TerminalPreview.liveActivity(from: noSpinnerAtAll, agent: .claude))
     }
 
     /// Codex has no working footer: its status row sits right above the input box.
@@ -661,7 +661,7 @@ final class TerminalPreviewTests: XCTestCase {
             "› Ask Codex to do anything",
             "  gpt-5.6-sol low · ~/projects/linkC/.worktrees/state-repro · renaming... ⠋",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: justStarted), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: justStarted, agent: .codex), "Working")
 
         let withBackgroundTerminal = [
             "  Tip: New Use /fast to enable our fastest inference with increased plan usage.",
@@ -673,7 +673,7 @@ final class TerminalPreviewTests: XCTestCase {
             "› Ask Codex to do anything",
             "  gpt-5.6-sol low · ~/projects/linkC/.worktrees/state-repro · Run sleep command",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: withBackgroundTerminal), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: withBackgroundTerminal, agent: .codex), "Working")
     }
 
     func testLiveActivityReadsAFinishedCodexTurnAsIdle() {
@@ -688,7 +688,7 @@ final class TerminalPreviewTests: XCTestCase {
             "› Ask Codex to do anything",
             "  gpt-5.6-sol low · ~/projects/linkC/.worktrees/state-repro · Run sleep command",
         ]
-        XCTAssertNil(TerminalPreview.liveActivity(from: finished))
+        XCTAssertNil(TerminalPreview.liveActivity(from: finished, agent: .codex))
     }
 
     func testLiveActivitySaysWorkingWhenTheFooterDoesButNoSpinnerRowIsOnScreen() {
@@ -700,7 +700,7 @@ final class TerminalPreviewTests: XCTestCase {
             rule,
             "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
         ]
-        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .claude), "Working")
     }
 
     // MARK: Trust dialogs (captured with the app's launch flags; paths shortened)

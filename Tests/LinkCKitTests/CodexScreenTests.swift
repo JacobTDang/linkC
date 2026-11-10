@@ -10,7 +10,7 @@ final class CodexScreenTests: XCTestCase {
     /// a row under its status row. That put the tip, not the status row, next to the input box,
     /// and linkC read the turn as ended.
     func testAStatusRowWithATipUnderItStillReadsAsWorking() throws {
-        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("codex-0.159-working-tip-under-status")), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("codex-0.159-working-tip-under-status"), agent: .codex), "Working")
     }
 
     /// The tip fixture with its tip row wrapped onto `continuations` further rows, indented under
@@ -24,9 +24,9 @@ final class CodexScreenTests: XCTestCase {
     }
 
     func testAStatusRowWithAWrappedTipUnderItStillReadsAsWorking() throws {
-        XCTAssertEqual(TerminalPreview.liveActivity(from: try tipFrame(wrappedOnto: ["Vim editing in the composer."])), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: try tipFrame(wrappedOnto: ["Vim editing in the composer."]), agent: .codex), "Working")
         XCTAssertEqual(
-            TerminalPreview.liveActivity(from: try tipFrame(wrappedOnto: ["Vim editing in", "the composer."])), "Working"
+            TerminalPreview.liveActivity(from: try tipFrame(wrappedOnto: ["Vim editing in", "the composer."]), agent: .codex), "Working"
         )
     }
 
@@ -36,7 +36,7 @@ final class CodexScreenTests: XCTestCase {
         var rows = try screen("codex-0.159-turn-finished")
         let box = try XCTUnwrap(rows.firstIndex { $0.contains("Ask Codex to do anything") })
         rows.insert(contentsOf: ["  └ done", "    Vim editing in the composer."], at: box)
-        XCTAssertNil(TerminalPreview.liveActivity(from: rows))
+        XCTAssertNil(TerminalPreview.liveActivity(from: rows, agent: .codex))
     }
 
     /// Only rows under a `└` detail row are skipped as its wrapped continuation. Indented rows
@@ -44,17 +44,17 @@ final class CodexScreenTests: XCTestCase {
     /// the input box sits under.
     func testIndentedRowsWithNoDetailRowAboveThemAreNotSkipped() throws {
         var rows = try screen("codex-0.159-working-before-tip")
-        XCTAssertNotNil(TerminalPreview.liveActivity(from: rows), "the frame reads as working as captured")
+        XCTAssertNotNil(TerminalPreview.liveActivity(from: rows, agent: .codex), "the frame reads as working as captured")
         let box = try XCTUnwrap(rows.firstIndex { $0.contains("Ask Codex to do anything") })
         rows.insert(contentsOf: ["    stray indented output", "    more of it"], at: box)
-        XCTAssertNil(TerminalPreview.liveActivity(from: rows))
+        XCTAssertNil(TerminalPreview.liveActivity(from: rows, agent: .codex))
     }
 
     /// A brief pasted while Codex is still starting its tool servers sits in the input box under
     /// "Waiting for startup"; there is no status row yet. The turn has not begun, but the worker
     /// is not idle either.
     func testAnInputWaitingForStartupReadsAsWorking() throws {
-        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("codex-0.159-waiting-for-startup")), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("codex-0.159-waiting-for-startup"), agent: .codex), "Working")
     }
 
     func testTheFramesAroundThoseTwoStillReadAsWorking() throws {
@@ -64,19 +64,19 @@ final class CodexScreenTests: XCTestCase {
             "codex-0.159-working-background-terminal",
             "codex-0.159-working-narrow",
         ] {
-            XCTAssertNotNil(TerminalPreview.liveActivity(from: try screen(name)), name)
+            XCTAssertNotNil(TerminalPreview.liveActivity(from: try screen(name), agent: .codex), name)
         }
     }
 
     func testAFinishedTurnReadsAsNotWorking() throws {
-        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("codex-0.159-turn-finished")))
+        XCTAssertNil(TerminalPreview.liveActivity(from: try screen("codex-0.159-turn-finished"), agent: .codex))
     }
 
     /// A turn can end with a terminal Codex started still running: the reply is out, the status
     /// row is gone, and a footer above the input box says one is left. The worker is not idle.
     func testAFinishedTurnWithABackgroundTerminalLeftRunningShowsIt() throws {
         let rows = try screen("codex-0.159-turn-finished-background-terminal")
-        XCTAssertNil(TerminalPreview.liveActivity(from: rows), "the turn itself is over")
+        XCTAssertNil(TerminalPreview.liveActivity(from: rows, agent: .codex), "the turn itself is over")
         XCTAssertTrue(TerminalPreview.hasBackgroundTerminals(in: rows))
     }
 
