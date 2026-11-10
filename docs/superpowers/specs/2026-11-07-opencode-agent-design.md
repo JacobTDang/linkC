@@ -129,7 +129,7 @@ OpenCode is screen-read, like every agent but Claude.
 
 - **Working:** the row under the input box opens with OpenCode's 8-glyph progress bar of `⬝`/`■`. The bar alone decides, since a narrow screen can show it with no hint after it (§4.1); prose that mentions the hint does not count. The phrase is the text of the Braille spinner row right above the box, skipping the box's own `┃` rows, the `┃` transcript block above it and 1.18.19's `▣  Build · <model>` header, and never the 2.2.5 session-title row (the screen's first row, which carries a spinner all turn); with no such row it is `Working`.
 - **Done:** the bar is gone; `TurnEndDebounce` ends the turn as for the other agents.
-- **Not the generic scan:** OpenCode's input box carries none of the prompt markers the generic scan stops at, so an OpenCode screen is read only by these rules, and a finished turn's output above the box is never taken for a running one.
+- **Not the generic scan:** OpenCode's input box carries none of the prompt markers the generic scan stops at, so an OpenCode screen is read only by these rules, and a finished turn's output above the box is never taken for a running one. The OpenCode reader runs only for OpenCode sessions; every other agent's screen goes through the generic scan, whatever it looks like.
 - **Watchdog:** the bar row counts as a live row, so its animation and the ticking context size are not read as progress.
 
 The rules are tested against screens captured from the real TUI, 2.2.5 and 1.18.19, at 92 and 46 columns: idle, working stages, done.
