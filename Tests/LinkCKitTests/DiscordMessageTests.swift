@@ -1,7 +1,7 @@
 import XCTest
 @testable import LinkCKit
 
-/// The body of one webhook request in the JD LLC house style: one Components V2 card per event, a digest for
+/// The body of one webhook request in the house style: one Components V2 card per event, a digest for
 /// several, within Discord's limits (spec §4.2, §5).
 final class DiscordMessageTests: XCTestCase {
     private static let unix = 1_800_000_000

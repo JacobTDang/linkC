@@ -14,7 +14,7 @@
 - Outbound only: linkC never reads from Discord.
 - **Never log, show or notify a webhook URL.** Logs and messages name a webhook "default" or by its project folder's name. Transport errors are reported by their description only, never `String(describing:)` of a `URLError` (its `userInfo` holds the URL).
 - Sliding window: at most **5** requests per webhook in any **2 s**. Discord's `X-RateLimit-Remaining: 0` + `X-RateLimit-Reset-After`, and a 429's `retry_after`, can only make it stricter.
-- The message is the JD LLC house style (spec §5, Task 7): one Components V2 container, at most **40** components and **4000** text characters (UTF-16 units); title **100**, detail line **120**, folder name **50**, at most **4** detail lines, digest pages of at most **15** events; cut with `…`. (Tasks 1-4 first built embeds; Task 7 replaces them.)
+- The message is the house style (spec §5, Task 7): one Components V2 container, at most **40** components and **4000** text characters (UTF-16 units); title **100**, detail line **120**, folder name **50**, at most **4** detail lines, digest pages of at most **15** events; cut with `…`. (Tasks 1-4 first built embeds; Task 7 replaces them.)
 - At most **100** waiting events per webhook; the oldest are dropped and counted.
 - Retries for 5xx, timeouts and no network: **2, 4, 8, 16, 32 s** (the first attempt plus five retries).
 - 404, 401, 403 stop the webhook; 400 (and any other 4xx but 429) drops the message.
@@ -2683,7 +2683,7 @@ posting, and linkC tells you so.
 
 - [ ] **Step 5: Commit.** `feat(discord): Settings > Discord, the app's wiring, and the README`.
 
-### Task 7: Post in the JD LLC house style
+### Task 7: Post in the house style
 
 Runs after Task 5 and before Task 6.
 

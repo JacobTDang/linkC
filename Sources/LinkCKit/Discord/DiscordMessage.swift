@@ -1,6 +1,6 @@
 import Foundation
 
-/// The body of one webhook request in the JD LLC house style: one Components V2 card per event, a digest for
+/// The body of one webhook request in the house style: one Components V2 card per event, a digest for
 /// several, within Discord's limits (spec §4.2, §5). Discord counts characters in UTF-16 units, so every limit
 /// here does too.
 enum DiscordMessage {

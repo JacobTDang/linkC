@@ -84,9 +84,9 @@ A request goes out only when all three hold:
 - **Logging never includes the webhook URL.** Logs name a webhook by "default" or by its project name. A transport error is reported by its type name (and a `URLError`'s code), never by its text, which can hold the URL.
 - **No retry loop on a stopped webhook.** A stopped webhook makes no requests at all.
 
-## 5. The message: the JD LLC house style
+## 5. The message: the house style
 
-linkC posts in the JD LLC house style, the one every project on the user's Discord server uses (the user's `discord-webhook` skill, `references/house-style.md`). This section replaces the embed design of the first version of this spec. The user chose one digest card for a burst of events, and the Keychain for the URLs.
+linkC posts in the house style that the other projects posting to the same Discord server use. This section replaces the embed design of the first version of this spec. The user chose one digest card for a burst of events, and the Keychain for the URLs.
 
 **Transport:**
 - POST to the webhook URL with `with_components=true&wait=true` added as its query. Without `with_components`, Discord drops the components; without `wait`, a message Discord did not save still returns 204.
@@ -138,7 +138,7 @@ One Container, its colour that of the most serious event in it (failed, then nee
 
 ### 5.4 Live check
 
-One test posts a card of each tone and one digest to the user's `#bot-preview` channel through the real transport. It runs only when `DISCORD_PREVIEW_WEBHOOK_URL` is set, from `~/.config/jd-llc/discord-preview-webhook`, and is skipped otherwise. It asserts that each post was saved (Discord returned an id). Then someone looks at the channel before the work is called done: Discord accepting a message says nothing about how it reads.
+One test posts a card of each tone and one digest to a preview channel through the real transport. It runs only when `DISCORD_PREVIEW_WEBHOOK_URL` is set to a test channel's webhook, and is skipped otherwise. It asserts that each post was saved (Discord returned an id). Then someone looks at the channel before the work is called done: Discord accepting a message says nothing about how it reads.
 
 ## 6. Settings and the Keychain
 

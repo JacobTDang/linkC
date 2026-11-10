@@ -1,9 +1,9 @@
 import XCTest
 @testable import LinkCKit
 
-/// Posts a card of each tone and a digest to the user's #bot-preview channel through the real transport (spec §5.4).
+/// Posts a card of each tone and a digest to a preview channel through the real transport (spec §5.4).
 /// It runs only with DISCORD_PREVIEW_WEBHOOK_URL set:
-/// `DISCORD_PREVIEW_WEBHOOK_URL="$(cat ~/.config/jd-llc/discord-preview-webhook)" swift test --filter DiscordLivePreviewTests`.
+/// `DISCORD_PREVIEW_WEBHOOK_URL="<a test channel's webhook URL>" swift test --filter DiscordLivePreviewTests`.
 /// Then look at the channel: Discord saving a message says nothing about how it reads.
 final class DiscordLivePreviewTests: XCTestCase {
     func testEveryKindOfMessageIsSavedInThePreviewChannel() async throws {
