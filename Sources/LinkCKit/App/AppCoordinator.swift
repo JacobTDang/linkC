@@ -1243,7 +1243,7 @@ public final class AppCoordinator {
                 store.updateState(id: session.id, to: .ready)
             }
 
-            let liveActivity = screen.liveActivity()
+            let liveActivity = screen.liveActivity(agent: currentSession.agentKind)
             let isWorking = liveActivity != nil && !liveActivity!.isEmpty
 
             if isWorking {

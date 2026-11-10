@@ -119,7 +119,9 @@ public enum TerminalPreview {
     /// above the box. Without that marker the box ends the scan, because everything above it may
     /// be a finished turn's output.
     public static func liveActivity(from rows: [String], agent: AgentKind) -> String? {
-        if let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
+        // OpenCode's input box has none of the prompt markers the generic scan stops at, so only
+        // a session known to be OpenCode may use its dedicated reader.
+        if agent == .opencode, let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
         return genericLiveActivity(from: rows)
     }
 
