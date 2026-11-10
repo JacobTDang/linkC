@@ -118,10 +118,14 @@ public enum TerminalPreview {
     /// the footer below it is what says the turn is running, and the phrase is the spinner row
     /// above the box. Without that marker the box ends the scan, because everything above it may
     /// be a finished turn's output.
-    public static func liveActivity(from rows: [String]) -> String? {
-        // OpenCode's input box has none of the prompt markers the scan below stops at, so its
-        // screens are read on their own.
+    public static func liveActivity(from rows: [String], agent: AgentKind) -> String? {
         if let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
+        return genericLiveActivity(from: rows)
+    }
+
+    /// The pre-OpenCode reader. Kept separate so the fixture sweep can prove every other agent's
+    /// screen still reads exactly as it did before agent-kind gating.
+    static func genericLiveActivity(from rows: [String]) -> String? {
 
         let recent = Array(rows.suffix(12).reversed())
         var footerSaysWorking = false
@@ -428,6 +432,12 @@ public enum TerminalPreview {
             }
         }
         return t
+    }
+
+    /// Compatibility for the dedicated row-reader tests. Session code must pass its agent kind.
+    static func liveActivity(from rows: [String]) -> String? {
+        if let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
+        return genericLiveActivity(from: rows)
     }
 }
 
