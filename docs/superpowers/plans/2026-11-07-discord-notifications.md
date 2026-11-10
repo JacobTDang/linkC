@@ -2499,6 +2499,9 @@ The app target has no unit tests. Check it by building with no warnings, by runn
             self.discord = discord
 ```
 
+  - In `AppModel.shutdown()`, first thing: `discord?.shutdown()` (linkC is quitting: no more posts, no queue
+    left waiting on a retry).
+
 
 - [ ] **Step 2: The DISCORD section** in `Sources/linkc/Screens/SettingsScreen.swift`.
   - Add `@State private var addingDiscordProject: String?` to `SettingsScreen`.
@@ -2509,7 +2512,8 @@ The app target has no unit tests. Check it by building with no warnings, by runn
                     Text(
                         "linkC posts its events to Discord: an agent finishing or needing you, tasks, closed "
                             + "workers, rate limits and watched services. A project with its own webhook posts "
-                            + "there; everything else goes to the default. Webhook URLs stay in your Keychain."
+                            + "there; everything else goes to the default. Webhook URLs stay in your Keychain. "
+                            + "Name each webhook \u{201C}linkC\u{201D} in Discord: its posts show that name."
                     )
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.textTertiary)
@@ -2648,21 +2652,9 @@ private struct DiscordWebhookRow: View {
 }
 ```
 
-  `error.localizedDescription` must read well for a refused URL and a Keychain failure. Add to `DiscordWebhooks.swift`:
-
-```swift
-extension DiscordWebhookURL.Refusal: LocalizedError {
-    public var errorDescription: String? { description }
-}
-```
-
-  and to `SecretStore.swift`:
-
-```swift
-extension KeychainSecretStore.Failure: LocalizedError {
-    public var errorDescription: String? { description }
-}
-```
+  `error.localizedDescription` already reads well for a refused URL and a Keychain failure:
+  `DiscordWebhookURL.Refusal` and `KeychainSecretStore.Failure` conform to `LocalizedError` since Task 2. Do not
+  add those extensions again.
 
 - [ ] **Step 3: README.** After the "Opening an agent from a terminal" subsection, add:
 
@@ -2677,9 +2669,11 @@ linkC can post its events to a Discord channel, so you can follow your agents fr
 
 In Settings > Discord, paste a channel's webhook URL (Discord: channel settings > Integrations > Webhooks)
 as the default. A project can have its own webhook: its events go there instead and never to the default.
-Webhook URLs are kept in your Keychain. linkC only posts; nothing in Discord reaches your agents. Posts are
-paced to Discord's limits and grouped when many events arrive at once. A webhook that Discord reports as
-deleted stops posting, and linkC tells you so.
+Name the webhook "linkC" in Discord: its posts show that name. Webhook URLs are kept in your Keychain. linkC
+only posts; nothing in Discord reaches your agents. Each event is a small card, green when something finished,
+yellow when an agent needs you, red when something failed; information posts silently. Posts are paced to
+Discord's limits, and a burst of events arrives as one digest. A webhook that Discord reports as deleted stops
+posting, and linkC tells you so.
 ```
 
 - [ ] **Step 4: Verify.**
