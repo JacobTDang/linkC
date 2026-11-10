@@ -176,15 +176,25 @@ enum DiscordMessage {
         dropped == 1 ? "⚠️ 1 earlier event was not posted." : "⚠️ \(dropped) earlier events were not posted."
     }
 
+    static func folderName(of project: String?) -> String? {
+        guard let project else { return nil }
+        let last = URL(fileURLWithPath: project).lastPathComponent
+        guard !last.isEmpty else { return nil }
+        return escape(last, limit: maxFolderName)
+    }
+
     static func postURL(for webhook: URL) -> URL {
         guard var components = URLComponents(url: webhook, resolvingAgainstBaseURL: false) else {
-            return webhook
+            preconditionFailure("invalid webhook URL for postURL")
         }
-        var items = components.queryItems ?? []
+        var items = components.queryItems?.filter { $0.name != "with_components" && $0.name != "wait" } ?? []
         items.append(URLQueryItem(name: "with_components", value: "true"))
         items.append(URLQueryItem(name: "wait", value: "true"))
         components.queryItems = items
-        return components.url ?? webhook
+        guard let url = components.url else {
+            preconditionFailure("could not construct postURL")
+        }
+        return url
     }
 
     static func size(_ payload: Payload) -> (components: Int, characters: Int) {
@@ -250,11 +260,10 @@ enum DiscordMessage {
                 children.append(.text(droppedLine(dropped)))
             }
             children.append(.separator)
-            if let project = event.project {
-                let folder = escape(URL(fileURLWithPath: project).lastPathComponent, limit: maxFolderName)
-                children.append(.text("-# linkC · \(folder) · \(timestamp(event.at))"))
+            if let folder = folderName(of: event.project) {
+                children.append(.text("-# \(folder) · \(timestamp(event.at))"))
             } else {
-                children.append(.text("-# linkC · \(timestamp(event.at))"))
+                children.append(.text("-# \(timestamp(event.at))"))
             }
             let payload = Payload(flags: flags(for: [event]), container: .container(accentColor: color(for: event.tone), children))
             try check(payload)
@@ -268,22 +277,14 @@ enum DiscordMessage {
         func buildDigestContainer(
             pageEvents: [LinkCEvent],
             totalEvents: Int,
-            pageIndex: Int,
-            totalPages: Int,
-            isFirstPage: Bool,
-            isCandidateCheck: Bool
+            suffix: String,
+            isFirstPage: Bool
         ) -> Component {
-            var headline = "## 📋 \(totalEvents) linkC events"
-            if isCandidateCheck {
-                headline += " (99/99)"
-            } else if totalPages > 1 {
-                headline += " (\(pageIndex + 1)/\(totalPages))"
-            }
+            let headline = "## 📋 \(totalEvents) linkC events\(suffix)"
             var children: [Component] = [.text(headline)]
             for e in pageEvents {
                 var line = "\(emoji(for: e.tone)) **\(escape(e.title, limit: maxTitle))**"
-                if let project = e.project {
-                    let folder = escape(URL(fileURLWithPath: project).lastPathComponent, limit: maxFolderName)
+                if let folder = folderName(of: e.project) {
                     line += " · \(folder)"
                 }
                 if let firstDetail = detailLines(for: e.body).first {
@@ -295,8 +296,11 @@ enum DiscordMessage {
                 children.append(.text(droppedLine(dropped)))
             }
             children.append(.separator)
-            let newestDate = pageEvents.map(\.at).max() ?? Date()
-            children.append(.text("-# linkC · \(timestamp(newestDate))"))
+            // A digest page carries at least one event (maxEventsPerPage is 15), so max() is never nil.
+            guard let newestDate = pageEvents.map(\.at).max() else {
+                preconditionFailure("a digest page has at least one event")
+            }
+            children.append(.text("-# \(timestamp(newestDate))"))
             return .container(accentColor: digestAccent(for: pageEvents), children)
         }
 
@@ -306,10 +310,8 @@ enum DiscordMessage {
             let testContainer = buildDigestContainer(
                 pageEvents: testEvents,
                 totalEvents: events.count,
-                pageIndex: 0,
-                totalPages: 99,
-                isFirstPage: isFirstPage,
-                isCandidateCheck: true
+                suffix: " (99/99)",
+                isFirstPage: isFirstPage
             )
             let payload = Payload(flags: flags(for: testEvents), container: testContainer)
             let (comps, chars) = size(payload)
@@ -336,13 +338,12 @@ enum DiscordMessage {
 
         var result: [Page] = []
         for (index, pageEvents) in pagesEvents.enumerated() {
+            let suffix = pagesEvents.count > 1 ? " (\(index + 1)/\(pagesEvents.count))" : ""
             let container = buildDigestContainer(
                 pageEvents: pageEvents,
                 totalEvents: events.count,
-                pageIndex: index,
-                totalPages: pagesEvents.count,
-                isFirstPage: index == 0,
-                isCandidateCheck: false
+                suffix: suffix,
+                isFirstPage: index == 0
             )
             let payload = Payload(flags: flags(for: pageEvents), container: container)
             try check(payload)

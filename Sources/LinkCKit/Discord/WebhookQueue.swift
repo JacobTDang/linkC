@@ -93,6 +93,9 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
     private func drain() async {
         defer { runner = nil }
         while !cancelled, !pending.isEmpty, !isStopped, !Task.isCancelled {
+            await waitForTurn()
+            guard !cancelled, !Task.isCancelled, !isStopped, !pending.isEmpty else { return }
+            // Taken now, as it goes: everything that arrived during the wait rides along.
             let events = pending
             pending.removeAll()
             let carriedDropped = dropped
@@ -193,8 +196,17 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
         guard let json = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any] else {
             return base
         }
-        if let code = json["code"], let message = json["message"] as? String {
+        let code = json["code"]
+        let rawMessage = json["message"] as? String
+        let message = rawMessage.map { msg in
+            msg.count > 200 ? String(msg.prefix(199)) + "…" : msg
+        }
+        if let code, let message {
             return "\(base): code \(code), \(message)"
+        } else if let message {
+            return "\(base): \(message)"
+        } else if let code {
+            return "\(base): code \(code)"
         }
         return base
     }

@@ -30,7 +30,7 @@ public protocol WebhookTransport: Sendable {
 }
 
 /// The real transport: an ephemeral session, a 10 s timeout, and no redirects (a webhook that
-/// redirects is not Discord's). Errors are reported by their description only: a `URLError`'s
+/// redirects is not Discord's). Errors are reported by type (`describe`): a `URLError`'s
 /// `userInfo` holds the URL, which is a secret.
 public struct URLSessionWebhookTransport: WebhookTransport {
     public struct Failure: Error, LocalizedError {
@@ -38,7 +38,7 @@ public struct URLSessionWebhookTransport: WebhookTransport {
     }
 
     /// A transport error by its type (and a URLError's code), never by its text, which can hold the URL.
-    public static func describe(_ error: Error) -> String {
+    static func describe(_ error: Error) -> String {
         if let urlError = error as? URLError {
             let code = urlError.errorCode
             let words: String? = switch urlError.code {
