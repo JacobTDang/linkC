@@ -84,6 +84,21 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.markMessageDelivered(id: "non-existent-id"))
     }
 
+    func testMarkMessageFailedLeavesThePendingQueueWithoutBeingDelivered() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let failing = try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "Task 1")
+        let other = try store.enqueue(from: .cursor, to: .agy, kind: .peerNote, body: "Task 2")
+
+        try store.markMessageFailed(id: failing.id)
+
+        let messages = try store.load().messages
+        XCTAssertEqual(messages.first { $0.id == failing.id }?.status, .failed)
+        XCTAssertNil(messages.first { $0.id == failing.id }?.deliveredAt, "a failed message was never delivered")
+        XCTAssertEqual(messages.first { $0.id == other.id }?.status, .queued)
+        XCTAssertEqual(try store.fetchPending().map(\.id), [other.id])
+        XCTAssertThrowsError(try store.markMessageFailed(id: "non-existent-id"))
+    }
+
     func testRecordLimitAndIsAgentLimitedWithCooldownExpiration() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
 

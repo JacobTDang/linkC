@@ -27,7 +27,7 @@ extension AppCoordinator {
                     continue
                 case .available:
                     break
-                case .unavailable(let reason):
+                case .refused(let reason), .uncheckable(let reason):
                     do {
                         try openRequests.withdraw(request.id)
                         try openRequests.answer(request.id, with: .refused(reason))

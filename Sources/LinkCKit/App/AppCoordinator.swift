@@ -29,7 +29,12 @@ public final class AppCoordinator {
     enum OpenCodeModelAvailability: Equatable {
         case checking
         case available
-        case unavailable(String)
+        /// A permanent answer: no model is configured for the tier, or the model is not among those
+        /// OpenCode lists.
+        case refused(String)
+        /// The listing itself failed (OpenCode missing, a non-zero exit, a timeout, no models), so
+        /// nothing is known about the model.
+        case uncheckable(String)
     }
 
     public let store = SessionStore()
@@ -109,7 +114,12 @@ public final class AppCoordinator {
     private var openCodeModelListings: [String: OpenCodeModelListing] = [:]
     private var openCodeModelChecksInFlight: Set<String> = []
     static let openCodeModelListingMaxAge: TimeInterval = 5
+    /// A failed listing is kept longer, so a broken OpenCode is listed at most once a minute per folder.
+    static let openCodeModelFailedListingMaxAge: TimeInterval = 60
     var openCodeModelCheckCount = 0
+    /// OpenCode refusals already reported, one per queued task or message, so a pass that meets the
+    /// same one again says nothing. Pruned by the dispatch passes to what is still queued.
+    var openCodeRefusalsReported: Set<OpenCodeRefusalKey> = []
     /// Lists OpenCode's sessions as `opencode session list --format json --standalone` run in a
     /// folder prints them. A seam, so a test can play the listing; the real one runs off the main thread.
     var openCodeSessionList: @Sendable (_ executable: String, _ folder: String) async throws -> String = {
@@ -332,19 +342,21 @@ public final class AppCoordinator {
 
     func openCodeModelAvailability(in folder: String, tier: ModelTier) -> OpenCodeModelAvailability {
         guard let model = resolvedModel(for: .opencode, tier: tier) else {
-            return .unavailable("no model configured for opencode tier \(tier.rawValue) — set it in linkC's Settings > Models")
+            return .refused("no model configured for opencode tier \(tier.rawValue) — set it in linkC's Settings > Models")
         }
         let norm = ProjectPath.canonical(folder)
-        if let listing = openCodeModelListings[norm],
-           now().timeIntervalSince(listing.checkedAt) <= Self.openCodeModelListingMaxAge {
+        if let listing = openCodeModelListings[norm] {
+            let age = now().timeIntervalSince(listing.checkedAt)
             switch listing.result {
-            case .success(let models):
+            case .success(let models) where age <= Self.openCodeModelListingMaxAge:
                 guard models.contains(model) else {
-                    return .unavailable("\(model) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings")
+                    return .refused("\(model) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings")
                 }
                 return .available
-            case .failure(let reason):
-                return .unavailable("could not check opencode tier \(tier.rawValue)'s model \(model) against the models OpenCode lists — \(reason)")
+            case .failure(let reason) where age <= Self.openCodeModelFailedListingMaxAge:
+                return .uncheckable("could not check opencode tier \(tier.rawValue)'s model \(model) against the models OpenCode lists — \(reason)")
+            case .success, .failure:
+                break
             }
         }
         if openCodeModelChecksInFlight.insert(norm).inserted {
