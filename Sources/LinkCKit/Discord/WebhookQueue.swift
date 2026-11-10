@@ -27,6 +27,7 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
 
     let name: String
     let url: URL
+    private let postURL: URL
     private let transport: WebhookTransport
     private let clock: C
     private let wallClock: () -> Date
@@ -49,6 +50,7 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
     init(name: String, url: URL, transport: WebhookTransport, clock: C, wallClock: @escaping () -> Date = Date.init) {
         self.name = name
         self.url = url
+        self.postURL = DiscordMessage.postURL(for: url)
         self.transport = transport
         self.clock = clock
         self.wallClock = wallClock
@@ -91,23 +93,33 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
     private func drain() async {
         defer { runner = nil }
         while !cancelled, !pending.isEmpty, !isStopped, !Task.isCancelled {
-            await waitForTurn()
-            guard !cancelled, !Task.isCancelled, !isStopped, !pending.isEmpty else { return }
-            // Packed now, as it goes: everything that arrived during the wait rides along.
-            let (payload, taken) = DiscordMessage.batch(pending, dropped: dropped)
-            let carried = taken + dropped
-            pending.removeFirst(taken)
+            let events = pending
+            pending.removeAll()
+            let carriedDropped = dropped
             dropped = 0
-            let body: Data
+            let pages: [DiscordMessage.Page]
             do {
-                body = try DiscordMessage.encode(payload)
+                pages = try DiscordMessage.pages(events, dropped: carriedDropped)
             } catch {
-                NSLog("[linkC discord] %@: a message could not be encoded — %@", name, error.localizedDescription)
-                status = .failed("a message could not be encoded: \(error.localizedDescription)", at: wallClock())
-                dropped += carried
+                NSLog("[linkC discord] %@: a message could not be built — %@", name, error.localizedDescription)
+                status = .failed("a message could not be built: \(error.localizedDescription)", at: wallClock())
+                dropped += events.count + carriedDropped
                 continue
             }
-            await deliver(body, carrying: carried)
+            for (index, page) in pages.enumerated() {
+                guard !cancelled, !isStopped, !Task.isCancelled else { return }
+                let carried = page.eventCount + (index == 0 ? carriedDropped : 0)
+                let body: Data
+                do {
+                    body = try DiscordMessage.encode(page.payload)
+                } catch {
+                    NSLog("[linkC discord] %@: a message could not be built — %@", name, error.localizedDescription)
+                    status = .failed("a message could not be built: \(error.localizedDescription)", at: wallClock())
+                    dropped += carried
+                    continue
+                }
+                await deliver(body, carrying: carried)
+            }
         }
     }
 
@@ -121,7 +133,7 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
             pacer.recordSend(at: clock.now)
             let response: WebhookResponse
             do {
-                response = try await transport.post(body, to: url)
+                response = try await transport.post(body, to: postURL)
                 guard !cancelled else { return }
             } catch {
                 guard !cancelled else { return }
@@ -135,10 +147,16 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
             if let exhausted = limits.exhaustedFor {
                 pacer.block(until: clock.now.advanced(by: exhausted))
             }
-            switch response.status {
-            case 200..<300:
+            if response.savedMessageID != nil {
                 status = .posted(at: wallClock())
                 return
+            }
+            switch response.status {
+            case 200..<300:
+                guard await retry(&failures, because: "Discord answered \(response.status) without saving the message") else {
+                    if !cancelled { dropped += carried }
+                    return
+                }
             case 429:
                 let wait = limits.retryAfter ?? DiscordRateLimit.defaultRetryAfter
                 pacer.block(until: clock.now.advanced(by: wait))
@@ -156,9 +174,9 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
                 dropped += carried
                 return
             case 400..<500:
-                let detail = String(decoding: response.body.prefix(500), as: UTF8.self)
-                NSLog("[linkC discord] %@: Discord refused a message (%ld) — %@", name, response.status, detail)
-                status = .failed("Discord refused a message (\(response.status)): \(detail)", at: wallClock())
+                let text = Self.refusal(for: response)
+                NSLog("[linkC discord] %@: %@", name, text)
+                status = .failed(text, at: wallClock())
                 dropped += carried
                 return
             default:
@@ -168,6 +186,17 @@ final class WebhookQueue<C: Clock> where C.Duration == Duration {
                 }
             }
         }
+    }
+
+    private static func refusal(for response: WebhookResponse) -> String {
+        let base = "Discord refused a message (\(response.status))"
+        guard let json = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any] else {
+            return base
+        }
+        if let code = json["code"], let message = json["message"] as? String {
+            return "\(base): code \(code), \(message)"
+        }
+        return base
     }
 
     /// Waits out the next retry delay. False once every delay was used: the message is dropped.
