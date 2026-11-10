@@ -27,6 +27,31 @@ final class CodexScreenTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
     }
 
+    /// A limit warning between the status row and a tip: the walk passes it on its way to the status row.
+    func testALimitWarningAboveATipStillReadsAsWorking() throws {
+        var rows = try screen("codex-0.159-working-tip-under-status")
+        let tip = try XCTUnwrap(rows.firstIndex { $0.contains("└ Tip:") })
+        rows.insert("                                        ⚠ 5h limit: 27% left · resets at 5:51 AM · /status", at: tip)
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+    }
+
+    /// A tip wrapped onto three rows and a limit warning: four rows under the status row.
+    func testAWrappedTipAndALimitWarningStillReadAsWorking() throws {
+        var rows = try tipFrame(wrappedOnto: ["Vim editing in", "the composer."])
+        let box = try XCTUnwrap(rows.firstIndex { $0.contains("Ask Codex to do anything") })
+        rows.insert("                                        ⚠ 5h limit: 27% left · resets at 5:51 AM · /status", at: box)
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+    }
+
+    /// A terminal can draw the warning sign with its emoji variation selector (U+26A0 U+FE0F).
+    func testALimitWarningWithTheEmojiFormStillReadsAsWorking() throws {
+        let rows = try screen("codex-0.163-working-limit-warning").map {
+            $0.replacingOccurrences(of: "\u{26A0} 5h limit", with: "\u{26A0}\u{FE0F} 5h limit")
+        }
+        XCTAssertTrue(rows.contains { $0.contains("\u{26A0}\u{FE0F} 5h limit") })
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+    }
+
     /// A finished turn with a limit warning row above the input box still reads as not working.
     func testAFinishedTurnWithALimitWarningStillReadsAsNotWorking() throws {
         var rows = try screen("codex-0.159-turn-finished")
