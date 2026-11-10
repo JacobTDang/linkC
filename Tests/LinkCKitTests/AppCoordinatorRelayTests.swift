@@ -1312,13 +1312,13 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let ws = tempDir.path
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
-            try? "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n".write(to: scriptURL, atomically: true, encoding: .utf8)
-            var attrs = (try? FileManager.default.attributesOfItem(atPath: scriptURL.path)) ?? [:]
+            try "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n".write(to: scriptURL, atomically: true, encoding: .utf8)
+            var attrs = try FileManager.default.attributesOfItem(atPath: scriptURL.path)
             attrs[.posixPermissions] = 0o755
-            try? FileManager.default.setAttributes(attrs, ofItemAtPath: scriptURL.path)
+            try FileManager.default.setAttributes(attrs, ofItemAtPath: scriptURL.path)
         }
         let settingsDir = tempDir.appendingPathComponent("settings_opencode_reroute_test")
-        try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         let coordinator = AppCoordinator(
             terminals: TerminalSessionManager(),
             hookServer: HookServer.forTesting(),

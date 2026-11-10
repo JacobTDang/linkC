@@ -40,6 +40,8 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
     /// `cursor-agent models` (2026-10-17); Grok runs on the Cursor plan. An empty entry means that tier
     /// is unconfigured and delegation refuses loudly. All are editable in settings. The opencode ids are
     /// OpenCode's free models as `opencode models` lists them; each answered a live prompt (2026-11-07).
+    /// Free models come and go: `opencode/crouton-alpha-free` was absent from `opencode models --standalone`
+    /// on 2026-11-09, so a delegation at the deep tier is refused until the tier is set to a listed model.
     public static let seeded = AgentModelSettings(
         models: [
             AgentKind.claude.rawValue: ["light": "haiku", "standard": "sonnet", "deep": "opus"],

@@ -1,8 +1,8 @@
 import XCTest
 @testable import LinkCKit
 
-/// OpenCode through linkC's tool server: its place in every list of agents, and (Task 7) the
-/// checks that keep a task off a model OpenCode no longer offers.
+/// OpenCode through linkC's tool server: its place in every list of agents, and the checks that
+/// keep a task off a model OpenCode no longer offers.
 final class MCPServerOpenCodeTests: XCTestCase {
     private var tempDir: URL!
 

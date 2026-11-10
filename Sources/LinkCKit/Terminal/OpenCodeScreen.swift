@@ -5,9 +5,10 @@ import Foundation
 /// footer opens with an 8-glyph progress bar of "⬝"/"■" — followed by the interrupt hint, though a
 /// narrow screen can show the bar alone; once the turn ends, the footer shows the folder path.
 ///
-/// While the model thinks, a Braille spinner row sits right above the box and its turn header. The
-/// session title row, the screen's first row, carries a spinner of its own all through a turn, and
-/// a tool call still pending draws one inside the "┃" block; neither is the thinking row.
+/// While the model thinks, a Braille spinner row sits right above the box and its turn header. On
+/// 2.2.5 the session title row, the screen's first row, carries a spinner of its own all through a
+/// turn (1.18.19 has no title row), and a tool call still pending draws one inside the "┃" block;
+/// neither is the thinking row.
 enum OpenCodeScreen {
     enum Turn: Equatable {
         case idle
@@ -48,8 +49,8 @@ enum OpenCodeScreen {
     /// to the box and its turn header are skipped: each opens with "┃" (the box, and the transcript
     /// block directly above it, where a pending tool call's own spinner sits) or with "▣" (the
     /// assistant header "▣  Build · <model>" that OpenCode 1.18.19 draws between the spinner row and
-    /// the box). The next row up is the only candidate. The screen's first row is the session title,
-    /// so it is never one, however few rows sit between it and the box.
+    /// the box). The next row up is the only candidate. On 2.2.5 the screen's first row is the session
+    /// title, so the first row is never one, however few rows sit between it and the box.
     private static func thinkingPhrase(above edge: Int, in rows: [String]) -> String? {
         guard let candidate = rows[..<edge].lastIndex(where: { !isBoxFurniture($0) }), candidate > 0 else { return nil }
         let text = TerminalPreview.visibleText(rows[candidate])
