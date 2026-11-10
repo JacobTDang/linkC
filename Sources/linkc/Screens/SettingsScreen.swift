@@ -165,12 +165,13 @@ struct SettingsScreen: View {
                         DiscordWebhookRow(discord: discord, account: DiscordWebhooks.defaultAccount, title: "Default")
                         ForEach(discord.webhooks.projects, id: \.self) { folder in
                             DiscordWebhookRow(discord: discord, account: folder,
-                                              title: URL(fileURLWithPath: folder).lastPathComponent)
+                                              title: (folder as NSString).lastPathComponent)
                         }
                         if let folder = addingDiscordProject, !discord.webhooks.projects.contains(folder) {
                             DiscordWebhookRow(discord: discord, account: folder,
-                                              title: URL(fileURLWithPath: folder).lastPathComponent,
+                                              title: (folder as NSString).lastPathComponent,
                                               opensEditing: true, onDone: { addingDiscordProject = nil })
+                                .id(folder)
                         }
                         HStack {
                             QuietLink("Add project…") { addDiscordProject() }
@@ -227,6 +228,7 @@ struct SettingsScreen: View {
     }
 
     private func addDiscordProject() {
+        NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -234,7 +236,13 @@ struct SettingsScreen: View {
         panel.prompt = "Choose"
         panel.message = "Choose the project folder whose events go to a webhook of their own"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        addingDiscordProject = ProjectPath.canonical(url.path)
+        let folder = ProjectPath.canonical(url.path)
+        if model.discord?.webhooks.projects.contains(folder) == true {
+            errorText = "This project already has a webhook."
+        } else {
+            errorText = nil
+            addingDiscordProject = folder
+        }
     }
 
     /// Add app…: pick a folder, prefill from its own `.linkc/app.json` when it has one and it

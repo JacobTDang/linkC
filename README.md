@@ -153,6 +153,15 @@ add `--task` to hand the prompt off as a task: the new session is a worker it ca
 The task is recorded in the folder you run the command from, so an agent hands work off from the
 folder it started in: that is the folder its `linkc_get_task` reads.
 
+When an agent hits its usage limit, its current task moves to another available agent — never
+back to the one that gave it — and the limited agent rests until it actually recovers. linkC
+prefers real evidence over a guess: an already-known reset time from the agent's own usage
+window, or a time the limit message itself states ("try again at 3:05 PM", "in 2h 10m"), and
+only falls back to a fixed cooldown when neither is available. Separately, linkC watches for a
+task that stalls: no start after 10 minutes, a question left unanswered for 5 minutes, or no
+screen change for 15 minutes. When one of those trips, linkC tells both you and the agent that
+handed off the task.
+
 ### Discord
 
 linkC can post its events to a Discord channel, so you can follow your agents from your phone:
@@ -168,15 +177,6 @@ only posts; nothing in Discord reaches your agents. Each event is a small card, 
 yellow when an agent needs you, red when something failed; information posts silently. Posts are paced to
 Discord's limits, and a burst of events arrives as one digest. A webhook that Discord reports as deleted stops
 posting, and linkC tells you so.
-
-When an agent hits its usage limit, its current task moves to another available agent — never
-back to the one that gave it — and the limited agent rests until it actually recovers. linkC
-prefers real evidence over a guess: an already-known reset time from the agent's own usage
-window, or a time the limit message itself states ("try again at 3:05 PM", "in 2h 10m"), and
-only falls back to a fixed cooldown when neither is available. Separately, linkC watches for a
-task that stalls: no start after 10 minutes, a question left unanswered for 5 minutes, or no
-screen change for 15 minutes. When one of those trips, linkC tells both you and the agent that
-handed off the task.
 
 ### Usage and limits
 
@@ -212,8 +212,8 @@ is active, and that session's tab is selected. Click a notification to jump to i
 
 - **Tool servers** — your Docker containers and Compose projects: start, stop, restart, and open
   their logs in a terminal.
-- **Settings** — launch at login, the keyboard shortcut, per-tier models, the usage footer, and
-  watched endpoints.
+- **Settings** — launch at login, the keyboard shortcut, per-tier models, the usage footer,
+  watched endpoints, and Discord webhooks.
 - **Servers** (sidebar) — your running Docker servers.
 - **Cloud** (sidebar) — your Oracle Cloud instances, Supabase projects, and watched endpoints.
 
@@ -342,6 +342,7 @@ swift test                                     # run the unit and integration te
 | `Sources/LinkCKit/Blackboard` | The shared state of a project: the inbox, tasks, messages, notes and handoffs. |
 | `Sources/LinkCKit/Board` | The Board model: edits, merges, layout, arrow routing, component kinds and logos. |
 | `Sources/LinkCKit/Config` | Integrations: Docker, Oracle Cloud, Supabase, MCP server health, skills and watched endpoints. |
+| `Sources/LinkCKit/Discord` | Discord: events, webhook URLs in the Keychain, the paced queue and the message cards. |
 | `Sources/LinkCKit/Core` | Domain models, agent kinds, model tiers, the session store and project grouping. |
 | `Sources/LinkCKit/Git` | The Git commands for verified tasks. |
 | `Sources/LinkCKit/Hooks` | Claude Code hooks: the event decoder, the local HTTP server and the settings composer. |
