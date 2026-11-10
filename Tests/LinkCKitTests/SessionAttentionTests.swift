@@ -188,4 +188,43 @@ final class SessionAttentionTests: XCTestCase {
         XCTAssertNotEqual(s2, s3)
         XCTAssertNotEqual(s1, s3)
     }
+
+    /// A permission prompt answered mid-turn is still the same turn: the clock counts from the prompt the user
+    /// sent, not from the answer. A new prompt starts a new turn.
+    func testTheTurnClockSurvivesAnAnsweredPermissionPrompt() {
+        var session = Session(id: "s1", cwd: "/p", title: "p", state: .ready, stateChangedAt: t0)
+        func apply(_ kind: HookEventKind, at seconds: TimeInterval) {
+            session = SessionReducer.apply(
+                HookEvent(kind: kind, linkcSessionId: "s1", claudeSessionId: "c1", cwd: "/p"),
+                to: session, now: t0.addingTimeInterval(seconds)).session
+        }
+        apply(.userPromptSubmit, at: 10)
+        apply(.notificationPermission, at: 100)
+        apply(.toolFinished, at: 130)
+        XCTAssertEqual(session.state, .working)
+        XCTAssertEqual(session.turnStartedAt, t0.addingTimeInterval(10))
+        let now = t0.addingTimeInterval(195)
+        XCTAssertEqual(SessionAttention().status(for: session, onScreen: false, rateLimited: false, now: now).text(now: now),
+                       "3m 05s")
+
+        apply(.stop, at: 200)
+        apply(.userPromptSubmit, at: 300)
+        XCTAssertEqual(session.turnStartedAt, t0.addingTimeInterval(300), "a new prompt is a new turn")
+    }
+
+    /// Agents read off the screen change state through the store, not hooks: the same rule holds there.
+    func testTheStoreKeepsTheTurnClockAcrossAPermissionPrompt() throws {
+        let store = SessionStore()
+        let id = store.create(cwd: "/p", title: "p", agentKind: .codex).id
+        store.updateState(id: id, to: .working)
+        let started = try XCTUnwrap(store.session(id: id)?.turnStartedAt)
+        store.updateState(id: id, to: .waitingPermission)
+        store.updateState(id: id, to: .working)
+        XCTAssertEqual(store.session(id: id)?.turnStartedAt, started)
+
+        store.updateState(id: id, to: .finished)
+        store.updateState(id: id, to: .working)
+        let next = try XCTUnwrap(store.session(id: id))
+        XCTAssertEqual(next.turnStartedAt, next.stateChangedAt, "a turn after a finished one starts when it starts")
+    }
 }
