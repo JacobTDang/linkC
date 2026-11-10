@@ -28,6 +28,40 @@ final class OpenCodeScreenTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.liveActivity(from: try screen("1.18.19-working-thinking-narrow")), "Thinking")
     }
 
+    /// A tool call still pending is drawn inside the "┃" block with a spinner of its own. It is part
+    /// of the transcript, so it never names the phrase, wherever in the block it sits.
+    func testAPendingToolCallInTheBoxNeverNamesThePhrase() throws {
+        let screen = try screen("2.2.5-working-thinking")
+        let thinking = try XCTUnwrap(screen.firstIndex { $0.trimmingCharacters(in: .whitespaces) == "⠋ Thinking" })
+        let edge = try XCTUnwrap(screen.lastIndex(where: OpenCodeScreen.isInputBoxEdge))
+        for position in [thinking + 1, edge] {
+            var rows = screen
+            rows.insert("  ┃  ⠋ Writing command…", at: position)
+            XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Thinking", "tool call inserted at row \(position)")
+        }
+    }
+
+    /// The box grows tall when the model row wraps or a prompt is queued in it; the thinking row
+    /// stays right above the whole box, however many rows it has.
+    func testATallBoxDoesNotHideTheThinkingRow() throws {
+        var rows = try screen("2.2.5-working-thinking")
+        let edge = try XCTUnwrap(rows.lastIndex(where: OpenCodeScreen.isInputBoxEdge))
+        rows.insert(contentsOf: Array(repeating: "  ┃  and then run the tests", count: 12), at: edge - 1)
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Thinking")
+    }
+
+    /// While a turn runs, the session title row at the top of the screen carries a Braille spinner.
+    /// It is the screen's first row, never the thinking row, however few rows sit between it and the box.
+    func testTheSessionTitleIsNeverThePhrase() throws {
+        var rows = try screen("2.2.5-working-narrow-no-hint")
+        XCTAssertTrue(try XCTUnwrap(rows.first).trimmingCharacters(in: .whitespaces).hasPrefix("⠋"), "no spinner on the title row")
+        // A wider screen echoes the prompt in two rows, not four, which brings the title near the box.
+        rows.removeAll { ["┃  Then run wc -w story.txt and report the", "┃  count."].contains($0.trimmingCharacters(in: .whitespaces)) }
+        XCTAssertEqual(try XCTUnwrap(rows.lastIndex(where: OpenCodeScreen.isInputBoxEdge)), 9, "rows between the title and the box")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: Array(rows.dropFirst())), "Working", "the same frame without the title row")
+    }
+
     func testAFinishedTurnReadsIdle() throws {
         for name in ["2.2.5-done", "2.2.5-done-narrow", "1.18.19-done", "1.18.19-done-narrow"] {
             XCTAssertNil(TerminalPreview.liveActivity(from: try screen(name)), name)
