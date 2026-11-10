@@ -154,7 +154,8 @@ struct SettingsScreen: View {
                     Text(
                         "linkC posts its events to Discord: an agent finishing or needing you, tasks, closed "
                             + "workers, rate limits and watched services. A project with its own webhook posts "
-                            + "there; everything else goes to the default. Webhook URLs stay in your Keychain. "
+                            + "there, its subfolders and worktrees too; everything else goes to the default. "
+                            + "Webhook URLs stay in your Keychain. "
                             + "Name each webhook \u{201C}linkC\u{201D} in Discord: its posts show that name."
                     )
                     .font(.system(size: 11))

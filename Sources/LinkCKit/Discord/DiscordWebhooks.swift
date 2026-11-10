@@ -134,11 +134,15 @@ public final class DiscordWebhooks {
         states[account] = nil
     }
 
-    /// Where `event` goes: its project's webhook when the project has its own entry, else the default.
-    /// A project with its own entry never falls back, even when its webhook can't be used.
+    /// Where `event` goes: its project's webhook, covering subfolders and worktrees (nearest listed
+    /// folder winning), else the default. A project with its own entry never falls back, even when
+    /// its webhook can't be used.
     public func route(_ event: LinkCEvent) -> DiscordRoute {
-        let account = event.project.flatMap { preferences.discordProjects.contains($0) ? $0 : nil }
-            ?? Self.defaultAccount
+        let account = event.project.flatMap { folder in
+            preferences.discordProjects
+                .filter { listed in folder == listed || folder.hasPrefix(listed + "/") }
+                .max(by: { $0.count < $1.count })
+        } ?? Self.defaultAccount
         switch state(for: account) {
         case .set(let webhook): return .webhook(account: account, webhook)
         case .notSet: return .none(reason: nil)

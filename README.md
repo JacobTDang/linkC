@@ -171,7 +171,8 @@ linkC can post its events to a Discord channel, so you can follow your agents fr
 - rate limits, and watched services going down or coming back.
 
 In Settings > Discord, paste a channel's webhook URL (Discord: channel settings > Integrations > Webhooks)
-as the default. A project can have its own webhook: its events go there instead and never to the default.
+as the default. A project can have its own webhook: its events, and those of its subfolders and worktrees, go
+there instead and never to the default.
 Name the webhook "linkC" in Discord: its posts show that name. Webhook URLs are kept in your Keychain. linkC
 only posts; nothing in Discord reaches your agents. Each event is a small card, green when something finished,
 yellow when an agent needs you, red when something failed; information posts silently. Posts are paced to
