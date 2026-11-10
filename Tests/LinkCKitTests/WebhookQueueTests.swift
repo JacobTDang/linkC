@@ -369,5 +369,27 @@ final class WebhookQueueTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(transport.requests.count, 1)
     }
-}
 
+    /// A refusal shows as much as Discord said: a message alone, a code alone, nothing readable, a long message cut.
+    func testARefusalSaysWhatDiscordSaid() async throws {
+        let cases: [(body: String, shown: String)] = [
+            (#"{"message":"Invalid Form Body"}"#, "Discord refused a message (400): Invalid Form Body"),
+            (#"{"code":50035}"#, "Discord refused a message (400): code 50035"),
+            ("not json", "Discord refused a message (400)"),
+            (#"{"message":"\#(String(repeating: "m", count: 300))"}"#,
+             "Discord refused a message (400): " + String(repeating: "m", count: 199) + "…"),
+        ]
+        for (body, shown) in cases {
+            let clock = ManualClock()
+            let transport = ScriptedWebhookTransport([.success(WebhookResponse(status: 400, body: Data(body.utf8)))])
+            let queue = makeQueue(transport, clock)
+            defer { queue.cancel() }
+            queue.enqueue(event(1))
+            try await until("refused: \(shown)") {
+                if case .failed = queue.status { return true }
+                return false
+            }
+            XCTAssertEqual(queue.status, .failed(shown, at: wallNow))
+        }
+    }
+}

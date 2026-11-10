@@ -235,6 +235,9 @@ final class DiscordMessageTests: XCTestCase {
                        "https://discord.com/api/webhooks/1/token?with_components=true&wait=true")
         XCTAssertEqual(DiscordMessage.postURL(for: URL(string: "https://discord.com/api/webhooks/1/token?thread_id=5")!).absoluteString,
                        "https://discord.com/api/webhooks/1/token?thread_id=5&with_components=true&wait=true")
+        XCTAssertEqual(DiscordMessage.postURL(for: URL(string: "https://discord.com/api/webhooks/1/token?wait=false&with_components=false&thread_id=5")!).absoluteString,
+                       "https://discord.com/api/webhooks/1/token?thread_id=5&with_components=true&wait=true",
+                       "our values replace any already there, never repeat them")
     }
 
     /// Only a 200 whose JSON has a non-empty `id` means Discord saved the message.
