@@ -153,6 +153,22 @@ add `--task` to hand the prompt off as a task: the new session is a worker it ca
 The task is recorded in the folder you run the command from, so an agent hands work off from the
 folder it started in: that is the folder its `linkc_get_task` reads.
 
+### Discord
+
+linkC can post its events to a Discord channel, so you can follow your agents from your phone:
+- an agent finishing, needing permission or input, or ending with an error;
+- a task delivered, done, failed, expired or cancelled;
+- a worker closing;
+- rate limits, and watched services going down or coming back.
+
+In Settings > Discord, paste a channel's webhook URL (Discord: channel settings > Integrations > Webhooks)
+as the default. A project can have its own webhook: its events go there instead and never to the default.
+Name the webhook "linkC" in Discord: its posts show that name. Webhook URLs are kept in your Keychain. linkC
+only posts; nothing in Discord reaches your agents. Each event is a small card, green when something finished,
+yellow when an agent needs you, red when something failed; information posts silently. Posts are paced to
+Discord's limits, and a burst of events arrives as one digest. A webhook that Discord reports as deleted stops
+posting, and linkC tells you so.
+
 When an agent hits its usage limit, its current task moves to another available agent — never
 back to the one that gave it — and the limited agent rests until it actually recovers. linkC
 prefers real evidence over a guess: an already-known reset time from the agent's own usage

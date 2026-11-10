@@ -116,6 +116,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @Observable
 final class AppModel {
     private(set) var coordinator: AppCoordinator?
+    /// Posts linkC's events to the user's Discord webhooks (Settings > Discord).
+    private(set) var discord: DiscordNotifier<ContinuousClock>?
     private(set) var setupError: String?
     /// The error strip's message: shown for a few seconds, then cleared, so a one-off failure is
     /// loud without lingering. Empty messages never show.
@@ -245,6 +247,17 @@ final class AppModel {
             coordinator.onCommandSessionOpened = { [weak self] id in
                 self?.tearOff(.terminal(id), at: nil)
             }
+            // linkC's events also go to Discord, for the webhooks set in Settings > Discord.
+            let discord = DiscordNotifier(
+                webhooks: DiscordWebhooks(secrets: KeychainSecretStore(), preferences: prefs),
+                transport: URLSessionWebhookTransport(),
+                clock: ContinuousClock(),
+                notifyUser: { [weak coordinator] title, body in
+                    coordinator?.postLocalNotification(title: title, body: body)
+                }
+            )
+            coordinator.onEvent = { [weak discord] event in discord?.post(event) }
+            self.discord = discord
             try coordinator.start()
             coordinator.usageTracker = usage
             coordinator.panelSweep = { [weak self] in
@@ -1310,6 +1323,7 @@ final class AppModel {
     }
 
     func shutdown() {
+        discord?.shutdown()
         LinkCAppProcess.stopAll(Array(appProcesses.values))
         appProcesses = [:]
         healthTimer?.invalidate()
