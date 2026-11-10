@@ -40,6 +40,16 @@ final class MCPServerIdentityTests: XCTestCase {
         XCTAssertEqual(caller.pid, getppid())
     }
 
+    /// The environment OpenCode's registration hands the tool server is what names OpenCode.
+    func testOpenCodeIsTheCallerWhenItsRegistrationSaysSo() throws {
+        let registered = try XCTUnwrap(MCPRegistrar.openCodeEntry(binaryPath: "/bin/linkc-mcp")["environment"] as? [String: String])
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: registered, ancestorResolver: { _ in nil }, sessionResolver: { nil })
+        let caller = server.resolveCaller([:])
+        XCTAssertEqual(caller.agent, .opencode)
+        XCTAssertTrue(caller.isIdentified)
+        XCTAssertEqual(caller.pid, getppid())
+    }
+
     func testAncestorResolverIsUsedWhenNoArgumentOrEnvironment() throws {
         let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in (.agy, 77) }, sessionResolver: { nil })
         let caller = server.resolveCaller([:])
