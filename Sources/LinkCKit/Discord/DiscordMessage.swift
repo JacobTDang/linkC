@@ -296,7 +296,7 @@ enum DiscordMessage {
                 children.append(.text(droppedLine(dropped)))
             }
             children.append(.separator)
-            // A digest page carries at least one event (maxEventsPerPage is 15), so max() is never nil.
+            // A page is never empty, so max() is never nil.
             guard let newestDate = pageEvents.map(\.at).max() else {
                 preconditionFailure("a digest page has at least one event")
             }

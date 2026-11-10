@@ -2783,7 +2783,7 @@ the empty ones. At most `maxDetailLines`: when there are more, show the first `m
 2. `.text(<detail lines joined by "\n">)`, only when there is at least one
 3. `.text(<dropped line>)`, only when `dropped > 0`
 4. `.separator`
-5. `.text("-# linkC · <folder> · <timestamp>")`, or `"-# linkC · <timestamp>"` with no project
+5. `.text("-# <folder> · <timestamp>")`, or `"-# <timestamp>"` with no project (the webhook's name already says linkC)
 
 **A digest page**: one container, accent = the most serious tone on the page (failed, then needsYou, then done,
 then info), children in order:
@@ -2793,7 +2793,7 @@ then info), children in order:
    `"\n-# <first detail line>"` when it has one.
 3. `.text(<dropped line>)` on the first page, when `dropped > 0`.
 4. `.separator`
-5. `.text("-# linkC · <timestamp of the newest event on this page>")`
+5. `.text("-# <timestamp of the newest event on this page>")`
 
 #### 2. `WebhookResponse.savedMessageID` (`WebhookTransport.swift`)
 
