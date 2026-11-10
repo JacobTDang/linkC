@@ -9,15 +9,16 @@ final class SessionAttentionTests: XCTestCase {
         _ state: SessionState, lastSeen: Date? = nil, onScreen: Bool = false, rateLimited: Bool = false
     ) -> SessionRowStatus {
         SessionAttention.status(
-            state: state, stateChangedAt: t0, lastSeen: lastSeen, onScreen: onScreen,
-            rateLimited: rateLimited, now: t0.addingTimeInterval(240))
+            state: state, stateChangedAt: t0, turnStartedAt: t0.addingTimeInterval(-60), lastSeen: lastSeen,
+            onScreen: onScreen, rateLimited: rateLimited, now: t0.addingTimeInterval(240))
     }
 
     func testEachStateReadsAsTheSpecTableSays() {
         let t240 = t0.addingTimeInterval(240)
         XCTAssertEqual(status(.starting), SessionRowStatus(format: .fixed("starting"), tone: .quiet, marker: .none, now: t240))
         XCTAssertEqual(status(.ready), SessionRowStatus(format: .age(prefix: "", since: t0), tone: .quiet, marker: .none, now: t240))
-        XCTAssertEqual(status(.working), SessionRowStatus(format: .elapsed(since: t0), tone: .working, marker: .none, now: t240))
+        XCTAssertEqual(status(.working), SessionRowStatus(format: .elapsed(since: t0.addingTimeInterval(-60)), tone: .working, marker: .none, now: t240),
+                       "a working row counts from the turn's start, not the last state change")
         XCTAssertEqual(status(.waitingPermission), SessionRowStatus(format: .age(prefix: "", since: t0), tone: .attention, marker: .pingDot, now: t240))
         XCTAssertEqual(status(.error), SessionRowStatus(format: .fixed("error"), tone: .error, marker: .none, now: t240))
         XCTAssertEqual(status(.error, rateLimited: true), SessionRowStatus(format: .fixed("rate limited"), tone: .error, marker: .none, now: t240))
@@ -85,14 +86,14 @@ final class SessionAttentionTests: XCTestCase {
 
     func testStatusTextRendersAccuratelyAtGivenNow() {
         let readyStatus = SessionAttention.status(
-            state: .ready, stateChangedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false, now: t0
+            state: .ready, stateChangedAt: t0, turnStartedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false, now: t0
         )
         XCTAssertEqual(readyStatus.text(now: t0.addingTimeInterval(15)), "15s")
         XCTAssertEqual(readyStatus.text(now: t0.addingTimeInterval(125)), "2m")
         XCTAssertEqual(readyStatus.text(now: t0.addingTimeInterval(7200)), "2h")
 
         let permStatus = SessionAttention.status(
-            state: .waitingPermission, stateChangedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false, now: t0
+            state: .waitingPermission, stateChangedAt: t0, turnStartedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false, now: t0
         )
         XCTAssertEqual(permStatus.text(now: t0.addingTimeInterval(30)), "30s")
         XCTAssertEqual(permStatus.text(now: t0.addingTimeInterval(240)), "4m")
@@ -156,7 +157,7 @@ final class SessionAttentionTests: XCTestCase {
     func testAnUnchangedAgeStatusIsEqualAtEveryLaterTime() {
         func idle(at offset: TimeInterval) -> SessionRowStatus {
             SessionAttention.status(
-                state: .ready, stateChangedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false,
+                state: .ready, stateChangedAt: t0, turnStartedAt: t0, lastSeen: nil, onScreen: false, rateLimited: false,
                 now: t0.addingTimeInterval(offset))
         }
         XCTAssertNotEqual(idle(at: 59).text, idle(at: 60).text, "the derived text does move with the clock")
@@ -227,4 +228,20 @@ final class SessionAttentionTests: XCTestCase {
         let next = try XCTUnwrap(store.session(id: id))
         XCTAssertEqual(next.turnStartedAt, next.stateChangedAt, "a turn after a finished one starts when it starts")
     }
+
+    /// Declining a permission prompt (Esc) and typing a new instruction is a new turn: the clock starts again.
+    func testANewPromptWhileAPromptWaitsStartsANewTurn() {
+        var session = Session(id: "s1", cwd: "/p", title: "p", state: .ready, stateChangedAt: t0)
+        func apply(_ kind: HookEventKind, at seconds: TimeInterval) {
+            session = SessionReducer.apply(
+                HookEvent(kind: kind, linkcSessionId: "s1", claudeSessionId: "c1", cwd: "/p"),
+                to: session, now: t0.addingTimeInterval(seconds)).session
+        }
+        apply(.userPromptSubmit, at: 10)
+        apply(.notificationPermission, at: 100)
+        apply(.userPromptSubmit, at: 150)
+        XCTAssertEqual(session.state, .working)
+        XCTAssertEqual(session.turnStartedAt, t0.addingTimeInterval(150))
+    }
 }
+
