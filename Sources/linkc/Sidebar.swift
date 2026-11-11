@@ -394,7 +394,7 @@ private struct ProjectRow: View {
 }
 
 /// The 6pt state dot beside a project in the sidebar, and beside a pane's title in a split: coral
-/// when something wants you, teal while it works, an empty slot when idle.
+/// when something wants you, soft white while it works, an empty slot when idle.
 struct StateDotView: View {
     let dot: ProjectDot
 
@@ -404,9 +404,8 @@ struct StateDotView: View {
             Color.clear.frame(width: 6, height: 6)
         case .working:
             Circle()
-                .fill(Theme.statusRunning)
+                .fill(Theme.statusWorking)
                 .frame(width: 6, height: 6)
-                .shadow(color: Theme.statusRunning.opacity(0.8), radius: 3)
         case .attention:
             Circle()
                 .fill(Theme.accent)
@@ -442,6 +441,7 @@ private struct SessionRow: View {
                 }
             }
         }
+        .hairlineSweep(isWorking: row.status.tone == .working)
         .draggable(LinkCTerminalDrag(id: row.id))
     }
 }
@@ -467,8 +467,19 @@ private struct AgeTimelineSchedule: TimelineSchedule {
 
 private struct SessionStatusLabel: View {
     let status: SessionRowStatus
+    @Environment(\.panelVisible) private var panelVisible
 
     var body: some View {
+        HStack(spacing: 6) {
+            statusTextView
+            if status.marker != .none {
+                StatusDotView(marker: status.marker)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusTextView: some View {
         switch status.format {
         case .fixed(let text):
             Text(text)
@@ -482,16 +493,18 @@ private struct SessionStatusLabel: View {
                     .monospacedDigit()
                     .foregroundStyle(color(for: status.tone))
             }
+        case .elapsed(let since):
+            TimelineView(.periodic(from: since, by: panelVisible ? 1.0 : 3600.0)) { context in
+                Text(status.text(now: context.date))
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(color(for: status.tone))
+            }
         }
     }
 
     private func color(for tone: SessionRowStatus.Tone) -> Color {
-        switch tone {
-        case .quiet: return Theme.textTertiary
-        case .working: return Theme.statusRunning
-        case .attention: return Theme.accent
-        case .error: return Theme.statusError
-        }
+        tone == .error ? Theme.statusError : Theme.textTertiary
     }
 }
 

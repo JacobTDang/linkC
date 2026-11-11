@@ -103,9 +103,12 @@ public struct Session: Sendable, Identifiable, Equatable {
     public private(set) var cwd: String
     public var title: String
     public var state: SessionState
-    /// When `state` last actually changed — feeds "needs permission · 4m". A re-asserted
+    /// When `state` last actually changed — feeds the age shown on a row. A re-asserted
     /// identical state never resets it.
     public var stateChangedAt: Date
+    /// When the current turn began: the last move into `.working` from any state other than
+    /// `.waitingPermission`.
+    public var turnStartedAt: Date
     public var agentKind: AgentKind
     /// The model this session was launched with, and the tier it was launched for. Set once at
     /// launch: a pinned session is never switched out from under the person using it, so the
@@ -124,6 +127,7 @@ public struct Session: Sendable, Identifiable, Equatable {
         state: SessionState = .starting,
         claudeSessionId: String? = nil,
         stateChangedAt: Date = Date(),
+        turnStartedAt: Date? = nil,
         agentKind: AgentKind = .claude,
         model: String? = nil,
         modelTier: ModelTier? = nil,
@@ -135,6 +139,7 @@ public struct Session: Sendable, Identifiable, Equatable {
         self.state = state
         self.claudeSessionId = claudeSessionId
         self.stateChangedAt = stateChangedAt
+        self.turnStartedAt = turnStartedAt ?? stateChangedAt
         self.agentKind = agentKind
         self.model = model
         self.modelTier = modelTier
