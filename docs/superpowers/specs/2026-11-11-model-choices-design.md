@@ -159,4 +159,35 @@ TDD through the existing seams. No real CLI is run in tests.
   - an agy Gemini limit does not hold a task for `claude-opus-4-6-thinking`;
   - a worker that ends while `.starting`, for a task with a model, fails that task at once with the reason.
 - **Settings:** the picker lists the cached models, "Other…" accepts a typed id, and OpenCode refuses an id that is not free.
+- **Sessions you open yourself (§9):**
+  - an OpenCode session restored after a relaunch, restored from Earlier, or opened with Continue or Resume starts with no `--session`, `--continue` or `--conversation`, with the default tier's free model in its config, and says it started fresh;
+  - a relaunch brings back every OpenCode entry, and restoring one next to a live one is not refused;
+  - another agent's continue and restore are unchanged (Codex still runs `resume --last`);
+  - a user-opened agy session starts with `--model gemini-3.8-flash-medium` (seeded default tier) and records that model, and no tier;
+  - a restored agy session starts with `--continue --model <the default tier's model>`;
+  - an agy default tier with no model opens with no model;
+  - a limit seen on a user-opened agy session records the `gemini` pool and leaves the Claude/GPT pool free.
 - **Full runs:** the full suite and `scripts/tsan.sh`.
+
+## 9. Sessions you open yourself
+
+Two choices Jacob made about the sessions he opens, or that come back after a quit.
+
+### 9.1 OpenCode never resumes
+
+OpenCode's own conversation resumes on the model it last ran on. linkC cannot see that model, and it could be a paid one. So linkC never resumes an OpenCode conversation. "Continue last", "Resume" and the restore of an OpenCode session (after a relaunch, or from Earlier) all open a new OpenCode conversation in the same folder. It is opened as a New → OpenCode session is: on the default tier's model, which is free (§4.1), named in the session's inline config. linkC passes no `--session`, `--continue` or `--conversation`, and does not run `opencode session list`.
+
+- The panel's Continue last menu does not list OpenCode, as the Resume menu never did. New → OpenCode is the way to open one.
+- A restored OpenCode session says that it started fresh, in linkC's log and in a notice: "OpenCode starts a new conversation on restore, so it only ever runs a free model."
+- Every OpenCode conversation is new, so no two entries compete for one. A relaunch brings back every OpenCode entry, and restoring an OpenCode card is not refused because another OpenCode session is live in its folder.
+- A default tier that is not free (§4.3) still refuses the launch. A relaunch then leaves the entry under Earlier and logs why.
+- Other agents keep their own continue and restore.
+
+### 9.2 Your own agy sessions open on agy's default model
+
+A session the user opens on agy used to start with no model, so `session.model` was nil, and a limit it hit was recorded for the whole agent (both pools, §6). Now a session opened without a tier, and an agy session restored after a quit, starts with `--model <the model of agy's default tier>` (`AgentModelCatalog.launchArguments`) and records that model. `recordLimit(of:)` then records the pool of that model: with the seeded default tier, `gemini-3.8-flash-medium`, a limit is a `gemini` limit and agy's Claude/GPT pool stays free.
+
+- The session records no tier, as a Grok session of the user's. A session with a tier is handed delegated tier tasks, and the user's own is not.
+- When the default tier has no model, the session opens as before, with no model. It is not refused: it is the user's own.
+- Resume is the exception. It ends its arguments with `--conversation`, and the conversation keeps the model it had, so no model is passed and a limit on it is recorded for the whole agent.
+- A session with a tier, and every worker, uses its tier's model as before.

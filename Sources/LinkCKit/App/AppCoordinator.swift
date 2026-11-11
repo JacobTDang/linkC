@@ -127,11 +127,6 @@ public final class AppCoordinator {
     /// OpenCode refusals whose notice has reached the delegator's inbox. A notice that could not be written is
     /// missing here, so every later pass tries it again. Pruned like `openCodeRefusalUsersTold`.
     var openCodeRefusalNoticesSent: Set<OpenCodeRefusalKey> = []
-    /// Lists OpenCode's sessions as `opencode session list --format json --standalone` run in a
-    /// folder prints them. A seam, so a test can play the listing; the real one runs off the main thread.
-    var openCodeSessionList: @Sendable (_ executable: String, _ folder: String) async throws -> String = {
-        try await AppCoordinator.listOpenCodeSessions(executable: $0, folder: $1)
-    }
     /// Runs task gates and verifications off the main actor; injected so tests can script verdicts.
     let verifier: any TaskVerifier
     /// Workspaces with a verification run in flight, mapped to the task id running there — at
@@ -991,11 +986,16 @@ public final class AppCoordinator {
         guard (tier == nil && model == nil) || mode == .new else {
             throw LinkCError.process("a tier can only pin a new session; \(mode) reuses an existing session's model")
         }
+        // OpenCode never resumes a conversation: its own would keep whatever model it last ran on,
+        // which linkC cannot see and which may not be free. Continue, Resume and a restore all open
+        // a new conversation in the folder, on the default tier's model.
+        let opensFresh = agent == .opencode && mode != .new
+        let mode: LaunchMode = agent == .opencode ? .new : mode
         let resolved: (model: String?, tier: ModelTier?)
         if let model {
             resolved = (model, nil)
         } else {
-            resolved = try launchModel(for: agent, tier: tier)
+            resolved = try launchModel(for: agent, tier: tier, mode: mode)
         }
         let model = resolved.model
         let modelTier = resolved.tier
@@ -1004,9 +1004,8 @@ public final class AppCoordinator {
         if agent == .opencode, let model, !OpenCodeFreeModels.isFree(model) {
             throw LinkCError.process("\(model) is not a free OpenCode model")
         }
-        // A continued OpenCode session keeps the model it last ran on, which linkC does not know.
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
-                                   model: agent == .opencode && mode == .continueLast ? nil : model, modelTier: modelTier,
+                                   model: model, modelTier: modelTier,
                                    claudeSessionId: resumeId, isWorker: asWorker)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent, select: false)
@@ -1095,18 +1094,13 @@ public final class AppCoordinator {
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
             }
 
-            if agent == .opencode, mode == .continueLast {
-                // OpenCode's own `--continue` can open another folder's session. This folder's is
-                // found first; the terminal starts when the listing is back.
-                continueOpenCode(session: session, terminal: terminal, executable: executable, args: args, env: env)
-            } else {
-                try terminal.start(
-                    executable: executable,
-                    args: args,
-                    env: env
-                )
-            }
+            try terminal.start(
+                executable: executable,
+                args: args,
+                env: env
+            )
             if select { terminals.select(session.id) }
+            if opensFresh { tellOpenCodeStartedFresh(title: title, folder: cwd) }
             // Record the now-live session so it survives a quit/crash and can be restored.
             manifest.upsert(RestorableSession(
                 linkcId: session.id,
@@ -1133,9 +1127,19 @@ public final class AppCoordinator {
     /// Cursor's own default is Auto, not Grok. With no tier, Grok runs on its default tier's model but
     /// records no tier, so a Grok session the user opened is, like any other, never handed a
     /// delegated task (`Session.canCarry`). A tier with no model refuses the launch rather than
-    /// run on whatever Cursor would pick.
-    private func launchModel(for agent: AgentKind, tier: ModelTier?) throws -> (model: String?, tier: ModelTier?) {
+    /// run on whatever Cursor would pick. A session the user opens on agy also names its default
+    /// tier's model, but opens without one when that tier has none.
+    private func launchModel(for agent: AgentKind, tier: ModelTier?, mode: LaunchMode) throws -> (model: String?, tier: ModelTier?) {
         guard AgentKind.alwaysNamesModel.contains(agent) else {
+            if agent == .agy, tier == nil, mode != .resume {
+                // The user's own agy session opens on the default tier's model, so a limit it hits
+                // is recorded for that model's pool (`ModelPool`), not for all of agy. With no model
+                // for the tier it opens as it always did. It records no tier, like Grok's, so it is
+                // never handed a delegated task. Resume passes no model: `--conversation` is the
+                // last flag agy is given, and its conversation keeps the model it had.
+                let settings = modelSettings()
+                return (settings.model(for: .agy, tier: settings.defaultTier(for: .agy)), nil)
+            }
             let model = tier.flatMap { resolvedModel(for: agent, tier: $0) }
             return (model, model == nil ? nil : tier)
         }
@@ -1231,10 +1235,11 @@ public final class AppCoordinator {
         // RECENT conversation for that agent. Refuse whichever way this entry would collide with
         // a session already live (including one restored moments ago in the same Restore-all
         // pass, or one a relaunch already brought back onto this entry's id/folder); the card
-        // stays and the user can restore it individually later.
+        // stays and the user can restore it individually later. OpenCode never resumes — it opens a
+        // new conversation — so it collides with nothing.
         let resumesById = targetAgent == .claude && !(r.claudeSessionId ?? "").isEmpty
         let folder = ProjectPath.canonical(r.cwd)
-        if store.sessions.contains(where: { live in
+        if targetAgent != .opencode, store.sessions.contains(where: { live in
             resumesById
                 ? live.claudeSessionId == r.claudeSessionId
                 : live.agentKind == targetAgent && live.cwd == folder

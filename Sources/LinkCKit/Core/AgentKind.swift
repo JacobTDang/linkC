@@ -162,10 +162,9 @@ public struct AgentDescriptor: Sendable {
                 // `OPENCODE_CONFIG_CONTENT`, `LINKC_SESSION` — reaches it; the shared background service has
                 // the environment of whatever started it. Every permission approved that the config does not deny.
                 yoloFlags: ["--standalone", "--auto"],
-                // OpenCode's own `--continue` takes the newest session of the whole project — every
-                // worktree of a repo is one project — and moves into that session's folder. linkC
-                // passes `--session <id>` for this folder's own session instead (AppCoordinator+OpenCode).
-                // OpenCode has no session-picker flag.
+                // linkC never resumes an OpenCode conversation: it would run on whatever model it last
+                // used, which linkC cannot see and which may not be free. Continue, Resume and a
+                // restore open a new conversation instead (AppCoordinator.launch).
                 continueArgs: [],
                 resumeArgs: []
             )
