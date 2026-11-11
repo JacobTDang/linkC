@@ -306,7 +306,7 @@ final class MCPServerModelTests: XCTestCase {
         let customServer = MCPServer(
             workspaceRoot: tempDir.path,
             inboxStore: inboxStore,
-            modelSwitcher: { agent, model in
+            modelSwitcher: { agent, model, _ in
                 tracker.invokedAgent = agent
                 tracker.invokedModel = model
                 return "Switched \(agent.displayName) to \(model) via test callback."
@@ -494,6 +494,22 @@ final class MCPServerModelTests: XCTestCase {
                 return XCTFail("Expected LinkCError.process, got: \(error)")
             }
             XCTAssertTrue(msg.contains("No active session found"))
+        }
+
+        // A named session is switched, not the first of its agent.
+        let second = coordinator.store.create(cwd: tempDir.path, title: "claude", id: "sess-claude-2", agentKind: .claude)
+        coordinator.store.updateState(id: second.id, to: .ready)
+        _ = terminals.makeSession(id: second.id, cwd: tempDir.path, title: "claude", agentKind: .claude)
+        let named = try coordinator.switchModel(in: tempDir.path, agent: .claude, to: "haiku", sessionId: second.id)
+        XCTAssertTrue(named.contains("in session sess-claude-2."), named)
+
+        // A named session that is gone is refused, never swapped for another of its agent.
+        coordinator.store.updateState(id: second.id, to: .ended)
+        XCTAssertThrowsError(try coordinator.switchModel(in: tempDir.path, agent: .claude, to: "haiku", sessionId: second.id)) { error in
+            guard case LinkCError.process(let msg) = error else {
+                return XCTFail("Expected LinkCError.process, got: \(error)")
+            }
+            XCTAssertTrue(msg.contains("sess-claude-2"), msg)
         }
     }
 }

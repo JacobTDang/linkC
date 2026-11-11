@@ -557,7 +557,7 @@ final class MCPServerTests: XCTestCase {
     func testSwitchModelCatchesModelSwitcherError() throws {
         let throwingServer = MCPServer(
             workspaceRoot: tempDir.path,
-            modelSwitcher: { _, _ in
+            modelSwitcher: { _, _, _ in
                 throw LinkCError.process("Failed to switch model in session")
             },
             environment: ["LINKC_AGENT": "claude"],

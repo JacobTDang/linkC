@@ -357,6 +357,10 @@ public struct PendingMessage: Codable, Sendable, Identifiable, Equatable {
     public let kind: MessageKind
     public let taskId: String?
     public let contentHash: String
+    /// The one session this message is for: the worker holding the task its sender named. Set, it
+    /// goes there or nowhere, never to another session of `toAgent`. Separate from `taskId`, which
+    /// routes a notice about a task to the task's delegator.
+    public let toSessionId: String?
 
     public init(
         id: String = UUID().uuidString,
@@ -370,7 +374,8 @@ public struct PendingMessage: Codable, Sendable, Identifiable, Equatable {
         deliveredAt: Date? = nil,
         kind: MessageKind? = nil,
         taskId: String? = nil,
-        contentHash: String? = nil
+        contentHash: String? = nil,
+        toSessionId: String? = nil
     ) {
         self.id = id
         self.fromAgent = fromAgent
@@ -385,10 +390,11 @@ public struct PendingMessage: Codable, Sendable, Identifiable, Equatable {
         self.kind = resolvedKind
         self.taskId = taskId
         self.contentHash = contentHash ?? LinkCFrame.contentHash(from: fromAgent, to: toAgent, kind: resolvedKind, prompt: prompt)
+        self.toSessionId = toSessionId
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, fromAgent, toAgent, prompt, claimedFiles, status, rerouteCount, createdAt, deliveredAt, kind, taskId, contentHash
+        case id, fromAgent, toAgent, prompt, claimedFiles, status, rerouteCount, createdAt, deliveredAt, kind, taskId, contentHash, toSessionId
     }
 
     public init(from decoder: Decoder) throws {
@@ -410,7 +416,8 @@ public struct PendingMessage: Codable, Sendable, Identifiable, Equatable {
             kind: kind,
             taskId: try c.decodeIfPresent(String.self, forKey: .taskId),
             contentHash: try c.decodeIfPresent(String.self, forKey: .contentHash)
-                ?? LinkCFrame.contentHash(from: fromAgent, to: toAgent, kind: kind, prompt: prompt)
+                ?? LinkCFrame.contentHash(from: fromAgent, to: toAgent, kind: kind, prompt: prompt),
+            toSessionId: try c.decodeIfPresent(String.self, forKey: .toSessionId)
         )
     }
 }
