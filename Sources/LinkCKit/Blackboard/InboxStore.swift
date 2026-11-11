@@ -424,6 +424,8 @@ public final class InboxStore: Sendable {
         force: Bool = false,
         verification: Verification? = nil,
         gate: Verdict? = nil,
+        fromProject: String? = nil,
+        isQuestion: Bool = false,
         timeout: TimeInterval = 5.0
     ) throws -> TaskRecord {
         guard hop <= 2 else { throw InboxError.hopLimit(hop) }
@@ -443,6 +445,7 @@ public final class InboxStore: Sendable {
                 $0.state.isOpen && $0.toAgent == to && $0.prompt == prompt
                     && $0.verification?.baseSha == verification?.baseSha
                     && $0.targetSessionId == targetSessionId
+                    && $0.fromProject == fromProject
             }) {
                 return existing
             }
@@ -458,12 +461,48 @@ public final class InboxStore: Sendable {
                 fromAgent: from, fromSessionId: fromSessionId, tier: tier, toAgent: to,
                 prompt: prompt, files: normalized,
                 state: verification == nil || gate != nil ? .queued : .gating, hop: hop,
-                verification: verification, gate: gate, targetSessionId: targetSessionId
+                verification: verification, gate: gate, targetSessionId: targetSessionId,
+                fromProject: fromProject, isQuestion: isQuestion
             )
             inbox.tasks.append(task)
             inbox.updatedAt = Date()
             try saveUnlocked(inbox)
             return task
+        }
+    }
+
+    public func recordSent(_ sent: SentTask, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            inbox.sentTasks.removeAll { $0.taskId == sent.taskId }
+            inbox.sentTasks.append(sent)
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+        }
+    }
+
+    public func sentTask(matching prefix: String, timeout: TimeInterval = 5.0) throws -> SentTask? {
+        let sent = try snapshot(timeout: timeout).sentTasks
+        if let exact = sent.first(where: { $0.taskId == prefix }) { return exact }
+        guard prefix.count >= Self.minimumTaskIdPrefix else { return nil }
+        let lower = prefix.lowercased()
+        let matches = sent.filter { $0.taskId.lowercased().hasPrefix(lower) }
+        guard matches.count <= 1 else {
+            throw InboxError.ambiguousTaskId(prefix: prefix, matches: matches.map(\.taskId))
+        }
+        return matches.first
+    }
+
+    public func sentTasks(timeout: TimeInterval = 5.0) throws -> [SentTask] {
+        try snapshot(timeout: timeout).sentTasks
+    }
+
+    public func dropSent(taskId: String, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            inbox.sentTasks.removeAll { $0.taskId == taskId }
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
         }
     }
 

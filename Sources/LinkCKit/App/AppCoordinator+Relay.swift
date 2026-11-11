@@ -142,7 +142,21 @@ extension AppCoordinator {
 
     /// The text injected into the assignee's terminal. Composed at injection time; never stored as a message.
     static func deliveryFrame(for task: TaskRecord) -> String {
-        var lines = ["[linkC task \(task.shortId) from \(task.fromAgent.displayName)]", task.prompt, ""]
+        let origin: String
+        if let fromProject = task.fromProject {
+            let name = URL(fileURLWithPath: fromProject).lastPathComponent
+            origin = "[linkC task \(task.shortId) from \(name) · \(task.fromAgent.displayName)]"
+        } else {
+            origin = "[linkC task \(task.shortId) from \(task.fromAgent.displayName)]"
+        }
+        var lines = [origin, task.prompt, ""]
+        if task.isQuestion {
+            let name = task.fromProject.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "another project"
+            lines.append("This is a question from \(name). Answer it with linkc_complete_task(\"\(task.id)\", status: \"done\", summary: <your answer, at most 1,000 characters>). Do not change any files.")
+            lines.append("")
+            lines.append("When you begin, call linkc_start_task(\"\(task.id)\").")
+            return lines.joined(separator: "\n")
+        }
         if let v = task.verification {
             lines.append("Work on branch \(v.branch). linkC verifies by running `\(v.command)` at the sha you report. Do not modify: \(v.testPaths.joined(separator: ", ")).")
             lines.append("")

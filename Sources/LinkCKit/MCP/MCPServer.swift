@@ -561,6 +561,7 @@ public final class MCPServer: Sendable {
                         "pid": ["type": "integer", "description": "Process ID of the sender"],
                         "force": ["type": "boolean", "description": "Override an existing lease held by another assignee"],
                         "tier": ["type": "string", "description": "Model tier for this task: light, standard or deep. Defaults to the agent's configured default tier."],
+                        "project": ["type": "string", "description": "Optional. Another project's folder name or path; the task is created there."],
                         "verify": [
                             "type": "object",
                             "description": "Make this a verified task. linkC confirms the tests fail at base_sha before delivery, then runs command at the worker's reported sha and decides done or failed itself.",
@@ -575,6 +576,20 @@ public final class MCPServer: Sendable {
                         ]
                     ],
                     "required": ["to", "prompt"]
+                ]
+            ],
+            [
+                "name": "linkc_ask",
+                "description": "Ask an agent in another project a question. It answers from its own context, and the answer (at most 1,000 characters) comes back to this session as a [linkC task …] line. Use linkc_list_projects to see the projects.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "project": ["type": "string", "description": "Target project's folder name or path"],
+                        "question": ["type": "string", "description": "The question to ask"],
+                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList)); defaults to claude"],
+                        "tier": ["type": "string", "description": "Model tier: light, standard or deep"]
+                    ],
+                    "required": ["project", "question"]
                 ]
             ],
             [
@@ -884,155 +899,42 @@ public final class MCPServer: Sendable {
                 }
 
             case "linkc_delegate_task":
-                guard let toStr = args["to"] as? String, !toStr.isEmpty else {
-                    return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
-                }
-                guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
-                    return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
-                }
-                guard toAgent != .shell else {
-                    return toolResultResponse(id: id, text: "Error: Cannot delegate tasks to interactive terminal shell. Target an AI CLI agent (\(AgentKind.peerList)).", isError: true)
-                }
-                guard let prompt = args["prompt"] as? String, !prompt.isEmpty else {
-                    return toolResultResponse(id: id, text: "Error: Missing required argument 'prompt'.", isError: true)
-                }
-
-                // Check if recipient is currently in a rate-limit cooldown
                 do {
-                    if let limitStatus = try inboxStore.isAgentLimited(agent: toAgent) {
-                        let peerCandidates: [AgentKind] = AgentKind.peers.filter { $0 != toAgent }
-                        var availablePeers: [String] = []
-                        for peer in peerCandidates {
-                            if (try inboxStore.isAgentLimited(agent: peer)) == nil {
-                                availablePeers.append(peer.rawValue)
-                            }
-                        }
-                        let peerListStr = availablePeers.isEmpty ? "none" : availablePeers.joined(separator: ", ")
-                        let errorMsg = "Cannot delegate to '\(toAgent.rawValue)': agent is currently in limit cooldown (reason: \(limitStatus.reason)). Alternative available peer agents: \(peerListStr)."
-                        return toolResultResponse(id: id, text: errorMsg, isError: true)
-                    }
+                    let target = try targetProject(args)
+                    let destStore = target.map { InboxStore(workspaceRoot: $0.path) } ?? inboxStore
+                    let destRoot = target?.path ?? workspaceRoot
+                    return try createDelegatedTask(
+                        id: id, caller: caller, args: args, destStore: destStore, destRoot: destRoot,
+                        crossProject: target.map { (name: $0.name, path: $0.path) }
+                    )
                 } catch {
                     return errorResult(id: id, error)
                 }
 
-                let files = args["files"] as? [String] ?? []
-                let force = args["force"] as? Bool ?? false
-
-                var verification: Verification?
-                switch args["verify"] {
-                case nil, is NSNull:
-                    break
-                case let verify as [String: Any]:
-                    do {
-                        verification = try resolveVerification(verify)
-                    } catch {
-                        return toolResultResponse(id: id, text: "Error: \(error.localizedDescription)", isError: true)
-                    }
-                default:
-                    return toolResultResponse(id: id, text: "Error: verify must be an object.", isError: true)
+            case "linkc_ask":
+                if args["verify"] != nil {
+                    return toolResultResponse(id: id, text: "Error: an ask cannot be verified.", isError: true)
                 }
-
-                // Read once per request: a stable view of the mapping for the whole handler,
-                // never cached across calls — the next request reads whatever is on disk then.
-                let settings = modelSettings()
-                // A non-string `tier` is malformed and refused outright; a string is trimmed and,
-                // if empty or all whitespace, treated the same as an absent argument.
-                let tierArg: String?
-                if let raw = args["tier"] {
-                    guard let text = raw as? String else {
-                        return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
-                    }
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    tierArg = trimmed.isEmpty ? nil : trimmed
-                } else {
-                    tierArg = nil
+                guard let question = args["question"] as? String, !question.isEmpty else {
+                    return toolResultResponse(id: id, text: "Error: Missing required argument 'question'.", isError: true)
                 }
-                let tier: ModelTier?
-                if let tierArg {
-                    guard let parsed = ModelTier(rawValue: tierArg.lowercased()) else {
-                        return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
-                    }
-                    guard toAgent != .cursor else {
-                        return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
-                    }
-                    tier = parsed
-                } else if toAgent == .cursor {
-                    // Cursor was never tiered; an omitted tier keeps working exactly as before.
-                    tier = nil
-                } else {
-                    tier = settings.defaultTier(for: toAgent)
-                }
-                if let tier {
-                    guard settings.model(for: toAgent, tier: tier) != nil else {
-                        return toolResultResponse(
-                            id: id,
-                            text: "Error: no model configured for \(toAgent.rawValue) tier \(tier.rawValue) — set it in linkC settings.",
-                            isError: true)
-                    }
-                }
-                if toAgent == .opencode, let tier, let model = settings.model(for: .opencode, tier: tier) {
-                    let offered: [String]
-                    do {
-                        offered = try openCodeModels(workspaceRoot)
-                    } catch {
-                        return toolResultResponse(
-                            id: id,
-                            text: "Error: could not check opencode tier \(tier.rawValue)'s model \(model) against the models OpenCode lists — \(error)",
-                            isError: true)
-                    }
-                    guard offered.contains(model) else {
-                        return toolResultResponse(
-                            id: id,
-                            text: "Error: \(model) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings.",
-                            isError: true)
-                    }
-                }
-
-                let task: TaskRecord
                 do {
-                    task = try inboxStore.createTask(from: caller.agent, to: toAgent,
-                                                     fromSessionId: callerSessionId(),
-                                                     tier: tier,
-                                                     prompt: prompt, files: files,
-                                                     force: force, verification: verification)
+                    guard let target = try targetProject(args) else {
+                        return toolResultResponse(id: id, text: "Error: Missing required argument 'project'.", isError: true)
+                    }
+                    var askArgs = args
+                    askArgs["prompt"] = question
+                    if askArgs["to"] == nil { askArgs["to"] = AgentKind.claude.rawValue }
+                    askArgs["files"] = [String]()
+                    return try createDelegatedTask(
+                        id: id, caller: caller, args: askArgs,
+                        destStore: InboxStore(workspaceRoot: target.path), destRoot: target.path,
+                        crossProject: (name: target.name, path: target.path),
+                        isQuestion: true
+                    )
                 } catch {
                     return errorResult(id: id, error)
                 }
-
-                let successText = verification.map {
-                    "Task \(task.shortId) created. linkC will confirm the tests fail at \(VerificationRunner.short($0.baseSha)) before delivery."
-                } ?? "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
-
-                // Warn when the target is nearly out, without ever blocking or failing the
-                // delegation. Whether a reader can ever produce a warning is decided once, in
-                // `warnCapableAgents`, next to where readers are registered — not here by
-                // checking the target's identity. A reader left out of that set (the transcript
-                // usage reader today) is never called at all, so its read cost is never paid for
-                // a warning it could never carry.
-                var usageNote = ""
-                if warnCapableAgents.contains(toAgent),
-                   let window = usageReaders[toAgent]?().windowNeedingWarning,
-                   let percent = window.usedPercent {
-                    let resetSuffix = window.resetsAt.map { ", resets \(Self.formatReset($0, now: Date()))" } ?? ""
-                    usageNote = " \(toAgent.displayName) is at \(Self.formatPercent(percent)) of its \(window.label) window\(resetSuffix)."
-                }
-
-                if !files.isEmpty {
-                    do {
-                        _ = try store.broadcastIntent(
-                            agentKind: caller.agent,
-                            pid: caller.pid,
-                            goal: "Delegated task \(task.shortId) to \(toAgent.displayName)",
-                            files: files,
-                            status: "delegating"
-                        )
-                    } catch {
-                        let warning = "Warning: task was created but the blackboard broadcast failed: \(error.localizedDescription)."
-                        return toolResultResponse(id: id, text: "\(successText)\n\(warning)\(usageNote)")
-                    }
-                }
-
-                return toolResultResponse(id: id, text: "\(successText)\(usageNote)")
 
             case "linkc_send_message":
                 guard let toStr = args["to"] as? String, !toStr.isEmpty else {
@@ -1711,6 +1613,170 @@ public final class MCPServer: Sendable {
                 throw LinkCError.server("could not create detail board \"\(slug)\": \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Shared body of `linkc_delegate_task` / `linkc_ask`. `destStore`/`destRoot` are this project or another.
+    private func createDelegatedTask(
+        id: Any?,
+        caller: MCPCaller,
+        args: [String: Any],
+        destStore: InboxStore,
+        destRoot: String,
+        crossProject: (name: String, path: String)?,
+        isQuestion: Bool = false
+    ) throws -> Data? {
+        guard let toStr = args["to"] as? String, !toStr.isEmpty else {
+            return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
+        }
+        guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+            return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
+        }
+        guard toAgent != .shell else {
+            return toolResultResponse(id: id, text: "Error: Cannot delegate tasks to interactive terminal shell. Target an AI CLI agent (\(AgentKind.peerList)).", isError: true)
+        }
+        guard let prompt = args["prompt"] as? String, !prompt.isEmpty else {
+            return toolResultResponse(id: id, text: "Error: Missing required argument 'prompt'.", isError: true)
+        }
+
+        if let limitStatus = try destStore.isAgentLimited(agent: toAgent) {
+            let peerCandidates: [AgentKind] = AgentKind.peers.filter { $0 != toAgent }
+            var availablePeers: [String] = []
+            for peer in peerCandidates {
+                if (try destStore.isAgentLimited(agent: peer)) == nil {
+                    availablePeers.append(peer.rawValue)
+                }
+            }
+            let peerListStr = availablePeers.isEmpty ? "none" : availablePeers.joined(separator: ", ")
+            let errorMsg = "Cannot delegate to '\(toAgent.rawValue)': agent is currently in limit cooldown (reason: \(limitStatus.reason)). Alternative available peer agents: \(peerListStr)."
+            return toolResultResponse(id: id, text: errorMsg, isError: true)
+        }
+
+        let files = args["files"] as? [String] ?? []
+        let force = args["force"] as? Bool ?? false
+
+        var verification: Verification?
+        switch args["verify"] {
+        case nil, is NSNull:
+            break
+        case let verify as [String: Any]:
+            do {
+                verification = try resolveVerification(verify)
+            } catch {
+                return toolResultResponse(id: id, text: "Error: \(error.localizedDescription)", isError: true)
+            }
+        default:
+            return toolResultResponse(id: id, text: "Error: verify must be an object.", isError: true)
+        }
+
+        let settings = modelSettings()
+        let tierArg: String?
+        if let raw = args["tier"] {
+            guard let text = raw as? String else {
+                return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            tierArg = trimmed.isEmpty ? nil : trimmed
+        } else {
+            tierArg = nil
+        }
+        let tier: ModelTier?
+        if let tierArg {
+            guard let parsed = ModelTier(rawValue: tierArg.lowercased()) else {
+                return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
+            }
+            guard toAgent != .cursor else {
+                return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
+            }
+            tier = parsed
+        } else if toAgent == .cursor {
+            tier = nil
+        } else {
+            tier = settings.defaultTier(for: toAgent)
+        }
+        if let tier {
+            guard settings.model(for: toAgent, tier: tier) != nil else {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: no model configured for \(toAgent.rawValue) tier \(tier.rawValue) — set it in linkC settings.",
+                    isError: true)
+            }
+        }
+        if toAgent == .opencode, let tier, let model = settings.model(for: .opencode, tier: tier) {
+            let offered: [String]
+            do {
+                offered = try openCodeModels(destRoot)
+            } catch {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: could not check opencode tier \(tier.rawValue)'s model \(model) against the models OpenCode lists — \(error)",
+                    isError: true)
+            }
+            guard offered.contains(model) else {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(model) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings.",
+                    isError: true)
+            }
+        }
+
+        let fromProject = crossProject.map { _ in ProjectPath.canonical(workspaceRoot) }
+        let task = try destStore.createTask(
+            from: caller.agent, to: toAgent,
+            fromSessionId: callerSessionId(),
+            tier: tier,
+            prompt: prompt, files: files,
+            force: force, verification: verification,
+            fromProject: fromProject, isQuestion: isQuestion
+        )
+
+        if let crossProject {
+            do {
+                try inboxStore.recordSent(SentTask(
+                    taskId: task.id, project: ProjectPath.canonical(crossProject.path),
+                    fromSessionId: callerSessionId()
+                ))
+            } catch {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: task \(task.id) was created in \(crossProject.name) but this project won't track it: \(error.localizedDescription)",
+                    isError: true
+                )
+            }
+        }
+
+        let successText: String
+        if let crossProject {
+            successText = "Task \(task.shortId) queued for \(toAgent.displayName) in \(crossProject.name). Track with linkc_get_task(\"\(task.id)\")."
+        } else if let verification {
+            successText = "Task \(task.shortId) created. linkC will confirm the tests fail at \(VerificationRunner.short(verification.baseSha)) before delivery."
+        } else {
+            successText = "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
+        }
+
+        var usageNote = ""
+        if warnCapableAgents.contains(toAgent),
+           let window = usageReaders[toAgent]?().windowNeedingWarning,
+           let percent = window.usedPercent {
+            let resetSuffix = window.resetsAt.map { ", resets \(Self.formatReset($0, now: Date()))" } ?? ""
+            usageNote = " \(toAgent.displayName) is at \(Self.formatPercent(percent)) of its \(window.label) window\(resetSuffix)."
+        }
+
+        if !files.isEmpty {
+            do {
+                _ = try store.broadcastIntent(
+                    agentKind: caller.agent,
+                    pid: caller.pid,
+                    goal: "Delegated task \(task.shortId) to \(toAgent.displayName)",
+                    files: files,
+                    status: "delegating"
+                )
+            } catch {
+                let warning = "Warning: task was created but the blackboard broadcast failed: \(error.localizedDescription)."
+                return toolResultResponse(id: id, text: "\(successText)\n\(warning)\(usageNote)")
+            }
+        }
+
+        return toolResultResponse(id: id, text: "\(successText)\(usageNote)")
     }
 
     /// `linkc_list_projects`: one line per known project other than the caller's (spec §4.1).

@@ -168,8 +168,13 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     /// The one session this task may be delivered to: the session the `linkc --task` command opened for
     /// it. nil: any session of `toAgent` that can carry it. Optional for the same reason as `tier`.
     public var targetSessionId: String?
+    /// Canonical path of the project that sent this task, when it came from another project.
+    public let fromProject: String?
+    /// True for an ask (`linkc_ask`). Stored as Optional so older rows decode; use `isQuestion`.
+    public let question: Bool?
 
     public var shortId: String { String(id.prefix(8)) }
+    public var isQuestion: Bool { question == true }
 
     public init(
         id: String = UUID().uuidString,
@@ -196,7 +201,9 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         gate: Verdict? = nil,
         verdict: Verdict? = nil,
         closeRequest: CloseRequest? = nil,
-        targetSessionId: String? = nil
+        targetSessionId: String? = nil,
+        fromProject: String? = nil,
+        isQuestion: Bool = false
     ) {
         self.id = id
         self.fromAgent = fromAgent
@@ -223,6 +230,8 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.verdict = verdict
         self.closeRequest = closeRequest
         self.targetSessionId = targetSessionId
+        self.fromProject = fromProject
+        self.question = isQuestion ? true : nil
     }
 }
 
@@ -442,6 +451,21 @@ public struct AgentLimitStatus: Codable, Sendable, Equatable {
     }
 }
 
+/// A task this project sent into another project's inbox (spec 2026-11-11 cross-project §5.4).
+public struct SentTask: Codable, Equatable, Sendable {
+    public let taskId: String
+    public let project: String
+    public let fromSessionId: String?
+    public let createdAt: Date
+
+    public init(taskId: String, project: String, fromSessionId: String? = nil, createdAt: Date = Date()) {
+        self.taskId = taskId
+        self.project = project
+        self.fromSessionId = fromSessionId
+        self.createdAt = createdAt
+    }
+}
+
 /// Container stored at `<workspaceRoot>/.linkc/inbox.json`.
 public struct Inbox: Codable, Sendable, Equatable {
     public static let currentVersion = 2
@@ -452,6 +476,7 @@ public struct Inbox: Codable, Sendable, Equatable {
     public var messages: [PendingMessage]
     public var agentLimits: [AgentLimitStatus]
     public var tasks: [TaskRecord]
+    public var sentTasks: [SentTask]
 
     public init(
         version: Int = Inbox.currentVersion,
@@ -459,7 +484,8 @@ public struct Inbox: Codable, Sendable, Equatable {
         updatedAt: Date = Date(),
         messages: [PendingMessage] = [],
         agentLimits: [AgentLimitStatus] = [],
-        tasks: [TaskRecord] = []
+        tasks: [TaskRecord] = [],
+        sentTasks: [SentTask] = []
     ) {
         self.version = version
         self.workspacePath = workspacePath
@@ -467,10 +493,11 @@ public struct Inbox: Codable, Sendable, Equatable {
         self.messages = messages
         self.agentLimits = agentLimits
         self.tasks = tasks
+        self.sentTasks = sentTasks
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, workspacePath, updatedAt, messages, agentLimits, tasks
+        case version, workspacePath, updatedAt, messages, agentLimits, tasks, sentTasks
     }
 
     public init(from decoder: Decoder) throws {
@@ -481,7 +508,8 @@ public struct Inbox: Codable, Sendable, Equatable {
             updatedAt: try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date(),
             messages: try c.decodeIfPresent([PendingMessage].self, forKey: .messages) ?? [],
             agentLimits: try c.decodeIfPresent([AgentLimitStatus].self, forKey: .agentLimits) ?? [],
-            tasks: try c.decodeIfPresent([TaskRecord].self, forKey: .tasks) ?? []
+            tasks: try c.decodeIfPresent([TaskRecord].self, forKey: .tasks) ?? [],
+            sentTasks: try c.decodeIfPresent([SentTask].self, forKey: .sentTasks) ?? []
         )
     }
 }
