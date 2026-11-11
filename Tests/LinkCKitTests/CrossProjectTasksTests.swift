@@ -185,4 +185,117 @@ final class CrossProjectTasksTests: XCTestCase {
         XCTAssertTrue(verified.isError)
         XCTAssertTrue(verified.text.lowercased().contains("verified") || verified.text.lowercased().contains("verify"), verified.text)
     }
+
+    // MARK: - Pointer-following tools (A4)
+
+    private func delegateToAway(prompt: String = "fix away") throws -> TaskRecord {
+        let result = try call(homeServer(), "linkc_delegate_task", [
+            "project": "away", "to": "codex", "prompt": prompt
+        ])
+        XCTAssertFalse(result.isError, result.text)
+        return try XCTUnwrap(awayInbox.openTasks().first)
+    }
+
+    func testGetTaskFollowsTheSentPointer() throws {
+        let task = try delegateToAway()
+        let result = try call(homeServer(), "linkc_get_task", ["task_id": task.shortId])
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertTrue(result.text.contains(task.id), result.text)
+        XCTAssertTrue(result.text.contains("fix away"), result.text)
+    }
+
+    func testCancelTaskFromHomeCancelsInAwayWithStopNotice() throws {
+        let task = try delegateToAway()
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: "away-worker")
+        let result = try call(homeServer(), "linkc_cancel_task", ["task_id": task.shortId, "reason": "no longer needed"])
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try awayInbox.task(id: task.id)?.state, .cancelled)
+        let stop = try XCTUnwrap(awayInbox.load().messages.first { $0.taskId == task.id })
+        XCTAssertEqual(stop.toSessionId, "away-worker")
+        XCTAssertTrue(stop.prompt.contains("cancelled"), stop.prompt)
+    }
+
+    func testCloseWorkerFromHomeWritesInAway() throws {
+        let task = try delegateToAway()
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: "away-worker")
+        try awayInbox.markTaskStarted(taskId: task.id)
+        try awayInbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "done"))
+        try awayInbox.acceptUnverified(taskId: task.id)
+        let wait = MCPServer.CloseAnswerWait(timeout: 0, interval: 0.01, sleep: { _ in })
+        let server = MCPServer(
+            workspaceRoot: home.path, inboxStore: homeInbox,
+            environment: ["LINKC_AGENT": "claude", "LINKC_SESSION": "home-claude"],
+            ancestorResolver: { _ in nil }, modelSettings: { .seeded },
+            sessionResolver: { nil }, usageReaders: [:],
+            closeAnswerWait: wait, knownProjects: file
+        )
+        let result = try call(server, "linkc_close_worker", ["task_id": task.shortId])
+        let recorded = try XCTUnwrap(awayInbox.task(id: task.id)?.closeRequest)
+        XCTAssertEqual(recorded.by, .delegator)
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertTrue(result.text.contains("Close"), result.text)
+    }
+
+    func testMyTasksListsDelegatedWithProjectArrow() throws {
+        let task = try delegateToAway(prompt: "list me")
+        let result = try call(homeServer(), "linkc_my_tasks", [:])
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertTrue(result.text.contains(task.shortId), result.text)
+        XCTAssertTrue(result.text.contains("→ away"), result.text)
+    }
+
+    func testSendMessageWithTaskIdEnqueuesInAway() throws {
+        let task = try delegateToAway()
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: "away-worker")
+        let result = try call(homeServer(), "linkc_send_message", [
+            "to": "codex", "message": "nudge", "task_id": task.shortId
+        ])
+        XCTAssertFalse(result.isError, result.text)
+        let msg = try XCTUnwrap(awayInbox.fetchPending().first)
+        XCTAssertEqual(msg.toSessionId, "away-worker")
+        XCTAssertTrue(try homeInbox.fetchPending().isEmpty)
+    }
+
+    func testSwitchModelWithTaskIdEnqueuesInAwayOrCallsSwitcherWithAwayPath() throws {
+        let task = try delegateToAway()
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: "away-worker")
+        let model = try XCTUnwrap(AgentModelSettings.seeded.model(for: .codex, tier: .light))
+
+        let enqueued = try call(homeServer(), "linkc_switch_model", ["model": model, "task_id": task.id])
+        XCTAssertFalse(enqueued.isError, enqueued.text)
+        let cmd = try XCTUnwrap(awayInbox.fetchPending().first { $0.kind == .command })
+        XCTAssertEqual(cmd.toSessionId, "away-worker")
+
+        final class Seen: @unchecked Sendable {
+            var workspace: String?
+            var sessionId: String??
+        }
+        let seen = Seen()
+        let switching = MCPServer(
+            workspaceRoot: home.path, inboxStore: homeInbox,
+            modelSwitcher: { _, _, sessionId, workspace in
+                seen.workspace = workspace
+                seen.sessionId = sessionId
+                return "switched"
+            },
+            environment: ["LINKC_AGENT": "claude", "LINKC_SESSION": "home-claude"],
+            ancestorResolver: { _ in nil }, modelSettings: { .seeded },
+            sessionResolver: { nil }, usageReaders: [:], knownProjects: file
+        )
+        let switched = try call(switching, "linkc_switch_model", ["model": model, "task_id": task.id])
+        XCTAssertFalse(switched.isError, switched.text)
+        XCTAssertEqual(seen.workspace, ProjectPath.canonical(away.path))
+        XCTAssertEqual(seen.sessionId, .some("away-worker"))
+    }
+
+    func testStalePointerIsDroppedWhenTaskIsGone() throws {
+        let task = try delegateToAway()
+        var inbox = try awayInbox.load()
+        inbox.tasks.removeAll { $0.id == task.id }
+        try awayInbox.saveRaw(inbox)
+        let result = try call(homeServer(), "linkc_get_task", ["task_id": task.shortId])
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.text.lowercased().contains("not found"), result.text)
+        XCTAssertTrue(try homeInbox.sentTasks().isEmpty)
+    }
 }

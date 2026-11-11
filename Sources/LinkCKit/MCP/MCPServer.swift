@@ -142,7 +142,7 @@ final class TTLCachedUsageReader: @unchecked Sendable {
 public final class MCPServer: Sendable {
     /// Switches `agent`'s model in the workspace: in `sessionId` when the caller named a task, else in
     /// the first session of `agent`.
-    public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String, _ sessionId: String?) throws -> String
+    public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String, _ sessionId: String?, _ workspaceRoot: String) throws -> String
     public typealias AncestorResolver = @Sendable (_ pid: pid_t) -> (agent: AgentKind, pid: pid_t)?
     public typealias ModelSettingsProvider = @Sendable () -> AgentModelSettings
     public typealias SessionResolver = @Sendable () -> String?
@@ -949,7 +949,8 @@ public final class MCPServer: Sendable {
 
                 do {
                     let worker = try taskWorker(args, agent: toAgent)
-                    let pending = try inboxStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote,
+                    let destStore = worker?.store ?? inboxStore
+                    let pending = try destStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote,
                                                          toSessionId: worker?.sessionId, body: messageText)
                     if let worker {
                         return toolResultResponse(id: id, text: "Message queued for the \(toAgent.displayName) worker holding task \(worker.task.shortId) (ID: \(pending.id)). linkC delivers it when that worker is idle; if the worker has ended by then, the message fails.")
@@ -1025,7 +1026,7 @@ public final class MCPServer: Sendable {
 
             case "linkc_switch_model":
                 let named = (args["agent"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let worker: (task: TaskRecord, sessionId: String)?
+                let worker: (task: TaskRecord, sessionId: String, store: InboxStore, root: String)?
                 do {
                     worker = try taskWorker(args, agent: named.flatMap { AgentKind(rawValue: $0.lowercased()) })
                 } catch {
@@ -1055,9 +1056,11 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: '\(cleanModel)' is not a configured model for \(agent.displayName). Configured models: \(allowed)", isError: true)
                 }
 
+                let destRoot = worker?.root ?? workspaceRoot
+                let destStore = worker?.store ?? inboxStore
                 if let modelSwitcher {
                     do {
-                        let result = try modelSwitcher(agent, cleanModel, worker?.sessionId)
+                        let result = try modelSwitcher(agent, cleanModel, worker?.sessionId, destRoot)
                         return toolResultResponse(id: id, text: result)
                     } catch {
                         return errorResult(id: id, error)
@@ -1065,7 +1068,7 @@ public final class MCPServer: Sendable {
                 } else {
                     let cmd = AgentModelCatalog.interactiveSwitchCommand(model: cleanModel, for: agent)
                     do {
-                        _ = try inboxStore.enqueue(from: agent, to: agent, kind: .command, toSessionId: worker?.sessionId, body: cmd)
+                        _ = try destStore.enqueue(from: agent, to: agent, kind: .command, toSessionId: worker?.sessionId, body: cmd)
                     } catch {
                         return errorResult(id: id, error)
                     }
@@ -1156,15 +1159,16 @@ public final class MCPServer: Sendable {
 
             case "linkc_start_task":
                 do {
-                    let task = try requireTask(args)
+                    let resolved = try requireTask(args)
+                    let task = resolved.task
                     guard caller.agent == task.toAgent else {
                         return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
                     }
                     guard callerMayAct(on: task) else {
                         return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to another session.", isError: true)
                     }
-                    try inboxStore.markTaskStarted(taskId: task.id)
-                    let updated = try inboxStore.task(id: task.id) ?? task
+                    try resolved.store.markTaskStarted(taskId: task.id)
+                    let updated = try resolved.store.task(id: task.id) ?? task
                     return toolResultResponse(id: id, text: "Started: \(taskLine(updated))")
                 } catch {
                     return errorResult(id: id, error)
@@ -1172,7 +1176,8 @@ public final class MCPServer: Sendable {
 
             case "linkc_complete_task":
                 do {
-                    let task = try requireTask(args)
+                    let resolved = try requireTask(args)
+                    let task = resolved.task
                     guard caller.agent == task.toAgent else {
                         return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
                     }
@@ -1199,14 +1204,14 @@ public final class MCPServer: Sendable {
                     var sha: String?
                     if let raw = (args["sha"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
                         do {
-                            sha = try GitClient().resolveCommit(raw, in: URL(fileURLWithPath: workspaceRoot))
+                            sha = try GitClient().resolveCommit(raw, in: URL(fileURLWithPath: resolved.root))
                         } catch {
                             return toolResultResponse(id: id, text: "Error: sha: \(error.localizedDescription). Commit your work, then report that commit's sha.", isError: true)
                         }
                     }
                     // `tests` is still accepted from older callers and ignored: linkC runs the tests itself.
                     let report = TaskReport(status: status, summary: summary, sha: sha, commits: args["commits"] as? [String] ?? [])
-                    try inboxStore.reportTask(taskId: task.id, report: report)
+                    try resolved.store.reportTask(taskId: task.id, report: report)
 
                     var text: String
                     if task.verification == nil {
@@ -1217,7 +1222,7 @@ public final class MCPServer: Sendable {
                         text = "Reported. linkC will mark the task failed."
                     }
                     if closeSession {
-                        text += " " + closeOwnSession(after: task)
+                        text += " " + closeOwnSession(after: task, store: resolved.store)
                     }
                     return toolResultResponse(id: id, text: text)
                 } catch {
@@ -1226,12 +1231,13 @@ public final class MCPServer: Sendable {
 
             case "linkc_close_worker":
                 do {
-                    let task = try requireTask(args)
+                    let resolved = try requireTask(args)
+                    let task = resolved.task
                     guard caller.agent == task.fromAgent, callerDelegated(task) else {
                         return toolResultResponse(id: id, text: "Error: only the agent that delegated task \(task.shortId) (\(task.fromAgent.displayName)) may close its worker.", isError: true)
                     }
-                    let request = try inboxStore.requestClose(taskId: task.id, by: .delegator)
-                    guard let answer = try awaitAnswer(to: request, on: task.id) else {
+                    let request = try resolved.store.requestClose(taskId: task.id, by: .delegator)
+                    guard let answer = try awaitAnswer(to: request, on: task.id, store: resolved.store) else {
                         return toolResultResponse(id: id, text: "Close requested for the worker of task \(task.shortId), but linkC has not answered yet (is it running?). The request may still be acted on if the worker still qualifies; linkc_get_task(\"\(task.id)\") shows the outcome.")
                     }
                     if let refusal = answer.refusal {
@@ -1244,7 +1250,8 @@ public final class MCPServer: Sendable {
 
             case "linkc_cancel_task":
                 do {
-                    let task = try requireTask(args)
+                    let resolved = try requireTask(args)
+                    let task = resolved.task
                     let force = args["force"] as? Bool ?? false
                     let isAssignee = caller.agent == task.toAgent && callerMayAct(on: task)
                     guard force || caller.agent == task.fromAgent || isAssignee else {
@@ -1253,11 +1260,11 @@ public final class MCPServer: Sendable {
                     let reason = (args["reason"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
                     let resolvedReason = (reason?.isEmpty == false) ? reason! : "cancelled by \(caller.agent.displayName)"
                     let wasDelivered = task.state == .delivered || task.state == .started
-                    try inboxStore.cancelTask(taskId: task.id, reason: resolvedReason)
+                    try resolved.store.cancelTask(taskId: task.id, reason: resolvedReason)
                     let successText = "Cancelled task \(task.shortId) (\(resolvedReason))."
                     if wasDelivered {
                         do {
-                            _ = try inboxStore.enqueue(
+                            _ = try resolved.store.enqueue(
                                 from: caller.agent, to: task.toAgent, kind: .completion,
                                 taskId: task.id, toSessionId: task.assigneeSessionId,
                                 body: "cancelled: \(resolvedReason). Stop work on it."
@@ -1274,8 +1281,8 @@ public final class MCPServer: Sendable {
 
             case "linkc_get_task":
                 do {
-                    let task = try requireTask(args)
-                    return toolResultResponse(id: id, text: taskMarkdown(task))
+                    let resolved = try requireTask(args)
+                    return toolResultResponse(id: id, text: taskMarkdown(resolved.task))
                 } catch {
                     return errorResult(id: id, error)
                 }
@@ -1285,17 +1292,28 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: Self.unidentifiedCallerMessage, isError: true)
                 }
                 let assigned: [TaskRecord]
-                let delegated: [TaskRecord]
+                var delegatedLines: [String] = []
                 do {
                     assigned = try inboxStore.openTasks(for: caller.agent).filter { callerMayAct(on: $0) }
-                    delegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
+                    let localDelegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
+                    delegatedLines = localDelegated.map { "- \(taskLine($0))" }
+                    for pointer in try inboxStore.sentTasks() {
+                        let name = URL(fileURLWithPath: pointer.project).lastPathComponent
+                        do {
+                            let remote = InboxStore(workspaceRoot: pointer.project)
+                            guard let task = try remote.task(id: pointer.taskId), task.state.isOpen else { continue }
+                            delegatedLines.append("- \(taskLine(task)) → \(name)")
+                        } catch {
+                            delegatedLines.append("- \(name): could not be read (\(error.localizedDescription))")
+                        }
+                    }
                 } catch {
                     return errorResult(id: id, error)
                 }
                 var text = "# Open tasks for \(caller.agent.displayName)\n\n## Assigned to you (\(assigned.count))\n"
                 text += assigned.isEmpty ? "_None._\n" : assigned.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
-                text += "\n## Delegated by you (\(delegated.count))\n"
-                text += delegated.isEmpty ? "_None._\n" : delegated.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
+                text += "\n## Delegated by you (\(delegatedLines.count))\n"
+                text += delegatedLines.isEmpty ? "_None._\n" : delegatedLines.joined(separator: "\n") + "\n"
                 return toolResultResponse(id: id, text: text)
 
             default:
@@ -1485,28 +1503,42 @@ public final class MCPServer: Sendable {
         return Verification(branch: branch, baseSha: base, command: command, testPaths: paths, timeoutSeconds: timeout)
     }
 
-    private func requireTask(_ args: [String: Any]) throws -> TaskRecord {
+    /// Resolves `task_id` in this inbox, or through a `sentTasks` pointer into the project that holds it
+    /// (spec 2026-11-11 cross-project §5.4 / §6.3).
+    private func requireTask(_ args: [String: Any]) throws -> (task: TaskRecord, store: InboxStore, root: String) {
         guard let taskId = (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !taskId.isEmpty else {
             throw LinkCError.server("Missing required argument 'task_id'.")
         }
-        guard let task = try inboxStore.task(matching: taskId) else { throw InboxError.taskNotFound(taskId) }
-        return task
+        if let task = try inboxStore.task(matching: taskId) {
+            return (task, inboxStore, workspaceRoot)
+        }
+        guard let pointer = try inboxStore.sentTask(matching: taskId) else {
+            throw InboxError.taskNotFound(taskId)
+        }
+        let remote = InboxStore(workspaceRoot: pointer.project)
+        if let task = try remote.task(id: pointer.taskId) {
+            return (task, remote, ProjectPath.canonical(pointer.project))
+        }
+        try inboxStore.dropSent(taskId: pointer.taskId)
+        throw InboxError.taskNotFound(taskId)
     }
 
     /// The task `args["task_id"]` names and the session holding it, or nil when no task is named. Throws
     /// when the task does not exist, no worker holds it yet, or it is for another agent than `agent`.
-    private func taskWorker(_ args: [String: Any], agent: AgentKind?) throws -> (task: TaskRecord, sessionId: String)? {
+    /// Follows a `sentTasks` pointer so a message or model switch reaches the worker in the other project.
+    private func taskWorker(_ args: [String: Any], agent: AgentKind?) throws -> (task: TaskRecord, sessionId: String, store: InboxStore, root: String)? {
         guard let taskId = (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !taskId.isEmpty else {
             return nil
         }
-        guard let task = try inboxStore.task(matching: taskId) else { throw InboxError.taskNotFound(taskId) }
+        let resolved = try requireTask(args)
+        let task = resolved.task
         if let agent, agent != task.toAgent {
             throw LinkCError.server("Task \(task.shortId) is for \(task.toAgent.displayName), not \(agent.displayName).")
         }
         guard let sessionId = task.assigneeSessionId else {
             throw LinkCError.server("Task \(task.shortId) has no worker yet (it is \(task.state.rawValue)). Send this once the task has started.")
         }
-        return (task, sessionId)
+        return (task, sessionId, resolved.store, resolved.root)
     }
 
     /// A task delivered to a specific session belongs to that session. Several sessions of one
@@ -1532,9 +1564,9 @@ public final class MCPServer: Sendable {
     /// The reporting worker's own request to close its session, after its report is recorded:
     /// a sentence for the tool result. A refusal is stated, not raised — the report already
     /// landed and stays.
-    private func closeOwnSession(after task: TaskRecord) -> String {
+    private func closeOwnSession(after task: TaskRecord, store: InboxStore) -> String {
         do {
-            _ = try inboxStore.requestClose(taskId: task.id, by: .worker)
+            _ = try store.requestClose(taskId: task.id, by: .worker)
             return "Close requested: linkC closes this session after your turn ends if it launched it as a worker, it holds no other open task, and nothing was typed into it after the task ended."
         } catch InboxError.closeRefused(let reason) {
             return "Not closing this session: \(reason)"
@@ -1547,12 +1579,12 @@ public final class MCPServer: Sendable {
     /// none came. Only the answer to this very request counts — an earlier one is not. The request
     /// is already recorded, so a poll that cannot take the inbox lock (the relay holds it while it
     /// decides) is not an answer yet, not a failure of the request; any other read error is.
-    private func awaitAnswer(to request: CloseRequest, on taskId: String) throws -> CloseRequest? {
+    private func awaitAnswer(to request: CloseRequest, on taskId: String, store: InboxStore) throws -> CloseRequest? {
         var waited: TimeInterval = 0
         while true {
             let current: TaskRecord?
             do {
-                current = try inboxStore.task(id: taskId)
+                current = try store.task(id: taskId)
             } catch LinkCError.lockTimeout {
                 return nil
             }
