@@ -113,14 +113,14 @@ hand off work and share context with each other:
 | `linkc_close_worker` | Close the worker that carried a task you delegated. |
 | `linkc_get_task` | Show the full record of a task. |
 | `linkc_my_tasks` | List your open tasks. |
-| `linkc_send_message` | Send a message to another agent. |
+| `linkc_send_message` | Send a message to another agent. With `task_id`, it goes to the worker holding that task. |
 | `linkc_get_inbox` | Show the queued messages and the active agent limits. |
 | `linkc_post_note` | Post a note that all agents in the project can read. |
 | `linkc_broadcast_intent` | Tell the other agents your goal and your files. |
 | `linkc_check_conflicts` | Find out if another agent claims a file. |
 | `linkc_get_project_context` | Show the Board, and the goals and notes of the other agents. |
 | `linkc_get_board`, `linkc_edit_board` | Read or edit the Board, or a detail board. The `detail` step creates a component's detail board; the `column` step adds, changes or removes a table column. |
-| `linkc_get_models`, `linkc_switch_model` | List an agent's models, or change one. |
+| `linkc_get_models`, `linkc_switch_model` | List an agent's models, or change one. With `task_id`, `linkc_switch_model` changes the worker holding that task. |
 | `linkc_get_usage_status` | Show the usage each agent has left. |
 
 linkC delivers tasks and messages by typing them into the receiving agent's terminal — every
@@ -129,7 +129,9 @@ standard or deep), configured per agent in **Settings > Models**. A verified tas
 test command: linkC runs it itself, and the work only counts as done if the tests fail before it
 and pass after.
 
-When no agent of the right kind is free, linkC launches one to carry the task. That worker closes
+When no agent of the right kind is free, linkC launches one to carry the task, so several workers of
+one agent can run side by side: three tasks for Codex with no Codex free start three Codex workers.
+A free agent is one that is idle or still starting and is not holding a task it has not reported. Each worker closes
 once it has been idle for a minute since its task ended, unless another task for the same kind of
 agent is waiting for it, and after ten idle minutes at the latest. The delegating agent can close it
 sooner with `linkc_close_worker`, and the worker can close itself when it reports with

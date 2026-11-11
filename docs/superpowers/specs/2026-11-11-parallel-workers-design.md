@@ -31,7 +31,7 @@ A new pure type, `WorkerClaims`, plans each pass of `dispatchTasks`. Its inputs:
 - the folder's live sessions (not ended);
 - the ids of sessions that are the assignee of a `delivered` or `started` task, which are tasks given to them and not yet reported.
 
-It walks the tasks in order. Each task gets one decision:
+Pinned tasks claim first, then the unpinned tasks in queue order, so an earlier unpinned task cannot take a pinned task's session. Each task gets one decision:
 
 - **Pinned task** (`targetSessionId` set): unchanged. If its session can carry it, the task claims that session, so no other task in the pass counts on it. The task is delivered when the session is idle and ready, and waits otherwise. It never starts a session. A pinned task whose session has ended expires, as today.
 - **Unpinned task:** it claims the first session that meets all of these:
@@ -70,8 +70,9 @@ The tools return an error, with the reason, when:
 
 - the task does not exist;
 - the task has no worker yet ("send it once the task starts");
-- the task's agent differs from `to` or `agent`;
-- the task's worker has ended.
+- the task's agent differs from `to` or `agent`.
+
+The MCP server runs outside the app and cannot see which sessions are live. So a worker that has ended is caught at delivery: the message fails, and the user is told (§6).
 
 A task that is finished but whose worker is still live can still be messaged, for a follow-up in the same context.
 
@@ -96,9 +97,10 @@ TDD through the existing seams. Nothing real is launched.
   - a pinned task keeps its own session;
   - a tier mismatch is not claimed.
 - `dispatchTasks` integration tests with the fake terminal and agent resolver:
-  - three Codex tasks with one busy worker start two workers;
+  - with one busy and one idle Codex session, three Codex tasks: the idle session takes one, and the other two each start a worker;
   - the next pass, with those two starting, starts none;
-  - once idle, each task goes to a different worker.
+  - once idle, each task goes to a different worker;
+  - a worker idle with an unreported task gets no new task, and a new worker starts.
 - Message routing:
   - `toSessionId` reaches the right one of two workers;
   - an ended worker fails the message;
