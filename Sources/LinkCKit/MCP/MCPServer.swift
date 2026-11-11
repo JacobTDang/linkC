@@ -203,6 +203,9 @@ public final class MCPServer: Sendable {
     /// The models OpenCode offers in a folder, read on every OpenCode delegation: a free model can
     /// go at any time, and OpenCode runs a session whose model it does not know on whatever it picks.
     public let openCodeModels: OpenCodeModelLister
+    /// The app's list of known projects, which a `project` argument names one of (spec 2026-11-11
+    /// cross-project §4).
+    public let knownProjects: KnownProjectsFile
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -254,7 +257,8 @@ public final class MCPServer: Sendable {
         usageReaders: [AgentKind: UsageReader] = MCPServer.defaultUsageReaders(),
         warnCapableAgents: Set<AgentKind> = MCPServer.defaultWarnCapableAgents,
         closeAnswerWait: CloseAnswerWait = .standard,
-        openCodeModels: @escaping OpenCodeModelLister = { try MCPServer.listOpenCodeModels(in: $0) }
+        openCodeModels: @escaping OpenCodeModelLister = { try MCPServer.listOpenCodeModels(in: $0) },
+        knownProjects: KnownProjectsFile = .applicationSupport
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -269,6 +273,18 @@ public final class MCPServer: Sendable {
         self.warnCapableAgents = warnCapableAgents
         self.closeAnswerWait = closeAnswerWait
         self.openCodeModels = openCodeModels
+        self.knownProjects = knownProjects
+    }
+
+    /// The project a tool's `project` argument names, or nil when the call has none and so acts on
+    /// this project. Throws the refusals of `ProjectRef.resolve`, and `KnownProjectsError` when the
+    /// app's list can't be read.
+    func targetProject(_ args: [String: Any]) throws -> KnownProject? {
+        guard let raw = args["project"] else { return nil }
+        guard let ref = raw as? String else {
+            throw LinkCError.server("project must be a folder name or a full path")
+        }
+        return try ProjectRef.resolve(ref, among: knownProjects.read(), caller: workspaceRoot)
     }
 
     /// The real readers, wired to each agent's own on-disk records. `agy` and `cursor` write
