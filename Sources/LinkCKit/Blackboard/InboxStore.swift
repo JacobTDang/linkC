@@ -233,6 +233,13 @@ public final class InboxStore: Sendable {
         try snapshot(timeout: timeout)
     }
 
+    /// True when any message is `.queued`, or any task `state.isOpen` — the sweep serves such folders.
+    public func hasOpenWork(timeout: TimeInterval = 5.0) throws -> Bool {
+        let inbox = try snapshot(timeout: timeout)
+        return inbox.messages.contains { $0.status == .queued }
+            || inbox.tasks.contains { $0.state.isOpen }
+    }
+
     /// Public raw save for testing or explicit writes.
     public func saveRaw(_ inbox: Inbox, timeout: TimeInterval = 5.0) throws {
         try withFileLock(timeout: timeout) {

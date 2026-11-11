@@ -67,7 +67,11 @@ final class AppCoordinatorRelayTests: XCTestCase {
         userHome: URL? = nil,
         openCodeModels: @escaping AppCoordinator.OpenCodeModelLister = { _ in
             AgentModelSettings.seeded.models[AgentKind.opencode.rawValue]?.values.map { $0 } ?? []
-        }
+        },
+        sweepClock: any Clock<Duration> = ContinuousClock(),
+        mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
+        knownProjectsFile: KnownProjectsFile? = nil,
+        sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] }
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -107,6 +111,10 @@ final class AppCoordinatorRelayTests: XCTestCase {
             injectionGap: injectionGap,
             turnEndQuietPeriod: turnEndQuietPeriod,
             now: now,
+            sweepClock: sweepClock,
+            mcpWorkspaces: mcpWorkspaces,
+            knownProjectsFile: knownProjectsFile,
+            sidebarProjects: sidebarProjects,
             openCodeModels: openCodeModels,
             isWatching: { _ in false }
         )
@@ -4573,6 +4581,79 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .expired)
         XCTAssertEqual(coordinator.store.sessions.map(\.id), ["ENDED"], "no session was launched for it")
+    }
+
+    // MARK: - Known projects (spec 2026-11-11 cross-project §4)
+
+    @MainActor
+    func testSweepPublishesTheSessionsProject() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "idle", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+
+        await coordinator.runSweepTickForTests()
+
+        let projects = try file.read()
+        XCTAssertEqual(projects.count, 1)
+        XCTAssertEqual(projects[0].path, ProjectPath.canonical(tempDir.path))
+        XCTAssertEqual(projects[0].sessions.map(\.id), ["L1"])
+        XCTAssertEqual(projects[0].sessions.first?.activity, .idle)
+    }
+
+    @MainActor
+    func testProjectsFileIsRewrittenOnlyWhenContentsChange() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "idle", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+
+        await coordinator.runSweepTickForTests()
+        XCTAssertEqual(coordinator.knownProjectsWriteCount, 1)
+
+        await coordinator.runSweepTickForTests()
+        XCTAssertEqual(coordinator.knownProjectsWriteCount, 1, "unchanged contents must not rewrite the file")
+    }
+
+    @MainActor
+    func testShutdownRemovesTheProjectsFile() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        let session = coordinator.store.create(cwd: tempDir.path, title: "idle", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        await coordinator.runSweepTickForTests()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.url.path))
+
+        coordinator.shutdown()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+    }
+
+    /// A sidebar project with no session of its own still gets a worker when its inbox has open work.
+    @MainActor
+    func testASidebarProjectWithOpenWorkGetsAWorker() async throws {
+        let project = tempDir.appendingPathComponent("sidebar-proj", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let folder = ProjectPath.canonical(project.path)
+        let clock = ManualClock()
+        let coordinator = makeCoordinator(
+            sweepClock: clock,
+            sidebarProjects: { [folder] }
+        )
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        _ = try InboxStore(workspaceRoot: folder).createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+
+        try coordinator.start()
+
+        let served = try await waitUntil {
+            coordinator.store.sessions.contains { $0.cwd == folder && $0.agentKind == .codex && $0.isWorker }
+        }
+        XCTAssertTrue(served, "sidebar project with open work never got a worker")
     }
 }
 

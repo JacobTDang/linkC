@@ -210,7 +210,8 @@ public final class MCPServer: Sendable {
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
         "linkc_get_project_context", "linkc_check_conflicts", "linkc_get_inbox",
-        "linkc_get_task", "linkc_get_models", "linkc_get_usage_status", "linkc_get_board"
+        "linkc_get_task", "linkc_get_models", "linkc_get_usage_status", "linkc_get_board",
+        "linkc_list_projects"
     ]
 
     /// Tools whose `agent` argument is a target/filter rather than the caller's identity.
@@ -482,6 +483,14 @@ public final class MCPServer: Sendable {
                 ]
             ],
             [
+                "name": "linkc_list_projects",
+                "description": "List the other projects linkC knows, one line each: name, path, and each open session's agent and whether it is idle or busy. Pass a name or path as `project` to linkc_ask, linkc_delegate_task, linkc_send_message, linkc_get_board or linkc_get_project_context.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [:]
+                ]
+            ],
+            [
                 "name": "linkc_get_board",
                 "description": "Read this project's Board — its architecture (system, places, components, notes) as JSON, exactly as `system-map.json` holds it minus layout. Use the exact names it shows with linkc_edit_board. Optional board: \"overview\" (default) or a detail board's slug. Parts marked outside come from the parent board and are read-only here.",
                 "inputSchema": [
@@ -717,6 +726,13 @@ public final class MCPServer: Sendable {
                 }
 
                 return toolResultResponse(id: id, text: responseText)
+
+            case "linkc_list_projects":
+                do {
+                    return try listProjectsResult(id: id)
+                } catch {
+                    return errorResult(id: id, error)
+                }
 
             case "linkc_check_conflicts":
                 let files = args["files"] as? [String] ?? []
@@ -1695,6 +1711,29 @@ public final class MCPServer: Sendable {
                 throw LinkCError.server("could not create detail board \"\(slug)\": \(error.localizedDescription)")
             }
         }
+    }
+
+    /// `linkc_list_projects`: one line per known project other than the caller's (spec §4.1).
+    private func listProjectsResult(id: Any?) throws -> Data? {
+        let own = ProjectPath.canonical(workspaceRoot)
+        let others = try knownProjects.read().filter { $0.path != own }
+        guard !others.isEmpty else {
+            return toolResultResponse(id: id, text: "No other project is known to linkC.")
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let lines = others.map { project -> String in
+            let path = project.path.hasPrefix(home)
+                ? "~" + project.path.dropFirst(home.count)
+                : project.path
+            let sessions: String
+            if project.sessions.isEmpty {
+                sessions = "no sessions"
+            } else {
+                sessions = project.sessions.map { "\($0.agent) \($0.activity.rawValue)" }.joined(separator: ", ")
+            }
+            return "\(project.name)  \(path)  \(sessions)"
+        }
+        return toolResultResponse(id: id, text: lines.joined(separator: "\n"))
     }
 
     /// The catch every tool handler in this file reaches for once it has nothing more specific
