@@ -587,12 +587,14 @@ public final class MCPServer: Sendable {
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList))"],
+                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList)). Optional with reply_to (taken from the original message)."],
                         "message": ["type": "string", "description": "Message or note content to send"],
                         "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
-                        "task_id": ["type": "string", "description": "Optional. The message goes to the worker holding this task, not the first session of the agent. Refused while the task has no worker yet."]
+                        "task_id": ["type": "string", "description": "Optional. The message goes to the worker holding this task, not the first session of the agent. Refused while the task has no worker yet."],
+                        "project": ["type": "string", "description": "Optional. Another project's folder name or path; the message is delivered there."],
+                        "reply_to": ["type": "string", "description": "Optional. Id of a cross-project message in this inbox to reply to."]
                     ],
-                    "required": ["to", "message"]
+                    "required": ["message"]
                 ]
             ],
             [
@@ -966,14 +968,42 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(id: id, text: "\(successText)\(usageNote)")
 
             case "linkc_send_message":
+                guard let messageText = args["message"] as? String, !messageText.isEmpty else {
+                    return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
+                }
+                let replyTo = args["reply_to"] as? String
+                let hasProjectArg = args["project"] != nil
+                if replyTo != nil || hasProjectArg {
+                    if messageText.count > PendingMessage.crossProjectMessageLimit {
+                        return toolResultResponse(
+                            id: id,
+                            text: "Messages to another project are at most 2,000 characters. Point to a file path instead; both projects are on this Mac.",
+                            isError: true
+                        )
+                    }
+                }
+
+                if let replyTo {
+                    do {
+                        return try crossProjectReplyResult(id: id, caller: caller, args: args, replyTo: replyTo, messageText: messageText)
+                    } catch {
+                        return errorResult(id: id, error)
+                    }
+                }
+
+                if hasProjectArg {
+                    do {
+                        return try crossProjectSendResult(id: id, caller: caller, args: args, messageText: messageText)
+                    } catch {
+                        return errorResult(id: id, error)
+                    }
+                }
+
                 guard let toStr = args["to"] as? String, !toStr.isEmpty else {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
                 }
                 guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
                     return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
-                }
-                guard let messageText = args["message"] as? String, !messageText.isEmpty else {
-                    return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
                 }
 
                 do {
@@ -1642,6 +1672,125 @@ public final class MCPServer: Sendable {
                 throw LinkCError.server("could not create detail board \"\(slug)\": \(error.localizedDescription)")
             }
         }
+    }
+
+    /// `linkc_send_message(project:)` — write into the named project's inbox (spec §6).
+    private func crossProjectSendResult(
+        id: Any?,
+        caller: MCPCaller,
+        args: [String: Any],
+        messageText: String
+    ) throws -> Data? {
+        guard let toStr = args["to"] as? String, !toStr.isEmpty else {
+            return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
+        }
+        guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+            return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
+        }
+        guard let target = try targetProject(args) else {
+            return toolResultResponse(id: id, text: "Error: Missing required argument 'project'.", isError: true)
+        }
+        if let refusal = openSessionRefusal(to: toAgent, in: target) {
+            return toolResultResponse(id: id, text: refusal, isError: true)
+        }
+        let pending = try InboxStore(workspaceRoot: target.path).enqueue(
+            from: caller.agent,
+            to: toAgent,
+            kind: .peerNote,
+            body: messageText,
+            fromProject: ProjectPath.canonical(workspaceRoot),
+            fromSessionId: callerSessionId(),
+            chainDepth: 0
+        )
+        return toolResultResponse(
+            id: id,
+            text: "Message queued for \(toAgent.displayName) in \(target.name) (ID: \(pending.id)). linkC will deliver it when idle."
+        )
+    }
+
+    /// `linkc_send_message(reply_to:)` — reply into the original message's project (spec §6).
+    private func crossProjectReplyResult(
+        id: Any?,
+        caller: MCPCaller,
+        args: [String: Any],
+        replyTo: String,
+        messageText: String
+    ) throws -> Data? {
+        guard let original = try inboxStore.message(matching: replyTo) else {
+            return toolResultResponse(
+                id: id,
+                text: "Message \(replyTo) not found; send without reply_to.",
+                isError: true
+            )
+        }
+        guard let fromProject = original.fromProject else {
+            return toolResultResponse(
+                id: id,
+                text: "Message \(original.id) did not come from another project; reply without reply_to.",
+                isError: true
+            )
+        }
+        if original.chainDepth + 1 >= PendingMessage.replyChainLimit {
+            return toolResultResponse(
+                id: id,
+                text: "This conversation has gone back and forth 10 times. Ask the user before continuing.",
+                isError: true
+            )
+        }
+        if let projectArg = args["project"] as? String {
+            let resolved = try ProjectRef.resolve(projectArg, among: knownProjects.read(), caller: workspaceRoot)
+            if ProjectPath.canonical(resolved.path) != ProjectPath.canonical(fromProject) {
+                return toolResultResponse(
+                    id: id,
+                    text: "project must match the message's origin (\(URL(fileURLWithPath: fromProject).lastPathComponent)), or be omitted.",
+                    isError: true
+                )
+            }
+        } else if args["project"] != nil {
+            return toolResultResponse(id: id, text: "project must be a folder name or a full path", isError: true)
+        }
+        if let toStr = args["to"] as? String, !toStr.isEmpty {
+            guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+                return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
+            }
+            if toAgent != original.fromAgent {
+                return toolResultResponse(
+                    id: id,
+                    text: "to must be \(original.fromAgent.rawValue) (the message's sender), or be omitted.",
+                    isError: true
+                )
+            }
+        }
+        let destination = KnownProject(
+            path: ProjectPath.canonical(fromProject),
+            sessions: (try? knownProjects.read().first(where: { ProjectPath.canonical($0.path) == ProjectPath.canonical(fromProject) })?.sessions) ?? []
+        )
+        let toAgent = original.fromAgent
+        let toSessionId = original.fromSessionId
+        if toSessionId == nil, let refusal = openSessionRefusal(to: toAgent, in: destination) {
+            return toolResultResponse(id: id, text: refusal, isError: true)
+        }
+        let pending = try InboxStore(workspaceRoot: destination.path).enqueue(
+            from: caller.agent,
+            to: toAgent,
+            kind: .peerNote,
+            toSessionId: toSessionId,
+            body: messageText,
+            fromProject: ProjectPath.canonical(workspaceRoot),
+            fromSessionId: callerSessionId(),
+            chainDepth: original.chainDepth + 1
+        )
+        return toolResultResponse(
+            id: id,
+            text: "Reply queued for \(toAgent.displayName) in \(destination.name) (ID: \(pending.id))."
+        )
+    }
+
+    /// Refusal when `projects.json` shows no live session of `to` in `project`.
+    private func openSessionRefusal(to agent: AgentKind, in project: KnownProject) -> String? {
+        let open = project.sessions.contains { $0.agentKind == agent }
+        guard !open else { return nil }
+        return "No \(agent.displayName) session is open in \(project.name). Use linkc_ask or linkc_delegate_task, which start one."
     }
 
     /// `linkc_get_board` body for this project's folder or another project's (spec §7).
