@@ -3287,9 +3287,11 @@ final class AppCoordinatorRelayTests: XCTestCase {
     }
 
     /// A tier the settings mapping cannot resolve must never spawn an unpinned session — that
-    /// session could never satisfy the tiered task, so the next tick would spawn another one.
+    /// session could never satisfy the tiered task, so the next tick would spawn another one. It
+    /// fails the task at once, and tells the delegator what to set, rather than leave it queued
+    /// until the queue expires it without a word.
     @MainActor
-    func testATieredTaskWithNoConfiguredModelStaysQueuedRatherThanSpawning() async throws {
+    func testATieredTaskWithNoConfiguredModelFailsAtOnceRatherThanSpawning() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         var models = AgentModelSettings.seeded
@@ -3302,7 +3304,12 @@ final class AppCoordinatorRelayTests: XCTestCase {
         coordinator.processPendingMessages(workspacePath: ws)
         coordinator.processPendingMessages(workspacePath: ws)
 
-        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued, "no candidate and no model to spawn — the task stays queued")
+        let failed = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(failed.state, .failed)
+        XCTAssertEqual(failed.cancelReason, "Codex's Light tier has no model. Set one in Settings > Models.")
+        let told = try inbox.load().messages.filter { $0.taskId == task.id && $0.toAgent == .claude }
+        XCTAssertTrue(told.contains { $0.prompt.contains("Codex's Light tier has no model. Set one in Settings > Models.") },
+                      told.map(\.prompt).joined(separator: "\n"))
         XCTAssertTrue(coordinator.store.sessions.isEmpty, "an unresolvable tier must never spawn a session, not even once")
     }
 

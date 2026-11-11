@@ -490,6 +490,12 @@ private struct TierModelField: View {
                         .foregroundStyle(Theme.statusError)
                         .frame(width: 120, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
+                } else if let warning = TierModelChoices.warning(forTypedId: text, agent: agent, lists: lists) {
+                    Text(warning)
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.contextWarn)
+                        .frame(width: 120, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }

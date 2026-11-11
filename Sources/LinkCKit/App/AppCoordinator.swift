@@ -155,6 +155,21 @@ public final class AppCoordinator {
     private var injectedText: [String: [String]] = [:]
     private static let injectedHistoryLimit = 20
 
+    /// What a delegator was told about a held task: the end of the limit holding it, or nil when the
+    /// notice named none. A task is told again only when this changes.
+    struct LimitHoldNotice: Equatable {
+        let until: Date?
+    }
+
+    /// A notice to a delegator that did not reach the inbox, and is sent again until it does.
+    struct PendingDelegatorNotice: Equatable {
+        let workspace: String
+        let sender: AgentKind
+        let delegator: AgentKind
+        let taskId: String?
+        let body: String
+    }
+
     /// A teammate spawn the relay could not complete.
     struct SpawnFailure: Equatable, Sendable {
         let agent: AgentKind
@@ -180,9 +195,17 @@ public final class AppCoordinator {
     /// `dispatchMessages` to the ids still `.queued` in that workspace's inbox, so a notice that
     /// is later delivered or expires is forgotten rather than tracked for the app's whole lifetime.
     var undeliveredNoticesReported: [String: Set<String>] = [:]
-    /// Per workspace, the queued tasks whose delegator was told that a limit holds them. A task
-    /// stays marked only while it is held, so one pass says it once and the next says nothing.
-    var limitHoldNoticesSent: [String: Set<String>] = [:]
+    /// Per workspace, the queued tasks whose delegator was told that a limit holds them, and the end
+    /// the notice named. A task stays marked only while it is held, so one pass says it once and the
+    /// next says nothing, until the end it was told moves.
+    var limitHoldNoticesSent: [String: [String: LimitHoldNotice]] = [:]
+    /// Notices for a delegator that the inbox could not take when they were sent. The next relay
+    /// tick of their workspace sends them again; one leaves only when it has been written.
+    var pendingDelegatorNotices: [PendingDelegatorNotice] = []
+    /// Per session id, the task a limit has held with that worker: one that names its model, which is
+    /// never moved to another agent, so it carries on with its worker once the limit ends. The worker
+    /// is told to when its session recovers; the entry is dropped then, or with the session.
+    var limitHeldModelTasks: [String: String] = [:]
     /// Recent-output signature captured the moment a limit was last recorded for a session, keyed
     /// by session id. A later detection whose recent output hashes the same is the identical old
     /// banner still sitting in the scrollback after a cooldown expired and `sampleAgentStates`
@@ -780,6 +803,7 @@ public final class AppCoordinator {
         limitSignatures.removeValue(forKey: sessionId)
         limitScans.removeValue(forKey: sessionId)
         limitHolds.removeValue(forKey: sessionId)
+        limitHeldModelTasks.removeValue(forKey: sessionId)
         if wasWorker {
             // A worker was linkC's, not the user's: its report is in the task record, so it
             // leaves nothing under Earlier.
@@ -806,7 +830,8 @@ public final class AppCoordinator {
     /// Queued model tasks for this worker's agent/model fail at once when the CLI exits at launch.
     func failModelTasksRejectedAtLaunch(session: Session, model: String, screen: ScreenSnapshot?) {
         let lastLine = Self.lastNonEmptyScreenLine(screen)
-        let reason = "\(session.agentKind.displayName) exited at launch with model \(model): \(lastLine)"
+        let exited = "\(session.agentKind.displayName) exited at launch with model \(model)"
+        let reason = lastLine.isEmpty ? "\(exited) (nothing on its screen)." : "\(exited): \(lastLine)"
         let inbox = InboxStore(workspaceRoot: session.cwd)
         let open: [TaskRecord]
         do {
@@ -1342,13 +1367,15 @@ public final class AppCoordinator {
             if let current = store.session(id: session.id), current.state == .error {
                 let norm = session.cwd
                 do {
-                    if try InboxStore(workspaceRoot: norm).isAgentLimited(agent: session.agentKind, model: current.model) == nil {
+                    if try InboxStore(workspaceRoot: norm)
+                        .isAgentLimited(agent: session.agentKind, model: current.model, timeout: Self.relayLockTimeout) == nil {
                         store.updateState(id: session.id, to: .ready)
                     }
                 } catch {
                     NSLog("[linkC relay] sampleAgentStates: %@ cooldown check — %@", session.agentKind.displayName, String(describing: error))
                 }
             }
+            resumeModelTaskAfterLimit(of: session.id)
 
             // Detect dynamic agent kind changes in child process tree. Only for sessions that
             // could change: a hook-driven launch's kind is known, and walking its tree tells

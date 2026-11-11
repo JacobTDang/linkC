@@ -15,6 +15,9 @@ public struct TierModelChoices: Equatable, Sendable {
     public let typedId: String
     /// Nil when the current value is acceptable; otherwise the refusal under the field.
     public let validationError: String?
+    /// Nil when the current value is in the agent's live list, or that list is unknown; otherwise what
+    /// to show under the field. It never blocks saving: a renamed model may be listed later.
+    public let warning: String?
     /// How old the agent's list is, e.g. "2m ago", or nil when never fetched.
     public let listAgeText: String?
     /// The last refresh error for this agent, if any.
@@ -26,6 +29,7 @@ public struct TierModelChoices: Equatable, Sendable {
         showsOtherField: Bool,
         typedId: String,
         validationError: String?,
+        warning: String?,
         listAgeText: String?,
         listError: String?
     ) {
@@ -34,6 +38,7 @@ public struct TierModelChoices: Equatable, Sendable {
         self.showsOtherField = showsOtherField
         self.typedId = typedId
         self.validationError = validationError
+        self.warning = warning
         self.listAgeText = listAgeText
         self.listError = listError
     }
@@ -70,6 +75,7 @@ public struct TierModelChoices: Equatable, Sendable {
             showsOtherField: selected == otherLabel,
             typedId: trimmed,
             validationError: validationError(forTypedId: trimmed, agent: agent),
+            warning: warning(forTypedId: trimmed, agent: agent, lists: lists, now: now),
             listAgeText: age,
             listError: list?.error)
     }
@@ -83,5 +89,24 @@ public struct TierModelChoices: Equatable, Sendable {
             return "\(trimmed) is not a free OpenCode model"
         }
         return nil
+    }
+
+    /// What to warn about under the field when `id` is not in `agent`'s live list, or nil. Only a list
+    /// read cleanly says what the CLI offers (`ModelListCache.liveModels`), so a failed, empty or
+    /// missing list warns of nothing. A refused id (`validationError`) has its own text instead.
+    public static func warning(
+        forTypedId id: String,
+        agent: AgentKind,
+        lists: [AgentKind: AgentModelList],
+        now: Date = Date()
+    ) -> String? {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, validationError(forTypedId: trimmed, agent: agent) == nil,
+              let live = ModelListCache.liveModels(for: agent, lists: lists),
+              let fetchedAt = lists[agent]?.fetchedAt else { return nil }
+        guard !live.contains(where: { $0.id.caseInsensitiveCompare(trimmed) == .orderedSame }) else { return nil }
+        let name = agent.rawValue
+        return "\(trimmed) is not in \(name)'s list (read \(AgeFormat.compact(from: fetchedAt, to: now)) ago). "
+            + "Delegation refuses it until \(name) lists it."
     }
 }

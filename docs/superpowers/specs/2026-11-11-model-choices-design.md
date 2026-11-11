@@ -70,6 +70,8 @@ For OpenCode:
 - the picker shows free models only;
 - a typed id that is not free is refused, and the refusal is shown under the field.
 
+For an agent whose list was read successfully (agy, cursor, grok, OpenCode), a typed id that is not in it is saved, with a warning under the field: "<id> is not in <agent>'s list (read <age> ago). Delegation refuses it until <agent> lists it."
+
 ### 4.4 `linkc_get_models`
 
 For each agent, it returns:
@@ -130,8 +132,10 @@ Every failure below is reported at once, to the session that asked. None of them
 - **A model that is not free (OpenCode).** These are refused, and the refusal lists the free models.
 - **A model that is rate-limited.**
   - When the task is created or the model is switched, the refusal gives the reason and when the limit ends. It also names what is not limited. For example: "agy's Gemini pool is limited until Fri 09:12. Not limited: agy's Claude/GPT pool (claude-opus-4-6-thinking, claude-sonnet-4-6, gpt-oss-120b-medium), cursor, opencode."
-  - When a worker already holding a task hits the limit, the delegator gets a notice at once. The existing reroute and the existing notices still apply.
-- **A CLI that rejects its model at launch.** A worker started for a task with a model can end while it is still `.starting`. In that case the task fails at once, with the reason: "<Agent> exited at launch with model <id>: <the last non-empty line of its screen>". The task is not started again on every pass until the queue expires.
+  - When a worker already holding a task hits the limit, the delegator gets a notice at once. The existing reroute and the existing notices still apply. A task with a model stays with its worker; when the worker's session recovers, it is told "linkC: the limit has ended. Carry on with task <id>." A notice the inbox could not take is sent again on each tick until it is written.
+  - A queued task held by a limit: the delegator is told when it is held, and again when the end of the limit moves later. If the limit ends after the task would expire in the queue, the task fails at once: "<the limit>. That is after this task would expire in the queue; delegate it again then, or to: <what is not limited>."
+- **A tier with no model.** A queued task whose tier has no model fails at once: "<Agent>'s <tier> tier has no model. Set one in Settings > Models."
+- **A CLI that rejects its model at launch.** A worker started for a task with a model can end while it is still `.starting`. In that case the task fails at once, with the reason: "<Agent> exited at launch with model <id>: <the last non-empty line of its screen>", or "<Agent> exited at launch with model <id> (nothing on its screen)." when the screen is empty. The task is not started again on every pass until the queue expires.
 
 agy's "model not recognized" line at start-up is not a failure. It is a known warning that does no harm.
 

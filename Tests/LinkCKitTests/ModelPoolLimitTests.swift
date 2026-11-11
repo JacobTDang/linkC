@@ -34,6 +34,27 @@ final class ModelPoolLimitTests: XCTestCase {
         XCTAssertNotNil(try store.isAgentLimited(agent: .codex, model: "gpt-6-astra"))
     }
 
+    /// The relay builds a refusal on the main actor, so it tells the refusal how long a store read may
+    /// wait for the inbox lock; the refusal gives up then rather than after the store's 5 seconds.
+    func testARefusalWaitsForAHeldInboxLockOnlyAsLongAsItIsTold() throws {
+        try store.recordLimit(agent: .agy, reason: "weekly", cooldown: 3600, pool: "gemini")
+        let limit = AgentLimitStatus(
+            agent: .agy, reason: "weekly", cooldownExpiresAt: Date().addingTimeInterval(3600), pool: "gemini")
+        let lockPath = tempDir.appendingPathComponent(".linkc/.inbox.lock").path
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        XCTAssertGreaterThan(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        defer { flock(fd, LOCK_UN); close(fd) }
+
+        let start = Date()
+        XCTAssertThrowsError(try MCPServer.limitRefusal(
+            agent: .agy, limit: limit, model: "gemini-3.8-flash-medium", readLists: { [:] },
+            settings: .seeded, inboxStore: store, lockTimeout: 0.2)) { error in
+            guard case LinkCError.lockTimeout = error else { return XCTFail("expected a lock timeout, got \(error)") }
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
+    }
+
     func testDelegationRefusalNamesWhatIsNotLimited() throws {
         try store.recordLimit(agent: .agy, reason: "weekly", cooldown: 3600, pool: "gemini")
         let lists: [AgentKind: AgentModelList] = [

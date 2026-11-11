@@ -88,4 +88,62 @@ final class TierModelChoicesTests: XCTestCase {
         XCTAssertNil(choices.listAgeText)
         XCTAssertNil(choices.listError)
     }
+
+    // MARK: - A typed id the agent does not list
+
+    private func liveList(_ ids: [String], fetchedAt: Date, error: String? = nil) -> AgentModelList {
+        AgentModelList(models: ids.map { ListedModel(id: $0, name: $0) }, fetchedAt: fetchedAt, error: error)
+    }
+
+    func testTypedIdNotInALiveListWarnsAndStillSaves() {
+        let fetched = Date(timeIntervalSince1970: 1_700_000_000)
+        let lists: [AgentKind: AgentModelList] = [.agy: liveList(["gemini-3.8-flash-medium"], fetchedAt: fetched)]
+        let now = fetched.addingTimeInterval(120)
+
+        let warning = TierModelChoices.warning(forTypedId: "gemini-9", agent: .agy, lists: lists, now: now)
+
+        XCTAssertEqual(warning, "gemini-9 is not in agy's list (read 2m ago). Delegation refuses it until agy lists it.")
+        XCTAssertNil(TierModelChoices.validationError(forTypedId: "gemini-9", agent: .agy), "a warning never blocks saving")
+        let choices = TierModelChoices.make(agent: .agy, lists: lists, settings: .seeded, current: "gemini-9", now: now)
+        XCTAssertEqual(choices.warning, warning)
+        XCTAssertNil(choices.validationError)
+    }
+
+    func testTypedIdInTheLiveListDoesNotWarnInAnyCase() {
+        let lists: [AgentKind: AgentModelList] = [.cursor: liveList(["composer-2"], fetchedAt: Date())]
+        XCTAssertNil(TierModelChoices.warning(forTypedId: "composer-2", agent: .cursor, lists: lists))
+        XCTAssertNil(TierModelChoices.warning(forTypedId: "Composer-2 ", agent: .cursor, lists: lists))
+    }
+
+    /// Only a list that was read cleanly says what the CLI offers: a failed refresh, an empty list and
+    /// a list never read say nothing, and neither does an agent with no listing command.
+    func testNoWarningWithoutAListThatWasReadCleanly() {
+        let fetched = Date()
+        XCTAssertNil(TierModelChoices.warning(
+            forTypedId: "x", agent: .grok, lists: [.grok: liveList(["a"], fetchedAt: fetched, error: "grok offline")]))
+        XCTAssertNil(TierModelChoices.warning(
+            forTypedId: "x", agent: .grok, lists: [.grok: liveList([], fetchedAt: fetched)]))
+        XCTAssertNil(TierModelChoices.warning(forTypedId: "x", agent: .grok, lists: [:]))
+        XCTAssertNil(TierModelChoices.warning(forTypedId: "x", agent: .claude, lists: [:]))
+        XCTAssertNil(TierModelChoices.warning(forTypedId: "", agent: .grok, lists: [.grok: liveList(["a"], fetchedAt: fetched)]))
+    }
+
+    /// A non-free OpenCode id stays refused, with its own text and no warning on top; a free one the
+    /// list lacks is only warned about.
+    func testOpenCodeNonFreeStaysRefusedAndAFreeUnlistedIdWarns() {
+        let fetched = Date(timeIntervalSince1970: 1_700_000_000)
+        let lists: [AgentKind: AgentModelList] = [.opencode: liveList(["opencode/big-pickle"], fetchedAt: fetched)]
+        let now = fetched.addingTimeInterval(30)
+
+        let paid = TierModelChoices.make(
+            agent: .opencode, lists: lists, settings: .seeded, current: "opencode/claude-sonnet-5", now: now)
+        XCTAssertEqual(paid.validationError, "opencode/claude-sonnet-5 is not a free OpenCode model")
+        XCTAssertNil(paid.warning)
+
+        let free = TierModelChoices.make(
+            agent: .opencode, lists: lists, settings: .seeded, current: "opencode/gone-free", now: now)
+        XCTAssertNil(free.validationError)
+        XCTAssertEqual(free.warning,
+                       "opencode/gone-free is not in opencode's list (read 30s ago). Delegation refuses it until opencode lists it.")
+    }
 }

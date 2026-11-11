@@ -129,6 +129,119 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         XCTAssertTrue(text.contains("Not limited:"), text)
     }
 
+    // MARK: - A limited worker carries on
+
+    /// A worker on a Gemini model, holding a started task for that model, that has just hit its limit.
+    private func limitedModelWorker(
+        _ coordinator: AppCoordinator, inbox: InboxStore
+    ) async throws -> (worker: Session, task: TaskRecord) {
+        let worker = try coordinator.newSession(cwd: tempDir.path, agent: .agy, model: "gemini-3.8-flash-medium")
+        coordinator.store.updateState(id: worker.id, to: .finished)
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-medium",
+                                        prompt: "Use Flash.", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        coordinator.terminals.sendInput(sessionId: worker.id, text: "quota exceeded\n")
+        let shown = try await waitUntil {
+            coordinator.terminals.session(id: worker.id)?.recentOutput(lines: 10).contains("quota exceeded") ?? false
+        }
+        XCTAssertTrue(shown, "the mock agent never printed the banner")
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: worker.id))
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.state, .error)
+        return (worker, task)
+    }
+
+    private func endLimits(_ inbox: InboxStore) throws {
+        var seeded = try inbox.load()
+        seeded.agentLimits = []
+        try inbox.saveRaw(seeded)
+    }
+
+    private func carryOnMessages(_ inbox: InboxStore, for worker: Session) throws -> [PendingMessage] {
+        try inbox.load().messages.filter { $0.toSessionId == worker.id }
+    }
+
+    /// The delegator was told the task "carries on when the limit ends": when the worker's session
+    /// recovers from the limit, the worker is told to, once.
+    func testALimitedModelWorkerIsToldToCarryOnOnceItsLimitEnds() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ProjectPath.canonical(tempDir.path))
+        let (worker, task) = try await limitedModelWorker(coordinator, inbox: inbox)
+
+        coordinator.sampleAgentStates()
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.state, .error, "the limit is still on")
+        XCTAssertTrue(try carryOnMessages(inbox, for: worker).isEmpty, "nothing to say while the limit lasts")
+
+        try endLimits(inbox)
+        coordinator.sampleAgentStates()
+
+        XCTAssertNotEqual(coordinator.store.session(id: worker.id)?.state, .error)
+        let told = try carryOnMessages(inbox, for: worker)
+        XCTAssertEqual(told.map(\.prompt), ["linkC: the limit has ended. Carry on with task \(task.id)."])
+        XCTAssertEqual(told.first?.toAgent, .agy)
+
+        // Delivered, and the worker keeps its screen: later samples add nothing.
+        coordinator.dispatchMessages(workspacePath: tempDir.path, inboxStore: inbox)
+        coordinator.sampleAgentStates()
+        coordinator.sampleAgentStates()
+        XCTAssertEqual(try carryOnMessages(inbox, for: worker).count, 1, "once per recovery")
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .started)
+    }
+
+    /// A task that ended while its worker was limited has nothing to carry on with.
+    func testALimitedWorkerWhoseTaskEndedIsNotToldToCarryOn() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: ProjectPath.canonical(tempDir.path))
+        let (worker, task) = try await limitedModelWorker(coordinator, inbox: inbox)
+        try inbox.cancelTask(taskId: task.id, reason: "not needed")
+
+        try endLimits(inbox)
+        coordinator.sampleAgentStates()
+
+        XCTAssertNotEqual(coordinator.store.session(id: worker.id)?.state, .error)
+        XCTAssertTrue(try carryOnMessages(inbox, for: worker).isEmpty)
+    }
+
+    /// The delegator's notice that the task stays with its limited worker is not given up on when the
+    /// inbox cannot be written at that moment: the next tick sends it.
+    func testTheStaysNoticeIsRetriedOnTheNextTickWhenItCouldNotBeWritten() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let root = ProjectPath.canonical(tempDir.path)
+        let inbox = InboxStore(workspaceRoot: root)
+        try inbox.recordLimit(agent: .agy, reason: "quota exceeded", cooldown: 1800, pool: "gemini")
+        let linkcDir = URL(fileURLWithPath: root).appendingPathComponent(".linkc").path
+        let worker = try coordinator.newSession(cwd: tempDir.path, agent: .agy, model: "gemini-3.8-flash-medium")
+        coordinator.store.updateState(id: worker.id, to: .finished)
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-medium",
+                                        prompt: "Use Flash.", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        coordinator.terminals.sendInput(sessionId: worker.id, text: "quota exceeded\n")
+        let shown = try await waitUntil {
+            coordinator.terminals.session(id: worker.id)?.recentOutput(lines: 10).contains("quota exceeded") ?? false
+        }
+        XCTAssertTrue(shown)
+
+        // The inbox cannot be written: no file can be added to its folder.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: linkcDir)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: linkcDir) }
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: worker.id))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: linkcDir)
+        XCTAssertTrue(try notices(inbox, for: task).isEmpty, "the notice could not be written yet")
+
+        coordinator.processPendingMessages(workspacePath: root)
+
+        let told = try notices(inbox, for: task)
+        XCTAssertEqual(told.count, 1, "the next tick sends it: \(told.map(\.prompt))")
+        XCTAssertTrue(try XCTUnwrap(told.first).prompt.contains("stays with Antigravity"), told.first?.prompt ?? "")
+
+        coordinator.processPendingMessages(workspacePath: root)
+        XCTAssertEqual(try notices(inbox, for: task).count, 1, "and only once")
+    }
+
     /// A limit seen on a session records the pool of the model that session runs.
     func testALimitIsRecordedForTheSessionsModelPool() async throws {
         let coordinator = makeCoordinator()
@@ -226,7 +339,7 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         let inbox = InboxStore(workspaceRoot: tempDir.path)
         let task = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-medium",
                                         prompt: "Use Flash.", files: [])
-        try inbox.recordLimit(agent: .agy, reason: "first", cooldown: 3600, pool: "gemini")
+        try inbox.recordLimit(agent: .agy, reason: "first", cooldown: 1800, pool: "gemini")
         coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
         XCTAssertEqual(try notices(inbox, for: task).count, 1)
 
@@ -238,7 +351,7 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         XCTAssertEqual(coordinator.store.sessions.count, 1)
         XCTAssertEqual(try notices(inbox, for: task).count, 1, "nothing new to say while it is not held")
 
-        try inbox.recordLimit(agent: .agy, reason: "second", cooldown: 3600, pool: "gemini")
+        try inbox.recordLimit(agent: .agy, reason: "second", cooldown: 1800, pool: "gemini")
         coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
         XCTAssertEqual(try notices(inbox, for: task).count, 2, "held again by a new limit")
     }
@@ -263,6 +376,125 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         let told = try notices(inbox, for: task)
         XCTAssertEqual(told.count, 1, "\(told.map(\.prompt))")
         XCTAssertTrue(try XCTUnwrap(told.first).prompt.contains("rate-limited"), told.first?.prompt ?? "")
+    }
+
+    /// A hold that lasts past the time the task would expire in the queue is no hold: the queue would
+    /// end the task without a word. The task fails at once, and its delegator is told when the limit
+    /// ends and where else to send the work.
+    func testATaskHeldPastItsQueueExpiryFailsAtOnceAndTellsItsDelegator() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        try inbox.recordLimit(agent: .agy, reason: "quota exceeded", cooldown: 2 * 3600, pool: "gemini")
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-medium",
+                                        prompt: "Use Flash.", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+
+        let failed = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(failed.state, .failed)
+        let reason = try XCTUnwrap(failed.cancelReason)
+        XCTAssertTrue(reason.hasPrefix("agy's Gemini pool is limited until "), reason)
+        XCTAssertTrue(reason.hasSuffix(" (quota exceeded). That is after this task would expire in the queue; "
+                                       + "delegate it again then, or to: claude, agy's Claude/GPT pool, cursor, codex, grok, opencode."),
+                      reason)
+        let told = try inbox.load().messages.filter { $0.taskId == task.id && $0.toAgent == .claude }
+        XCTAssertTrue(told.contains { $0.prompt.contains("failed") && $0.prompt.contains(reason) },
+                      told.map(\.prompt).joined(separator: "\n"))
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "no worker is started for it")
+    }
+
+    /// A limit that ends in time is still a hold, so the task waits.
+    func testATaskHeldForLessThanItsQueueExpiryStillWaits() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        try inbox.recordLimit(agent: .agy, reason: "quota exceeded", cooldown: 1800, pool: "gemini")
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-medium",
+                                        prompt: "Use Flash.", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
+    }
+
+    /// The same when every other pool is limited too: nothing to offer, so the text says only when.
+    func testAHeldPastExpiryTaskWithNowhereElseSaysOnlyToDelegateAgainLater() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        for agent in AgentKind.peers where agent != .agy {
+            try inbox.recordLimit(agent: agent, reason: "cap", cooldown: 4 * 3600)
+        }
+        try inbox.recordLimit(agent: .agy, reason: "quota exceeded", cooldown: 4 * 3600, pool: "claude-gpt")
+        try inbox.recordLimit(agent: .agy, reason: "quota exceeded", cooldown: 4 * 3600, pool: "gemini")
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-medium",
+                                        prompt: "Use Flash.", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+
+        let reason = try XCTUnwrap(inbox.task(id: task.id)?.cancelReason)
+        XCTAssertTrue(reason.hasSuffix("That is after this task would expire in the queue; delegate it again then."), reason)
+        XCTAssertFalse(reason.contains("or to:"), reason)
+    }
+
+    /// While a task is held, a limit that is pushed later is news: the delegator is told the new end,
+    /// and only once for each end.
+    func testAHeldTaskIsToldAgainWhenItsLimitEndsLater() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-medium",
+                                        prompt: "Use Flash.", files: [])
+        try inbox.recordLimit(agent: .agy, reason: "quota exceeded", cooldown: 900, pool: "gemini")
+        let firstEnd = try XCTUnwrap(inbox.liveLimits(agent: .agy).first).cooldownExpiresAt
+
+        func pass() throws {
+            coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+            coordinator.dispatchMessages(workspacePath: tempDir.path, inboxStore: inbox)
+        }
+        try pass()
+        try pass()
+        XCTAssertEqual(try notices(inbox, for: task).count, 1, "one notice for the first end")
+
+        let laterEnd = firstEnd.addingTimeInterval(1800)
+        try inbox.extendLimit(agent: .agy, until: laterEnd, pool: "gemini")
+        try pass()
+        try pass()
+
+        let told = try notices(inbox, for: task)
+        XCTAssertEqual(told.count, 2, "a second notice for the later end, then silence: \(told.map(\.prompt))")
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE HH:mm"
+        let latest = try XCTUnwrap(told.last).prompt
+        XCTAssertTrue(latest.contains("limited until \(formatter.string(from: laterEnd))"), latest)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
+    }
+
+    /// A task waiting for a rate-limited session says when that session's limit ends, when a limit row
+    /// holds it. Here the session runs a Claude/GPT model on the task's tier and the tier's own model is
+    /// a Gemini one, so only the session is limited.
+    func testATaskWaitingOnALimitedSessionSaysWhenItsLimitEnds() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let session = coordinator.store.create(cwd: ProjectPath.canonical(tempDir.path), title: "agy", id: "L1",
+                                               agentKind: .agy, model: "claude-opus-4-6-thinking",
+                                               modelTier: .standard, isWorker: true)
+        coordinator.store.updateState(id: session.id, to: .error)
+        try inbox.recordLimit(agent: .agy, reason: "quota exceeded", cooldown: 1800, pool: "claude-gpt")
+        let end = try XCTUnwrap(inbox.liveLimits(agent: .agy).first).cooldownExpiresAt
+        let task = try inbox.createTask(from: .claude, to: .agy, tier: .standard, prompt: "Standard.", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE HH:mm"
+        let told = try notices(inbox, for: task)
+        XCTAssertEqual(told.count, 1, "\(told.map(\.prompt))")
+        let text = try XCTUnwrap(told.first).prompt
+        XCTAssertTrue(text.contains("rate-limited until \(formatter.string(from: end))"), text)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
     }
 
     // MARK: - OpenCode runs free models only, at launch
@@ -393,6 +625,23 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         XCTAssertTrue(reason.contains("Error: unknown model id"), reason)
         let told = try inbox.load().messages.filter { $0.taskId == task.id && $0.toAgent == .claude }
         XCTAssertTrue(told.contains { $0.prompt.contains("failed") }, told.map(\.prompt).joined(separator: "\n"))
+    }
+
+    /// A CLI that exits without printing anything leaves no last line to quote: the reason says so,
+    /// rather than ending in a dangling colon.
+    func testAModelWorkerThatExitsWithAnEmptyScreenFailsItsTaskSayingSo() async throws {
+        let coordinator = makeCoordinator(agent: exitingAgent(printing: ""))
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "claude-opus-4-6-thinking",
+                                        prompt: "Use Opus.", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+        let failed = try await waitUntil { (try? inbox.task(id: task.id)?.state) == .failed }
+        XCTAssertTrue(failed, "the worker's exit never failed its task")
+
+        let reason = try XCTUnwrap(inbox.task(id: task.id)?.cancelReason)
+        XCTAssertEqual(reason, "\(AgentKind.agy.displayName) exited at launch with model claude-opus-4-6-thinking (nothing on its screen).")
     }
 
     /// agy prints "model not recognized" and keeps running: harmless. When agy exits after it, the

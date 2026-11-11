@@ -1577,20 +1577,53 @@ public final class MCPServer: Sendable {
         return text
     }
 
+    /// The pieces of a limit refusal: the limit itself, and what is not limited.
+    struct LimitDescription: Equatable {
+        /// "agy's Gemini pool is limited until Fri 09:12 (quota exceeded)".
+        let limit: String
+        /// What is not limited, as a list; nil when everything is.
+        let notLimited: String?
+        /// Set when the model lists could not be read, and the unlimited models may be missing from the text.
+        let caveat: String
+    }
+
+    /// "Fri 09:12": when a limit ends, in the reader's own time zone.
+    static func limitEndText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE HH:mm"
+        return formatter.string(from: date)
+    }
+
     /// Refusal when a model (or its pool) is limited: names the limit, and what is not limited. A
     /// limit status that cannot be read throws; a list of models that cannot be read is said in the
-    /// refusal itself, and the limit is still reported.
+    /// refusal itself, and the limit is still reported. `lockTimeout` is how long a store read waits
+    /// for the inbox lock: the relay passes its own short one.
     static func limitRefusal(
         agent: AgentKind,
         limit: AgentLimitStatus,
         model: String?,
         readLists: () throws -> [AgentKind: AgentModelList],
         settings: AgentModelSettings,
-        inboxStore: InboxStore
+        inboxStore: InboxStore,
+        lockTimeout: TimeInterval = 5.0
     ) throws -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEE HH:mm"
-        let until = formatter.string(from: limit.cooldownExpiresAt)
+        let described = try limitDescription(
+            agent: agent, limit: limit, model: model, readLists: readLists, settings: settings,
+            inboxStore: inboxStore, lockTimeout: lockTimeout)
+        return "\(described.limit). Not limited: \(described.notLimited ?? "none").\(described.caveat)"
+    }
+
+    /// What a refusal for `limit` says, in pieces, for a caller that words the rest itself.
+    static func limitDescription(
+        agent: AgentKind,
+        limit: AgentLimitStatus,
+        model: String?,
+        readLists: () throws -> [AgentKind: AgentModelList],
+        settings: AgentModelSettings,
+        inboxStore: InboxStore,
+        lockTimeout: TimeInterval = 5.0
+    ) throws -> LimitDescription {
+        let until = limitEndText(limit.cooldownExpiresAt)
         let subject: String
         if let pool = limit.pool {
             subject = "\(agent.rawValue)'s \(ModelPool.displayName(pool)) pool"
@@ -1606,7 +1639,7 @@ public final class MCPServer: Sendable {
             lists = [:]
             caveat = " (The model lists could not be read: \(error).)"
         }
-        let agyLimits = try inboxStore.liveLimits(agent: .agy)
+        let agyLimits = try inboxStore.liveLimits(agent: .agy, timeout: lockTimeout)
         var parts: [String] = []
         for peer in AgentKind.peers {
             if peer == .agy {
@@ -1620,12 +1653,14 @@ public final class MCPServer: Sendable {
                     let listed = ids.isEmpty ? "" : " (\(ids.joined(separator: ", ")))"
                     parts.append("agy's \(ModelPool.displayName(pool)) pool\(listed)")
                 }
-            } else if peer != agent, try inboxStore.isAgentLimited(agent: peer) == nil {
+            } else if peer != agent, try inboxStore.isAgentLimited(agent: peer, timeout: lockTimeout) == nil {
                 parts.append(peer.rawValue)
             }
         }
-        let notLimited = parts.isEmpty ? "none" : parts.joined(separator: ", ")
-        return "\(subject) is limited until \(until) (\(limit.reason)). Not limited: \(notLimited).\(caveat)"
+        return LimitDescription(
+            limit: "\(subject) is limited until \(until) (\(limit.reason))",
+            notLimited: parts.isEmpty ? nil : parts.joined(separator: ", "),
+            caveat: caveat)
     }
 
     /// One agent's section of `linkc_get_usage_status`'s report: a heading (with plan type when
