@@ -639,35 +639,52 @@ extension AppCoordinator {
     /// Forgets the refusals reported in `workspace` for `kind` of item that are no longer queued, so a
     /// report stays marked only while its item waits.
     private func forgetOpenCodeRefusals(in workspace: String, of kind: OpenCodeRefusalKey.Kind, keeping queued: Set<String>) {
-        openCodeRefusalsReported = openCodeRefusalsReported.filter {
-            $0.workspace != workspace || $0.kind != kind || queued.contains($0.id)
+        func stillQueued(_ key: OpenCodeRefusalKey) -> Bool {
+            key.workspace != workspace || key.kind != kind || queued.contains(key.id)
         }
+        openCodeRefusalUsersTold = openCodeRefusalUsersTold.filter(stillQueued)
+        openCodeRefusalNoticesSent = openCodeRefusalNoticesSent.filter(stillQueued)
     }
 
-    /// Tells `key`'s sender that OpenCode could not be asked about its model, the first time only. The item
-    /// stays queued, so every later pass meets it again.
+    /// Reports that OpenCode could not be asked about `key`'s model: the user is told on the first pass,
+    /// whether or not the sender's notice can be written, and the notice is tried on every pass until it
+    /// lands, so it is never lost. The item stays queued, so every later pass meets it again.
     private func reportOpenCodeSpawnRefusal(
         _ reason: String, from delegator: AgentKind, taskId: String?, key: OpenCodeRefusalKey,
         workspacePath: String, inboxStore: InboxStore
     ) {
-        guard openCodeRefusalsReported.insert(key).inserted else { return }
-        // A "last known problem" marker only: whether to report is decided by `key`.
-        lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
-        announceOpenCodeRefusal(reason, notice: reason, from: .opencode, to: delegator, taskId: taskId, inboxStore: inboxStore)
+        if openCodeRefusalUsersTold.insert(key).inserted {
+            // A "last known problem" marker only: whether to report is decided by `key`.
+            lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
+            notifications.post(title: Self.openCodeRefusalTitle, body: reason)
+        }
+        guard !openCodeRefusalNoticesSent.contains(key) else { return }
+        if enqueueOpenCodeRefusalNotice(reason, from: .opencode, to: delegator, taskId: taskId, inboxStore: inboxStore) {
+            openCodeRefusalNoticesSent.insert(key)
+        }
     }
 
-    /// Sends `notice` to `delegator` and tells the user `reason`.
+    /// Sends `notice` to `delegator` and tells the user `reason`, whether or not the notice could be written.
     private func announceOpenCodeRefusal(
         _ reason: String, notice: String, from sender: AgentKind, to delegator: AgentKind, taskId: String?,
         inboxStore: InboxStore
     ) {
+        _ = enqueueOpenCodeRefusalNotice(notice, from: sender, to: delegator, taskId: taskId, inboxStore: inboxStore)
+        notifications.post(title: Self.openCodeRefusalTitle, body: reason)
+    }
+
+    /// Whether `notice` reached `delegator`'s inbox; a failure is logged.
+    private func enqueueOpenCodeRefusalNotice(
+        _ notice: String, from sender: AgentKind, to delegator: AgentKind, taskId: String?, inboxStore: InboxStore
+    ) -> Bool {
         do {
             _ = try inboxStore.enqueue(from: sender, to: delegator, kind: .notice, taskId: taskId, body: notice,
                                        timeout: Self.relayLockTimeout)
+            return true
         } catch {
             NSLog("[linkC relay] OpenCode model refusal notice — %@", String(describing: error))
+            return false
         }
-        notifications.post(title: Self.openCodeRefusalTitle, body: reason)
     }
 
     /// Whether a queued message is something a tick can act on: a brief spawns an agent, and any
@@ -1110,8 +1127,13 @@ extension AppCoordinator {
                 // OpenCode's models are still being listed off the main actor. Forget this screen's scan
                 // and signature so the next tick reads the unchanged screen again from the start;
                 // `recordLimit` keeps a live record as it is, so reading it twice records nothing new.
+                // The hold in force this pass (cleared above because it ended or the worker went quiet)
+                // is put back: the next pass then continues it, meets `limitHoldCap` or a quiet worker
+                // at once, and goes on against the listing. Without it a worker still busy would start
+                // a fresh hold, and a fresh notice, on every listing, and its task would never move.
                 limitScans[sessionId] = nil
                 limitSignatures[sessionId] = nil
+                limitHolds[sessionId] = held
                 return false
             case .available:
                 break

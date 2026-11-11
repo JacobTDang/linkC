@@ -45,8 +45,9 @@ private final class CapturingSink: NotificationSink, @unchecked Sendable {
     private var all: [(id: String, title: String, body: String)] = []
     var deliveries: [(id: String, title: String, body: String)] { lock.withLock { all } }
     func deliver(id: String, title: String, body: String) { lock.withLock { all.append((id, title, body)) } }
+    @MainActor
     func refusals() -> [(id: String, title: String, body: String)] {
-        deliveries.filter { $0.title == "linkC: OpenCode could not start" }
+        deliveries.filter { $0.title == AppCoordinator.openCodeRefusalTitle }
     }
 }
 
@@ -291,6 +292,46 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
         XCTAssertEqual(scans.count, 2, "the screen has not changed since, so the rules have nothing new to read")
     }
 
+    /// A reroute held for a busy worker ends at `limitHoldCap`. If OpenCode's models still have to be
+    /// listed on that pass, the hold must stay as it was: the pass that reads the listing then meets the
+    /// cap at once and reroutes, rather than starting a fresh hold (and a second notice) for a worker that
+    /// is still busy, over and over.
+    func testAHeldRerouteThatReachedItsCapIsNotHeldAgainWhileOpenCodesModelsAreListed() async throws {
+        let clock = ControllableClock()
+        let lister = ModelLister(.models(["opencode/big-pickle"]), held: true)
+        let coordinator = makeCoordinator(lister: lister, now: clock.now)
+        defer { stopAll(coordinator) }
+        let (terminal, task, inbox) = try limitedCodexSession(in: coordinator, screen: banner)
+        coordinator.store.updateState(id: "S1", to: .working)
+        func pass() -> Bool { coordinator.checkLimitsAndReroute(for: "S1", screen: terminal.screenSnapshot()) }
+        func holdNotices() throws -> [PendingMessage] {
+            try notices(in: inbox, for: .claude, about: task).filter { $0.prompt.contains("is left with it for now") }
+        }
+
+        XCTAssertFalse(pass(), "a busy worker keeps its task: the hold begins")
+        let began = try XCTUnwrap(coordinator.limitHolds["S1"]).since
+        clock.advance(2 * coordinator.turnEndQuietPeriod + 1)
+        XCTAssertFalse(pass())
+        let told = try holdNotices()
+        XCTAssertEqual(told.count, 1, "the hold has lasted two quiet periods, so the delegator is told")
+        // Delivered, so an identical notice would be queued again rather than folded into this one.
+        for notice in told { try inbox.markMessageDelivered(id: notice.id) }
+
+        clock.advance(AppCoordinator.limitHoldCap)
+        XCTAssertFalse(pass(), "the cap has passed, but OpenCode's models are still being listed")
+        XCTAssertEqual(coordinator.limitHolds["S1"]?.since, began, "the hold in force is not given up while the listing runs")
+        lister.release()
+        try await waitForListing(coordinator)
+        XCTAssertTrue(pass(), "the listing is read, and the cap passed with it: the task moves")
+
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled)
+        XCTAssertEqual(try inbox.load().tasks.first { $0.hop == 1 }?.toAgent, .opencode)
+        XCTAssertNil(coordinator.limitHolds["S1"], "no second hold was begun")
+        clock.advance(2 * coordinator.turnEndQuietPeriod + 1)
+        _ = pass()
+        XCTAssertEqual(try holdNotices().count, 1, "and no second 'left with it' notice was sent")
+    }
+
     // MARK: - A reroute OpenCode cannot take
 
     /// What a listing that proves nothing, or a model it does not list, leaves of a limit reroute: the
@@ -443,6 +484,40 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
         XCTAssertEqual(sink.refusals().count, 1)
     }
 
+    /// The user hears of a refusal on the first pass, once, whether or not the delegator's notice could be
+    /// written. The notice is tried again on every later pass until it lands, and only then is it left alone.
+    func testTheUserHearsOfARefusalOnceWhileItsNoticeCouldNotBeWrittenAndTheNoticeIsSentOnceItCan() async throws {
+        let lister = ModelLister(.failure("`opencode models` exited 1"))
+        let coordinator = makeCoordinator(lister: lister)
+        defer { stopAll(coordinator) }
+        let (task, inbox) = try queueTask()
+        coordinator.dispatchTasks(workspacePath: folder, inboxStore: inbox)
+        try await waitForListing(coordinator)
+
+        // A read-only `.linkc` makes the notice's write fail, while the task is still read as queued.
+        let fm = FileManager.default
+        let linkcPath = (folder as NSString).appendingPathComponent(".linkc")
+        let originalPerms = (try fm.attributesOfItem(atPath: linkcPath)[.posixPermissions] as? NSNumber)?.intValue ?? 0o755
+        defer { try? fm.setAttributes([.posixPermissions: originalPerms], ofItemAtPath: linkcPath) }
+        try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: linkcPath)
+        XCTAssertThrowsError(try inbox.enqueue(from: .opencode, to: .claude, kind: .notice, body: "probe"),
+                             "a read-only .linkc must make the notice's write throw")
+        for _ in 0..<4 { coordinator.dispatchTasks(workspacePath: folder, inboxStore: inbox) }
+        try fm.setAttributes([.posixPermissions: originalPerms], ofItemAtPath: linkcPath)
+
+        XCTAssertTrue(try notices(in: inbox, for: .claude, about: task).isEmpty, "nothing could be written")
+        XCTAssertEqual(sink.refusals().count, 1, "the user heard on the first pass, and not again on the failed retries")
+        XCTAssertTrue(try XCTUnwrap(sink.refusals().first).body.contains("`opencode models` exited 1"))
+        XCTAssertEqual(coordinator.openCodeRefusalUsersTold.count, 1)
+        XCTAssertTrue(coordinator.openCodeRefusalNoticesSent.isEmpty, "a notice that did not land is not remembered as sent")
+
+        for _ in 0..<3 { coordinator.dispatchTasks(workspacePath: folder, inboxStore: inbox) }
+
+        XCTAssertEqual(try notices(in: inbox, for: .claude, about: task).count, 1, "the next pass sent the notice, once")
+        XCTAssertEqual(sink.refusals().count, 1, "and the user was not told again")
+        XCTAssertEqual(coordinator.openCodeRefusalNoticesSent.count, 1)
+    }
+
     /// Each task is reported on its own: a second delegator waiting in the same workspace hears too.
     func testTwoQueuedTasksFromDifferentDelegatorsAreEachReported() async throws {
         let lister = ModelLister(.failure("`opencode models` exited 1"))
@@ -487,12 +562,14 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
         coordinator.dispatchTasks(workspacePath: folder, inboxStore: inbox)
         try await waitForListing(coordinator)
         coordinator.dispatchTasks(workspacePath: folder, inboxStore: inbox)
-        XCTAssertEqual(coordinator.openCodeRefusalsReported.count, 1)
+        XCTAssertEqual(coordinator.openCodeRefusalUsersTold.count, 1)
+        XCTAssertEqual(coordinator.openCodeRefusalNoticesSent.count, 1)
 
         try inbox.cancelTask(taskId: task.id, reason: "the delegator withdrew it")
         coordinator.dispatchTasks(workspacePath: folder, inboxStore: inbox)
 
-        XCTAssertTrue(coordinator.openCodeRefusalsReported.isEmpty)
+        XCTAssertTrue(coordinator.openCodeRefusalUsersTold.isEmpty)
+        XCTAssertTrue(coordinator.openCodeRefusalNoticesSent.isEmpty)
     }
 
     // MARK: - A queued message for OpenCode

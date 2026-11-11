@@ -99,6 +99,26 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.markMessageFailed(id: "non-existent-id"))
     }
 
+    /// Only a message still waiting can be failed: one already delivered went out, and a failed one is over.
+    /// Overwriting either would rewrite what happened, so the call refuses and leaves the message alone.
+    func testMarkMessageFailedRefusesAMessageThatIsNotQueued() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let sent = try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "Task 1")
+        let dead = try store.enqueue(from: .cursor, to: .agy, kind: .peerNote, body: "Task 2")
+        try store.markMessageDelivered(id: sent.id)
+        try store.markMessageFailed(id: dead.id)
+        let before = try store.load().messages
+
+        XCTAssertThrowsError(try store.markMessageFailed(id: sent.id)) {
+            XCTAssertTrue(String(describing: $0).contains("delivered"), "the error says what the message is: \($0)")
+        }
+        XCTAssertThrowsError(try store.markMessageFailed(id: dead.id))
+
+        XCTAssertEqual(try store.load().messages, before, "neither message was touched")
+        XCTAssertEqual(before.first { $0.id == sent.id }?.status, .delivered)
+        XCTAssertNotNil(before.first { $0.id == sent.id }?.deliveredAt)
+    }
+
     func testRecordLimitAndIsAgentLimitedWithCooldownExpiration() throws {
         let store = InboxStore(workspaceRoot: tempDir.path)
 

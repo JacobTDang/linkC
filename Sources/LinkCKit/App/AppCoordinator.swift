@@ -121,9 +121,12 @@ public final class AppCoordinator {
     /// public initializer's default `openCodeModels`.
     public static let openCodeModelListingTimeout: TimeInterval = 10
     var openCodeModelCheckCount = 0
-    /// OpenCode refusals already reported, one per queued task or message, so a pass that meets the
-    /// same one again says nothing. Pruned by the dispatch passes to what is still queued.
-    var openCodeRefusalsReported: Set<OpenCodeRefusalKey> = []
+    /// OpenCode refusals the user has been told of, one per queued task or message, so a pass that meets the
+    /// same one again says nothing to them. Pruned by the dispatch passes to what is still queued.
+    var openCodeRefusalUsersTold: Set<OpenCodeRefusalKey> = []
+    /// OpenCode refusals whose notice has reached the delegator's inbox. A notice that could not be written is
+    /// missing here, so every later pass tries it again. Pruned like `openCodeRefusalUsersTold`.
+    var openCodeRefusalNoticesSent: Set<OpenCodeRefusalKey> = []
     /// Lists OpenCode's sessions as `opencode session list --format json --standalone` run in a
     /// folder prints them. A seam, so a test can play the listing; the real one runs off the main thread.
     var openCodeSessionList: @Sendable (_ executable: String, _ folder: String) async throws -> String = {
