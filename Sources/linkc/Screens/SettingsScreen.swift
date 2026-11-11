@@ -57,29 +57,53 @@ struct SettingsScreen: View {
 
                     SectionHeader(title: "MODELS").padding(.top, 6)
                     ForEach([AgentKind.claude, .codex, .agy, .grok, .opencode], id: \.self) { agent in
-                        SettingRow(
-                            title: agent.displayName,
-                            detail: "Which model each tier launches. A renamed model can be typed in."
-                        ) {
-                            HStack(spacing: 6) {
-                                ForEach(ModelTier.resolutionOrder, id: \.self) { tier in
-                                    TierModelField(preferences: model.preferences, agent: agent, tier: tier)
-                                }
-                                Picker("", selection: Binding(
-                                    get: { model.preferences.agentModels.defaultTier(for: agent) },
-                                    set: { newValue in
-                                        var edited = model.preferences.agentModels
-                                        edited.setDefaultTier(newValue, for: agent)
-                                        model.preferences.agentModels = edited
-                                    }
-                                )) {
+                        let lists = (try? model.coordinator?.modelLists()) ?? [:]
+                        let choices = TierModelChoices.make(
+                            agent: agent, lists: lists, settings: model.preferences.agentModels,
+                            current: model.preferences.agentModels.model(for: agent, tier: .standard) ?? "")
+                        VStack(alignment: .leading, spacing: 4) {
+                            SettingRow(
+                                title: agent.displayName,
+                                detail: "Which model each tier launches. Pick one, or Other… to type an id."
+                            ) {
+                                HStack(spacing: 6) {
                                     ForEach(ModelTier.resolutionOrder, id: \.self) { tier in
-                                        Text(tier.label).tag(tier)
+                                        TierModelField(
+                                            preferences: model.preferences, agent: agent, tier: tier,
+                                            lists: lists)
+                                    }
+                                    Picker("", selection: Binding(
+                                        get: { model.preferences.agentModels.defaultTier(for: agent) },
+                                        set: { newValue in
+                                            var edited = model.preferences.agentModels
+                                            edited.setDefaultTier(newValue, for: agent)
+                                            model.preferences.agentModels = edited
+                                        }
+                                    )) {
+                                        ForEach(ModelTier.resolutionOrder, id: \.self) { tier in
+                                            Text(tier.label).tag(tier)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .labelsHidden()
+                                    .fixedSize()
+                                }
+                            }
+                            if choices.listAgeText != nil || choices.listError != nil {
+                                HStack(spacing: 6) {
+                                    if let age = choices.listAgeText {
+                                        Text("Listed \(age)")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(Theme.textTertiary)
+                                    }
+                                    if let error = choices.listError {
+                                        Text(error)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(Theme.statusError)
+                                            .lineLimit(2)
                                     }
                                 }
-                                .pickerStyle(.menu)
-                                .labelsHidden()
-                                .fixedSize()
+                                .padding(.horizontal, 4)
                             }
                         }
                     }
@@ -203,7 +227,12 @@ struct SettingsScreen: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
         }
-        .onAppear { launchAtLogin = LoginItem.isEnabled }
+        .onAppear {
+            launchAtLogin = LoginItem.isEnabled
+            if let refresher = model.coordinator?.modelListRefresher {
+                Task { await refresher.refreshNow() }
+            }
+        }
     }
 
     private static var versionLabel: String {
@@ -396,38 +425,88 @@ private struct SettingRow<Control: View>: View {
     }
 }
 
-/// One model-id text field. Holds the typed text locally and commits it to preferences only
-/// on submit or on losing focus — never per keystroke, so a half-typed id (e.g. mid-edit
-/// "gpt-6-ast") is never briefly the live mapping a relay tick could launch a session with.
+/// One tier's model picker: listed ids, plus "Other…" which reveals a text field for a typed id.
+/// Typed text commits on submit or blur — never per keystroke — so a half-typed id is never the
+/// live mapping a relay tick could launch with. OpenCode refuses a non-free typed id.
 private struct TierModelField: View {
     let preferences: AppPreferences
     let agent: AgentKind
     let tier: ModelTier
+    let lists: [AgentKind: AgentModelList]
 
     @State private var text: String = ""
+    @State private var pickingOther = false
     @FocusState private var isFocused: Bool
 
+    private var choices: TierModelChoices {
+        TierModelChoices.make(
+            agent: agent, lists: lists, settings: preferences.agentModels, current: currentValue)
+    }
+
     var body: some View {
-        TextField(tier.label, text: $text)
-            .textFieldStyle(.roundedBorder)
-            .controlSize(.mini)
-            .frame(width: 96)
-            .focused($isFocused)
-            .onAppear { text = currentValue }
-            .onSubmit { commit() }
-            .onChange(of: isFocused) { wasFocused, nowFocused in
-                if wasFocused && !nowFocused { commit() }
+        VStack(alignment: .leading, spacing: 2) {
+            Picker(tier.label, selection: Binding(
+                get: { pickingOther ? TierModelChoices.otherLabel : choices.selectedOption },
+                set: { select($0) }
+            )) {
+                ForEach(choices.optionLabels, id: \.self) { label in
+                    Text(label).tag(label)
+                }
             }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.mini)
+            .frame(width: 120, alignment: .leading)
+
+            if pickingOther || choices.showsOtherField {
+                TextField(tier.label, text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.mini)
+                    .frame(width: 120)
+                    .focused($isFocused)
+                    .onSubmit { commit() }
+                    .onChange(of: isFocused) { wasFocused, nowFocused in
+                        if wasFocused && !nowFocused { commit() }
+                    }
+                if let error = TierModelChoices.validationError(forTypedId: text, agent: agent) {
+                    Text(error)
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.statusError)
+                        .frame(width: 120, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .onAppear {
+            text = currentValue
+            pickingOther = choices.showsOtherField
+        }
     }
 
     private var currentValue: String {
         preferences.agentModels.model(for: agent, tier: tier) ?? ""
     }
 
-    private func commit() {
-        guard text != currentValue else { return }
+    private func select(_ label: String) {
+        if label == TierModelChoices.otherLabel {
+            pickingOther = true
+            return
+        }
+        pickingOther = false
+        text = label
+        commit(force: label)
+    }
+
+    private func commit(force value: String? = nil) {
+        let next = (value ?? text).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let error = TierModelChoices.validationError(forTypedId: next, agent: agent) {
+            // Keep the typed text visible; do not write a non-free OpenCode id.
+            _ = error
+            return
+        }
+        guard next != currentValue else { return }
         var edited = preferences.agentModels
-        edited.setModel(text, for: agent, tier: tier)
+        edited.setModel(next, for: agent, tier: tier)
         preferences.agentModels = edited
     }
 }

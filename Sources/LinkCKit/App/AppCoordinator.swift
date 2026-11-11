@@ -229,9 +229,9 @@ public final class AppCoordinator {
     /// the next spawn without anyone re-injecting anything.
     private let modelSettings: @MainActor @Sendable () -> AgentModelSettings
     /// Live model lists from `ModelListCache`. Injected so tests need no Application Support file.
-    let modelLists: @MainActor @Sendable () throws -> [AgentKind: AgentModelList]
+    public let modelLists: @MainActor @Sendable () throws -> [AgentKind: AgentModelList]
     /// Refreshes CLI model lists at launch and every 6 hours. Tests can replace or leave nil.
-    var modelListRefresher: ModelListRefresher?
+    public var modelListRefresher: ModelListRefresher?
     /// Minimum interval between injections into the same terminal. Tests can override it.
     public static let injectionGap: TimeInterval = 2
     let injectionGap: TimeInterval
