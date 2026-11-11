@@ -229,6 +229,7 @@ final class AppModel {
                 claudePath: preflight.claudePath,
                 terminals: terminals,
                 modelSettings: { prefs.agentModels },
+                sidebarProjects: { [weak self] in self?.sidebarState.projectOrder ?? [] },
                 isWatching: { [weak self] id in
                     guard let self, NSApp.isActive else { return false }
                     // The panel watches what it shows: a terminal that lives in a window is watched only

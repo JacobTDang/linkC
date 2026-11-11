@@ -119,7 +119,7 @@ final class MCPServerTaskRoutingTests: XCTestCase {
         let seen = Seen()
         let model = try XCTUnwrap(AgentModelSettings.seeded.model(for: .codex, tier: .light))
         let task = try codexTask(heldBy: "W2")
-        let switching = server(modelSwitcher: { _, _, sessionId in
+        let switching = server(modelSwitcher: { _, _, sessionId, _ in
             seen.sessionId = sessionId
             return "switched"
         })

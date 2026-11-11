@@ -320,6 +320,15 @@ public final class BlackboardStore: Sendable {
         }
     }
 
+    /// The project context as `getProjectContext` returns it, for reading another project's folder:
+    /// nothing is written there. Stale agents are dropped from the returned copy only, and no lock
+    /// file or folder is created (a save replaces the file atomically, so a reader never sees half).
+    public func readProjectContext() throws -> Blackboard {
+        var board = try loadUnlocked()
+        pruneStaleUnlocked(&board, olderThan: Self.staleAgentAge)
+        return board
+    }
+
     /// How long an agent record may go without a beat before any call that reads the board prunes it.
     public static let staleAgentAge: TimeInterval = 15 * 60
 

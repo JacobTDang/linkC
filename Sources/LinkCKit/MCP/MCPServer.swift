@@ -142,7 +142,7 @@ final class TTLCachedUsageReader: @unchecked Sendable {
 public final class MCPServer: Sendable {
     /// Switches `agent`'s model in the workspace: in `sessionId` when the caller named a task, else in
     /// the first session of `agent`.
-    public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String, _ sessionId: String?) throws -> String
+    public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String, _ sessionId: String?, _ workspaceRoot: String) throws -> String
     public typealias AncestorResolver = @Sendable (_ pid: pid_t) -> (agent: AgentKind, pid: pid_t)?
     public typealias ModelSettingsProvider = @Sendable () -> AgentModelSettings
     public typealias SessionResolver = @Sendable () -> String?
@@ -205,11 +205,15 @@ public final class MCPServer: Sendable {
     public let openCodeModels: OpenCodeModelLister
     /// Live model lists from the app's cache. The MCP server never runs a CLI to list models.
     public let modelLists: @Sendable () throws -> [AgentKind: AgentModelList]
+    /// The app's list of known projects, which a `project` argument names one of (spec 2026-11-11
+    /// cross-project §4).
+    public let knownProjects: KnownProjectsFile
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
         "linkc_get_project_context", "linkc_check_conflicts", "linkc_get_inbox",
-        "linkc_get_task", "linkc_get_models", "linkc_get_usage_status", "linkc_get_board"
+        "linkc_get_task", "linkc_get_models", "linkc_get_usage_status", "linkc_get_board",
+        "linkc_list_projects"
     ]
 
     /// Tools whose `agent` argument is a target/filter rather than the caller's identity.
@@ -259,7 +263,8 @@ public final class MCPServer: Sendable {
         openCodeModels: @escaping OpenCodeModelLister = { try MCPServer.listOpenCodeModels(in: $0) },
         modelLists: @escaping @Sendable () throws -> [AgentKind: AgentModelList] = {
             try ModelListCache.applicationSupport.read()
-        }
+        },
+        knownProjects: KnownProjectsFile = .applicationSupport
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -275,6 +280,18 @@ public final class MCPServer: Sendable {
         self.closeAnswerWait = closeAnswerWait
         self.openCodeModels = openCodeModels
         self.modelLists = modelLists
+        self.knownProjects = knownProjects
+    }
+
+    /// The project a tool's `project` argument names, or nil when the call has none and so acts on
+    /// this project. Throws the refusals of `ProjectRef.resolve`, and `KnownProjectsError` when the
+    /// app's list can't be read.
+    func targetProject(_ args: [String: Any]) throws -> KnownProject? {
+        guard let raw = args["project"] else { return nil }
+        guard let ref = raw as? String else {
+            throw LinkCError.server("project must be a folder name or a full path")
+        }
+        return try ProjectRef.resolve(ref, among: knownProjects.read(), caller: workspaceRoot)
     }
 
     /// The real readers, wired to each agent's own on-disk records. `agy` and `cursor` write
@@ -466,6 +483,23 @@ public final class MCPServer: Sendable {
                 "description": "Get this project's system map — its components, how each is reached, and what exists versus what is only intended — plus all peer agents active in this workspace, their goals, claimed files, and shared notes.",
                 "inputSchema": [
                     "type": "object",
+                    "properties": [
+                        "project": [
+                            "type": "string",
+                            "description": "Optional. Another project's folder name or path; reads that project's context. With it, notes are titles only unless note is also set."
+                        ],
+                        "note": [
+                            "type": "string",
+                            "description": "Optional. A note title (matched ignoring case); returns that note in full."
+                        ]
+                    ]
+                ]
+            ],
+            [
+                "name": "linkc_list_projects",
+                "description": "List the other projects linkC knows, one line each: name, path, and each open session's agent and whether it is idle or busy. Pass a name or path as `project` to linkc_ask, linkc_delegate_task, linkc_send_message, linkc_get_board or linkc_get_project_context.",
+                "inputSchema": [
+                    "type": "object",
                     "properties": [:]
                 ]
             ],
@@ -478,6 +512,10 @@ public final class MCPServer: Sendable {
                         "board": [
                             "type": "string",
                             "description": "Optional board to read: \"overview\" (default) or a detail board's slug."
+                        ],
+                        "project": [
+                            "type": "string",
+                            "description": "Optional. Another project's folder name or path; reads that project's Board."
                         ]
                     ]
                 ]
@@ -541,6 +579,7 @@ public final class MCPServer: Sendable {
                         "force": ["type": "boolean", "description": "Override an existing lease held by another assignee"],
                         "tier": ["type": "string", "description": "Model tier for this task: light, standard or deep. Defaults to the agent's configured default tier. Pass tier or model, not both."],
                         "model": ["type": "string", "description": "A specific model of the target agent, as an alternative to tier. Must be one the agent lists. Pass tier or model, not both."],
+                        "project": ["type": "string", "description": "Optional. Another project's folder name or path; the task is created there."],
                         "verify": [
                             "type": "object",
                             "description": "Make this a verified task. linkC confirms the tests fail at base_sha before delivery, then runs command at the worker's reported sha and decides done or failed itself.",
@@ -558,17 +597,33 @@ public final class MCPServer: Sendable {
                 ]
             ],
             [
+                "name": "linkc_ask",
+                "description": "Ask an agent in another project a question. It answers from its own context, and the answer (at most 1,000 characters) comes back to this session as a [linkC task …] line. Use linkc_list_projects to see the projects.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "project": ["type": "string", "description": "Target project's folder name or path"],
+                        "question": ["type": "string", "description": "The question to ask"],
+                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList)); defaults to claude"],
+                        "tier": ["type": "string", "description": "Model tier: light, standard or deep"]
+                    ],
+                    "required": ["project", "question"]
+                ]
+            ],
+            [
                 "name": "linkc_send_message",
                 "description": "Send a direct message or peer note to another agent in the workspace. Several workers of one agent can run at once: pass task_id to reach the worker holding that task.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList))"],
+                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList)). Optional with reply_to (taken from the original message)."],
                         "message": ["type": "string", "description": "Message or note content to send"],
                         "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
-                        "task_id": ["type": "string", "description": "Optional. The message goes to the worker holding this task, not the first session of the agent. Refused while the task has no worker yet."]
+                        "task_id": ["type": "string", "description": "Optional. The message goes to the worker holding this task, not the first session of the agent. Refused while the task has no worker yet."],
+                        "project": ["type": "string", "description": "Optional. Another project's folder name or path; the message is delivered there."],
+                        "reply_to": ["type": "string", "description": "Optional. Id of a cross-project message in this inbox to reply to."]
                     ],
-                    "required": ["to", "message"]
+                    "required": ["message"]
                 ]
             ],
             [
@@ -707,6 +762,13 @@ public final class MCPServer: Sendable {
 
                 return toolResultResponse(id: id, text: responseText)
 
+            case "linkc_list_projects":
+                do {
+                    return try listProjectsResult(id: id)
+                } catch {
+                    return errorResult(id: id, error)
+                }
+
             case "linkc_check_conflicts":
                 let files = args["files"] as? [String] ?? []
                 let pid: pid_t? = (args["pid"] as? Int).map { pid_t($0) } ?? (caller.isIdentified ? caller.pid : nil)
@@ -736,94 +798,35 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(id: id, text: "Shared note posted: '\(note.title)' (ID: \(note.id))")
 
             case "linkc_get_project_context":
-                let board = try store.getProjectContext()
-                var text = "# Project Shared Context: \(board.projectPath)\n"
-                text += "Active Agents: \(board.activeAgents.count)\n\n"
-
-                if board.activeAgents.isEmpty {
-                    text += "_No other active agents currently recorded._\n\n"
-                } else {
-                    text += "## Active Peer Agents\n"
-                    for a in board.activeAgents {
-                        text += "- **\(a.agentKind.displayName)** (PID \(a.pid)) — \(a.status)\n"
-                        text += "  - Goal: \(a.goal)\n"
-                        if !a.claimedFiles.isEmpty {
-                            text += "  - Claimed Files: \(a.claimedFiles.joined(separator: ", "))\n"
-                        }
-                    }
-                    text += "\n"
-                }
-
-                if !board.sharedNotes.isEmpty {
-                    text += "## Shared Notes & Decisions\n"
-                    for n in board.sharedNotes {
-                        text += "### \(n.title) (by \(n.authorAgent.displayName))\n"
-                        text += "\(n.content)\n\n"
-                    }
-                }
-
-                // The project's own map of its components, when it keeps one. A map that cannot be read
-                // says so: an agent must not be told a project has no components when it has a broken file.
                 do {
-                    if let loaded = try BoardMapStore(workspacePath: board.projectPath).load() {
-                        text += BoardReport.markdown(for: loaded.map)
-                        text += "Read with `linkc_get_board`; change with `linkc_edit_board`.\n\n"
+                    let noteTitle: String?
+                    if let rawNote = args["note"] {
+                        guard let title = rawNote as? String else { throw LinkCError.server("note must be a note title") }
+                        noteTitle = title
                     } else {
-                        text += "## System\n_No map yet — `linkc_edit_board` starts one._\n\n"
+                        noteTitle = nil
                     }
+                    let target = try targetProject(args)
+                    let boardStore = target.map { BlackboardStore(workspaceRoot: $0.path) } ?? store
+                    return try projectContextResult(
+                        id: id,
+                        store: boardStore,
+                        crossProjectName: target?.name,
+                        noteTitle: noteTitle
+                    )
                 } catch {
-                    // The message can carry a name straight from the file — sanitized the same
-                    // way every other field in this report is, since it lands in markdown too.
-                    text += "## System\n_The system map could not be read: \(BoardReport.sanitized(error.localizedDescription))_\n\n"
+                    return errorResult(id: id, error)
                 }
-
-                return toolResultResponse(id: id, text: text)
 
             case "linkc_get_board":
+                let root: String
                 do {
-                    let rawBoard = args["board"] as? String
-                    let slug: String?
-                    if let rawBoard, rawBoard != "overview" {
-                        slug = rawBoard
-                    } else {
-                        slug = nil
-                    }
-
-                    let projectName = URL(fileURLWithPath: workspaceRoot).lastPathComponent
-                    let catalog = try BoardCatalog.load(workspacePath: workspaceRoot, projectName: projectName)
-
-                    if let slug {
-                        guard BoardSlug.isValid(slug), catalog.entry(for: slug) != nil else {
-                            let known = (["overview"] + catalog.entries.compactMap(\.slug)).joined(separator: ", ")
-                            return toolResultResponse(id: id, text: "unknown board \"\(slug)\" — known boards: \(known)", isError: true)
-                        }
-                    }
-
-                    let map: BoardMap
-                    if let slug {
-                        map = try BoardDrill.open(slug, workspacePath: workspaceRoot, catalog: catalog)
-                    } else {
-                        guard let loaded = try BoardMapStore(workspacePath: workspaceRoot, board: nil).load() else {
-                            return toolResultResponse(id: id, text: "This project has no map yet — linkc_edit_board creates one.")
-                        }
-                        map = loaded.map
-                    }
-
-                    var text = try map.architectureJSON()
-                        + "\n\nVerbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system, detail. "
-                        + "Kinds: \(ComponentKind.groupedKindList) (any other kind is kept and drawn as a service). "
-                        + "\"memory\" is the AI agent's checkpointer; \"ram\" is hardware memory. "
-                        + "Parts marked outside come from the parent board and are read-only here."
-
-                    text += "\n\nBoards:\n"
-                    for entry in catalog.entries {
-                        let indent = String(repeating: "  ", count: entry.depth)
-                        let slugLabel = entry.slug ?? "overview"
-                        let pathLabel = entry.linked ? entry.path.joined(separator: " › ") : "(unlinked)"
-                        text += "\(indent)\(slugLabel) — \(pathLabel)\n"
-                    }
-
-                    return toolResultResponse(id: id, text: text)
+                    root = try targetProject(args)?.path ?? workspaceRoot
+                } catch {
+                    return errorResult(id: id, error)
+                }
+                do {
+                    return try boardResult(id: id, root: root, boardArg: args["board"] as? String)
                 } catch {
                     return toolResultResponse(id: id, text: BoardReport.sanitized(error.localizedDescription), isError: true)
                 }
@@ -857,262 +860,113 @@ public final class MCPServer: Sendable {
                 }
 
             case "linkc_delegate_task":
-                guard let toStr = args["to"] as? String, !toStr.isEmpty else {
-                    return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
-                }
-                guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
-                    return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
-                }
-                guard toAgent != .shell else {
-                    return toolResultResponse(id: id, text: "Error: Cannot delegate tasks to interactive terminal shell. Target an AI CLI agent (\(AgentKind.peerList)).", isError: true)
-                }
-                guard let prompt = args["prompt"] as? String, !prompt.isEmpty else {
-                    return toolResultResponse(id: id, text: "Error: Missing required argument 'prompt'.", isError: true)
-                }
-
-                let files = args["files"] as? [String] ?? []
-                let force = args["force"] as? Bool ?? false
-
-                var verification: Verification?
-                switch args["verify"] {
-                case nil, is NSNull:
-                    break
-                case let verify as [String: Any]:
-                    do {
-                        verification = try resolveVerification(verify)
-                    } catch {
-                        return toolResultResponse(id: id, text: "Error: \(error.localizedDescription)", isError: true)
-                    }
-                default:
-                    return toolResultResponse(id: id, text: "Error: verify must be an object.", isError: true)
-                }
-
-                // Read once per request: a stable view of the mapping for the whole handler,
-                // never cached across calls — the next request reads whatever is on disk then.
-                let settings = modelSettings()
-                let modelArg: String?
-                if let raw = args["model"] {
-                    guard let text = raw as? String else {
-                        return toolResultResponse(id: id, text: "Error: model must be a string.", isError: true)
-                    }
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    modelArg = trimmed.isEmpty ? nil : trimmed
-                } else {
-                    modelArg = nil
-                }
-                // A non-string `tier` is malformed and refused outright; a string is trimmed and,
-                // if empty or all whitespace, treated the same as an absent argument.
-                let tierArg: String?
-                if let raw = args["tier"] {
-                    guard let text = raw as? String else {
-                        return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
-                    }
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    tierArg = trimmed.isEmpty ? nil : trimmed
-                } else {
-                    tierArg = nil
-                }
-                if modelArg != nil, tierArg != nil {
-                    return toolResultResponse(id: id, text: "Error: pass tier or model, not both", isError: true)
-                }
-
-                // The cache is read only by a check that needs it: a model named by hand, or a tier of
-                // an agent whose models come from its CLI. A missing file reads as "nothing listed yet".
-                var readLists: [AgentKind: AgentModelList]?
-                func lists() throws -> [AgentKind: AgentModelList] {
-                    if let readLists { return readLists }
-                    let read = try modelLists()
-                    readLists = read
-                    return read
-                }
-                let listsUnreadable: (Error) -> String = { "Error: could not read the live model lists — \($0)" }
-
-                let tier: ModelTier?
-                let model: String?
-                if let modelArg {
-                    guard toAgent != .cursor else {
-                        return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
-                    }
-                    let choosable: [ListedModel]
-                    do {
-                        choosable = ModelListCache.choosable(for: toAgent, lists: try lists(), settings: settings)
-                    } catch {
-                        return toolResultResponse(id: id, text: listsUnreadable(error), isError: true)
-                    }
-                    if toAgent == .opencode, !OpenCodeFreeModels.isFree(modelArg) {
-                        let free = choosable.filter { OpenCodeFreeModels.isFree($0.id) }.map(\.id).joined(separator: ", ")
-                        return toolResultResponse(
-                            id: id,
-                            text: "Error: \(modelArg) is not free — OpenCode runs free models only. Free models: \(free)",
-                            isError: true)
-                    }
-                    // The listed spelling is what is stored and launched, whatever case it was typed in.
-                    guard let listed = choosable.first(where: { $0.id.caseInsensitiveCompare(modelArg) == .orderedSame }) else {
-                        let ids = choosable.map(\.id).joined(separator: ", ")
-                        return toolResultResponse(
-                            id: id,
-                            text: "Error: \(modelArg) is not among the models \(toAgent.displayName) lists. Available: \(ids)",
-                            isError: true)
-                    }
-                    if toAgent == .opencode {
-                        let offered: [String]
-                        do {
-                            offered = try openCodeModels(workspaceRoot)
-                        } catch {
-                            return toolResultResponse(
-                                id: id,
-                                text: "Error: could not check \(listed.id) against the models OpenCode lists — \(error)",
-                                isError: true)
-                        }
-                        guard offered.contains(where: { $0.caseInsensitiveCompare(listed.id) == .orderedSame }) else {
-                            return toolResultResponse(
-                                id: id,
-                                text: "Error: \(listed.id) is not among the models OpenCode lists — free models come and go; pick another.",
-                                isError: true)
-                        }
-                    }
-                    model = listed.id
-                    tier = nil
-                } else if let tierArg {
-                    guard let parsed = ModelTier(rawValue: tierArg.lowercased()) else {
-                        return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
-                    }
-                    guard toAgent != .cursor else {
-                        return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
-                    }
-                    tier = parsed
-                    model = nil
-                } else if toAgent == .cursor {
-                    // Cursor was never tiered; an omitted tier keeps working exactly as before.
-                    tier = nil
-                    model = nil
-                } else {
-                    tier = settings.defaultTier(for: toAgent)
-                    model = nil
-                }
-                if let tier {
-                    guard settings.model(for: toAgent, tier: tier) != nil else {
-                        return toolResultResponse(
-                            id: id,
-                            text: "Error: no model configured for \(toAgent.rawValue) tier \(tier.rawValue) — set it in linkC settings.",
-                            isError: true)
-                    }
-                }
-                if toAgent == .opencode, let tier, let tierModel = settings.model(for: .opencode, tier: tier) {
-                    guard OpenCodeFreeModels.isFree(tierModel) else {
-                        return toolResultResponse(
-                            id: id,
-                            text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not free — OpenCode runs free models only; set the tier in linkC settings.",
-                            isError: true)
-                    }
-                }
-                // A tier whose model the agent's own list no longer has would start a worker the CLI
-                // rejects. Refused now; an agent never listed (or whose last listing failed) is not blocked.
-                if let tier, let tierModel = settings.model(for: toAgent, tier: tier),
-                   ModelListParser.listedAgents.contains(toAgent) {
-                    do {
-                        if let offered = ModelListCache.liveModels(for: toAgent, lists: try lists()),
-                           !offered.contains(where: { $0.id.caseInsensitiveCompare(tierModel) == .orderedSame }) {
-                            return toolResultResponse(
-                                id: id,
-                                text: "Error: \(toAgent.rawValue)'s \(tier.rawValue) tier is set to \(tierModel), which \(toAgent.rawValue) no longer offers. Pick another in Settings > Models. Offered: \(offered.map(\.id).joined(separator: ", ")).",
-                                isError: true)
-                        }
-                    } catch {
-                        return toolResultResponse(id: id, text: listsUnreadable(error), isError: true)
-                    }
-                }
-                if toAgent == .opencode, let tier, let tierModel = settings.model(for: .opencode, tier: tier) {
-                    let offered: [String]
-                    do {
-                        offered = try openCodeModels(workspaceRoot)
-                    } catch {
-                        return toolResultResponse(
-                            id: id,
-                            text: "Error: could not check opencode tier \(tier.rawValue)'s model \(tierModel) against the models OpenCode lists — \(error)",
-                            isError: true)
-                    }
-                    guard offered.contains(tierModel) else {
-                        return toolResultResponse(
-                            id: id,
-                            text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings.",
-                            isError: true)
-                    }
-                }
-
-                let limitModel = model ?? tier.flatMap { settings.model(for: toAgent, tier: $0) }
                 do {
-                    if let limitStatus = try inboxStore.isAgentLimited(agent: toAgent, model: limitModel) {
-                        let refusal = try Self.limitRefusal(
-                            agent: toAgent, limit: limitStatus, model: limitModel, readLists: lists,
-                            settings: settings, inboxStore: inboxStore)
-                        return toolResultResponse(id: id, text: "Error: \(refusal)", isError: true)
-                    }
+                    let target = try targetProject(args)
+                    let destStore = target.map { InboxStore(workspaceRoot: $0.path) } ?? inboxStore
+                    let destRoot = target?.path ?? workspaceRoot
+                    return try createDelegatedTask(
+                        id: id, caller: caller, args: args, destStore: destStore, destRoot: destRoot,
+                        crossProject: target.map { (name: $0.name, path: $0.path) }
+                    )
                 } catch {
                     return errorResult(id: id, error)
                 }
 
-                let task: TaskRecord
+            case "linkc_ask":
+                if args["verify"] != nil {
+                    return toolResultResponse(id: id, text: "Error: an ask cannot be verified.", isError: true)
+                }
+                guard let question = args["question"] as? String, !question.isEmpty else {
+                    return toolResultResponse(id: id, text: "Error: Missing required argument 'question'.", isError: true)
+                }
                 do {
-                    task = try inboxStore.createTask(from: caller.agent, to: toAgent,
-                                                     fromSessionId: callerSessionId(),
-                                                     tier: tier, model: model,
-                                                     prompt: prompt, files: files,
-                                                     force: force, verification: verification)
+                    guard let target = try targetProject(args) else {
+                        return toolResultResponse(id: id, text: "Error: Missing required argument 'project'.", isError: true)
+                    }
+                    var askArgs = args
+                    askArgs["prompt"] = question
+                    if askArgs["to"] == nil { askArgs["to"] = AgentKind.claude.rawValue }
+                    askArgs["files"] = [String]()
+                    return try createDelegatedTask(
+                        id: id, caller: caller, args: askArgs,
+                        destStore: InboxStore(workspaceRoot: target.path), destRoot: target.path,
+                        crossProject: (name: target.name, path: target.path),
+                        isQuestion: true
+                    )
                 } catch {
                     return errorResult(id: id, error)
                 }
-
-                let successText = verification.map {
-                    "Task \(task.shortId) created. linkC will confirm the tests fail at \(VerificationRunner.short($0.baseSha)) before delivery."
-                } ?? "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
-
-                // Warn when the target is nearly out, without ever blocking or failing the
-                // delegation. Whether a reader can ever produce a warning is decided once, in
-                // `warnCapableAgents`, next to where readers are registered — not here by
-                // checking the target's identity. A reader left out of that set (the transcript
-                // usage reader today) is never called at all, so its read cost is never paid for
-                // a warning it could never carry.
-                var usageNote = ""
-                if warnCapableAgents.contains(toAgent),
-                   let window = usageReaders[toAgent]?().windowNeedingWarning,
-                   let percent = window.usedPercent {
-                    let resetSuffix = window.resetsAt.map { ", resets \(Self.formatReset($0, now: Date()))" } ?? ""
-                    usageNote = " \(toAgent.displayName) is at \(Self.formatPercent(percent)) of its \(window.label) window\(resetSuffix)."
-                }
-
-                if !files.isEmpty {
-                    do {
-                        _ = try store.broadcastIntent(
-                            agentKind: caller.agent,
-                            pid: caller.pid,
-                            goal: "Delegated task \(task.shortId) to \(toAgent.displayName)",
-                            files: files,
-                            status: "delegating"
-                        )
-                    } catch {
-                        let warning = "Warning: task was created but the blackboard broadcast failed: \(error.localizedDescription)."
-                        return toolResultResponse(id: id, text: "\(successText)\n\(warning)\(usageNote)")
-                    }
-                }
-
-                return toolResultResponse(id: id, text: "\(successText)\(usageNote)")
 
             case "linkc_send_message":
+                guard let messageText = args["message"] as? String, !messageText.isEmpty else {
+                    return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
+                }
+                let replyTo: String?
+                if let rawReplyTo = args["reply_to"] {
+                    guard let messageId = rawReplyTo as? String else {
+                        return toolResultResponse(id: id, text: "reply_to must be a message id", isError: true)
+                    }
+                    replyTo = messageId
+                } else {
+                    replyTo = nil
+                }
+                if replyTo != nil || args["project"] != nil {
+                    // An empty task_id names no task, as it does for a message to this project.
+                    let taskIdGiven = args["task_id"] != nil
+                        && (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) != ""
+                    if taskIdGiven {
+                        return toolResultResponse(id: id, text: "task_id cannot be combined with project or reply_to.", isError: true)
+                    }
+                    if messageText.count > PendingMessage.crossProjectMessageLimit {
+                        return toolResultResponse(
+                            id: id,
+                            text: "Messages to another project are at most 2,000 characters. Point to a file path instead; both projects are on this Mac.",
+                            isError: true
+                        )
+                    }
+                }
+
+                if let replyTo {
+                    do {
+                        return try crossProjectReplyResult(id: id, caller: caller, args: args, replyTo: replyTo, messageText: messageText)
+                    } catch {
+                        return errorResult(id: id, error)
+                    }
+                }
+
+                do {
+                    if let target = try targetProject(args) {
+                        return try crossProjectSendResult(id: id, caller: caller, args: args, target: target, messageText: messageText)
+                    }
+                } catch {
+                    return errorResult(id: id, error)
+                }
+
                 guard let toStr = args["to"] as? String, !toStr.isEmpty else {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
                 }
                 guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
                     return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
-                }
-                guard let messageText = args["message"] as? String, !messageText.isEmpty else {
-                    return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
                 }
 
                 do {
                     let worker = try taskWorker(args, agent: toAgent)
-                    let pending = try inboxStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote,
-                                                         toSessionId: worker?.sessionId, body: messageText)
+                    let destStore = worker?.store ?? inboxStore
+                    // The worker of a task sent to another project is in that project: the message crosses
+                    // projects, so it carries its origin and keeps to the cross-project size (spec §6.1, §6.3).
+                    let ownRoot = ProjectPath.canonical(workspaceRoot)
+                    let crossesProjects = worker.map { ProjectPath.canonical($0.root) != ownRoot } ?? false
+                    if crossesProjects, messageText.count > PendingMessage.crossProjectMessageLimit {
+                        return toolResultResponse(
+                            id: id,
+                            text: "Messages to another project are at most 2,000 characters. Point to a file path instead; both projects are on this Mac.",
+                            isError: true
+                        )
+                    }
+                    let pending = try destStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote,
+                                                         toSessionId: worker?.sessionId, body: messageText,
+                                                         fromProject: crossesProjects ? ownRoot : nil,
+                                                         fromSessionId: crossesProjects ? callerSessionId() : nil)
                     if let worker {
                         return toolResultResponse(id: id, text: "Message queued for the \(toAgent.displayName) worker holding task \(worker.task.shortId) (ID: \(pending.id)). linkC delivers it when that worker is idle; if the worker has ended by then, the message fails.")
                     }
@@ -1188,7 +1042,7 @@ public final class MCPServer: Sendable {
 
             case "linkc_switch_model":
                 let named = (args["agent"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let worker: (task: TaskRecord, sessionId: String)?
+                let worker: (task: TaskRecord, sessionId: String, store: InboxStore, root: String)?
                 do {
                     worker = try taskWorker(args, agent: named.flatMap { AgentKind(rawValue: $0.lowercased()) })
                 } catch {
@@ -1234,9 +1088,11 @@ public final class MCPServer: Sendable {
                     return errorResult(id: id, error)
                 }
 
+                let destRoot = worker?.root ?? workspaceRoot
+                let destStore = worker?.store ?? inboxStore
                 if let modelSwitcher {
                     do {
-                        let result = try modelSwitcher(agent, cleanModel, worker?.sessionId)
+                        let result = try modelSwitcher(agent, cleanModel, worker?.sessionId, destRoot)
                         return toolResultResponse(id: id, text: result)
                     } catch {
                         return errorResult(id: id, error)
@@ -1244,7 +1100,7 @@ public final class MCPServer: Sendable {
                 } else {
                     let cmd = AgentModelCatalog.interactiveSwitchCommand(model: cleanModel, for: agent)
                     do {
-                        _ = try inboxStore.enqueue(from: agent, to: agent, kind: .command, toSessionId: worker?.sessionId, body: cmd)
+                        _ = try destStore.enqueue(from: agent, to: agent, kind: .command, toSessionId: worker?.sessionId, body: cmd)
                     } catch {
                         return errorResult(id: id, error)
                     }
@@ -1384,7 +1240,7 @@ public final class MCPServer: Sendable {
 
             case "linkc_start_task":
                 do {
-                    let task = try requireTask(args)
+                    let task = try requireOwnTask(args)
                     guard caller.agent == task.toAgent else {
                         return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
                     }
@@ -1400,7 +1256,7 @@ public final class MCPServer: Sendable {
 
             case "linkc_complete_task":
                 do {
-                    let task = try requireTask(args)
+                    let task = try requireOwnTask(args)
                     guard caller.agent == task.toAgent else {
                         return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
                     }
@@ -1454,12 +1310,13 @@ public final class MCPServer: Sendable {
 
             case "linkc_close_worker":
                 do {
-                    let task = try requireTask(args)
+                    let resolved = try requireTask(args)
+                    let task = resolved.task
                     guard caller.agent == task.fromAgent, callerDelegated(task) else {
                         return toolResultResponse(id: id, text: "Error: only the agent that delegated task \(task.shortId) (\(task.fromAgent.displayName)) may close its worker.", isError: true)
                     }
-                    let request = try inboxStore.requestClose(taskId: task.id, by: .delegator)
-                    guard let answer = try awaitAnswer(to: request, on: task.id) else {
+                    let request = try resolved.store.requestClose(taskId: task.id, by: .delegator)
+                    guard let answer = try awaitAnswer(to: request, on: task.id, store: resolved.store) else {
                         return toolResultResponse(id: id, text: "Close requested for the worker of task \(task.shortId), but linkC has not answered yet (is it running?). The request may still be acted on if the worker still qualifies; linkc_get_task(\"\(task.id)\") shows the outcome.")
                     }
                     if let refusal = answer.refusal {
@@ -1472,7 +1329,8 @@ public final class MCPServer: Sendable {
 
             case "linkc_cancel_task":
                 do {
-                    let task = try requireTask(args)
+                    let resolved = try requireTask(args)
+                    let task = resolved.task
                     let force = args["force"] as? Bool ?? false
                     let isAssignee = caller.agent == task.toAgent && callerMayAct(on: task)
                     guard force || caller.agent == task.fromAgent || isAssignee else {
@@ -1481,13 +1339,28 @@ public final class MCPServer: Sendable {
                     let reason = (args["reason"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
                     let resolvedReason = (reason?.isEmpty == false) ? reason! : "cancelled by \(caller.agent.displayName)"
                     let wasDelivered = task.state == .delivered || task.state == .started
-                    try inboxStore.cancelTask(taskId: task.id, reason: resolvedReason)
+                    try resolved.store.cancelTask(taskId: task.id, reason: resolvedReason)
                     let successText = "Cancelled task \(task.shortId) (\(resolvedReason))."
                     if wasDelivered {
+                        // The delegator (or anyone forcing it) stopping the work tells the worker to stop. The
+                        // worker giving the task up tells the delegator instead: addressed to no session, so
+                        // for a task from another project the relay forwards it home.
+                        let notified = isAssignee ? task.fromAgent : task.toAgent
                         do {
-                            _ = try inboxStore.enqueue(from: caller.agent, to: task.toAgent, kind: .completion, taskId: task.id, body: "cancelled: \(resolvedReason). Stop work on it.")
+                            if isAssignee {
+                                _ = try resolved.store.enqueue(
+                                    from: caller.agent, to: task.fromAgent, kind: .completion,
+                                    taskId: task.id, body: "cancelled by its worker: \(resolvedReason)"
+                                )
+                            } else {
+                                _ = try resolved.store.enqueue(
+                                    from: caller.agent, to: task.toAgent, kind: .completion,
+                                    taskId: task.id, toSessionId: task.assigneeSessionId,
+                                    body: "cancelled: \(resolvedReason). Stop work on it."
+                                )
+                            }
                         } catch {
-                            let warning = "Warning: task state was updated but notifying \(task.toAgent.displayName) failed: \(error.localizedDescription). They can run linkc_get_task(\"\(task.id)\")."
+                            let warning = "Warning: task state was updated but notifying \(notified.displayName) failed: \(error.localizedDescription). They can run linkc_get_task(\"\(task.id)\")."
                             return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
                         }
                     }
@@ -1498,8 +1371,8 @@ public final class MCPServer: Sendable {
 
             case "linkc_get_task":
                 do {
-                    let task = try requireTask(args)
-                    return toolResultResponse(id: id, text: taskMarkdown(task))
+                    let resolved = try requireTask(args)
+                    return toolResultResponse(id: id, text: taskMarkdown(resolved.task))
                 } catch {
                     return errorResult(id: id, error)
                 }
@@ -1509,17 +1382,34 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: Self.unidentifiedCallerMessage, isError: true)
                 }
                 let assigned: [TaskRecord]
-                let delegated: [TaskRecord]
+                var delegatedLines: [String] = []
                 do {
                     assigned = try inboxStore.openTasks(for: caller.agent).filter { callerMayAct(on: $0) }
-                    delegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
+                    let localDelegated = try inboxStore.openTasks().filter { $0.fromAgent == caller.agent && $0.toAgent != caller.agent }
+                    delegatedLines = localDelegated.map { "- \(taskLine($0))" }
+                    for pointer in try inboxStore.sentTasks() {
+                        let name = URL(fileURLWithPath: pointer.project).lastPathComponent
+                        let task: TaskRecord?
+                        do {
+                            task = try InboxStore(workspaceRoot: pointer.project).task(id: pointer.taskId)
+                        } catch {
+                            delegatedLines.append("- \(name): could not be read (\(error.localizedDescription))")
+                            continue
+                        }
+                        guard let task else {
+                            // The task is gone from that inbox: the pointer has nothing left to point at.
+                            try inboxStore.dropSent(taskId: pointer.taskId)
+                            continue
+                        }
+                        if task.state.isOpen { delegatedLines.append("- \(taskLine(task)) → \(name)") }
+                    }
                 } catch {
                     return errorResult(id: id, error)
                 }
                 var text = "# Open tasks for \(caller.agent.displayName)\n\n## Assigned to you (\(assigned.count))\n"
                 text += assigned.isEmpty ? "_None._\n" : assigned.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
-                text += "\n## Delegated by you (\(delegated.count))\n"
-                text += delegated.isEmpty ? "_None._\n" : delegated.map { "- \(taskLine($0))" }.joined(separator: "\n") + "\n"
+                text += "\n## Delegated by you (\(delegatedLines.count))\n"
+                text += delegatedLines.isEmpty ? "_None._\n" : delegatedLines.joined(separator: "\n") + "\n"
                 return toolResultResponse(id: id, text: text)
 
             default:
@@ -1747,7 +1637,7 @@ public final class MCPServer: Sendable {
     }
 
     /// Checks `verify` against the workspace's git and returns it with base_sha fully resolved.
-    private func resolveVerification(_ raw: [String: Any]) throws -> Verification {
+    private func resolveVerification(_ raw: [String: Any], in root: String? = nil) throws -> Verification {
         func field(_ key: String) throws -> String {
             guard let value = (raw[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
                 throw LinkCError.server("verify.\(key) is required")
@@ -1775,7 +1665,7 @@ public final class MCPServer: Sendable {
         }
 
         let git = GitClient()
-        let workspace = URL(fileURLWithPath: workspaceRoot)
+        let workspace = URL(fileURLWithPath: root ?? workspaceRoot)
         let base: String
         do { base = try git.resolveCommit(baseArg, in: workspace) } catch {
             throw LinkCError.server("verify.base_sha: \(error.localizedDescription)")
@@ -1795,28 +1685,55 @@ public final class MCPServer: Sendable {
         return Verification(branch: branch, baseSha: base, command: command, testPaths: paths, timeoutSeconds: timeout)
     }
 
-    private func requireTask(_ args: [String: Any]) throws -> TaskRecord {
+    private func taskIdArgument(_ args: [String: Any]) throws -> String {
         guard let taskId = (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !taskId.isEmpty else {
             throw LinkCError.server("Missing required argument 'task_id'.")
         }
+        return taskId
+    }
+
+    /// Resolves `task_id` in this inbox only. The assignee's tools (`linkc_start_task`,
+    /// `linkc_complete_task`) use it: a task this project sent elsewhere is not its to start or answer.
+    private func requireOwnTask(_ args: [String: Any]) throws -> TaskRecord {
+        let taskId = try taskIdArgument(args)
         guard let task = try inboxStore.task(matching: taskId) else { throw InboxError.taskNotFound(taskId) }
         return task
     }
 
+    /// Resolves `task_id` in this inbox, or through a `sentTasks` pointer into the project that holds it
+    /// (spec 2026-11-11 cross-project §5.4 / §6.3).
+    private func requireTask(_ args: [String: Any]) throws -> (task: TaskRecord, store: InboxStore, root: String) {
+        let taskId = try taskIdArgument(args)
+        if let task = try inboxStore.task(matching: taskId) {
+            return (task, inboxStore, workspaceRoot)
+        }
+        guard let pointer = try inboxStore.sentTask(matching: taskId) else {
+            throw InboxError.taskNotFound(taskId)
+        }
+        let remote = InboxStore(workspaceRoot: pointer.project)
+        if let task = try remote.task(id: pointer.taskId) {
+            return (task, remote, ProjectPath.canonical(pointer.project))
+        }
+        try inboxStore.dropSent(taskId: pointer.taskId)
+        throw InboxError.taskNotFound(taskId)
+    }
+
     /// The task `args["task_id"]` names and the session holding it, or nil when no task is named. Throws
     /// when the task does not exist, no worker holds it yet, or it is for another agent than `agent`.
-    private func taskWorker(_ args: [String: Any], agent: AgentKind?) throws -> (task: TaskRecord, sessionId: String)? {
+    /// Follows a `sentTasks` pointer so a message or model switch reaches the worker in the other project.
+    private func taskWorker(_ args: [String: Any], agent: AgentKind?) throws -> (task: TaskRecord, sessionId: String, store: InboxStore, root: String)? {
         guard let taskId = (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !taskId.isEmpty else {
             return nil
         }
-        guard let task = try inboxStore.task(matching: taskId) else { throw InboxError.taskNotFound(taskId) }
+        let resolved = try requireTask(args)
+        let task = resolved.task
         if let agent, agent != task.toAgent {
             throw LinkCError.server("Task \(task.shortId) is for \(task.toAgent.displayName), not \(agent.displayName).")
         }
         guard let sessionId = task.assigneeSessionId else {
             throw LinkCError.server("Task \(task.shortId) has no worker yet (it is \(task.state.rawValue)). Send this once the task has started.")
         }
-        return (task, sessionId)
+        return (task, sessionId, resolved.store, resolved.root)
     }
 
     /// A task delivered to a specific session belongs to that session. Several sessions of one
@@ -1857,12 +1774,12 @@ public final class MCPServer: Sendable {
     /// none came. Only the answer to this very request counts — an earlier one is not. The request
     /// is already recorded, so a poll that cannot take the inbox lock (the relay holds it while it
     /// decides) is not an answer yet, not a failure of the request; any other read error is.
-    private func awaitAnswer(to request: CloseRequest, on taskId: String) throws -> CloseRequest? {
+    private func awaitAnswer(to request: CloseRequest, on taskId: String, store: InboxStore) throws -> CloseRequest? {
         var waited: TimeInterval = 0
         while true {
             let current: TaskRecord?
             do {
-                current = try inboxStore.task(id: taskId)
+                current = try store.task(id: taskId)
             } catch LinkCError.lockTimeout {
                 return nil
             }
@@ -1927,6 +1844,580 @@ public final class MCPServer: Sendable {
                 throw LinkCError.server("could not create detail board \"\(slug)\": \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Shared body of `linkc_delegate_task` / `linkc_ask`. `destStore`/`destRoot` are this project or another.
+    private func createDelegatedTask(
+        id: Any?,
+        caller: MCPCaller,
+        args: [String: Any],
+        destStore: InboxStore,
+        destRoot: String,
+        crossProject: (name: String, path: String)?,
+        isQuestion: Bool = false
+    ) throws -> Data? {
+        // A known project whose folder was deleted since linkC listed it: any write there would create the
+        // folder again, with an inbox nobody serves.
+        if let crossProject {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: crossProject.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return toolResultResponse(id: id, text: "Error: \(crossProject.name)'s folder \(crossProject.path) no longer exists.", isError: true)
+            }
+        }
+        guard let toStr = args["to"] as? String, !toStr.isEmpty else {
+            return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
+        }
+        guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+            return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
+        }
+        guard toAgent != .shell else {
+            return toolResultResponse(id: id, text: "Error: Cannot delegate tasks to interactive terminal shell. Target an AI CLI agent (\(AgentKind.peerList)).", isError: true)
+        }
+        guard let prompt = args["prompt"] as? String, !prompt.isEmpty else {
+            return toolResultResponse(id: id, text: "Error: Missing required argument 'prompt'.", isError: true)
+        }
+
+        let files = args["files"] as? [String] ?? []
+        let force = args["force"] as? Bool ?? false
+
+        var verification: Verification?
+        switch args["verify"] {
+        case nil, is NSNull:
+            break
+        case let verify as [String: Any]:
+            do {
+                verification = try resolveVerification(verify, in: destRoot)
+            } catch {
+                return toolResultResponse(id: id, text: "Error: \(error.localizedDescription)", isError: true)
+            }
+        default:
+            return toolResultResponse(id: id, text: "Error: verify must be an object.", isError: true)
+        }
+
+        // Read once per request: a stable view of the mapping for the whole handler,
+        // never cached across calls — the next request reads whatever is on disk then.
+        let settings = modelSettings()
+        let modelArg: String?
+        if let raw = args["model"] {
+            guard let text = raw as? String else {
+                return toolResultResponse(id: id, text: "Error: model must be a string.", isError: true)
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            modelArg = trimmed.isEmpty ? nil : trimmed
+        } else {
+            modelArg = nil
+        }
+        // A non-string `tier` is malformed and refused outright; a string is trimmed and,
+        // if empty or all whitespace, treated the same as an absent argument.
+        let tierArg: String?
+        if let raw = args["tier"] {
+            guard let text = raw as? String else {
+                return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            tierArg = trimmed.isEmpty ? nil : trimmed
+        } else {
+            tierArg = nil
+        }
+        if modelArg != nil, tierArg != nil {
+            return toolResultResponse(id: id, text: "Error: pass tier or model, not both", isError: true)
+        }
+
+        // The cache is read only by a check that needs it: a model named by hand, or a tier of
+        // an agent whose models come from its CLI. A missing file reads as "nothing listed yet".
+        var readLists: [AgentKind: AgentModelList]?
+        func lists() throws -> [AgentKind: AgentModelList] {
+            if let readLists { return readLists }
+            let read = try modelLists()
+            readLists = read
+            return read
+        }
+        let listsUnreadable: (Error) -> String = { "Error: could not read the live model lists — \($0)" }
+
+        let tier: ModelTier?
+        let model: String?
+        if let modelArg {
+            guard toAgent != .cursor else {
+                return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
+            }
+            let choosable: [ListedModel]
+            do {
+                choosable = ModelListCache.choosable(for: toAgent, lists: try lists(), settings: settings)
+            } catch {
+                return toolResultResponse(id: id, text: listsUnreadable(error), isError: true)
+            }
+            if toAgent == .opencode, !OpenCodeFreeModels.isFree(modelArg) {
+                let free = choosable.filter { OpenCodeFreeModels.isFree($0.id) }.map(\.id).joined(separator: ", ")
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(modelArg) is not free — OpenCode runs free models only. Free models: \(free)",
+                    isError: true)
+            }
+            // The listed spelling is what is stored and launched, whatever case it was typed in.
+            guard let listed = choosable.first(where: { $0.id.caseInsensitiveCompare(modelArg) == .orderedSame }) else {
+                let ids = choosable.map(\.id).joined(separator: ", ")
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(modelArg) is not among the models \(toAgent.displayName) lists. Available: \(ids)",
+                    isError: true)
+            }
+            if toAgent == .opencode {
+                let offered: [String]
+                do {
+                    offered = try openCodeModels(destRoot)
+                } catch {
+                    return toolResultResponse(
+                        id: id,
+                        text: "Error: could not check \(listed.id) against the models OpenCode lists — \(error)",
+                        isError: true)
+                }
+                guard offered.contains(where: { $0.caseInsensitiveCompare(listed.id) == .orderedSame }) else {
+                    return toolResultResponse(
+                        id: id,
+                        text: "Error: \(listed.id) is not among the models OpenCode lists — free models come and go; pick another.",
+                        isError: true)
+                }
+            }
+            model = listed.id
+            tier = nil
+        } else if let tierArg {
+            guard let parsed = ModelTier(rawValue: tierArg.lowercased()) else {
+                return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
+            }
+            guard toAgent != .cursor else {
+                return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
+            }
+            tier = parsed
+            model = nil
+        } else if toAgent == .cursor {
+            // Cursor was never tiered; an omitted tier keeps working exactly as before.
+            tier = nil
+            model = nil
+        } else {
+            tier = settings.defaultTier(for: toAgent)
+            model = nil
+        }
+        if let tier {
+            guard settings.model(for: toAgent, tier: tier) != nil else {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: no model configured for \(toAgent.rawValue) tier \(tier.rawValue) — set it in linkC settings.",
+                    isError: true)
+            }
+        }
+        if toAgent == .opencode, let tier, let tierModel = settings.model(for: .opencode, tier: tier) {
+            guard OpenCodeFreeModels.isFree(tierModel) else {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not free — OpenCode runs free models only; set the tier in linkC settings.",
+                    isError: true)
+            }
+        }
+        // A tier whose model the agent's own list no longer has would start a worker the CLI
+        // rejects. Refused now; an agent never listed (or whose last listing failed) is not blocked.
+        if let tier, let tierModel = settings.model(for: toAgent, tier: tier),
+           ModelListParser.listedAgents.contains(toAgent) {
+            do {
+                if let offered = ModelListCache.liveModels(for: toAgent, lists: try lists()),
+                   !offered.contains(where: { $0.id.caseInsensitiveCompare(tierModel) == .orderedSame }) {
+                    return toolResultResponse(
+                        id: id,
+                        text: "Error: \(toAgent.rawValue)'s \(tier.rawValue) tier is set to \(tierModel), which \(toAgent.rawValue) no longer offers. Pick another in Settings > Models. Offered: \(offered.map(\.id).joined(separator: ", ")).",
+                        isError: true)
+                }
+            } catch {
+                return toolResultResponse(id: id, text: listsUnreadable(error), isError: true)
+            }
+        }
+        if toAgent == .opencode, let tier, let tierModel = settings.model(for: .opencode, tier: tier) {
+            let offered: [String]
+            do {
+                offered = try openCodeModels(destRoot)
+            } catch {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: could not check opencode tier \(tier.rawValue)'s model \(tierModel) against the models OpenCode lists — \(error)",
+                    isError: true)
+            }
+            guard offered.contains(tierModel) else {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings.",
+                    isError: true)
+            }
+        }
+
+        // The limit that applies is the one in the project that does the work, for the model it would run.
+        let limitModel = model ?? tier.flatMap { settings.model(for: toAgent, tier: $0) }
+        if let limitStatus = try destStore.isAgentLimited(agent: toAgent, model: limitModel) {
+            let refusal = try Self.limitRefusal(
+                agent: toAgent, limit: limitStatus, model: limitModel, readLists: lists,
+                settings: settings, inboxStore: destStore)
+            return toolResultResponse(id: id, text: "Error: \(refusal)", isError: true)
+        }
+
+        let fromProject = crossProject.map { _ in ProjectPath.canonical(workspaceRoot) }
+        let task = try destStore.createTask(
+            from: caller.agent, to: toAgent,
+            fromSessionId: callerSessionId(),
+            tier: tier, model: model,
+            prompt: prompt, files: files,
+            hop: try newTaskHop(),
+            force: force, verification: verification,
+            fromProject: fromProject, isQuestion: isQuestion
+        )
+
+        if let crossProject {
+            do {
+                try inboxStore.recordSent(SentTask(
+                    taskId: task.id, project: ProjectPath.canonical(crossProject.path),
+                    fromSessionId: callerSessionId()
+                ))
+            } catch {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: task \(task.id) was created in \(crossProject.name) but this project won't track it: \(error.localizedDescription)",
+                    isError: true
+                )
+            }
+        }
+
+        let successText: String
+        if let crossProject {
+            successText = "Task \(task.shortId) queued for \(toAgent.displayName) in \(crossProject.name). Track with linkc_get_task(\"\(task.id)\")."
+        } else if let verification {
+            successText = "Task \(task.shortId) created. linkC will confirm the tests fail at \(VerificationRunner.short(verification.baseSha)) before delivery."
+        } else {
+            successText = "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
+        }
+
+        var usageNote = ""
+        if warnCapableAgents.contains(toAgent),
+           let window = usageReaders[toAgent]?().windowNeedingWarning,
+           let percent = window.usedPercent {
+            let resetSuffix = window.resetsAt.map { ", resets \(Self.formatReset($0, now: Date()))" } ?? ""
+            usageNote = " \(toAgent.displayName) is at \(Self.formatPercent(percent)) of its \(window.label) window\(resetSuffix)."
+        }
+
+        if !files.isEmpty {
+            do {
+                // The files are paths in the project that does the work, so they are claimed on its board.
+                let board = crossProject == nil ? store : BlackboardStore(workspaceRoot: destRoot)
+                _ = try board.broadcastIntent(
+                    agentKind: caller.agent,
+                    pid: caller.pid,
+                    goal: "Delegated task \(task.shortId) to \(toAgent.displayName)",
+                    files: files,
+                    status: "delegating"
+                )
+            } catch {
+                let warning = "Warning: task was created but the blackboard broadcast failed: \(error.localizedDescription)."
+                return toolResultResponse(id: id, text: "\(successText)\n\(warning)\(usageNote)")
+            }
+        }
+
+        return toolResultResponse(id: id, text: "\(successText)\(usageNote)")
+    }
+
+    /// The hop of a task this caller creates now: one past the open task this caller's session holds in its own
+    /// inbox, or 0 when it holds none (spec 2026-11-11 cross-project §5.3). `createTask` refuses past 2, so the
+    /// chain is cut across projects as well as within one. The highest hop wins when it holds several.
+    private func newTaskHop() throws -> Int {
+        guard let session = callerSessionId() else { return 0 }
+        let held = try inboxStore.openTasks().filter { $0.assigneeSessionId == session }
+        return (held.map(\.hop).max() ?? -1) + 1
+    }
+
+    /// `linkc_list_projects`: one line per known project other than the caller's (spec §4.1).
+    private func listProjectsResult(id: Any?) throws -> Data? {
+        let own = ProjectPath.canonical(workspaceRoot)
+        let others = try knownProjects.read().filter { $0.path != own }
+        guard !others.isEmpty else {
+            return toolResultResponse(id: id, text: "No other project is known to linkC.")
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let lines = others.map { project -> String in
+            let path = project.path == home || project.path.hasPrefix(home + "/")
+                ? "~" + project.path.dropFirst(home.count)
+                : project.path
+            let sessions: String
+            if project.sessions.isEmpty {
+                sessions = "no sessions"
+            } else {
+                sessions = project.sessions.map { "\($0.agent) \($0.activity.rawValue)" }.joined(separator: ", ")
+            }
+            return "\(project.name)  \(path)  \(sessions)"
+        }
+        return toolResultResponse(id: id, text: lines.joined(separator: "\n"))
+    }
+
+    /// `linkc_send_message(project:)` — write into the named project's inbox (spec §6).
+    private func crossProjectSendResult(
+        id: Any?,
+        caller: MCPCaller,
+        args: [String: Any],
+        target: KnownProject,
+        messageText: String
+    ) throws -> Data? {
+        guard let toStr = args["to"] as? String, !toStr.isEmpty else {
+            return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
+        }
+        guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+            return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
+        }
+        if let refusal = openSessionRefusal(to: toAgent, in: target) {
+            return toolResultResponse(id: id, text: refusal, isError: true)
+        }
+        let pending = try InboxStore(workspaceRoot: target.path).enqueue(
+            from: caller.agent,
+            to: toAgent,
+            kind: .peerNote,
+            body: messageText,
+            fromProject: ProjectPath.canonical(workspaceRoot),
+            fromSessionId: callerSessionId(),
+            chainDepth: 0
+        )
+        return toolResultResponse(
+            id: id,
+            text: "Message queued for \(toAgent.displayName) in \(target.name) (ID: \(pending.id)). linkC will deliver it when idle."
+        )
+    }
+
+    /// `linkc_send_message(reply_to:)` — reply into the original message's project (spec §6).
+    private func crossProjectReplyResult(
+        id: Any?,
+        caller: MCPCaller,
+        args: [String: Any],
+        replyTo: String,
+        messageText: String
+    ) throws -> Data? {
+        guard let original = try inboxStore.message(matching: replyTo) else {
+            return toolResultResponse(
+                id: id,
+                text: "Message \(replyTo) not found; send without reply_to.",
+                isError: true
+            )
+        }
+        guard let fromProject = original.fromProject else {
+            return toolResultResponse(
+                id: id,
+                text: "Message \(original.id) did not come from another project; reply without reply_to.",
+                isError: true
+            )
+        }
+        if original.chainDepth + 1 >= PendingMessage.replyChainLimit {
+            return toolResultResponse(
+                id: id,
+                text: "This conversation has gone back and forth 10 times. Ask the user before continuing.",
+                isError: true
+            )
+        }
+        let originName = URL(fileURLWithPath: fromProject).lastPathComponent
+        if let rawProject = args["project"] {
+            guard let projectArg = rawProject as? String else {
+                return toolResultResponse(id: id, text: "project must be a folder name or a full path", isError: true)
+            }
+            if !Self.project(projectArg, names: fromProject) {
+                return toolResultResponse(
+                    id: id,
+                    text: "project must match the message's origin (\(originName)), or be omitted.",
+                    isError: true
+                )
+            }
+        }
+        if let toStr = args["to"] as? String, !toStr.isEmpty {
+            guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+                return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
+            }
+            if toAgent != original.fromAgent {
+                return toolResultResponse(
+                    id: id,
+                    text: "to must be \(original.fromAgent.rawValue) (the message's sender), or be omitted.",
+                    isError: true
+                )
+            }
+        }
+        let originPath = ProjectPath.canonical(fromProject)
+        guard let destination = try knownProjects.read().first(where: { ProjectPath.canonical($0.path) == originPath }) else {
+            return toolResultResponse(
+                id: id,
+                text: "\(originName) is no longer known to linkC; the reply was not sent.",
+                isError: true
+            )
+        }
+        let toAgent = original.fromAgent
+        let toSessionId = original.fromSessionId
+        if toSessionId == nil, let refusal = openSessionRefusal(to: toAgent, in: destination) {
+            return toolResultResponse(id: id, text: refusal, isError: true)
+        }
+        let pending = try InboxStore(workspaceRoot: destination.path).enqueue(
+            from: caller.agent,
+            to: toAgent,
+            kind: .peerNote,
+            toSessionId: toSessionId,
+            body: messageText,
+            fromProject: ProjectPath.canonical(workspaceRoot),
+            fromSessionId: callerSessionId(),
+            chainDepth: original.chainDepth + 1
+        )
+        return toolResultResponse(
+            id: id,
+            text: "Reply queued for \(toAgent.displayName) in \(destination.name) (ID: \(pending.id))."
+        )
+    }
+
+    /// Whether a reply's `project` argument names `origin`: its full path, or its folder name
+    /// ignoring case. Compared directly, not resolved against the known projects, where a second
+    /// folder with the same name would make the origin ambiguous.
+    private static func project(_ ref: String, names origin: String) -> Bool {
+        let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+        let originPath = ProjectPath.canonical(origin)
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
+            return ProjectPath.canonical((trimmed as NSString).expandingTildeInPath) == originPath
+        }
+        return URL(fileURLWithPath: originPath).lastPathComponent.caseInsensitiveCompare(trimmed) == .orderedSame
+    }
+
+    /// Refusal when `projects.json` shows no live session of `to` in `project`.
+    private func openSessionRefusal(to agent: AgentKind, in project: KnownProject) -> String? {
+        let open = project.sessions.contains { $0.agentKind == agent }
+        guard !open else { return nil }
+        return "No \(agent.displayName) session is open in \(project.name). Use linkc_ask or linkc_delegate_task, which start one."
+    }
+
+    /// `linkc_get_board` body for this project's folder or another project's (spec §7).
+    private func boardResult(id: Any?, root: String, boardArg: String?) throws -> Data? {
+        let slug: String?
+        if let boardArg, boardArg != "overview" {
+            slug = boardArg
+        } else {
+            slug = nil
+        }
+
+        let projectName = URL(fileURLWithPath: root).lastPathComponent
+        let catalog = try BoardCatalog.load(workspacePath: root, projectName: projectName)
+
+        if let slug {
+            guard BoardSlug.isValid(slug), catalog.entry(for: slug) != nil else {
+                let known = (["overview"] + catalog.entries.compactMap(\.slug)).joined(separator: ", ")
+                return toolResultResponse(id: id, text: "unknown board \"\(slug)\" — known boards: \(known)", isError: true)
+            }
+        }
+
+        let map: BoardMap
+        if let slug {
+            map = try BoardDrill.open(slug, workspacePath: root, catalog: catalog)
+        } else {
+            guard let loaded = try BoardMapStore(workspacePath: root, board: nil).load() else {
+                return toolResultResponse(id: id, text: "This project has no map yet — linkc_edit_board creates one.")
+            }
+            map = loaded.map
+        }
+
+        var text = try map.architectureJSON()
+            + "\n\nVerbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system, detail. "
+            + "Kinds: \(ComponentKind.groupedKindList) (any other kind is kept and drawn as a service). "
+            + "\"memory\" is the AI agent's checkpointer; \"ram\" is hardware memory. "
+            + "Parts marked outside come from the parent board and are read-only here."
+
+        text += "\n\nBoards:\n"
+        for entry in catalog.entries {
+            let indent = String(repeating: "  ", count: entry.depth)
+            let slugLabel = entry.slug ?? "overview"
+            let pathLabel = entry.linked ? entry.path.joined(separator: " › ") : "(unlinked)"
+            text += "\(indent)\(slugLabel) — \(pathLabel)\n"
+        }
+
+        return toolResultResponse(id: id, text: text)
+    }
+
+    /// `linkc_get_project_context` body for this project's store or another's. With
+    /// `crossProjectName`, nothing is written in that project, notes are titles only unless
+    /// `noteTitle` picks one, and the report points at the read-only tools (spec §7).
+    private func projectContextResult(
+        id: Any?,
+        store: BlackboardStore,
+        crossProjectName: String?,
+        noteTitle: String?
+    ) throws -> Data? {
+        let board = try crossProjectName == nil ? store.getProjectContext() : store.readProjectContext()
+
+        if let noteTitle {
+            let trimmed = noteTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let matches = board.sharedNotes.filter { $0.title.caseInsensitiveCompare(trimmed) == .orderedSame }
+            guard let note = matches.first else {
+                let titles = board.sharedNotes.map(\.title)
+                let list = titles.isEmpty ? "This project has no notes." : "Known notes: \(titles.joined(separator: ", "))."
+                return toolResultResponse(
+                    id: id,
+                    text: "No note \"\(noteTitle)\" in \(crossProjectName ?? "this project"). \(list)",
+                    isError: true
+                )
+            }
+            var text = "### \(note.title) (by \(note.authorAgent.displayName))\n"
+            text += "\(note.content)\n"
+            return toolResultResponse(id: id, text: text)
+        }
+
+        var text = "# Project Shared Context: \(board.projectPath)\n"
+        text += "Active Agents: \(board.activeAgents.count)\n\n"
+
+        if board.activeAgents.isEmpty {
+            text += "_No other active agents currently recorded._\n\n"
+        } else {
+            text += "## Active Peer Agents\n"
+            for a in board.activeAgents {
+                text += "- **\(a.agentKind.displayName)** (PID \(a.pid)) — \(a.status)\n"
+                text += "  - Goal: \(a.goal)\n"
+                if !a.claimedFiles.isEmpty {
+                    text += "  - Claimed Files: \(a.claimedFiles.joined(separator: ", "))\n"
+                }
+            }
+            text += "\n"
+        }
+
+        if !board.sharedNotes.isEmpty {
+            text += "## Shared Notes & Decisions\n"
+            if crossProjectName != nil {
+                for n in board.sharedNotes {
+                    text += "- \(n.title)\n"
+                }
+                text += "\n"
+            } else {
+                for n in board.sharedNotes {
+                    text += "### \(n.title) (by \(n.authorAgent.displayName))\n"
+                    text += "\(n.content)\n\n"
+                }
+            }
+        }
+
+        // The project's own map of its components, when it keeps one. A map that cannot be read
+        // says so: an agent must not be told a project has no components when it has a broken file.
+        do {
+            if let loaded = try BoardMapStore(workspacePath: board.projectPath).load() {
+                text += BoardReport.markdown(for: loaded.map)
+                if let crossProjectName {
+                    text += "This board is read-only from here; read it with `linkc_get_board(project: \"\(crossProjectName)\")`.\n\n"
+                } else {
+                    text += "Read with `linkc_get_board`; change with `linkc_edit_board`.\n\n"
+                }
+            } else if crossProjectName != nil {
+                text += "## System\n_No map yet._\n\n"
+            } else {
+                text += "## System\n_No map yet — `linkc_edit_board` starts one._\n\n"
+            }
+        } catch {
+            // The message can carry a name straight from the file — sanitized the same
+            // way every other field in this report is, since it lands in markdown too.
+            text += "## System\n_The system map could not be read: \(BoardReport.sanitized(error.localizedDescription))_\n\n"
+        }
+
+        // Last, so it is the line an agent reads when it decides what to open next.
+        if let crossProjectName, !board.sharedNotes.isEmpty {
+            text += "Read one with linkc_get_project_context(project: \"\(crossProjectName)\", note: \"<title>\").\n"
+        }
+
+        return toolResultResponse(id: id, text: text)
     }
 
     /// The catch every tool handler in this file reaches for once it has nothing more specific

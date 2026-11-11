@@ -792,4 +792,49 @@ final class InboxStoreTests: XCTestCase {
         let again = try store.createTask(from: .claude, to: .codex, targetSessionId: "S1", prompt: "carry", files: [])
         XCTAssertEqual(first.id, again.id)
     }
+
+    // MARK: - hasOpenWork
+
+    func testHasOpenWorkIsFalseForAnEmptyInbox() throws {
+        XCTAssertFalse(try InboxStore(workspaceRoot: tempDir.path).hasOpenWork())
+    }
+
+    func testHasOpenWorkIsTrueForAQueuedMessage() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        _ = try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "hello")
+        XCTAssertTrue(try store.hasOpenWork())
+    }
+
+    func testHasOpenWorkIsFalseOnceTheOnlyMessageIsDelivered() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let message = try store.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "hello")
+        try store.markMessageDelivered(id: message.id)
+        XCTAssertFalse(try store.hasOpenWork())
+    }
+
+    func testHasOpenWorkIsTrueForAnOpenTaskInEveryOpenState() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let task = try store.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        XCTAssertTrue(try store.hasOpenWork(), "queued")
+        try store.markTaskDelivered(taskId: task.id, sessionId: "S1")
+        XCTAssertTrue(try store.hasOpenWork(), "delivered")
+        try store.markTaskStarted(taskId: task.id)
+        XCTAssertTrue(try store.hasOpenWork(), "started")
+        try store.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "ok"))
+        XCTAssertTrue(try store.hasOpenWork(), "reported")
+    }
+
+    func testHasOpenWorkIsFalseWhenEveryTaskIsFinished() throws {
+        let store = InboxStore(workspaceRoot: tempDir.path)
+        let task = try store.createTask(from: .claude, to: .codex, prompt: "carry", files: [])
+        try store.cancelTask(taskId: task.id, reason: "no")
+        XCTAssertFalse(try store.hasOpenWork())
+    }
+
+    func testHasOpenWorkThrowsOnAnUnreadableInboxInsteadOfAnswering() throws {
+        let url = tempDir.appendingPathComponent(".linkc/inbox.json")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: url)
+        XCTAssertThrowsError(try InboxStore(workspaceRoot: tempDir.path).hasOpenWork())
+    }
 }

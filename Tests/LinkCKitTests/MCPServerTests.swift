@@ -47,14 +47,16 @@ final class MCPServerTests: XCTestCase {
         let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
         let result = resJson?["result"] as? [String: Any]
         let tools = result?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 18)
+        XCTAssertEqual(tools?.count, 20)
 
         let toolNames = Set(tools?.compactMap { $0["name"] as? String } ?? [])
         XCTAssertTrue(toolNames.contains("linkc_broadcast_intent"))
         XCTAssertTrue(toolNames.contains("linkc_get_project_context"))
+        XCTAssertTrue(toolNames.contains("linkc_list_projects"))
         XCTAssertTrue(toolNames.contains("linkc_check_conflicts"))
         XCTAssertTrue(toolNames.contains("linkc_post_note"))
         XCTAssertTrue(toolNames.contains("linkc_delegate_task"))
+        XCTAssertTrue(toolNames.contains("linkc_ask"))
         XCTAssertTrue(toolNames.contains("linkc_send_message"))
         XCTAssertTrue(toolNames.contains("linkc_get_inbox"))
         for name in [
@@ -558,7 +560,7 @@ final class MCPServerTests: XCTestCase {
     func testSwitchModelCatchesModelSwitcherError() throws {
         let throwingServer = MCPServer(
             workspaceRoot: tempDir.path,
-            modelSwitcher: { _, _, _ in
+            modelSwitcher: { _, _, _, _ in
                 throw LinkCError.process("Failed to switch model in session")
             },
             environment: ["LINKC_AGENT": "claude"],

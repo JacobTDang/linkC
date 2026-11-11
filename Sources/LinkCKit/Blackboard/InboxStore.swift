@@ -233,6 +233,13 @@ public final class InboxStore: Sendable {
         try snapshot(timeout: timeout)
     }
 
+    /// True when any message is `.queued`, or any task `state.isOpen` — the sweep serves such folders.
+    public func hasOpenWork(timeout: TimeInterval = 5.0) throws -> Bool {
+        let inbox = try snapshot(timeout: timeout)
+        return inbox.messages.contains { $0.status == .queued }
+            || inbox.tasks.contains { $0.state.isOpen }
+    }
+
     /// Public raw save for testing or explicit writes.
     public func saveRaw(_ inbox: Inbox, timeout: TimeInterval = 5.0) throws {
         try withFileLock(timeout: timeout) {
@@ -243,6 +250,8 @@ public final class InboxStore: Sendable {
     /// Enqueues a short, kind-tagged message. The store composes the frame; callers pass the bare body.
     /// Rejects framed bodies (loop guard), `.task` kind, completions without a task id, and 24 h duplicates.
     /// `toSessionId` addresses it to one session (`PendingMessage.toSessionId`).
+    /// `fromProject` / `fromSessionId` / `chainDepth` stamp a cross-project peer note (spec §6); a
+    /// duplicate must match all three, so two senders of one text are two messages.
     public func enqueue(
         from: AgentKind,
         to: AgentKind,
@@ -250,37 +259,62 @@ public final class InboxStore: Sendable {
         taskId: String? = nil,
         toSessionId: String? = nil,
         body: String,
+        fromProject: String? = nil,
+        fromSessionId: String? = nil,
+        chainDepth: Int = 0,
         timeout: TimeInterval = 5.0
     ) throws -> PendingMessage {
         guard kind != .task else { throw InboxError.kindNotAllowed(.task) }
         guard !LinkCFrame.beginsWithMarker(body) else { throw InboxError.framedBody }
 
+        let id = UUID().uuidString
         let prompt: String
+        let hashPrompt: String
         switch kind {
         case .completion:
             guard let taskId else { throw InboxError.missingTaskId }
             prompt = "\(LinkCFrame.taskPrefix) \(taskId.prefix(8))] \(body)"
+            hashPrompt = prompt
         case .notice:
             prompt = "\(LinkCFrame.noticePrefix) \(body)"
+            hashPrompt = prompt
         case .peerNote:
-            prompt = "\(LinkCFrame.peerNotePrefix) \(from.displayName)]: \(body)"
+            if let fromProject {
+                let projectName = URL(fileURLWithPath: fromProject).lastPathComponent
+                let base = "\(LinkCFrame.peerNotePrefix) \(from.displayName) · \(projectName)]: \(body)"
+                hashPrompt = base
+                prompt = base + "\nReply with linkc_send_message(project: \"\(projectName)\", reply_to: \"\(id.prefix(8))\")"
+            } else {
+                prompt = "\(LinkCFrame.peerNotePrefix) \(from.displayName)]: \(body)"
+                hashPrompt = prompt
+            }
         case .command:
             prompt = body
+            hashPrompt = prompt
         case .task:
             throw InboxError.kindNotAllowed(.task)
         }
 
-        let hash = LinkCFrame.contentHash(from: from, to: to, kind: kind, prompt: prompt)
+        // The sender's full folder, session and reply depth tell two senders of one text apart: a
+        // merged duplicate would hand the second sender the first's id, and its reply the wrong session.
+        // A message with none of them (every local one) hashes exactly as it always did.
+        var hashMaterial = hashPrompt
+        if fromProject != nil || fromSessionId != nil || chainDepth != 0 {
+            hashMaterial += "\n[origin project=\(fromProject ?? "") session=\(fromSessionId ?? "") depth=\(chainDepth)]"
+        }
+        let hash = LinkCFrame.contentHash(from: from, to: to, kind: kind, prompt: hashMaterial)
         return try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
             if let existing = inbox.messages.first(where: {
                 $0.contentHash == hash && $0.fromAgent == from && $0.toAgent == to && $0.createdAt >= dedupeCutoff
                     && $0.status == .queued && $0.toSessionId == toSessionId
+                    && $0.fromProject == fromProject && $0.fromSessionId == fromSessionId && $0.chainDepth == chainDepth
             }) {
                 return existing
             }
             let message = PendingMessage(
+                id: id,
                 fromAgent: from,
                 toAgent: to,
                 prompt: prompt,
@@ -289,12 +323,46 @@ public final class InboxStore: Sendable {
                 kind: kind,
                 taskId: taskId,
                 contentHash: hash,
-                toSessionId: toSessionId
+                toSessionId: toSessionId,
+                fromProject: fromProject,
+                fromSessionId: fromSessionId,
+                chainDepth: chainDepth
             )
             inbox.messages.append(message)
             inbox.updatedAt = Date()
             try saveUnlocked(inbox)
             return message
+        }
+    }
+
+    /// Inserts a copy of an already-framed message for cross-project forwarding (spec §5.5).
+    /// Returns false when the same contentHash was received or enqueued in the last 24 hours.
+    @discardableResult
+    public func receiveForwarded(_ message: PendingMessage, timeout: TimeInterval = 5.0) throws -> Bool {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
+            if inbox.messages.contains(where: {
+                $0.contentHash == message.contentHash && $0.fromAgent == message.fromAgent
+                    && $0.toAgent == message.toAgent && $0.createdAt >= dedupeCutoff
+            }) {
+                return false
+            }
+            let copy = PendingMessage(
+                fromAgent: message.fromAgent,
+                toAgent: message.toAgent,
+                prompt: message.prompt,
+                claimedFiles: [],
+                status: .queued,
+                kind: message.kind,
+                taskId: message.taskId,
+                contentHash: message.contentHash,
+                toSessionId: message.toSessionId
+            )
+            inbox.messages.append(copy)
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+            return true
         }
     }
 
@@ -431,6 +499,8 @@ public final class InboxStore: Sendable {
         force: Bool = false,
         verification: Verification? = nil,
         gate: Verdict? = nil,
+        fromProject: String? = nil,
+        isQuestion: Bool = false,
         timeout: TimeInterval = 5.0
     ) throws -> TaskRecord {
         guard hop <= 2 else { throw InboxError.hopLimit(hop) }
@@ -451,6 +521,7 @@ public final class InboxStore: Sendable {
                     && $0.verification?.baseSha == verification?.baseSha
                     && $0.targetSessionId == targetSessionId
                     && $0.model == model
+                    && $0.fromProject == fromProject
             }) {
                 return existing
             }
@@ -466,12 +537,66 @@ public final class InboxStore: Sendable {
                 fromAgent: from, fromSessionId: fromSessionId, tier: tier, model: model, toAgent: to,
                 prompt: prompt, files: normalized,
                 state: verification == nil || gate != nil ? .queued : .gating, hop: hop,
-                verification: verification, gate: gate, targetSessionId: targetSessionId
+                verification: verification, gate: gate, targetSessionId: targetSessionId,
+                fromProject: fromProject, isQuestion: isQuestion
             )
             inbox.tasks.append(task)
             inbox.updatedAt = Date()
             try saveUnlocked(inbox)
             return task
+        }
+    }
+
+    public func recordSent(_ sent: SentTask, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            inbox.sentTasks.removeAll { $0.taskId == sent.taskId }
+            inbox.sentTasks.append(sent)
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+        }
+    }
+
+    /// Points the record of a sent task at its reroute copy, keeping the project, the asking session and
+    /// the time it was sent. False, and nothing written, when no record names `taskId`.
+    @discardableResult
+    public func replaceSent(taskId: String, with newTaskId: String, timeout: TimeInterval = 5.0) throws -> Bool {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            inbox.sentTasks.removeAll { $0.taskId == newTaskId }
+            guard let index = inbox.sentTasks.firstIndex(where: { $0.taskId == taskId }) else { return false }
+            let old = inbox.sentTasks[index]
+            inbox.sentTasks[index] = SentTask(
+                taskId: newTaskId, project: old.project, fromSessionId: old.fromSessionId, createdAt: old.createdAt
+            )
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+            return true
+        }
+    }
+
+    public func sentTask(matching prefix: String, timeout: TimeInterval = 5.0) throws -> SentTask? {
+        let sent = try snapshot(timeout: timeout).sentTasks
+        if let exact = sent.first(where: { $0.taskId == prefix }) { return exact }
+        guard prefix.count >= Self.minimumTaskIdPrefix else { return nil }
+        let lower = prefix.lowercased()
+        let matches = sent.filter { $0.taskId.lowercased().hasPrefix(lower) }
+        guard matches.count <= 1 else {
+            throw InboxError.ambiguousTaskId(prefix: prefix, matches: matches.map(\.taskId))
+        }
+        return matches.first
+    }
+
+    public func sentTasks(timeout: TimeInterval = 5.0) throws -> [SentTask] {
+        try snapshot(timeout: timeout).sentTasks
+    }
+
+    public func dropSent(taskId: String, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            inbox.sentTasks.removeAll { $0.taskId == taskId }
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
         }
     }
 
@@ -493,6 +618,20 @@ public final class InboxStore: Sendable {
         let matches = tasks.filter { $0.id.lowercased().hasPrefix(prefix) }
         guard matches.count <= 1 else {
             throw InboxError.ambiguousTaskId(prefix: idOrPrefix, matches: matches.map(\.id))
+        }
+        return matches.first
+    }
+
+    /// The message whose id is `idOrPrefix`, or the one message whose id begins with it, ignoring case.
+    /// Same prefix rules as `task(matching:)`.
+    public func message(matching idOrPrefix: String, timeout: TimeInterval = 5.0) throws -> PendingMessage? {
+        let messages = try snapshot(timeout: timeout).messages
+        if let exact = messages.first(where: { $0.id == idOrPrefix }) { return exact }
+        guard idOrPrefix.count >= Self.minimumTaskIdPrefix else { return nil }
+        let prefix = idOrPrefix.lowercased()
+        let matches = messages.filter { $0.id.lowercased().hasPrefix(prefix) }
+        guard matches.count <= 1 else {
+            throw InboxError.ambiguousMessageId(prefix: idOrPrefix, matches: matches.map(\.id))
         }
         return matches.first
     }

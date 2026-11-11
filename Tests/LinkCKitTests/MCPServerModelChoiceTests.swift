@@ -108,7 +108,7 @@ final class MCPServerModelChoiceTests: XCTestCase {
 
     func testSwitchModelHandsTheListedIdToTheSwitcher() throws {
         let asked = OSAllocatedUnfairLock<[String]>(initialState: [])
-        let switcher: MCPServer.ModelSwitcher = { _, model, _ in
+        let switcher: MCPServer.ModelSwitcher = { _, model, _, _ in
             asked.withLock { $0.append(model) }
             return "switched"
         }
