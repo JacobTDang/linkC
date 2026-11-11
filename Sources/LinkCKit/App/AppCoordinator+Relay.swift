@@ -313,6 +313,8 @@ extension AppCoordinator {
         }
         let queued = open.filter { $0.state == .queued }
         forgetOpenCodeRefusals(in: norm, of: .task, keeping: Set(queued.map(\.id)))
+        // A task is told about only while it is held: forget the ones that are gone from the queue.
+        limitHoldNoticesSent[norm]?.formIntersection(Set(queued.map(\.id)))
         guard !queued.isEmpty else { return false }
 
         // Each queued task claims its own session, or starts one (`WorkerClaims`). A session counts as
@@ -331,8 +333,10 @@ extension AppCoordinator {
 
         var loggedInjectionWait = false
         var launched: Set<String> = []
+        var heldThisPass: Set<String> = []
         for task in queued {
-            // A pool limit holds back only tasks that would run on that pool.
+            // A pool limit holds back only tasks that would run on that pool. The delegator is told
+            // the first time a task is held, with what is limited and what is not.
             let taskModel = modelForLimit(of: task)
             do {
                 if let limit = try inboxStore.isAgentLimited(agent: task.toAgent, model: taskModel, timeout: Self.relayLockTimeout) {
@@ -340,6 +344,8 @@ extension AppCoordinator {
                           task.shortId, task.toAgent.displayName,
                           limit.pool.map { " \($0) pool" } ?? "",
                           limit.cooldownExpiresAt.description, limit.reason)
+                    heldThisPass.insert(task.id)
+                    tellDelegatorTaskWaits(task, limit: limit, model: taskModel, in: norm, inboxStore: inboxStore)
                     continue
                 }
             } catch {
@@ -364,6 +370,8 @@ extension AppCoordinator {
             case .awaitLimited(let id):
                 NSLog("[linkC relay] dispatchTasks: task %@ waits — %@ session %@ is rate-limited",
                       task.shortId, task.toAgent.displayName, id)
+                heldThisPass.insert(task.id)
+                tellDelegatorTaskWaits(task, limit: nil, model: taskModel, sessionId: id, in: norm, inboxStore: inboxStore)
                 continue
             case .awaitReady(let id):
                 if !injectionGapElapsed(sessionId: id) {
@@ -452,6 +460,8 @@ extension AppCoordinator {
                 }
             }
         }
+        // A task is told about again only if a later hold meets it: forget the ones no longer held.
+        limitHoldNoticesSent[norm]?.formIntersection(heldThisPass)
         return false
     }
 
@@ -478,21 +488,33 @@ extension AppCoordinator {
                   task.shortId, task.toAgent.displayName, tier.label)
             return false
         }
-        if task.toAgent == .opencode, task.model == nil {
-            let tier = task.tier ?? defaultTier(for: .opencode)
-            switch openCodeModelAvailability(in: workspacePath, tier: tier) {
+        if task.toAgent == .opencode {
+            let availability: OpenCodeModelAvailability
+            if let model = task.model {
+                availability = openCodeModelAvailability(
+                    in: workspacePath, model: model, subject: model, remedy: "pick another free model")
+            } else {
+                availability = openCodeModelAvailability(in: workspacePath, tier: task.tier ?? defaultTier(for: .opencode))
+            }
+            switch availability {
             case .checking:
                 return false
             case .available:
                 break
             case .refused(let reason):
                 // Waiting will not make OpenCode list the model: end the task with the reason, rather
-                // than leave it queued for an hour behind a generic "undelivered".
+                // than leave it queued for an hour behind a generic "undelivered". A task that names
+                // its model fails: it was asked for something that cannot run.
                 do {
-                    try inboxStore.expireTaskAndNotify(
-                        taskId: task.id, reason: reason, notifyBody: "expired — \(reason)", timeout: Self.relayLockTimeout
-                    )
-                    logTaskEnded(task, as: "expired", reason: reason)
+                    if task.model != nil {
+                        try inboxStore.failTaskAndNotify(
+                            taskId: task.id, reason: reason, notifyBody: "failed — \(reason)", timeout: Self.relayLockTimeout)
+                        logTaskEnded(task, as: "failed", reason: reason)
+                    } else {
+                        try inboxStore.expireTaskAndNotify(
+                            taskId: task.id, reason: reason, notifyBody: "expired — \(reason)", timeout: Self.relayLockTimeout)
+                        logTaskEnded(task, as: "expired", reason: reason)
+                    }
                     lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
                     notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: workspacePath)
                 } catch {
@@ -524,8 +546,49 @@ extension AppCoordinator {
             lastSpawnFailure = SpawnFailure(agent: task.toAgent, workspacePath: workspacePath, error: String(describing: error))
             NSLog("[linkC relay] dispatchTasks: task %@ could not spawn %@ — %@",
                   task.shortId, task.toAgent.displayName, String(describing: error))
+            // A task that names its model fails with the launch's own error: starting the same
+            // worker on every pass would only repeat it until the queue expires the task.
+            if let model = task.model {
+                let reason = "\(task.toAgent.displayName) could not start with model \(model): \(error)"
+                do {
+                    try inboxStore.failTaskAndNotify(
+                        taskId: task.id, reason: reason, notifyBody: "failed — \(reason)", timeout: Self.relayLockTimeout)
+                    logTaskEnded(task, as: "failed", reason: reason)
+                } catch {
+                    if isRelayLockTimeout(error) { return true }
+                    NSLog("[linkC relay] dispatchTasks: task %@ launch failure — %@", task.shortId, String(describing: error))
+                }
+            }
         }
         return false
+    }
+
+    /// Tells `task`'s delegator, once while the task is held, why it waits: the limit holding it, and
+    /// what is not limited. `limit` is nil when no limit row holds it but its own session is
+    /// rate-limited (`sessionId`). The mark is kept only after the notice reaches the inbox, so one
+    /// that could not be written is tried again on the next pass.
+    private func tellDelegatorTaskWaits(
+        _ task: TaskRecord, limit: AgentLimitStatus?, model: String?, sessionId: String? = nil,
+        in workspace: String, inboxStore: InboxStore
+    ) {
+        guard limitHoldNoticesSent[workspace]?.contains(task.id) != true else { return }
+        let why: String
+        if let limit {
+            do {
+                why = try MCPServer.limitRefusal(
+                    agent: task.toAgent, limit: limit, model: model, readLists: modelLists,
+                    settings: liveModelSettings(), inboxStore: inboxStore)
+            } catch {
+                NSLog("[linkC relay] task %@ held — could not build its notice: %@", task.shortId, String(describing: error))
+                return
+            }
+        } else {
+            why = "\(task.toAgent.displayName) session \(sessionId ?? "") is rate-limited and has not recovered yet."
+        }
+        let body = "Task \(task.shortId) waits: \(why)"
+        if enqueueDelegatorNotice(body, from: task.toAgent, to: task.fromAgent, taskId: task.id, inboxStore: inboxStore) {
+            limitHoldNoticesSent[workspace, default: []].insert(task.id)
+        }
     }
 
     // MARK: - Messages
@@ -750,7 +813,7 @@ extension AppCoordinator {
             notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: workspacePath)
         }
         guard !openCodeRefusalNoticesSent.contains(key) else { return }
-        if enqueueOpenCodeRefusalNotice(reason, from: .opencode, to: delegator, taskId: taskId, inboxStore: inboxStore) {
+        if enqueueDelegatorNotice(reason, from: .opencode, to: delegator, taskId: taskId, inboxStore: inboxStore) {
             openCodeRefusalNoticesSent.insert(key)
         }
     }
@@ -760,12 +823,12 @@ extension AppCoordinator {
         _ reason: String, notice: String, from sender: AgentKind, to delegator: AgentKind, taskId: String?,
         inboxStore: InboxStore
     ) {
-        _ = enqueueOpenCodeRefusalNotice(notice, from: sender, to: delegator, taskId: taskId, inboxStore: inboxStore)
+        _ = enqueueDelegatorNotice(notice, from: sender, to: delegator, taskId: taskId, inboxStore: inboxStore)
         notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: inboxStore.workspaceRoot)
     }
 
     /// Whether `notice` reached `delegator`'s inbox; a failure is logged.
-    private func enqueueOpenCodeRefusalNotice(
+    private func enqueueDelegatorNotice(
         _ notice: String, from sender: AgentKind, to delegator: AgentKind, taskId: String?, inboxStore: InboxStore
     ) -> Bool {
         do {
@@ -773,7 +836,7 @@ extension AppCoordinator {
                                        timeout: Self.relayLockTimeout)
             return true
         } catch {
-            NSLog("[linkC relay] OpenCode model refusal notice — %@", String(describing: error))
+            NSLog("[linkC relay] notice to the delegator — %@", String(describing: error))
             return false
         }
     }
@@ -1160,6 +1223,14 @@ extension AppCoordinator {
         }
         limitHolds[sessionId] = nil
 
+        // A task that names its model is never moved: the model means nothing to another agent. It
+        // stays with its worker until the limit ends, and its delegator is told now.
+        if let currentTask, let model = currentTask.model {
+            tellDelegatorModelTaskStays(currentTask, model: model, of: session, inboxStore: inboxStore)
+            store.updateState(id: session.id, to: .error)
+            return true
+        }
+
         // Tell the delegator (notice: shown in inbox/dashboard, never injected). Sent when the
         // breaker trips or once the current task has actually been cancelled — never for a task
         // that finished under us.
@@ -1186,13 +1257,12 @@ extension AppCoordinator {
             )
         }
 
-        // Candidates: installed, not limited for this task's model, not this agent; prefer ones already active here.
-        let rerouteModel = currentTask.map { modelForLimit(of: $0) } ?? nil
+        // Candidates: installed, not limited for this task's tier model, not this agent; prefer ones already active here.
         let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor, .grok, .opencode]
         var candidates = supportedPeers.filter { candidate in
             guard candidate != session.agentKind && candidate != currentTask?.fromAgent else { return false }
             do {
-                let peerModel = currentTask?.tier.flatMap { resolvedModel(for: candidate, tier: $0) } ?? rerouteModel
+                let peerModel = currentTask?.tier.flatMap { resolvedModel(for: candidate, tier: $0) }
                 guard try inboxStore.isAgentLimited(agent: candidate, model: peerModel) == nil else { return false }
             } catch {
                 NSLog("[linkC relay] checkLimitsAndReroute: limit status for %@ — %@", candidate.displayName, String(describing: error))
@@ -1409,12 +1479,35 @@ extension AppCoordinator {
         return true
     }
 
+    /// Tells the delegator of a task with a model that it stays with its limited worker, and why.
+    private func tellDelegatorModelTaskStays(_ task: TaskRecord, model: String, of session: Session, inboxStore: InboxStore) {
+        var why = "\(session.agentKind.displayName) reached its usage limit on model \(model)."
+        do {
+            if let limit = try inboxStore.isAgentLimited(agent: session.agentKind, model: model) {
+                why = try MCPServer.limitRefusal(
+                    agent: session.agentKind, limit: limit, model: model, readLists: modelLists,
+                    settings: liveModelSettings(), inboxStore: inboxStore)
+            }
+        } catch {
+            NSLog("[linkC relay] task %@ — limit status for its notice — %@", task.shortId, String(describing: error))
+        }
+        NSLog("[linkC relay] checkLimitsAndReroute: task %@ names model %@ and is never rerouted — %@", task.shortId, model, why)
+        notifications.post(title: "linkC: \(session.agentKind.displayName) Rate Limited", body: why, project: session.cwd)
+        guard task.fromAgent != session.agentKind else { return }
+        _ = enqueueDelegatorNotice(
+            "Task \(task.shortId) stays with \(session.agentKind.displayName): \(why) A task with a model is never moved to another agent; it carries on when the limit ends. linkc_cancel_task(\"\(task.id)\") to stop it.",
+            from: session.agentKind, to: task.fromAgent, taskId: task.id, inboxStore: inboxStore)
+    }
+
     private func tellDelegatorOfHold(task: TaskRecord, of session: Session, busy: String, inboxStore: InboxStore) {
         guard task.fromAgent != session.agentKind else { return }
+        let outcome = task.model == nil
+            ? "It moves to another agent once the worker is quiet, or at most \(Int(Self.limitHoldCap / 60)) minutes after the limit rule first matched."
+            : "A task with a model is never moved to another agent, so it stays with this worker."
         do {
             _ = try inboxStore.enqueue(
                 from: session.agentKind, to: task.fromAgent, kind: .notice, taskId: task.id,
-                body: "\(session.agentKind.displayName)'s screen matches a limit rule but \(busy), so task \(task.shortId) is left with it for now. It moves to another agent once the worker is quiet, or at most \(Int(Self.limitHoldCap / 60)) minutes after the limit rule first matched. linkc_cancel_task(\"\(task.id)\") to stop it now."
+                body: "\(session.agentKind.displayName)'s screen matches a limit rule but \(busy), so task \(task.shortId) is left with it for now. \(outcome) linkc_cancel_task(\"\(task.id)\") to stop it now."
             )
         } catch {
             NSLog("[linkC relay] checkLimitsAndReroute: task %@ held-back notice — %@", task.shortId, String(describing: error))

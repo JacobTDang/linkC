@@ -6,7 +6,7 @@
 
 **Architecture:**
 - Pure parsers turn each CLI's model listing into `[ListedModel]`.
-- The app refreshes the lists into `models.json`, and the MCP server and Settings read that file.
+- The app refreshes the lists into `model-lists.json`, and the MCP server and Settings read that file.
 - `TaskRecord.model` and `AgentLimitStatus.pool` carry the new choices through the existing relay.
 
 **Tech Stack:** Swift 6, SwiftPM, XCTest, SwiftUI (Settings). Library `LinkCKit`, app target `linkc`, MCP server `linkc-mcp`.
@@ -112,7 +112,7 @@ public struct AgentModelList: Codable, Equatable, Sendable {
     public var models: [ListedModel]; public var fetchedAt: Date?; public var error: String?
 }
 public struct ModelListCache: Sendable {
-    public let url: URL                                   // .applicationSupport → …/linkC/models.json
+    public let url: URL                                   // .applicationSupport → …/linkC/model-lists.json
     public static var applicationSupport: ModelListCache
     public func read() throws -> [AgentKind: AgentModelList]   // missing file → [:] is NOT allowed to hide a decode error
     public func write(_ lists: [AgentKind: AgentModelList]) throws

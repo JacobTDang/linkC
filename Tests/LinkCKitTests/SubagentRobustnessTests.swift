@@ -126,6 +126,7 @@ final class SubagentRobustnessTests: XCTestCase {
             settingsDir: tempDir.appendingPathComponent("settings"),
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
+            modelLists: TestModelLists.none,
             isWatching: { _ in false }
         )
         coordinator.usageTracker = tracker

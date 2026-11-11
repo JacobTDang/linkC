@@ -14,7 +14,7 @@ final class MCPServerBoardTests: XCTestCase {
     }
 
     private func server() -> MCPServer {
-        MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in nil }, sessionResolver: { nil })
+        MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, modelLists: TestModelLists.none)
     }
 
     private func call(_ server: MCPServer, _ name: String, _ args: [String: Any] = [:]) throws -> (text: String, isError: Bool) {
@@ -65,7 +65,7 @@ final class MCPServerBoardTests: XCTestCase {
     }
 
     func testAnUnidentifiedCallerCanReadButNotEdit() throws {
-        let s = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in nil }, sessionResolver: { nil })
+        let s = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in nil }, sessionResolver: { nil }, modelLists: TestModelLists.none)
         XCTAssertFalse(try call(s, "linkc_get_board").isError)
         XCTAssertTrue(try call(s, "linkc_edit_board", ["steps": [["add": "a"]]]).isError)
     }

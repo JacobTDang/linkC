@@ -393,14 +393,21 @@ public final class InboxStore: Sendable {
 
     /// A live limit that applies to `model` for `agent`. A limit applies when its pool is nil
     /// (the whole agent) or equals the model's pool. With no model, any live limit for the agent.
+    /// When several apply, the one that ends last.
     public func isAgentLimited(agent: AgentKind, model: String? = nil, timeout: TimeInterval = 5.0) throws -> AgentLimitStatus? {
-        let inbox = try snapshot(timeout: timeout)
-        let now = Date()
-        let live = inbox.agentLimits.filter { $0.agent == agent && $0.cooldownExpiresAt > now }
-        guard !live.isEmpty else { return nil }
-        guard let model else { return live.first }
+        let live = try liveLimits(agent: agent, timeout: timeout)
+        guard let model else { return Self.latest(live) }
         let pool = ModelPool.pool(of: model, agent: agent)
-        return live.first { $0.pool == nil || $0.pool == pool }
+        return Self.latest(live.filter { $0.pool == nil || $0.pool == pool })
+    }
+
+    /// Every live limit on `agent`: one per quota pool for agy, otherwise at most one.
+    public func liveLimits(agent: AgentKind, timeout: TimeInterval = 5.0) throws -> [AgentLimitStatus] {
+        try snapshot(timeout: timeout).liveLimits(for: agent, now: Date())
+    }
+
+    private static func latest(_ limits: [AgentLimitStatus]) -> AgentLimitStatus? {
+        limits.max { $0.cooldownExpiresAt < $1.cooldownExpiresAt }
     }
 
     // MARK: - Task lifecycle
@@ -443,7 +450,6 @@ public final class InboxStore: Sendable {
                 $0.state.isOpen && $0.toAgent == to && $0.prompt == prompt
                     && $0.verification?.baseSha == verification?.baseSha
                     && $0.targetSessionId == targetSessionId
-                    && $0.tier == tier
                     && $0.model == model
             }) {
                 return existing

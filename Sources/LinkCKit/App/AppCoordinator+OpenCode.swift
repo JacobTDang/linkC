@@ -37,7 +37,7 @@ extension AppCoordinator {
                 guard let self, self.store.session(id: session.id) != nil else { return }
                 self.notifications.post(title: "linkC: OpenCode could not continue",
                                         body: "\(session.title): \(error)", project: folder)
-                self.cleanup(sessionId: session.id)
+                self.cleanup(sessionId: session.id, end: .launchFailed)
             }
         }
     }

@@ -62,6 +62,7 @@ final class AgentProbeSweepTests: XCTestCase {
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
             agentPathResolver: { _ in script.path },
+            modelLists: TestModelLists.none,
             deliverySettle: 0,
             turnEndQuietPeriod: 0,
             isWatching: { _ in false }

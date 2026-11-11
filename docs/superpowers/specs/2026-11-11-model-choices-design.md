@@ -53,7 +53,7 @@ The app refreshes the lists at these times:
 - every 6 hours;
 - when Settings opens.
 
-It saves them to `~/Library/Application Support/linkC/models.json`. For each agent the file holds:
+It saves them to `~/Library/Application Support/linkC/model-lists.json` (not `models.json`: that file holds the tier → model settings). For each agent the file holds:
 
 - `models`;
 - `fetchedAt`;

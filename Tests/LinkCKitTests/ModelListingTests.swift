@@ -60,6 +60,27 @@ final class ModelListingTests: XCTestCase {
         XCTAssertEqual(models, [ListedModel(id: "gemini-3.8-flash-high", name: "Flash")])
     }
 
+    /// A line without the tab is not a model: whatever agy prints in place of its list must not become one.
+    func testAgyParserIgnoresALineWithoutATab() {
+        XCTAssertEqual(ModelListParser.agy("Error: not logged in\n"), [])
+        XCTAssertEqual(ModelListParser.agy("Error: not logged in\ngemini-3.8-flash-high\tFlash\nplease run agy login\n"),
+                       [ListedModel(id: "gemini-3.8-flash-high", name: "Flash")])
+        XCTAssertEqual(ModelListParser.agy("gemini-3.8-flash-high Flash"), [], "a space is not the separator")
+        XCTAssertEqual(ModelListParser.agy("gemini-3.8-flash-high\t"), [], "a model with no name is not a line of the list")
+        XCTAssertEqual(ModelListParser.agy("Error: not\tlogged in"), [], "an id has no spaces in it")
+    }
+
+    func testListingThrowsWhenTheOutputHasNoModels() {
+        XCTAssertThrowsError(try ModelListParser.listing("Error: not logged in\n", for: .agy)) { error in
+            XCTAssertEqual(String(describing: error), "agy models listed nothing: Error: not logged in")
+        }
+        XCTAssertThrowsError(try ModelListParser.listing("", for: .opencode)) { error in
+            XCTAssertEqual(String(describing: error), "opencode models listed nothing: (no output)")
+        }
+        XCTAssertThrowsError(try ModelListParser.listing("x", for: .claude))
+        XCTAssertEqual(try ModelListParser.listing(agyOutput, for: .agy).count, 6)
+    }
+
     func testCursorParserSkipsHeaderTrimsZeroWidthAndKeepsSpaces() {
         let models = ModelListParser.cursor(cursorOutput)
         XCTAssertEqual(models.map(\.id), [
@@ -150,7 +171,8 @@ final class ModelListingTests: XCTestCase {
             modelSettings: { frozen },
             sessionResolver: { nil },
             usageReaders: [:],
-            openCodeModels: { _ in ["opencode/claude-sonnet-5", "opencode/big-pickle"] })
+            openCodeModels: { _ in ["opencode/claude-sonnet-5", "opencode/big-pickle"] },
+            modelLists: TestModelLists.none)
 
         let request: [String: Any] = [
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -191,6 +213,7 @@ final class ModelListingTests: XCTestCase {
             userSettingsURL: settingsDir.appendingPathComponent("user-settings.json"),
             manifestDir: settingsDir.appendingPathComponent("manifest"),
             modelSettings: { frozen },
+            modelLists: TestModelLists.none,
             openCodeModels: { _ in
                 XCTFail("OpenCode's models were listed for a non-free id")
                 return []

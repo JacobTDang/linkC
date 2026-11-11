@@ -12,7 +12,7 @@ final class MCPServerModelTests: XCTestCase {
             .appendingPathComponent("linkc-mcp-model-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         inboxStore = InboxStore(workspaceRoot: tempDir.path)
-        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
+        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
     }
 
     override func tearDownWithError() throws {
@@ -80,7 +80,7 @@ final class MCPServerModelTests: XCTestCase {
         let settings = edited   // a @Sendable closure cannot capture a var
         let bare = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore,
                              environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
-                             modelSettings: { settings }, sessionResolver: { nil }, usageReaders: [:])
+                             modelSettings: { settings }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
 
         let req = """
         {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "linkc_get_models", "arguments": {"agent": "codex"}}}
@@ -192,7 +192,8 @@ final class MCPServerModelTests: XCTestCase {
             ancestorResolver: { _ in nil },
             modelSettings: { box.value },
             sessionResolver: { nil },
-            usageReaders: [:]
+            usageReaders: [:],
+            modelLists: TestModelLists.none
         )
 
         let before = try getModelsText(liveServer)
@@ -220,7 +221,8 @@ final class MCPServerModelTests: XCTestCase {
             ancestorResolver: { _ in nil },
             modelSettings: { .seeded },
             sessionResolver: { nil },
-            usageReaders: [:]
+            usageReaders: [:],
+            modelLists: TestModelLists.none
         )
         let req = """
         {
@@ -314,7 +316,8 @@ final class MCPServerModelTests: XCTestCase {
             environment: ["LINKC_AGENT": "claude"],
             ancestorResolver: { _ in nil },
             sessionResolver: { nil },
-            usageReaders: [:]
+            usageReaders: [:],
+            modelLists: TestModelLists.none
         )
 
         let req = """
@@ -461,6 +464,7 @@ final class MCPServerModelTests: XCTestCase {
             settingsDir: settingsDir,
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
+            modelLists: TestModelLists.none,
             isWatching: { _ in false }
         )
 

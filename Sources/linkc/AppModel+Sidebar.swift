@@ -221,15 +221,9 @@ extension AppModel {
     }
 
     /// Checks if a session's agent has an active rate limit recorded in the inbox.
+    /// An agy agent can carry one limit per quota pool: the live one that ends last is the one shown.
     func agentLimit(for session: Session) -> AgentLimitStatus? {
-        let norm = session.cwd
-        guard let inbox = inbox(for: norm) else { return nil }
-        let now = Date()
-        if let limit = inbox.agentLimits.first(where: { $0.agent == session.agentKind }),
-           limit.cooldownExpiresAt > now {
-            return limit
-        }
-        return nil
+        inbox(for: session.cwd)?.liveLimit(for: session.agentKind, now: Date())
     }
 
     /// Every agent's most recent live cap across the workspaces that have a session. When an agent

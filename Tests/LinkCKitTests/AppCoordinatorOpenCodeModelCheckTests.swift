@@ -108,6 +108,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
             manifestDir: tempDir.appendingPathComponent("manifest"),
             agentPathResolver: { installed.contains($0) ? agent : nil },
             modelSettings: { .seeded },
+            modelLists: TestModelLists.none,
             deliverySettle: 0,
             injectionGap: 0,
             now: now,

@@ -84,6 +84,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             userHome: userHome,
             defaults: defaults,
             modelSettings: { models },
+            modelLists: TestModelLists.none,
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
             // make dispatch tests wait for real. Zero here; production keeps the default.
             deliverySettle: 0,

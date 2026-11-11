@@ -66,6 +66,7 @@ final class AppCoordinatorSwarmTests: XCTestCase {
             settingsDir: settingsDir,
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
+            modelLists: TestModelLists.none,
             isWatching: { _ in false }
         )
     }

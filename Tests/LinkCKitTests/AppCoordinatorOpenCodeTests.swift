@@ -53,6 +53,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
             manifestDir: settingsDir,
             agentPathResolver: { _ in agent },
             modelSettings: { models },
+            modelLists: TestModelLists.none,
             deliverySettle: 0,
             turnEndQuietPeriod: 0.0,
             isWatching: { _ in false }

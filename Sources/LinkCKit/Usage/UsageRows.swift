@@ -93,12 +93,15 @@ public enum UsageRows {
             // available, and while it holds the published figures cannot be acted on anyway.
             if let limit = limits[agent], limit.cooldownExpiresAt > now {
                 anyLimitHit = true
+                // agy limits one quota pool at a time: the row says which.
+                let pool = limit.pool.map { ModelPool.displayName($0) }
                 rows.append(UsageRow(
                     agent: agent,
-                    text: "limit hit · retry \(AgeFormat.compact(from: now, to: limit.cooldownExpiresAt))",
+                    text: (pool.map { "\($0) " } ?? "") + "limit hit · retry \(AgeFormat.compact(from: now, to: limit.cooldownExpiresAt))",
                     isCoral: true,
                     isStale: false,
-                    help: "\(limit.reason) · seen \(AgeFormat.compact(from: limit.limitedAt, to: now)) ago · retry is linkC's own wait, not the provider's reset"))
+                    help: (pool.map { "\($0) pool: " } ?? "")
+                        + "\(limit.reason) · seen \(AgeFormat.compact(from: limit.limitedAt, to: now)) ago · retry is linkC's own wait, not the provider's reset"))
                 continue
             }
 

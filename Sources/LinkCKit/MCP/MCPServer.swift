@@ -916,13 +916,16 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: pass tier or model, not both", isError: true)
                 }
 
-                let lists: [AgentKind: AgentModelList]
-                do {
-                    lists = try modelLists()
-                } catch {
-                    return toolResultResponse(id: id, text: "Error: could not read the live model lists — \(error)", isError: true)
+                // The cache is read only by a check that needs it: a model named by hand, or a tier of
+                // an agent whose models come from its CLI. A missing file reads as "nothing listed yet".
+                var readLists: [AgentKind: AgentModelList]?
+                func lists() throws -> [AgentKind: AgentModelList] {
+                    if let readLists { return readLists }
+                    let read = try modelLists()
+                    readLists = read
+                    return read
                 }
-                let available = ModelListCache.available(for: toAgent, lists: lists, settings: settings)
+                let listsUnreadable: (Error) -> String = { "Error: could not read the live model lists — \($0)" }
 
                 let tier: ModelTier?
                 let model: String?
@@ -930,18 +933,25 @@ public final class MCPServer: Sendable {
                     guard toAgent != .cursor else {
                         return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
                     }
+                    let choosable: [ListedModel]
+                    do {
+                        choosable = ModelListCache.choosable(for: toAgent, lists: try lists(), settings: settings)
+                    } catch {
+                        return toolResultResponse(id: id, text: listsUnreadable(error), isError: true)
+                    }
                     if toAgent == .opencode, !OpenCodeFreeModels.isFree(modelArg) {
-                        let free = available.filter { OpenCodeFreeModels.isFree($0.id) }.map(\.id).joined(separator: ", ")
+                        let free = choosable.filter { OpenCodeFreeModels.isFree($0.id) }.map(\.id).joined(separator: ", ")
                         return toolResultResponse(
                             id: id,
                             text: "Error: \(modelArg) is not free — OpenCode runs free models only. Free models: \(free)",
                             isError: true)
                     }
-                    guard available.contains(where: { $0.id.caseInsensitiveCompare(modelArg) == .orderedSame }) else {
-                        let listed = available.map(\.id).joined(separator: ", ")
+                    // The listed spelling is what is stored and launched, whatever case it was typed in.
+                    guard let listed = choosable.first(where: { $0.id.caseInsensitiveCompare(modelArg) == .orderedSame }) else {
+                        let ids = choosable.map(\.id).joined(separator: ", ")
                         return toolResultResponse(
                             id: id,
-                            text: "Error: \(modelArg) is not among the models \(toAgent.displayName) lists. Available: \(listed)",
+                            text: "Error: \(modelArg) is not among the models \(toAgent.displayName) lists. Available: \(ids)",
                             isError: true)
                     }
                     if toAgent == .opencode {
@@ -951,17 +961,17 @@ public final class MCPServer: Sendable {
                         } catch {
                             return toolResultResponse(
                                 id: id,
-                                text: "Error: could not check \(modelArg) against the models OpenCode lists — \(error)",
+                                text: "Error: could not check \(listed.id) against the models OpenCode lists — \(error)",
                                 isError: true)
                         }
-                        guard offered.contains(where: { $0.caseInsensitiveCompare(modelArg) == .orderedSame }) else {
+                        guard offered.contains(where: { $0.caseInsensitiveCompare(listed.id) == .orderedSame }) else {
                             return toolResultResponse(
                                 id: id,
-                                text: "Error: \(modelArg) is not among the models OpenCode lists — free models come and go; pick another.",
+                                text: "Error: \(listed.id) is not among the models OpenCode lists — free models come and go; pick another.",
                                 isError: true)
                         }
                     }
-                    model = modelArg
+                    model = listed.id
                     tier = nil
                 } else if let tierArg {
                     guard let parsed = ModelTier(rawValue: tierArg.lowercased()) else {
@@ -995,6 +1005,24 @@ public final class MCPServer: Sendable {
                             text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not free — OpenCode runs free models only; set the tier in linkC settings.",
                             isError: true)
                     }
+                }
+                // A tier whose model the agent's own list no longer has would start a worker the CLI
+                // rejects. Refused now; an agent never listed (or whose last listing failed) is not blocked.
+                if let tier, let tierModel = settings.model(for: toAgent, tier: tier),
+                   ModelListParser.listedAgents.contains(toAgent) {
+                    do {
+                        if let offered = ModelListCache.liveModels(for: toAgent, lists: try lists()),
+                           !offered.contains(where: { $0.id.caseInsensitiveCompare(tierModel) == .orderedSame }) {
+                            return toolResultResponse(
+                                id: id,
+                                text: "Error: \(toAgent.rawValue)'s \(tier.rawValue) tier is set to \(tierModel), which \(toAgent.rawValue) no longer offers. Pick another in Settings > Models. Offered: \(offered.map(\.id).joined(separator: ", ")).",
+                                isError: true)
+                        }
+                    } catch {
+                        return toolResultResponse(id: id, text: listsUnreadable(error), isError: true)
+                    }
+                }
+                if toAgent == .opencode, let tier, let tierModel = settings.model(for: .opencode, tier: tier) {
                     let offered: [String]
                     do {
                         offered = try openCodeModels(workspaceRoot)
@@ -1015,9 +1043,9 @@ public final class MCPServer: Sendable {
                 let limitModel = model ?? tier.flatMap { settings.model(for: toAgent, tier: $0) }
                 do {
                     if let limitStatus = try inboxStore.isAgentLimited(agent: toAgent, model: limitModel) {
-                        let refusal = Self.limitRefusal(
-                            agent: toAgent, limit: limitStatus, model: limitModel,
-                            lists: lists, settings: settings, inboxStore: inboxStore)
+                        let refusal = try Self.limitRefusal(
+                            agent: toAgent, limit: limitStatus, model: limitModel, readLists: lists,
+                            settings: settings, inboxStore: inboxStore)
                         return toolResultResponse(id: id, text: "Error: \(refusal)", isError: true)
                     }
                 } catch {
@@ -1109,7 +1137,8 @@ public final class MCPServer: Sendable {
                     for limit in activeLimits {
                         let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
                         let remainingMin = remainingSec / 60
-                        text += "- **\(limit.agent.displayName)** (\(limit.agent.rawValue)): \(limit.reason) (cooldown: \(remainingMin)m remaining)\n"
+                        let scope = limit.pool.map { ", \(ModelPool.displayName($0)) pool" } ?? ""
+                        text += "- **\(limit.agent.displayName)** (\(limit.agent.rawValue)\(scope)): \(limit.reason) (cooldown: \(remainingMin)m remaining)\n"
                     }
                     text += "\n"
                 } else {
@@ -1179,23 +1208,26 @@ public final class MCPServer: Sendable {
                 guard let model = args["model"] as? String, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'model'.", isError: true)
                 }
-                let cleanModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                let typedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                let settings = modelSettings()
                 let lists: [AgentKind: AgentModelList]
                 do {
                     lists = try modelLists()
                 } catch {
                     return toolResultResponse(id: id, text: "Error: could not read the live model lists — \(error)", isError: true)
                 }
-                let available = ModelListCache.available(for: agent, lists: lists, settings: modelSettings())
-                guard available.contains(where: { $0.id.caseInsensitiveCompare(cleanModel) == .orderedSame }) else {
-                    let allowed = available.isEmpty ? "none listed yet" : available.map(\.id).joined(separator: ", ")
-                    return toolResultResponse(id: id, text: "Error: '\(cleanModel)' is not among the models \(agent.displayName) lists. Available: \(allowed)", isError: true)
+                let choosable = ModelListCache.choosable(for: agent, lists: lists, settings: settings)
+                // The listed spelling is what the CLI is told, whatever case it was typed in.
+                guard let listed = choosable.first(where: { $0.id.caseInsensitiveCompare(typedModel) == .orderedSame }) else {
+                    let allowed = choosable.isEmpty ? "none listed yet" : choosable.map(\.id).joined(separator: ", ")
+                    return toolResultResponse(id: id, text: "Error: '\(typedModel)' is not among the models \(agent.displayName) lists. Available: \(allowed)", isError: true)
                 }
+                let cleanModel = listed.id
                 do {
                     if let limitStatus = try inboxStore.isAgentLimited(agent: agent, model: cleanModel) {
-                        let refusal = Self.limitRefusal(
+                        let refusal = try Self.limitRefusal(
                             agent: agent, limit: limitStatus, model: cleanModel,
-                            lists: lists, settings: modelSettings(), inboxStore: inboxStore)
+                            readLists: { lists }, settings: settings, inboxStore: inboxStore)
                         return toolResultResponse(id: id, text: "Error: \(refusal)", isError: true)
                     }
                 } catch {
@@ -1244,18 +1276,31 @@ public final class MCPServer: Sendable {
                 let now = Date()
                 for agent in targetAgents {
                     text += "## \(agent.displayName)\n"
-                    let limit: AgentLimitStatus?
+                    let liveLimits: [AgentLimitStatus]
                     do {
-                        limit = try inboxStore.isAgentLimited(agent: agent)
+                        liveLimits = try inboxStore.liveLimits(agent: agent)
                     } catch {
                         return errorResult(id: id, error)
                     }
-                    if let limit {
-                        let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
-                        let remainingMin = remainingSec / 60
-                        text += "⚠️ **Rate Limited**: \(limit.reason) (\(remainingMin)m cooldown remaining)\n\n"
-                    } else {
+                    if liveLimits.isEmpty {
                         text += "Status: Active / Available\n\n"
+                    } else {
+                        // One limit per quota pool for agy: each says which pool it covers, and the pools
+                        // that are not limited are named, so a Gemini limit never reads as Claude being out.
+                        for limit in liveLimits.sorted(by: { $0.cooldownExpiresAt > $1.cooldownExpiresAt }) {
+                            let remainingMin = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now))) / 60
+                            let scope = limit.pool.map { " (\(ModelPool.displayName($0)) pool)" } ?? ""
+                            text += "⚠️ **Rate Limited**\(scope): \(limit.reason) (\(remainingMin)m cooldown remaining)\n"
+                        }
+                        if agent == .agy, !liveLimits.contains(where: { $0.pool == nil }) {
+                            let agyPools: [String] = ["gemini", "claude-gpt"]
+                            let free = agyPools.filter { pool in !liveLimits.contains { $0.pool == pool } }
+                            let names = free.map { "\(ModelPool.displayName($0)) pool" }
+                            if !names.isEmpty {
+                                text += "Available: \(names.joined(separator: ", "))\n"
+                            }
+                        }
+                        text += "\n"
                     }
                     let list = lists[agent]
                     if let fetchedAt = list?.fetchedAt {
@@ -1290,6 +1335,7 @@ public final class MCPServer: Sendable {
                             }
                             if let pool = ModelPool.pool(of: listed.id, agent: agent) {
                                 line += " [pool \(ModelPool.displayName(pool))]"
+                                if liveLimits.contains(where: { $0.pool == pool }) { line += " — limited" }
                             }
                             text += line + "\n"
                         }
@@ -1326,7 +1372,8 @@ public final class MCPServer: Sendable {
                         let remainingSec = max(0, Int(limit.cooldownExpiresAt.timeIntervalSince(now)))
                         let remainingMin = remainingSec / 60
 
-                        text += "### \(limit.agent.displayName) (\(limit.agent.rawValue))\n"
+                        let scope = limit.pool.map { " — \(ModelPool.displayName($0)) pool" } ?? ""
+                        text += "### \(limit.agent.displayName) (\(limit.agent.rawValue))\(scope)\n"
                         text += "- **Reason:** \(limit.reason)\n"
                         text += "- **Cooldown Remaining:** \(remainingMin)m (\(remainingSec)s)\n"
                         text += "- **Expires At:** \(limit.cooldownExpiresAt)\n\n"
@@ -1530,18 +1577,17 @@ public final class MCPServer: Sendable {
         return text
     }
 
-    /// One agent's section of `linkc_get_usage_status`'s report: a heading (with plan type when
-    /// known), one line per window, and either the observation age or why nothing is known.
-    /// Refusal when a model (or its pool) is limited: names the limit, and what is not limited.
+    /// Refusal when a model (or its pool) is limited: names the limit, and what is not limited. A
+    /// limit status that cannot be read throws; a list of models that cannot be read is said in the
+    /// refusal itself, and the limit is still reported.
     static func limitRefusal(
         agent: AgentKind,
         limit: AgentLimitStatus,
         model: String?,
-        lists: [AgentKind: AgentModelList],
+        readLists: () throws -> [AgentKind: AgentModelList],
         settings: AgentModelSettings,
-        inboxStore: InboxStore,
-        now: Date = Date()
-    ) -> String {
+        inboxStore: InboxStore
+    ) throws -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEE HH:mm"
         let until = formatter.string(from: limit.cooldownExpiresAt)
@@ -1551,27 +1597,39 @@ public final class MCPServer: Sendable {
         } else {
             subject = agent.rawValue
         }
-        var parts: [String] = []
-        if agent == .agy {
-            for pool in ["gemini", "claude-gpt"] where pool != limit.pool {
-                let sample = pool == "gemini" ? "gemini-3.8-flash-medium" : "claude-opus-4-6-thinking"
-                guard (try? inboxStore.isAgentLimited(agent: .agy, model: sample)) == nil else { continue }
-                let ids = ModelListCache.available(for: .agy, lists: lists, settings: settings)
-                    .filter { ModelPool.pool(of: $0.id, agent: .agy) == pool }
-                    .map(\.id)
-                let listed = ids.isEmpty ? "" : " (\(ids.joined(separator: ", ")))"
-                parts.append("agy's \(ModelPool.displayName(pool)) pool\(listed)")
-            }
+        var caveat = ""
+        let lists: [AgentKind: AgentModelList]
+        do {
+            lists = try readLists()
+        } catch {
+            NSLog("[linkC mcp] limit refusal — the model lists could not be read: %@", String(describing: error))
+            lists = [:]
+            caveat = " (The model lists could not be read: \(error).)"
         }
-        for peer in AgentKind.peers where peer != agent {
-            if (try? inboxStore.isAgentLimited(agent: peer)) == nil {
+        let agyLimits = try inboxStore.liveLimits(agent: .agy)
+        var parts: [String] = []
+        for peer in AgentKind.peers {
+            if peer == .agy {
+                for pool in ["gemini", "claude-gpt"] {
+                    // The pool this refusal is about is limited; so is any pool a live limit covers.
+                    if agent == .agy, pool == limit.pool { continue }
+                    if agyLimits.contains(where: { $0.pool == nil || $0.pool == pool }) { continue }
+                    let ids = ModelListCache.available(for: .agy, lists: lists, settings: settings)
+                        .filter { ModelPool.pool(of: $0.id, agent: .agy) == pool }
+                        .map(\.id)
+                    let listed = ids.isEmpty ? "" : " (\(ids.joined(separator: ", ")))"
+                    parts.append("agy's \(ModelPool.displayName(pool)) pool\(listed)")
+                }
+            } else if peer != agent, try inboxStore.isAgentLimited(agent: peer) == nil {
                 parts.append(peer.rawValue)
             }
         }
         let notLimited = parts.isEmpty ? "none" : parts.joined(separator: ", ")
-        return "\(subject) is limited until \(until) (\(limit.reason)). Not limited: \(notLimited)."
+        return "\(subject) is limited until \(until) (\(limit.reason)). Not limited: \(notLimited).\(caveat)"
     }
 
+    /// One agent's section of `linkc_get_usage_status`'s report: a heading (with plan type when
+    /// known), one line per window, and either the observation age or why nothing is known.
     private static func renderUsageSection(_ usage: AgentUsage, now: Date) -> String {
         let planSuffix = usage.planType.map { " — plan \($0)" } ?? ""
         var text = "## \(usage.agent.displayName)\(planSuffix)\n"

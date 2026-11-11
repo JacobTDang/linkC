@@ -100,6 +100,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             userHome: userHome,
             verifier: verifier,
             modelSettings: { models },
+            modelLists: TestModelLists.none,
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
             // make every dispatch test wait for real. Zero by default; a settle test overrides
             // both this and `now` to prove the threshold without sleeping through it.
@@ -250,6 +251,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             manifestDir: tempDir.appendingPathComponent("manifest_\(UUID().uuidString)"),
             agentPathResolver: { _ in plainScript.path },
             verifier: verifier,
+            modelLists: TestModelLists.none,
             isWatching: { _ in false }
         )
     }
@@ -1018,62 +1020,6 @@ final class AppCoordinatorRelayTests: XCTestCase {
         )
     }
 
-    /// A model-task worker that exits while still `.starting` fails the task at once with the screen's last line.
-    @MainActor
-    func testAModelWorkerThatExitsAtLaunchFailsItsTaskAtOnce() async throws {
-        let coordinator = makeCoordinator()
-        defer { coordinator.shutdown() }
-        let inbox = InboxStore(workspaceRoot: tempDir.path)
-        let task = try inbox.createTask(from: .claude, to: .agy, model: "claude-opus-4-6-thinking",
-                                        prompt: "Use Opus.", files: [])
-        let worker = try coordinator.spawnTeammate(
-            in: tempDir.path, agent: .agy, model: "claude-opus-4-6-thinking", asWorker: true)
-        XCTAssertEqual(coordinator.store.session(id: worker.id)?.state, .starting)
-        let terminal = try XCTUnwrap(coordinator.terminals.session(id: worker.id))
-        terminal.terminalView.feed(text: "Error: unknown model id\r\n")
-        coordinator.cleanup(sessionId: worker.id)
-
-        let failed = try XCTUnwrap(inbox.task(id: task.id))
-        XCTAssertEqual(failed.state, .failed)
-        XCTAssertTrue(failed.cancelReason?.contains("exited at launch with model claude-opus-4-6-thinking") ?? false,
-                      failed.cancelReason ?? "nil")
-        XCTAssertTrue(failed.cancelReason?.contains("unknown model id") ?? false, failed.cancelReason ?? "nil")
-        let notice = try inbox.load().messages.first { $0.kind == .notice || $0.kind == .completion }
-        XCTAssertNotNil(notice)
-        XCTAssertTrue(notice?.prompt.contains("failed") ?? false, notice?.prompt ?? "nil")
-    }
-
-    /// The same exit for a tier task keeps today's behaviour: the task stays queued.
-    @MainActor
-    func testATierWorkerThatExitsAtLaunchLeavesItsTaskQueued() async throws {
-        let coordinator = makeCoordinator()
-        defer { coordinator.shutdown() }
-        let inbox = InboxStore(workspaceRoot: tempDir.path)
-        let task = try inbox.createTask(from: .claude, to: .agy, tier: .standard,
-                                        prompt: "Flash work", files: [])
-        let worker = try coordinator.spawnTeammate(
-            in: tempDir.path, agent: .agy, tier: .standard, asWorker: true)
-        XCTAssertEqual(coordinator.store.session(id: worker.id)?.state, .starting)
-        coordinator.cleanup(sessionId: worker.id)
-        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
-    }
-
-    /// agy's "model not recognized" start-up line is not a failure.
-    @MainActor
-    func testAgysModelNotRecognizedLineIsNotALaunchFailure() async throws {
-        let coordinator = makeCoordinator()
-        defer { coordinator.shutdown() }
-        let inbox = InboxStore(workspaceRoot: tempDir.path)
-        let task = try inbox.createTask(from: .claude, to: .agy, model: "claude-opus-4-6-thinking",
-                                        prompt: "Use Opus.", files: [])
-        let worker = try coordinator.spawnTeammate(
-            in: tempDir.path, agent: .agy, model: "claude-opus-4-6-thinking", asWorker: true)
-        let terminal = try XCTUnwrap(coordinator.terminals.session(id: worker.id))
-        terminal.terminalView.feed(text: "model not recognized — continuing\r\n")
-        coordinator.cleanup(sessionId: worker.id)
-        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
-    }
-
     /// A Gemini pool limit holds a Gemini-tier task back, but a Claude-model task is still delivered.
     @MainActor
     func testAnAgyGeminiLimitDoesNotHoldAClaudeModelTask() async throws {
@@ -1094,7 +1040,11 @@ final class AppCoordinatorRelayTests: XCTestCase {
         coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
 
         XCTAssertEqual(try inbox.task(id: claudeTask.id)?.state, .delivered)
+        XCTAssertEqual(try inbox.task(id: claudeTask.id)?.assigneeSessionId, opusSession.id,
+                       "the Claude-model task goes to the session running that model")
         XCTAssertEqual(try inbox.task(id: geminiTask.id)?.state, .queued)
+        XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .agy }.map(\.id), [opusSession.id],
+                       "no worker is started for the held Gemini task")
     }
 
     /// A model task with no session on that model starts a worker launched with `--model <id>`.
@@ -1561,6 +1511,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest_uninstalled_test"),
             agentPathResolver: { kind in kind == .codex ? nil : scriptURL.path },
+            modelLists: TestModelLists.none,
             isWatching: { _ in false }
         )
         defer { coordinator.shutdown() }
@@ -1606,6 +1557,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             agentPathResolver: { kind in kind == .grok ? scriptURL.path : nil },
             userHome: tempDir.appendingPathComponent("home"),
             modelSettings: { .seeded },
+            modelLists: TestModelLists.none,
             openCodeModels: { _ in ["opencode/big-pickle"] },
             isWatching: { _ in false }
         )
@@ -1652,6 +1604,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             agentPathResolver: { kind in kind == .opencode ? scriptURL.path : nil },
             userHome: tempDir.appendingPathComponent("home"),
             modelSettings: { .seeded },
+            modelLists: TestModelLists.none,
             openCodeModels: { _ in ["opencode/big-pickle"] },
             isWatching: { _ in false }
         )
@@ -2944,7 +2897,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
     private func delegateAndGate(_ repo: URL, _ coordinator: AppCoordinator) async throws -> TaskRecord {
         let inbox = InboxStore(workspaceRoot: repo.path)
         let delegator = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "claude"],
-                                   ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
+                                   ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
         let base = try runGit(["rev-parse", "HEAD"], in: repo)
         let delegated = try mcpCall(delegator, "linkc_delegate_task", [
             "to": "codex", "prompt": "Make check.sh pass", "tier": "deep",
@@ -2968,7 +2921,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try runGit(["commit", "-q", "-m", "worker"], in: repo)
         let sha = try runGit(["rev-parse", "HEAD"], in: repo)
         let worker = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "codex"],
-                                ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
+                                ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
         let reported = try mcpCall(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "worker change", "sha": sha])
         XCTAssertFalse(reported.isError, reported.text)
         return sha
@@ -4162,7 +4115,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
                 MainActor.assumeIsolated {
                     _ = coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: InboxStore(workspaceRoot: ws))
                 }
-            }))
+            }),
+            modelLists: TestModelLists.none)
     }
 
     @MainActor

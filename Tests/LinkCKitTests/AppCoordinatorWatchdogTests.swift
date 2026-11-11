@@ -63,6 +63,7 @@ final class AppCoordinatorWatchdogTests: XCTestCase {
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
             agentPathResolver: { _ in scriptURL.path },
+            modelLists: TestModelLists.none,
             deliverySettle: 0,
             turnEndQuietPeriod: 0.0,
             now: now,

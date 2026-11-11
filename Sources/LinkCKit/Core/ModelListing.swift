@@ -13,6 +13,10 @@ public struct ListedModel: Codable, Equatable, Sendable {
 
 /// Pure parsers that turn each CLI's model listing into `[ListedModel]`.
 public enum ModelListParser {
+    /// Agents whose models come from a CLI listing. Claude and Codex have fixed lists (`fixed(for:)`).
+    /// Grok has no listing of its own: it reuses Cursor's.
+    public static let listedAgents: [AgentKind] = [.agy, .cursor, .grok, .opencode]
+
     private static let zeroWidth: CharacterSet = {
         var set = CharacterSet()
         set.insert(Unicode.Scalar(0x200B)!) // zero-width space
@@ -28,16 +32,15 @@ public enum ModelListParser {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// `agy models`: `id<TAB>name` lines after a "Fetching…" header.
+    /// `agy models`: `id<TAB>name` lines after a "Fetching…" header. A line without the tab is not a
+    /// model: the header, and anything agy prints instead of a list ("Error: not logged in").
     public static func agy(_ output: String) -> [ListedModel] {
         output.split(whereSeparator: \.isNewline).compactMap { line in
             let trimmed = clean(String(line))
-            guard !trimmed.isEmpty else { return nil }
-            guard !trimmed.lowercased().hasPrefix("fetching") else { return nil }
-            let parts = trimmed.split(separator: "\t", maxSplits: 1).map(String.init)
-            guard let id = parts.first, !id.isEmpty else { return nil }
-            let name = parts.count > 1 ? clean(parts[1]) : id
-            guard !name.isEmpty else { return nil }
+            guard let tab = trimmed.firstIndex(of: "\t") else { return nil }
+            let id = clean(String(trimmed[..<tab]))
+            let name = clean(String(trimmed[trimmed.index(after: tab)...]))
+            guard !id.isEmpty, !id.contains(where: \.isWhitespace), !name.isEmpty else { return nil }
             return ListedModel(id: id, name: name)
         }
     }
@@ -70,6 +73,28 @@ public enum ModelListParser {
         }
     }
 
+    /// What `agent`'s CLI printed, as models. Output that yields none is an error, never an empty
+    /// list: a CLI that printed text but no models (an error line, a changed format) must not pass
+    /// for one that has none. Throws for an agent that has no listing command.
+    public static func listing(_ output: String, for agent: AgentKind) throws -> [ListedModel] {
+        let models: [ListedModel]
+        switch agent {
+        case .agy: models = Self.agy(output)
+        case .cursor: models = Self.cursor(output)
+        case .grok: models = Self.grok(fromCursor: output)
+        case .opencode: models = Self.openCode(output)
+        case .claude, .codex, .shell:
+            throw LinkCError.process("\(agent.rawValue) has no model listing command")
+        }
+        guard !models.isEmpty else {
+            let first = output.split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+            throw LinkCError.process("\(agent.rawValue) models listed nothing: \(first ?? "(no output)")")
+        }
+        return models
+    }
+
     /// Fixed lists for agents with no list command. Nil for agents that list from a CLI.
     public static func fixed(for agent: AgentKind) -> [ListedModel]? {
         switch agent {
@@ -100,7 +125,7 @@ public enum ModelPool {
     /// agy: "gemini" for gemini-…, "claude-gpt" for claude-… and gpt-oss-…, nil otherwise; nil for every other agent.
     public static func pool(of model: String, agent: AgentKind) -> String? {
         guard agent == .agy else { return nil }
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if trimmed.hasPrefix("gemini-") { return "gemini" }
         if trimmed.hasPrefix("claude-") || trimmed.hasPrefix("gpt-oss-") { return "claude-gpt" }
         return nil

@@ -56,8 +56,24 @@ struct SettingsScreen: View {
                     }
 
                     SectionHeader(title: "MODELS").padding(.top, 6)
+                    // The refresher is observable: this view redraws when a refresh ends, and never reads
+                    // the cache file itself.
+                    let refresher = model.coordinator?.modelListRefresher
+                    if refresher?.isRefreshing == true {
+                        Text("Refreshing the model lists…")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.textTertiary)
+                            .padding(.horizontal, 4)
+                    }
+                    if let cacheProblem = refresher?.cacheProblem {
+                        Text(cacheProblem)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.statusError)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 4)
+                    }
                     ForEach([AgentKind.claude, .codex, .agy, .grok, .opencode], id: \.self) { agent in
-                        let lists = (try? model.coordinator?.modelLists()) ?? [:]
+                        let lists = refresher?.lists ?? [:]
                         let choices = TierModelChoices.make(
                             agent: agent, lists: lists, settings: model.preferences.agentModels,
                             current: model.preferences.agentModels.model(for: agent, tier: .standard) ?? "")
@@ -499,11 +515,8 @@ private struct TierModelField: View {
 
     private func commit(force value: String? = nil) {
         let next = (value ?? text).trimmingCharacters(in: .whitespacesAndNewlines)
-        if let error = TierModelChoices.validationError(forTypedId: next, agent: agent) {
-            // Keep the typed text visible; do not write a non-free OpenCode id.
-            _ = error
-            return
-        }
+        // A non-free OpenCode id is not written; the refusal stays under the field, with the typed text.
+        guard TierModelChoices.validationError(forTypedId: next, agent: agent) == nil else { return }
         guard next != currentValue else { return }
         var edited = preferences.agentModels
         edited.setModel(next, for: agent, tier: tier)

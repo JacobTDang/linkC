@@ -310,6 +310,7 @@ final class DirectoryTrustManagerTests: XCTestCase {
             userSettingsURL: tempDir.appendingPathComponent("no-such-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
             claudeJsonURL: jsonURL,
+            modelLists: TestModelLists.none,
             isWatching: { _ in false }
         )
 

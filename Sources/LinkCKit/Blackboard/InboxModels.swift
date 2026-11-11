@@ -496,3 +496,16 @@ public struct Inbox: Codable, Sendable, Equatable {
         )
     }
 }
+
+extension Inbox {
+    /// Every limit on `agent` still running at `now`: one per quota pool for agy, otherwise at most one.
+    public func liveLimits(for agent: AgentKind, now: Date = Date()) -> [AgentLimitStatus] {
+        agentLimits.filter { $0.agent == agent && $0.cooldownExpiresAt > now }
+    }
+
+    /// The live limit to show for `agent`: the one that ends last, since that is when every pool is
+    /// free again.
+    public func liveLimit(for agent: AgentKind, now: Date = Date()) -> AgentLimitStatus? {
+        liveLimits(for: agent, now: now).max { $0.cooldownExpiresAt < $1.cooldownExpiresAt }
+    }
+}
