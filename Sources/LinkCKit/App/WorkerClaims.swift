@@ -8,6 +8,11 @@ public enum WorkerClaim: Equatable, Sendable {
     case awaitReady(String)
     /// The session is still starting.
     case awaitStart(String)
+    /// A worker holding no task that is busy or held at a prompt, such as a trust dialog at boot. It
+    /// is waited for: a worker started past it could stop at the same prompt, pass after pass.
+    case awaitBusy(String)
+    /// A session that could carry the task is rate-limited, so its agent is paused.
+    case awaitLimited(String)
     /// A pinned task whose session cannot take it this pass. It never starts a session.
     case awaitPinned
     /// No session is free for the task: start a worker.
@@ -17,8 +22,8 @@ public enum WorkerClaim: Equatable, Sendable {
 /// Which session each queued task goes to in one relay pass (spec 2026-11-11 §4). A free session
 /// is one that can carry the task, is idle or still starting, and is not still holding a task it
 /// was given and has not reported. Each free session is claimed by at most one task in a pass, so a
-/// worker still booting counts as taken and two tasks start exactly two workers, not one per pass.
-/// When no session is free, the task starts another: there is no cap. Pure: it decides only.
+/// worker still booting counts as taken. A task that finds no free session starts another worker:
+/// there is no cap. Pure: it decides only.
 public enum WorkerClaims {
     private static let idleStates: Set<SessionState> = [.ready, .finished, .waitingIdle]
 
@@ -35,6 +40,7 @@ public enum WorkerClaims {
         func claim(_ session: Session) -> WorkerClaim {
             claimed.insert(session.id)
             if session.state == .starting { return .awaitStart(session.id) }
+            if !idleStates.contains(session.state) { return .awaitBusy(session.id) }
             return ready.contains(session.id) ? .deliver(to: session.id) : .awaitReady(session.id)
         }
 
@@ -49,13 +55,20 @@ public enum WorkerClaims {
         }
 
         for task in queued where task.targetSessionId == nil {
-            let free = live.filter {
-                !claimed.contains($0.id) && !holdingUnreported.contains($0.id) && $0.canCarry(task) && isFree($0)
-            }
-            let preferred = free.first { idleStates.contains($0.state) && ready.contains($0.id) }
+            let carriers = live.filter { $0.canCarry(task) }
+            let unclaimed = carriers.filter { !claimed.contains($0.id) && !holdingUnreported.contains($0.id) }
+            let free = unclaimed.filter(isFree)
+            let pick = free.first { idleStates.contains($0.state) && ready.contains($0.id) }
                 ?? free.first { idleStates.contains($0.state) }
                 ?? free.first
-            claims[task.id] = preferred.map(claim) ?? .spawn
+                ?? unclaimed.first { $0.isWorker && ($0.state == .working || $0.state == .waitingPermission) }
+            if let pick {
+                claims[task.id] = claim(pick)
+            } else if let limited = carriers.first(where: { $0.state == .error }) {
+                claims[task.id] = .awaitLimited(limited.id)
+            } else {
+                claims[task.id] = .spawn
+            }
         }
         return claims
     }

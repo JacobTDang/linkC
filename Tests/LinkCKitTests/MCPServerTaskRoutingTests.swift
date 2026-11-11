@@ -93,6 +93,12 @@ final class MCPServerTaskRoutingTests: XCTestCase {
         XCTAssertEqual(Set(try inbox.fetchPending().compactMap(\.toSessionId)), ["W1", "W2"])
     }
 
+    func testAMessageWrittenBeforeToSessionIdExistedStillDecodes() throws {
+        let json = #"{"id":"M1","fromAgent":"claude","toAgent":"codex","prompt":"hi","status":"queued","createdAt":0}"#
+        let message = try JSONDecoder().decode(PendingMessage.self, from: Data(json.utf8))
+        XCTAssertNil(message.toSessionId)
+    }
+
     // MARK: - linkc_switch_model
 
     func testAModelSwitchWithATaskIdIsAddressedToThatTasksWorkerAndTakesItsAgent() throws {

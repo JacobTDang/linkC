@@ -329,6 +329,7 @@ extension AppCoordinator {
         let claims = WorkerClaims.plan(queued: queued, sessions: folderSessions, holdingUnreported: holdingUnreported, ready: ready)
 
         var loggedInjectionWait = false
+        var launched: Set<String> = []
         for task in queued {
             guard let claim = claims[task.id] else {
                 NSLog("[linkC relay] dispatchTasks: task %@ has no claim this pass — waiting", task.shortId)
@@ -340,6 +341,14 @@ extension AppCoordinator {
                 assignee = id
             case .awaitStart(let id):
                 NSLog("[linkC relay] dispatchTasks: task %@ waits for %@ session %@ to start", task.shortId, task.toAgent.displayName, id)
+                continue
+            case .awaitBusy(let id):
+                NSLog("[linkC relay] dispatchTasks: task %@ waits for %@ worker %@, which holds no task and is %@",
+                      task.shortId, task.toAgent.displayName, id, String(describing: store.session(id: id)?.state))
+                continue
+            case .awaitLimited(let id):
+                NSLog("[linkC relay] dispatchTasks: task %@ waits — %@ session %@ is rate-limited",
+                      task.shortId, task.toAgent.displayName, id)
                 continue
             case .awaitReady(let id):
                 if !injectionGapElapsed(sessionId: id) {
@@ -353,8 +362,10 @@ extension AppCoordinator {
                 // never will — a CLI that doesn't support it, or a broken TERM. Waiting out the
                 // generic 60-minute queued expiry would bury the real reason behind "undelivered
                 // for 60m"; fail this task now, with the reason that actually explains it, and
-                // stop retrying it every tick.
-                if now().timeIntervalSince(task.createdAt) > Self.pasteNegotiationTimeout {
+                // stop retrying it every tick. The wait is counted from when the session went idle,
+                // so time the task spent queued behind workers still starting is not held against it.
+                let idleSince = store.session(id: id)?.stateChangedAt ?? task.createdAt
+                if now().timeIntervalSince(max(task.createdAt, idleSince)) > Self.pasteNegotiationTimeout {
                     let reason = "\(task.toAgent.displayName) never accepted pasted input"
                     do {
                         try inboxStore.expireTaskAndNotify(
@@ -390,7 +401,7 @@ extension AppCoordinator {
                 }
                 continue
             case .spawn:
-                if spawnWorker(for: task, workspacePath: workspacePath, inboxStore: inboxStore) { return true }
+                if spawnWorker(for: task, workspacePath: workspacePath, inboxStore: inboxStore, launched: &launched) { return true }
                 continue
             }
 
@@ -439,8 +450,11 @@ extension AppCoordinator {
     /// Starts a worker for `task`, which found no free session. It is delivered on a later pass: a CLI
     /// needs seconds to reach its prompt, and a frame typed into a booting TUI is lost. The session stays
     /// `.starting` until its agent is really running: Claude's SessionStart hook, or `sampleAgentStates`
-    /// for every other kind. Returns `true` when the inbox lock timed out.
-    private func spawnWorker(for task: TaskRecord, workspacePath: String, inboxStore: InboxStore) -> Bool {
+    /// for every other kind. At most one worker is launched per agent and tier in a pass (`launched`), so
+    /// a CLI that exits at launch is retried once a pass, not once per queued task; each task still runs
+    /// the checks before it, so a refusal is reported for every task. Returns `true` when the inbox lock
+    /// timed out.
+    private func spawnWorker(for task: TaskRecord, workspacePath: String, inboxStore: InboxStore, launched: inout Set<String>) -> Bool {
         // A tiered task whose tier no longer resolves to a model (settings edited while the task sat
         // queued) must not spawn an unpinned session: that session could never carry the task, so the
         // next pass would spawn another one, forever. Leave it queued and say why; do not invent a model.
@@ -479,6 +493,11 @@ extension AppCoordinator {
                                            workspacePath: workspacePath, inboxStore: inboxStore)
                 return false
             }
+        }
+        guard launched.insert("\(task.toAgent.rawValue)|\(task.tier?.rawValue ?? "")").inserted else {
+            NSLog("[linkC relay] dispatchTasks: task %@ waits for the next pass to start its %@ worker",
+                  task.shortId, task.toAgent.displayName)
+            return false
         }
         do {
             _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier, asWorker: true)

@@ -12,7 +12,7 @@ Opening sessions by hand is not capped. Delegation is. `dispatchTasks` (`AppCoor
 ## 2. Goals
 
 - A queued task that finds no free worker of its agent and tier starts another one. There is no cap.
-- Two tasks that arrive together start two workers, and the next relay passes start no more while those two boot.
+- Two tasks that arrive together start two workers, one per relay pass, and later passes start no more while those two boot.
 - An idle worker is reused, as today.
 - Claude can send a message or a model switch to the worker that holds a given task, rather than to the first session of that agent.
 
@@ -43,12 +43,15 @@ Pinned tasks claim first, then the unpinned tasks in queue order, so an earlier 
   An idle session is preferred to a starting one.
   - **Idle session claimed:** the existing readiness checks decide what happens: the injection gap, a negotiated bracketed paste, and the settle margin. If they pass, the task is delivered. If not, the task waits for that session. The paste-negotiation timeout still expires the task.
   - **Starting session claimed:** the task waits for it. A booting worker counts as taken, so no extra worker starts.
-  - **No session claimed:** a worker is started, after the existing checks: the tier has a model, and OpenCode lists the model. Sessions that are `working`, `waitingPermission` or `error` are never claimed.
+  - **No free session, but a worker holding no task is `working` or `waitingPermission`:** the task claims that worker and waits for it. This is a worker held at a prompt before it got a task, such as a trust dialog at boot, or one busy as it boots. A worker started past it could stop at the same prompt, pass after pass. A session the user opened, or a worker busy with its own task, is never waited for this way.
+  - **A session that could carry the task is `error`:** its agent is rate-limited, so the task waits, as it did before this change. No fresh worker is started into the cooldown.
+  - **Otherwise:** a worker is started, after the existing checks: the tier has a model, and OpenCode lists the model. Every such task runs those checks, so a refusal is reported for each. `dispatchTasks`, not `WorkerClaims`, then launches at most one worker per agent and tier in a pass; another task that needs one waits for the next pass. So a CLI that exits at launch is retried once a pass, as before, not once per queued task.
 
 `WorkerClaims` decides only. It does not deliver, start, or write to the inbox. `dispatchTasks` carries out each decision with the code it has today.
 
 Effects:
 
+- The paste-negotiation timeout counts from when the claimed session went idle, not from when the task was created, so time spent queued behind workers still booting is not held against the session.
 - A worker that went idle without reporting its task gets no new unpinned task. The next task gets a fresh worker instead of having its brief pasted on top of an unanswered question.
 - The existing reaper closes idle extra workers: 60 s after their task ends, or after 10 minutes idle. It needs no change.
 
@@ -92,12 +95,14 @@ TDD through the existing seams. Nothing real is launched.
   - an idle worker is reused;
   - a busy worker means a new spawn;
   - a starting worker is claimed, not spawned past;
-  - two tasks give two spawns, and the next pass, with both starting, gives none;
+  - two tasks with no workers each need one, and with one worker starting the second still needs one;
+  - a worker with no task held at a dialog, or busy, is waited for;
+  - a rate-limited session that could carry the task holds it back;
   - a worker holding an unreported task is skipped;
   - a pinned task keeps its own session;
   - a tier mismatch is not claimed.
 - `dispatchTasks` integration tests with the fake terminal and agent resolver:
-  - with one busy and one idle Codex session, three Codex tasks: the idle session takes one, and the other two each start a worker;
+  - with one busy and one idle Codex session, three Codex tasks: the idle session takes one, and the other two each start a worker, one per pass;
   - the next pass, with those two starting, starts none;
   - once idle, each task goes to a different worker;
   - a worker idle with an unreported task gets no new task, and a new worker starts.

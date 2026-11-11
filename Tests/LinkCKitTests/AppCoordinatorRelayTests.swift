@@ -518,8 +518,11 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertEqual(try inbox.task(id: tasks[0].id)?.assigneeSessionId, idle.id, "the idle session takes the first task")
+        XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .codex }.count, 3, "one worker starts per pass")
+
+        coordinator.processPendingMessages(workspacePath: ws)
         let started = coordinator.store.sessions.filter { $0.agentKind == .codex && $0.id != busy.id && $0.id != idle.id }
-        XCTAssertEqual(started.count, 2, "each of the other two tasks starts its own worker")
+        XCTAssertEqual(started.count, 2, "each of the other two tasks has its own worker")
 
         coordinator.processPendingMessages(workspacePath: ws)
         XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .codex }.count, 4,
@@ -534,6 +537,45 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let assignees = try tasks.dropFirst().map { try XCTUnwrap(inbox.task(id: $0.id)?.assigneeSessionId) }
         XCTAssertEqual(Set(assignees), Set(started.map(\.id)), "each remaining task reaches a different new worker")
         XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .codex }.count, 4)
+    }
+
+    /// A worker held at a prompt before it holds any task (a trust dialog at boot) is waited for, pass
+    /// after pass: a worker started past it would stop at the same prompt.
+    @MainActor
+    func testAWorkerHeldAtADialogBeforeItsTaskIsWaitedForAndNoMoreStart() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "Behind a dialog", files: [])
+        coordinator.processPendingMessages(workspacePath: ws)
+        let worker = try XCTUnwrap(coordinator.store.sessions.first { $0.agentKind == .codex })
+        coordinator.store.updateState(id: worker.id, to: .waitingPermission)
+
+        for _ in 0..<3 { coordinator.processPendingMessages(workspacePath: ws) }
+
+        XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .codex }.count, 1)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
+    }
+
+    /// A rate-limited session that could carry the task pauses its agent: no fresh worker is started
+    /// into the cooldown.
+    @MainActor
+    func testARateLimitedSessionHoldsNewTasksForItsAgentBack() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let limited = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: limited.id, to: .error)
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: "During a cooldown", files: [])
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .codex }.count, 1)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
     }
 
     /// A worker that went idle without reporting its task is not handed another: the brief would land
@@ -599,11 +641,16 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         let toEnded = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, toSessionId: ended.id, body: "too late")
         let toGone = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, toSessionId: "NO-SUCH-SESSION", body: "gone")
+        let otherFolder = tempDir.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: otherFolder, withIntermediateDirectories: true)
+        let elsewhere = try coordinator.newSession(cwd: otherFolder.path, agent: .codex)
+        let toElsewhere = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, toSessionId: elsewhere.id, body: "moved")
         coordinator.dispatchMessages(workspacePath: ws, inboxStore: inbox)
 
         let messages = try inbox.load().messages
         XCTAssertEqual(messages.first { $0.id == toEnded.id }?.status, .failed)
         XCTAssertEqual(messages.first { $0.id == toGone.id }?.status, .failed)
+        XCTAssertEqual(messages.first { $0.id == toElsewhere.id }?.status, .failed, "a session in another folder is not this folder's worker")
         XCTAssertTrue(coordinator.recentlyInjectedTexts(sessionId: other.id).isEmpty, "never handed to another Codex")
         XCTAssertTrue(sink.deliveries.contains { $0.title.contains("not delivered") }, "the user is told")
     }
@@ -882,7 +929,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try "#!/bin/sh\nstty -echo 2>/dev/null\nexec /bin/cat\n".write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
 
-        let coordinator = makeCoordinator(agentPathResolver: { _ in script.path })
+        let clock = ControllableClock()
+        let coordinator = makeCoordinator(now: clock.now, agentPathResolver: { _ in script.path })
         defer { coordinator.shutdown() }
 
         let assignee = try coordinator.newSession(cwd: ws, agent: .codex)
@@ -895,6 +943,12 @@ final class AppCoordinatorRelayTests: XCTestCase {
         seeded.tasks.append(task)
         try inbox.saveRaw(seeded)
 
+        // Only a session idle that long without negotiating is given up on: one that just went idle is waited for.
+        coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued,
+                       "time the task spent queued before its session went idle is not held against the session")
+
+        clock.set(Date().addingTimeInterval(3 * 60))
         coordinator.dispatchTasks(workspacePath: ws, inboxStore: inbox)
 
         let final = try XCTUnwrap(inbox.task(id: task.id))

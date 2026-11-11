@@ -4,8 +4,9 @@ import XCTest
 final class WorkerClaimsTests: XCTestCase {
     private let folder = "/tmp/linkc-worker-claims"
 
-    private func session(_ id: String, _ state: SessionState, agent: AgentKind = .codex, tier: ModelTier? = nil) -> Session {
-        Session(id: id, cwd: folder, title: id, state: state, agentKind: agent, modelTier: tier, isWorker: true)
+    private func session(_ id: String, _ state: SessionState, agent: AgentKind = .codex, tier: ModelTier? = nil,
+                         worker: Bool = true) -> Session {
+        Session(id: id, cwd: folder, title: id, state: state, agentKind: agent, modelTier: tier, isWorker: worker)
     }
 
     private func task(_ id: String, to agent: AgentKind = .codex, tier: ModelTier? = nil,
@@ -26,25 +27,60 @@ final class WorkerClaimsTests: XCTestCase {
         XCTAssertEqual(claims["T1"], .deliver(to: "A"))
     }
 
-    func testABusyWorkerMeansANewOneStarts() {
-        let claims = plan([task("T1")], [session("A", .working)])
+    func testAWorkerBusyWithItsTaskMeansANewOneStarts() {
+        let claims = plan([task("T1")], [session("A", .working)], holding: ["A"])
         XCTAssertEqual(claims["T1"], .spawn)
     }
 
-    func testWorkersWaitingOnAPermissionOrInErrorAreNotClaimed() {
-        let claims = plan([task("T1"), task("T2")], [session("A", .waitingPermission), session("B", .error)])
+    func testAWorkerWaitingOnAPermissionForItsTaskMeansANewOneStarts() {
+        let claims = plan([task("T1")], [session("A", .waitingPermission)], holding: ["A"])
         XCTAssertEqual(claims["T1"], .spawn)
+    }
+
+    func testABusySessionTheUserOpenedMeansANewWorkerStarts() {
+        let claims = plan([task("T1")], [session("A", .working, worker: false)])
+        XCTAssertEqual(claims["T1"], .spawn)
+    }
+
+    func testAWorkerHeldAtADialogWithNoTaskIsWaitedForNotStartedPast() {
+        // A trust dialog at boot: starting a worker past it would hit the same dialog, pass after pass.
+        let claims = plan([task("T1"), task("T2")], [session("A", .waitingPermission)])
+        XCTAssertEqual(claims["T1"], .awaitBusy("A"))
         XCTAssertEqual(claims["T2"], .spawn)
     }
+
+    func testAWorkerBusyWithNoTaskIsWaitedFor() {
+        let claims = plan([task("T1")], [session("A", .working)])
+        XCTAssertEqual(claims["T1"], .awaitBusy("A"))
+    }
+
+    func testARateLimitedSessionThatCouldCarryTheTaskHoldsItBack() {
+        let claims = plan([task("T1"), task("T2")], [session("A", .error)], holding: ["A"])
+        XCTAssertEqual(claims["T1"], .awaitLimited("A"))
+        XCTAssertEqual(claims["T2"], .awaitLimited("A"))
+    }
+
+    func testARateLimitedSessionOnAnotherTierDoesNotHoldTheTaskBack() {
+        let claims = plan([task("T1", tier: .deep)], [session("A", .error, tier: .light)])
+        XCTAssertEqual(claims["T1"], .spawn)
+    }
+
+
 
     func testAStartingWorkerIsClaimedRatherThanStartingAnother() {
         let claims = plan([task("T1")], [session("A", .starting)])
         XCTAssertEqual(claims["T1"], .awaitStart("A"))
     }
 
-    func testTwoTasksWithNoWorkersStartTwo() {
+    func testTwoTasksWithNoWorkersEachNeedOne() {
         let claims = plan([task("T1"), task("T2")], [])
         XCTAssertEqual(claims["T1"], .spawn)
+        XCTAssertEqual(claims["T2"], .spawn)
+    }
+
+    func testWithOneWorkerStartingTheSecondTaskStillNeedsOne() {
+        let claims = plan([task("T1"), task("T2")], [session("A", .starting)])
+        XCTAssertEqual(claims["T1"], .awaitStart("A"))
         XCTAssertEqual(claims["T2"], .spawn)
     }
 
