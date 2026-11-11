@@ -268,6 +268,14 @@ public final class AppCoordinator {
     private let sweepClock: any Clock<Duration>
     /// The folders where linkC's MCP server runs (`MCPWorkspaceRegistry`), served even with no session there.
     private let mcpWorkspaces: @MainActor @Sendable () -> Set<String>
+    /// Where the app publishes known projects for out-of-process MCP servers. Nil: publish nothing (tests).
+    private let knownProjectsFile: KnownProjectsFile?
+    /// Sidebar project paths (`SidebarState.projectOrder`), folded into the known-projects list.
+    private let sidebarProjects: @MainActor @Sendable () -> [String]
+    /// Last contents written to `knownProjectsFile`, so a rewrite only happens when they change.
+    private var lastPublishedProjects: [KnownProject]?
+    /// How many times `projects.json` was written this run — test seam for rewrite-on-change.
+    private(set) var knownProjectsWriteCount = 0
     /// Where the `linkc` command leaves its requests; nil turns the command off.
     let openRequests: OpenRequestStore?
     /// Wakes a pass when the `linkc` command leaves a request.
@@ -312,6 +320,8 @@ public final class AppCoordinator {
         now: @escaping @MainActor @Sendable () -> Date = Date.init,
         sweepClock: any Clock<Duration> = ContinuousClock(),
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
+        knownProjectsFile: KnownProjectsFile? = nil,
+        sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] },
         openRequests: OpenRequestStore? = nil,
         openCodeModels: @escaping OpenCodeModelLister = { folder in
             try await Task.detached {
@@ -340,6 +350,8 @@ public final class AppCoordinator {
         self.now = now
         self.sweepClock = sweepClock
         self.mcpWorkspaces = mcpWorkspaces
+        self.knownProjectsFile = knownProjectsFile
+        self.sidebarProjects = sidebarProjects
         self.openRequests = openRequests
         self.openCodeModels = openCodeModels
         self.isWatching = isWatching
@@ -394,6 +406,7 @@ public final class AppCoordinator {
         claudePath: String,
         terminals: TerminalSessionManager,
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
+        sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -411,6 +424,8 @@ public final class AppCoordinator {
             modelSettings: modelSettings,
             usageReaders: MCPServer.defaultUsageReaders(),
             mcpWorkspaces: { MCPWorkspaceRegistry.applicationSupport.liveWorkspaces() },
+            knownProjectsFile: .applicationSupport,
+            sidebarProjects: sidebarProjects,
             openRequests: .applicationSupport,
             isWatching: isWatching
         )
@@ -513,11 +528,17 @@ public final class AppCoordinator {
                       openRequests.directory.path, String(describing: error))
             }
         }
-        // The ticker sleeps before its first pass. A folder where only an MCP server runs may already hold
-        // tasks queued while linkC was not running, and the `linkc` command may have left a request (it can
-        // be what launched linkC): serve them now, not an idle interval later. The request folder is read
+        // The ticker sleeps before its first pass. A folder where only an MCP server runs, or a sidebar
+        // project with no session yet, may already hold tasks queued while linkC was not running, and the
+        // `linkc` command may have left a request (it can be what launched linkC): serve them now, not an
+        // idle interval later. A known-projects file also needs its first write. The request folder is read
         // after its watcher is set up, so a request left in between wakes a pass too.
-        if !mcpWorkspaces().isEmpty || openRequests.map({ !$0.pending().isEmpty }) == true { ticker.wake() }
+        if knownProjectsFile != nil
+            || !mcpWorkspaces().isEmpty
+            || !sidebarProjects().isEmpty
+            || openRequests.map({ !$0.pending().isEmpty }) == true {
+            ticker.wake()
+        }
     }
 
     /// Tells the coordinator whether the panel, or a window that needs the same sampling, is on screen.
@@ -553,19 +574,66 @@ public final class AppCoordinator {
     /// session's sampling covers it. The watches come first, so a write after them wakes the next pass
     /// and one before them is read by this one.
     private func sweepTick() async {
-        let sessionFolders = Set(store.sessions.filter { $0.state != .ended }.map { ProjectPath.canonical($0.cwd) })
-        let serverOnlyFolders = mcpWorkspaces().subtracting(sessionFolders)
+        let liveSessions = store.sessions.filter { $0.state != .ended }
+        let sessionFolders = Set(liveSessions.map { ProjectPath.canonical($0.cwd) })
+        let mcpFolders = mcpWorkspaces()
+        let serverOnlyFolders = mcpFolders.subtracting(sessionFolders)
         let workspaces = sessionFolders.union(serverOnlyFolders)
-        relayWork.retain(only: workspaces)
-        taskEvents.retain(only: workspaces)
-        inboxWatcher?.watch(workspaces: workspaces)
+        let sidebar = sidebarProjects()
+        let knownPaths = KnownProjectsPublisher.paths(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions)
+        let watched = workspaces.union(knownPaths)
+        relayWork.retain(only: watched)
+        taskEvents.retain(only: watched)
+        inboxWatcher?.watch(workspaces: watched)
         sampleAgentStates()
+        // After the sampling, so the file holds the states it just settled.
+        publishKnownProjects(sidebar: sidebar, mcpFolders: mcpFolders)
         for folder in serverOnlyFolders.sorted() {
             processPendingMessages(workspacePath: folder)
+        }
+        for folder in knownPaths.subtracting(workspaces).sorted() {
+            let open: Bool
+            do {
+                open = try InboxStore(workspaceRoot: folder).hasOpenWork(timeout: Self.relayLockTimeout)
+            } catch {
+                // A contended lock is the next tick's to retry; anything else (a corrupt inbox) is the
+                // project's to be told about, not skipped without a word.
+                if isRelayLockTimeout(error) {
+                    NSLog("[linkC relay] sweepTick: %@ — inbox lock still contended after %.1fs; retrying next tick",
+                          folder, Self.relayLockTimeout)
+                } else {
+                    NSLog("[linkC relay] sweepTick: %@ open-work check — %@", folder, String(describing: error))
+                }
+                continue
+            }
+            if open {
+                processPendingMessages(workspacePath: folder)
+            }
         }
         handleOpenRequests()
         typeOpeningPrompts()
         if panelVisible { await panelSweep?() }
+    }
+
+    /// Test seam: run one sweep pass without waiting on the ticker.
+    func runSweepTickForTests() async {
+        await sweepTick()
+    }
+
+    private func publishKnownProjects(sidebar: [String], mcpFolders: Set<String>) {
+        guard let knownProjectsFile else { return }
+        let projects = KnownProjectsPublisher.projects(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions)
+        // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
+        // contents next changed, and every MCP server would report linkC as not running.
+        if lastPublishedProjects == projects,
+           FileManager.default.fileExists(atPath: knownProjectsFile.url.path) { return }
+        do {
+            try knownProjectsFile.write(projects)
+            lastPublishedProjects = projects
+            knownProjectsWriteCount += 1
+        } catch {
+            NSLog("[linkC] projects.json — %@", String(describing: error))
+        }
     }
 
     /// Snapshot all active sessions to the manifest with wasActiveOnQuit == true before shutdown.
@@ -606,6 +674,14 @@ public final class AppCoordinator {
         openRequestWatcher = nil
         hookServer.stop()
         statusLines.sweep()
+        if let knownProjectsFile {
+            do {
+                try knownProjectsFile.remove()
+            } catch {
+                NSLog("[linkC] projects.json remove — %@", String(describing: error))
+            }
+            lastPublishedProjects = nil
+        }
     }
 
     // MARK: - Hook events → store → focus-aware notification

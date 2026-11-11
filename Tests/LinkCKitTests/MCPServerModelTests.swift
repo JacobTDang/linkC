@@ -306,7 +306,7 @@ final class MCPServerModelTests: XCTestCase {
         let customServer = MCPServer(
             workspaceRoot: tempDir.path,
             inboxStore: inboxStore,
-            modelSwitcher: { agent, model, _ in
+            modelSwitcher: { agent, model, _, _ in
                 tracker.invokedAgent = agent
                 tracker.invokedModel = model
                 return "Switched \(agent.displayName) to \(model) via test callback."

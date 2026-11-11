@@ -106,20 +106,22 @@ hand off work and share context with each other:
 
 | Tool | Purpose |
 |---|---|
-| `linkc_delegate_task` | Give a task to another agent, with an optional model tier and verification. |
+| `linkc_delegate_task` | Give a task to another agent, with an optional model tier and verification. With `project`, the task goes to an agent in another project. |
+| `linkc_ask` | Ask an agent in another project a question. The answer, at most 1,000 characters, comes back to the session that asked. |
+| `linkc_list_projects` | List the other projects linkC knows, with each open session's agent and whether it is idle or busy. |
 | `linkc_start_task` | Accept a task that linkC delivered. |
 | `linkc_complete_task` | Report a task as done or failed. With `close_session`, also ask linkC to close the reporting worker. |
 | `linkc_cancel_task` | Cancel a task. |
 | `linkc_close_worker` | Close the worker that carried a task you delegated. |
 | `linkc_get_task` | Show the full record of a task. |
 | `linkc_my_tasks` | List your open tasks. |
-| `linkc_send_message` | Send a message to another agent. With `task_id`, it goes to the worker holding that task. |
+| `linkc_send_message` | Send a message to another agent. With `task_id`, it goes to the worker holding that task. With `project`, it goes to an open session in another project; `reply_to` answers a message that came from another project. |
 | `linkc_get_inbox` | Show the queued messages and the active agent limits. |
 | `linkc_post_note` | Post a note that all agents in the project can read. |
 | `linkc_broadcast_intent` | Tell the other agents your goal and your files. |
 | `linkc_check_conflicts` | Find out if another agent claims a file. |
-| `linkc_get_project_context` | Show the Board, and the goals and notes of the other agents. |
-| `linkc_get_board`, `linkc_edit_board` | Read or edit the Board, or a detail board. The `detail` step creates a component's detail board; the `column` step adds, changes or removes a table column. |
+| `linkc_get_project_context` | Show the Board, and the goals and notes of the other agents. With `project`, read another project's: its notes are listed by title, and `note` reads one in full. |
+| `linkc_get_board`, `linkc_edit_board` | Read or edit the Board, or a detail board. The `detail` step creates a component's detail board; the `column` step adds, changes or removes a table column. `linkc_get_board` with `project` reads another project's Board. |
 | `linkc_get_models`, `linkc_switch_model` | List an agent's models, or change one. With `task_id`, `linkc_switch_model` changes the worker holding that task. |
 | `linkc_get_usage_status` | Show the usage each agent has left. |
 
@@ -144,6 +146,15 @@ An agent you start yourself, typed into a linkC shell terminal or running in ano
 can delegate too: linkC serves every folder where its MCP server runs, not only the folders of its
 own sessions. A Claude started outside linkC in Desktop, Documents or Downloads can make macOS ask
 once whether linkC may access that protected folder, since linkC then watches it.
+
+An agent in one project can reach another project that linkC knows: one in the sidebar, or one
+where an agent's MCP server runs. `linkc_list_projects` lists them, and the tools above take the
+other project's folder name or full path as `project`. An ask or a task is written into that
+project's own inbox and runs there like any of its tasks, starting a worker if none is free. Its
+answer or report comes back to the session that sent it, so the reading happens in the other
+project and only a short answer reaches the asker. Cross-project messages are at most 2,000
+characters, a back-and-forth stops after 10 replies, and the other project's Board and notes can be
+read but not changed.
 
 ### Opening an agent from a terminal
 

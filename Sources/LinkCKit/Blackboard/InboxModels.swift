@@ -168,8 +168,13 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     /// The one session this task may be delivered to: the session the `linkc --task` command opened for
     /// it. nil: any session of `toAgent` that can carry it. Optional for the same reason as `tier`.
     public var targetSessionId: String?
+    /// Canonical path of the project that sent this task, when it came from another project.
+    public let fromProject: String?
+    /// True for an ask (`linkc_ask`). Stored as Optional so older rows decode; use `isQuestion`.
+    public let question: Bool?
 
     public var shortId: String { String(id.prefix(8)) }
+    public var isQuestion: Bool { question == true }
 
     public init(
         id: String = UUID().uuidString,
@@ -196,7 +201,9 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         gate: Verdict? = nil,
         verdict: Verdict? = nil,
         closeRequest: CloseRequest? = nil,
-        targetSessionId: String? = nil
+        targetSessionId: String? = nil,
+        fromProject: String? = nil,
+        isQuestion: Bool = false
     ) {
         self.id = id
         self.fromAgent = fromAgent
@@ -223,6 +230,8 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.verdict = verdict
         self.closeRequest = closeRequest
         self.targetSessionId = targetSessionId
+        self.fromProject = fromProject
+        self.question = isQuestion ? true : nil
     }
 }
 
@@ -280,6 +289,7 @@ public enum InboxError: Error, LocalizedError, Equatable {
     case illegalTransition(taskId: String, from: TaskState, to: TaskState)
     case taskNotFound(String)
     case ambiguousTaskId(prefix: String, matches: [String])
+    case ambiguousMessageId(prefix: String, matches: [String])
     case framedBody
     case hopLimit(Int)
     case kindNotAllowed(MessageKind)
@@ -307,6 +317,9 @@ public enum InboxError: Error, LocalizedError, Equatable {
         case .ambiguousTaskId(let prefix, let matches):
             let list = matches.map { "\($0.prefix(8)) (\($0))" }.joined(separator: ", ")
             return "Task id '\(prefix)' is ambiguous; it matches \(list). Pass the full id."
+        case .ambiguousMessageId(let prefix, let matches):
+            let list = matches.map { "\($0.prefix(8)) (\($0))" }.joined(separator: ", ")
+            return "Message id '\(prefix)' is ambiguous; it matches \(list). Pass the full id."
         case .framedBody:
             return "Rejected: body begins with a linkC frame marker; forwarded messages cannot be re-sent."
         case .hopLimit(let hop):
@@ -345,6 +358,11 @@ public enum MessageStatus: String, Codable, Sendable {
 
 /// A short message routed to another agent (completion line, peer note, notice, or raw command).
 public struct PendingMessage: Codable, Sendable, Identifiable, Equatable {
+    /// Cap on a message body sent to another project (spec 2026-11-11 cross-project §6).
+    public static let crossProjectMessageLimit = 2_000
+    /// Cap on reply_to hops across projects; a message at depth `replyChainLimit - 1` cannot be replied to.
+    public static let replyChainLimit = 10
+
     public var id: String
     public let fromAgent: AgentKind
     public let toAgent: AgentKind
@@ -361,6 +379,12 @@ public struct PendingMessage: Codable, Sendable, Identifiable, Equatable {
     /// goes there or nowhere, never to another session of `toAgent`. Separate from `taskId`, which
     /// routes a notice about a task to the task's delegator.
     public let toSessionId: String?
+    /// Canonical path of the project that sent this message, when it came from another project.
+    public let fromProject: String?
+    /// The sending session's `LINKC_SESSION`, when the sender ran inside one.
+    public let fromSessionId: String?
+    /// How many cross-project replies deep this message is (0 for the first send).
+    public let chainDepth: Int
 
     public init(
         id: String = UUID().uuidString,
@@ -375,7 +399,10 @@ public struct PendingMessage: Codable, Sendable, Identifiable, Equatable {
         kind: MessageKind? = nil,
         taskId: String? = nil,
         contentHash: String? = nil,
-        toSessionId: String? = nil
+        toSessionId: String? = nil,
+        fromProject: String? = nil,
+        fromSessionId: String? = nil,
+        chainDepth: Int = 0
     ) {
         self.id = id
         self.fromAgent = fromAgent
@@ -391,10 +418,13 @@ public struct PendingMessage: Codable, Sendable, Identifiable, Equatable {
         self.taskId = taskId
         self.contentHash = contentHash ?? LinkCFrame.contentHash(from: fromAgent, to: toAgent, kind: resolvedKind, prompt: prompt)
         self.toSessionId = toSessionId
+        self.fromProject = fromProject
+        self.fromSessionId = fromSessionId
+        self.chainDepth = chainDepth
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, fromAgent, toAgent, prompt, claimedFiles, status, rerouteCount, createdAt, deliveredAt, kind, taskId, contentHash, toSessionId
+        case id, fromAgent, toAgent, prompt, claimedFiles, status, rerouteCount, createdAt, deliveredAt, kind, taskId, contentHash, toSessionId, fromProject, fromSessionId, chainDepth
     }
 
     public init(from decoder: Decoder) throws {
@@ -417,7 +447,10 @@ public struct PendingMessage: Codable, Sendable, Identifiable, Equatable {
             taskId: try c.decodeIfPresent(String.self, forKey: .taskId),
             contentHash: try c.decodeIfPresent(String.self, forKey: .contentHash)
                 ?? LinkCFrame.contentHash(from: fromAgent, to: toAgent, kind: kind, prompt: prompt),
-            toSessionId: try c.decodeIfPresent(String.self, forKey: .toSessionId)
+            toSessionId: try c.decodeIfPresent(String.self, forKey: .toSessionId),
+            fromProject: try c.decodeIfPresent(String.self, forKey: .fromProject),
+            fromSessionId: try c.decodeIfPresent(String.self, forKey: .fromSessionId),
+            chainDepth: try c.decodeIfPresent(Int.self, forKey: .chainDepth) ?? 0
         )
     }
 }
@@ -442,6 +475,21 @@ public struct AgentLimitStatus: Codable, Sendable, Equatable {
     }
 }
 
+/// A task this project sent into another project's inbox (spec 2026-11-11 cross-project §5.4).
+public struct SentTask: Codable, Equatable, Sendable {
+    public let taskId: String
+    public let project: String
+    public let fromSessionId: String?
+    public let createdAt: Date
+
+    public init(taskId: String, project: String, fromSessionId: String? = nil, createdAt: Date = Date()) {
+        self.taskId = taskId
+        self.project = project
+        self.fromSessionId = fromSessionId
+        self.createdAt = createdAt
+    }
+}
+
 /// Container stored at `<workspaceRoot>/.linkc/inbox.json`.
 public struct Inbox: Codable, Sendable, Equatable {
     public static let currentVersion = 2
@@ -452,6 +500,7 @@ public struct Inbox: Codable, Sendable, Equatable {
     public var messages: [PendingMessage]
     public var agentLimits: [AgentLimitStatus]
     public var tasks: [TaskRecord]
+    public var sentTasks: [SentTask]
 
     public init(
         version: Int = Inbox.currentVersion,
@@ -459,7 +508,8 @@ public struct Inbox: Codable, Sendable, Equatable {
         updatedAt: Date = Date(),
         messages: [PendingMessage] = [],
         agentLimits: [AgentLimitStatus] = [],
-        tasks: [TaskRecord] = []
+        tasks: [TaskRecord] = [],
+        sentTasks: [SentTask] = []
     ) {
         self.version = version
         self.workspacePath = workspacePath
@@ -467,10 +517,11 @@ public struct Inbox: Codable, Sendable, Equatable {
         self.messages = messages
         self.agentLimits = agentLimits
         self.tasks = tasks
+        self.sentTasks = sentTasks
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, workspacePath, updatedAt, messages, agentLimits, tasks
+        case version, workspacePath, updatedAt, messages, agentLimits, tasks, sentTasks
     }
 
     public init(from decoder: Decoder) throws {
@@ -481,7 +532,8 @@ public struct Inbox: Codable, Sendable, Equatable {
             updatedAt: try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date(),
             messages: try c.decodeIfPresent([PendingMessage].self, forKey: .messages) ?? [],
             agentLimits: try c.decodeIfPresent([AgentLimitStatus].self, forKey: .agentLimits) ?? [],
-            tasks: try c.decodeIfPresent([TaskRecord].self, forKey: .tasks) ?? []
+            tasks: try c.decodeIfPresent([TaskRecord].self, forKey: .tasks) ?? [],
+            sentTasks: try c.decodeIfPresent([SentTask].self, forKey: .sentTasks) ?? []
         )
     }
 }

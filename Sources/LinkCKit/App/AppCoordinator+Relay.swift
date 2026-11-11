@@ -75,9 +75,85 @@ extension AppCoordinator {
         guard !dispatchTasks(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
         }
+        guard !forwardNoticesHome(workspacePath: norm, inboxStore: inboxStore) else {
+            return logRelayLockContention(workspacePath: norm)
+        }
         if dispatchMessages(workspacePath: norm, inboxStore: inboxStore) {
             logRelayLockContention(workspacePath: norm)
         }
+    }
+
+    /// Forwards notices about tasks that came from another project back to that project's inbox
+    /// (spec 2026-11-11 cross-project §5.5). Returns true when the lock was contended.
+    @discardableResult
+    func forwardNoticesHome(workspacePath: String, inboxStore: InboxStore) -> Bool {
+        guard workspaceExists(workspacePath) else { return false }
+        let norm = ProjectPath.canonical(workspacePath)
+        let pending: [PendingMessage]
+        do {
+            pending = try inboxStore.fetchPending(timeout: Self.relayLockTimeout)
+        } catch {
+            if isRelayLockTimeout(error) { return true }
+            NSLog("[linkC relay] forwardNoticesHome: fetch — %@", String(describing: error))
+            return false
+        }
+        for message in pending where Self.ownsForwardHome(message) {
+            guard let taskId = message.taskId else { continue }
+            let record: TaskRecord?
+            do {
+                record = try inboxStore.task(id: taskId, timeout: Self.relayLockTimeout)
+            } catch {
+                if isRelayLockTimeout(error) { return true }
+                NSLog("[linkC relay] forwardNoticesHome: message %@ task lookup — %@", message.id, String(describing: error))
+                continue
+            }
+            guard let task = record,
+                  let fromProject = task.fromProject,
+                  ProjectPath.canonical(fromProject) != norm else { continue }
+
+            guard workspaceExists(fromProject) else {
+                if failForwardedMessage(message, inboxStore: inboxStore) { return true }
+                NSLog("[linkC relay] forwardNoticesHome: home project gone — %@", fromProject)
+                continue
+            }
+
+            do {
+                _ = try InboxStore(workspaceRoot: fromProject).receiveForwarded(message, timeout: Self.relayLockTimeout)
+            } catch {
+                if isRelayLockTimeout(error) { return true }
+                // The home inbox cannot take it (a corrupt file, say), and the next tick would meet the
+                // same error. Failing the local copy ends the retries; the log is the one report.
+                if failForwardedMessage(message, inboxStore: inboxStore) { return true }
+                NSLog("[linkC relay] forwardNoticesHome: message %@ could not be forwarded to %@, marked failed — %@",
+                      message.id, fromProject, String(describing: error))
+                continue
+            }
+            do {
+                try inboxStore.markMessageDelivered(id: message.id, timeout: Self.relayLockTimeout)
+            } catch {
+                if isRelayLockTimeout(error) { return true }
+                NSLog("[linkC relay] forwardNoticesHome: mark delivered — %@", String(describing: error))
+            }
+        }
+        return false
+    }
+
+    /// Marks a notice that cannot go home as failed, so it leaves the queue. True when the lock was
+    /// contended; any other error is logged, and the notice is tried again next tick.
+    private func failForwardedMessage(_ message: PendingMessage, inboxStore: InboxStore) -> Bool {
+        do {
+            try inboxStore.markMessageFailed(id: message.id, timeout: Self.relayLockTimeout)
+        } catch {
+            if isRelayLockTimeout(error) { return true }
+            NSLog("[linkC relay] forwardNoticesHome: message %@ mark failed — %@", message.id, String(describing: error))
+        }
+        return false
+    }
+
+    /// A queued notice this phase forwards home: has a taskId, no toSessionId, and belongs to a
+    /// cross-project task (checked by the caller against the local task row).
+    static func ownsForwardHome(_ message: PendingMessage) -> Bool {
+        message.taskId != nil && message.toSessionId == nil
     }
 
     /// True when `error` is the store's own lock-acquisition timeout rather than a real failure
@@ -142,7 +218,21 @@ extension AppCoordinator {
 
     /// The text injected into the assignee's terminal. Composed at injection time; never stored as a message.
     static func deliveryFrame(for task: TaskRecord) -> String {
-        var lines = ["[linkC task \(task.shortId) from \(task.fromAgent.displayName)]", task.prompt, ""]
+        let origin: String
+        if let fromProject = task.fromProject {
+            let name = URL(fileURLWithPath: fromProject).lastPathComponent
+            origin = "[linkC task \(task.shortId) from \(name) · \(task.fromAgent.displayName)]"
+        } else {
+            origin = "[linkC task \(task.shortId) from \(task.fromAgent.displayName)]"
+        }
+        var lines = [origin, task.prompt, ""]
+        if task.isQuestion {
+            let name = task.fromProject.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "another project"
+            lines.append("This is a question from \(name). Answer it with linkc_complete_task(\"\(task.id)\", status: \"done\", summary: <your answer, at most 1,000 characters>). Do not change any files.")
+            lines.append("")
+            lines.append("When you begin, call linkc_start_task(\"\(task.id)\").")
+            return lines.joined(separator: "\n")
+        }
         if let v = task.verification {
             lines.append("Work on branch \(v.branch). linkC verifies by running `\(v.command)` at the sha you report. Do not modify: \(v.testPaths.joined(separator: ", ")).")
             lines.append("")
@@ -552,6 +642,25 @@ extension AppCoordinator {
         var sessionOrder: [String] = []
         var loggedInjectionWait = false
         for message in pending where message.status == .queued {
+            // Owned by forwardNoticesHome: a notice about a task from another project. Skip when
+            // that phase could not finish, so it is never pasted here. A task that cannot be looked up
+            // is skipped too: delivering the notice anyway could paste it into a session of the target
+            // project, which did not ask.
+            if Self.ownsForwardHome(message), let taskId = message.taskId {
+                let record: TaskRecord?
+                do {
+                    record = try inboxStore.task(id: taskId, timeout: Self.relayLockTimeout)
+                } catch {
+                    if isRelayLockTimeout(error) { return true }
+                    NSLog("[linkC relay] dispatchMessages: message %@ task lookup — %@; skipped this tick", message.id, String(describing: error))
+                    continue
+                }
+                if let fromProject = record?.fromProject,
+                   ProjectPath.canonical(fromProject) != norm {
+                    continue
+                }
+            }
+
             if message.kind == .task, verificationInFlight { continue }
 
             if message.kind == .notice {
@@ -811,6 +920,20 @@ extension AppCoordinator {
             if let delegatorId = record?.fromSessionId,
                let delegator = store.sessions.first(where: { $0.id == delegatorId && $0.state != .ended && $0.cwd == workspace }) {
                 return delegator
+            }
+            if record == nil {
+                let pointer: SentTask?
+                do {
+                    pointer = try inboxStore.sentTask(matching: taskId, timeout: Self.relayLockTimeout)
+                } catch {
+                    if isRelayLockTimeout(error) { throw error }
+                    NSLog("[linkC relay] %@: message %@ sent-task lookup — %@", caller, message.id, String(describing: error))
+                    pointer = nil
+                }
+                if let sessionId = pointer?.fromSessionId,
+                   let session = store.sessions.first(where: { $0.id == sessionId && $0.state != .ended && $0.cwd == workspace }) {
+                    return session
+                }
             }
         }
         return store.sessions.first { $0.cwd == workspace && $0.agentKind == message.toAgent && $0.state != .ended }
@@ -1287,6 +1410,7 @@ extension AppCoordinator {
             // state between the openTasks read and here, the transition throws and nothing is
             // re-dispatched or announced. A verified copy keeps its verification and the gate it
             // passed, and is not gated again: HEAD has moved and the tree may hold partial work.
+            var copyId: String?
             do {
                 try inboxStore.cancelTask(
                     taskId: currentTask.id, reason: "rerouted to \(target.displayName) after limit — \(evidence)"
@@ -1294,14 +1418,14 @@ extension AppCoordinator {
                 NSLog("[linkC relay] checkLimitsAndReroute: task %@ cancelled, rerouted to %@ (hop %d) — limit rule '%@' matched; %@",
                       currentTask.shortId, target.displayName, hop + 1, match.matchedPattern, evidence)
                 tellDelegator()
-                _ = try inboxStore.createTask(
-                    from: currentTask.fromAgent, to: target, fromSessionId: currentTask.fromSessionId,
-                    tier: currentTask.tier, prompt: currentTask.prompt,
-                    files: currentTask.files, hop: hop + 1, force: true,
-                    verification: currentTask.verification, gate: currentTask.gate
-                )
+                copyId = try createRerouteCopy(of: currentTask, to: target, hop: hop + 1, in: inboxStore)
             } catch {
                 NSLog("[linkC relay] checkLimitsAndReroute: task %@ cancel/hop %d copy — %@", currentTask.shortId, hop + 1, String(describing: error))
+            }
+            // This project's inbox lock is released: the sending project's pointer follows the copy, so
+            // its answer still finds the session that asked. Never both locks at once.
+            if let copyId, let fromProject = currentTask.fromProject {
+                followReroute(from: currentTask, toCopy: copyId, inProject: fromProject)
             }
         } else {
             // Nothing is in flight, so there is nothing to move. linkC does NOT invent work
@@ -1320,6 +1444,41 @@ extension AppCoordinator {
 }
 
 extension AppCoordinator {
+    /// The reroute copy of `task` for `target`: the same work from the same place, so it keeps the return
+    /// address and, for an ask, stays a question. Returns the copy's id. Kept out of line: inlined into
+    /// `checkLimitsAndReroute`, Swift 6.3.3's release optimizer (CopyPropagation) crashes on it.
+    @inline(never)
+    fileprivate func createRerouteCopy(of task: TaskRecord, to target: AgentKind, hop: Int,
+                                       in inboxStore: InboxStore) throws -> String {
+        try inboxStore.createTask(
+            from: task.fromAgent, to: target, fromSessionId: task.fromSessionId,
+            tier: task.tier, prompt: task.prompt,
+            files: task.files, hop: hop, force: true,
+            verification: task.verification, gate: task.gate,
+            fromProject: task.fromProject, isQuestion: task.isQuestion
+        ).id
+    }
+
+    /// Points the sending project's record of `task` at its reroute copy, `copyId`. A failure leaves the
+    /// record on the cancelled original, so it is logged with both ids.
+    fileprivate func followReroute(from task: TaskRecord, toCopy copyId: String, inProject home: String) {
+        let copyShortId = String(copyId.prefix(8))
+        guard workspaceExists(home) else {
+            NSLog("[linkC relay] checkLimitsAndReroute: task %@ rerouted to %@, but its sending project is gone — %@",
+                  task.shortId, copyShortId, home)
+            return
+        }
+        do {
+            if try InboxStore(workspaceRoot: home).replaceSent(taskId: task.id, with: copyId) == false {
+                NSLog("[linkC relay] checkLimitsAndReroute: task %@ rerouted to %@, but %@ holds no record of having sent it",
+                      task.shortId, copyShortId, home)
+            }
+        } catch {
+            NSLog("[linkC relay] checkLimitsAndReroute: task %@ rerouted to %@, but %@'s record of it could not follow — %@",
+                  task.shortId, copyShortId, home, String(describing: error))
+        }
+    }
+
     /// Records `session`'s agent as out of quota: until the limit's own reset when there is real
     /// evidence of one, otherwise for the rule's fixed cooldown.
     fileprivate func recordLimit(of session: Session, match: LimitMatch, at tickNow: Date, inboxStore: InboxStore) {
