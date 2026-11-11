@@ -303,135 +303,52 @@ extension AppCoordinator {
         // A verification owns this checkout until it finishes: injecting a brief now would let a
         // worker edit the tree the verdict is about to be measured against.
         guard verificationsInFlight[norm] == nil && verificationsInFlight[workspacePath] == nil else { return false }
-        let queued: [TaskRecord]
+        let open: [TaskRecord]
         do {
-            queued = try inboxStore.openTasks(timeout: Self.relayLockTimeout).filter { $0.state == .queued }
+            open = try inboxStore.openTasks(timeout: Self.relayLockTimeout)
         } catch {
             if isRelayLockTimeout(error) { return true }
             NSLog("[linkC relay] dispatchTasks: open tasks — %@", String(describing: error))
             return false
         }
+        let queued = open.filter { $0.state == .queued }
         forgetOpenCodeRefusals(in: norm, of: .task, keeping: Set(queued.map(\.id)))
         guard !queued.isEmpty else { return false }
 
+        // Each queued task claims its own session, or starts one (`WorkerClaims`). A session counts as
+        // ready only once it can take a paste: the brief is always multi-line, so it must arrive as one
+        // bracketed paste, never as raw text a line-oriented TUI would submit line by line. Negotiation
+        // alone is not enough: a real CLI's flag flips well before it can actually consume input (see
+        // `Self.defaultDeliverySettle`), so the session must also have been ready for the settle margin.
+        // An idle session not ready yet is still claimed, so it is waited for rather than started past.
+        let folderSessions = store.sessions.filter { $0.cwd == norm && $0.state != .ended }
+        let holdingUnreported = Set(open.filter { $0.state == .delivered || $0.state == .started }.compactMap(\.assigneeSessionId))
+        let ready = Set(folderSessions.filter {
+            isIdle($0.state) && injectionGapElapsed(sessionId: $0.id) && pasteSettled(sessionId: $0.id)
+        }.map(\.id))
+        let claims = WorkerClaims.plan(queued: queued, sessions: folderSessions, holdingUnreported: holdingUnreported, ready: ready)
+
         var loggedInjectionWait = false
         for task in queued {
-            let candidates = store.sessions.filter {
-                $0.cwd == norm && $0.state != .ended && $0.canCarry(task)
-            }
-            if candidates.isEmpty {
-                // A pinned task goes to its own session or nowhere: never to another, and no session is
-                // launched for it. With its session gone before delivery there is nothing to deliver to.
-                if let target = task.targetSessionId {
-                    if store.session(id: target).map({ $0.state == .ended }) ?? true {
-                        let reason = "its session ended before the task was delivered"
-                        do {
-                            try inboxStore.expireTaskAndNotify(
-                                taskId: task.id, reason: reason, notifyBody: "expired — \(reason)", timeout: Self.relayLockTimeout
-                            )
-                            logTaskEnded(task, as: "expired", reason: reason)
-                        } catch {
-                            if isRelayLockTimeout(error) { return true }
-                            NSLog("[linkC relay] dispatchTasks: task %@ pinned session gone — %@", task.shortId, String(describing: error))
-                        }
-                    } else {
-                        NSLog("[linkC relay] dispatchTasks: task %@ is pinned to session %@, which cannot carry it — waiting",
-                              task.shortId, target)
-                    }
-                    continue
-                }
-                // A tiered task whose tier no longer resolves to a model (settings edited while
-                // the task sat queued) must not spawn an unpinned session — that session could
-                // never satisfy `$0.modelTier == task.tier` above, so the next tick would spawn
-                // another one, forever. Leave it queued and say why; do not invent a model.
-                if let tier = task.tier, resolvedModel(for: task.toAgent, tier: tier) == nil {
-                    NSLog("[linkC relay] dispatchTasks: task %@ has no %@ model configured for tier %@ — leaving queued",
-                          task.shortId, task.toAgent.displayName, tier.label)
-                    continue
-                }
-                // Spawn now, deliver on a later tick. A CLI needs seconds to reach its prompt, and a
-                // frame typed into a booting TUI is lost — the worker never sees the task. The session
-                // stays `.starting` until its agent is really running: Claude's SessionStart hook, or
-                // `sampleAgentStates` for every other kind.
-                if task.toAgent == .opencode {
-                    let tier = task.tier ?? defaultTier(for: .opencode)
-                    switch openCodeModelAvailability(in: workspacePath, tier: tier) {
-                    case .checking:
-                        continue
-                    case .available:
-                        break
-                    case .refused(let reason):
-                        // Waiting will not make OpenCode list the model: end the task with the reason, rather
-                        // than leave it queued for an hour behind a generic "undelivered".
-                        do {
-                            try inboxStore.expireTaskAndNotify(
-                                taskId: task.id, reason: reason, notifyBody: "expired — \(reason)", timeout: Self.relayLockTimeout
-                            )
-                            logTaskEnded(task, as: "expired", reason: reason)
-                            lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
-                            notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: workspacePath)
-                        } catch {
-                            if isRelayLockTimeout(error) { return true }
-                            NSLog("[linkC relay] dispatchTasks: task %@ OpenCode refusal — %@", task.shortId, String(describing: error))
-                        }
-                        continue
-                    case .uncheckable(let reason):
-                        // The listing failed, so nothing is known about the model: the task waits (and expires
-                        // on its own like any queued task), and its delegator is told once.
-                        reportOpenCodeSpawnRefusal(reason, from: task.fromAgent, taskId: task.id,
-                                                   key: OpenCodeRefusalKey(workspace: norm, kind: .task, id: task.id),
-                                                   workspacePath: workspacePath, inboxStore: inboxStore)
-                        continue
-                    }
-                }
-                do {
-                    _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier, asWorker: true)
-                } catch {
-                    // Swallowing this used to leave the task `.queued` forever, retried every
-                    // second, with nothing anywhere saying why — the same silence the sibling
-                    // "no model configured" branch above no longer has.
-                    lastSpawnFailure = SpawnFailure(agent: task.toAgent, workspacePath: workspacePath, error: String(describing: error))
-                    NSLog("[linkC relay] dispatchTasks: task %@ could not spawn %@ — %@",
-                          task.shortId, task.toAgent.displayName, String(describing: error))
-                }
+            guard let claim = claims[task.id] else {
+                NSLog("[linkC relay] dispatchTasks: task %@ has no claim this pass — waiting", task.shortId)
                 continue
             }
-            let idleCandidates = candidates.filter {
-                guard isIdle($0.state) else { return false }
-                guard injectionGapElapsed(sessionId: $0.id) else {
+            let assignee: String
+            switch claim {
+            case .deliver(let id):
+                assignee = id
+            case .awaitStart(let id):
+                NSLog("[linkC relay] dispatchTasks: task %@ waits for %@ session %@ to start", task.shortId, task.toAgent.displayName, id)
+                continue
+            case .awaitReady(let id):
+                if !injectionGapElapsed(sessionId: id) {
                     if !loggedInjectionWait {
                         NSLog("[linkC relay] dispatchTasks: waiting for the injection gap")
                         loggedInjectionWait = true
                     }
-                    return false
+                    continue
                 }
-                return true
-            }
-            guard !idleCandidates.isEmpty else {
-                if !candidates.contains(where: { isIdle($0.state) }) {
-                    NSLog("[linkC relay] dispatchTasks: task %@ has %@ session(s) for %@ but none is idle — waiting",
-                          task.shortId, String(candidates.count), task.toAgent.displayName)
-                }
-                continue // busy or inside the injection gap: retry on a later tick
-            }
-            // The brief is always multi-line, so it must arrive as one bracketed paste — never as
-            // raw text a line-oriented TUI would submit line by line. Require negotiation here,
-            // among the idle candidates, rather than folding it into the `candidates` filter above:
-            // that filter also decides whether to spawn a new session, and an idle-but-not-yet-
-            // negotiated session would look like "no session exists" there, spawning a duplicate
-            // every tick instead of waiting for this one to finish negotiating.
-            //
-            // Negotiation alone is not enough: a real CLI's flag flips well before it can
-            // actually consume input (see `Self.defaultDeliverySettle`), so also require the session to
-            // have been ready for at least the settle margin. A session that never settles is
-            // simply not a candidate this tick — never dropped, never silently skipped forever —
-            // and the log line below fires every tick it's waited on, so it can't starve in
-            // silence.
-            guard let session = idleCandidates.first(where: { candidate in
-                guard let terminal = terminals.session(id: candidate.id), terminal.acceptsPaste,
-                      let readySince = terminal.pasteReadySince else { return false }
-                return now().timeIntervalSince(readySince) >= deliverySettle
-            }) else {
                 // An idle session that has sat this long without ever negotiating bracketed paste
                 // never will — a CLI that doesn't support it, or a broken TERM. Waiting out the
                 // generic 60-minute queued expiry would bury the real reason behind "undelivered
@@ -450,12 +367,35 @@ extension AppCoordinator {
                     }
                     continue
                 }
-                NSLog("[linkC relay] dispatchTasks: task %@ has an idle session but none has settled after negotiating bracketed paste yet — waiting", task.shortId)
+                NSLog("[linkC relay] dispatchTasks: task %@ has an idle session that has not settled after negotiating bracketed paste yet — waiting", task.shortId)
+                continue
+            case .awaitPinned:
+                // A pinned task goes to its own session or nowhere: never to another, and no session is
+                // launched for it. With its session gone before delivery there is nothing to deliver to.
+                let target = task.targetSessionId ?? "none"
+                if store.session(id: target).map({ $0.state == .ended }) ?? true {
+                    let reason = "its session ended before the task was delivered"
+                    do {
+                        try inboxStore.expireTaskAndNotify(
+                            taskId: task.id, reason: reason, notifyBody: "expired — \(reason)", timeout: Self.relayLockTimeout
+                        )
+                        logTaskEnded(task, as: "expired", reason: reason)
+                    } catch {
+                        if isRelayLockTimeout(error) { return true }
+                        NSLog("[linkC relay] dispatchTasks: task %@ pinned session gone — %@", task.shortId, String(describing: error))
+                    }
+                } else {
+                    NSLog("[linkC relay] dispatchTasks: task %@ is pinned to session %@, which cannot take it now — waiting",
+                          task.shortId, target)
+                }
+                continue
+            case .spawn:
+                if spawnWorker(for: task, workspacePath: workspacePath, inboxStore: inboxStore) { return true }
                 continue
             }
 
             do {
-                try inboxStore.markTaskDelivered(taskId: task.id, sessionId: session.id, timeout: Self.relayLockTimeout)
+                try inboxStore.markTaskDelivered(taskId: task.id, sessionId: assignee, timeout: Self.relayLockTimeout)
             } catch {
                 if isRelayLockTimeout(error) { return true }
                 NSLog("[linkC relay] dispatchTasks: task %@ mark delivered — %@", task.shortId, String(describing: error))
@@ -470,9 +410,9 @@ extension AppCoordinator {
             // else moves it until its 4h lease lapses. Fail it loud and immediately instead —
             // `.delivered → .failed` is always a legal transition, so the delegator is told now,
             // with the real reason, rather than after a very long silence.
-            if terminals.sendInput(sessionId: session.id, text: frame) {
-                recordInjection(sessionId: session.id, text: frame, startsWork: true)
-                store.updateState(id: session.id, to: .working)
+            if terminals.sendInput(sessionId: assignee, text: frame) {
+                recordInjection(sessionId: assignee, text: frame, startsWork: true)
+                store.updateState(id: assignee, to: .working)
             } else {
                 let reason = "delivery marked done but the text never reached \(task.toAgent.displayName)'s terminal"
                 NSLog("[linkC relay] dispatchTasks: task %@ — %@", task.shortId, reason)
@@ -485,6 +425,69 @@ extension AppCoordinator {
                     NSLog("[linkC relay] dispatchTasks: task %@ fail-after-lost-delivery — %@", task.shortId, String(describing: error))
                 }
             }
+        }
+        return false
+    }
+
+    /// Whether `sessionId`'s terminal has negotiated bracketed paste and stayed ready for the settle margin.
+    private func pasteSettled(sessionId: String) -> Bool {
+        guard let terminal = terminals.session(id: sessionId), terminal.acceptsPaste,
+              let readySince = terminal.pasteReadySince else { return false }
+        return now().timeIntervalSince(readySince) >= deliverySettle
+    }
+
+    /// Starts a worker for `task`, which found no free session. It is delivered on a later pass: a CLI
+    /// needs seconds to reach its prompt, and a frame typed into a booting TUI is lost. The session stays
+    /// `.starting` until its agent is really running: Claude's SessionStart hook, or `sampleAgentStates`
+    /// for every other kind. Returns `true` when the inbox lock timed out.
+    private func spawnWorker(for task: TaskRecord, workspacePath: String, inboxStore: InboxStore) -> Bool {
+        // A tiered task whose tier no longer resolves to a model (settings edited while the task sat
+        // queued) must not spawn an unpinned session: that session could never carry the task, so the
+        // next pass would spawn another one, forever. Leave it queued and say why; do not invent a model.
+        if let tier = task.tier, resolvedModel(for: task.toAgent, tier: tier) == nil {
+            NSLog("[linkC relay] dispatchTasks: task %@ has no %@ model configured for tier %@ — leaving queued",
+                  task.shortId, task.toAgent.displayName, tier.label)
+            return false
+        }
+        if task.toAgent == .opencode {
+            let tier = task.tier ?? defaultTier(for: .opencode)
+            switch openCodeModelAvailability(in: workspacePath, tier: tier) {
+            case .checking:
+                return false
+            case .available:
+                break
+            case .refused(let reason):
+                // Waiting will not make OpenCode list the model: end the task with the reason, rather
+                // than leave it queued for an hour behind a generic "undelivered".
+                do {
+                    try inboxStore.expireTaskAndNotify(
+                        taskId: task.id, reason: reason, notifyBody: "expired — \(reason)", timeout: Self.relayLockTimeout
+                    )
+                    logTaskEnded(task, as: "expired", reason: reason)
+                    lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
+                    notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: workspacePath)
+                } catch {
+                    if isRelayLockTimeout(error) { return true }
+                    NSLog("[linkC relay] dispatchTasks: task %@ OpenCode refusal — %@", task.shortId, String(describing: error))
+                }
+                return false
+            case .uncheckable(let reason):
+                // The listing failed, so nothing is known about the model: the task waits (and expires
+                // on its own like any queued task), and its delegator is told once.
+                reportOpenCodeSpawnRefusal(reason, from: task.fromAgent, taskId: task.id,
+                                           key: OpenCodeRefusalKey(workspace: ProjectPath.canonical(workspacePath), kind: .task, id: task.id),
+                                           workspacePath: workspacePath, inboxStore: inboxStore)
+                return false
+            }
+        }
+        do {
+            _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier, asWorker: true)
+        } catch {
+            // Swallowing this used to leave the task `.queued` forever, retried every second, with
+            // nothing anywhere saying why.
+            lastSpawnFailure = SpawnFailure(agent: task.toAgent, workspacePath: workspacePath, error: String(describing: error))
+            NSLog("[linkC relay] dispatchTasks: task %@ could not spawn %@ — %@",
+                  task.shortId, task.toAgent.displayName, String(describing: error))
         }
         return false
     }
