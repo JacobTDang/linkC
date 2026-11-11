@@ -692,7 +692,9 @@ final class MCPServerTaskTests: XCTestCase {
         try inbox.recordLimit(agent: .codex, reason: "quota", cooldown: 1800)
         let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task", ["to": "codex", "prompt": "x"])
         XCTAssertTrue(res.isError)
-        XCTAssertTrue(res.text.contains("Alternative available peer agents: claude, agy, cursor, grok, opencode."), res.text)
+        XCTAssertTrue(res.text.contains("Not limited:"), res.text)
+        XCTAssertTrue(res.text.contains("grok"), res.text)
+        XCTAssertTrue(res.text.contains("claude"), res.text)
     }
 
     func testGetModelsWithNoAgentListsGrok() throws {

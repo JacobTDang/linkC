@@ -203,9 +203,9 @@ final class MCPServerModelTests: XCTestCase {
         box.value = edited
 
         let after = try getModelsText(liveServer)
-        XCTAssertTrue(after.contains("gpt-7-nova"),
+        XCTAssertTrue(after.contains("**deep**: gpt-7-nova"),
                        "A later call on the same server must see a settings edit, not a snapshot frozen at construction: \(after)")
-        XCTAssertFalse(after.contains("gpt-6-astra"), after)
+        XCTAssertFalse(after.contains("**deep**: gpt-6-astra"), after)
     }
 
     // MARK: - linkc_switch_model

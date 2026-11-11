@@ -728,7 +728,16 @@ public final class AppCoordinator {
     /// not killed — the process is already dead here), its per-session settings file, its
     /// notification dedupe entry, and its usage-tracker dictionaries. Idempotent.
     func cleanup(sessionId: String) {
-        let wasWorker = store.session(id: sessionId)?.isWorker ?? false
+        let ending = store.session(id: sessionId)
+        let screen = terminals.session(id: sessionId)?.screenSnapshot()
+        let wasWorker = ending?.isWorker ?? false
+        // A model-task worker (model set, no tier) that dies while still `.starting` fails those
+        // tasks at once: waiting the queue out would only respawn the same rejected model every pass.
+        // A tier worker keeps today's behaviour even when it also carries a concrete model id.
+        if let ending, ending.isWorker, ending.state == .starting,
+           ending.modelTier == nil, let model = ending.model {
+            failModelTasksRejectedAtLaunch(session: ending, model: model, screen: screen)
+        }
         store.remove(id: sessionId)
         terminals.remove(sessionId)
         let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
@@ -754,6 +763,43 @@ public final class AppCoordinator {
             manifest.markEnded(linkcId: sessionId, at: Date())
         }
         syncRestorables()
+    }
+
+    /// agy's known harmless start-up warning — not a launch rejection.
+    static let agyModelNotRecognized = "model not recognized"
+
+    /// Last non-empty line of a screen snapshot's recent output.
+    static func lastNonEmptyScreenLine(_ screen: ScreenSnapshot?) -> String {
+        guard let screen else { return "" }
+        let lines = screen.recentOutput(lines: 40)
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return lines.last.map { String($0) } ?? ""
+    }
+
+    /// Queued model tasks for this worker's agent/model fail at once when the CLI exits at launch.
+    func failModelTasksRejectedAtLaunch(session: Session, model: String, screen: ScreenSnapshot?) {
+        let lastLine = Self.lastNonEmptyScreenLine(screen)
+        if lastLine.localizedCaseInsensitiveContains(Self.agyModelNotRecognized) { return }
+        let reason = "\(session.agentKind.displayName) exited at launch with model \(model): \(lastLine)"
+        let inbox = InboxStore(workspaceRoot: session.cwd)
+        let open: [TaskRecord]
+        do {
+            open = try inbox.openTasks(for: session.agentKind)
+        } catch {
+            NSLog("[linkC] launch rejection: could not read tasks for %@ — %@", session.cwd, String(describing: error))
+            return
+        }
+        for task in open where task.state == .queued && task.model == model {
+            do {
+                try inbox.failTaskAndNotify(
+                    taskId: task.id, reason: reason, notifyBody: "failed — \(reason)")
+                NSLog("[linkC relay] task %@ failed — %@", task.shortId, reason)
+            } catch {
+                NSLog("[linkC] launch rejection: task %@ — %@", task.shortId, String(describing: error))
+            }
+        }
     }
 
     // MARK: - UI commands

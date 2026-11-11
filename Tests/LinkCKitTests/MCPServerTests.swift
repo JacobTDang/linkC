@@ -197,10 +197,10 @@ final class MCPServerTests: XCTestCase {
 
         let content = result?["content"] as? [[String: Any]]
         let text = content?.first?["text"] as? String ?? ""
-        XCTAssertTrue(text.contains("cooldown"), "Error message should mention cooldown: \(text)")
+        XCTAssertTrue(text.lowercased().contains("limited"), "Error message should mention the limit: \(text)")
         XCTAssertTrue(text.contains("429 Too Many Requests"), "Error message should include reason: \(text)")
-        XCTAssertTrue(text.contains("Alternative available peer agents"), "Error message should list alternatives: \(text)")
-        XCTAssertTrue(text.contains("agy"), "Should include agy as alternative: \(text)")
+        XCTAssertTrue(text.contains("Not limited:"), "Error message should list what is not limited: \(text)")
+        XCTAssertTrue(text.contains("agy"), "Should include agy as not limited: \(text)")
 
         // Verify no message was enqueued
         let pending = try inboxStore.fetchPending()
@@ -539,7 +539,8 @@ final class MCPServerTests: XCTestCase {
         let resResult = json?["result"] as? [String: Any]
         XCTAssertEqual(resResult?["isError"] as? Bool, true)
         let text = ((resResult?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
-        XCTAssertTrue(text.contains("Alternative available peer agents: none"))
+        XCTAssertTrue(text.lowercased().contains("limited"), text)
+        XCTAssertTrue(text.contains("Not limited: none"), text)
     }
 
     func testGetInboxEmptyState() throws {

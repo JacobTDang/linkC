@@ -592,7 +592,7 @@ public final class InboxStore: Sendable {
     /// linkC failing a task whose assignee can no longer report (its session ended).
     public func failTask(taskId: String, reason: String, timeout: TimeInterval = 5.0) throws {
         try transition(taskId: taskId, timeout: timeout, target: { task in
-            guard task.state == .delivered || task.state == .started else {
+            guard task.state == .delivered || task.state == .started || task.state == .queued else {
                 throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: .failed)
             }
             return .failed
@@ -671,7 +671,7 @@ public final class InboxStore: Sendable {
     /// Fails a task and enqueues the delegator's one-line outcome as a single locked write.
     public func failTaskAndNotify(taskId: String, reason: String, notifyBody: String, timeout: TimeInterval = 5.0) throws {
         try transitionAndNotify(taskId: taskId, timeout: timeout, target: { task in
-            guard task.state == .delivered || task.state == .started else {
+            guard task.state == .delivered || task.state == .started || task.state == .queued else {
                 throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: .failed)
             }
             return .failed

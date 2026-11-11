@@ -18,7 +18,7 @@ public enum TaskState: String, Codable, Sendable, CaseIterable {
         switch (self, next) {
         case (.gating, .queued), (.gating, .cancelled), (.gating, .expired):
             return true
-        case (.queued, .delivered), (.queued, .cancelled), (.queued, .expired):
+        case (.queued, .delivered), (.queued, .cancelled), (.queued, .expired), (.queued, .failed):
             return true
         case (.delivered, .started), (.delivered, .reported), (.delivered, .failed),
              (.delivered, .cancelled), (.delivered, .expired):

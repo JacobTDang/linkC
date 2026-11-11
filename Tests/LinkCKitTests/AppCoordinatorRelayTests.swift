@@ -1018,6 +1018,62 @@ final class AppCoordinatorRelayTests: XCTestCase {
         )
     }
 
+    /// A model-task worker that exits while still `.starting` fails the task at once with the screen's last line.
+    @MainActor
+    func testAModelWorkerThatExitsAtLaunchFailsItsTaskAtOnce() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "claude-opus-4-6-thinking",
+                                        prompt: "Use Opus.", files: [])
+        let worker = try coordinator.spawnTeammate(
+            in: tempDir.path, agent: .agy, model: "claude-opus-4-6-thinking", asWorker: true)
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.state, .starting)
+        let terminal = try XCTUnwrap(coordinator.terminals.session(id: worker.id))
+        terminal.terminalView.feed(text: "Error: unknown model id\r\n")
+        coordinator.cleanup(sessionId: worker.id)
+
+        let failed = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(failed.state, .failed)
+        XCTAssertTrue(failed.cancelReason?.contains("exited at launch with model claude-opus-4-6-thinking") ?? false,
+                      failed.cancelReason ?? "nil")
+        XCTAssertTrue(failed.cancelReason?.contains("unknown model id") ?? false, failed.cancelReason ?? "nil")
+        let notice = try inbox.load().messages.first { $0.kind == .notice || $0.kind == .completion }
+        XCTAssertNotNil(notice)
+        XCTAssertTrue(notice?.prompt.contains("failed") ?? false, notice?.prompt ?? "nil")
+    }
+
+    /// The same exit for a tier task keeps today's behaviour: the task stays queued.
+    @MainActor
+    func testATierWorkerThatExitsAtLaunchLeavesItsTaskQueued() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .agy, tier: .standard,
+                                        prompt: "Flash work", files: [])
+        let worker = try coordinator.spawnTeammate(
+            in: tempDir.path, agent: .agy, tier: .standard, asWorker: true)
+        XCTAssertEqual(coordinator.store.session(id: worker.id)?.state, .starting)
+        coordinator.cleanup(sessionId: worker.id)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
+    }
+
+    /// agy's "model not recognized" start-up line is not a failure.
+    @MainActor
+    func testAgysModelNotRecognizedLineIsNotALaunchFailure() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "claude-opus-4-6-thinking",
+                                        prompt: "Use Opus.", files: [])
+        let worker = try coordinator.spawnTeammate(
+            in: tempDir.path, agent: .agy, model: "claude-opus-4-6-thinking", asWorker: true)
+        let terminal = try XCTUnwrap(coordinator.terminals.session(id: worker.id))
+        terminal.terminalView.feed(text: "model not recognized — continuing\r\n")
+        coordinator.cleanup(sessionId: worker.id)
+        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued)
+    }
+
     /// A Gemini pool limit holds a Gemini-tier task back, but a Claude-model task is still delivered.
     @MainActor
     func testAnAgyGeminiLimitDoesNotHoldAClaudeModelTask() async throws {
