@@ -1410,7 +1410,7 @@ extension AppCoordinator {
             // state between the openTasks read and here, the transition throws and nothing is
             // re-dispatched or announced. A verified copy keeps its verification and the gate it
             // passed, and is not gated again: HEAD has moved and the tree may hold partial work.
-            var copy: TaskRecord?
+            var copyId: String?
             do {
                 try inboxStore.cancelTask(
                     taskId: currentTask.id, reason: "rerouted to \(target.displayName) after limit — \(evidence)"
@@ -1418,22 +1418,14 @@ extension AppCoordinator {
                 NSLog("[linkC relay] checkLimitsAndReroute: task %@ cancelled, rerouted to %@ (hop %d) — limit rule '%@' matched; %@",
                       currentTask.shortId, target.displayName, hop + 1, match.matchedPattern, evidence)
                 tellDelegator()
-                // The copy is the same work from the same place: it keeps the return address and, for an
-                // ask, stays a question.
-                copy = try inboxStore.createTask(
-                    from: currentTask.fromAgent, to: target, fromSessionId: currentTask.fromSessionId,
-                    tier: currentTask.tier, prompt: currentTask.prompt,
-                    files: currentTask.files, hop: hop + 1, force: true,
-                    verification: currentTask.verification, gate: currentTask.gate,
-                    fromProject: currentTask.fromProject, isQuestion: currentTask.isQuestion
-                )
+                copyId = try createRerouteCopy(of: currentTask, to: target, hop: hop + 1, in: inboxStore)
             } catch {
                 NSLog("[linkC relay] checkLimitsAndReroute: task %@ cancel/hop %d copy — %@", currentTask.shortId, hop + 1, String(describing: error))
             }
             // This project's inbox lock is released: the sending project's pointer follows the copy, so
             // its answer still finds the session that asked. Never both locks at once.
-            if let copy, let fromProject = currentTask.fromProject {
-                followReroute(from: currentTask, to: copy, inProject: fromProject)
+            if let copyId, let fromProject = currentTask.fromProject {
+                followReroute(from: currentTask, toCopy: copyId, inProject: fromProject)
             }
         } else {
             // Nothing is in flight, so there is nothing to move. linkC does NOT invent work
@@ -1452,22 +1444,38 @@ extension AppCoordinator {
 }
 
 extension AppCoordinator {
-    /// Points the sending project's record of `task` at its reroute `copy`. A failure leaves the record on
-    /// the cancelled original, so it is logged with both ids.
-    fileprivate func followReroute(from task: TaskRecord, to copy: TaskRecord, inProject home: String) {
+    /// The reroute copy of `task` for `target`: the same work from the same place, so it keeps the return
+    /// address and, for an ask, stays a question. Returns the copy's id. Kept out of line: inlined into
+    /// `checkLimitsAndReroute`, Swift 6.3.3's release optimizer (CopyPropagation) crashes on it.
+    @inline(never)
+    fileprivate func createRerouteCopy(of task: TaskRecord, to target: AgentKind, hop: Int,
+                                       in inboxStore: InboxStore) throws -> String {
+        try inboxStore.createTask(
+            from: task.fromAgent, to: target, fromSessionId: task.fromSessionId,
+            tier: task.tier, prompt: task.prompt,
+            files: task.files, hop: hop, force: true,
+            verification: task.verification, gate: task.gate,
+            fromProject: task.fromProject, isQuestion: task.isQuestion
+        ).id
+    }
+
+    /// Points the sending project's record of `task` at its reroute copy, `copyId`. A failure leaves the
+    /// record on the cancelled original, so it is logged with both ids.
+    fileprivate func followReroute(from task: TaskRecord, toCopy copyId: String, inProject home: String) {
+        let copyShortId = String(copyId.prefix(8))
         guard workspaceExists(home) else {
             NSLog("[linkC relay] checkLimitsAndReroute: task %@ rerouted to %@, but its sending project is gone — %@",
-                  task.shortId, copy.shortId, home)
+                  task.shortId, copyShortId, home)
             return
         }
         do {
-            if try InboxStore(workspaceRoot: home).replaceSent(taskId: task.id, with: copy.id) == false {
+            if try InboxStore(workspaceRoot: home).replaceSent(taskId: task.id, with: copyId) == false {
                 NSLog("[linkC relay] checkLimitsAndReroute: task %@ rerouted to %@, but %@ holds no record of having sent it",
-                      task.shortId, copy.shortId, home)
+                      task.shortId, copyShortId, home)
             }
         } catch {
             NSLog("[linkC relay] checkLimitsAndReroute: task %@ rerouted to %@, but %@'s record of it could not follow — %@",
-                  task.shortId, copy.shortId, home, String(describing: error))
+                  task.shortId, copyShortId, home, String(describing: error))
         }
     }
 
