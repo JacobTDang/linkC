@@ -298,4 +298,288 @@ final class CrossProjectTasksTests: XCTestCase {
         XCTAssertTrue(result.text.lowercased().contains("not found"), result.text)
         XCTAssertTrue(try homeInbox.sentTasks().isEmpty)
     }
+
+    // MARK: - Review fixes
+
+    private func server(
+        root: URL, inbox: InboxStore, agent: String, session: String,
+        openCodeModels: @escaping MCPServer.OpenCodeModelLister = { _ in [] }
+    ) -> MCPServer {
+        MCPServer(workspaceRoot: root.path, inboxStore: inbox,
+                  environment: ["LINKC_AGENT": agent, "LINKC_SESSION": session],
+                  ancestorResolver: { _ in nil }, modelSettings: { .seeded },
+                  sessionResolver: { nil }, usageReaders: [:],
+                  openCodeModels: openCodeModels, knownProjects: file)
+    }
+
+    /// The codex worker that holds tasks in `away`.
+    private func awayWorker() -> MCPServer {
+        server(root: away, inbox: awayInbox, agent: "codex", session: "away-worker")
+    }
+
+    private func hold(_ hop: Int, in inbox: InboxStore, as session: String, prompt: String = "held") throws -> TaskRecord {
+        let task = try inbox.createTask(from: .claude, to: .codex, prompt: prompt, files: [], hop: hop)
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session)
+        return task
+    }
+
+    func testReplaceSentPointsTheSendersRecordAtTheCopyAndKeepsItsOwnerAndSession() throws {
+        let old = UUID().uuidString
+        let new = UUID().uuidString
+        let created = Date(timeIntervalSince1970: 1_000)
+        try homeInbox.recordSent(SentTask(taskId: old, project: "/p/away", fromSessionId: "home-claude", createdAt: created))
+
+        XCTAssertTrue(try homeInbox.replaceSent(taskId: old, with: new))
+
+        let pointers = try homeInbox.sentTasks()
+        XCTAssertEqual(pointers.map(\.taskId), [new])
+        XCTAssertEqual(pointers.first?.project, "/p/away")
+        XCTAssertEqual(pointers.first?.fromSessionId, "home-claude")
+        XCTAssertEqual(pointers.first?.createdAt, created)
+    }
+
+    func testReplaceSentWithNoPointerChangesNothingAndSaysSo() throws {
+        XCTAssertFalse(try homeInbox.replaceSent(taskId: UUID().uuidString, with: UUID().uuidString))
+        XCTAssertTrue(try homeInbox.sentTasks().isEmpty)
+    }
+
+    // MARK: A stale known project is not recreated
+
+    func testDelegatingToAProjectWhoseFolderIsGoneIsRefusedAndNothingIsCreated() throws {
+        let listedPath = ProjectPath.canonical(away.path)
+        try FileManager.default.removeItem(at: away)
+
+        let delegated = try call(homeServer(), "linkc_delegate_task", ["project": "away", "to": "codex", "prompt": "fix"])
+        let asked = try call(homeServer(), "linkc_ask", ["project": "away", "question": "why?"])
+
+        for result in [delegated, asked] {
+            XCTAssertTrue(result.isError, result.text)
+            XCTAssertTrue(result.text.contains("away's folder \(listedPath) no longer exists"), result.text)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: away.path), "the refusal must not recreate the folder")
+        XCTAssertTrue(try homeInbox.sentTasks().isEmpty)
+    }
+
+    // MARK: Hops count across projects (spec 5.3)
+
+    func testAWorkerHoldingAHopTwoTaskCannotDelegateOrAskAnywhere() throws {
+        _ = try hold(2, in: awayInbox, as: "away-worker")
+
+        let toProject = try call(awayWorker(), "linkc_delegate_task", ["project": "money-printer", "to": "claude", "prompt": "go on"])
+        let ask = try call(awayWorker(), "linkc_ask", ["project": "money-printer", "question": "and you?"])
+        let local = try call(awayWorker(), "linkc_delegate_task", ["to": "cursor", "prompt": "local"])
+
+        for result in [toProject, ask, local] {
+            XCTAssertTrue(result.isError, result.text)
+            XCTAssertTrue(result.text.contains("hop 3"), result.text)
+        }
+        XCTAssertTrue(try homeInbox.openTasks().isEmpty)
+        XCTAssertEqual(try awayInbox.openTasks().count, 1, "only the task it already held")
+        XCTAssertTrue(try awayInbox.sentTasks().isEmpty)
+    }
+
+    func testAWorkerHoldingAHopZeroTaskCreatesAHopOneTaskInTheOtherProject() throws {
+        _ = try hold(0, in: awayInbox, as: "away-worker")
+
+        let result = try call(awayWorker(), "linkc_delegate_task", ["project": "money-printer", "to": "claude", "prompt": "next"])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try homeInbox.openTasks().first?.hop, 1)
+    }
+
+    func testAWorkerHoldingAHopOneTaskCreatesAHopTwoTaskLocally() throws {
+        _ = try hold(1, in: awayInbox, as: "away-worker")
+
+        let result = try call(awayWorker(), "linkc_delegate_task", ["to": "cursor", "prompt": "local"])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try awayInbox.openTasks().first { $0.prompt == "local" }?.hop, 2)
+    }
+
+    func testASessionHoldingNothingStartsAtHopZero() throws {
+        _ = try hold(2, in: awayInbox, as: "some-other-session")
+
+        let result = try call(awayWorker(), "linkc_delegate_task", ["project": "money-printer", "to": "claude", "prompt": "fresh"])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try homeInbox.openTasks().first?.hop, 0, "a task held by another session is not this caller's")
+    }
+
+    // MARK: start and complete are assignee tools
+
+    func testTheAskingSessionCannotStartOrCompleteItsOwnCrossProjectAsk() throws {
+        let asked = try call(homeServer(), "linkc_ask", ["project": "away", "question": "How is the ledger?"])
+        XCTAssertFalse(asked.isError, asked.text)
+        let task = try XCTUnwrap(awayInbox.openTasks().first)
+
+        let started = try call(homeServer(), "linkc_start_task", ["task_id": task.shortId])
+        let completed = try call(homeServer(), "linkc_complete_task", [
+            "task_id": task.shortId, "status": "done", "summary": "I answered myself"
+        ])
+
+        for result in [started, completed] {
+            XCTAssertTrue(result.isError, result.text)
+            XCTAssertTrue(result.text.lowercased().contains("not found"), result.text)
+        }
+        XCTAssertEqual(try awayInbox.task(id: task.id)?.state, .queued)
+        XCTAssertNil(try awayInbox.task(id: task.id)?.report)
+
+        // A caller linkC cannot tell the session of (Codex's MCP servers, notably) is not locked out of an
+        // assignee's tools, so only the lookup keeps it out of a task that lives in another project.
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: "away-claude")
+        let unresolved = MCPServer(workspaceRoot: home.path, inboxStore: homeInbox,
+                                   environment: ["LINKC_AGENT": "claude"],
+                                   ancestorResolver: { _ in nil }, modelSettings: { .seeded },
+                                   sessionResolver: { nil }, usageReaders: [:], knownProjects: file)
+        let startedBlind = try call(unresolved, "linkc_start_task", ["task_id": task.shortId])
+        let completedBlind = try call(unresolved, "linkc_complete_task", [
+            "task_id": task.shortId, "status": "done", "summary": "I answered myself"
+        ])
+        for result in [startedBlind, completedBlind] {
+            XCTAssertTrue(result.isError, result.text)
+            XCTAssertTrue(result.text.lowercased().contains("not found"), result.text)
+        }
+        XCTAssertEqual(try awayInbox.task(id: task.id)?.state, .delivered)
+    }
+
+    // MARK: Who a cancel notice goes to
+
+    private func delegatedLocally() throws -> TaskRecord {
+        let task = try homeInbox.createTask(from: .claude, to: .codex, fromSessionId: "home-claude", prompt: "local work", files: [])
+        try homeInbox.markTaskDelivered(taskId: task.id, sessionId: "home-worker")
+        return task
+    }
+
+    func testTheDelegatorCancellingALocalTaskTellsTheWorker() throws {
+        let task = try delegatedLocally()
+
+        let result = try call(homeServer(), "linkc_cancel_task", ["task_id": task.shortId, "reason": "changed my mind"])
+
+        XCTAssertFalse(result.isError, result.text)
+        let notice = try XCTUnwrap(homeInbox.load().messages.first { $0.taskId == task.id })
+        XCTAssertEqual(notice.toAgent, .codex)
+        XCTAssertEqual(notice.toSessionId, "home-worker")
+        XCTAssertTrue(notice.prompt.contains("cancelled: changed my mind. Stop work on it."), notice.prompt)
+    }
+
+    func testTheWorkerCancellingALocalTaskTellsTheDelegatorNotItself() throws {
+        let task = try delegatedLocally()
+        let worker = server(root: home, inbox: homeInbox, agent: "codex", session: "home-worker")
+
+        let result = try call(worker, "linkc_cancel_task", ["task_id": task.shortId, "reason": "cannot be done"])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try homeInbox.task(id: task.id)?.state, .cancelled)
+        let notice = try XCTUnwrap(homeInbox.load().messages.first { $0.taskId == task.id })
+        XCTAssertEqual(notice.toAgent, .claude, "the delegator is told")
+        XCTAssertNil(notice.toSessionId, "not addressed to a session, so it reaches the delegator")
+        XCTAssertTrue(notice.prompt.contains("cancelled by its worker: cannot be done"), notice.prompt)
+    }
+
+    func testAForcedCancelByAnotherAgentStillStopsTheWorker() throws {
+        let task = try delegatedLocally()
+        let bystander = server(root: home, inbox: homeInbox, agent: "cursor", session: "home-cursor")
+
+        let result = try call(bystander, "linkc_cancel_task", ["task_id": task.shortId, "force": true])
+
+        XCTAssertFalse(result.isError, result.text)
+        let notice = try XCTUnwrap(homeInbox.load().messages.first { $0.taskId == task.id })
+        XCTAssertEqual(notice.toAgent, .codex)
+        XCTAssertEqual(notice.toSessionId, "home-worker")
+    }
+
+    func testTheWorkerCancellingACrossProjectTaskTellsTheDelegatorAtHome() throws {
+        let task = try delegateToAway()
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: "away-worker")
+
+        let result = try call(awayWorker(), "linkc_cancel_task", ["task_id": task.shortId, "reason": "cannot be done"])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try awayInbox.task(id: task.id)?.state, .cancelled)
+        let notice = try XCTUnwrap(awayInbox.load().messages.first { $0.taskId == task.id })
+        XCTAssertEqual(notice.toAgent, .claude)
+        XCTAssertNil(notice.toSessionId, "with no addressee the relay forwards it to the sending project")
+        XCTAssertTrue(notice.prompt.contains("cancelled by its worker: cannot be done"), notice.prompt)
+    }
+
+    // MARK: linkc_my_tasks drops a pointer whose task is gone
+
+    func testMyTasksDropsAPointerWhoseTaskIsGoneFromTheTargetInbox() throws {
+        let task = try delegateToAway(prompt: "will vanish")
+        var inbox = try awayInbox.load()
+        inbox.tasks.removeAll { $0.id == task.id }
+        try awayInbox.saveRaw(inbox)
+
+        let result = try call(homeServer(), "linkc_my_tasks", [:])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertFalse(result.text.contains(task.shortId), result.text)
+        XCTAssertTrue(try homeInbox.sentTasks().isEmpty, "a pointer to nothing is dropped, not skipped every time")
+    }
+
+    func testMyTasksKeepsAPointerWhoseTaskIsFinished() throws {
+        let task = try delegateToAway(prompt: "finished")
+        try awayInbox.cancelTask(taskId: task.id, reason: "done with it")
+
+        let result = try call(homeServer(), "linkc_my_tasks", [:])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try homeInbox.sentTasks().map(\.taskId), [task.id], "get_task can still read a finished task")
+    }
+
+    // MARK: Delegated files are claimed where the work happens
+
+    func testFilesDelegatedToAnotherProjectAreClaimedOnItsBlackboardNotTheSenders() throws {
+        let result = try call(homeServer(), "linkc_delegate_task", [
+            "project": "away", "to": "codex", "prompt": "touch A", "files": ["Sources/A.swift"]
+        ])
+        XCTAssertFalse(result.isError, result.text)
+
+        let senders = try BlackboardStore(workspaceRoot: home.path).load().activeAgents.flatMap(\.claimedFiles)
+        let targets = try BlackboardStore(workspaceRoot: away.path).load().activeAgents.flatMap(\.claimedFiles)
+        XCTAssertTrue(senders.isEmpty, "target-relative paths must not land on the sender's board: \(senders)")
+        XCTAssertEqual(targets, ["Sources/A.swift"])
+    }
+
+    // MARK: Every check runs against the target project
+
+    func testDelegatingToAnAgentInLimitCooldownInTheTargetProjectIsRefused() throws {
+        try awayInbox.recordLimit(agent: .codex, reason: "429", cooldown: 3600)
+
+        let result = try call(homeServer(), "linkc_delegate_task", ["project": "away", "to": "codex", "prompt": "fix"])
+
+        XCTAssertTrue(result.isError, result.text)
+        XCTAssertTrue(result.text.contains("cooldown"), result.text)
+        XCTAssertTrue(try awayInbox.openTasks().isEmpty)
+        XCTAssertTrue(try homeInbox.sentTasks().isEmpty)
+    }
+
+    func testTheOpenCodeModelListingRunsForTheTargetFolder() throws {
+        final class Seen: @unchecked Sendable { var folders: [String] = [] }
+        let seen = Seen()
+        let offered = AgentModelSettings.seeded.models[AgentKind.opencode.rawValue]?.values.map { $0 } ?? []
+        let sender = server(root: home, inbox: homeInbox, agent: "claude", session: "home-claude",
+                            openCodeModels: { folder in seen.folders.append(folder); return offered })
+
+        let result = try call(sender, "linkc_delegate_task", ["project": "away", "to": "opencode", "prompt": "fix"])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(seen.folders, [ProjectPath.canonical(away.path)])
+    }
+
+    func testAFailedPointerWriteIsReportedWithTheTaskIdTheTargetNowHolds() throws {
+        // A readable inbox in `home` whose folder can no longer take a write: the task is created in
+        // `away`, and only the pointer cannot be saved.
+        _ = try homeInbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "seed")
+        let linkc = home.appendingPathComponent(".linkc")
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: linkc.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: linkc.path) }
+
+        let result = try call(homeServer(), "linkc_delegate_task", ["project": "away", "to": "codex", "prompt": "fix"])
+
+        let created = try XCTUnwrap(awayInbox.openTasks().first)
+        XCTAssertTrue(result.isError, result.text)
+        XCTAssertTrue(result.text.contains(created.id), result.text)
+        XCTAssertTrue(result.text.contains("won't track"), result.text)
+    }
 }

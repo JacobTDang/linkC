@@ -4826,7 +4826,324 @@ final class AppCoordinatorRelayTests: XCTestCase {
         }
         XCTAssertTrue(pasted)
     }
+
+    // MARK: - Cross-project review fixes
+
+    /// Two empty project folders, `home` (where the question was asked) and `away` (where it is carried).
+    private func makeHomeAndAway() throws -> (home: String, away: String, homeInbox: InboxStore, awayInbox: InboxStore) {
+        let home = tempDir.appendingPathComponent("home")
+        let away = tempDir.appendingPathComponent("away")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: away, withIntermediateDirectories: true)
+        let homePath = ProjectPath.canonical(home.path)
+        let awayPath = ProjectPath.canonical(away.path)
+        return (homePath, awayPath, InboxStore(workspaceRoot: homePath), InboxStore(workspaceRoot: awayPath))
+    }
+
+    /// A question from `home`'s claude session `askerId`, delivered to the codex `worker` in `away` and
+    /// answered, with the completion notice settled into `away`'s queue. Returns the task.
+    @MainActor
+    private func answeredAwayQuestion(
+        _ coordinator: AppCoordinator, home: String, away: String,
+        homeInbox: InboxStore, awayInbox: InboxStore, askerId: String, workerId: String
+    ) throws -> TaskRecord {
+        let task = try awayInbox.createTask(
+            from: .claude, to: .codex, fromSessionId: askerId, prompt: "What is the ledger?", files: [],
+            fromProject: home, isQuestion: true
+        )
+        try homeInbox.recordSent(SentTask(taskId: task.id, project: away, fromSessionId: askerId))
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: workerId)
+        try awayInbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "double-entry"))
+        XCTAssertFalse(coordinator.settleResolvableTasks(workspacePath: away, inboxStore: awayInbox))
+        return task
+    }
+
+    @MainActor
+    private func printed(_ marker: String, by sessionId: String, in coordinator: AppCoordinator, iterations: Int = TestWait.polls) async throws -> Bool {
+        try await waitUntil({
+            coordinator.terminals.session(id: sessionId)?.recentOutput(lines: 20).contains(marker) ?? false
+        }, iterations: iterations)
+    }
+
+    /// A rerouted copy is the same question from the same project, and the sender's pointer follows it, so
+    /// its answer still finds the session that asked.
+    @MainActor
+    func testARerouteOfACrossProjectTaskKeepsItsReturnAddressAndTheSendersPointerFollowsIt() async throws {
+        let (home, away, homeInbox, awayInbox) = try makeHomeAndAway()
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let first = try coordinator.newSession(cwd: home, agent: .codex)
+        coordinator.store.updateState(id: first.id, to: .ready)
+        let asker = try coordinator.newSession(cwd: home, agent: .codex)
+        coordinator.store.updateState(id: asker.id, to: .ready)
+        let worker = try coordinator.newSession(cwd: away, agent: .claude)
+        coordinator.store.updateState(id: worker.id, to: Self.turnOver)
+        let peer = try coordinator.newSession(cwd: away, agent: .cursor)
+        coordinator.store.updateState(id: peer.id, to: .ready)
+
+        let task = try awayInbox.createTask(
+            from: .codex, to: .claude, fromSessionId: asker.id, prompt: "What is the ledger?", files: [],
+            fromProject: home, isQuestion: true
+        )
+        try homeInbox.recordSent(SentTask(taskId: task.id, project: away, fromSessionId: asker.id))
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try awayInbox.markTaskStarted(taskId: task.id)
+
+        coordinator.terminals.sendInput(sessionId: worker.id, text: "Rate limit reached\n")
+        let banner = try await printed("Rate limit reached", by: worker.id, in: coordinator)
+        XCTAssertTrue(banner)
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: worker.id))
+
+        let copy = try XCTUnwrap(awayInbox.openTasks().first { $0.hop == 1 })
+        XCTAssertEqual(copy.toAgent, .cursor)
+        XCTAssertEqual(copy.fromProject, home, "the copy still comes from the project that asked")
+        XCTAssertTrue(copy.isQuestion, "the copy is still a question")
+        XCTAssertEqual(copy.fromSessionId, asker.id)
+
+        let pointers = try homeInbox.sentTasks()
+        XCTAssertEqual(pointers.map(\.taskId), [copy.id], "the sender's pointer names the copy, not the cancelled original")
+        XCTAssertEqual(pointers.first?.project, away)
+        XCTAssertEqual(pointers.first?.fromSessionId, asker.id)
+
+        // The copy's worker answers; the answer goes home to the asking session.
+        let delivered = try await waitUntil {
+            coordinator.processPendingMessages(workspacePath: away)
+            return (try? awayInbox.task(id: copy.id))?.state == .delivered
+        }
+        XCTAssertTrue(delivered)
+        try awayInbox.reportTask(taskId: copy.id, report: TaskReport(status: "done", summary: "double-entry"))
+        coordinator.processPendingMessages(workspacePath: away)
+        coordinator.processPendingMessages(workspacePath: home)
+
+        let line = "[linkC task \(copy.shortId)]"
+        let atAsker = try await printed(line, by: asker.id, in: coordinator)
+        XCTAssertTrue(atAsker, "the rerouted answer must reach the asking session")
+        XCTAssertFalse(coordinator.terminals.session(id: first.id)?.recentOutput(lines: 20).contains(line) ?? true)
+    }
+
+    /// With two live claude sessions at home, the answer goes to the one that asked, not the first.
+    @MainActor
+    func testAForwardedCompletionGoesToTheAskingSessionNotTheFirstLiveOne() async throws {
+        let (home, away, homeInbox, awayInbox) = try makeHomeAndAway()
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let first = try coordinator.newSession(cwd: home, agent: .claude)
+        coordinator.store.updateState(id: first.id, to: .ready)
+        let asker = try coordinator.newSession(cwd: home, agent: .claude)
+        coordinator.store.updateState(id: asker.id, to: .ready)
+        let worker = try coordinator.newSession(cwd: away, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .ready)
+        let task = try answeredAwayQuestion(
+            coordinator, home: home, away: away, homeInbox: homeInbox, awayInbox: awayInbox,
+            askerId: asker.id, workerId: worker.id
+        )
+
+        coordinator.processPendingMessages(workspacePath: away)
+        coordinator.processPendingMessages(workspacePath: home)
+
+        let line = "[linkC task \(task.shortId)]"
+        let atAsker = try await printed(line, by: asker.id, in: coordinator)
+        XCTAssertTrue(atAsker, "the answer belongs to the session that asked")
+        XCTAssertFalse(coordinator.terminals.session(id: first.id)?.recentOutput(lines: 20).contains(line) ?? true,
+                       "the first live claude session at home did not ask")
+    }
+
+    /// The cancel stop notice is for the worker in the folder where it runs; no relay pass sends it home.
+    @MainActor
+    func testANoticeAddressedToASessionIsNotForwardedHome() async throws {
+        let (home, away, homeInbox, awayInbox) = try makeHomeAndAway()
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let asker = try coordinator.newSession(cwd: home, agent: .claude)
+        coordinator.store.updateState(id: asker.id, to: .ready)
+        let worker = try coordinator.newSession(cwd: away, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .ready)
+        let task = try awayInbox.createTask(
+            from: .claude, to: .codex, fromSessionId: asker.id, prompt: "q", files: [], fromProject: home
+        )
+        try homeInbox.recordSent(SentTask(taskId: task.id, project: away, fromSessionId: asker.id))
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try awayInbox.markTaskStarted(taskId: task.id)
+        try awayInbox.cancelTask(taskId: task.id, reason: "no longer needed")
+        _ = try awayInbox.enqueue(
+            from: .claude, to: .codex, kind: .completion, taskId: task.id, toSessionId: worker.id,
+            body: "cancelled: no longer needed. Stop work on it."
+        )
+
+        coordinator.processPendingMessages(workspacePath: away)
+
+        let atWorker = try await printed("[linkC task \(task.shortId)] cancelled", by: worker.id, in: coordinator)
+        XCTAssertTrue(atWorker, "the stop notice reaches the worker it is for")
+        XCTAssertTrue(try homeInbox.load().messages.isEmpty, "and is not forwarded to the sending project")
+        XCTAssertFalse(coordinator.terminals.session(id: asker.id)?.recentOutput(lines: 20).contains("cancelled") ?? true)
+    }
+
+    // MARK: A notice about another project's task is never pasted in the away folder
+
+    /// The shared setup: `away` holds a live claude session that is not the asker, and an answered
+    /// question from `home` whose completion line is addressed to claude.
+    @MainActor
+    private func awayWithABystanderAndAnAnsweredQuestion(
+        _ coordinator: AppCoordinator
+    ) throws -> (home: String, away: String, homeInbox: InboxStore, awayInbox: InboxStore, task: TaskRecord, bystander: Session) {
+        let (home, away, homeInbox, awayInbox) = try makeHomeAndAway()
+        let bystander = try coordinator.newSession(cwd: away, agent: .claude)
+        coordinator.store.updateState(id: bystander.id, to: .ready)
+        let worker = try coordinator.newSession(cwd: away, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .ready)
+        let task = try answeredAwayQuestion(
+            coordinator, home: home, away: away, homeInbox: homeInbox, awayInbox: awayInbox,
+            askerId: "home-asker", workerId: worker.id
+        )
+        return (home, away, homeInbox, awayInbox, task, bystander)
+    }
+
+    @MainActor
+    func testDispatchMessagesNeverPastesAHomeBoundNoticeIntoTheAwayFolder() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let setup = try awayWithABystanderAndAnAnsweredQuestion(coordinator)
+
+        coordinator.dispatchMessages(workspacePath: setup.away, inboxStore: setup.awayInbox)
+
+        let pasted = try await printed("[linkC task \(setup.task.shortId)]", by: setup.bystander.id, in: coordinator, iterations: 20)
+        XCTAssertFalse(pasted, "a live claude session in away is not the asker")
+        XCTAssertEqual(try setup.awayInbox.fetchPending().filter { $0.taskId == setup.task.id }.count, 1,
+                       "the notice waits to be forwarded")
+    }
+
+    @MainActor
+    func testDispatchMessagesSkipsAMessageWhoseTaskCannotBeLookedUp() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let setup = try awayWithABystanderAndAnAnsweredQuestion(coordinator)
+        let broken = InboxStore(workspaceRoot: setup.away, failureInjector: { id in
+            id == setup.task.id ? LinkCError.server("injected lookup failure") : nil
+        })
+
+        coordinator.dispatchMessages(workspacePath: setup.away, inboxStore: broken)
+
+        let pasted = try await printed("[linkC task \(setup.task.shortId)]", by: setup.bystander.id, in: coordinator, iterations: 20)
+        XCTAssertFalse(pasted, "when the task cannot be looked up the message is held, never delivered here")
+        XCTAssertEqual(try setup.awayInbox.fetchPending().filter { $0.taskId == setup.task.id }.count, 1)
+    }
+
+    @MainActor
+    func testAHeldHomeLockDelaysForwardingWithoutPastingInTheAwayFolder() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let setup = try awayWithABystanderAndAnAnsweredQuestion(coordinator)
+        let line = "[linkC task \(setup.task.shortId)]"
+
+        let lockPath = URL(fileURLWithPath: setup.home).appendingPathComponent(".linkc/.inbox.lock").path
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        XCTAssertGreaterThan(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        coordinator.processPendingMessages(workspacePath: setup.away)
+        flock(fd, LOCK_UN)
+        close(fd)
+
+        let early = try await printed(line, by: setup.bystander.id, in: coordinator, iterations: 20)
+        XCTAssertFalse(early, "forwarding was delayed; the notice must not be pasted in away")
+        XCTAssertEqual(try setup.awayInbox.fetchPending().filter { $0.taskId == setup.task.id }.count, 1)
+
+        coordinator.processPendingMessages(workspacePath: setup.away)
+
+        XCTAssertEqual(try setup.homeInbox.load().messages.filter { $0.taskId == setup.task.id }.count, 1, "the next tick forwards it")
+        XCTAssertTrue(try setup.awayInbox.fetchPending().filter { $0.taskId == setup.task.id }.isEmpty)
+        let late = try await printed(line, by: setup.bystander.id, in: coordinator, iterations: 20)
+        XCTAssertFalse(late)
+    }
+
+    /// A home inbox that cannot be written is not retried forever: the away copy is failed.
+    @MainActor
+    func testForwardingFailsTheLocalCopyWhenTheHomeInboxIsCorrupt() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let setup = try awayWithABystanderAndAnAnsweredQuestion(coordinator)
+        try Data("not json".utf8).write(to: URL(fileURLWithPath: setup.home).appendingPathComponent(".linkc/inbox.json"))
+
+        coordinator.processPendingMessages(workspacePath: setup.away)
+
+        XCTAssertEqual(try setup.awayInbox.load().messages.first { $0.taskId == setup.task.id }?.status, .failed)
+    }
+
+    // MARK: - Known projects: the sweep
+
+    @MainActor
+    func testTheSweepRewritesAProjectsFileThatWasDeleted() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "idle", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        await coordinator.runSweepTickForTests()
+        try FileManager.default.removeItem(at: file.url)
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.read().first?.sessions.map(\.id), ["L1"], "the file must come back with the same contents")
+    }
+
+    @MainActor
+    func testAPublisherStateChangeRewritesTheProjectsFile() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "idle", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        await coordinator.runSweepTickForTests()
+        XCTAssertEqual(try file.read().first?.sessions.first?.activity, .idle)
+
+        coordinator.store.updateState(id: session.id, to: .working)
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(coordinator.knownProjectsWriteCount, 2)
+        XCTAssertEqual(try file.read().first?.sessions.first?.activity, .busy)
+    }
+
+    /// The file is written after the sweep sampled the sessions, so it never publishes a state the
+    /// sampling had already moved on from: an `.error` session whose cooldown is over is ready again.
+    @MainActor
+    func testTheProjectsFileHoldsTheStatesTheSweepJustSampled() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer {
+            coordinator.store.sessions.forEach { coordinator.stopSession($0.id) }
+            coordinator.shutdown()
+        }
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .claude)
+        coordinator.store.updateState(id: session.id, to: .error)
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(coordinator.store.session(id: session.id)?.state, .ready, "sampling recovers it")
+        XCTAssertEqual(try file.read().first?.sessions.first?.activity, .idle)
+    }
+
+    /// A known project with no session and nothing open is left alone; one with open work is relayed.
+    @MainActor
+    func testAnIdleKnownProjectIsNotRelayedButOneWithOpenWorkIs() async throws {
+        let project = tempDir.appendingPathComponent("sidebar-idle", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let folder = ProjectPath.canonical(project.path)
+        let coordinator = makeCoordinator(sidebarProjects: { [folder] })
+        defer { coordinator.shutdown() }
+
+        // A relay pass for a folder starts by clearing what the last pass noted about it.
+        coordinator.relayWork.noteContention(in: folder)
+        await coordinator.runSweepTickForTests()
+        XCTAssertFalse(coordinator.relayWork.isEmpty, "no open work and no session: the sweep did not relay the folder")
+
+        _ = try InboxStore(workspaceRoot: folder).enqueue(from: .claude, to: .codex, kind: .peerNote, body: "hello")
+        await coordinator.runSweepTickForTests()
+        XCTAssertTrue(coordinator.relayWork.isEmpty, "open work: the sweep relayed the folder")
+    }
 }
+
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.
 private final class ScriptedVerifier: TaskVerifier, @unchecked Sendable {

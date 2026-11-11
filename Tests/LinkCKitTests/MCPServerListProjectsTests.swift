@@ -91,4 +91,19 @@ final class MCPServerListProjectsTests: XCTestCase {
         XCTAssertFalse(result.isError, result.text)
         XCTAssertTrue(MCPServer.readOnlyTools.contains("linkc_list_projects"))
     }
+
+    func testOnlyAWholeLeadingComponentIsShortenedToATilde() throws {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let lookalike = home + "-lookalike/proj"
+        try file.write([
+            KnownProject(path: ProjectPath.canonical(here.path), sessions: []),
+            KnownProject(path: lookalike, sessions: []),
+            KnownProject(path: home, sessions: [])
+        ])
+
+        let lines = try call(server()).text.split(separator: "\n").map(String.init)
+
+        XCTAssertTrue(lines.contains { $0.contains("  \(lookalike)  ") }, "a folder that only starts with the home path keeps its path: \(lines)")
+        XCTAssertTrue(lines.contains { $0.contains("  ~  ") }, "the home folder itself is ~: \(lines)")
+    }
 }

@@ -55,4 +55,20 @@ final class KnownProjectsPublisherTests: XCTestCase {
         )
         XCTAssertEqual(projects.map(\.path), [canonical])
     }
+
+    func testPathsAreTheSameUnionAsProjectsWithoutTheSessions() {
+        let a = "/tmp/linkc-pub-paths-a-\(UUID().uuidString)"
+        let b = "/tmp/linkc-pub-paths-b-\(UUID().uuidString)"
+        let c = "/tmp/linkc-pub-paths-c-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "S1", cwd: a, title: "live", state: .working, agentKind: .claude),
+            Session(id: "S2", cwd: c, title: "gone", state: .ended, agentKind: .codex),
+        ]
+
+        let paths = KnownProjectsPublisher.paths(sidebar: [b], mcpFolders: [], sessions: sessions)
+        let projects = KnownProjectsPublisher.projects(sidebar: [b], mcpFolders: [], sessions: sessions)
+
+        XCTAssertEqual(paths, Set([a, b].map(ProjectPath.canonical)), "an ended session's folder is not a project")
+        XCTAssertEqual(paths, Set(projects.map(\.path)))
+    }
 }

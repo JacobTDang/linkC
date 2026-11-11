@@ -512,6 +512,24 @@ public final class InboxStore: Sendable {
         }
     }
 
+    /// Points the record of a sent task at its reroute copy, keeping the project, the asking session and
+    /// the time it was sent. False, and nothing written, when no record names `taskId`.
+    @discardableResult
+    public func replaceSent(taskId: String, with newTaskId: String, timeout: TimeInterval = 5.0) throws -> Bool {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            inbox.sentTasks.removeAll { $0.taskId == newTaskId }
+            guard let index = inbox.sentTasks.firstIndex(where: { $0.taskId == taskId }) else { return false }
+            let old = inbox.sentTasks[index]
+            inbox.sentTasks[index] = SentTask(
+                taskId: newTaskId, project: old.project, fromSessionId: old.fromSessionId, createdAt: old.createdAt
+            )
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+            return true
+        }
+    }
+
     public func sentTask(matching prefix: String, timeout: TimeInterval = 5.0) throws -> SentTask? {
         let sent = try snapshot(timeout: timeout).sentTasks
         if let exact = sent.first(where: { $0.taskId == prefix }) { return exact }

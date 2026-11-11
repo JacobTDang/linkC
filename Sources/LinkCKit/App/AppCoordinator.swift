@@ -579,26 +579,31 @@ public final class AppCoordinator {
         let mcpFolders = mcpWorkspaces()
         let serverOnlyFolders = mcpFolders.subtracting(sessionFolders)
         let workspaces = sessionFolders.union(serverOnlyFolders)
-        let known = KnownProjectsPublisher.projects(
-            sidebar: sidebarProjects(),
-            mcpFolders: mcpFolders,
-            sessions: store.sessions
-        )
-        publishKnownProjects(known)
-        let knownPaths = Set(known.map(\.path))
+        let sidebar = sidebarProjects()
+        let knownPaths = KnownProjectsPublisher.paths(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions)
         let watched = workspaces.union(knownPaths)
         relayWork.retain(only: watched)
         taskEvents.retain(only: watched)
         inboxWatcher?.watch(workspaces: watched)
         sampleAgentStates()
+        // After the sampling, so the file holds the states it just settled.
+        publishKnownProjects(sidebar: sidebar, mcpFolders: mcpFolders)
         for folder in serverOnlyFolders.sorted() {
             processPendingMessages(workspacePath: folder)
         }
         for folder in knownPaths.subtracting(workspaces).sorted() {
             let open: Bool
             do {
-                open = try InboxStore(workspaceRoot: folder).hasOpenWork()
+                open = try InboxStore(workspaceRoot: folder).hasOpenWork(timeout: Self.relayLockTimeout)
             } catch {
+                // A contended lock is the next tick's to retry; anything else (a corrupt inbox) is the
+                // project's to be told about, not skipped without a word.
+                if isRelayLockTimeout(error) {
+                    NSLog("[linkC relay] sweepTick: %@ — inbox lock still contended after %.1fs; retrying next tick",
+                          folder, Self.relayLockTimeout)
+                } else {
+                    NSLog("[linkC relay] sweepTick: %@ open-work check — %@", folder, String(describing: error))
+                }
                 continue
             }
             if open {
@@ -615,9 +620,13 @@ public final class AppCoordinator {
         await sweepTick()
     }
 
-    private func publishKnownProjects(_ projects: [KnownProject]) {
+    private func publishKnownProjects(sidebar: [String], mcpFolders: Set<String>) {
         guard let knownProjectsFile else { return }
-        if lastPublishedProjects == projects { return }
+        let projects = KnownProjectsPublisher.projects(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions)
+        // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
+        // contents next changed, and every MCP server would report linkC as not running.
+        if lastPublishedProjects == projects,
+           FileManager.default.fileExists(atPath: knownProjectsFile.url.path) { return }
         do {
             try knownProjectsFile.write(projects)
             lastPublishedProjects = projects
@@ -666,7 +675,11 @@ public final class AppCoordinator {
         hookServer.stop()
         statusLines.sweep()
         if let knownProjectsFile {
-            try? knownProjectsFile.remove()
+            do {
+                try knownProjectsFile.remove()
+            } catch {
+                NSLog("[linkC] projects.json remove — %@", String(describing: error))
+            }
             lastPublishedProjects = nil
         }
     }

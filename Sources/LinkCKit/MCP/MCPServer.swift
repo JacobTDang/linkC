@@ -1159,16 +1159,15 @@ public final class MCPServer: Sendable {
 
             case "linkc_start_task":
                 do {
-                    let resolved = try requireTask(args)
-                    let task = resolved.task
+                    let task = try requireOwnTask(args)
                     guard caller.agent == task.toAgent else {
                         return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
                     }
                     guard callerMayAct(on: task) else {
                         return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to another session.", isError: true)
                     }
-                    try resolved.store.markTaskStarted(taskId: task.id)
-                    let updated = try resolved.store.task(id: task.id) ?? task
+                    try inboxStore.markTaskStarted(taskId: task.id)
+                    let updated = try inboxStore.task(id: task.id) ?? task
                     return toolResultResponse(id: id, text: "Started: \(taskLine(updated))")
                 } catch {
                     return errorResult(id: id, error)
@@ -1176,8 +1175,7 @@ public final class MCPServer: Sendable {
 
             case "linkc_complete_task":
                 do {
-                    let resolved = try requireTask(args)
-                    let task = resolved.task
+                    let task = try requireOwnTask(args)
                     guard caller.agent == task.toAgent else {
                         return toolResultResponse(id: id, text: "Error: task \(task.shortId) is assigned to \(task.toAgent.displayName), not \(caller.agent.displayName).", isError: true)
                     }
@@ -1204,14 +1202,14 @@ public final class MCPServer: Sendable {
                     var sha: String?
                     if let raw = (args["sha"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
                         do {
-                            sha = try GitClient().resolveCommit(raw, in: URL(fileURLWithPath: resolved.root))
+                            sha = try GitClient().resolveCommit(raw, in: URL(fileURLWithPath: workspaceRoot))
                         } catch {
                             return toolResultResponse(id: id, text: "Error: sha: \(error.localizedDescription). Commit your work, then report that commit's sha.", isError: true)
                         }
                     }
                     // `tests` is still accepted from older callers and ignored: linkC runs the tests itself.
                     let report = TaskReport(status: status, summary: summary, sha: sha, commits: args["commits"] as? [String] ?? [])
-                    try resolved.store.reportTask(taskId: task.id, report: report)
+                    try inboxStore.reportTask(taskId: task.id, report: report)
 
                     var text: String
                     if task.verification == nil {
@@ -1222,7 +1220,7 @@ public final class MCPServer: Sendable {
                         text = "Reported. linkC will mark the task failed."
                     }
                     if closeSession {
-                        text += " " + closeOwnSession(after: task, store: resolved.store)
+                        text += " " + closeOwnSession(after: task)
                     }
                     return toolResultResponse(id: id, text: text)
                 } catch {
@@ -1263,14 +1261,25 @@ public final class MCPServer: Sendable {
                     try resolved.store.cancelTask(taskId: task.id, reason: resolvedReason)
                     let successText = "Cancelled task \(task.shortId) (\(resolvedReason))."
                     if wasDelivered {
+                        // The delegator (or anyone forcing it) stopping the work tells the worker to stop. The
+                        // worker giving the task up tells the delegator instead: addressed to no session, so
+                        // for a task from another project the relay forwards it home.
+                        let notified = isAssignee ? task.fromAgent : task.toAgent
                         do {
-                            _ = try resolved.store.enqueue(
-                                from: caller.agent, to: task.toAgent, kind: .completion,
-                                taskId: task.id, toSessionId: task.assigneeSessionId,
-                                body: "cancelled: \(resolvedReason). Stop work on it."
-                            )
+                            if isAssignee {
+                                _ = try resolved.store.enqueue(
+                                    from: caller.agent, to: task.fromAgent, kind: .completion,
+                                    taskId: task.id, body: "cancelled by its worker: \(resolvedReason)"
+                                )
+                            } else {
+                                _ = try resolved.store.enqueue(
+                                    from: caller.agent, to: task.toAgent, kind: .completion,
+                                    taskId: task.id, toSessionId: task.assigneeSessionId,
+                                    body: "cancelled: \(resolvedReason). Stop work on it."
+                                )
+                            }
                         } catch {
-                            let warning = "Warning: task state was updated but notifying \(task.toAgent.displayName) failed: \(error.localizedDescription). They can run linkc_get_task(\"\(task.id)\")."
+                            let warning = "Warning: task state was updated but notifying \(notified.displayName) failed: \(error.localizedDescription). They can run linkc_get_task(\"\(task.id)\")."
                             return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
                         }
                     }
@@ -1299,13 +1308,19 @@ public final class MCPServer: Sendable {
                     delegatedLines = localDelegated.map { "- \(taskLine($0))" }
                     for pointer in try inboxStore.sentTasks() {
                         let name = URL(fileURLWithPath: pointer.project).lastPathComponent
+                        let task: TaskRecord?
                         do {
-                            let remote = InboxStore(workspaceRoot: pointer.project)
-                            guard let task = try remote.task(id: pointer.taskId), task.state.isOpen else { continue }
-                            delegatedLines.append("- \(taskLine(task)) → \(name)")
+                            task = try InboxStore(workspaceRoot: pointer.project).task(id: pointer.taskId)
                         } catch {
                             delegatedLines.append("- \(name): could not be read (\(error.localizedDescription))")
+                            continue
                         }
+                        guard let task else {
+                            // The task is gone from that inbox: the pointer has nothing left to point at.
+                            try inboxStore.dropSent(taskId: pointer.taskId)
+                            continue
+                        }
+                        if task.state.isOpen { delegatedLines.append("- \(taskLine(task)) → \(name)") }
                     }
                 } catch {
                     return errorResult(id: id, error)
@@ -1503,12 +1518,25 @@ public final class MCPServer: Sendable {
         return Verification(branch: branch, baseSha: base, command: command, testPaths: paths, timeoutSeconds: timeout)
     }
 
-    /// Resolves `task_id` in this inbox, or through a `sentTasks` pointer into the project that holds it
-    /// (spec 2026-11-11 cross-project §5.4 / §6.3).
-    private func requireTask(_ args: [String: Any]) throws -> (task: TaskRecord, store: InboxStore, root: String) {
+    private func taskIdArgument(_ args: [String: Any]) throws -> String {
         guard let taskId = (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !taskId.isEmpty else {
             throw LinkCError.server("Missing required argument 'task_id'.")
         }
+        return taskId
+    }
+
+    /// Resolves `task_id` in this inbox only. The assignee's tools (`linkc_start_task`,
+    /// `linkc_complete_task`) use it: a task this project sent elsewhere is not its to start or answer.
+    private func requireOwnTask(_ args: [String: Any]) throws -> TaskRecord {
+        let taskId = try taskIdArgument(args)
+        guard let task = try inboxStore.task(matching: taskId) else { throw InboxError.taskNotFound(taskId) }
+        return task
+    }
+
+    /// Resolves `task_id` in this inbox, or through a `sentTasks` pointer into the project that holds it
+    /// (spec 2026-11-11 cross-project §5.4 / §6.3).
+    private func requireTask(_ args: [String: Any]) throws -> (task: TaskRecord, store: InboxStore, root: String) {
+        let taskId = try taskIdArgument(args)
         if let task = try inboxStore.task(matching: taskId) {
             return (task, inboxStore, workspaceRoot)
         }
@@ -1564,9 +1592,9 @@ public final class MCPServer: Sendable {
     /// The reporting worker's own request to close its session, after its report is recorded:
     /// a sentence for the tool result. A refusal is stated, not raised — the report already
     /// landed and stays.
-    private func closeOwnSession(after task: TaskRecord, store: InboxStore) -> String {
+    private func closeOwnSession(after task: TaskRecord) -> String {
         do {
-            _ = try store.requestClose(taskId: task.id, by: .worker)
+            _ = try inboxStore.requestClose(taskId: task.id, by: .worker)
             return "Close requested: linkC closes this session after your turn ends if it launched it as a worker, it holds no other open task, and nothing was typed into it after the task ended."
         } catch InboxError.closeRefused(let reason) {
             return "Not closing this session: \(reason)"
@@ -1661,6 +1689,14 @@ public final class MCPServer: Sendable {
         crossProject: (name: String, path: String)?,
         isQuestion: Bool = false
     ) throws -> Data? {
+        // A known project whose folder was deleted since linkC listed it: any write there would create the
+        // folder again, with an inbox nobody serves.
+        if let crossProject {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: crossProject.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return toolResultResponse(id: id, text: "Error: \(crossProject.name)'s folder \(crossProject.path) no longer exists.", isError: true)
+            }
+        }
         guard let toStr = args["to"] as? String, !toStr.isEmpty else {
             return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
         }
@@ -1761,6 +1797,7 @@ public final class MCPServer: Sendable {
             fromSessionId: callerSessionId(),
             tier: tier,
             prompt: prompt, files: files,
+            hop: try newTaskHop(),
             force: force, verification: verification,
             fromProject: fromProject, isQuestion: isQuestion
         )
@@ -1799,7 +1836,9 @@ public final class MCPServer: Sendable {
 
         if !files.isEmpty {
             do {
-                _ = try store.broadcastIntent(
+                // The files are paths in the project that does the work, so they are claimed on its board.
+                let board = crossProject == nil ? store : BlackboardStore(workspaceRoot: destRoot)
+                _ = try board.broadcastIntent(
                     agentKind: caller.agent,
                     pid: caller.pid,
                     goal: "Delegated task \(task.shortId) to \(toAgent.displayName)",
@@ -1815,6 +1854,15 @@ public final class MCPServer: Sendable {
         return toolResultResponse(id: id, text: "\(successText)\(usageNote)")
     }
 
+    /// The hop of a task this caller creates now: one past the open task this caller's session holds in its own
+    /// inbox, or 0 when it holds none (spec 2026-11-11 cross-project §5.3). `createTask` refuses past 2, so the
+    /// chain is cut across projects as well as within one. The highest hop wins when it holds several.
+    private func newTaskHop() throws -> Int {
+        guard let session = callerSessionId() else { return 0 }
+        let held = try inboxStore.openTasks().filter { $0.assigneeSessionId == session }
+        return (held.map(\.hop).max() ?? -1) + 1
+    }
+
     /// `linkc_list_projects`: one line per known project other than the caller's (spec §4.1).
     private func listProjectsResult(id: Any?) throws -> Data? {
         let own = ProjectPath.canonical(workspaceRoot)
@@ -1824,7 +1872,7 @@ public final class MCPServer: Sendable {
         }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let lines = others.map { project -> String in
-            let path = project.path.hasPrefix(home)
+            let path = project.path == home || project.path.hasPrefix(home + "/")
                 ? "~" + project.path.dropFirst(home.count)
                 : project.path
             let sessions: String
