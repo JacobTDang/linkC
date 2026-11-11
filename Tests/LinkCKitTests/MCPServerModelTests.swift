@@ -486,7 +486,8 @@ final class MCPServerModelTests: XCTestCase {
             guard case LinkCError.process(let msg) = error else {
                 return XCTFail("Expected LinkCError.process, got: \(error)")
             }
-            XCTAssertTrue(msg.contains("not an allowed free or subscription-tier model"))
+            XCTAssertTrue(msg.contains("not among the models"), msg)
+            XCTAssertTrue(msg.contains("Available:"), msg)
         }
 
         XCTAssertThrowsError(try coordinator.switchModel(in: "/nonexistent/path", agent: .claude, to: "haiku")) { error in

@@ -228,6 +228,10 @@ public final class AppCoordinator {
     /// The current tier → model mapping. A closure, not a value, so a settings edit is seen on
     /// the next spawn without anyone re-injecting anything.
     private let modelSettings: @MainActor @Sendable () -> AgentModelSettings
+    /// Live model lists from `ModelListCache`. Injected so tests need no Application Support file.
+    let modelLists: @MainActor @Sendable () throws -> [AgentKind: AgentModelList]
+    /// Refreshes CLI model lists at launch and every 6 hours. Tests can replace or leave nil.
+    var modelListRefresher: ModelListRefresher?
     /// Minimum interval between injections into the same terminal. Tests can override it.
     public static let injectionGap: TimeInterval = 2
     let injectionGap: TimeInterval
@@ -305,6 +309,10 @@ public final class AppCoordinator {
         defaults: UserDefaults? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
+        modelLists: @escaping @MainActor @Sendable () throws -> [AgentKind: AgentModelList] = {
+            try ModelListCache.applicationSupport.read()
+        },
+        modelListRefresher: ModelListRefresher? = nil,
         usageReaders: [AgentKind: MCPServer.UsageReader] = [:],
         deliverySettle: TimeInterval = AppCoordinator.defaultDeliverySettle,
         injectionGap: TimeInterval = AppCoordinator.injectionGap,
@@ -333,6 +341,8 @@ public final class AppCoordinator {
         self.defaults = defaults
         self.verifier = verifier
         self.modelSettings = modelSettings
+        self.modelLists = modelLists
+        self.modelListRefresher = modelListRefresher
         self.usageReaders = usageReaders
         self.injectionGap = injectionGap
         self.deliverySettle = deliverySettle
@@ -412,6 +422,7 @@ public final class AppCoordinator {
             userHome: FileManager.default.homeDirectoryForCurrentUser,
             defaults: .standard,
             modelSettings: modelSettings,
+            modelListRefresher: ModelListRefresher(),
             usageReaders: MCPServer.defaultUsageReaders(),
             mcpWorkspaces: { MCPWorkspaceRegistry.applicationSupport.liveWorkspaces() },
             openRequests: .applicationSupport,
@@ -521,6 +532,9 @@ public final class AppCoordinator {
         // be what launched linkC): serve them now, not an idle interval later. The request folder is read
         // after its watcher is set up, so a request left in between wakes a pass too.
         if !mcpWorkspaces().isEmpty || openRequests.map({ !$0.pending().isEmpty }) == true { ticker.wake() }
+        if let modelListRefresher {
+            Task { await modelListRefresher.start() }
+        }
     }
 
     /// Tells the coordinator whether the panel, or a window that needs the same sampling, is on screen.
@@ -607,6 +621,7 @@ public final class AppCoordinator {
         inboxWatcher = nil
         openRequestWatcher?.stop()
         openRequestWatcher = nil
+        modelListRefresher?.stop()
         hookServer.stop()
         statusLines.sweep()
     }
@@ -1467,9 +1482,18 @@ public final class AppCoordinator {
         guard agent != .shell else {
             throw LinkCError.process("Cannot switch model on shell session.")
         }
-        guard AgentModelCatalog.isFreeOrSubscription(model: modelName, for: agent) else {
-            let allowed = AgentModelCatalog.models(for: agent).map { $0.id }.joined(separator: ", ")
-            throw LinkCError.process("'\(modelName)' is not an allowed free or subscription-tier model for \(agent.displayName). Allowed models: \(allowed)")
+        let lists: [AgentKind: AgentModelList]
+        do {
+            lists = try modelLists()
+        } catch {
+            throw LinkCError.process("could not read the live model lists — \(error)")
+        }
+        let available = ModelListCache.available(for: agent, lists: lists, settings: modelSettings())
+        let allowedIds = available.map(\.id)
+        let match = allowedIds.contains { $0.caseInsensitiveCompare(modelName) == .orderedSame }
+        guard match else {
+            let allowed = allowedIds.joined(separator: ", ")
+            throw LinkCError.process("'\(modelName)' is not among the models \(agent.displayName) lists. Available: \(allowed)")
         }
         let norm = ProjectPath.canonical(workspacePath)
         guard let session = store.sessions.first(where: {
