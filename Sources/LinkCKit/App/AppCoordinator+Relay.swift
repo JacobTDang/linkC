@@ -464,7 +464,7 @@ extension AppCoordinator {
                   task.shortId, task.toAgent.displayName, tier.label)
             return false
         }
-        if task.toAgent == .opencode {
+        if task.toAgent == .opencode, task.model == nil {
             let tier = task.tier ?? defaultTier(for: .opencode)
             switch openCodeModelAvailability(in: workspacePath, tier: tier) {
             case .checking:
@@ -495,13 +495,15 @@ extension AppCoordinator {
                 return false
             }
         }
-        guard launched.insert("\(task.toAgent.rawValue)|\(task.tier?.rawValue ?? "")").inserted else {
+        let launchKey = "\(task.toAgent.rawValue)|\(task.tier?.rawValue ?? "")|\(task.model ?? "")"
+        guard launched.insert(launchKey).inserted else {
             NSLog("[linkC relay] dispatchTasks: task %@ waits for the next pass to start its %@ worker",
                   task.shortId, task.toAgent.displayName)
             return false
         }
         do {
-            _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier, asWorker: true)
+            _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt,
+                                  tier: task.tier, model: task.model, asWorker: true)
         } catch {
             // Swallowing this used to leave the task `.queued` forever, retried every second, with
             // nothing anywhere saying why.

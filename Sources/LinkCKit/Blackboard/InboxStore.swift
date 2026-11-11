@@ -411,6 +411,7 @@ public final class InboxStore: Sendable {
         fromSessionId: String? = nil,
         targetSessionId: String? = nil,
         tier: ModelTier? = nil,
+        model: String? = nil,
         prompt: String,
         files: [String],
         hop: Int = 0,
@@ -436,6 +437,8 @@ public final class InboxStore: Sendable {
                 $0.state.isOpen && $0.toAgent == to && $0.prompt == prompt
                     && $0.verification?.baseSha == verification?.baseSha
                     && $0.targetSessionId == targetSessionId
+                    && $0.tier == tier
+                    && $0.model == model
             }) {
                 return existing
             }
@@ -448,7 +451,7 @@ public final class InboxStore: Sendable {
             }
 
             let task = TaskRecord(
-                fromAgent: from, fromSessionId: fromSessionId, tier: tier, toAgent: to,
+                fromAgent: from, fromSessionId: fromSessionId, tier: tier, model: model, toAgent: to,
                 prompt: prompt, files: normalized,
                 state: verification == nil || gate != nil ? .queued : .gating, hop: hop,
                 verification: verification, gate: gate, targetSessionId: targetSessionId

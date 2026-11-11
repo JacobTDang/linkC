@@ -203,6 +203,8 @@ public final class MCPServer: Sendable {
     /// The models OpenCode offers in a folder, read on every OpenCode delegation: a free model can
     /// go at any time, and OpenCode runs a session whose model it does not know on whatever it picks.
     public let openCodeModels: OpenCodeModelLister
+    /// Live model lists from the app's cache. The MCP server never runs a CLI to list models.
+    public let modelLists: @Sendable () throws -> [AgentKind: AgentModelList]
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -254,7 +256,10 @@ public final class MCPServer: Sendable {
         usageReaders: [AgentKind: UsageReader] = MCPServer.defaultUsageReaders(),
         warnCapableAgents: Set<AgentKind> = MCPServer.defaultWarnCapableAgents,
         closeAnswerWait: CloseAnswerWait = .standard,
-        openCodeModels: @escaping OpenCodeModelLister = { try MCPServer.listOpenCodeModels(in: $0) }
+        openCodeModels: @escaping OpenCodeModelLister = { try MCPServer.listOpenCodeModels(in: $0) },
+        modelLists: @escaping @Sendable () throws -> [AgentKind: AgentModelList] = {
+            try ModelListCache.applicationSupport.read()
+        }
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -269,6 +274,7 @@ public final class MCPServer: Sendable {
         self.warnCapableAgents = warnCapableAgents
         self.closeAnswerWait = closeAnswerWait
         self.openCodeModels = openCodeModels
+        self.modelLists = modelLists
     }
 
     /// The real readers, wired to each agent's own on-disk records. `agy` and `cursor` write
@@ -533,7 +539,8 @@ public final class MCPServer: Sendable {
                         "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
                         "pid": ["type": "integer", "description": "Process ID of the sender"],
                         "force": ["type": "boolean", "description": "Override an existing lease held by another assignee"],
-                        "tier": ["type": "string", "description": "Model tier for this task: light, standard or deep. Defaults to the agent's configured default tier."],
+                        "tier": ["type": "string", "description": "Model tier for this task: light, standard or deep. Defaults to the agent's configured default tier. Pass tier or model, not both."],
+                        "model": ["type": "string", "description": "A specific model of the target agent, as an alternative to tier. Must be one the agent lists. Pass tier or model, not both."],
                         "verify": [
                             "type": "object",
                             "description": "Make this a verified task. linkC confirms the tests fail at base_sha before delivery, then runs command at the worker's reported sha and decides done or failed itself.",
@@ -901,6 +908,16 @@ public final class MCPServer: Sendable {
                 // Read once per request: a stable view of the mapping for the whole handler,
                 // never cached across calls — the next request reads whatever is on disk then.
                 let settings = modelSettings()
+                let modelArg: String?
+                if let raw = args["model"] {
+                    guard let text = raw as? String else {
+                        return toolResultResponse(id: id, text: "Error: model must be a string.", isError: true)
+                    }
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    modelArg = trimmed.isEmpty ? nil : trimmed
+                } else {
+                    modelArg = nil
+                }
                 // A non-string `tier` is malformed and refused outright; a string is trimmed and,
                 // if empty or all whitespace, treated the same as an absent argument.
                 let tierArg: String?
@@ -913,8 +930,58 @@ public final class MCPServer: Sendable {
                 } else {
                     tierArg = nil
                 }
+                if modelArg != nil, tierArg != nil {
+                    return toolResultResponse(id: id, text: "Error: pass tier or model, not both", isError: true)
+                }
+
+                let lists: [AgentKind: AgentModelList]
+                do {
+                    lists = try modelLists()
+                } catch {
+                    return toolResultResponse(id: id, text: "Error: could not read the live model lists — \(error)", isError: true)
+                }
+                let available = ModelListCache.available(for: toAgent, lists: lists, settings: settings)
+
                 let tier: ModelTier?
-                if let tierArg {
+                let model: String?
+                if let modelArg {
+                    guard toAgent != .cursor else {
+                        return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
+                    }
+                    if toAgent == .opencode, !OpenCodeFreeModels.isFree(modelArg) {
+                        let free = available.filter { OpenCodeFreeModels.isFree($0.id) }.map(\.id).joined(separator: ", ")
+                        return toolResultResponse(
+                            id: id,
+                            text: "Error: \(modelArg) is not free — OpenCode runs free models only. Free models: \(free)",
+                            isError: true)
+                    }
+                    guard available.contains(where: { $0.id.caseInsensitiveCompare(modelArg) == .orderedSame }) else {
+                        let listed = available.map(\.id).joined(separator: ", ")
+                        return toolResultResponse(
+                            id: id,
+                            text: "Error: \(modelArg) is not among the models \(toAgent.displayName) lists. Available: \(listed)",
+                            isError: true)
+                    }
+                    if toAgent == .opencode {
+                        let offered: [String]
+                        do {
+                            offered = try openCodeModels(workspaceRoot)
+                        } catch {
+                            return toolResultResponse(
+                                id: id,
+                                text: "Error: could not check \(modelArg) against the models OpenCode lists — \(error)",
+                                isError: true)
+                        }
+                        guard offered.contains(where: { $0.caseInsensitiveCompare(modelArg) == .orderedSame }) else {
+                            return toolResultResponse(
+                                id: id,
+                                text: "Error: \(modelArg) is not among the models OpenCode lists — free models come and go; pick another.",
+                                isError: true)
+                        }
+                    }
+                    model = modelArg
+                    tier = nil
+                } else if let tierArg {
                     guard let parsed = ModelTier(rawValue: tierArg.lowercased()) else {
                         return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
                     }
@@ -922,11 +989,14 @@ public final class MCPServer: Sendable {
                         return toolResultResponse(id: id, text: "Error: cursor cannot be pinned to a model.", isError: true)
                     }
                     tier = parsed
+                    model = nil
                 } else if toAgent == .cursor {
                     // Cursor was never tiered; an omitted tier keeps working exactly as before.
                     tier = nil
+                    model = nil
                 } else {
                     tier = settings.defaultTier(for: toAgent)
+                    model = nil
                 }
                 if let tier {
                     guard settings.model(for: toAgent, tier: tier) != nil else {
@@ -936,11 +1006,11 @@ public final class MCPServer: Sendable {
                             isError: true)
                     }
                 }
-                if toAgent == .opencode, let tier, let model = settings.model(for: .opencode, tier: tier) {
-                    guard OpenCodeFreeModels.isFree(model) else {
+                if toAgent == .opencode, let tier, let tierModel = settings.model(for: .opencode, tier: tier) {
+                    guard OpenCodeFreeModels.isFree(tierModel) else {
                         return toolResultResponse(
                             id: id,
-                            text: "Error: \(model) (opencode tier \(tier.rawValue)) is not free — OpenCode runs free models only; set the tier in linkC settings.",
+                            text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not free — OpenCode runs free models only; set the tier in linkC settings.",
                             isError: true)
                     }
                     let offered: [String]
@@ -949,13 +1019,13 @@ public final class MCPServer: Sendable {
                     } catch {
                         return toolResultResponse(
                             id: id,
-                            text: "Error: could not check opencode tier \(tier.rawValue)'s model \(model) against the models OpenCode lists — \(error)",
+                            text: "Error: could not check opencode tier \(tier.rawValue)'s model \(tierModel) against the models OpenCode lists — \(error)",
                             isError: true)
                     }
-                    guard offered.contains(model) else {
+                    guard offered.contains(tierModel) else {
                         return toolResultResponse(
                             id: id,
-                            text: "Error: \(model) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings.",
+                            text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings.",
                             isError: true)
                     }
                 }
@@ -964,7 +1034,7 @@ public final class MCPServer: Sendable {
                 do {
                     task = try inboxStore.createTask(from: caller.agent, to: toAgent,
                                                      fromSessionId: callerSessionId(),
-                                                     tier: tier,
+                                                     tier: tier, model: model,
                                                      prompt: prompt, files: files,
                                                      force: force, verification: verification)
                 } catch {
@@ -1116,13 +1186,16 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'model'.", isError: true)
                 }
                 let cleanModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-                // Validate against the mapping `linkc_get_models` actually reports — not the
-                // separate, stale AgentModelCatalog whitelist, which would reject every id this
-                // agent is really configured to run.
-                let configured = modelSettings().configuredModels(for: agent)
-                guard configured.contains(where: { $0.caseInsensitiveCompare(cleanModel) == .orderedSame }) else {
-                    let allowed = configured.isEmpty ? "none configured — set one in linkC settings" : configured.joined(separator: ", ")
-                    return toolResultResponse(id: id, text: "Error: '\(cleanModel)' is not a configured model for \(agent.displayName). Configured models: \(allowed)", isError: true)
+                let lists: [AgentKind: AgentModelList]
+                do {
+                    lists = try modelLists()
+                } catch {
+                    return toolResultResponse(id: id, text: "Error: could not read the live model lists — \(error)", isError: true)
+                }
+                let available = ModelListCache.available(for: agent, lists: lists, settings: modelSettings())
+                guard available.contains(where: { $0.id.caseInsensitiveCompare(cleanModel) == .orderedSame }) else {
+                    let allowed = available.isEmpty ? "none listed yet" : available.map(\.id).joined(separator: ", ")
+                    return toolResultResponse(id: id, text: "Error: '\(cleanModel)' is not among the models \(agent.displayName) lists. Available: \(allowed)", isError: true)
                 }
 
                 if let modelSwitcher {
@@ -1157,7 +1230,13 @@ public final class MCPServer: Sendable {
                 }
 
                 let settings = modelSettings()
-                var text = "# Configured Models by Tier\n\n"
+                let lists: [AgentKind: AgentModelList]
+                do {
+                    lists = try modelLists()
+                } catch {
+                    return toolResultResponse(id: id, text: "Error: could not read the live model lists — \(error)", isError: true)
+                }
+                var text = "# Models\n\n"
                 let now = Date()
                 for agent in targetAgents {
                     text += "## \(agent.displayName)\n"
@@ -1174,21 +1253,49 @@ public final class MCPServer: Sendable {
                     } else {
                         text += "Status: Active / Available\n\n"
                     }
+                    let list = lists[agent]
+                    if let fetchedAt = list?.fetchedAt {
+                        text += "- Listed \(AgeFormat.compact(from: fetchedAt, to: now)) ago\n"
+                    }
+                    if let error = list?.error {
+                        text += "- Last refresh error: \(error)\n"
+                    }
                     if agent == .cursor {
                         text += "- cursor cannot be pinned to a model\n\n"
                         continue
                     }
+                    text += "### Tiers\n"
                     for tier in ModelTier.resolutionOrder {
                         let id = settings.model(for: agent, tier: tier) ?? "(not set)"
                         let marker = tier == settings.defaultTier(for: agent) ? " — default" : ""
                         text += "- **\(tier.rawValue)**: \(id)\(marker)\n"
+                    }
+                    let available = ModelListCache.available(for: agent, lists: lists, settings: settings)
+                    text += "### Listed\n"
+                    if available.isEmpty {
+                        text += "- (none yet)\n"
+                    } else {
+                        for listed in available {
+                            var line = "- \(listed.id)"
+                            if listed.name != listed.id { line += " — \(listed.name)" }
+                            let tiers = ModelTier.resolutionOrder.filter {
+                                settings.model(for: agent, tier: $0)?.caseInsensitiveCompare(listed.id) == .orderedSame
+                            }
+                            if !tiers.isEmpty {
+                                line += " (tier \(tiers.map(\.rawValue).joined(separator: ", ")))"
+                            }
+                            if let pool = ModelPool.pool(of: listed.id, agent: agent) {
+                                line += " [pool \(ModelPool.displayName(pool))]"
+                            }
+                            text += line + "\n"
+                        }
                     }
                     if agent == .opencode {
                         text += "- opencode cannot switch a running session's model; delegate at another tier\n"
                     }
                     text += "\n"
                 }
-                text += "Edit these in linkC settings under MODELS.\n"
+                text += "Edit tier defaults in linkC settings under MODELS.\n"
                 return toolResultResponse(id: id, text: text)
 
             case "linkc_get_usage_status":

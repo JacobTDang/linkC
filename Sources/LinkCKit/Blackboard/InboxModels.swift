@@ -127,8 +127,12 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     /// Which model tier this task runs on. Optional for one reason: `loadUnlocked` throws on a
     /// decode error, so a required field would make every task row written before tiers existed
     /// unreadable and take the inbox with it. `nil` means "written before tiers" and keeps the
-    /// pre-tier routing; every task created from here on carries one.
+    /// pre-tier routing; every task created from here on carries one. A task with `model` set
+    /// has no tier.
     public let tier: ModelTier?
+    /// A specific model of `toAgent`, as an alternative to `tier`. Optional so rows written
+    /// before model-per-task still decode. A task with a model has no `tier`.
+    public let model: String?
     public let toAgent: AgentKind
     public var assigneeSessionId: String?
     public let prompt: String
@@ -176,6 +180,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         fromAgent: AgentKind,
         fromSessionId: String? = nil,
         tier: ModelTier? = nil,
+        model: String? = nil,
         toAgent: AgentKind,
         assigneeSessionId: String? = nil,
         prompt: String,
@@ -202,6 +207,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.fromAgent = fromAgent
         self.fromSessionId = fromSessionId
         self.tier = tier
+        self.model = model
         self.toAgent = toAgent
         self.assigneeSessionId = assigneeSessionId
         self.prompt = prompt

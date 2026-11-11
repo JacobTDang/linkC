@@ -6,14 +6,16 @@ final class WorkerClaimsTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_000_000)
 
     private func session(_ id: String, _ state: SessionState, agent: AgentKind = .codex, tier: ModelTier? = nil,
+                         model: String? = nil,
                          worker: Bool = true, for duration: TimeInterval = 0) -> Session {
         Session(id: id, cwd: folder, title: id, state: state, stateChangedAt: now.addingTimeInterval(-duration),
-                agentKind: agent, modelTier: tier, isWorker: worker)
+                agentKind: agent, model: model, modelTier: tier, isWorker: worker)
     }
 
     private func task(_ id: String, to agent: AgentKind = .codex, tier: ModelTier? = nil,
+                      model: String? = nil,
                       from sessionId: String? = nil, pinnedTo target: String? = nil) -> TaskRecord {
-        TaskRecord(id: id, fromAgent: .claude, fromSessionId: sessionId, tier: tier, toAgent: agent,
+        TaskRecord(id: id, fromAgent: .claude, fromSessionId: sessionId, tier: tier, model: model, toAgent: agent,
                    prompt: id, targetSessionId: target)
     }
 
@@ -74,6 +76,17 @@ final class WorkerClaimsTests: XCTestCase {
     func testARateLimitedSessionOnAnotherTierDoesNotHoldTheTaskBack() {
         let claims = plan([task("T1", tier: .deep)], [session("A", .error, tier: .light)])
         XCTAssertEqual(claims["T1"], .spawn)
+    }
+
+    func testAModelTaskNeedsASessionRunningThatModel() {
+        let matching = plan(
+            [task("T1", model: "claude-opus-4-6-thinking")],
+            [session("A", .ready, model: "claude-opus-4-6-thinking")])
+        XCTAssertEqual(matching["T1"], .deliver(to: "A"))
+        let other = plan(
+            [task("T1", model: "claude-opus-4-6-thinking")],
+            [session("A", .ready, model: "gemini-3.8-flash-medium")])
+        XCTAssertEqual(other["T1"], .spawn)
     }
 
 

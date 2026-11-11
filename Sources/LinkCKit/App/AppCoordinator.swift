@@ -763,6 +763,7 @@ public final class AppCoordinator {
     @discardableResult
     public func spawnTeammate(
         in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil, tier: ModelTier? = nil,
+        model: String? = nil,
         asWorker: Bool = false
     ) throws -> Session {
         let norm = ProjectPath.canonical(workspacePath)
@@ -795,16 +796,19 @@ public final class AppCoordinator {
 
         // A teammate starts in the background — the relay spawns these while the user is
         // working elsewhere, and selecting one raises the panel over whatever they were doing.
-        return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier, select: false, asWorker: asWorker)
+        return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier, model: model,
+                              select: false, asWorker: asWorker)
     }
 
     @discardableResult
     public func newSession(
         cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil,
+        model: String? = nil,
         select: Bool = true, asWorker: Bool = false
     ) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
-        return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier, asWorker: asWorker, select: select)
+        return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier, model: model,
+                          asWorker: asWorker, select: select)
     }
 
     /// The model configured for `agent` at `tier`, or nil when the mapping has no entry — a
@@ -875,18 +879,26 @@ public final class AppCoordinator {
         resumeId: String? = nil,
         id: String? = nil,
         tier: ModelTier? = nil,
+        model: String? = nil,
         asWorker: Bool = false,
         select: Bool
     ) throws -> Session {
-        // A tier only ever pins a brand-new process. For Codex, `.continueLast`/`.resume` argv
-        // starts with the `resume` subcommand (see AgentDescriptor), so appending `--model <id>`
+        // A tier or model only ever pins a brand-new process. For Codex, `.continueLast`/`.resume`
+        // argv starts with the `resume` subcommand (see AgentDescriptor), so appending `--model <id>`
         // after it — as this function does for `.new` — would land the flag after the subcommand
         // instead of before it. No caller pairs a tier with anything but `.new` today; refuse the
         // combination outright rather than ever build that argv.
-        guard tier == nil || mode == .new else {
+        guard (tier == nil && model == nil) || mode == .new else {
             throw LinkCError.process("a tier can only pin a new session; \(mode) reuses an existing session's model")
         }
-        let (model, modelTier) = try launchModel(for: agent, tier: tier)
+        let resolved: (model: String?, tier: ModelTier?)
+        if let model {
+            resolved = (model, nil)
+        } else {
+            resolved = try launchModel(for: agent, tier: tier)
+        }
+        let model = resolved.model
+        let modelTier = resolved.tier
         // A continued OpenCode session keeps the model it last ran on, which linkC does not know.
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
                                    model: agent == .opencode && mode == .continueLast ? nil : model, modelTier: modelTier,

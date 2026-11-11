@@ -1018,6 +1018,53 @@ final class AppCoordinatorRelayTests: XCTestCase {
         )
     }
 
+    /// A model task with no session on that model starts a worker launched with `--model <id>`.
+    @MainActor
+    func testAModelTaskStartsAWorkerLaunchedWithThatModel() async throws {
+        let argvFile = tempDir.appendingPathComponent("argv-record")
+        let script = tempDir.appendingPathComponent("argv_agent.sh")
+        try """
+            #!/bin/sh
+            printf '%s\\n' "$@" > "\(argvFile.path)"
+            stty -echo 2>/dev/null
+            printf '\\033[?2004h'
+            exec /bin/cat
+            """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let coordinator = makeCoordinator(agentPathResolver: { _ in script.path })
+        defer { coordinator.shutdown() }
+        let session = try coordinator.spawnTeammate(
+            in: tempDir.path, agent: .agy, model: "claude-opus-4-6-thinking", asWorker: true)
+        XCTAssertEqual(session.model, "claude-opus-4-6-thinking")
+        XCTAssertNil(session.modelTier)
+        // The mock writes argv after start; give the child a moment.
+        var argv: [String] = []
+        for _ in 0..<50 {
+            argv = ((try? String(contentsOf: argvFile, encoding: .utf8)) ?? "")
+                .split(separator: "\n").map(String.init)
+            if argv.contains("--model") { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(argv.contains("--model"), "argv=\(argv) model=\(session.model ?? "nil")")
+        XCTAssertTrue(argv.contains("claude-opus-4-6-thinking"), "argv=\(argv)")
+
+        // Through the relay: a queued model task with no matching session starts another worker.
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        _ = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-medium",
+                                 prompt: "Use Flash.", files: [])
+        // The existing Opus worker cannot carry a Flash task, so a new worker is claimed.
+        coordinator.store.updateState(id: session.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: session.id)
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+        let flashWorker = try await waitUntil {
+            coordinator.store.sessions.contains {
+                $0.agentKind == .agy && $0.isWorker && $0.model == "gemini-3.8-flash-medium"
+            }
+        }
+        XCTAssertTrue(flashWorker, "spawn failure: \(coordinator.lastSpawnFailure.map { String(describing: $0) } ?? "none")")
+    }
+
     /// Test 2e2: A legacy `.task` row is the only message kind that still spawns, and a spawn
     /// failure there must be recorded rather than swallowed. This is the path the old
     /// message-dispatch spawn-failure test covered before every other kind stopped spawning.
@@ -4661,7 +4708,7 @@ private final class BlockingVerifier: TaskVerifier, @unchecked Sendable {
 private extension TaskRecord {
     func with(createdAt: Date) -> TaskRecord {
         TaskRecord(
-            id: id, fromAgent: fromAgent, fromSessionId: fromSessionId, tier: tier, toAgent: toAgent,
+            id: id, fromAgent: fromAgent, fromSessionId: fromSessionId, tier: tier, model: model, toAgent: toAgent,
             assigneeSessionId: assigneeSessionId, prompt: prompt, files: files, state: state, hop: hop,
             createdAt: createdAt, queuedAt: queuedAt, deliveredAt: deliveredAt, startedAt: startedAt, finishedAt: finishedAt,
             leaseExpiresAt: leaseExpiresAt, report: report, cancelReason: cancelReason,

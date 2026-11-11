@@ -61,7 +61,7 @@ final class MCPServerModelTests: XCTestCase {
         let text = content?.first?["text"] as? String ?? ""
 
         // Header and agent sections
-        XCTAssertTrue(text.contains("Configured Models by Tier"), "Missing title: \(text)")
+        XCTAssertTrue(text.contains("# Models"), "Missing title: \(text)")
         XCTAssertTrue(text.contains("Claude"), "Missing Claude section: \(text)")
         XCTAssertTrue(text.contains("Codex"), "Missing Codex section: \(text)")
 
@@ -266,8 +266,8 @@ final class MCPServerModelTests: XCTestCase {
 
         let content = result?["content"] as? [[String: Any]]
         let text = content?.first?["text"] as? String ?? ""
-        XCTAssertTrue(text.contains("is not a configured model"), "Expected rejection: \(text)")
-        XCTAssertTrue(text.contains("Configured models:"), "Expected configured list in: \(text)")
+        XCTAssertTrue(text.contains("is not among the models"), "Expected rejection: \(text)")
+        XCTAssertTrue(text.contains("Available:"), "Expected available list in: \(text)")
     }
 
     func testSwitchModelRejectsShellAgent() throws {
