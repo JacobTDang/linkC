@@ -3,10 +3,12 @@ import XCTest
 
 final class WorkerClaimsTests: XCTestCase {
     private let folder = "/tmp/linkc-worker-claims"
+    private let now = Date(timeIntervalSince1970: 1_000_000)
 
     private func session(_ id: String, _ state: SessionState, agent: AgentKind = .codex, tier: ModelTier? = nil,
-                         worker: Bool = true) -> Session {
-        Session(id: id, cwd: folder, title: id, state: state, agentKind: agent, modelTier: tier, isWorker: worker)
+                         worker: Bool = true, for duration: TimeInterval = 0) -> Session {
+        Session(id: id, cwd: folder, title: id, state: state, stateChangedAt: now.addingTimeInterval(-duration),
+                agentKind: agent, modelTier: tier, isWorker: worker)
     }
 
     private func task(_ id: String, to agent: AgentKind = .codex, tier: ModelTier? = nil,
@@ -19,7 +21,7 @@ final class WorkerClaimsTests: XCTestCase {
                       holding: Set<String> = [], ready: Set<String>? = nil) -> [String: WorkerClaim] {
         let idle = sessions.filter { [.ready, .finished, .waitingIdle].contains($0.state) }.map(\.id)
         return WorkerClaims.plan(queued: tasks, sessions: sessions, holdingUnreported: holding,
-                                 ready: ready ?? Set(idle))
+                                 ready: ready ?? Set(idle), now: now)
     }
 
     func testAnIdleWorkerIsReused() {
@@ -52,6 +54,15 @@ final class WorkerClaimsTests: XCTestCase {
     func testAWorkerBusyWithNoTaskIsWaitedFor() {
         let claims = plan([task("T1")], [session("A", .working)])
         XCTAssertEqual(claims["T1"], .awaitBusy("A"))
+    }
+
+    func testAWorkerStuckWithNoTaskIsWaitedForOnlySoLong() {
+        // A screen misread as working, or a dialog nobody answers, must not hold the agent's tasks for an hour.
+        let patience = WorkerClaims.busyWorkerPatience
+        let within = plan([task("T1")], [session("A", .waitingPermission, for: patience - 1)])
+        XCTAssertEqual(within["T1"], .awaitBusy("A"))
+        let past = plan([task("T1")], [session("A", .working, for: patience + 1)])
+        XCTAssertEqual(past["T1"], .spawn)
     }
 
     func testARateLimitedSessionThatCouldCarryTheTaskHoldsItBack() {

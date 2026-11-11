@@ -9,7 +9,8 @@ public enum WorkerClaim: Equatable, Sendable {
     /// The session is still starting.
     case awaitStart(String)
     /// A worker holding no task that is busy or held at a prompt, such as a trust dialog at boot. It
-    /// is waited for: a worker started past it could stop at the same prompt, pass after pass.
+    /// is waited for, up to `WorkerClaims.busyWorkerPatience`: a worker started past it could stop at
+    /// the same prompt, pass after pass.
     case awaitBusy(String)
     /// A session that could carry the task is rate-limited, so its agent is paused.
     case awaitLimited(String)
@@ -27,11 +28,16 @@ public enum WorkerClaim: Equatable, Sendable {
 public enum WorkerClaims {
     private static let idleStates: Set<SessionState> = [.ready, .finished, .waitingIdle]
 
+    /// How long a task waits for a worker that holds no task and is busy or at a prompt. Past it the
+    /// worker is taken to be stuck (a screen misread as working, a dialog nobody answers) and a worker
+    /// is started past it, so a stuck worker costs at most one launch in this long, not the queue's hour.
+    public static let busyWorkerPatience: TimeInterval = 3 * 60
+
     /// `queued` in queue order. `sessions` are the folder's sessions. `holdingUnreported` are the
     /// assignees of delivered or started tasks. `ready` are the idle sessions that can take a paste
     /// now. Pinned tasks claim first, so an earlier unpinned task cannot take a pinned task's session.
     public static func plan(
-        queued: [TaskRecord], sessions: [Session], holdingUnreported: Set<String>, ready: Set<String>
+        queued: [TaskRecord], sessions: [Session], holdingUnreported: Set<String>, ready: Set<String>, now: Date
     ) -> [String: WorkerClaim] {
         let live = sessions.filter { $0.state != .ended }
         var claimed: Set<String> = []
@@ -61,7 +67,10 @@ public enum WorkerClaims {
             let pick = free.first { idleStates.contains($0.state) && ready.contains($0.id) }
                 ?? free.first { idleStates.contains($0.state) }
                 ?? free.first
-                ?? unclaimed.first { $0.isWorker && ($0.state == .working || $0.state == .waitingPermission) }
+                ?? unclaimed.first {
+                    $0.isWorker && ($0.state == .working || $0.state == .waitingPermission)
+                        && now.timeIntervalSince($0.stateChangedAt) < busyWorkerPatience
+                }
             if let pick {
                 claims[task.id] = claim(pick)
             } else if let limited = carriers.first(where: { $0.state == .error }) {

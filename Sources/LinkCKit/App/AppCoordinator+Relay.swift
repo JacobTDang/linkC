@@ -326,7 +326,8 @@ extension AppCoordinator {
         let ready = Set(folderSessions.filter {
             isIdle($0.state) && injectionGapElapsed(sessionId: $0.id) && pasteSettled(sessionId: $0.id)
         }.map(\.id))
-        let claims = WorkerClaims.plan(queued: queued, sessions: folderSessions, holdingUnreported: holdingUnreported, ready: ready)
+        let claims = WorkerClaims.plan(queued: queued, sessions: folderSessions, holdingUnreported: holdingUnreported,
+                                       ready: ready, now: now())
 
         var loggedInjectionWait = false
         var launched: Set<String> = []
@@ -344,7 +345,7 @@ extension AppCoordinator {
                 continue
             case .awaitBusy(let id):
                 NSLog("[linkC relay] dispatchTasks: task %@ waits for %@ worker %@, which holds no task and is %@",
-                      task.shortId, task.toAgent.displayName, id, String(describing: store.session(id: id)?.state))
+                      task.shortId, task.toAgent.displayName, id, store.session(id: id)?.state.rawValue ?? "gone")
                 continue
             case .awaitLimited(let id):
                 NSLog("[linkC relay] dispatchTasks: task %@ waits — %@ session %@ is rate-limited",

@@ -43,7 +43,7 @@ Pinned tasks claim first, then the unpinned tasks in queue order, so an earlier 
   An idle session is preferred to a starting one.
   - **Idle session claimed:** the existing readiness checks decide what happens: the injection gap, a negotiated bracketed paste, and the settle margin. If they pass, the task is delivered. If not, the task waits for that session. The paste-negotiation timeout still expires the task.
   - **Starting session claimed:** the task waits for it. A booting worker counts as taken, so no extra worker starts.
-  - **No free session, but a worker holding no task is `working` or `waitingPermission`:** the task claims that worker and waits for it. This is a worker held at a prompt before it got a task, such as a trust dialog at boot, or one busy as it boots. A worker started past it could stop at the same prompt, pass after pass. A session the user opened, or a worker busy with its own task, is never waited for this way.
+  - **No free session, but a worker holding no task is `working` or `waitingPermission`:** the task claims that worker and waits for it. This is a worker held at a prompt before it got a task, such as a trust dialog at boot, or one busy as it boots. A worker started past it could stop at the same prompt, pass after pass. The wait lasts at most `WorkerClaims.busyWorkerPatience` (3 minutes) in that state. After that, the worker is taken to be stuck (a screen misread as working, or a dialog nobody answers), and a worker is started past it. So a stuck worker costs at most one launch every 3 minutes, and does not hold the queue for an hour. A session the user opened, or a worker busy with its own task, is never waited for this way.
   - **A session that could carry the task is `error`:** its agent is rate-limited, so the task waits, as it did before this change. No fresh worker is started into the cooldown.
   - **Otherwise:** a worker is started, after the existing checks: the tier has a model, and OpenCode lists the model. Every such task runs those checks, so a refusal is reported for each. `dispatchTasks`, not `WorkerClaims`, then launches at most one worker per agent and tier in a pass; another task that needs one waits for the next pass. So a CLI that exits at launch is retried once a pass, as before, not once per queued task.
 
@@ -96,7 +96,7 @@ TDD through the existing seams. Nothing real is launched.
   - a busy worker means a new spawn;
   - a starting worker is claimed, not spawned past;
   - two tasks with no workers each need one, and with one worker starting the second still needs one;
-  - a worker with no task held at a dialog, or busy, is waited for;
+  - a worker with no task held at a dialog, or busy, is waited for, but only for 3 minutes;
   - a rate-limited session that could carry the task holds it back;
   - a worker holding an unreported task is skipped;
   - a pinned task keeps its own session;
