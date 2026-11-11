@@ -21,7 +21,7 @@ extension AppCoordinator {
             NSLog("[linkC relay] reapIdleWorkers: tasks — %@", String(describing: error))
             return false
         }
-        if answerCloseRequests(tasks: tasks, inboxStore: inboxStore) { return true }
+        if answerCloseRequests(tasks: tasks, inboxStore: inboxStore, workspacePath: norm) { return true }
         // With no session here, there is nothing to reap; close requests above may still come from an outside delegator.
         guard store.sessions.contains(where: { $0.cwd == norm }) else { return false }
         let workers = store.sessions.filter {
@@ -32,7 +32,9 @@ extension AppCoordinator {
             // stays a worker; the reaper still never closes the one on screen.
             guard id != terminals.selectedId else { continue }
             NSLog("[linkC relay] closing finished worker %@ in %@", id, workspacePath)
+            let agent = store.session(id: id)?.agentKind
             stopSession(id)
+            postWorkerClosed(agent, in: norm, because: "It sat idle after its work ended.")
         }
         return false
     }
@@ -41,7 +43,7 @@ extension AppCoordinator {
     /// the tool that asked to read. A request that has to wait stays pending. Returns `true` when
     /// the inbox lock was still contended after `relayLockTimeout`; the request is then decided
     /// again next tick, and a session already closed reads as closed.
-    private func answerCloseRequests(tasks: [TaskRecord], inboxStore: InboxStore) -> Bool {
+    private func answerCloseRequests(tasks: [TaskRecord], inboxStore: InboxStore, workspacePath norm: String) -> Bool {
         for task in tasks {
             guard let request = task.closeRequest, request.isPending else { continue }
             let session = task.assigneeSessionId.flatMap { store.session(id: $0) }
@@ -54,7 +56,9 @@ extension AppCoordinator {
                 continue
             case .close(let sessionId):
                 NSLog("[linkC relay] closing worker %@ on request for task %@", sessionId, task.shortId)
+                let agent = store.session(id: sessionId)?.agentKind
                 stopSession(sessionId)
+                postWorkerClosed(agent, in: norm, because: "Closed on request for task \(task.shortId).")
                 outcome = .closed(at: now())
             case .alreadyClosed:
                 outcome = .closed(at: now())
@@ -70,5 +74,12 @@ extension AppCoordinator {
             }
         }
         return false
+    }
+
+    /// A Discord-only event for a worker linkC just closed (spec §2).
+    private func postWorkerClosed(_ agent: AgentKind?, in folder: String, because reason: String) {
+        notifications.postEvent(LinkCEvent(
+            kind: .workerClosed, tone: .info, title: "\(agent?.shortName ?? "A") worker closed",
+            body: reason, project: folder, at: now()))
     }
 }

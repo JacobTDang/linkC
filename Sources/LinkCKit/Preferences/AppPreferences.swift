@@ -56,6 +56,8 @@ public final class AppPreferences {
         static let usageFooter = "showsUsageFooter"
         static let linkCApps = "linkCApps"
         static let linkCAppsUnreadable = "linkCApps.unreadable"
+        static let discordProjects = "discordWebhookProjects"
+        static let discordProjectsUnreadable = "discordWebhookProjects.unreadable"
     }
 
     public var hotKeyPreset: HotKeyPreset {
@@ -95,6 +97,12 @@ public final class AppPreferences {
         }
     }
 
+    /// The project folders (canonical) that have a Discord webhook of their own. The URLs are secrets
+    /// and live only in the Keychain (`DiscordWebhooks`).
+    public var discordProjects: [String] {
+        didSet { defaults.set(discordProjects, forKey: Keys.discordProjects) }
+    }
+
     private let defaults: UserDefaults
     private let modelStore: AgentModelStore
 
@@ -117,6 +125,14 @@ public final class AppPreferences {
                 NSLog("[linkC] the Settings apps are unreadable, starting with none — %@", String(describing: error))
             }
         }
+        let storedProjects = defaults.object(forKey: Keys.discordProjects)
+        if let storedProjects, !(storedProjects is [String]) {
+            // The list is kept aside under its own key so it can be recovered, and until the projects are set
+            // again in Settings their events go to the default webhook.
+            defaults.set(storedProjects, forKey: Keys.discordProjectsUnreadable)
+            NSLog("[linkC] the Discord project list is unreadable, starting with none")
+        }
+        self.discordProjects = storedProjects as? [String] ?? []
         self.linkCApps = apps
     }
 }

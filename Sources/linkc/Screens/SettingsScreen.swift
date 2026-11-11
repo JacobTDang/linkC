@@ -10,6 +10,7 @@ struct SettingsScreen: View {
     @State private var launchAtLogin = false
     @State private var loginItemBusy = false
     @State private var errorText: String?
+    @State private var addingDiscordProject: String?
     /// A decode error from a folder's own `.linkc/app.json`, surfaced once under the row
     /// `addApp()` just appended — keyed by folder so the right row seeds its error text from it
     /// the moment it's created.
@@ -148,6 +149,38 @@ struct SettingsScreen: View {
                             }
                         }
                     }
+
+                    SectionHeader(title: "DISCORD").padding(.top, 6)
+                    Text(
+                        "linkC posts its events to Discord: an agent finishing or needing you, tasks, closed "
+                            + "workers, rate limits and watched services. A project with its own webhook posts "
+                            + "there, its subfolders and worktrees too; everything else goes to the default. "
+                            + "Webhook URLs stay in your Keychain. "
+                            + "Name each webhook \u{201C}linkC\u{201D} in Discord: its posts show that name."
+                    )
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+                    if let discord = model.discord {
+                        DiscordWebhookRow(discord: discord, account: DiscordWebhooks.defaultAccount, title: "Default")
+                        ForEach(discord.webhooks.projects, id: \.self) { folder in
+                            DiscordWebhookRow(discord: discord, account: folder,
+                                              title: (folder as NSString).lastPathComponent)
+                        }
+                        if let folder = addingDiscordProject, !discord.webhooks.projects.contains(folder) {
+                            DiscordWebhookRow(discord: discord, account: folder,
+                                              title: (folder as NSString).lastPathComponent,
+                                              opensEditing: true, onDone: { addingDiscordProject = nil })
+                                .id(folder)
+                        }
+                        HStack {
+                            QuietLink("Add project…") { addDiscordProject() }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.top, 2)
+                    }
                 }
                 .readingColumn()
                 .padding(.horizontal, 12)
@@ -195,6 +228,24 @@ struct SettingsScreen: View {
         }
     }
 
+    private func addDiscordProject() {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Choose the project folder whose events go to a webhook of their own"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let folder = ProjectPath.canonical(url.path)
+        if model.discord?.webhooks.projects.contains(folder) == true {
+            errorText = "This project already has a webhook."
+        } else {
+            errorText = nil
+            addingDiscordProject = folder
+        }
+    }
+
     /// Add app…: pick a folder, prefill from its own `.linkc/app.json` when it has one and it
     /// decodes, prefill with defaults otherwise (showing the decode error under the new row when
     /// the file exists but is broken), then register the app for every project.
@@ -224,6 +275,100 @@ struct SettingsScreen: View {
             }
         }
         model.preferences.linkCApps.append(LinkCAppSetting(folder: folder, manifest: manifest))
+    }
+}
+
+/// One Discord webhook in Settings: its name, its webhook's id (never the URL) and status, and
+/// set / test / remove. The URL is typed into a secure field and cleared once stored.
+private struct DiscordWebhookRow: View {
+    let discord: DiscordNotifier<ContinuousClock>
+    let account: String
+    let title: String
+    /// Opens with the field showing: a project just added has no webhook yet.
+    var opensEditing = false
+    var onDone: () -> Void = {}
+
+    @State private var editing = false
+    @State private var text = ""
+    @State private var error: String?
+
+    private var state: DiscordWebhookState { discord.webhooks.state(for: account) }
+
+    private var isSet: Bool {
+        if case .set = state { return true }
+        return false
+    }
+
+    private var detail: String {
+        switch state {
+        case .notSet: "Not set"
+        case .set(let webhook): "Webhook \(webhook.id) · \(discord.status(for: account).label(now: Date()))"
+        case .missing: WebhookStatus.missing.label(now: Date())
+        case .unreadable(let reason): reason
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 12)
+                if isSet { QuietLink("test") { run { try discord.sendTest(to: account) } } }
+                QuietLink(isSet ? "change" : "set") { editing.toggle() }
+                if state != .notSet || account != DiscordWebhooks.defaultAccount {
+                    QuietLink("remove") {
+                        run {
+                            try discord.remove(account)
+                            onDone()
+                        }
+                    }
+                }
+            }
+            if editing {
+                HStack(spacing: 6) {
+                    SecureField("https://discord.com/api/webhooks/…", text: $text)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.mini)
+                        .onSubmit { save() }
+                    QuietLink("save") { save() }
+                }
+            }
+            if let error {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.contextWarn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .onAppear { if opensEditing { editing = true } }
+    }
+
+    private func save() {
+        run {
+            try discord.set(text, for: account)
+            text = ""
+            editing = false
+            onDone()
+        }
+    }
+
+    private func run(_ action: () throws -> Void) {
+        do {
+            try action()
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }
 

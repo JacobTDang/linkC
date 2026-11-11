@@ -277,6 +277,8 @@ public final class AppCoordinator {
     /// What the last relay pass found in each workspace, so choosing the next interval reads
     /// nothing. Internal: the relay writes it (see `AppCoordinator+Relay.swift`).
     var relayWork = RelayWork()
+    /// The task states each folder had at the last relay pass, for Discord's task events.
+    var taskEvents = TaskEventFeed()
 
     /// Whether the app has something on screen that needs its own sampling: the menu-bar panel, or a
     /// window that shows live terminals. The app decides which, and sets it through `setPanelVisible`.
@@ -555,6 +557,7 @@ public final class AppCoordinator {
         let serverOnlyFolders = mcpWorkspaces().subtracting(sessionFolders)
         let workspaces = sessionFolders.union(serverOnlyFolders)
         relayWork.retain(only: workspaces)
+        taskEvents.retain(only: workspaces)
         inboxWatcher?.watch(workspaces: workspaces)
         sampleAgentStates()
         for folder in serverOnlyFolders.sorted() {
@@ -678,14 +681,25 @@ public final class AppCoordinator {
     /// Announce something that isn't a session — a watched service going down or coming
     /// back. Routed through the same notification manager so authorization, the sink, and
     /// click handling stay in one place.
-    public func notify(id: String, title: String, body: String) {
+    public func notify(id: String, title: String, body: String, tone: LinkCEvent.Tone) {
         // A unique request id per alert: UNNotificationRequest's identifier IS the
         // dedupe key, so reusing one id per endpoint would make each new alert replace
         // the last in Notification Center — a down→up→down flap would leave only its
         // final state for someone who was away from the machine.
         notifications.postAlert(
-            id: "\(Self.alertIdPrefix)\(id):\(UUID().uuidString)", title: title, body: body
+            id: "\(Self.alertIdPrefix)\(id):\(UUID().uuidString)", title: title, body: body, tone: tone
         )
+    }
+
+    /// A macOS notification linkC never forwards to Discord.
+    public func postLocalNotification(title: String, body: String) {
+        notifications.postLocal(title: title, body: body)
+    }
+
+    /// Told every event linkC posts, for Discord (spec 2026-11-05): alerts, task changes, closed workers.
+    public var onEvent: ((LinkCEvent) -> Void)? {
+        get { notifications.onEvent }
+        set { notifications.onEvent = newValue }
     }
 
     /// Marks a notification as "not a session" — clicking one must not be routed into
@@ -875,7 +889,8 @@ public final class AppCoordinator {
                    openingPrompts.removeValue(forKey: session.id) != nil {
                     NSLog("[linkC] the linkc prompt for %@ was dropped: the user typed first", session.id)
                     notifications.post(title: "linkC: your prompt was not typed",
-                                       body: "You typed into \(session.agentKind.displayName) first. Paste it in yourself if you still want it.")
+                                       body: "You typed into \(session.agentKind.displayName) first. Paste it in yourself if you still want it.",
+                                       project: session.cwd, tone: .info)
                 }
                 adoptWorker(session.id)
             }

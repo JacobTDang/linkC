@@ -138,7 +138,8 @@ extension AppCoordinator {
                           id, session.agentKind.displayName, Self.pasteNegotiationTimeout)
                     notifications.post(
                         title: "linkC: your prompt was not typed",
-                        body: "\(session.agentKind.displayName) was not ready for it within \(Int(Self.pasteNegotiationTimeout / 60)) minutes. Paste it in yourself."
+                        body: "\(session.agentKind.displayName) was not ready for it within \(Int(Self.pasteNegotiationTimeout / 60)) minutes. Paste it in yourself.",
+                        project: session.cwd
                     )
                 }
                 continue
@@ -151,7 +152,8 @@ extension AppCoordinator {
                 NSLog("[linkC] the linkc prompt for %@ did not reach its terminal", id)
                 notifications.post(
                     title: "linkC: your prompt was not typed",
-                    body: "It did not reach \(session.agentKind.displayName)'s terminal. Paste it in yourself."
+                    body: "It did not reach \(session.agentKind.displayName)'s terminal. Paste it in yourself.",
+                    project: session.cwd
                 )
             }
         }

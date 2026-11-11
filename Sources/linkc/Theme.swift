@@ -15,6 +15,8 @@ enum Theme {
 
     // Status colors.
     static let statusRunning = Color(red: 0.369, green: 0.710, blue: 0.612) // ~#5EB59C
+    /// A session's working dot (project rows, split-pane headers): soft white, no glow.
+    static let statusWorking = Color.white.opacity(0.70)
     static let statusError = Color(red: 0.85, green: 0.35, blue: 0.33)
     /// Soft gold for a context hairline nearing auto-compact (~#E3C169).
     static let contextWarn = Color(red: 0.89, green: 0.757, blue: 0.412)

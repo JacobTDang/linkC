@@ -50,6 +50,9 @@ extension AppCoordinator {
         let inboxStore = InboxStore(workspaceRoot: norm)
         relayWork.beginPass(in: norm)
         pollPasteReadiness(workspacePath: norm)
+        guard !reportTaskEvents(workspacePath: norm, inboxStore: inboxStore) else {
+            return logRelayLockContention(workspacePath: norm)
+        }
         guard !settleResolvableTasks(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
         }
@@ -97,6 +100,28 @@ extension AppCoordinator {
         for session in store.sessions where session.cwd == workspacePath && session.state != .ended {
             _ = terminals.session(id: session.id)?.acceptsPaste
         }
+    }
+
+    /// Posts the task changes in `workspacePath` since the last pass, for Discord only (spec §2.1). A relay
+    /// phase: returns `true` when the inbox lock was still contended after `relayLockTimeout`, so the tick
+    /// stops there. A read that fails keeps the last snapshot, so the next pass compares again: nothing is
+    /// lost or repeated.
+    @discardableResult
+    func reportTaskEvents(workspacePath norm: String, inboxStore: InboxStore) -> Bool {
+        // Like every relay phase: a store read would recreate a deleted workspace on disk.
+        guard workspaceExists(norm) else { return false }
+        let tasks: [TaskRecord]
+        do {
+            tasks = try inboxStore.load(timeout: Self.relayLockTimeout).tasks
+        } catch {
+            if isRelayLockTimeout(error) { return true }
+            NSLog("[linkC relay] reportTaskEvents: tasks — %@", String(describing: error))
+            return false
+        }
+        for event in taskEvents.events(in: norm, tasks: tasks, at: now()) {
+            notifications.postEvent(event)
+        }
+        return false
     }
 
     /// Logs once that this tick ended early because the inbox lock was still held by another
@@ -344,7 +369,7 @@ extension AppCoordinator {
                             )
                             logTaskEnded(task, as: "expired", reason: reason)
                             lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
-                            notifications.post(title: Self.openCodeRefusalTitle, body: reason)
+                            notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: workspacePath)
                         } catch {
                             if isRelayLockTimeout(error) { return true }
                             NSLog("[linkC relay] dispatchTasks: task %@ OpenCode refusal — %@", task.shortId, String(describing: error))
@@ -656,7 +681,7 @@ extension AppCoordinator {
         if openCodeRefusalUsersTold.insert(key).inserted {
             // A "last known problem" marker only: whether to report is decided by `key`.
             lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
-            notifications.post(title: Self.openCodeRefusalTitle, body: reason)
+            notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: workspacePath)
         }
         guard !openCodeRefusalNoticesSent.contains(key) else { return }
         if enqueueOpenCodeRefusalNotice(reason, from: .opencode, to: delegator, taskId: taskId, inboxStore: inboxStore) {
@@ -670,7 +695,7 @@ extension AppCoordinator {
         inboxStore: InboxStore
     ) {
         _ = enqueueOpenCodeRefusalNotice(notice, from: sender, to: delegator, taskId: taskId, inboxStore: inboxStore)
-        notifications.post(title: Self.openCodeRefusalTitle, body: reason)
+        notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: inboxStore.workspaceRoot)
     }
 
     /// Whether `notice` reached `delegator`'s inbox; a failure is logged.
@@ -946,7 +971,8 @@ extension AppCoordinator {
         if notified > 0 {
             notifications.post(
                 title: "linkC: \(session.agentKind.displayName) turn ended",
-                body: "\(notified) task(s) still open without a report; \(open.first?.fromAgent.displayName ?? "the delegator") was told."
+                body: "\(notified) task(s) still open without a report; \(open.first?.fromAgent.displayName ?? "the delegator") was told.",
+                project: norm
             )
             processPendingMessages(workspacePath: norm)
         }
@@ -1086,7 +1112,8 @@ extension AppCoordinator {
             }
             self.notifications.post(
                 title: "linkC: \(session.agentKind.displayName) Rate Limited",
-                body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available."
+                body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available.",
+                project: session.cwd
             )
         }
 
@@ -1171,7 +1198,8 @@ extension AppCoordinator {
             store.updateState(id: session.id, to: .error)
             notifications.post(
                 title: "linkC: Swarm Rate Limited",
-                body: "All candidate agents in \(URL(fileURLWithPath: norm).lastPathComponent) are rate limited or the task has exhausted its reroute hops. Pausing auto-delegation."
+                body: "All candidate agents in \(URL(fileURLWithPath: norm).lastPathComponent) are rate limited or the task has exhausted its reroute hops. Pausing auto-delegation.",
+                project: norm
             )
             return true
         }

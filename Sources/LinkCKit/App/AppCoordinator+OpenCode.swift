@@ -36,7 +36,7 @@ extension AppCoordinator {
                 // Closed while the listing ran: the user already ended it, so there is nothing to tell them.
                 guard let self, self.store.session(id: session.id) != nil else { return }
                 self.notifications.post(title: "linkC: OpenCode could not continue",
-                                        body: "\(session.title): \(error)")
+                                        body: "\(session.title): \(error)", project: folder)
                 self.cleanup(sessionId: session.id)
             }
         }

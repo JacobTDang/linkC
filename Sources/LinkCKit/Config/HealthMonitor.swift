@@ -296,6 +296,8 @@ public struct HealthChange: Equatable, Sendable {
     public let endpointId: String
     public let title: String
     public let body: String
+    /// How the change reads in Discord: down is failed, degraded needs you, back up is information.
+    public let tone: LinkCEvent.Tone
 }
 
 /// Which changes deserve a notification. The rule that matters: alert on CHANGE, never on
@@ -319,19 +321,22 @@ public enum HealthTransitions {
                 return HealthChange(
                     endpointId: endpoint.id,
                     title: endpoint.label,
-                    body: "\(endpoint.label) is not responding"
+                    body: "\(endpoint.label) is not responding",
+                    tone: .failed
                 )
             case (.ok, .degraded(let code, _)), (.down, .degraded(let code, _)):
                 return HealthChange(
                     endpointId: endpoint.id,
                     title: endpoint.label,
-                    body: "\(endpoint.label) is answering \(code)"
+                    body: "\(endpoint.label) is answering \(code)",
+                    tone: .needsYou
                 )
             case (.down, .ok), (.degraded, .ok):
                 return HealthChange(
                     endpointId: endpoint.id,
                     title: endpoint.label,
-                    body: "\(endpoint.label) is back up"
+                    body: "\(endpoint.label) is back up",
+                    tone: .info
                 )
             default:
                 // ok → ok (latency drift) and any other same-kind move: not an event.

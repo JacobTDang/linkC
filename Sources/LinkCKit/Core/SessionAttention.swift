@@ -1,38 +1,44 @@
 import Foundation
 import Observation
 
-/// What a session row says on its right, and a tone the sidebar colors it by. Coral means the
-/// session wants you: blocked on a prompt, an error, or a finished turn nobody has looked at yet.
+/// What a session row says on its right: its text, the tone the sidebar colors it by, and any coral dot.
+/// Coral means the session wants you: blocked on a prompt, an error, or a finished turn nobody has looked at yet.
 public struct SessionRowStatus: Equatable, Sendable {
     public enum Tone: Equatable, Sendable { case quiet, working, attention, error }
+
+    public enum Marker: Equatable, Sendable { case none, dot, pingDot }
 
     public enum Format: Equatable, Sendable {
         case fixed(String)
         case age(prefix: String, since: Date)
+        case elapsed(since: Date)
     }
 
     public let format: Format
     public let tone: Tone
+    public let marker: Marker
     public let text: String
 
     public var isCoral: Bool { tone == .attention || tone == .error }
 
-    public init(format: Format, tone: Tone, now: Date = Date()) {
+    public init(format: Format, tone: Tone, marker: Marker = .none, now: Date = Date()) {
         self.format = format
         self.tone = tone
+        self.marker = marker
         self.text = Self.formatText(format: format, now: now)
     }
 
-    public init(text: String, tone: Tone) {
+    public init(text: String, tone: Tone, marker: Marker = .none) {
         self.format = .fixed(text)
         self.tone = tone
+        self.marker = marker
         self.text = text
     }
 
     /// `text` is derived from `format` and the clock, so it stays out of the comparison: an age
     /// label that nothing happened to is the same status every second.
     public static func == (lhs: SessionRowStatus, rhs: SessionRowStatus) -> Bool {
-        lhs.format == rhs.format && lhs.tone == rhs.tone
+        lhs.format == rhs.format && lhs.tone == rhs.tone && lhs.marker == rhs.marker
     }
 
     public func text(now: Date) -> String {
@@ -46,6 +52,8 @@ public struct SessionRowStatus: Equatable, Sendable {
         case .age(let prefix, let since):
             let age = AgeFormat.compact(from: since, to: now)
             return prefix.isEmpty ? age : "\(prefix) \(age)"
+        case .elapsed(let since):
+            return AgeFormat.elapsed(from: since, to: now)
         }
     }
 }
@@ -91,33 +99,34 @@ public final class SessionAttention {
 
     public func status(for session: Session, onScreen: Bool, rateLimited: Bool, now: Date = Date()) -> SessionRowStatus {
         Self.status(
-            state: session.state, stateChangedAt: session.stateChangedAt, lastSeen: lastSeen[session.id],
-            onScreen: onScreen, rateLimited: rateLimited, now: now)
+            state: session.state, stateChangedAt: session.stateChangedAt, turnStartedAt: session.turnStartedAt,
+            lastSeen: lastSeen[session.id], onScreen: onScreen, rateLimited: rateLimited, now: now)
     }
 
     /// The spec's state table. `lastSeen` is when the session was last on screen; `onScreen` is
     /// whether it is on screen right now.
     public nonisolated static func status(
-        state: SessionState, stateChangedAt: Date, lastSeen: Date?, onScreen: Bool, rateLimited: Bool, now: Date = Date()
+        state: SessionState, stateChangedAt: Date, turnStartedAt: Date, lastSeen: Date?, onScreen: Bool,
+        rateLimited: Bool, now: Date = Date()
     ) -> SessionRowStatus {
         switch state {
         case .starting:
-            return SessionRowStatus(format: .fixed("starting"), tone: .quiet, now: now)
+            return SessionRowStatus(format: .fixed("starting"), tone: .quiet, marker: .none, now: now)
         case .ready:
-            return SessionRowStatus(format: .age(prefix: "idle", since: stateChangedAt), tone: .quiet, now: now)
+            return SessionRowStatus(format: .age(prefix: "", since: stateChangedAt), tone: .quiet, marker: .none, now: now)
         case .working:
-            return SessionRowStatus(format: .fixed("working"), tone: .working, now: now)
+            return SessionRowStatus(format: .elapsed(since: turnStartedAt), tone: .working, marker: .none, now: now)
         case .waitingPermission:
-            return SessionRowStatus(format: .age(prefix: "needs you ·", since: stateChangedAt), tone: .attention, now: now)
+            return SessionRowStatus(format: .age(prefix: "", since: stateChangedAt), tone: .attention, marker: .pingDot, now: now)
         case .finished, .waitingIdle:
             let seen = onScreen || (lastSeen.map { $0 >= stateChangedAt } ?? false)
             return seen
-                ? SessionRowStatus(format: .age(prefix: "idle", since: stateChangedAt), tone: .quiet, now: now)
-                : SessionRowStatus(format: .age(prefix: "done ·", since: stateChangedAt), tone: .attention, now: now)
+                ? SessionRowStatus(format: .age(prefix: "", since: stateChangedAt), tone: .quiet, marker: .none, now: now)
+                : SessionRowStatus(format: .age(prefix: "", since: stateChangedAt), tone: .attention, marker: .dot, now: now)
         case .error:
-            return SessionRowStatus(format: .fixed(rateLimited ? "rate limited" : "error"), tone: .error, now: now)
+            return SessionRowStatus(format: .fixed(rateLimited ? "rate limited" : "error"), tone: .error, marker: .none, now: now)
         case .ended:
-            return SessionRowStatus(format: .fixed("ended"), tone: .quiet, now: now)
+            return SessionRowStatus(format: .fixed("ended"), tone: .quiet, marker: .none, now: now)
         }
     }
 }
