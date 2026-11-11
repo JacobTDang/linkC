@@ -295,7 +295,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
     /// A reroute held for a busy worker ends at `limitHoldCap`. If OpenCode's models still have to be
     /// listed on that pass, the hold must stay as it was: the pass that reads the listing then meets the
     /// cap at once and reroutes, rather than starting a fresh hold (and a second notice) for a worker that
-    /// is still busy, over and over.
+    /// is still busy, over and over. A second hold would leave the task and the session where they were.
     func testAHeldRerouteThatReachedItsCapIsNotHeldAgainWhileOpenCodesModelsAreListed() async throws {
         let clock = ControllableClock()
         let lister = ModelLister(.models(["opencode/big-pickle"]), held: true)
@@ -312,10 +312,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
         let began = try XCTUnwrap(coordinator.limitHolds["S1"]).since
         clock.advance(2 * coordinator.turnEndQuietPeriod + 1)
         XCTAssertFalse(pass())
-        let told = try holdNotices()
-        XCTAssertEqual(told.count, 1, "the hold has lasted two quiet periods, so the delegator is told")
-        // Delivered, so an identical notice would be queued again rather than folded into this one.
-        for notice in told { try inbox.markMessageDelivered(id: notice.id) }
+        XCTAssertEqual(try holdNotices().count, 1, "the hold has lasted two quiet periods, so the delegator is told")
 
         clock.advance(AppCoordinator.limitHoldCap)
         XCTAssertFalse(pass(), "the cap has passed, but OpenCode's models are still being listed")
@@ -327,9 +324,40 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .cancelled)
         XCTAssertEqual(try inbox.load().tasks.first { $0.hop == 1 }?.toAgent, .opencode)
         XCTAssertNil(coordinator.limitHolds["S1"], "no second hold was begun")
-        clock.advance(2 * coordinator.turnEndQuietPeriod + 1)
-        _ = pass()
+        XCTAssertEqual(coordinator.store.session(id: "S1")?.state, .error)
         XCTAssertEqual(try holdNotices().count, 1, "and no second 'left with it' notice was sent")
+    }
+
+    /// The pass that waited for the listing forgets the screen's scan, but not the signature of the banner a
+    /// held reroute was begun from: a pass with a hold in force never sets one, so clearing it would leave the
+    /// session with none. The old banner is still on the screen once the cooldown lapses, and a redraw that
+    /// changes nothing the rules read must not arm the limit again.
+    func testAnOldBannerDoesNotRearmALimitAfterAHeldRerouteWaitedForTheListing() async throws {
+        let clock = ControllableClock()
+        let lister = ModelLister(.models(["opencode/big-pickle"]), held: true)
+        let coordinator = makeCoordinator(lister: lister, now: clock.now)
+        defer { stopAll(coordinator) }
+        let (terminal, _, inbox) = try limitedCodexSession(
+            in: coordinator, screen: "\u{1b}[2J\u{1b}[H\(banner)\r\n\r\n\r\n")
+        coordinator.store.updateState(id: "S1", to: .working)
+        func pass() -> Bool { coordinator.checkLimitsAndReroute(for: "S1", screen: terminal.screenSnapshot()) }
+
+        XCTAssertFalse(pass(), "a busy worker keeps its task: the hold begins")
+        clock.advance(AppCoordinator.limitHoldCap + 1)
+        XCTAssertFalse(pass(), "the cap has passed, but OpenCode's models are still being listed")
+        lister.release()
+        try await waitForListing(coordinator)
+        XCTAssertTrue(pass(), "the listing is read, and the task moves")
+        XCTAssertEqual(try inbox.load().tasks.first { $0.hop == 1 }?.toAgent, .opencode)
+        XCTAssertEqual(coordinator.store.session(id: "S1")?.state, .error)
+
+        try lapseCodexCooldown(coordinator, inbox: inbox)
+        terminal.terminalView.feed(text: "\u{1b}[3;1H╭──────────────────╮")
+        XCTAssertFalse(pass())
+
+        XCTAssertNil(try inbox.isAgentLimited(agent: .codex), "the same old banner must not arm a new limit")
+        XCTAssertNotEqual(coordinator.store.session(id: "S1")?.state, .error)
+        XCTAssertEqual(try inbox.load().tasks.filter { $0.hop == 1 }.count, 1, "and must not reroute anything")
     }
 
     // MARK: - A reroute OpenCode cannot take

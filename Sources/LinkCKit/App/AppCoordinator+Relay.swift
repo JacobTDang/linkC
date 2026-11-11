@@ -1152,14 +1152,17 @@ extension AppCoordinator {
             switch openCodeModelAvailability(in: norm, tier: tier) {
             case .checking:
                 // OpenCode's models are still being listed off the main actor. Forget this screen's scan
-                // and signature so the next tick reads the unchanged screen again from the start;
-                // `recordLimit` keeps a live record as it is, so reading it twice records nothing new.
+                // so the next tick reads the unchanged screen again from the start; `recordLimit` keeps a
+                // live record as it is, so reading it twice records nothing new. The signature is forgotten
+                // too, but only when this pass set it, which only a pass with no hold in force does: a pass
+                // with one never sets it, so clearing it there would take away the stale-banner guard of
+                // the pass that began the hold.
                 // The hold in force this pass (cleared above because it ended or the worker went quiet)
                 // is put back: the next pass then continues it, meets `limitHoldCap` or a quiet worker
                 // at once, and goes on against the listing. Without it a worker still busy would start
                 // a fresh hold, and a fresh notice, on every listing, and its task would never move.
                 limitScans[sessionId] = nil
-                limitSignatures[sessionId] = nil
+                if held == nil { limitSignatures[sessionId] = nil }
                 limitHolds[sessionId] = held
                 return false
             case .available:
