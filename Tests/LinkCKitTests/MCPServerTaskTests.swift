@@ -137,6 +137,7 @@ final class MCPServerTaskTests: XCTestCase {
         let msg = try XCTUnwrap(inbox.load().messages.first)
         XCTAssertEqual(msg.toAgent, .codex)
         XCTAssertEqual(msg.kind, .completion)
+        XCTAssertEqual(msg.toSessionId, "s1", "stop notice must address the worker, not the delegator")
         XCTAssertTrue(msg.prompt.contains("cancelled: scope changed"))
     }
 

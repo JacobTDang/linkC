@@ -305,6 +305,37 @@ public final class InboxStore: Sendable {
         }
     }
 
+    /// Inserts a copy of an already-framed message for cross-project forwarding (spec §5.5).
+    /// Returns false when the same contentHash was received or enqueued in the last 24 hours.
+    @discardableResult
+    public func receiveForwarded(_ message: PendingMessage, timeout: TimeInterval = 5.0) throws -> Bool {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
+            if inbox.messages.contains(where: {
+                $0.contentHash == message.contentHash && $0.fromAgent == message.fromAgent
+                    && $0.toAgent == message.toAgent && $0.createdAt >= dedupeCutoff
+            }) {
+                return false
+            }
+            let copy = PendingMessage(
+                fromAgent: message.fromAgent,
+                toAgent: message.toAgent,
+                prompt: message.prompt,
+                claimedFiles: [],
+                status: .queued,
+                kind: message.kind,
+                taskId: message.taskId,
+                contentHash: message.contentHash,
+                toSessionId: message.toSessionId
+            )
+            inbox.messages.append(copy)
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+            return true
+        }
+    }
+
     /// Returns pending messages in FIFO order (those with status `.queued`).
     public func fetchPending(timeout: TimeInterval = 5.0) throws -> [PendingMessage] {
         try snapshot(timeout: timeout).messages.filter { $0.status == .queued }

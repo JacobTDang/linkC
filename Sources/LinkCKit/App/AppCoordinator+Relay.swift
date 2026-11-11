@@ -75,9 +75,73 @@ extension AppCoordinator {
         guard !dispatchTasks(workspacePath: norm, inboxStore: inboxStore) else {
             return logRelayLockContention(workspacePath: norm)
         }
+        guard !forwardNoticesHome(workspacePath: norm, inboxStore: inboxStore) else {
+            return logRelayLockContention(workspacePath: norm)
+        }
         if dispatchMessages(workspacePath: norm, inboxStore: inboxStore) {
             logRelayLockContention(workspacePath: norm)
         }
+    }
+
+    /// Forwards notices about tasks that came from another project back to that project's inbox
+    /// (spec 2026-11-11 cross-project §5.5). Returns true when the lock was contended.
+    @discardableResult
+    func forwardNoticesHome(workspacePath: String, inboxStore: InboxStore) -> Bool {
+        guard workspaceExists(workspacePath) else { return false }
+        let norm = ProjectPath.canonical(workspacePath)
+        let pending: [PendingMessage]
+        do {
+            pending = try inboxStore.fetchPending(timeout: Self.relayLockTimeout)
+        } catch {
+            if isRelayLockTimeout(error) { return true }
+            NSLog("[linkC relay] forwardNoticesHome: fetch — %@", String(describing: error))
+            return false
+        }
+        for message in pending where Self.ownsForwardHome(message) {
+            let record: TaskRecord?
+            do {
+                record = try inboxStore.task(matching: message.taskId ?? "", timeout: Self.relayLockTimeout)
+                    ?? (message.taskId.flatMap { try inboxStore.task(id: $0, timeout: Self.relayLockTimeout) })
+            } catch {
+                if isRelayLockTimeout(error) { return true }
+                continue
+            }
+            guard let task = record,
+                  let fromProject = task.fromProject,
+                  ProjectPath.canonical(fromProject) != norm else { continue }
+
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: fromProject, isDirectory: &isDir), isDir.boolValue else {
+                do {
+                    try inboxStore.markMessageFailed(id: message.id, timeout: Self.relayLockTimeout)
+                } catch {
+                    if isRelayLockTimeout(error) { return true }
+                }
+                NSLog("[linkC relay] forwardNoticesHome: home project gone — %@", fromProject)
+                continue
+            }
+
+            do {
+                _ = try InboxStore(workspaceRoot: fromProject).receiveForwarded(message, timeout: Self.relayLockTimeout)
+            } catch {
+                if isRelayLockTimeout(error) { return true }
+                NSLog("[linkC relay] forwardNoticesHome: receive — %@", String(describing: error))
+                continue
+            }
+            do {
+                try inboxStore.markMessageDelivered(id: message.id, timeout: Self.relayLockTimeout)
+            } catch {
+                if isRelayLockTimeout(error) { return true }
+                NSLog("[linkC relay] forwardNoticesHome: mark delivered — %@", String(describing: error))
+            }
+        }
+        return false
+    }
+
+    /// A queued notice this phase forwards home: has a taskId, no toSessionId, and belongs to a
+    /// cross-project task (checked by the caller against the local task row).
+    static func ownsForwardHome(_ message: PendingMessage) -> Bool {
+        message.taskId != nil && message.toSessionId == nil
     }
 
     /// True when `error` is the store's own lock-acquisition timeout rather than a real failure
@@ -566,6 +630,23 @@ extension AppCoordinator {
         var sessionOrder: [String] = []
         var loggedInjectionWait = false
         for message in pending where message.status == .queued {
+            // Owned by forwardNoticesHome: a notice about a task from another project. Skip when
+            // that phase could not finish (contended lock), so it is never pasted here.
+            if Self.ownsForwardHome(message) {
+                let record: TaskRecord?
+                do {
+                    record = try inboxStore.task(matching: message.taskId ?? "", timeout: Self.relayLockTimeout)
+                        ?? (message.taskId.flatMap { try inboxStore.task(id: $0, timeout: Self.relayLockTimeout) })
+                } catch {
+                    if isRelayLockTimeout(error) { return true }
+                    record = nil
+                }
+                if let fromProject = record?.fromProject,
+                   ProjectPath.canonical(fromProject) != norm {
+                    continue
+                }
+            }
+
             if message.kind == .task, verificationInFlight { continue }
 
             if message.kind == .notice {
@@ -825,6 +906,19 @@ extension AppCoordinator {
             if let delegatorId = record?.fromSessionId,
                let delegator = store.sessions.first(where: { $0.id == delegatorId && $0.state != .ended && $0.cwd == workspace }) {
                 return delegator
+            }
+            if record == nil, let taskId = message.taskId {
+                let pointer: SentTask?
+                do {
+                    pointer = try inboxStore.sentTask(matching: taskId, timeout: Self.relayLockTimeout)
+                } catch {
+                    if isRelayLockTimeout(error) { throw error }
+                    pointer = nil
+                }
+                if let sessionId = pointer?.fromSessionId,
+                   let session = store.sessions.first(where: { $0.id == sessionId && $0.state != .ended && $0.cwd == workspace }) {
+                    return session
+                }
             }
         }
         return store.sessions.first { $0.cwd == workspace && $0.agentKind == message.toAgent && $0.state != .ended }

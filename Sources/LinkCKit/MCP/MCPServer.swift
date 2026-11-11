@@ -1257,7 +1257,11 @@ public final class MCPServer: Sendable {
                     let successText = "Cancelled task \(task.shortId) (\(resolvedReason))."
                     if wasDelivered {
                         do {
-                            _ = try inboxStore.enqueue(from: caller.agent, to: task.toAgent, kind: .completion, taskId: task.id, body: "cancelled: \(resolvedReason). Stop work on it.")
+                            _ = try inboxStore.enqueue(
+                                from: caller.agent, to: task.toAgent, kind: .completion,
+                                taskId: task.id, toSessionId: task.assigneeSessionId,
+                                body: "cancelled: \(resolvedReason). Stop work on it."
+                            )
                         } catch {
                             let warning = "Warning: task state was updated but notifying \(task.toAgent.displayName) failed: \(error.localizedDescription). They can run linkc_get_task(\"\(task.id)\")."
                             return toolResultResponse(id: id, text: "\(successText)\n\(warning)")
@@ -1433,7 +1437,7 @@ public final class MCPServer: Sendable {
     }
 
     /// Checks `verify` against the workspace's git and returns it with base_sha fully resolved.
-    private func resolveVerification(_ raw: [String: Any]) throws -> Verification {
+    private func resolveVerification(_ raw: [String: Any], in root: String? = nil) throws -> Verification {
         func field(_ key: String) throws -> String {
             guard let value = (raw[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
                 throw LinkCError.server("verify.\(key) is required")
@@ -1461,7 +1465,7 @@ public final class MCPServer: Sendable {
         }
 
         let git = GitClient()
-        let workspace = URL(fileURLWithPath: workspaceRoot)
+        let workspace = URL(fileURLWithPath: root ?? workspaceRoot)
         let base: String
         do { base = try git.resolveCommit(baseArg, in: workspace) } catch {
             throw LinkCError.server("verify.base_sha: \(error.localizedDescription)")
@@ -1660,7 +1664,7 @@ public final class MCPServer: Sendable {
             break
         case let verify as [String: Any]:
             do {
-                verification = try resolveVerification(verify)
+                verification = try resolveVerification(verify, in: destRoot)
             } catch {
                 return toolResultResponse(id: id, text: "Error: \(error.localizedDescription)", isError: true)
             }

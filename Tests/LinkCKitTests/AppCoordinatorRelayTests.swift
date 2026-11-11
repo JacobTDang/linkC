@@ -4655,6 +4655,177 @@ final class AppCoordinatorRelayTests: XCTestCase {
         }
         XCTAssertTrue(served, "sidebar project with open work never got a worker")
     }
+
+    // MARK: - Cross-project notice forwarding (spec 2026-11-11 §5.5)
+
+    @MainActor
+    func testCompletionOfATaskFromAnotherProjectIsPastedAtHome() async throws {
+        let home = tempDir.appendingPathComponent("home")
+        let away = tempDir.appendingPathComponent("away")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: away, withIntermediateDirectories: true)
+        let homePath = ProjectPath.canonical(home.path)
+        let awayPath = ProjectPath.canonical(away.path)
+        let homeInbox = InboxStore(workspaceRoot: homePath)
+        let awayInbox = InboxStore(workspaceRoot: awayPath)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let asker = try coordinator.newSession(cwd: homePath, agent: .claude)
+        coordinator.store.updateState(id: asker.id, to: .ready)
+        let worker = try coordinator.newSession(cwd: awayPath, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .ready)
+
+        let task = try awayInbox.createTask(
+            from: .claude, to: .codex, fromSessionId: asker.id, prompt: "What is the ledger?", files: [],
+            fromProject: homePath
+        )
+        try homeInbox.recordSent(SentTask(taskId: task.id, project: awayPath, fromSessionId: asker.id))
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try awayInbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "double-entry"))
+
+        coordinator.processPendingMessages(workspacePath: awayPath)
+        coordinator.processPendingMessages(workspacePath: homePath)
+
+        let pastedHome = try await waitUntil {
+            coordinator.terminals.session(id: asker.id)?.recentOutput(lines: 20)
+                .contains("[linkC task \(task.shortId)]") ?? false
+        }
+        XCTAssertTrue(pastedHome, "completion must reach the home session")
+        let awayOut = coordinator.terminals.session(id: worker.id)?.recentOutput(lines: 20) ?? ""
+        XCTAssertFalse(awayOut.contains("[linkC task \(task.shortId)]"), "must not paste into the away worker")
+        XCTAssertEqual(try awayInbox.load().messages.first { $0.taskId == task.id }?.status, .delivered)
+    }
+
+    @MainActor
+    func testForwardedCompletionFallsBackToAnotherLiveClaudeAtHome() async throws {
+        let home = tempDir.appendingPathComponent("home")
+        let away = tempDir.appendingPathComponent("away")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: away, withIntermediateDirectories: true)
+        let homePath = ProjectPath.canonical(home.path)
+        let awayPath = ProjectPath.canonical(away.path)
+        let homeInbox = InboxStore(workspaceRoot: homePath)
+        let awayInbox = InboxStore(workspaceRoot: awayPath)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let ended = try coordinator.newSession(cwd: homePath, agent: .claude)
+        coordinator.store.updateState(id: ended.id, to: .ended)
+        let other = try coordinator.newSession(cwd: homePath, agent: .claude)
+        coordinator.store.updateState(id: other.id, to: .ready)
+        let worker = try coordinator.newSession(cwd: awayPath, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .ready)
+
+        let task = try awayInbox.createTask(
+            from: .claude, to: .codex, fromSessionId: ended.id, prompt: "q", files: [],
+            fromProject: homePath
+        )
+        try homeInbox.recordSent(SentTask(taskId: task.id, project: awayPath, fromSessionId: ended.id))
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try awayInbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "answer"))
+
+        coordinator.processPendingMessages(workspacePath: awayPath)
+        coordinator.processPendingMessages(workspacePath: homePath)
+
+        let pasted = try await waitUntil {
+            coordinator.terminals.session(id: other.id)?.recentOutput(lines: 20)
+                .contains("[linkC task \(task.shortId)]") ?? false
+        }
+        XCTAssertTrue(pasted)
+    }
+
+    @MainActor
+    func testReceiveForwardedBeforePassDedupesAndStillMarksAwayDelivered() throws {
+        let home = tempDir.appendingPathComponent("home")
+        let away = tempDir.appendingPathComponent("away")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: away, withIntermediateDirectories: true)
+        let homePath = ProjectPath.canonical(home.path)
+        let awayPath = ProjectPath.canonical(away.path)
+        let homeInbox = InboxStore(workspaceRoot: homePath)
+        let awayInbox = InboxStore(workspaceRoot: awayPath)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let asker = try coordinator.newSession(cwd: homePath, agent: .claude)
+        coordinator.store.updateState(id: asker.id, to: .ready)
+        let worker = try coordinator.newSession(cwd: awayPath, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .ready)
+
+        let task = try awayInbox.createTask(
+            from: .claude, to: .codex, fromSessionId: asker.id, prompt: "q", files: [],
+            fromProject: homePath
+        )
+        try homeInbox.recordSent(SentTask(taskId: task.id, project: awayPath, fromSessionId: asker.id))
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try awayInbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "answer"))
+        // Settle so the completion lands in away's queue.
+        XCTAssertFalse(coordinator.settleResolvableTasks(workspacePath: awayPath, inboxStore: awayInbox))
+        let original = try XCTUnwrap(awayInbox.fetchPending().first { $0.taskId == task.id })
+
+        // Crash between forward and mark-delivered: home already has a copy.
+        XCTAssertTrue(try homeInbox.receiveForwarded(original))
+        coordinator.processPendingMessages(workspacePath: awayPath)
+
+        let homeCopies = try homeInbox.load().messages.filter { $0.taskId == task.id && $0.kind == .completion }
+        XCTAssertEqual(homeCopies.count, 1)
+        XCTAssertEqual(try awayInbox.load().messages.first { $0.id == original.id }?.status, .delivered)
+    }
+
+    @MainActor
+    func testForwardFailsWhenHomeFolderIsGone() throws {
+        let home = tempDir.appendingPathComponent("home-gone")
+        let away = tempDir.appendingPathComponent("away")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: away, withIntermediateDirectories: true)
+        let homePath = ProjectPath.canonical(home.path)
+        let awayPath = ProjectPath.canonical(away.path)
+        let awayInbox = InboxStore(workspaceRoot: awayPath)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let worker = try coordinator.newSession(cwd: awayPath, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .ready)
+
+        let task = try awayInbox.createTask(
+            from: .claude, to: .codex, fromSessionId: "gone", prompt: "q", files: [],
+            fromProject: homePath
+        )
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try awayInbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "answer"))
+        XCTAssertFalse(coordinator.settleResolvableTasks(workspacePath: awayPath, inboxStore: awayInbox))
+        try FileManager.default.removeItem(at: home)
+
+        coordinator.processPendingMessages(workspacePath: awayPath)
+
+        XCTAssertEqual(try awayInbox.load().messages.first { $0.taskId == task.id }?.status, .failed)
+    }
+
+    @MainActor
+    func testLocalTaskCompletionIsStillDeliveredLocally() async throws {
+        let ws = ProjectPath.canonical(tempDir.path)
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let asker = try coordinator.newSession(cwd: ws, agent: .claude)
+        coordinator.store.updateState(id: asker.id, to: .ready)
+        let worker = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: worker.id, to: .ready)
+
+        let task = try inbox.createTask(from: .claude, to: .codex, fromSessionId: asker.id, prompt: "local", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try inbox.reportTask(taskId: task.id, report: TaskReport(status: "done", summary: "ok"))
+
+        coordinator.processPendingMessages(workspacePath: ws)
+
+        let pasted = try await waitUntil {
+            coordinator.terminals.session(id: asker.id)?.recentOutput(lines: 20)
+                .contains("[linkC task \(task.shortId)]") ?? false
+        }
+        XCTAssertTrue(pasted)
+    }
 }
 
 /// Returns scripted verdicts and records each call. With `hold`, every run waits for `release()`.
@@ -4747,7 +4918,7 @@ private extension TaskRecord {
             createdAt: createdAt, queuedAt: queuedAt, deliveredAt: deliveredAt, startedAt: startedAt, finishedAt: finishedAt,
             leaseExpiresAt: leaseExpiresAt, report: report, cancelReason: cancelReason,
             unreportedTurnEndNotified: unreportedTurnEndNotified, verification: verification, gate: gate,
-            verdict: verdict
+            verdict: verdict, targetSessionId: targetSessionId, fromProject: fromProject, isQuestion: isQuestion
         )
     }
 }
