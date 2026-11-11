@@ -544,6 +544,13 @@ extension AppCoordinator {
                 continue
             }
 
+            // A message for one worker goes there or nowhere: with that worker gone, it fails and the user is told.
+            if let addressee = message.toSessionId,
+               store.session(id: addressee).map({ $0.state == .ended || $0.cwd != norm }) ?? true {
+                if failMessageForEndedWorker(message, addressee: addressee, workspacePath: norm, inboxStore: inboxStore) { return true }
+                continue
+            }
+
             let target: Session?
             do {
                 target = try deliveryTarget(for: message, in: norm, inboxStore: inboxStore, caller: "dispatchMessages")
@@ -654,6 +661,26 @@ extension AppCoordinator {
         return false
     }
 
+    /// Fails `message`, addressed to `addressee`, which has ended or left the workspace, and tells the
+    /// user. Returns `true` when the inbox lock timed out.
+    private func failMessageForEndedWorker(_ message: PendingMessage, addressee: String, workspacePath: String, inboxStore: InboxStore) -> Bool {
+        do {
+            try inboxStore.markMessageFailed(id: message.id, timeout: Self.relayLockTimeout)
+        } catch {
+            if isRelayLockTimeout(error) { return true }
+            NSLog("[linkC relay] dispatchMessages: message %@ for ended session %@ — %@", message.id, addressee, String(describing: error))
+            return false
+        }
+        NSLog("[linkC relay] dispatchMessages: message %@ failed — its %@ worker %@ ended before it was delivered",
+              message.id, message.toAgent.displayName, addressee)
+        notifications.post(
+            title: "linkC: a message was not delivered",
+            body: "The \(message.toAgent.displayName) worker it was for ended before it could be delivered.",
+            project: workspacePath
+        )
+        return false
+    }
+
     /// One queued task or message OpenCode was asked to start: the key a refusal is reported under.
     struct OpenCodeRefusalKey: Hashable {
         enum Kind { case task, message }
@@ -749,6 +776,9 @@ extension AppCoordinator {
     /// where a message is going. Throws only the relay lock timeout; any other lookup failure is
     /// logged and treated as "no delegator".
     func deliveryTarget(for message: PendingMessage, in workspace: String, inboxStore: InboxStore, caller: String) throws -> Session? {
+        if let addressee = message.toSessionId {
+            return store.sessions.first { $0.id == addressee && $0.state != .ended && $0.cwd == workspace }
+        }
         if let taskId = message.taskId {
             let record: TaskRecord?
             do {

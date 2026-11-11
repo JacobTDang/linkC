@@ -242,11 +242,13 @@ public final class InboxStore: Sendable {
 
     /// Enqueues a short, kind-tagged message. The store composes the frame; callers pass the bare body.
     /// Rejects framed bodies (loop guard), `.task` kind, completions without a task id, and 24 h duplicates.
+    /// `toSessionId` addresses it to one session (`PendingMessage.toSessionId`).
     public func enqueue(
         from: AgentKind,
         to: AgentKind,
         kind: MessageKind,
         taskId: String? = nil,
+        toSessionId: String? = nil,
         body: String,
         timeout: TimeInterval = 5.0
     ) throws -> PendingMessage {
@@ -274,7 +276,7 @@ public final class InboxStore: Sendable {
             let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
             if let existing = inbox.messages.first(where: {
                 $0.contentHash == hash && $0.fromAgent == from && $0.toAgent == to && $0.createdAt >= dedupeCutoff
-                    && $0.status == .queued
+                    && $0.status == .queued && $0.toSessionId == toSessionId
             }) {
                 return existing
             }
@@ -286,7 +288,8 @@ public final class InboxStore: Sendable {
                 status: .queued,
                 kind: kind,
                 taskId: taskId,
-                contentHash: hash
+                contentHash: hash,
+                toSessionId: toSessionId
             )
             inbox.messages.append(message)
             inbox.updatedAt = Date()

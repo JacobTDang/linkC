@@ -140,7 +140,9 @@ final class TTLCachedUsageReader: @unchecked Sendable {
 
 /// Pure-Swift Model Context Protocol (MCP) server speaking JSON-RPC 2.0.
 public final class MCPServer: Sendable {
-    public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String) throws -> String
+    /// Switches `agent`'s model in the workspace: in `sessionId` when the caller named a task, else in
+    /// the first session of `agent`.
+    public typealias ModelSwitcher = @Sendable (_ agent: AgentKind, _ model: String, _ sessionId: String?) throws -> String
     public typealias AncestorResolver = @Sendable (_ pid: pid_t) -> (agent: AgentKind, pid: pid_t)?
     public typealias ModelSettingsProvider = @Sendable () -> AgentModelSettings
     public typealias SessionResolver = @Sendable () -> String?
@@ -552,13 +554,14 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_send_message",
-                "description": "Send a direct message or peer note to another agent in the workspace.",
+                "description": "Send a direct message or peer note to another agent in the workspace. Several workers of one agent can run at once: pass task_id to reach the worker holding that task.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
                         "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList))"],
                         "message": ["type": "string", "description": "Message or note content to send"],
-                        "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"]
+                        "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
+                        "task_id": ["type": "string", "description": "Optional. The message goes to the worker holding this task, not the first session of the agent. Refused while the task has no worker yet."]
                     ],
                     "required": ["to", "message"]
                 ]
@@ -573,12 +576,13 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_switch_model",
-                "description": "Switch the active model for an agent in the workspace using free/subscription tier models (injecting /model <model> into the agent's terminal).",
+                "description": "Switch the active model for an agent in the workspace using free/subscription tier models (injecting /model <model> into the agent's terminal). Several workers of one agent can run at once: pass task_id to switch the worker holding that task.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "agent": ["type": "string", "description": "Agent kind (\(AgentKind.peerList)), defaults to claude"],
-                        "model": ["type": "string", "description": "Model name (e.g. sonnet, haiku, opus, gpt-4o, o3-mini, pro, flash, flash_lite)"]
+                        "agent": ["type": "string", "description": "Agent kind (\(AgentKind.peerList)), defaults to the task's agent with task_id, else claude"],
+                        "model": ["type": "string", "description": "Model name (e.g. sonnet, haiku, opus, gpt-4o, o3-mini, pro, flash, flash_lite)"],
+                        "task_id": ["type": "string", "description": "Optional. Switches the worker holding this task, not the first session of the agent. Refused while the task has no worker yet."]
                     ],
                     "required": ["model"]
                 ]
@@ -1010,7 +1014,12 @@ public final class MCPServer: Sendable {
                 }
 
                 do {
-                    let pending = try inboxStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote, body: messageText)
+                    let worker = try taskWorker(args, agent: toAgent)
+                    let pending = try inboxStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote,
+                                                         toSessionId: worker?.sessionId, body: messageText)
+                    if let worker {
+                        return toolResultResponse(id: id, text: "Message queued for the \(toAgent.displayName) worker holding task \(worker.task.shortId) (ID: \(pending.id)). linkC delivers it when that worker is idle; if the worker has ended by then, the message fails.")
+                    }
                     return toolResultResponse(id: id, text: "Message queued for \(toAgent.displayName) (ID: \(pending.id)). linkC will deliver it when idle.")
                 } catch {
                     return errorResult(id: id, error)
@@ -1081,7 +1090,14 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(id: id, text: text)
 
             case "linkc_switch_model":
-                let agentStr = (args["agent"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? caller.agent.rawValue
+                let named = (args["agent"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let worker: (task: TaskRecord, sessionId: String)?
+                do {
+                    worker = try taskWorker(args, agent: named.flatMap { AgentKind(rawValue: $0.lowercased()) })
+                } catch {
+                    return errorResult(id: id, error)
+                }
+                let agentStr = named ?? worker?.task.toAgent.rawValue ?? caller.agent.rawValue
                 guard let agent = AgentKind(rawValue: agentStr.lowercased()) else {
                     return toolResultResponse(id: id, text: "Error: Unknown agent '\(agentStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
                 }
@@ -1107,7 +1123,7 @@ public final class MCPServer: Sendable {
 
                 if let modelSwitcher {
                     do {
-                        let result = try modelSwitcher(agent, cleanModel)
+                        let result = try modelSwitcher(agent, cleanModel, worker?.sessionId)
                         return toolResultResponse(id: id, text: result)
                     } catch {
                         return errorResult(id: id, error)
@@ -1115,7 +1131,7 @@ public final class MCPServer: Sendable {
                 } else {
                     let cmd = AgentModelCatalog.interactiveSwitchCommand(model: cleanModel, for: agent)
                     do {
-                        _ = try inboxStore.enqueue(from: agent, to: agent, kind: .command, body: cmd)
+                        _ = try inboxStore.enqueue(from: agent, to: agent, kind: .command, toSessionId: worker?.sessionId, body: cmd)
                     } catch {
                         return errorResult(id: id, error)
                     }
@@ -1537,6 +1553,22 @@ public final class MCPServer: Sendable {
         }
         guard let task = try inboxStore.task(matching: taskId) else { throw InboxError.taskNotFound(taskId) }
         return task
+    }
+
+    /// The task `args["task_id"]` names and the session holding it, or nil when no task is named. Throws
+    /// when the task does not exist, no worker holds it yet, or it is for another agent than `agent`.
+    private func taskWorker(_ args: [String: Any], agent: AgentKind?) throws -> (task: TaskRecord, sessionId: String)? {
+        guard let taskId = (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !taskId.isEmpty else {
+            return nil
+        }
+        guard let task = try inboxStore.task(matching: taskId) else { throw InboxError.taskNotFound(taskId) }
+        if let agent, agent != task.toAgent {
+            throw LinkCError.server("Task \(task.shortId) is for \(task.toAgent.displayName), not \(agent.displayName).")
+        }
+        guard let sessionId = task.assigneeSessionId else {
+            throw LinkCError.server("Task \(task.shortId) has no worker yet (it is \(task.state.rawValue)). Send this once the task has started.")
+        }
+        return (task, sessionId)
     }
 
     /// A task delivered to a specific session belongs to that session. Several sessions of one

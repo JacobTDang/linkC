@@ -562,6 +562,52 @@ final class AppCoordinatorRelayTests: XCTestCase {
                        "the second task starts its own worker")
     }
 
+    /// A message addressed to one worker reaches that worker, not the first session of its agent.
+    @MainActor
+    func testAMessageForOneWorkerReachesThatWorkerNotTheFirstOfItsAgent() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let first = try coordinator.newSession(cwd: ws, agent: .codex)
+        let second = try coordinator.newSession(cwd: ws, agent: .codex)
+        for session in [first, second] {
+            coordinator.store.updateState(id: session.id, to: .ready)
+            try await waitForPasteReady(coordinator, sessionId: session.id)
+        }
+
+        let message = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, toSessionId: second.id, body: "cover the edge case")
+        coordinator.dispatchMessages(workspacePath: ws, inboxStore: inbox)
+
+        XCTAssertEqual(coordinator.recentlyInjectedTexts(sessionId: second.id), [message.prompt])
+        XCTAssertTrue(coordinator.recentlyInjectedTexts(sessionId: first.id).isEmpty)
+    }
+
+    /// A message whose worker has ended fails, says so, and never goes to another session of its agent.
+    @MainActor
+    func testAMessageWhoseWorkerEndedFailsAndGoesToNoOtherSession() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+        let other = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: other.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: other.id)
+        let ended = try coordinator.newSession(cwd: ws, agent: .codex)
+        coordinator.store.updateState(id: ended.id, to: .ended)
+
+        let toEnded = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, toSessionId: ended.id, body: "too late")
+        let toGone = try inbox.enqueue(from: .claude, to: .codex, kind: .peerNote, toSessionId: "NO-SUCH-SESSION", body: "gone")
+        coordinator.dispatchMessages(workspacePath: ws, inboxStore: inbox)
+
+        let messages = try inbox.load().messages
+        XCTAssertEqual(messages.first { $0.id == toEnded.id }?.status, .failed)
+        XCTAssertEqual(messages.first { $0.id == toGone.id }?.status, .failed)
+        XCTAssertTrue(coordinator.recentlyInjectedTexts(sessionId: other.id).isEmpty, "never handed to another Codex")
+        XCTAssertTrue(sink.deliveries.contains { $0.title.contains("not delivered") }, "the user is told")
+    }
+
     /// Test 2b: Notices are never injected; completions and peer notes are injected once.
     @MainActor
     func testNoticesAreNeverInjectedButCompletionsAre() async throws {

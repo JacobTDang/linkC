@@ -1458,8 +1458,9 @@ public final class AppCoordinator {
 
     /// Switches the active model for an agent session in the given workspace using free/subscription tier models.
     /// Injects the interactive switch command (e.g. `/model <modelName>`) directly into the agent's live terminal PTY.
+    /// With `sessionId`, that session is switched: it must be a live session of `agent` in the workspace.
     @discardableResult
-    public func switchModel(in workspacePath: String, agent: AgentKind, to modelName: String) throws -> String {
+    public func switchModel(in workspacePath: String, agent: AgentKind, to modelName: String, sessionId: String? = nil) throws -> String {
         guard agent != .shell else {
             throw LinkCError.process("Cannot switch model on shell session.")
         }
@@ -1469,8 +1470,11 @@ public final class AppCoordinator {
         }
         let norm = ProjectPath.canonical(workspacePath)
         guard let session = store.sessions.first(where: {
-            $0.cwd == norm && $0.agentKind == agent && $0.state != .ended
+            $0.cwd == norm && $0.agentKind == agent && $0.state != .ended && (sessionId == nil || $0.id == sessionId)
         }) else {
+            if let sessionId {
+                throw LinkCError.process("Session \(sessionId) is not a live \(agent.displayName) session in \(workspacePath).")
+            }
             throw LinkCError.process("No active session found for \(agent.displayName) in \(workspacePath).")
         }
         let cmd = AgentModelCatalog.interactiveSwitchCommand(model: modelName, for: agent)
