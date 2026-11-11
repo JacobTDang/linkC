@@ -256,6 +256,26 @@ final class CrossProjectTasksTests: XCTestCase {
         XCTAssertTrue(try homeInbox.fetchPending().isEmpty)
     }
 
+    func testAMessageToTheWorkerOfASentTaskCarriesItsOriginAndTheCrossProjectCap() throws {
+        let task = try delegateToAway()
+        try awayInbox.markTaskDelivered(taskId: task.id, sessionId: "away-worker")
+
+        let tooLong = try call(homeServer(), "linkc_send_message", [
+            "to": "codex", "message": String(repeating: "x", count: PendingMessage.crossProjectMessageLimit + 1),
+            "task_id": task.shortId
+        ])
+        XCTAssertTrue(tooLong.isError)
+        XCTAssertTrue(tooLong.text.hasPrefix("Messages to another project are at most 2,000 characters."), tooLong.text)
+        XCTAssertTrue(try awayInbox.fetchPending().isEmpty)
+
+        let sent = try call(homeServer(), "linkc_send_message", ["to": "codex", "message": "nudge", "task_id": task.shortId])
+        XCTAssertFalse(sent.isError, sent.text)
+        let message = try XCTUnwrap(awayInbox.fetchPending().first)
+        XCTAssertEqual(message.fromProject, ProjectPath.canonical(home.path))
+        XCTAssertEqual(message.fromSessionId, "home-claude")
+        XCTAssertTrue(message.prompt.contains("money-printer"), message.prompt)
+    }
+
     func testSwitchModelWithTaskIdEnqueuesInAwayOrCallsSwitcherWithAwayPath() throws {
         let task = try delegateToAway()
         try awayInbox.markTaskDelivered(taskId: task.id, sessionId: "away-worker")

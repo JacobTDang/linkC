@@ -947,8 +947,21 @@ public final class MCPServer: Sendable {
                 do {
                     let worker = try taskWorker(args, agent: toAgent)
                     let destStore = worker?.store ?? inboxStore
+                    // The worker of a task sent to another project is in that project: the message crosses
+                    // projects, so it carries its origin and keeps to the cross-project size (spec §6.1, §6.3).
+                    let ownRoot = ProjectPath.canonical(workspaceRoot)
+                    let crossesProjects = worker.map { ProjectPath.canonical($0.root) != ownRoot } ?? false
+                    if crossesProjects, messageText.count > PendingMessage.crossProjectMessageLimit {
+                        return toolResultResponse(
+                            id: id,
+                            text: "Messages to another project are at most 2,000 characters. Point to a file path instead; both projects are on this Mac.",
+                            isError: true
+                        )
+                    }
                     let pending = try destStore.enqueue(from: caller.agent, to: toAgent, kind: .peerNote,
-                                                         toSessionId: worker?.sessionId, body: messageText)
+                                                         toSessionId: worker?.sessionId, body: messageText,
+                                                         fromProject: crossesProjects ? ownRoot : nil,
+                                                         fromSessionId: crossesProjects ? callerSessionId() : nil)
                     if let worker {
                         return toolResultResponse(id: id, text: "Message queued for the \(toAgent.displayName) worker holding task \(worker.task.shortId) (ID: \(pending.id)). linkC delivers it when that worker is idle; if the worker has ended by then, the message fails.")
                     }
