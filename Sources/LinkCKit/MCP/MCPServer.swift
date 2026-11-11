@@ -478,7 +478,16 @@ public final class MCPServer: Sendable {
                 "description": "Get this project's system map — its components, how each is reached, and what exists versus what is only intended — plus all peer agents active in this workspace, their goals, claimed files, and shared notes.",
                 "inputSchema": [
                     "type": "object",
-                    "properties": [:]
+                    "properties": [
+                        "project": [
+                            "type": "string",
+                            "description": "Optional. Another project's folder name or path; reads that project's context. With it, notes are titles only unless note is also set."
+                        ],
+                        "note": [
+                            "type": "string",
+                            "description": "Optional. A note title (matched ignoring case); returns that note in full."
+                        ]
+                    ]
                 ]
             ],
             [
@@ -490,6 +499,10 @@ public final class MCPServer: Sendable {
                         "board": [
                             "type": "string",
                             "description": "Optional board to read: \"overview\" (default) or a detail board's slug."
+                        ],
+                        "project": [
+                            "type": "string",
+                            "description": "Optional. Another project's folder name or path; reads that project's Board."
                         ]
                     ]
                 ]
@@ -747,94 +760,28 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(id: id, text: "Shared note posted: '\(note.title)' (ID: \(note.id))")
 
             case "linkc_get_project_context":
-                let board = try store.getProjectContext()
-                var text = "# Project Shared Context: \(board.projectPath)\n"
-                text += "Active Agents: \(board.activeAgents.count)\n\n"
-
-                if board.activeAgents.isEmpty {
-                    text += "_No other active agents currently recorded._\n\n"
-                } else {
-                    text += "## Active Peer Agents\n"
-                    for a in board.activeAgents {
-                        text += "- **\(a.agentKind.displayName)** (PID \(a.pid)) — \(a.status)\n"
-                        text += "  - Goal: \(a.goal)\n"
-                        if !a.claimedFiles.isEmpty {
-                            text += "  - Claimed Files: \(a.claimedFiles.joined(separator: ", "))\n"
-                        }
-                    }
-                    text += "\n"
-                }
-
-                if !board.sharedNotes.isEmpty {
-                    text += "## Shared Notes & Decisions\n"
-                    for n in board.sharedNotes {
-                        text += "### \(n.title) (by \(n.authorAgent.displayName))\n"
-                        text += "\(n.content)\n\n"
-                    }
-                }
-
-                // The project's own map of its components, when it keeps one. A map that cannot be read
-                // says so: an agent must not be told a project has no components when it has a broken file.
                 do {
-                    if let loaded = try BoardMapStore(workspacePath: board.projectPath).load() {
-                        text += BoardReport.markdown(for: loaded.map)
-                        text += "Read with `linkc_get_board`; change with `linkc_edit_board`.\n\n"
-                    } else {
-                        text += "## System\n_No map yet — `linkc_edit_board` starts one._\n\n"
-                    }
+                    let target = try targetProject(args)
+                    let boardStore = target.map { BlackboardStore(workspaceRoot: $0.path) } ?? store
+                    return try projectContextResult(
+                        id: id,
+                        store: boardStore,
+                        crossProjectName: target?.name,
+                        noteTitle: args["note"] as? String
+                    )
                 } catch {
-                    // The message can carry a name straight from the file — sanitized the same
-                    // way every other field in this report is, since it lands in markdown too.
-                    text += "## System\n_The system map could not be read: \(BoardReport.sanitized(error.localizedDescription))_\n\n"
+                    return errorResult(id: id, error)
                 }
-
-                return toolResultResponse(id: id, text: text)
 
             case "linkc_get_board":
+                let root: String
                 do {
-                    let rawBoard = args["board"] as? String
-                    let slug: String?
-                    if let rawBoard, rawBoard != "overview" {
-                        slug = rawBoard
-                    } else {
-                        slug = nil
-                    }
-
-                    let projectName = URL(fileURLWithPath: workspaceRoot).lastPathComponent
-                    let catalog = try BoardCatalog.load(workspacePath: workspaceRoot, projectName: projectName)
-
-                    if let slug {
-                        guard BoardSlug.isValid(slug), catalog.entry(for: slug) != nil else {
-                            let known = (["overview"] + catalog.entries.compactMap(\.slug)).joined(separator: ", ")
-                            return toolResultResponse(id: id, text: "unknown board \"\(slug)\" — known boards: \(known)", isError: true)
-                        }
-                    }
-
-                    let map: BoardMap
-                    if let slug {
-                        map = try BoardDrill.open(slug, workspacePath: workspaceRoot, catalog: catalog)
-                    } else {
-                        guard let loaded = try BoardMapStore(workspacePath: workspaceRoot, board: nil).load() else {
-                            return toolResultResponse(id: id, text: "This project has no map yet — linkc_edit_board creates one.")
-                        }
-                        map = loaded.map
-                    }
-
-                    var text = try map.architectureJSON()
-                        + "\n\nVerbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system, detail. "
-                        + "Kinds: \(ComponentKind.groupedKindList) (any other kind is kept and drawn as a service). "
-                        + "\"memory\" is the AI agent's checkpointer; \"ram\" is hardware memory. "
-                        + "Parts marked outside come from the parent board and are read-only here."
-
-                    text += "\n\nBoards:\n"
-                    for entry in catalog.entries {
-                        let indent = String(repeating: "  ", count: entry.depth)
-                        let slugLabel = entry.slug ?? "overview"
-                        let pathLabel = entry.linked ? entry.path.joined(separator: " › ") : "(unlinked)"
-                        text += "\(indent)\(slugLabel) — \(pathLabel)\n"
-                    }
-
-                    return toolResultResponse(id: id, text: text)
+                    root = try targetProject(args)?.path ?? workspaceRoot
+                } catch {
+                    return errorResult(id: id, error)
+                }
+                do {
+                    return try boardResult(id: id, root: root, boardArg: args["board"] as? String)
                 } catch {
                     return toolResultResponse(id: id, text: BoardReport.sanitized(error.localizedDescription), isError: true)
                 }
@@ -1695,6 +1642,130 @@ public final class MCPServer: Sendable {
                 throw LinkCError.server("could not create detail board \"\(slug)\": \(error.localizedDescription)")
             }
         }
+    }
+
+    /// `linkc_get_board` body for this project's folder or another project's (spec §7).
+    private func boardResult(id: Any?, root: String, boardArg: String?) throws -> Data? {
+        let rawBoard = boardArg
+        let slug: String?
+        if let rawBoard, rawBoard != "overview" {
+            slug = rawBoard
+        } else {
+            slug = nil
+        }
+
+        let projectName = URL(fileURLWithPath: root).lastPathComponent
+        let catalog = try BoardCatalog.load(workspacePath: root, projectName: projectName)
+
+        if let slug {
+            guard BoardSlug.isValid(slug), catalog.entry(for: slug) != nil else {
+                let known = (["overview"] + catalog.entries.compactMap(\.slug)).joined(separator: ", ")
+                return toolResultResponse(id: id, text: "unknown board \"\(slug)\" — known boards: \(known)", isError: true)
+            }
+        }
+
+        let map: BoardMap
+        if let slug {
+            map = try BoardDrill.open(slug, workspacePath: root, catalog: catalog)
+        } else {
+            guard let loaded = try BoardMapStore(workspacePath: root, board: nil).load() else {
+                return toolResultResponse(id: id, text: "This project has no map yet — linkc_edit_board creates one.")
+            }
+            map = loaded.map
+        }
+
+        var text = try map.architectureJSON()
+            + "\n\nVerbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system, detail. "
+            + "Kinds: \(ComponentKind.groupedKindList) (any other kind is kept and drawn as a service). "
+            + "\"memory\" is the AI agent's checkpointer; \"ram\" is hardware memory. "
+            + "Parts marked outside come from the parent board and are read-only here."
+
+        text += "\n\nBoards:\n"
+        for entry in catalog.entries {
+            let indent = String(repeating: "  ", count: entry.depth)
+            let slugLabel = entry.slug ?? "overview"
+            let pathLabel = entry.linked ? entry.path.joined(separator: " › ") : "(unlinked)"
+            text += "\(indent)\(slugLabel) — \(pathLabel)\n"
+        }
+
+        return toolResultResponse(id: id, text: text)
+    }
+
+    /// `linkc_get_project_context` body for this project's store or another's. With
+    /// `crossProjectName`, notes are titles only unless `noteTitle` picks one (spec §7).
+    private func projectContextResult(
+        id: Any?,
+        store: BlackboardStore,
+        crossProjectName: String?,
+        noteTitle: String?
+    ) throws -> Data? {
+        let board = try store.getProjectContext()
+
+        if let noteTitle {
+            let trimmed = noteTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let matches = board.sharedNotes.filter { $0.title.caseInsensitiveCompare(trimmed) == .orderedSame }
+            guard let note = matches.first else {
+                let titles = board.sharedNotes.map(\.title)
+                let list = titles.isEmpty ? "This project has no notes." : "Known notes: \(titles.joined(separator: ", "))."
+                return toolResultResponse(
+                    id: id,
+                    text: "No note \"\(noteTitle)\" in \(crossProjectName ?? "this project"). \(list)",
+                    isError: true
+                )
+            }
+            var text = "### \(note.title) (by \(note.authorAgent.displayName))\n"
+            text += "\(note.content)\n"
+            return toolResultResponse(id: id, text: text)
+        }
+
+        var text = "# Project Shared Context: \(board.projectPath)\n"
+        text += "Active Agents: \(board.activeAgents.count)\n\n"
+
+        if board.activeAgents.isEmpty {
+            text += "_No other active agents currently recorded._\n\n"
+        } else {
+            text += "## Active Peer Agents\n"
+            for a in board.activeAgents {
+                text += "- **\(a.agentKind.displayName)** (PID \(a.pid)) — \(a.status)\n"
+                text += "  - Goal: \(a.goal)\n"
+                if !a.claimedFiles.isEmpty {
+                    text += "  - Claimed Files: \(a.claimedFiles.joined(separator: ", "))\n"
+                }
+            }
+            text += "\n"
+        }
+
+        if !board.sharedNotes.isEmpty {
+            text += "## Shared Notes & Decisions\n"
+            if let crossProjectName {
+                for n in board.sharedNotes {
+                    text += "- \(n.title)\n"
+                }
+                text += "\nRead one with linkc_get_project_context(project: \"\(crossProjectName)\", note: \"<title>\").\n\n"
+            } else {
+                for n in board.sharedNotes {
+                    text += "### \(n.title) (by \(n.authorAgent.displayName))\n"
+                    text += "\(n.content)\n\n"
+                }
+            }
+        }
+
+        // The project's own map of its components, when it keeps one. A map that cannot be read
+        // says so: an agent must not be told a project has no components when it has a broken file.
+        do {
+            if let loaded = try BoardMapStore(workspacePath: board.projectPath).load() {
+                text += BoardReport.markdown(for: loaded.map)
+                text += "Read with `linkc_get_board`; change with `linkc_edit_board`.\n\n"
+            } else {
+                text += "## System\n_No map yet — `linkc_edit_board` starts one._\n\n"
+            }
+        } catch {
+            // The message can carry a name straight from the file — sanitized the same
+            // way every other field in this report is, since it lands in markdown too.
+            text += "## System\n_The system map could not be read: \(BoardReport.sanitized(error.localizedDescription))_\n\n"
+        }
+
+        return toolResultResponse(id: id, text: text)
     }
 
     /// The catch every tool handler in this file reaches for once it has nothing more specific
