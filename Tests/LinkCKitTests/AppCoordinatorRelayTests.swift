@@ -1018,6 +1018,29 @@ final class AppCoordinatorRelayTests: XCTestCase {
         )
     }
 
+    /// A Gemini pool limit holds a Gemini-tier task back, but a Claude-model task is still delivered.
+    @MainActor
+    func testAnAgyGeminiLimitDoesNotHoldAClaudeModelTask() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        try inbox.recordLimit(agent: .agy, reason: "gemini weekly", cooldown: 3600, pool: "gemini")
+
+        let opusSession = try coordinator.newSession(cwd: tempDir.path, agent: .agy, model: "claude-opus-4-6-thinking")
+        coordinator.store.updateState(id: opusSession.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: opusSession.id)
+
+        let claudeTask = try inbox.createTask(from: .claude, to: .agy, model: "claude-opus-4-6-thinking",
+                                              prompt: "Opus work", files: [])
+        let geminiTask = try inbox.createTask(from: .claude, to: .agy, tier: .standard,
+                                              prompt: "Flash work", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: claudeTask.id)?.state, .delivered)
+        XCTAssertEqual(try inbox.task(id: geminiTask.id)?.state, .queued)
+    }
+
     /// A model task with no session on that model starts a worker launched with `--model <id>`.
     @MainActor
     func testAModelTaskStartsAWorkerLaunchedWithThatModel() async throws {

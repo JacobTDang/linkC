@@ -347,19 +347,24 @@ public final class InboxStore: Sendable {
         agent: AgentKind,
         reason: String,
         cooldown: TimeInterval,
+        pool: String? = nil,
         timeout: TimeInterval = 5.0
     ) throws {
         try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             let now = Date()
-            if let index = inbox.agentLimits.firstIndex(where: { $0.agent == agent }) {
+            if let index = inbox.agentLimits.firstIndex(where: { $0.agent == agent && $0.pool == pool }) {
                 guard inbox.agentLimits[index].cooldownExpiresAt <= now else {
                     // Still live: nothing to change, so nothing to write.
                     return
                 }
-                inbox.agentLimits[index] = AgentLimitStatus(agent: agent, reason: reason, limitedAt: now, cooldownExpiresAt: now.addingTimeInterval(cooldown))
+                inbox.agentLimits[index] = AgentLimitStatus(
+                    agent: agent, reason: reason, limitedAt: now,
+                    cooldownExpiresAt: now.addingTimeInterval(cooldown), pool: pool)
             } else {
-                inbox.agentLimits.append(AgentLimitStatus(agent: agent, reason: reason, limitedAt: now, cooldownExpiresAt: now.addingTimeInterval(cooldown)))
+                inbox.agentLimits.append(AgentLimitStatus(
+                    agent: agent, reason: reason, limitedAt: now,
+                    cooldownExpiresAt: now.addingTimeInterval(cooldown), pool: pool))
             }
             inbox.updatedAt = now
             try saveUnlocked(inbox)
@@ -370,31 +375,32 @@ public final class InboxStore: Sendable {
     /// limit at all (nothing to extend). Used once a more accurate expiry becomes known (a real
     /// usage-window reset, or a banner's own stated time) than whatever `recordLimit` first
     /// stored; that first record must still win when it happens to be the later of the two.
-    public func extendLimit(agent: AgentKind, until: Date, timeout: TimeInterval = 5.0) throws {
+    public func extendLimit(agent: AgentKind, until: Date, pool: String? = nil, timeout: TimeInterval = 5.0) throws {
         try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             let now = Date()
-            guard let index = inbox.agentLimits.firstIndex(where: { $0.agent == agent }) else { return }
+            guard let index = inbox.agentLimits.firstIndex(where: { $0.agent == agent && $0.pool == pool }) else { return }
             let live = inbox.agentLimits[index]
             guard live.cooldownExpiresAt > now else { return } // nothing live to extend
             guard until > live.cooldownExpiresAt else { return } // never shorten
-            inbox.agentLimits[index] = AgentLimitStatus(agent: live.agent, reason: live.reason, limitedAt: live.limitedAt, cooldownExpiresAt: until)
+            inbox.agentLimits[index] = AgentLimitStatus(
+                agent: live.agent, reason: live.reason, limitedAt: live.limitedAt,
+                cooldownExpiresAt: until, pool: live.pool)
             inbox.updatedAt = now
             try saveUnlocked(inbox)
         }
     }
 
-    /// Returns the active limit status for an agent kind if cooldown has not expired; returns nil otherwise.
-    public func isAgentLimited(agent: AgentKind, timeout: TimeInterval = 5.0) throws -> AgentLimitStatus? {
+    /// A live limit that applies to `model` for `agent`. A limit applies when its pool is nil
+    /// (the whole agent) or equals the model's pool. With no model, any live limit for the agent.
+    public func isAgentLimited(agent: AgentKind, model: String? = nil, timeout: TimeInterval = 5.0) throws -> AgentLimitStatus? {
         let inbox = try snapshot(timeout: timeout)
         let now = Date()
-        guard let status = inbox.agentLimits.first(where: { $0.agent == agent }) else {
-            return nil
-        }
-        if status.cooldownExpiresAt > now {
-            return status
-        }
-        return nil
+        let live = inbox.agentLimits.filter { $0.agent == agent && $0.cooldownExpiresAt > now }
+        guard !live.isEmpty else { return nil }
+        guard let model else { return live.first }
+        let pool = ModelPool.pool(of: model, agent: agent)
+        return live.first { $0.pool == nil || $0.pool == pool }
     }
 
     // MARK: - Task lifecycle

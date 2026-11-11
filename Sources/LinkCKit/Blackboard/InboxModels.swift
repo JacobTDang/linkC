@@ -434,17 +434,22 @@ public struct AgentLimitStatus: Codable, Sendable, Equatable {
     public let reason: String
     public let limitedAt: Date
     public let cooldownExpiresAt: Date
+    /// agy's quota pool (`gemini` or `claude-gpt`), or nil for a whole-agent limit (every other
+    /// agent, and every limit written before pools). Optional so old rows still decode.
+    public let pool: String?
 
     public init(
         agent: AgentKind,
         reason: String,
         limitedAt: Date = Date(),
-        cooldownExpiresAt: Date
+        cooldownExpiresAt: Date,
+        pool: String? = nil
     ) {
         self.agent = agent
         self.reason = reason
         self.limitedAt = limitedAt
         self.cooldownExpiresAt = cooldownExpiresAt
+        self.pool = pool
     }
 }
 

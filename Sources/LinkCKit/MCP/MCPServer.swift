@@ -870,24 +870,6 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'prompt'.", isError: true)
                 }
 
-                // Check if recipient is currently in a rate-limit cooldown
-                do {
-                    if let limitStatus = try inboxStore.isAgentLimited(agent: toAgent) {
-                        let peerCandidates: [AgentKind] = AgentKind.peers.filter { $0 != toAgent }
-                        var availablePeers: [String] = []
-                        for peer in peerCandidates {
-                            if (try inboxStore.isAgentLimited(agent: peer)) == nil {
-                                availablePeers.append(peer.rawValue)
-                            }
-                        }
-                        let peerListStr = availablePeers.isEmpty ? "none" : availablePeers.joined(separator: ", ")
-                        let errorMsg = "Cannot delegate to '\(toAgent.rawValue)': agent is currently in limit cooldown (reason: \(limitStatus.reason)). Alternative available peer agents: \(peerListStr)."
-                        return toolResultResponse(id: id, text: errorMsg, isError: true)
-                    }
-                } catch {
-                    return errorResult(id: id, error)
-                }
-
                 let files = args["files"] as? [String] ?? []
                 let force = args["force"] as? Bool ?? false
 
@@ -1028,6 +1010,18 @@ public final class MCPServer: Sendable {
                             text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings.",
                             isError: true)
                     }
+                }
+
+                let limitModel = model ?? tier.flatMap { settings.model(for: toAgent, tier: $0) }
+                do {
+                    if let limitStatus = try inboxStore.isAgentLimited(agent: toAgent, model: limitModel) {
+                        let refusal = Self.limitRefusal(
+                            agent: toAgent, limit: limitStatus, model: limitModel,
+                            lists: lists, settings: settings, inboxStore: inboxStore)
+                        return toolResultResponse(id: id, text: "Error: \(refusal)", isError: true)
+                    }
+                } catch {
+                    return errorResult(id: id, error)
                 }
 
                 let task: TaskRecord
@@ -1196,6 +1190,16 @@ public final class MCPServer: Sendable {
                 guard available.contains(where: { $0.id.caseInsensitiveCompare(cleanModel) == .orderedSame }) else {
                     let allowed = available.isEmpty ? "none listed yet" : available.map(\.id).joined(separator: ", ")
                     return toolResultResponse(id: id, text: "Error: '\(cleanModel)' is not among the models \(agent.displayName) lists. Available: \(allowed)", isError: true)
+                }
+                do {
+                    if let limitStatus = try inboxStore.isAgentLimited(agent: agent, model: cleanModel) {
+                        let refusal = Self.limitRefusal(
+                            agent: agent, limit: limitStatus, model: cleanModel,
+                            lists: lists, settings: modelSettings(), inboxStore: inboxStore)
+                        return toolResultResponse(id: id, text: "Error: \(refusal)", isError: true)
+                    }
+                } catch {
+                    return errorResult(id: id, error)
                 }
 
                 if let modelSwitcher {
@@ -1528,6 +1532,46 @@ public final class MCPServer: Sendable {
 
     /// One agent's section of `linkc_get_usage_status`'s report: a heading (with plan type when
     /// known), one line per window, and either the observation age or why nothing is known.
+    /// Refusal when a model (or its pool) is limited: names the limit, and what is not limited.
+    static func limitRefusal(
+        agent: AgentKind,
+        limit: AgentLimitStatus,
+        model: String?,
+        lists: [AgentKind: AgentModelList],
+        settings: AgentModelSettings,
+        inboxStore: InboxStore,
+        now: Date = Date()
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE HH:mm"
+        let until = formatter.string(from: limit.cooldownExpiresAt)
+        let subject: String
+        if let pool = limit.pool {
+            subject = "\(agent.rawValue)'s \(ModelPool.displayName(pool)) pool"
+        } else {
+            subject = agent.rawValue
+        }
+        var parts: [String] = []
+        if agent == .agy {
+            for pool in ["gemini", "claude-gpt"] where pool != limit.pool {
+                let sample = pool == "gemini" ? "gemini-3.8-flash-medium" : "claude-opus-4-6-thinking"
+                guard (try? inboxStore.isAgentLimited(agent: .agy, model: sample)) == nil else { continue }
+                let ids = ModelListCache.available(for: .agy, lists: lists, settings: settings)
+                    .filter { ModelPool.pool(of: $0.id, agent: .agy) == pool }
+                    .map(\.id)
+                let listed = ids.isEmpty ? "" : " (\(ids.joined(separator: ", ")))"
+                parts.append("agy's \(ModelPool.displayName(pool)) pool\(listed)")
+            }
+        }
+        for peer in AgentKind.peers where peer != agent {
+            if (try? inboxStore.isAgentLimited(agent: peer)) == nil {
+                parts.append(peer.rawValue)
+            }
+        }
+        let notLimited = parts.isEmpty ? "none" : parts.joined(separator: ", ")
+        return "\(subject) is limited until \(until) (\(limit.reason)). Not limited: \(notLimited)."
+    }
+
     private static func renderUsageSection(_ usage: AgentUsage, now: Date) -> String {
         let planSuffix = usage.planType.map { " — plan \($0)" } ?? ""
         var text = "## \(usage.agent.displayName)\(planSuffix)\n"

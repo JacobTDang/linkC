@@ -332,6 +332,20 @@ extension AppCoordinator {
         var loggedInjectionWait = false
         var launched: Set<String> = []
         for task in queued {
+            // A pool limit holds back only tasks that would run on that pool.
+            let taskModel = modelForLimit(of: task)
+            do {
+                if let limit = try inboxStore.isAgentLimited(agent: task.toAgent, model: taskModel, timeout: Self.relayLockTimeout) {
+                    NSLog("[linkC relay] dispatchTasks: task %@ waits — %@%@ is limited until %@ (%@)",
+                          task.shortId, task.toAgent.displayName,
+                          limit.pool.map { " \($0) pool" } ?? "",
+                          limit.cooldownExpiresAt.description, limit.reason)
+                    continue
+                }
+            } catch {
+                if isRelayLockTimeout(error) { return true }
+                NSLog("[linkC relay] dispatchTasks: task %@ limit check — %@", task.shortId, String(describing: error))
+            }
             guard let claim = claims[task.id] else {
                 NSLog("[linkC relay] dispatchTasks: task %@ has no claim this pass — waiting", task.shortId)
                 continue
@@ -1172,12 +1186,14 @@ extension AppCoordinator {
             )
         }
 
-        // Candidates: installed, not limited, not this agent; prefer ones already active here.
+        // Candidates: installed, not limited for this task's model, not this agent; prefer ones already active here.
+        let rerouteModel = currentTask.map { modelForLimit(of: $0) } ?? nil
         let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor, .grok, .opencode]
         var candidates = supportedPeers.filter { candidate in
             guard candidate != session.agentKind && candidate != currentTask?.fromAgent else { return false }
             do {
-                guard try inboxStore.isAgentLimited(agent: candidate) == nil else { return false }
+                let peerModel = currentTask?.tier.flatMap { resolvedModel(for: candidate, tier: $0) } ?? rerouteModel
+                guard try inboxStore.isAgentLimited(agent: candidate, model: peerModel) == nil else { return false }
             } catch {
                 NSLog("[linkC relay] checkLimitsAndReroute: limit status for %@ — %@", candidate.displayName, String(describing: error))
             }
@@ -1336,8 +1352,10 @@ extension AppCoordinator {
         let hasConfidentExpiry = LimitCooldown.hasConfidentSignal(
             bannerText: match.bannerText, usage: usage, now: tickNow, calendar: .current
         )
+        let pool = ModelPool.pool(of: session.model ?? "", agent: session.agentKind)
         do {
-            try inboxStore.recordLimit(agent: session.agentKind, reason: match.matchedPattern, cooldown: match.cooldown)
+            try inboxStore.recordLimit(agent: session.agentKind, reason: match.matchedPattern,
+                                       cooldown: match.cooldown, pool: pool)
             if hasConfidentExpiry {
                 // recordLimit only ever creates the record with the fixed cooldown (or keeps a
                 // still-live one exactly as it was); extendLimit is the only thing allowed to push
@@ -1346,11 +1364,18 @@ extension AppCoordinator {
                 let expiry = LimitCooldown.expiry(
                     bannerText: match.bannerText, usage: usage, now: tickNow, calendar: .current, fallback: match.cooldown
                 )
-                try inboxStore.extendLimit(agent: session.agentKind, until: expiry)
+                try inboxStore.extendLimit(agent: session.agentKind, until: expiry, pool: pool)
             }
         } catch {
             NSLog("[linkC relay] checkLimitsAndReroute: record limit — %@", String(describing: error))
         }
+    }
+
+    /// The model a task would run: its own model, or its tier's configured model.
+    func modelForLimit(of task: TaskRecord) -> String? {
+        if let model = task.model { return model }
+        if let tier = task.tier { return resolvedModel(for: task.toAgent, tier: tier) }
+        return nil
     }
 
     /// A limit rule matched the screen of a session that is busy with `task`. True while the
