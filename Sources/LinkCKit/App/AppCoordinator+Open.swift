@@ -105,14 +105,16 @@ extension AppCoordinator {
         } else if let prompt = request.prompt {
             openingPrompts[session.id] = OpeningPrompt(text: prompt, since: now())
         }
-        onCommandSessionOpened?(session.id)
         let name = URL(fileURLWithPath: folder).lastPathComponent
+        // A worker an agent opens for a task joins the panel, as delegated workers do; only a session the
+        // user opens gets a window of its own.
         if let task {
             return .opened(
                 sessionId: session.id,
-                message: "Opened \(request.agent.displayName) in a linkC window (\(name)), carrying task \(task.shortId). Follow it with linkc_get_task and close the worker with linkc_close_worker."
+                message: "Opened \(request.agent.displayName) as a worker in linkC's panel (\(name)), carrying task \(task.shortId). Follow it with linkc_get_task and close the worker with linkc_close_worker."
             )
         }
+        onCommandSessionOpened?(session.id)
         return .opened(sessionId: session.id, message: "Opened \(request.agent.displayName) in a linkC window (\(name)).")
     }
 

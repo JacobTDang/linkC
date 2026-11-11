@@ -12,7 +12,8 @@ public enum LinkCCommand {
           --tier    the model tier (default: unpinned, as linkC's panel opens it; with --task, the agent's
                     default tier in linkC's Settings > Models)
           --task    for an agent handing off work: the new session carries the prompt as a task
-                    the calling agent can follow (linkc_get_task) and close (linkc_close_worker)
+                    the calling agent can follow (linkc_get_task) and close (linkc_close_worker);
+                    it opens as a worker in linkC's panel, not in a window
           --        the rest is the prompt, even words that start with -
           -h, --help
                     show this help
