@@ -479,7 +479,16 @@ public final class MCPServer: Sendable {
                 "description": "Get this project's system map — its components, how each is reached, and what exists versus what is only intended — plus all peer agents active in this workspace, their goals, claimed files, and shared notes.",
                 "inputSchema": [
                     "type": "object",
-                    "properties": [:]
+                    "properties": [
+                        "project": [
+                            "type": "string",
+                            "description": "Optional. Another project's folder name or path; reads that project's context. With it, notes are titles only unless note is also set."
+                        ],
+                        "note": [
+                            "type": "string",
+                            "description": "Optional. A note title (matched ignoring case); returns that note in full."
+                        ]
+                    ]
                 ]
             ],
             [
@@ -499,6 +508,10 @@ public final class MCPServer: Sendable {
                         "board": [
                             "type": "string",
                             "description": "Optional board to read: \"overview\" (default) or a detail board's slug."
+                        ],
+                        "project": [
+                            "type": "string",
+                            "description": "Optional. Another project's folder name or path; reads that project's Board."
                         ]
                     ]
                 ]
@@ -598,12 +611,14 @@ public final class MCPServer: Sendable {
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList))"],
+                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList)). Optional with reply_to (taken from the original message)."],
                         "message": ["type": "string", "description": "Message or note content to send"],
                         "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
-                        "task_id": ["type": "string", "description": "Optional. The message goes to the worker holding this task, not the first session of the agent. Refused while the task has no worker yet."]
+                        "task_id": ["type": "string", "description": "Optional. The message goes to the worker holding this task, not the first session of the agent. Refused while the task has no worker yet."],
+                        "project": ["type": "string", "description": "Optional. Another project's folder name or path; the message is delivered there."],
+                        "reply_to": ["type": "string", "description": "Optional. Id of a cross-project message in this inbox to reply to."]
                     ],
-                    "required": ["to", "message"]
+                    "required": ["message"]
                 ]
             ],
             [
@@ -778,94 +793,35 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(id: id, text: "Shared note posted: '\(note.title)' (ID: \(note.id))")
 
             case "linkc_get_project_context":
-                let board = try store.getProjectContext()
-                var text = "# Project Shared Context: \(board.projectPath)\n"
-                text += "Active Agents: \(board.activeAgents.count)\n\n"
-
-                if board.activeAgents.isEmpty {
-                    text += "_No other active agents currently recorded._\n\n"
-                } else {
-                    text += "## Active Peer Agents\n"
-                    for a in board.activeAgents {
-                        text += "- **\(a.agentKind.displayName)** (PID \(a.pid)) — \(a.status)\n"
-                        text += "  - Goal: \(a.goal)\n"
-                        if !a.claimedFiles.isEmpty {
-                            text += "  - Claimed Files: \(a.claimedFiles.joined(separator: ", "))\n"
-                        }
-                    }
-                    text += "\n"
-                }
-
-                if !board.sharedNotes.isEmpty {
-                    text += "## Shared Notes & Decisions\n"
-                    for n in board.sharedNotes {
-                        text += "### \(n.title) (by \(n.authorAgent.displayName))\n"
-                        text += "\(n.content)\n\n"
-                    }
-                }
-
-                // The project's own map of its components, when it keeps one. A map that cannot be read
-                // says so: an agent must not be told a project has no components when it has a broken file.
                 do {
-                    if let loaded = try BoardMapStore(workspacePath: board.projectPath).load() {
-                        text += BoardReport.markdown(for: loaded.map)
-                        text += "Read with `linkc_get_board`; change with `linkc_edit_board`.\n\n"
+                    let noteTitle: String?
+                    if let rawNote = args["note"] {
+                        guard let title = rawNote as? String else { throw LinkCError.server("note must be a note title") }
+                        noteTitle = title
                     } else {
-                        text += "## System\n_No map yet — `linkc_edit_board` starts one._\n\n"
+                        noteTitle = nil
                     }
+                    let target = try targetProject(args)
+                    let boardStore = target.map { BlackboardStore(workspaceRoot: $0.path) } ?? store
+                    return try projectContextResult(
+                        id: id,
+                        store: boardStore,
+                        crossProjectName: target?.name,
+                        noteTitle: noteTitle
+                    )
                 } catch {
-                    // The message can carry a name straight from the file — sanitized the same
-                    // way every other field in this report is, since it lands in markdown too.
-                    text += "## System\n_The system map could not be read: \(BoardReport.sanitized(error.localizedDescription))_\n\n"
+                    return errorResult(id: id, error)
                 }
-
-                return toolResultResponse(id: id, text: text)
 
             case "linkc_get_board":
+                let root: String
                 do {
-                    let rawBoard = args["board"] as? String
-                    let slug: String?
-                    if let rawBoard, rawBoard != "overview" {
-                        slug = rawBoard
-                    } else {
-                        slug = nil
-                    }
-
-                    let projectName = URL(fileURLWithPath: workspaceRoot).lastPathComponent
-                    let catalog = try BoardCatalog.load(workspacePath: workspaceRoot, projectName: projectName)
-
-                    if let slug {
-                        guard BoardSlug.isValid(slug), catalog.entry(for: slug) != nil else {
-                            let known = (["overview"] + catalog.entries.compactMap(\.slug)).joined(separator: ", ")
-                            return toolResultResponse(id: id, text: "unknown board \"\(slug)\" — known boards: \(known)", isError: true)
-                        }
-                    }
-
-                    let map: BoardMap
-                    if let slug {
-                        map = try BoardDrill.open(slug, workspacePath: workspaceRoot, catalog: catalog)
-                    } else {
-                        guard let loaded = try BoardMapStore(workspacePath: workspaceRoot, board: nil).load() else {
-                            return toolResultResponse(id: id, text: "This project has no map yet — linkc_edit_board creates one.")
-                        }
-                        map = loaded.map
-                    }
-
-                    var text = try map.architectureJSON()
-                        + "\n\nVerbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system, detail. "
-                        + "Kinds: \(ComponentKind.groupedKindList) (any other kind is kept and drawn as a service). "
-                        + "\"memory\" is the AI agent's checkpointer; \"ram\" is hardware memory. "
-                        + "Parts marked outside come from the parent board and are read-only here."
-
-                    text += "\n\nBoards:\n"
-                    for entry in catalog.entries {
-                        let indent = String(repeating: "  ", count: entry.depth)
-                        let slugLabel = entry.slug ?? "overview"
-                        let pathLabel = entry.linked ? entry.path.joined(separator: " › ") : "(unlinked)"
-                        text += "\(indent)\(slugLabel) — \(pathLabel)\n"
-                    }
-
-                    return toolResultResponse(id: id, text: text)
+                    root = try targetProject(args)?.path ?? workspaceRoot
+                } catch {
+                    return errorResult(id: id, error)
+                }
+                do {
+                    return try boardResult(id: id, root: root, boardArg: args["board"] as? String)
                 } catch {
                     return toolResultResponse(id: id, text: BoardReport.sanitized(error.localizedDescription), isError: true)
                 }
@@ -937,14 +893,55 @@ public final class MCPServer: Sendable {
                 }
 
             case "linkc_send_message":
+                guard let messageText = args["message"] as? String, !messageText.isEmpty else {
+                    return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
+                }
+                let replyTo: String?
+                if let rawReplyTo = args["reply_to"] {
+                    guard let messageId = rawReplyTo as? String else {
+                        return toolResultResponse(id: id, text: "reply_to must be a message id", isError: true)
+                    }
+                    replyTo = messageId
+                } else {
+                    replyTo = nil
+                }
+                if replyTo != nil || args["project"] != nil {
+                    // An empty task_id names no task, as it does for a message to this project.
+                    let taskIdGiven = args["task_id"] != nil
+                        && (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) != ""
+                    if taskIdGiven {
+                        return toolResultResponse(id: id, text: "task_id cannot be combined with project or reply_to.", isError: true)
+                    }
+                    if messageText.count > PendingMessage.crossProjectMessageLimit {
+                        return toolResultResponse(
+                            id: id,
+                            text: "Messages to another project are at most 2,000 characters. Point to a file path instead; both projects are on this Mac.",
+                            isError: true
+                        )
+                    }
+                }
+
+                if let replyTo {
+                    do {
+                        return try crossProjectReplyResult(id: id, caller: caller, args: args, replyTo: replyTo, messageText: messageText)
+                    } catch {
+                        return errorResult(id: id, error)
+                    }
+                }
+
+                do {
+                    if let target = try targetProject(args) {
+                        return try crossProjectSendResult(id: id, caller: caller, args: args, target: target, messageText: messageText)
+                    }
+                } catch {
+                    return errorResult(id: id, error)
+                }
+
                 guard let toStr = args["to"] as? String, !toStr.isEmpty else {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
                 }
                 guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
                     return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
-                }
-                guard let messageText = args["message"] as? String, !messageText.isEmpty else {
-                    return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
                 }
 
                 do {
@@ -1884,6 +1881,275 @@ public final class MCPServer: Sendable {
             return "\(project.name)  \(path)  \(sessions)"
         }
         return toolResultResponse(id: id, text: lines.joined(separator: "\n"))
+    }
+
+    /// `linkc_send_message(project:)` — write into the named project's inbox (spec §6).
+    private func crossProjectSendResult(
+        id: Any?,
+        caller: MCPCaller,
+        args: [String: Any],
+        target: KnownProject,
+        messageText: String
+    ) throws -> Data? {
+        guard let toStr = args["to"] as? String, !toStr.isEmpty else {
+            return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
+        }
+        guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+            return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
+        }
+        if let refusal = openSessionRefusal(to: toAgent, in: target) {
+            return toolResultResponse(id: id, text: refusal, isError: true)
+        }
+        let pending = try InboxStore(workspaceRoot: target.path).enqueue(
+            from: caller.agent,
+            to: toAgent,
+            kind: .peerNote,
+            body: messageText,
+            fromProject: ProjectPath.canonical(workspaceRoot),
+            fromSessionId: callerSessionId(),
+            chainDepth: 0
+        )
+        return toolResultResponse(
+            id: id,
+            text: "Message queued for \(toAgent.displayName) in \(target.name) (ID: \(pending.id)). linkC will deliver it when idle."
+        )
+    }
+
+    /// `linkc_send_message(reply_to:)` — reply into the original message's project (spec §6).
+    private func crossProjectReplyResult(
+        id: Any?,
+        caller: MCPCaller,
+        args: [String: Any],
+        replyTo: String,
+        messageText: String
+    ) throws -> Data? {
+        guard let original = try inboxStore.message(matching: replyTo) else {
+            return toolResultResponse(
+                id: id,
+                text: "Message \(replyTo) not found; send without reply_to.",
+                isError: true
+            )
+        }
+        guard let fromProject = original.fromProject else {
+            return toolResultResponse(
+                id: id,
+                text: "Message \(original.id) did not come from another project; reply without reply_to.",
+                isError: true
+            )
+        }
+        if original.chainDepth + 1 >= PendingMessage.replyChainLimit {
+            return toolResultResponse(
+                id: id,
+                text: "This conversation has gone back and forth 10 times. Ask the user before continuing.",
+                isError: true
+            )
+        }
+        let originName = URL(fileURLWithPath: fromProject).lastPathComponent
+        if let rawProject = args["project"] {
+            guard let projectArg = rawProject as? String else {
+                return toolResultResponse(id: id, text: "project must be a folder name or a full path", isError: true)
+            }
+            if !Self.project(projectArg, names: fromProject) {
+                return toolResultResponse(
+                    id: id,
+                    text: "project must match the message's origin (\(originName)), or be omitted.",
+                    isError: true
+                )
+            }
+        }
+        if let toStr = args["to"] as? String, !toStr.isEmpty {
+            guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+                return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
+            }
+            if toAgent != original.fromAgent {
+                return toolResultResponse(
+                    id: id,
+                    text: "to must be \(original.fromAgent.rawValue) (the message's sender), or be omitted.",
+                    isError: true
+                )
+            }
+        }
+        let originPath = ProjectPath.canonical(fromProject)
+        guard let destination = try knownProjects.read().first(where: { ProjectPath.canonical($0.path) == originPath }) else {
+            return toolResultResponse(
+                id: id,
+                text: "\(originName) is no longer known to linkC; the reply was not sent.",
+                isError: true
+            )
+        }
+        let toAgent = original.fromAgent
+        let toSessionId = original.fromSessionId
+        if toSessionId == nil, let refusal = openSessionRefusal(to: toAgent, in: destination) {
+            return toolResultResponse(id: id, text: refusal, isError: true)
+        }
+        let pending = try InboxStore(workspaceRoot: destination.path).enqueue(
+            from: caller.agent,
+            to: toAgent,
+            kind: .peerNote,
+            toSessionId: toSessionId,
+            body: messageText,
+            fromProject: ProjectPath.canonical(workspaceRoot),
+            fromSessionId: callerSessionId(),
+            chainDepth: original.chainDepth + 1
+        )
+        return toolResultResponse(
+            id: id,
+            text: "Reply queued for \(toAgent.displayName) in \(destination.name) (ID: \(pending.id))."
+        )
+    }
+
+    /// Whether a reply's `project` argument names `origin`: its full path, or its folder name
+    /// ignoring case. Compared directly, not resolved against the known projects, where a second
+    /// folder with the same name would make the origin ambiguous.
+    private static func project(_ ref: String, names origin: String) -> Bool {
+        let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+        let originPath = ProjectPath.canonical(origin)
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
+            return ProjectPath.canonical((trimmed as NSString).expandingTildeInPath) == originPath
+        }
+        return URL(fileURLWithPath: originPath).lastPathComponent.caseInsensitiveCompare(trimmed) == .orderedSame
+    }
+
+    /// Refusal when `projects.json` shows no live session of `to` in `project`.
+    private func openSessionRefusal(to agent: AgentKind, in project: KnownProject) -> String? {
+        let open = project.sessions.contains { $0.agentKind == agent }
+        guard !open else { return nil }
+        return "No \(agent.displayName) session is open in \(project.name). Use linkc_ask or linkc_delegate_task, which start one."
+    }
+
+    /// `linkc_get_board` body for this project's folder or another project's (spec §7).
+    private func boardResult(id: Any?, root: String, boardArg: String?) throws -> Data? {
+        let slug: String?
+        if let boardArg, boardArg != "overview" {
+            slug = boardArg
+        } else {
+            slug = nil
+        }
+
+        let projectName = URL(fileURLWithPath: root).lastPathComponent
+        let catalog = try BoardCatalog.load(workspacePath: root, projectName: projectName)
+
+        if let slug {
+            guard BoardSlug.isValid(slug), catalog.entry(for: slug) != nil else {
+                let known = (["overview"] + catalog.entries.compactMap(\.slug)).joined(separator: ", ")
+                return toolResultResponse(id: id, text: "unknown board \"\(slug)\" — known boards: \(known)", isError: true)
+            }
+        }
+
+        let map: BoardMap
+        if let slug {
+            map = try BoardDrill.open(slug, workspacePath: root, catalog: catalog)
+        } else {
+            guard let loaded = try BoardMapStore(workspacePath: root, board: nil).load() else {
+                return toolResultResponse(id: id, text: "This project has no map yet — linkc_edit_board creates one.")
+            }
+            map = loaded.map
+        }
+
+        var text = try map.architectureJSON()
+            + "\n\nVerbs: add, update, remove, connect, disconnect, place, remove_place, note, remove_note, system, detail. "
+            + "Kinds: \(ComponentKind.groupedKindList) (any other kind is kept and drawn as a service). "
+            + "\"memory\" is the AI agent's checkpointer; \"ram\" is hardware memory. "
+            + "Parts marked outside come from the parent board and are read-only here."
+
+        text += "\n\nBoards:\n"
+        for entry in catalog.entries {
+            let indent = String(repeating: "  ", count: entry.depth)
+            let slugLabel = entry.slug ?? "overview"
+            let pathLabel = entry.linked ? entry.path.joined(separator: " › ") : "(unlinked)"
+            text += "\(indent)\(slugLabel) — \(pathLabel)\n"
+        }
+
+        return toolResultResponse(id: id, text: text)
+    }
+
+    /// `linkc_get_project_context` body for this project's store or another's. With
+    /// `crossProjectName`, nothing is written in that project, notes are titles only unless
+    /// `noteTitle` picks one, and the report points at the read-only tools (spec §7).
+    private func projectContextResult(
+        id: Any?,
+        store: BlackboardStore,
+        crossProjectName: String?,
+        noteTitle: String?
+    ) throws -> Data? {
+        let board = try crossProjectName == nil ? store.getProjectContext() : store.readProjectContext()
+
+        if let noteTitle {
+            let trimmed = noteTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let matches = board.sharedNotes.filter { $0.title.caseInsensitiveCompare(trimmed) == .orderedSame }
+            guard let note = matches.first else {
+                let titles = board.sharedNotes.map(\.title)
+                let list = titles.isEmpty ? "This project has no notes." : "Known notes: \(titles.joined(separator: ", "))."
+                return toolResultResponse(
+                    id: id,
+                    text: "No note \"\(noteTitle)\" in \(crossProjectName ?? "this project"). \(list)",
+                    isError: true
+                )
+            }
+            var text = "### \(note.title) (by \(note.authorAgent.displayName))\n"
+            text += "\(note.content)\n"
+            return toolResultResponse(id: id, text: text)
+        }
+
+        var text = "# Project Shared Context: \(board.projectPath)\n"
+        text += "Active Agents: \(board.activeAgents.count)\n\n"
+
+        if board.activeAgents.isEmpty {
+            text += "_No other active agents currently recorded._\n\n"
+        } else {
+            text += "## Active Peer Agents\n"
+            for a in board.activeAgents {
+                text += "- **\(a.agentKind.displayName)** (PID \(a.pid)) — \(a.status)\n"
+                text += "  - Goal: \(a.goal)\n"
+                if !a.claimedFiles.isEmpty {
+                    text += "  - Claimed Files: \(a.claimedFiles.joined(separator: ", "))\n"
+                }
+            }
+            text += "\n"
+        }
+
+        if !board.sharedNotes.isEmpty {
+            text += "## Shared Notes & Decisions\n"
+            if crossProjectName != nil {
+                for n in board.sharedNotes {
+                    text += "- \(n.title)\n"
+                }
+                text += "\n"
+            } else {
+                for n in board.sharedNotes {
+                    text += "### \(n.title) (by \(n.authorAgent.displayName))\n"
+                    text += "\(n.content)\n\n"
+                }
+            }
+        }
+
+        // The project's own map of its components, when it keeps one. A map that cannot be read
+        // says so: an agent must not be told a project has no components when it has a broken file.
+        do {
+            if let loaded = try BoardMapStore(workspacePath: board.projectPath).load() {
+                text += BoardReport.markdown(for: loaded.map)
+                if let crossProjectName {
+                    text += "This board is read-only from here; read it with `linkc_get_board(project: \"\(crossProjectName)\")`.\n\n"
+                } else {
+                    text += "Read with `linkc_get_board`; change with `linkc_edit_board`.\n\n"
+                }
+            } else if crossProjectName != nil {
+                text += "## System\n_No map yet._\n\n"
+            } else {
+                text += "## System\n_No map yet — `linkc_edit_board` starts one._\n\n"
+            }
+        } catch {
+            // The message can carry a name straight from the file — sanitized the same
+            // way every other field in this report is, since it lands in markdown too.
+            text += "## System\n_The system map could not be read: \(BoardReport.sanitized(error.localizedDescription))_\n\n"
+        }
+
+        // Last, so it is the line an agent reads when it decides what to open next.
+        if let crossProjectName, !board.sharedNotes.isEmpty {
+            text += "Read one with linkc_get_project_context(project: \"\(crossProjectName)\", note: \"<title>\").\n"
+        }
+
+        return toolResultResponse(id: id, text: text)
     }
 
     /// The catch every tool handler in this file reaches for once it has nothing more specific

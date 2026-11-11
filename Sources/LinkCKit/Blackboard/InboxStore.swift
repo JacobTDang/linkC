@@ -250,6 +250,8 @@ public final class InboxStore: Sendable {
     /// Enqueues a short, kind-tagged message. The store composes the frame; callers pass the bare body.
     /// Rejects framed bodies (loop guard), `.task` kind, completions without a task id, and 24 h duplicates.
     /// `toSessionId` addresses it to one session (`PendingMessage.toSessionId`).
+    /// `fromProject` / `fromSessionId` / `chainDepth` stamp a cross-project peer note (spec §6); a
+    /// duplicate must match all three, so two senders of one text are two messages.
     public func enqueue(
         from: AgentKind,
         to: AgentKind,
@@ -257,37 +259,62 @@ public final class InboxStore: Sendable {
         taskId: String? = nil,
         toSessionId: String? = nil,
         body: String,
+        fromProject: String? = nil,
+        fromSessionId: String? = nil,
+        chainDepth: Int = 0,
         timeout: TimeInterval = 5.0
     ) throws -> PendingMessage {
         guard kind != .task else { throw InboxError.kindNotAllowed(.task) }
         guard !LinkCFrame.beginsWithMarker(body) else { throw InboxError.framedBody }
 
+        let id = UUID().uuidString
         let prompt: String
+        let hashPrompt: String
         switch kind {
         case .completion:
             guard let taskId else { throw InboxError.missingTaskId }
             prompt = "\(LinkCFrame.taskPrefix) \(taskId.prefix(8))] \(body)"
+            hashPrompt = prompt
         case .notice:
             prompt = "\(LinkCFrame.noticePrefix) \(body)"
+            hashPrompt = prompt
         case .peerNote:
-            prompt = "\(LinkCFrame.peerNotePrefix) \(from.displayName)]: \(body)"
+            if let fromProject {
+                let projectName = URL(fileURLWithPath: fromProject).lastPathComponent
+                let base = "\(LinkCFrame.peerNotePrefix) \(from.displayName) · \(projectName)]: \(body)"
+                hashPrompt = base
+                prompt = base + "\nReply with linkc_send_message(project: \"\(projectName)\", reply_to: \"\(id.prefix(8))\")"
+            } else {
+                prompt = "\(LinkCFrame.peerNotePrefix) \(from.displayName)]: \(body)"
+                hashPrompt = prompt
+            }
         case .command:
             prompt = body
+            hashPrompt = prompt
         case .task:
             throw InboxError.kindNotAllowed(.task)
         }
 
-        let hash = LinkCFrame.contentHash(from: from, to: to, kind: kind, prompt: prompt)
+        // The sender's full folder, session and reply depth tell two senders of one text apart: a
+        // merged duplicate would hand the second sender the first's id, and its reply the wrong session.
+        // A message with none of them (every local one) hashes exactly as it always did.
+        var hashMaterial = hashPrompt
+        if fromProject != nil || fromSessionId != nil || chainDepth != 0 {
+            hashMaterial += "\n[origin project=\(fromProject ?? "") session=\(fromSessionId ?? "") depth=\(chainDepth)]"
+        }
+        let hash = LinkCFrame.contentHash(from: from, to: to, kind: kind, prompt: hashMaterial)
         return try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
             if let existing = inbox.messages.first(where: {
                 $0.contentHash == hash && $0.fromAgent == from && $0.toAgent == to && $0.createdAt >= dedupeCutoff
                     && $0.status == .queued && $0.toSessionId == toSessionId
+                    && $0.fromProject == fromProject && $0.fromSessionId == fromSessionId && $0.chainDepth == chainDepth
             }) {
                 return existing
             }
             let message = PendingMessage(
+                id: id,
                 fromAgent: from,
                 toAgent: to,
                 prompt: prompt,
@@ -296,7 +323,10 @@ public final class InboxStore: Sendable {
                 kind: kind,
                 taskId: taskId,
                 contentHash: hash,
-                toSessionId: toSessionId
+                toSessionId: toSessionId,
+                fromProject: fromProject,
+                fromSessionId: fromSessionId,
+                chainDepth: chainDepth
             )
             inbox.messages.append(message)
             inbox.updatedAt = Date()
@@ -573,6 +603,20 @@ public final class InboxStore: Sendable {
         let matches = tasks.filter { $0.id.lowercased().hasPrefix(prefix) }
         guard matches.count <= 1 else {
             throw InboxError.ambiguousTaskId(prefix: idOrPrefix, matches: matches.map(\.id))
+        }
+        return matches.first
+    }
+
+    /// The message whose id is `idOrPrefix`, or the one message whose id begins with it, ignoring case.
+    /// Same prefix rules as `task(matching:)`.
+    public func message(matching idOrPrefix: String, timeout: TimeInterval = 5.0) throws -> PendingMessage? {
+        let messages = try snapshot(timeout: timeout).messages
+        if let exact = messages.first(where: { $0.id == idOrPrefix }) { return exact }
+        guard idOrPrefix.count >= Self.minimumTaskIdPrefix else { return nil }
+        let prefix = idOrPrefix.lowercased()
+        let matches = messages.filter { $0.id.lowercased().hasPrefix(prefix) }
+        guard matches.count <= 1 else {
+            throw InboxError.ambiguousMessageId(prefix: idOrPrefix, matches: matches.map(\.id))
         }
         return matches.first
     }
