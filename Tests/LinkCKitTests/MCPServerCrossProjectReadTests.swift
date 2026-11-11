@@ -93,15 +93,79 @@ final class MCPServerCrossProjectReadTests: XCTestCase {
         let result = try call(homeServer(), "linkc_get_project_context", ["project": "away"])
         XCTAssertFalse(result.isError, result.text)
         XCTAssertTrue(result.text.contains("Wire the ledger"), result.text)
-        XCTAssertTrue(result.text.contains("ledger"), "system map should include away's component: \(result.text)")
+        XCTAssertTrue(result.text.contains("engine"), "system map should include away's component: \(result.text)")
         XCTAssertTrue(result.text.contains("- Rate limits"), result.text)
         XCTAssertTrue(result.text.contains("- Auth shape"), result.text)
         XCTAssertFalse(result.text.contains("Codex cools down"), "bodies stay out of the title list: \(result.text)")
         XCTAssertFalse(result.text.contains("JWT in the cookie"), result.text)
-        XCTAssertTrue(
-            result.text.contains(#"Read one with linkc_get_project_context(project: "away", note: "<title>")."#),
-            result.text
+        XCTAssertEqual(
+            result.text.split(separator: "\n", omittingEmptySubsequences: true).last.map(String.init),
+            #"Read one with linkc_get_project_context(project: "away", note: "<title>")."#,
+            "the hint is the last line: \(result.text)"
         )
+    }
+
+    func testCrossProjectContextDoesNotOfferToEditAnotherProjectsBoard() throws {
+        try seedAwayBoardAndNotes()
+        let result = try call(homeServer(), "linkc_get_project_context", ["project": "away"])
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertFalse(result.text.contains("linkc_edit_board"), result.text)
+        XCTAssertTrue(result.text.contains(#"linkc_get_board(project: "away")"#), result.text)
+        XCTAssertTrue(result.text.contains("read-only"), result.text)
+    }
+
+    func testCrossProjectContextOfAProjectWithoutAMapDoesNotOfferToStartOne() throws {
+        _ = try BlackboardStore(workspaceRoot: away.path).postNote(authorAgent: .claude, title: "Auth shape", content: "JWT")
+        let result = try call(homeServer(), "linkc_get_project_context", ["project": "away"])
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertFalse(result.text.contains("linkc_edit_board"), result.text)
+        XCTAssertTrue(result.text.contains("No map yet"), result.text)
+        XCTAssertEqual(
+            result.text.split(separator: "\n", omittingEmptySubsequences: true).last.map(String.init),
+            #"Read one with linkc_get_project_context(project: "away", note: "<title>")."#
+        )
+    }
+
+    func testReadingAnotherProjectWritesNothingInIt() throws {
+        try seedAwayBoardAndNotes()
+        let board = BlackboardStore(workspaceRoot: away.path)
+        var stored = try board.load()
+        stored.activeAgents.append(AgentRecord(
+            agentId: "gone", agentKind: .claude, pid: 1, goal: "Abandoned goal", claimedFiles: [],
+            lastHeartbeat: Date().addingTimeInterval(-3 * 3600)
+        ))
+        try board.saveRaw(stored)
+        let before = try snapshot(of: away)
+
+        let context = try call(homeServer(), "linkc_get_project_context", ["project": "away"])
+        XCTAssertFalse(context.isError, context.text)
+        XCTAssertFalse(context.text.contains("Abandoned goal"), "a stale agent is not shown as active: \(context.text)")
+        XCTAssertTrue(context.text.contains("Wire the ledger"), context.text)
+        let note = try call(homeServer(), "linkc_get_project_context", ["project": "away", "note": "auth shape"])
+        XCTAssertFalse(note.isError, note.text)
+        let overview = try call(homeServer(), "linkc_get_board", ["project": "away"])
+        XCTAssertFalse(overview.isError, overview.text)
+
+        XCTAssertEqual(try snapshot(of: away), before)
+    }
+
+    func testANonStringNoteIsRefused() throws {
+        try seedAwayBoardAndNotes()
+        let result = try call(homeServer(), "linkc_get_project_context", ["project": "away", "note": 5])
+        XCTAssertTrue(result.isError)
+        XCTAssertEqual(result.text, "note must be a note title")
+    }
+
+    /// Every file and folder under `folder`, by relative path (a folder's ends in "/"), with each file's bytes.
+    private func snapshot(of folder: URL) throws -> [String: Data] {
+        var result: [String: Data] = [:]
+        for relative in try FileManager.default.subpathsOfDirectory(atPath: folder.path) {
+            let full = folder.appendingPathComponent(relative)
+            var isDirectory: ObjCBool = false
+            FileManager.default.fileExists(atPath: full.path, isDirectory: &isDirectory)
+            result[isDirectory.boolValue ? relative + "/" : relative] = isDirectory.boolValue ? Data() : try Data(contentsOf: full)
+        }
+        return result
     }
 
     func testGetProjectContextNoteReturnsThatNoteInFull() throws {
@@ -136,6 +200,7 @@ final class MCPServerCrossProjectReadTests: XCTestCase {
         XCTAssertFalse(context.isError, context.text)
         XCTAssertTrue(context.text.contains("Local only"), context.text)
         XCTAssertTrue(context.text.contains("stays in home"), "local context still shows note bodies: \(context.text)")
+        XCTAssertTrue(context.text.contains("change with `linkc_edit_board`"), context.text)
         XCTAssertFalse(context.text.contains("Auth shape"), context.text)
         XCTAssertFalse(context.text.contains(#"Read one with linkc_get_project_context(project:"#), context.text)
     }

@@ -763,13 +763,20 @@ public final class MCPServer: Sendable {
 
             case "linkc_get_project_context":
                 do {
+                    let noteTitle: String?
+                    if let rawNote = args["note"] {
+                        guard let title = rawNote as? String else { throw LinkCError.server("note must be a note title") }
+                        noteTitle = title
+                    } else {
+                        noteTitle = nil
+                    }
                     let target = try targetProject(args)
                     let boardStore = target.map { BlackboardStore(workspaceRoot: $0.path) } ?? store
                     return try projectContextResult(
                         id: id,
                         store: boardStore,
                         crossProjectName: target?.name,
-                        noteTitle: args["note"] as? String
+                        noteTitle: noteTitle
                     )
                 } catch {
                     return errorResult(id: id, error)
@@ -971,9 +978,22 @@ public final class MCPServer: Sendable {
                 guard let messageText = args["message"] as? String, !messageText.isEmpty else {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'message'.", isError: true)
                 }
-                let replyTo = args["reply_to"] as? String
-                let hasProjectArg = args["project"] != nil
-                if replyTo != nil || hasProjectArg {
+                let replyTo: String?
+                if let rawReplyTo = args["reply_to"] {
+                    guard let messageId = rawReplyTo as? String else {
+                        return toolResultResponse(id: id, text: "reply_to must be a message id", isError: true)
+                    }
+                    replyTo = messageId
+                } else {
+                    replyTo = nil
+                }
+                if replyTo != nil || args["project"] != nil {
+                    // An empty task_id names no task, as it does for a message to this project.
+                    let taskIdGiven = args["task_id"] != nil
+                        && (args["task_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) != ""
+                    if taskIdGiven {
+                        return toolResultResponse(id: id, text: "task_id cannot be combined with project or reply_to.", isError: true)
+                    }
                     if messageText.count > PendingMessage.crossProjectMessageLimit {
                         return toolResultResponse(
                             id: id,
@@ -991,12 +1011,12 @@ public final class MCPServer: Sendable {
                     }
                 }
 
-                if hasProjectArg {
-                    do {
-                        return try crossProjectSendResult(id: id, caller: caller, args: args, messageText: messageText)
-                    } catch {
-                        return errorResult(id: id, error)
+                do {
+                    if let target = try targetProject(args) {
+                        return try crossProjectSendResult(id: id, caller: caller, args: args, target: target, messageText: messageText)
                     }
+                } catch {
+                    return errorResult(id: id, error)
                 }
 
                 guard let toStr = args["to"] as? String, !toStr.isEmpty else {
@@ -1679,6 +1699,7 @@ public final class MCPServer: Sendable {
         id: Any?,
         caller: MCPCaller,
         args: [String: Any],
+        target: KnownProject,
         messageText: String
     ) throws -> Data? {
         guard let toStr = args["to"] as? String, !toStr.isEmpty else {
@@ -1686,9 +1707,6 @@ public final class MCPServer: Sendable {
         }
         guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
             return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
-        }
-        guard let target = try targetProject(args) else {
-            return toolResultResponse(id: id, text: "Error: Missing required argument 'project'.", isError: true)
         }
         if let refusal = openSessionRefusal(to: toAgent, in: target) {
             return toolResultResponse(id: id, text: refusal, isError: true)
@@ -1737,17 +1755,18 @@ public final class MCPServer: Sendable {
                 isError: true
             )
         }
-        if let projectArg = args["project"] as? String {
-            let resolved = try ProjectRef.resolve(projectArg, among: knownProjects.read(), caller: workspaceRoot)
-            if ProjectPath.canonical(resolved.path) != ProjectPath.canonical(fromProject) {
+        let originName = URL(fileURLWithPath: fromProject).lastPathComponent
+        if let rawProject = args["project"] {
+            guard let projectArg = rawProject as? String else {
+                return toolResultResponse(id: id, text: "project must be a folder name or a full path", isError: true)
+            }
+            if !Self.project(projectArg, names: fromProject) {
                 return toolResultResponse(
                     id: id,
-                    text: "project must match the message's origin (\(URL(fileURLWithPath: fromProject).lastPathComponent)), or be omitted.",
+                    text: "project must match the message's origin (\(originName)), or be omitted.",
                     isError: true
                 )
             }
-        } else if args["project"] != nil {
-            return toolResultResponse(id: id, text: "project must be a folder name or a full path", isError: true)
         }
         if let toStr = args["to"] as? String, !toStr.isEmpty {
             guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
@@ -1761,10 +1780,14 @@ public final class MCPServer: Sendable {
                 )
             }
         }
-        let destination = KnownProject(
-            path: ProjectPath.canonical(fromProject),
-            sessions: (try? knownProjects.read().first(where: { ProjectPath.canonical($0.path) == ProjectPath.canonical(fromProject) })?.sessions) ?? []
-        )
+        let originPath = ProjectPath.canonical(fromProject)
+        guard let destination = try knownProjects.read().first(where: { ProjectPath.canonical($0.path) == originPath }) else {
+            return toolResultResponse(
+                id: id,
+                text: "\(originName) is no longer known to linkC; the reply was not sent.",
+                isError: true
+            )
+        }
         let toAgent = original.fromAgent
         let toSessionId = original.fromSessionId
         if toSessionId == nil, let refusal = openSessionRefusal(to: toAgent, in: destination) {
@@ -1786,6 +1809,18 @@ public final class MCPServer: Sendable {
         )
     }
 
+    /// Whether a reply's `project` argument names `origin`: its full path, or its folder name
+    /// ignoring case. Compared directly, not resolved against the known projects, where a second
+    /// folder with the same name would make the origin ambiguous.
+    private static func project(_ ref: String, names origin: String) -> Bool {
+        let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+        let originPath = ProjectPath.canonical(origin)
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
+            return ProjectPath.canonical((trimmed as NSString).expandingTildeInPath) == originPath
+        }
+        return URL(fileURLWithPath: originPath).lastPathComponent.caseInsensitiveCompare(trimmed) == .orderedSame
+    }
+
     /// Refusal when `projects.json` shows no live session of `to` in `project`.
     private func openSessionRefusal(to agent: AgentKind, in project: KnownProject) -> String? {
         let open = project.sessions.contains { $0.agentKind == agent }
@@ -1795,10 +1830,9 @@ public final class MCPServer: Sendable {
 
     /// `linkc_get_board` body for this project's folder or another project's (spec §7).
     private func boardResult(id: Any?, root: String, boardArg: String?) throws -> Data? {
-        let rawBoard = boardArg
         let slug: String?
-        if let rawBoard, rawBoard != "overview" {
-            slug = rawBoard
+        if let boardArg, boardArg != "overview" {
+            slug = boardArg
         } else {
             slug = nil
         }
@@ -1841,14 +1875,15 @@ public final class MCPServer: Sendable {
     }
 
     /// `linkc_get_project_context` body for this project's store or another's. With
-    /// `crossProjectName`, notes are titles only unless `noteTitle` picks one (spec §7).
+    /// `crossProjectName`, nothing is written in that project, notes are titles only unless
+    /// `noteTitle` picks one, and the report points at the read-only tools (spec §7).
     private func projectContextResult(
         id: Any?,
         store: BlackboardStore,
         crossProjectName: String?,
         noteTitle: String?
     ) throws -> Data? {
-        let board = try store.getProjectContext()
+        let board = try crossProjectName == nil ? store.getProjectContext() : store.readProjectContext()
 
         if let noteTitle {
             let trimmed = noteTitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1886,11 +1921,11 @@ public final class MCPServer: Sendable {
 
         if !board.sharedNotes.isEmpty {
             text += "## Shared Notes & Decisions\n"
-            if let crossProjectName {
+            if crossProjectName != nil {
                 for n in board.sharedNotes {
                     text += "- \(n.title)\n"
                 }
-                text += "\nRead one with linkc_get_project_context(project: \"\(crossProjectName)\", note: \"<title>\").\n\n"
+                text += "\n"
             } else {
                 for n in board.sharedNotes {
                     text += "### \(n.title) (by \(n.authorAgent.displayName))\n"
@@ -1904,7 +1939,13 @@ public final class MCPServer: Sendable {
         do {
             if let loaded = try BoardMapStore(workspacePath: board.projectPath).load() {
                 text += BoardReport.markdown(for: loaded.map)
-                text += "Read with `linkc_get_board`; change with `linkc_edit_board`.\n\n"
+                if let crossProjectName {
+                    text += "This board is read-only from here; read it with `linkc_get_board(project: \"\(crossProjectName)\")`.\n\n"
+                } else {
+                    text += "Read with `linkc_get_board`; change with `linkc_edit_board`.\n\n"
+                }
+            } else if crossProjectName != nil {
+                text += "## System\n_No map yet._\n\n"
             } else {
                 text += "## System\n_No map yet — `linkc_edit_board` starts one._\n\n"
             }
@@ -1912,6 +1953,11 @@ public final class MCPServer: Sendable {
             // The message can carry a name straight from the file — sanitized the same
             // way every other field in this report is, since it lands in markdown too.
             text += "## System\n_The system map could not be read: \(BoardReport.sanitized(error.localizedDescription))_\n\n"
+        }
+
+        // Last, so it is the line an agent reads when it decides what to open next.
+        if let crossProjectName, !board.sharedNotes.isEmpty {
+            text += "Read one with linkc_get_project_context(project: \"\(crossProjectName)\", note: \"<title>\").\n"
         }
 
         return toolResultResponse(id: id, text: text)

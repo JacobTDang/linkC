@@ -243,7 +243,8 @@ public final class InboxStore: Sendable {
     /// Enqueues a short, kind-tagged message. The store composes the frame; callers pass the bare body.
     /// Rejects framed bodies (loop guard), `.task` kind, completions without a task id, and 24 h duplicates.
     /// `toSessionId` addresses it to one session (`PendingMessage.toSessionId`).
-    /// `fromProject` / `fromSessionId` / `chainDepth` stamp a cross-project peer note (spec §6).
+    /// `fromProject` / `fromSessionId` / `chainDepth` stamp a cross-project peer note (spec §6); a
+    /// duplicate must match all three, so two senders of one text are two messages.
     public func enqueue(
         from: AgentKind,
         to: AgentKind,
@@ -287,13 +288,21 @@ public final class InboxStore: Sendable {
             throw InboxError.kindNotAllowed(.task)
         }
 
-        let hash = LinkCFrame.contentHash(from: from, to: to, kind: kind, prompt: hashPrompt)
+        // The sender's full folder, session and reply depth tell two senders of one text apart: a
+        // merged duplicate would hand the second sender the first's id, and its reply the wrong session.
+        // A message with none of them (every local one) hashes exactly as it always did.
+        var hashMaterial = hashPrompt
+        if fromProject != nil || fromSessionId != nil || chainDepth != 0 {
+            hashMaterial += "\n[origin project=\(fromProject ?? "") session=\(fromSessionId ?? "") depth=\(chainDepth)]"
+        }
+        let hash = LinkCFrame.contentHash(from: from, to: to, kind: kind, prompt: hashMaterial)
         return try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             let dedupeCutoff = Date().addingTimeInterval(-24 * 3600)
             if let existing = inbox.messages.first(where: {
                 $0.contentHash == hash && $0.fromAgent == from && $0.toAgent == to && $0.createdAt >= dedupeCutoff
                     && $0.status == .queued && $0.toSessionId == toSessionId
+                    && $0.fromProject == fromProject && $0.fromSessionId == fromSessionId && $0.chainDepth == chainDepth
             }) {
                 return existing
             }

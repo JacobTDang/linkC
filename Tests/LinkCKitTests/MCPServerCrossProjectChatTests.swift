@@ -30,14 +30,36 @@ final class MCPServerCrossProjectChatTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func writeProjects(awaySessions: [KnownProject.OpenSession]) throws {
+    private func writeProjects(awaySessions: [KnownProject.OpenSession], extra: [KnownProject] = []) throws {
         try file.write([
             KnownProject(path: ProjectPath.canonical(home.path), sessions: [
                 .init(id: "home-claude", agent: "claude", activity: .idle)
             ]),
             KnownProject(path: ProjectPath.canonical(away.path), sessions: awaySessions)
-        ])
+        ] + extra)
     }
+
+    /// A folder named `name` under its own parent, so it can share a name with another known folder.
+    private func makeFolder(named name: String, under parent: String) throws -> URL {
+        let folder = tempDir.appendingPathComponent(parent).appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    /// A message in away's inbox that came from `home`, as a cross-project send leaves it.
+    private func messageFromHome(
+        fromSessionId: String? = "home-claude",
+        chainDepth: Int = 0,
+        body: String = "status?"
+    ) throws -> PendingMessage {
+        try awayInbox.enqueue(
+            from: .claude, to: .codex, kind: .peerNote, body: body,
+            fromProject: ProjectPath.canonical(home.path), fromSessionId: fromSessionId, chainDepth: chainDepth
+        )
+    }
+
+    private static let sizeRefusal =
+        "Messages to another project are at most 2,000 characters. Point to a file path instead; both projects are on this Mac."
 
     private func homeServer(session: String? = "home-claude") -> MCPServer {
         var env = ["LINKC_AGENT": "claude"]
@@ -98,6 +120,43 @@ final class MCPServerCrossProjectChatTests: XCTestCase {
         XCTAssertEqual(try awayInbox.fetchPending().count, 1)
     }
 
+    func testSameTextFromTwoSessionsOfOneProjectIsNotMerged() throws {
+        let first = try messageFromHome(fromSessionId: "home-claude-1")
+        let second = try messageFromHome(fromSessionId: "home-claude-2")
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(second.fromSessionId, "home-claude-2")
+        XCTAssertEqual(try awayInbox.fetchPending().count, 2)
+    }
+
+    func testSameTextFromTwoFoldersWithOneNameIsNotMerged() throws {
+        let first = try awayInbox.enqueue(
+            from: .claude, to: .codex, kind: .peerNote, body: "status?",
+            fromProject: "/x/app", fromSessionId: "s", chainDepth: 0
+        )
+        let second = try awayInbox.enqueue(
+            from: .claude, to: .codex, kind: .peerNote, body: "status?",
+            fromProject: "/y/app", fromSessionId: "s", chainDepth: 0
+        )
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(second.fromProject, "/y/app")
+        XCTAssertEqual(try awayInbox.fetchPending().count, 2)
+    }
+
+    func testSameTextAtAnotherChainDepthIsNotMerged() throws {
+        let first = try messageFromHome(chainDepth: 1)
+        let second = try messageFromHome(chainDepth: 2)
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(second.chainDepth, 2)
+        XCTAssertEqual(try awayInbox.fetchPending().count, 2)
+    }
+
+    func testIdenticalLocalMessagesStillDedupe() throws {
+        let first = try awayInbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "same")
+        let second = try awayInbox.enqueue(from: .claude, to: .codex, kind: .peerNote, body: "same")
+        XCTAssertEqual(first.id, second.id)
+        XCTAssertEqual(try awayInbox.fetchPending().count, 1)
+    }
+
     func testMessageMatchingHandlesShortIdAndAmbiguousPrefix() throws {
         let a = try homeInbox.enqueue(from: .codex, to: .claude, kind: .peerNote, body: "one")
         _ = try homeInbox.enqueue(from: .codex, to: .claude, kind: .peerNote, body: "two")
@@ -140,17 +199,108 @@ final class MCPServerCrossProjectChatTests: XCTestCase {
         XCTAssertTrue(message.prompt.contains("money-printer"), message.prompt)
     }
 
+    func testTwoSessionsOfOneProjectSendingTheSameTextEachKeepTheirReturnAddress() throws {
+        let first = try call(homeServer(session: "home-claude-1"), "linkc_send_message", [
+            "project": "away", "to": "codex", "message": "status?"
+        ])
+        let second = try call(homeServer(session: "home-claude-2"), "linkc_send_message", [
+            "project": "away", "to": "codex", "message": "status?"
+        ])
+        XCTAssertFalse(first.isError, first.text)
+        XCTAssertFalse(second.isError, second.text)
+        let messages = try awayInbox.fetchPending()
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(Set(messages.compactMap(\.fromSessionId)), ["home-claude-1", "home-claude-2"])
+    }
+
     func testAMessageOverTheCrossProjectLimitIsRefusedBeforeWriting() throws {
         let long = String(repeating: "x", count: PendingMessage.crossProjectMessageLimit + 1)
         let result = try call(homeServer(), "linkc_send_message", [
             "project": "away", "to": "codex", "message": long
         ])
         XCTAssertTrue(result.isError)
-        XCTAssertEqual(
-            result.text,
-            "Messages to another project are at most 2,000 characters. Point to a file path instead; both projects are on this Mac."
-        )
+        XCTAssertEqual(result.text, Self.sizeRefusal)
         XCTAssertTrue(try awayInbox.fetchPending().isEmpty)
+        XCTAssertTrue(try homeInbox.fetchPending().isEmpty)
+    }
+
+    func testTheSizeCheckComesBeforeAnUnknownProject() throws {
+        let long = String(repeating: "x", count: PendingMessage.crossProjectMessageLimit + 1)
+        let result = try call(homeServer(), "linkc_send_message", [
+            "project": "ghost", "to": "codex", "message": long
+        ])
+        XCTAssertTrue(result.isError)
+        XCTAssertEqual(result.text, Self.sizeRefusal)
+    }
+
+    func testTheSizeCapAppliesToAReply() throws {
+        let original = try messageFromHome()
+        let long = String(repeating: "x", count: PendingMessage.crossProjectMessageLimit + 1)
+        let result = try call(awayServer(), "linkc_send_message", [
+            "reply_to": original.id, "message": long
+        ])
+        XCTAssertTrue(result.isError)
+        XCTAssertEqual(result.text, Self.sizeRefusal)
+        XCTAssertTrue(try homeInbox.fetchPending().isEmpty)
+    }
+
+    func testALocalMessageOverTwoThousandCharactersIsStillAccepted() throws {
+        let long = String(repeating: "x", count: PendingMessage.crossProjectMessageLimit + 1)
+        let result = try call(homeServer(), "linkc_send_message", ["to": "codex", "message": long])
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try homeInbox.fetchPending().count, 1)
+    }
+
+    func testUnknownProjectIsRefusedWithTheKnownNames() throws {
+        let result = try call(homeServer(), "linkc_send_message", [
+            "project": "ghost", "to": "codex", "message": "ping"
+        ])
+        XCTAssertTrue(result.isError)
+        XCTAssertEqual(result.text, ProjectRefError.unknown("ghost", known: ["away"]).errorDescription)
+        XCTAssertTrue(try awayInbox.fetchPending().isEmpty)
+    }
+
+    func testMissingProjectsFileIsRefusedOnASend() throws {
+        try file.remove()
+        let result = try call(homeServer(), "linkc_send_message", [
+            "project": "away", "to": "codex", "message": "ping"
+        ])
+        XCTAssertTrue(result.isError)
+        XCTAssertEqual(result.text, KnownProjectsError.linkCNotRunning.errorDescription)
+        XCTAssertTrue(try awayInbox.fetchPending().isEmpty)
+    }
+
+    func testAProjectSendWithoutToIsRefused() throws {
+        let result = try call(homeServer(), "linkc_send_message", ["project": "away", "message": "ping"])
+        XCTAssertTrue(result.isError)
+        XCTAssertEqual(result.text, "Error: Missing required argument 'to'.")
+        XCTAssertTrue(try awayInbox.fetchPending().isEmpty)
+    }
+
+    func testTaskIdWithProjectOrReplyToIsRefused() throws {
+        let original = try messageFromHome()
+        let refusal = "task_id cannot be combined with project or reply_to."
+
+        let withProject = try call(homeServer(), "linkc_send_message", [
+            "project": "away", "to": "codex", "message": "ping", "task_id": "abcd1234"
+        ])
+        XCTAssertTrue(withProject.isError)
+        XCTAssertEqual(withProject.text, refusal)
+
+        let withReplyTo = try call(awayServer(), "linkc_send_message", [
+            "reply_to": original.id, "message": "pong", "task_id": "abcd1234"
+        ])
+        XCTAssertTrue(withReplyTo.isError)
+        XCTAssertEqual(withReplyTo.text, refusal)
+
+        XCTAssertEqual(try awayInbox.fetchPending().count, 1, "only the planted message")
+        XCTAssertTrue(try homeInbox.fetchPending().isEmpty)
+    }
+
+    func testANonStringReplyToIsRefused() throws {
+        let result = try call(awayServer(), "linkc_send_message", ["reply_to": 5, "message": "pong"])
+        XCTAssertTrue(result.isError)
+        XCTAssertEqual(result.text, "reply_to must be a message id")
         XCTAssertTrue(try homeInbox.fetchPending().isEmpty)
     }
 
@@ -192,22 +342,114 @@ final class MCPServerCrossProjectChatTests: XCTestCase {
     }
 
     func testReplyToRejectsMismatchedProjectOrTo() throws {
-        _ = try call(homeServer(), "linkc_send_message", [
-            "project": "away", "to": "codex", "message": "status?"
-        ])
-        let original = try XCTUnwrap(awayInbox.fetchPending().first)
+        let other = try makeFolder(named: "other", under: "elsewhere")
+        try writeProjects(
+            awaySessions: [.init(id: "away-codex", agent: "codex", activity: .idle)],
+            extra: [KnownProject(path: ProjectPath.canonical(other.path), sessions: [])]
+        )
+        let original = try messageFromHome()
         let short = String(original.id.prefix(8))
+        let projectRefusal = "project must match the message's origin (money-printer), or be omitted."
 
-        let badProject = try call(awayServer(), "linkc_send_message", [
+        let otherKnown = try call(awayServer(), "linkc_send_message", [
+            "reply_to": short, "project": "other", "message": "nope"
+        ])
+        XCTAssertTrue(otherKnown.isError)
+        XCTAssertEqual(otherKnown.text, projectRefusal)
+
+        let ghost = try call(awayServer(), "linkc_send_message", [
             "reply_to": short, "project": "ghost", "message": "nope"
         ])
-        XCTAssertTrue(badProject.isError)
+        XCTAssertTrue(ghost.isError)
+        XCTAssertEqual(ghost.text, projectRefusal)
 
         let badTo = try call(awayServer(), "linkc_send_message", [
             "reply_to": short, "to": "cursor", "message": "nope"
         ])
         XCTAssertTrue(badTo.isError)
+        XCTAssertEqual(badTo.text, "to must be claude (the message's sender), or be omitted.")
         XCTAssertEqual(try homeInbox.fetchPending().count, 0)
+    }
+
+    func testReplyAcceptsAProjectEqualToTheOrigin() throws {
+        let original = try messageFromHome()
+        let homePath = ProjectPath.canonical(home.path)
+        for ref in ["money-printer", "MONEY-PRINTER", homePath] {
+            let result = try call(awayServer(), "linkc_send_message", [
+                "reply_to": original.id, "project": ref, "to": "claude", "message": "ok \(ref)"
+            ])
+            XCTAssertFalse(result.isError, "\(ref): \(result.text)")
+        }
+        XCTAssertEqual(try homeInbox.fetchPending().count, 3)
+    }
+
+    func testReplyWithAProjectNameAnotherKnownFolderSharesStillReachesTheOrigin() throws {
+        let twin = try makeFolder(named: "money-printer", under: "elsewhere")
+        let twinInbox = InboxStore(workspaceRoot: twin.path)
+        try writeProjects(
+            awaySessions: [.init(id: "away-codex", agent: "codex", activity: .idle)],
+            extra: [KnownProject(path: ProjectPath.canonical(twin.path), sessions: [
+                .init(id: "twin-claude", agent: "claude", activity: .idle)
+            ])]
+        )
+        let original = try messageFromHome()
+
+        let result = try call(awayServer(), "linkc_send_message", [
+            "reply_to": original.id, "project": "money-printer", "message": "ledger is green"
+        ])
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try homeInbox.fetchPending().count, 1)
+        XCTAssertTrue(try twinInbox.fetchPending().isEmpty)
+    }
+
+    func testReplyIsRefusedWhenProjectsFileIsMissing() throws {
+        let original = try messageFromHome()
+        try file.remove()
+        let result = try call(awayServer(), "linkc_send_message", [
+            "reply_to": original.id, "message": "ledger is green"
+        ])
+        XCTAssertTrue(result.isError)
+        XCTAssertEqual(result.text, KnownProjectsError.linkCNotRunning.errorDescription)
+        XCTAssertTrue(try homeInbox.fetchPending().isEmpty)
+    }
+
+    func testReplyIsRefusedWhenProjectsFileIsUnreadable() throws {
+        let original = try messageFromHome()
+        try Data("not json".utf8).write(to: file.url)
+        let result = try call(awayServer(), "linkc_send_message", [
+            "reply_to": original.id, "message": "ledger is green"
+        ])
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.text.contains("project list at \(file.url.path) could not be read"), result.text)
+        XCTAssertTrue(try homeInbox.fetchPending().isEmpty)
+    }
+
+    func testReplyIsRefusedWhenTheOriginProjectIsNoLongerKnown() throws {
+        let withSession = try messageFromHome(fromSessionId: "home-claude")
+        let withoutSession = try messageFromHome(fromSessionId: nil, body: "from outside")
+        try file.write([
+            KnownProject(path: ProjectPath.canonical(away.path), sessions: [
+                .init(id: "away-codex", agent: "codex", activity: .idle)
+            ])
+        ])
+        for original in [withSession, withoutSession] {
+            let result = try call(awayServer(), "linkc_send_message", [
+                "reply_to": original.id, "message": "ledger is green"
+            ])
+            XCTAssertTrue(result.isError)
+            XCTAssertEqual(result.text, "money-printer is no longer known to linkC; the reply was not sent.")
+        }
+        XCTAssertTrue(try homeInbox.fetchPending().isEmpty)
+    }
+
+    func testReplyToAMessageAtChainDepthEightIsAllowedAndGetsDepthNine() throws {
+        let original = try messageFromHome(chainDepth: 8)
+        let result = try call(awayServer(), "linkc_send_message", [
+            "reply_to": original.id, "message": "one more"
+        ])
+        XCTAssertFalse(result.isError, result.text)
+        let reply = try XCTUnwrap(homeInbox.fetchPending().first)
+        XCTAssertEqual(reply.chainDepth, 9)
     }
 
     func testReplyToWithoutFromSessionIdOmitsToSessionIdAndChecksOpenSession() throws {
