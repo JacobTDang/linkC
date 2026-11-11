@@ -355,6 +355,9 @@ public final class AppCoordinator {
         guard let model = resolvedModel(for: .opencode, tier: tier) else {
             return .refused("no model configured for opencode tier \(tier.rawValue) — set it in linkC's Settings > Models")
         }
+        guard OpenCodeFreeModels.isFree(model) else {
+            return .refused("\(model) (opencode tier \(tier.rawValue)) is not free — OpenCode runs free models only; set the tier in linkC settings")
+        }
         let norm = ProjectPath.canonical(folder)
         if let listing = openCodeModelListings[norm] {
             let age = now().timeIntervalSince(listing.checkedAt)

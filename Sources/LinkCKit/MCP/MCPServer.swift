@@ -342,11 +342,9 @@ public final class MCPServer: Sendable {
         return models
     }
 
-    /// The model ids in `opencode models`' output: its non-empty lines, trimmed.
+    /// The free model ids in `opencode models`' output: its non-empty lines, trimmed, free only.
     static func parseOpenCodeModels(_ stdout: String) -> [String] {
-        stdout.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        ModelListParser.openCode(stdout).map(\.id)
     }
 
     /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified),
@@ -939,6 +937,12 @@ public final class MCPServer: Sendable {
                     }
                 }
                 if toAgent == .opencode, let tier, let model = settings.model(for: .opencode, tier: tier) {
+                    guard OpenCodeFreeModels.isFree(model) else {
+                        return toolResultResponse(
+                            id: id,
+                            text: "Error: \(model) (opencode tier \(tier.rawValue)) is not free — OpenCode runs free models only; set the tier in linkC settings.",
+                            isError: true)
+                    }
                     let offered: [String]
                     do {
                         offered = try openCodeModels(workspaceRoot)
