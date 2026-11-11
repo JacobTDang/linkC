@@ -415,19 +415,24 @@ public final class InboxStore: Sendable {
         agent: AgentKind,
         reason: String,
         cooldown: TimeInterval,
+        pool: String? = nil,
         timeout: TimeInterval = 5.0
     ) throws {
         try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             let now = Date()
-            if let index = inbox.agentLimits.firstIndex(where: { $0.agent == agent }) {
+            if let index = inbox.agentLimits.firstIndex(where: { $0.agent == agent && $0.pool == pool }) {
                 guard inbox.agentLimits[index].cooldownExpiresAt <= now else {
                     // Still live: nothing to change, so nothing to write.
                     return
                 }
-                inbox.agentLimits[index] = AgentLimitStatus(agent: agent, reason: reason, limitedAt: now, cooldownExpiresAt: now.addingTimeInterval(cooldown))
+                inbox.agentLimits[index] = AgentLimitStatus(
+                    agent: agent, reason: reason, limitedAt: now,
+                    cooldownExpiresAt: now.addingTimeInterval(cooldown), pool: pool)
             } else {
-                inbox.agentLimits.append(AgentLimitStatus(agent: agent, reason: reason, limitedAt: now, cooldownExpiresAt: now.addingTimeInterval(cooldown)))
+                inbox.agentLimits.append(AgentLimitStatus(
+                    agent: agent, reason: reason, limitedAt: now,
+                    cooldownExpiresAt: now.addingTimeInterval(cooldown), pool: pool))
             }
             inbox.updatedAt = now
             try saveUnlocked(inbox)
@@ -438,31 +443,39 @@ public final class InboxStore: Sendable {
     /// limit at all (nothing to extend). Used once a more accurate expiry becomes known (a real
     /// usage-window reset, or a banner's own stated time) than whatever `recordLimit` first
     /// stored; that first record must still win when it happens to be the later of the two.
-    public func extendLimit(agent: AgentKind, until: Date, timeout: TimeInterval = 5.0) throws {
+    public func extendLimit(agent: AgentKind, until: Date, pool: String? = nil, timeout: TimeInterval = 5.0) throws {
         try withFileLock(timeout: timeout) {
             var inbox = try loadUnlocked()
             let now = Date()
-            guard let index = inbox.agentLimits.firstIndex(where: { $0.agent == agent }) else { return }
+            guard let index = inbox.agentLimits.firstIndex(where: { $0.agent == agent && $0.pool == pool }) else { return }
             let live = inbox.agentLimits[index]
             guard live.cooldownExpiresAt > now else { return } // nothing live to extend
             guard until > live.cooldownExpiresAt else { return } // never shorten
-            inbox.agentLimits[index] = AgentLimitStatus(agent: live.agent, reason: live.reason, limitedAt: live.limitedAt, cooldownExpiresAt: until)
+            inbox.agentLimits[index] = AgentLimitStatus(
+                agent: live.agent, reason: live.reason, limitedAt: live.limitedAt,
+                cooldownExpiresAt: until, pool: live.pool)
             inbox.updatedAt = now
             try saveUnlocked(inbox)
         }
     }
 
-    /// Returns the active limit status for an agent kind if cooldown has not expired; returns nil otherwise.
-    public func isAgentLimited(agent: AgentKind, timeout: TimeInterval = 5.0) throws -> AgentLimitStatus? {
-        let inbox = try snapshot(timeout: timeout)
-        let now = Date()
-        guard let status = inbox.agentLimits.first(where: { $0.agent == agent }) else {
-            return nil
-        }
-        if status.cooldownExpiresAt > now {
-            return status
-        }
-        return nil
+    /// A live limit that applies to `model` for `agent`. A limit applies when its pool is nil
+    /// (the whole agent) or equals the model's pool. With no model, any live limit for the agent.
+    /// When several apply, the one that ends last.
+    public func isAgentLimited(agent: AgentKind, model: String? = nil, timeout: TimeInterval = 5.0) throws -> AgentLimitStatus? {
+        let live = try liveLimits(agent: agent, timeout: timeout)
+        guard let model else { return Self.latest(live) }
+        let pool = ModelPool.pool(of: model, agent: agent)
+        return Self.latest(live.filter { $0.pool == nil || $0.pool == pool })
+    }
+
+    /// Every live limit on `agent`: one per quota pool for agy, otherwise at most one.
+    public func liveLimits(agent: AgentKind, timeout: TimeInterval = 5.0) throws -> [AgentLimitStatus] {
+        try snapshot(timeout: timeout).liveLimits(for: agent, now: Date())
+    }
+
+    private static func latest(_ limits: [AgentLimitStatus]) -> AgentLimitStatus? {
+        limits.max { $0.cooldownExpiresAt < $1.cooldownExpiresAt }
     }
 
     // MARK: - Task lifecycle
@@ -479,6 +492,7 @@ public final class InboxStore: Sendable {
         fromSessionId: String? = nil,
         targetSessionId: String? = nil,
         tier: ModelTier? = nil,
+        model: String? = nil,
         prompt: String,
         files: [String],
         hop: Int = 0,
@@ -506,6 +520,7 @@ public final class InboxStore: Sendable {
                 $0.state.isOpen && $0.toAgent == to && $0.prompt == prompt
                     && $0.verification?.baseSha == verification?.baseSha
                     && $0.targetSessionId == targetSessionId
+                    && $0.model == model
                     && $0.fromProject == fromProject
             }) {
                 return existing
@@ -519,7 +534,7 @@ public final class InboxStore: Sendable {
             }
 
             let task = TaskRecord(
-                fromAgent: from, fromSessionId: fromSessionId, tier: tier, toAgent: to,
+                fromAgent: from, fromSessionId: fromSessionId, tier: tier, model: model, toAgent: to,
                 prompt: prompt, files: normalized,
                 state: verification == nil || gate != nil ? .queued : .gating, hop: hop,
                 verification: verification, gate: gate, targetSessionId: targetSessionId,
@@ -722,7 +737,7 @@ public final class InboxStore: Sendable {
     /// linkC failing a task whose assignee can no longer report (its session ended).
     public func failTask(taskId: String, reason: String, timeout: TimeInterval = 5.0) throws {
         try transition(taskId: taskId, timeout: timeout, target: { task in
-            guard task.state == .delivered || task.state == .started else {
+            guard task.state == .delivered || task.state == .started || task.state == .queued else {
                 throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: .failed)
             }
             return .failed
@@ -801,7 +816,7 @@ public final class InboxStore: Sendable {
     /// Fails a task and enqueues the delegator's one-line outcome as a single locked write.
     public func failTaskAndNotify(taskId: String, reason: String, notifyBody: String, timeout: TimeInterval = 5.0) throws {
         try transitionAndNotify(taskId: taskId, timeout: timeout, target: { task in
-            guard task.state == .delivered || task.state == .started else {
+            guard task.state == .delivered || task.state == .started || task.state == .queued else {
                 throw InboxError.illegalTransition(taskId: taskId, from: task.state, to: .failed)
             }
             return .failed

@@ -163,6 +163,17 @@ final class UsageRowsTests: XCTestCase {
         XCTAssertEqual(result.headline, "limit hit")
     }
 
+    /// agy limits one quota pool at a time: its row says which, and a limit with no pool reads as before.
+    func testAnAgyCapNamesItsPool() {
+        let gemini = AgentLimitStatus(
+            agent: .agy, reason: "quota exceeded", limitedAt: now.addingTimeInterval(-60),
+            cooldownExpiresAt: now.addingTimeInterval(900), pool: "gemini")
+        let result = build(limits: [.agy: gemini])
+        XCTAssertEqual(row(result, .agy)?.text, "Gemini limit hit · retry 15m")
+        XCTAssertEqual(row(result, .agy)?.help.hasPrefix("Gemini pool: quota exceeded"), true)
+        XCTAssertEqual(row(build(limits: [.agy: cap(.agy, clearsIn: 900)]), .agy)?.text, "limit hit · retry 15m")
+    }
+
     func testAnExpiredCapFallsThroughToNoUsageData() {
         let expired = AgentLimitStatus(
             agent: .cursor, reason: "usage cap", limitedAt: now.addingTimeInterval(-7200),

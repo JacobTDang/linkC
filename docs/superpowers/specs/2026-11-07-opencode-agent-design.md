@@ -82,15 +82,11 @@ The terminal environment adds to `LINKC_SESSION`:
 
 Every OpenCode launch names a model, as Grok's does. A session from the menu or `linkc opencode` without `--tier` runs on the default tier's model and records no tier, so it is never handed a delegated task. A delegated task, or `--tier`, uses its tier's model and records the tier. With no model for the tier, the launch refuses: `no model configured for opencode tier <tier> — set it in linkC settings`. It never leaves the model to OpenCode's own default.
 
-A continued session keeps the model it last ran on (§4.1), so linkC records no model for it. The default tier's model still goes in its config, for when no session ran in the folder and a new one starts.
-
-Menus: OpenCode is under New and Continue last, not under Resume….
+Menus: OpenCode is under New, and under neither Continue last nor Resume… (§5.3).
 
 ### 5.3 Continuing a session
 
-linkC continues an OpenCode session in its own folder only. For `.continueLast` — the menu item, and every restore after a quit — linkC runs `opencode session list --format json --standalone --max-count 10000` in the session's folder (OpenCode lists 100 sessions by default, across every worktree of the project; a listing that reaches the 10,000 asked for fails rather than risk missing this folder's session), takes the newest entry whose `directory` is that folder (both canonicalized with `ProjectPath.canonical`), and launches with `--session <id>`. With no such entry, the session starts new. If the listing fails, or its output does not parse, the launch fails with that error; it does not start a new session in its place.
-
-The listing runs off the main thread, through `ProcessRunner`; the session is launched when it returns. `RelaunchPlan` already lets at most one entry per folder and agent continue, so two restored OpenCode sessions never land on one conversation.
+Superseded by the model-choices spec (2026-11-11, §9.1). linkC never resumes an OpenCode conversation: a resumed one runs on the model it last used, which linkC cannot see and which may not be free. For `.continueLast` and `.resume` — and so for every restore after a quit — linkC opens a new conversation in the folder on the default tier's model, with no `--session`, `--continue` or `--conversation`, and does not list OpenCode's sessions. Because every OpenCode conversation is new, `RelaunchPlan` lets every OpenCode entry come back.
 
 ### 5.4 linkC's tools
 
@@ -191,7 +187,7 @@ Switches with a `default:` branch are checked by hand. The plan greps for `.grok
 - OpenCode not installed: `Executable for OPENCODE not found`.
 - No model for the tier: refused, as in §5.2.
 - A tier's model not listed by OpenCode: delegation refused, as in §5.8.
-- `opencode models` or `opencode session list` failing: the delegation or the continue fails with its error.
+- `opencode models` failing: the delegation fails with its error.
 - `opencode.json` that is not a JSON object: registration reports it and leaves the file untouched.
 - An `OPENCODE_CONFIG_CONTENT` in linkC's environment that does not parse: the launch fails naming it.
 
@@ -199,9 +195,9 @@ Switches with a `default:` branch are checked by hand. The plan greps for `.grok
 
 Unit tests in LinkCKit, each written first and shown to fail with its change reverted:
 
-- `AgentKind.opencode` properties; launch arguments and environment for new and continued sessions: `--standalone --auto`, no `--model`, `--session`, `OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_CONFIG_CONTENT` with the model and linkC's server, the merge into an inherited value, and its refusal of one that does not parse.
+- `AgentKind.opencode` properties; launch arguments and environment for new sessions: `--standalone --auto`, no `--model`, `OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_CONFIG_CONTENT` with the model and linkC's server, the merge into an inherited value, and its refusal of one that does not parse.
 - An OpenCode launch with no resolvable model refuses.
-- Continue: the newest session in exactly this folder is chosen; a session in another folder of the same project is not; none starts a new session; a failing or unparseable listing fails the launch.
+- Continue, Resume and restore open a new conversation on the default tier's model (model-choices spec §9.1).
 - Registration: a new file; an existing file keeps every other key; an unchanged entry is not rewritten; a file that is not a JSON object is refused and left byte-for-byte; the shared writer refuses the same way; an empty file is read as `{}`.
 - `detectAgent(inPath:)` for OpenCode's link and its Cellar path; `resolveCaller` with `LINKC_AGENT=opencode`.
 - Screen state from the captured screens: idle reads idle, each working stage reads working (the narrow bar with no hint included), done reads done, output and prose above a finished turn's box read idle.

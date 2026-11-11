@@ -40,6 +40,7 @@ final class AppCoordinatorTickerTests: XCTestCase {
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
             agentPathResolver: { _ in script.path },
+            modelLists: TestModelLists.none,
             deliverySettle: 0,
             injectionGap: injectionGap,
             sweepClock: clock,

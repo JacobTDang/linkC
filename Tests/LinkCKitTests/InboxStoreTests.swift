@@ -389,6 +389,7 @@ final class InboxStoreTests: XCTestCase {
         XCTAssertTrue(TaskState.queued.canTransition(to: .delivered))
         XCTAssertTrue(TaskState.queued.canTransition(to: .cancelled))
         XCTAssertTrue(TaskState.queued.canTransition(to: .expired))
+        XCTAssertTrue(TaskState.queued.canTransition(to: .failed), "a model rejected at launch fails while still queued")
         XCTAssertFalse(TaskState.queued.canTransition(to: .started))
         XCTAssertTrue(TaskState.delivered.canTransition(to: .started))
         XCTAssertFalse(TaskState.delivered.canTransition(to: .done))

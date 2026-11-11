@@ -106,7 +106,7 @@ hand off work and share context with each other:
 
 | Tool | Purpose |
 |---|---|
-| `linkc_delegate_task` | Give a task to another agent, with an optional model tier and verification. With `project`, the task goes to an agent in another project. |
+| `linkc_delegate_task` | Give a task to another agent, with an optional model tier or one of the agent's listed models, and optional verification. With `project`, the task goes to an agent in another project. |
 | `linkc_ask` | Ask an agent in another project a question. The answer, at most 1,000 characters, comes back to the session that asked. |
 | `linkc_list_projects` | List the other projects linkC knows, with each open session's agent and whether it is idle or busy. |
 | `linkc_start_task` | Accept a task that linkC delivered. |
@@ -122,14 +122,23 @@ hand off work and share context with each other:
 | `linkc_check_conflicts` | Find out if another agent claims a file. |
 | `linkc_get_project_context` | Show the Board, and the goals and notes of the other agents. With `project`, read another project's: its notes are listed by title, and `note` reads one in full. |
 | `linkc_get_board`, `linkc_edit_board` | Read or edit the Board, or a detail board. The `detail` step creates a component's detail board; the `column` step adds, changes or removes a table column. `linkc_get_board` with `project` reads another project's Board. |
-| `linkc_get_models`, `linkc_switch_model` | List an agent's models, or change one. With `task_id`, `linkc_switch_model` changes the worker holding that task. |
+| `linkc_get_models`, `linkc_switch_model` | List the models each agent offers (with the tier using each, agy's quota pool and the active limits), or change one. With `task_id`, `linkc_switch_model` changes the worker holding that task. |
 | `linkc_get_usage_status` | Show the usage each agent has left. |
 
 linkC delivers tasks and messages by typing them into the receiving agent's terminal — every
 message queued for one agent goes in as a single paste. A task can carry a model tier (light,
-standard or deep), configured per agent in **Settings > Models**. A verified task also carries a
-test command: linkC runs it itself, and the work only counts as done if the tests fail before it
-and pass after.
+standard or deep), configured per agent in **Settings > Models**, or a single model from that
+agent's list. A verified task also carries a test command: linkC runs it itself, and the work only
+counts as done if the tests fail before it and pass after.
+
+linkC reads each agent's models from its own CLI (`agy models`, `cursor-agent models`,
+`opencode models`) at launch, every 6 hours and when Settings opens. Claude and Codex, which have
+no list command, use a short list of checked ids. Each tier in **Settings > Models** picks from that
+list, or takes a typed id under "Other…". OpenCode is limited to its free models: `-free` models,
+Big Pickle and local Ollama models; any other OpenCode model is refused wherever it is set or
+launched, and OpenCode's Continue and restore start a new conversation on the free default model
+instead of resuming one. A model that does not exist, is not free, is rate-limited or is rejected
+at launch is reported to the delegating agent at once, with the reason and what is not limited.
 
 When no agent of the right kind is free, linkC launches one to carry the task, so several workers of
 one agent can run side by side: three tasks for Codex with no Codex free start three Codex workers.
@@ -201,6 +210,9 @@ where the agent reports one. linkC reads Claude Code's 5-hour and 7-day limits f
 Code session, and Codex usage from session files under `~/.codex/sessions` — none of it leaves
 your machine. Cursor Agent, Grok, OpenCode and Antigravity don't keep local usage records, so linkC can
 only show a limit for them once the limit message actually appears in the terminal.
+Antigravity's quota comes in two pools, Gemini and Claude/GPT, and linkC limits only the pool that
+ran out: with the Gemini pool spent, agy can still run Claude Opus or Sonnet. Your own agy sessions
+open on agy's default tier model so linkC knows which pool they draw on.
 
 ### App tabs
 

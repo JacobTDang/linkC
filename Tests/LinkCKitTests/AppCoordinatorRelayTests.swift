@@ -104,6 +104,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             userHome: userHome,
             verifier: verifier,
             modelSettings: { models },
+            modelLists: TestModelLists.none,
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
             // make every dispatch test wait for real. Zero by default; a settle test overrides
             // both this and `now` to prove the threshold without sleeping through it.
@@ -258,6 +259,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             manifestDir: tempDir.appendingPathComponent("manifest_\(UUID().uuidString)"),
             agentPathResolver: { _ in plainScript.path },
             verifier: verifier,
+            modelLists: TestModelLists.none,
             isWatching: { _ in false }
         )
     }
@@ -1026,6 +1028,80 @@ final class AppCoordinatorRelayTests: XCTestCase {
         )
     }
 
+    /// A Gemini pool limit holds a Gemini-tier task back, but a Claude-model task is still delivered.
+    @MainActor
+    func testAnAgyGeminiLimitDoesNotHoldAClaudeModelTask() async throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        try inbox.recordLimit(agent: .agy, reason: "gemini weekly", cooldown: 3600, pool: "gemini")
+
+        let opusSession = try coordinator.newSession(cwd: tempDir.path, agent: .agy, model: "claude-opus-4-6-thinking")
+        coordinator.store.updateState(id: opusSession.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: opusSession.id)
+
+        let claudeTask = try inbox.createTask(from: .claude, to: .agy, model: "claude-opus-4-6-thinking",
+                                              prompt: "Opus work", files: [])
+        let geminiTask = try inbox.createTask(from: .claude, to: .agy, tier: .standard,
+                                              prompt: "Flash work", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+
+        XCTAssertEqual(try inbox.task(id: claudeTask.id)?.state, .delivered)
+        XCTAssertEqual(try inbox.task(id: claudeTask.id)?.assigneeSessionId, opusSession.id,
+                       "the Claude-model task goes to the session running that model")
+        XCTAssertEqual(try inbox.task(id: geminiTask.id)?.state, .queued)
+        XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .agy }.map(\.id), [opusSession.id],
+                       "no worker is started for the held Gemini task")
+    }
+
+    /// A model task with no session on that model starts a worker launched with `--model <id>`.
+    @MainActor
+    func testAModelTaskStartsAWorkerLaunchedWithThatModel() async throws {
+        let argvFile = tempDir.appendingPathComponent("argv-record")
+        let script = tempDir.appendingPathComponent("argv_agent.sh")
+        try """
+            #!/bin/sh
+            printf '%s\\n' "$@" > "\(argvFile.path)"
+            stty -echo 2>/dev/null
+            printf '\\033[?2004h'
+            exec /bin/cat
+            """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let coordinator = makeCoordinator(agentPathResolver: { _ in script.path })
+        defer { coordinator.shutdown() }
+        let session = try coordinator.spawnTeammate(
+            in: tempDir.path, agent: .agy, model: "claude-opus-4-6-thinking", asWorker: true)
+        XCTAssertEqual(session.model, "claude-opus-4-6-thinking")
+        XCTAssertNil(session.modelTier)
+        // The mock writes argv after start; give the child a moment.
+        var argv: [String] = []
+        for _ in 0..<50 {
+            argv = ((try? String(contentsOf: argvFile, encoding: .utf8)) ?? "")
+                .split(separator: "\n").map(String.init)
+            if argv.contains("--model") { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(argv.contains("--model"), "argv=\(argv) model=\(session.model ?? "nil")")
+        XCTAssertTrue(argv.contains("claude-opus-4-6-thinking"), "argv=\(argv)")
+
+        // Through the relay: a queued model task with no matching session starts another worker.
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        _ = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-medium",
+                                 prompt: "Use Flash.", files: [])
+        // The existing Opus worker cannot carry a Flash task, so a new worker is claimed.
+        coordinator.store.updateState(id: session.id, to: .ready)
+        try await waitForPasteReady(coordinator, sessionId: session.id)
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+        let flashWorker = try await waitUntil {
+            coordinator.store.sessions.contains {
+                $0.agentKind == .agy && $0.isWorker && $0.model == "gemini-3.8-flash-medium"
+            }
+        }
+        XCTAssertTrue(flashWorker, "spawn failure: \(coordinator.lastSpawnFailure.map { String(describing: $0) } ?? "none")")
+    }
+
     /// Test 2e2: A legacy `.task` row is the only message kind that still spawns, and a spawn
     /// failure there must be recorded rather than swallowed. This is the path the old
     /// message-dispatch spawn-failure test covered before every other kind stopped spawning.
@@ -1443,6 +1519,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest_uninstalled_test"),
             agentPathResolver: { kind in kind == .codex ? nil : scriptURL.path },
+            modelLists: TestModelLists.none,
             isWatching: { _ in false }
         )
         defer { coordinator.shutdown() }
@@ -1488,6 +1565,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             agentPathResolver: { kind in kind == .grok ? scriptURL.path : nil },
             userHome: tempDir.appendingPathComponent("home"),
             modelSettings: { .seeded },
+            modelLists: TestModelLists.none,
             openCodeModels: { _ in ["opencode/big-pickle"] },
             isWatching: { _ in false }
         )
@@ -1534,6 +1612,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             agentPathResolver: { kind in kind == .opencode ? scriptURL.path : nil },
             userHome: tempDir.appendingPathComponent("home"),
             modelSettings: { .seeded },
+            modelLists: TestModelLists.none,
             openCodeModels: { _ in ["opencode/big-pickle"] },
             isWatching: { _ in false }
         )
@@ -2826,7 +2905,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
     private func delegateAndGate(_ repo: URL, _ coordinator: AppCoordinator) async throws -> TaskRecord {
         let inbox = InboxStore(workspaceRoot: repo.path)
         let delegator = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "claude"],
-                                   ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
+                                   ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
         let base = try runGit(["rev-parse", "HEAD"], in: repo)
         let delegated = try mcpCall(delegator, "linkc_delegate_task", [
             "to": "codex", "prompt": "Make check.sh pass", "tier": "deep",
@@ -2850,7 +2929,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         try runGit(["commit", "-q", "-m", "worker"], in: repo)
         let sha = try runGit(["rev-parse", "HEAD"], in: repo)
         let worker = MCPServer(workspaceRoot: repo.path, environment: ["LINKC_AGENT": "codex"],
-                                ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
+                                ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
         let reported = try mcpCall(worker, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "worker change", "sha": sha])
         XCTAssertFalse(reported.isError, reported.text)
         return sha
@@ -3216,9 +3295,11 @@ final class AppCoordinatorRelayTests: XCTestCase {
     }
 
     /// A tier the settings mapping cannot resolve must never spawn an unpinned session — that
-    /// session could never satisfy the tiered task, so the next tick would spawn another one.
+    /// session could never satisfy the tiered task, so the next tick would spawn another one. It
+    /// fails the task at once, and tells the delegator what to set, rather than leave it queued
+    /// until the queue expires it without a word.
     @MainActor
-    func testATieredTaskWithNoConfiguredModelStaysQueuedRatherThanSpawning() async throws {
+    func testATieredTaskWithNoConfiguredModelFailsAtOnceRatherThanSpawning() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)
         var models = AgentModelSettings.seeded
@@ -3231,7 +3312,12 @@ final class AppCoordinatorRelayTests: XCTestCase {
         coordinator.processPendingMessages(workspacePath: ws)
         coordinator.processPendingMessages(workspacePath: ws)
 
-        XCTAssertEqual(try inbox.task(id: task.id)?.state, .queued, "no candidate and no model to spawn — the task stays queued")
+        let failed = try XCTUnwrap(inbox.task(id: task.id))
+        XCTAssertEqual(failed.state, .failed)
+        XCTAssertEqual(failed.cancelReason, "Codex's Light tier has no model. Set one in Settings > Models.")
+        let told = try inbox.load().messages.filter { $0.taskId == task.id && $0.toAgent == .claude }
+        XCTAssertTrue(told.contains { $0.prompt.contains("Codex's Light tier has no model. Set one in Settings > Models.") },
+                      told.map(\.prompt).joined(separator: "\n"))
         XCTAssertTrue(coordinator.store.sessions.isEmpty, "an unresolvable tier must never spawn a session, not even once")
     }
 
@@ -4044,7 +4130,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
                 MainActor.assumeIsolated {
                     _ = coordinator.reapIdleWorkers(workspacePath: ws, inboxStore: InboxStore(workspaceRoot: ws))
                 }
-            }))
+            }),
+            modelLists: TestModelLists.none)
     }
 
     @MainActor
@@ -5230,7 +5317,7 @@ private final class BlockingVerifier: TaskVerifier, @unchecked Sendable {
 private extension TaskRecord {
     func with(createdAt: Date) -> TaskRecord {
         TaskRecord(
-            id: id, fromAgent: fromAgent, fromSessionId: fromSessionId, tier: tier, toAgent: toAgent,
+            id: id, fromAgent: fromAgent, fromSessionId: fromSessionId, tier: tier, model: model, toAgent: toAgent,
             assigneeSessionId: assigneeSessionId, prompt: prompt, files: files, state: state, hop: hop,
             createdAt: createdAt, queuedAt: queuedAt, deliveredAt: deliveredAt, startedAt: startedAt, finishedAt: finishedAt,
             leaseExpiresAt: leaseExpiresAt, report: report, cancelReason: cancelReason,

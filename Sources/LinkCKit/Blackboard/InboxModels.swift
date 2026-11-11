@@ -18,7 +18,7 @@ public enum TaskState: String, Codable, Sendable, CaseIterable {
         switch (self, next) {
         case (.gating, .queued), (.gating, .cancelled), (.gating, .expired):
             return true
-        case (.queued, .delivered), (.queued, .cancelled), (.queued, .expired):
+        case (.queued, .delivered), (.queued, .cancelled), (.queued, .expired), (.queued, .failed):
             return true
         case (.delivered, .started), (.delivered, .reported), (.delivered, .failed),
              (.delivered, .cancelled), (.delivered, .expired):
@@ -127,8 +127,12 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     /// Which model tier this task runs on. Optional for one reason: `loadUnlocked` throws on a
     /// decode error, so a required field would make every task row written before tiers existed
     /// unreadable and take the inbox with it. `nil` means "written before tiers" and keeps the
-    /// pre-tier routing; every task created from here on carries one.
+    /// pre-tier routing; every task created from here on carries one. A task with `model` set
+    /// has no tier.
     public let tier: ModelTier?
+    /// A specific model of `toAgent`, as an alternative to `tier`. Optional so rows written
+    /// before model-per-task still decode. A task with a model has no `tier`.
+    public let model: String?
     public let toAgent: AgentKind
     public var assigneeSessionId: String?
     public let prompt: String
@@ -181,6 +185,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         fromAgent: AgentKind,
         fromSessionId: String? = nil,
         tier: ModelTier? = nil,
+        model: String? = nil,
         toAgent: AgentKind,
         assigneeSessionId: String? = nil,
         prompt: String,
@@ -209,6 +214,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.fromAgent = fromAgent
         self.fromSessionId = fromSessionId
         self.tier = tier
+        self.model = model
         self.toAgent = toAgent
         self.assigneeSessionId = assigneeSessionId
         self.prompt = prompt
@@ -461,17 +467,22 @@ public struct AgentLimitStatus: Codable, Sendable, Equatable {
     public let reason: String
     public let limitedAt: Date
     public let cooldownExpiresAt: Date
+    /// agy's quota pool (`gemini` or `claude-gpt`), or nil for a whole-agent limit (every other
+    /// agent, and every limit written before pools). Optional so old rows still decode.
+    public let pool: String?
 
     public init(
         agent: AgentKind,
         reason: String,
         limitedAt: Date = Date(),
-        cooldownExpiresAt: Date
+        cooldownExpiresAt: Date,
+        pool: String? = nil
     ) {
         self.agent = agent
         self.reason = reason
         self.limitedAt = limitedAt
         self.cooldownExpiresAt = cooldownExpiresAt
+        self.pool = pool
     }
 }
 
@@ -535,5 +546,18 @@ public struct Inbox: Codable, Sendable, Equatable {
             tasks: try c.decodeIfPresent([TaskRecord].self, forKey: .tasks) ?? [],
             sentTasks: try c.decodeIfPresent([SentTask].self, forKey: .sentTasks) ?? []
         )
+    }
+}
+
+extension Inbox {
+    /// Every limit on `agent` still running at `now`: one per quota pool for agy, otherwise at most one.
+    public func liveLimits(for agent: AgentKind, now: Date = Date()) -> [AgentLimitStatus] {
+        agentLimits.filter { $0.agent == agent && $0.cooldownExpiresAt > now }
+    }
+
+    /// The live limit to show for `agent`: the one that ends last, since that is when every pool is
+    /// free again.
+    public func liveLimit(for agent: AgentKind, now: Date = Date()) -> AgentLimitStatus? {
+        liveLimits(for: agent, now: now).max { $0.cooldownExpiresAt < $1.cooldownExpiresAt }
     }
 }

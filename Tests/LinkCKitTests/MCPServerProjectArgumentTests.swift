@@ -23,7 +23,7 @@ final class MCPServerProjectArgumentTests: XCTestCase {
 
     private func server() -> MCPServer {
         MCPServer(workspaceRoot: here.path, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
-                  modelSettings: { .seeded }, sessionResolver: { nil }, usageReaders: [:], knownProjects: file)
+                  modelSettings: { .seeded }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none, knownProjects: file)
     }
 
     func testNoProjectArgumentMeansThisProject() throws {

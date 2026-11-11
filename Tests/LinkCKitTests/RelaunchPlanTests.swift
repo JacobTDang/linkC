@@ -30,6 +30,17 @@ final class RelaunchPlanTests: XCTestCase {
         XCTAssertEqual(result, RelaunchPlan(relaunch: ["B", "C"], toEarlier: ["A"], drop: []))
     }
 
+    /// OpenCode never resumes: each entry opens its own new conversation, so none contests another.
+    func testEveryOpenCodeEntryInAFolderComesBackOnItsOwnNewConversation() {
+        let result = plan([makeEntry("A", .opencode), makeEntry("B", .opencode)])
+        XCTAssertEqual(result, RelaunchPlan(relaunch: ["A", "B"], toEarlier: [], drop: []))
+    }
+
+    func testAnOpenCodeWorkerHoldingATaskComesBackBesideTheUsersOwnSession() {
+        let result = plan([makeEntry("W", .opencode, worker: true), makeEntry("U", .opencode)], holding: ["W"])
+        XCTAssertEqual(result, RelaunchPlan(relaunch: ["W", "U"], toEarlier: [], drop: []))
+    }
+
     func testDifferentAgentsInOneFolderEachContinue() {
         let result = plan([makeEntry("A", .agy), makeEntry("B", .cursor), makeEntry("C", .codex)])
         XCTAssertEqual(result.relaunch, ["A", "B", "C"])

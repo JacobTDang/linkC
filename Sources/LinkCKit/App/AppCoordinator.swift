@@ -127,11 +127,6 @@ public final class AppCoordinator {
     /// OpenCode refusals whose notice has reached the delegator's inbox. A notice that could not be written is
     /// missing here, so every later pass tries it again. Pruned like `openCodeRefusalUsersTold`.
     var openCodeRefusalNoticesSent: Set<OpenCodeRefusalKey> = []
-    /// Lists OpenCode's sessions as `opencode session list --format json --standalone` run in a
-    /// folder prints them. A seam, so a test can play the listing; the real one runs off the main thread.
-    var openCodeSessionList: @Sendable (_ executable: String, _ folder: String) async throws -> String = {
-        try await AppCoordinator.listOpenCodeSessions(executable: $0, folder: $1)
-    }
     /// Runs task gates and verifications off the main actor; injected so tests can script verdicts.
     let verifier: any TaskVerifier
     /// Workspaces with a verification run in flight, mapped to the task id running there — at
@@ -154,6 +149,21 @@ public final class AppCoordinator {
     /// — that occurrence is not the one already removed.
     private var injectedText: [String: [String]] = [:]
     private static let injectedHistoryLimit = 20
+
+    /// What a delegator was told about a held task: the end of the limit holding it, or nil when the
+    /// notice named none. A task is told again only when this changes.
+    struct LimitHoldNotice: Equatable {
+        let until: Date?
+    }
+
+    /// A notice to a delegator that did not reach the inbox, and is sent again until it does.
+    struct PendingDelegatorNotice: Equatable {
+        let workspace: String
+        let sender: AgentKind
+        let delegator: AgentKind
+        let taskId: String?
+        let body: String
+    }
 
     /// A teammate spawn the relay could not complete.
     struct SpawnFailure: Equatable, Sendable {
@@ -180,6 +190,17 @@ public final class AppCoordinator {
     /// `dispatchMessages` to the ids still `.queued` in that workspace's inbox, so a notice that
     /// is later delivered or expires is forgotten rather than tracked for the app's whole lifetime.
     var undeliveredNoticesReported: [String: Set<String>] = [:]
+    /// Per workspace, the queued tasks whose delegator was told that a limit holds them, and the end
+    /// the notice named. A task stays marked only while it is held, so one pass says it once and the
+    /// next says nothing, until the end it was told moves.
+    var limitHoldNoticesSent: [String: [String: LimitHoldNotice]] = [:]
+    /// Notices for a delegator that the inbox could not take when they were sent. The next relay
+    /// tick of their workspace sends them again; one leaves only when it has been written.
+    var pendingDelegatorNotices: [PendingDelegatorNotice] = []
+    /// Per session id, the task a limit has held with that worker: one that names its model, which is
+    /// never moved to another agent, so it carries on with its worker once the limit ends. The worker
+    /// is told to when its session recovers; the entry is dropped then, or with the session.
+    var limitHeldModelTasks: [String: String] = [:]
     /// Recent-output signature captured the moment a limit was last recorded for a session, keyed
     /// by session id. A later detection whose recent output hashes the same is the identical old
     /// banner still sitting in the scrollback after a cooldown expired and `sampleAgentStates`
@@ -228,6 +249,10 @@ public final class AppCoordinator {
     /// The current tier → model mapping. A closure, not a value, so a settings edit is seen on
     /// the next spawn without anyone re-injecting anything.
     private let modelSettings: @MainActor @Sendable () -> AgentModelSettings
+    /// Live model lists from `ModelListCache`. Injected so tests need no Application Support file.
+    public let modelLists: @MainActor @Sendable () throws -> [AgentKind: AgentModelList]
+    /// Refreshes CLI model lists at launch and every 6 hours. Tests can replace or leave nil.
+    public var modelListRefresher: ModelListRefresher?
     /// Minimum interval between injections into the same terminal. Tests can override it.
     public static let injectionGap: TimeInterval = 2
     let injectionGap: TimeInterval
@@ -313,6 +338,10 @@ public final class AppCoordinator {
         defaults: UserDefaults? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
+        modelLists: @escaping @MainActor @Sendable () throws -> [AgentKind: AgentModelList] = {
+            try ModelListCache.applicationSupport.read()
+        },
+        modelListRefresher: ModelListRefresher? = nil,
         usageReaders: [AgentKind: MCPServer.UsageReader] = [:],
         deliverySettle: TimeInterval = AppCoordinator.defaultDeliverySettle,
         injectionGap: TimeInterval = AppCoordinator.injectionGap,
@@ -343,6 +372,8 @@ public final class AppCoordinator {
         self.defaults = defaults
         self.verifier = verifier
         self.modelSettings = modelSettings
+        self.modelLists = modelLists
+        self.modelListRefresher = modelListRefresher
         self.usageReaders = usageReaders
         self.injectionGap = injectionGap
         self.deliverySettle = deliverySettle
@@ -367,17 +398,31 @@ public final class AppCoordinator {
         guard let model = resolvedModel(for: .opencode, tier: tier) else {
             return .refused("no model configured for opencode tier \(tier.rawValue) — set it in linkC's Settings > Models")
         }
+        return openCodeModelAvailability(
+            in: folder, model: model, subject: "\(model) (opencode tier \(tier.rawValue))",
+            checked: "opencode tier \(tier.rawValue)'s model \(model)", remedy: "set the tier in linkC settings")
+    }
+
+    /// Whether OpenCode may run `model` in `folder` right now: free, and listed by OpenCode itself.
+    /// `subject` names the model in a refusal, `checked` in the message that it could not be checked;
+    /// `remedy` says what to do about a refusal.
+    func openCodeModelAvailability(
+        in folder: String, model: String, subject: String, checked: String? = nil, remedy: String
+    ) -> OpenCodeModelAvailability {
+        guard OpenCodeFreeModels.isFree(model) else {
+            return .refused("\(subject) is not free — OpenCode runs free models only; \(remedy)")
+        }
         let norm = ProjectPath.canonical(folder)
         if let listing = openCodeModelListings[norm] {
             let age = now().timeIntervalSince(listing.checkedAt)
             switch listing.result {
             case .success(let models) where age <= Self.openCodeModelListingMaxAge:
                 guard models.contains(model) else {
-                    return .refused("\(model) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings")
+                    return .refused("\(subject) is not among the models OpenCode lists — free models come and go; \(remedy)")
                 }
                 return .available
             case .failure(let reason) where age <= Self.openCodeModelFailedListingMaxAge:
-                return .uncheckable("could not check opencode tier \(tier.rawValue)'s model \(model) against the models OpenCode lists — \(reason)")
+                return .uncheckable("could not check \(checked ?? subject) against the models OpenCode lists — \(reason)")
             case .success, .failure:
                 break
             }
@@ -422,6 +467,7 @@ public final class AppCoordinator {
             userHome: FileManager.default.homeDirectoryForCurrentUser,
             defaults: .standard,
             modelSettings: modelSettings,
+            modelListRefresher: ModelListRefresher(),
             usageReaders: MCPServer.defaultUsageReaders(),
             mcpWorkspaces: { MCPWorkspaceRegistry.applicationSupport.liveWorkspaces() },
             knownProjectsFile: .applicationSupport,
@@ -447,6 +493,7 @@ public final class AppCoordinator {
             settingsDir: workspaceDir,
             userSettingsURL: workspaceDir.appendingPathComponent("user-settings.json"),
             manifestDir: workspaceDir,
+            modelLists: { try ModelListCache(directory: workspaceDir).read() },
             isWatching: { _ in false }
         )
     }
@@ -538,6 +585,9 @@ public final class AppCoordinator {
             || !sidebarProjects().isEmpty
             || openRequests.map({ !$0.pending().isEmpty }) == true {
             ticker.wake()
+        }
+        if let modelListRefresher {
+            Task { await modelListRefresher.start() }
         }
     }
 
@@ -672,6 +722,7 @@ public final class AppCoordinator {
         inboxWatcher = nil
         openRequestWatcher?.stop()
         openRequestWatcher = nil
+        modelListRefresher?.stop()
         hookServer.stop()
         statusLines.sweep()
         if let knownProjectsFile {
@@ -720,7 +771,7 @@ public final class AppCoordinator {
         // A terminated session is pruned (store row, its terminal, its settings file, its
         // dedupe entry) instead of lingering forever as a dead tab. No notification for an end.
         if session.state == .ended {
-            cleanup(sessionId: session.id)
+            cleanup(sessionId: session.id, end: .reportedEnded)
             return
         }
 
@@ -782,11 +833,33 @@ public final class AppCoordinator {
     /// session focus, where the id matches nothing and the app activates on no navigation.
     static let alertIdPrefix = "alert:"
 
+    /// Why a session is being cleaned up.
+    enum SessionEnd {
+        /// Its process ended by itself.
+        case processExited
+        /// linkC or the user ended it.
+        case stopped
+        /// Its launch threw.
+        case launchFailed
+        /// A hook event reported it ended.
+        case reportedEnded
+    }
+
     /// Remove a session everywhere it leaves state behind: the store, its terminal (dropped,
     /// not killed — the process is already dead here), its per-session settings file, its
     /// notification dedupe entry, and its usage-tracker dictionaries. Idempotent.
-    func cleanup(sessionId: String) {
-        let wasWorker = store.session(id: sessionId)?.isWorker ?? false
+    func cleanup(sessionId: String, end: SessionEnd) {
+        let ending = store.session(id: sessionId)
+        let wasWorker = ending?.isWorker ?? false
+        // A model-task worker (model set, no tier) whose process ends by itself while still
+        // `.starting` fails those tasks at once: waiting the queue out would only respawn the same
+        // rejected model every pass. A session the user closed, or a launch that threw, rejected
+        // nothing. A tier worker keeps today's behaviour even when it also carries a model id.
+        if end == .processExited, let ending, ending.isWorker, ending.state == .starting,
+           ending.modelTier == nil, let model = ending.model {
+            failModelTasksRejectedAtLaunch(
+                session: ending, model: model, screen: terminals.session(id: sessionId)?.screenSnapshot())
+        }
         store.remove(id: sessionId)
         terminals.remove(sessionId)
         let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
@@ -801,6 +874,7 @@ public final class AppCoordinator {
         limitSignatures.removeValue(forKey: sessionId)
         limitScans.removeValue(forKey: sessionId)
         limitHolds.removeValue(forKey: sessionId)
+        limitHeldModelTasks.removeValue(forKey: sessionId)
         if wasWorker {
             // A worker was linkC's, not the user's: its report is in the task record, so it
             // leaves nothing under Earlier.
@@ -814,6 +888,40 @@ public final class AppCoordinator {
         syncRestorables()
     }
 
+    /// Last non-empty line of a screen snapshot's recent output.
+    static func lastNonEmptyScreenLine(_ screen: ScreenSnapshot?) -> String {
+        guard let screen else { return "" }
+        let lines = screen.recentOutput(lines: 40)
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return lines.last.map { String($0) } ?? ""
+    }
+
+    /// Queued model tasks for this worker's agent/model fail at once when the CLI exits at launch.
+    func failModelTasksRejectedAtLaunch(session: Session, model: String, screen: ScreenSnapshot?) {
+        let lastLine = Self.lastNonEmptyScreenLine(screen)
+        let exited = "\(session.agentKind.displayName) exited at launch with model \(model)"
+        let reason = lastLine.isEmpty ? "\(exited) (nothing on its screen)." : "\(exited): \(lastLine)"
+        let inbox = InboxStore(workspaceRoot: session.cwd)
+        let open: [TaskRecord]
+        do {
+            open = try inbox.openTasks(for: session.agentKind)
+        } catch {
+            NSLog("[linkC] launch rejection: could not read tasks for %@ — %@", session.cwd, String(describing: error))
+            return
+        }
+        for task in open where task.state == .queued && task.model == model {
+            do {
+                try inbox.failTaskAndNotify(
+                    taskId: task.id, reason: reason, notifyBody: "failed — \(reason)")
+                NSLog("[linkC relay] task %@ failed — %@", task.shortId, reason)
+            } catch {
+                NSLog("[linkC] launch rejection: task %@ — %@", task.shortId, String(describing: error))
+            }
+        }
+    }
+
     // MARK: - UI commands
 
     /// Spawns a teammate agent session in `workspacePath`, automatically synthesizing
@@ -821,6 +929,7 @@ public final class AppCoordinator {
     @discardableResult
     public func spawnTeammate(
         in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil, tier: ModelTier? = nil,
+        model: String? = nil,
         asWorker: Bool = false
     ) throws -> Session {
         let norm = ProjectPath.canonical(workspacePath)
@@ -853,16 +962,19 @@ public final class AppCoordinator {
 
         // A teammate starts in the background — the relay spawns these while the user is
         // working elsewhere, and selecting one raises the panel over whatever they were doing.
-        return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier, select: false, asWorker: asWorker)
+        return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier, model: model,
+                              select: false, asWorker: asWorker)
     }
 
     @discardableResult
     public func newSession(
         cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil,
+        model: String? = nil,
         select: Bool = true, asWorker: Bool = false
     ) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
-        return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier, asWorker: asWorker, select: select)
+        return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier, model: model,
+                          asWorker: asWorker, select: select)
     }
 
     /// The model configured for `agent` at `tier`, or nil when the mapping has no entry — a
@@ -877,6 +989,11 @@ public final class AppCoordinator {
     /// this is the relay's access point onto it.
     func tier(forModel model: String, agent: AgentKind) -> ModelTier? {
         modelSettings().tier(forModel: model, agent: agent)
+    }
+
+    /// The current tier → model mapping, read when asked.
+    func liveModelSettings() -> AgentModelSettings {
+        modelSettings()
     }
 
     /// `agent`'s default tier in Settings > Models: the tier a session opened without one gets.
@@ -933,27 +1050,44 @@ public final class AppCoordinator {
         resumeId: String? = nil,
         id: String? = nil,
         tier: ModelTier? = nil,
+        model: String? = nil,
         asWorker: Bool = false,
         select: Bool
     ) throws -> Session {
-        // A tier only ever pins a brand-new process. For Codex, `.continueLast`/`.resume` argv
-        // starts with the `resume` subcommand (see AgentDescriptor), so appending `--model <id>`
+        // A tier or model only ever pins a brand-new process. For Codex, `.continueLast`/`.resume`
+        // argv starts with the `resume` subcommand (see AgentDescriptor), so appending `--model <id>`
         // after it — as this function does for `.new` — would land the flag after the subcommand
         // instead of before it. No caller pairs a tier with anything but `.new` today; refuse the
         // combination outright rather than ever build that argv.
-        guard tier == nil || mode == .new else {
+        guard (tier == nil && model == nil) || mode == .new else {
             throw LinkCError.process("a tier can only pin a new session; \(mode) reuses an existing session's model")
         }
-        let (model, modelTier) = try launchModel(for: agent, tier: tier)
-        // A continued OpenCode session keeps the model it last ran on, which linkC does not know.
+        // OpenCode never resumes a conversation: its own would keep whatever model it last ran on,
+        // which linkC cannot see and which may not be free. Continue, Resume and a restore all open
+        // a new conversation in the folder, on the default tier's model.
+        let opensFresh = agent == .opencode && mode != .new
+        let mode: LaunchMode = agent == .opencode ? .new : mode
+        let resolved: (model: String?, tier: ModelTier?)
+        if let model {
+            resolved = (model, nil)
+        } else {
+            resolved = try launchModel(for: agent, tier: tier, mode: mode)
+        }
+        let model = resolved.model
+        let modelTier = resolved.tier
+        // OpenCode runs free models only, whichever way the model was chosen: the New menu, a
+        // teammate, a worker, or a tier that was set to a paid model.
+        if agent == .opencode, let model, !OpenCodeFreeModels.isFree(model) {
+            throw LinkCError.process("\(model) is not a free OpenCode model")
+        }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
-                                   model: agent == .opencode && mode == .continueLast ? nil : model, modelTier: modelTier,
+                                   model: model, modelTier: modelTier,
                                    claudeSessionId: resumeId, isWorker: asWorker)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent, select: false)
             // A terminated child = an ended session: prune everything when the child exits.
             terminal.onTerminated = { [weak self] _ in
-                self?.cleanup(sessionId: session.id)
+                self?.cleanup(sessionId: session.id, end: .processExited)
             }
             // A worker the user types into is theirs, on screen or not.
             terminal.onUserInput = { [weak self] in
@@ -1036,18 +1170,13 @@ public final class AppCoordinator {
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
             }
 
-            if agent == .opencode, mode == .continueLast {
-                // OpenCode's own `--continue` can open another folder's session. This folder's is
-                // found first; the terminal starts when the listing is back.
-                continueOpenCode(session: session, terminal: terminal, executable: executable, args: args, env: env)
-            } else {
-                try terminal.start(
-                    executable: executable,
-                    args: args,
-                    env: env
-                )
-            }
+            try terminal.start(
+                executable: executable,
+                args: args,
+                env: env
+            )
             if select { terminals.select(session.id) }
+            if opensFresh { tellOpenCodeStartedFresh(title: title, folder: cwd) }
             // Record the now-live session so it survives a quit/crash and can be restored.
             manifest.upsert(RestorableSession(
                 linkcId: session.id,
@@ -1064,7 +1193,7 @@ public final class AppCoordinator {
             sweepTicker?.wake()
             return session
         } catch {
-            cleanup(sessionId: session.id) // fail loud: no ghost session or orphaned settings file
+            cleanup(sessionId: session.id, end: .launchFailed) // fail loud: no ghost session or orphaned settings file
             throw error
         }
     }
@@ -1074,9 +1203,19 @@ public final class AppCoordinator {
     /// Cursor's own default is Auto, not Grok. With no tier, Grok runs on its default tier's model but
     /// records no tier, so a Grok session the user opened is, like any other, never handed a
     /// delegated task (`Session.canCarry`). A tier with no model refuses the launch rather than
-    /// run on whatever Cursor would pick.
-    private func launchModel(for agent: AgentKind, tier: ModelTier?) throws -> (model: String?, tier: ModelTier?) {
+    /// run on whatever Cursor would pick. A session the user opens on agy also names its default
+    /// tier's model, but opens without one when that tier has none.
+    private func launchModel(for agent: AgentKind, tier: ModelTier?, mode: LaunchMode) throws -> (model: String?, tier: ModelTier?) {
         guard AgentKind.alwaysNamesModel.contains(agent) else {
+            if agent == .agy, tier == nil, mode != .resume {
+                // The user's own agy session opens on the default tier's model, so a limit it hits
+                // is recorded for that model's pool (`ModelPool`), not for all of agy. With no model
+                // for the tier it opens as it always did. It records no tier, like Grok's, so it is
+                // never handed a delegated task. Resume passes no model: `--conversation` is the
+                // last flag agy is given, and its conversation keeps the model it had.
+                let settings = modelSettings()
+                return (settings.model(for: .agy, tier: settings.defaultTier(for: .agy)), nil)
+            }
             let model = tier.flatMap { resolvedModel(for: agent, tier: $0) }
             return (model, model == nil ? nil : tier)
         }
@@ -1172,10 +1311,11 @@ public final class AppCoordinator {
         // RECENT conversation for that agent. Refuse whichever way this entry would collide with
         // a session already live (including one restored moments ago in the same Restore-all
         // pass, or one a relaunch already brought back onto this entry's id/folder); the card
-        // stays and the user can restore it individually later.
+        // stays and the user can restore it individually later. OpenCode never resumes — it opens a
+        // new conversation — so it collides with nothing.
         let resumesById = targetAgent == .claude && !(r.claudeSessionId ?? "").isEmpty
         let folder = ProjectPath.canonical(r.cwd)
-        if store.sessions.contains(where: { live in
+        if targetAgent != .opencode, store.sessions.contains(where: { live in
             resumesById
                 ? live.claudeSessionId == r.claudeSessionId
                 : live.agentKind == targetAgent && live.cwd == folder
@@ -1308,13 +1448,15 @@ public final class AppCoordinator {
             if let current = store.session(id: session.id), current.state == .error {
                 let norm = session.cwd
                 do {
-                    if try InboxStore(workspaceRoot: norm).isAgentLimited(agent: session.agentKind) == nil {
+                    if try InboxStore(workspaceRoot: norm)
+                        .isAgentLimited(agent: session.agentKind, model: current.model, timeout: Self.relayLockTimeout) == nil {
                         store.updateState(id: session.id, to: .ready)
                     }
                 } catch {
                     NSLog("[linkC relay] sampleAgentStates: %@ cooldown check — %@", session.agentKind.displayName, String(describing: error))
                 }
             }
+            resumeModelTaskAfterLimit(of: session.id)
 
             // Detect dynamic agent kind changes in child process tree. Only for sessions that
             // could change: a hook-driven launch's kind is known, and walking its tree tells
@@ -1401,7 +1543,7 @@ public final class AppCoordinator {
 
     public func stopSession(_ id: String) {
         terminals.terminate(id)
-        cleanup(sessionId: id)
+        cleanup(sessionId: id, end: .stopped)
     }
 
     public var hookPort: UInt16 { hookServer.port }
@@ -1540,10 +1682,19 @@ public final class AppCoordinator {
         guard agent != .shell else {
             throw LinkCError.process("Cannot switch model on shell session.")
         }
-        guard AgentModelCatalog.isFreeOrSubscription(model: modelName, for: agent) else {
-            let allowed = AgentModelCatalog.models(for: agent).map { $0.id }.joined(separator: ", ")
-            throw LinkCError.process("'\(modelName)' is not an allowed free or subscription-tier model for \(agent.displayName). Allowed models: \(allowed)")
+        let lists: [AgentKind: AgentModelList]
+        do {
+            lists = try modelLists()
+        } catch {
+            throw LinkCError.process("could not read the live model lists — \(error)")
         }
+        let choosable = ModelListCache.choosable(for: agent, lists: lists, settings: modelSettings())
+        // The CLI is told the listed spelling, whatever case the model was typed in.
+        guard let listed = choosable.first(where: { $0.id.caseInsensitiveCompare(modelName) == .orderedSame }) else {
+            let allowed = choosable.map(\.id).joined(separator: ", ")
+            throw LinkCError.process("'\(modelName)' is not among the models \(agent.displayName) lists. Available: \(allowed)")
+        }
+        let modelName = listed.id
         let norm = ProjectPath.canonical(workspacePath)
         guard let session = store.sessions.first(where: {
             $0.cwd == norm && $0.agentKind == agent && $0.state != .ended && (sessionId == nil || $0.id == sessionId)

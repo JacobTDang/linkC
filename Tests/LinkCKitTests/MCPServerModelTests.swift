@@ -12,7 +12,7 @@ final class MCPServerModelTests: XCTestCase {
             .appendingPathComponent("linkc-mcp-model-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         inboxStore = InboxStore(workspaceRoot: tempDir.path)
-        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
+        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
     }
 
     override func tearDownWithError() throws {
@@ -61,7 +61,7 @@ final class MCPServerModelTests: XCTestCase {
         let text = content?.first?["text"] as? String ?? ""
 
         // Header and agent sections
-        XCTAssertTrue(text.contains("Configured Models by Tier"), "Missing title: \(text)")
+        XCTAssertTrue(text.contains("# Models"), "Missing title: \(text)")
         XCTAssertTrue(text.contains("Claude"), "Missing Claude section: \(text)")
         XCTAssertTrue(text.contains("Codex"), "Missing Codex section: \(text)")
 
@@ -80,7 +80,7 @@ final class MCPServerModelTests: XCTestCase {
         let settings = edited   // a @Sendable closure cannot capture a var
         let bare = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore,
                              environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
-                             modelSettings: { settings }, sessionResolver: { nil }, usageReaders: [:])
+                             modelSettings: { settings }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
 
         let req = """
         {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "linkc_get_models", "arguments": {"agent": "codex"}}}
@@ -192,7 +192,8 @@ final class MCPServerModelTests: XCTestCase {
             ancestorResolver: { _ in nil },
             modelSettings: { box.value },
             sessionResolver: { nil },
-            usageReaders: [:]
+            usageReaders: [:],
+            modelLists: TestModelLists.none
         )
 
         let before = try getModelsText(liveServer)
@@ -203,9 +204,9 @@ final class MCPServerModelTests: XCTestCase {
         box.value = edited
 
         let after = try getModelsText(liveServer)
-        XCTAssertTrue(after.contains("gpt-7-nova"),
+        XCTAssertTrue(after.contains("**deep**: gpt-7-nova"),
                        "A later call on the same server must see a settings edit, not a snapshot frozen at construction: \(after)")
-        XCTAssertFalse(after.contains("gpt-6-astra"), after)
+        XCTAssertFalse(after.contains("**deep**: gpt-6-astra"), after)
     }
 
     // MARK: - linkc_switch_model
@@ -220,7 +221,8 @@ final class MCPServerModelTests: XCTestCase {
             ancestorResolver: { _ in nil },
             modelSettings: { .seeded },
             sessionResolver: { nil },
-            usageReaders: [:]
+            usageReaders: [:],
+            modelLists: TestModelLists.none
         )
         let req = """
         {
@@ -266,8 +268,8 @@ final class MCPServerModelTests: XCTestCase {
 
         let content = result?["content"] as? [[String: Any]]
         let text = content?.first?["text"] as? String ?? ""
-        XCTAssertTrue(text.contains("is not a configured model"), "Expected rejection: \(text)")
-        XCTAssertTrue(text.contains("Configured models:"), "Expected configured list in: \(text)")
+        XCTAssertTrue(text.contains("is not among the models"), "Expected rejection: \(text)")
+        XCTAssertTrue(text.contains("Available:"), "Expected available list in: \(text)")
     }
 
     func testSwitchModelRejectsShellAgent() throws {
@@ -314,7 +316,8 @@ final class MCPServerModelTests: XCTestCase {
             environment: ["LINKC_AGENT": "claude"],
             ancestorResolver: { _ in nil },
             sessionResolver: { nil },
-            usageReaders: [:]
+            usageReaders: [:],
+            modelLists: TestModelLists.none
         )
 
         let req = """
@@ -461,6 +464,7 @@ final class MCPServerModelTests: XCTestCase {
             settingsDir: settingsDir,
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
+            modelLists: TestModelLists.none,
             isWatching: { _ in false }
         )
 
@@ -486,7 +490,8 @@ final class MCPServerModelTests: XCTestCase {
             guard case LinkCError.process(let msg) = error else {
                 return XCTFail("Expected LinkCError.process, got: \(error)")
             }
-            XCTAssertTrue(msg.contains("not an allowed free or subscription-tier model"))
+            XCTAssertTrue(msg.contains("not among the models"), msg)
+            XCTAssertTrue(msg.contains("Available:"), msg)
         }
 
         XCTAssertThrowsError(try coordinator.switchModel(in: "/nonexistent/path", agent: .claude, to: "haiku")) { error in

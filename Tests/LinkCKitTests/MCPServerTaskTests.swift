@@ -20,7 +20,7 @@ final class MCPServerTaskTests: XCTestCase {
 
     private func server(as agent: AgentKind) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": agent.rawValue],
-                  ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
+                  ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
     }
 
     private func server(as agent: AgentKind, models: AgentModelSettings,
@@ -32,7 +32,8 @@ final class MCPServerTaskTests: XCTestCase {
                   modelSettings: { models },
                   sessionResolver: { nil },
                   usageReaders: readers,
-                  warnCapableAgents: warnCapableAgents)
+                  warnCapableAgents: warnCapableAgents,
+                  modelLists: TestModelLists.none)
     }
 
     /// A caller with a fixed session, delivered through `LINKC_SESSION` the way most agents pass
@@ -40,7 +41,7 @@ final class MCPServerTaskTests: XCTestCase {
     private func server(as agent: AgentKind, session: String) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path,
                   environment: ["LINKC_AGENT": agent.rawValue, "LINKC_SESSION": session],
-                  ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:])
+                  ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
     }
 
     func testStartTaskMovesDeliveredToStarted() throws {
@@ -59,7 +60,7 @@ final class MCPServerTaskTests: XCTestCase {
         try inbox.markTaskDelivered(taskId: task.id, sessionId: "s1")
         let grok = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "cursor"],
                              ancestorResolver: { _ in nil }, sessionResolver: { nil },
-                             workerResolver: { "grok" }, usageReaders: [:])
+                             workerResolver: { "grok" }, usageReaders: [:], modelLists: TestModelLists.none)
 
         let res = try mcpCall(grok, "linkc_start_task", ["task_id": task.id])
 
@@ -157,7 +158,8 @@ final class MCPServerTaskTests: XCTestCase {
         let sibling = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                                 environment: ["LINKC_AGENT": "codex", "LINKC_SESSION": "session-B"],
                                 ancestorResolver: { _ in nil }, modelSettings: { .seeded }, sessionResolver: { nil },
-                                usageReaders: [:])
+                                usageReaders: [:],
+                                modelLists: TestModelLists.none)
         let refused = try mcpCall(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "I did it"])
         XCTAssertTrue(refused.isError, refused.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "a sibling may not settle another session's task")
@@ -165,7 +167,8 @@ final class MCPServerTaskTests: XCTestCase {
         let assignee = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                                  environment: ["LINKC_AGENT": "codex", "LINKC_SESSION": "session-A"],
                                  ancestorResolver: { _ in nil }, modelSettings: { .seeded }, sessionResolver: { nil },
-                                 usageReaders: [:])
+                                 usageReaders: [:],
+                                 modelLists: TestModelLists.none)
         let ok = try mcpCall(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
         XCTAssertFalse(ok.isError, ok.text)
     }
@@ -191,7 +194,8 @@ final class MCPServerTaskTests: XCTestCase {
         let sibling = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                                 environment: ["LINKC_AGENT": "codex"],
                                 ancestorResolver: { _ in nil }, sessionResolver: { "session-B" },
-                                usageReaders: [:])
+                                usageReaders: [:],
+                                modelLists: TestModelLists.none)
         let refused = try mcpCall(sibling, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "nope"])
         XCTAssertTrue(refused.isError, refused.text)
         XCTAssertEqual(try inbox.task(id: task.id)?.state, .delivered, "a sibling recovered via the resolver still may not settle another session's task")
@@ -199,7 +203,8 @@ final class MCPServerTaskTests: XCTestCase {
         let assignee = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                                  environment: ["LINKC_AGENT": "codex"],
                                  ancestorResolver: { _ in nil }, sessionResolver: { "session-A" },
-                                 usageReaders: [:])
+                                 usageReaders: [:],
+                                 modelLists: TestModelLists.none)
         let ok = try mcpCall(assignee, "linkc_complete_task", ["task_id": task.id, "status": "done", "summary": "done"])
         XCTAssertFalse(ok.isError, ok.text)
     }
@@ -210,7 +215,7 @@ final class MCPServerTaskTests: XCTestCase {
         let srv = MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                             environment: ["LINKC_AGENT": "claude"],
                             ancestorResolver: { _ in nil }, modelSettings: { .seeded },
-                            sessionResolver: { "session-Z" }, usageReaders: [:])
+                            sessionResolver: { "session-Z" }, usageReaders: [:], modelLists: TestModelLists.none)
         let res = try mcpCall(srv, "linkc_delegate_task", ["to": "agy", "prompt": "Rename a file"])
         XCTAssertFalse(res.isError, res.text)
         let task = try XCTUnwrap(inbox.openTasks().first)
@@ -246,7 +251,7 @@ final class MCPServerTaskTests: XCTestCase {
 
         // No `sessionResolver` argument: this is the real default, which now goes through the
         // cache instead of walking the ancestry fresh on every call.
-        let server = MCPServer(workspaceRoot: tempDir.path, ancestorResolver: { _ in nil }, usageReaders: [:])
+        let server = MCPServer(workspaceRoot: tempDir.path, ancestorResolver: { _ in nil }, usageReaders: [:], modelLists: TestModelLists.none)
 
         XCTAssertEqual(server.sessionResolver(), "stub-session")
         XCTAssertEqual(server.sessionResolver(), "stub-session")
@@ -693,7 +698,9 @@ final class MCPServerTaskTests: XCTestCase {
         try inbox.recordLimit(agent: .codex, reason: "quota", cooldown: 1800)
         let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task", ["to": "codex", "prompt": "x"])
         XCTAssertTrue(res.isError)
-        XCTAssertTrue(res.text.contains("Alternative available peer agents: claude, agy, cursor, grok, opencode."), res.text)
+        XCTAssertTrue(res.text.contains("Not limited:"), res.text)
+        XCTAssertTrue(res.text.contains("grok"), res.text)
+        XCTAssertTrue(res.text.contains("claude"), res.text)
     }
 
     func testGetModelsWithNoAgentListsGrok() throws {
@@ -817,7 +824,8 @@ final class MCPServerTaskTests: XCTestCase {
         return MCPServer(
             workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: environment,
             ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:],
-            closeAnswerWait: MCPServer.CloseAnswerWait(timeout: 1, interval: 0.1, sleep: { _ in answer() }))
+            closeAnswerWait: MCPServer.CloseAnswerWait(timeout: 1, interval: 0.1, sleep: { _ in answer() }),
+            modelLists: TestModelLists.none)
     }
 
     /// A task Claude session "D" delegated, delivered to session "W" and reported.

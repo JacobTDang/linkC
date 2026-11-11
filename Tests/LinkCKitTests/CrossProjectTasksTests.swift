@@ -39,7 +39,7 @@ final class CrossProjectTasksTests: XCTestCase {
         MCPServer(workspaceRoot: home.path, inboxStore: homeInbox,
                   environment: ["LINKC_AGENT": "claude", "LINKC_SESSION": "home-claude"],
                   ancestorResolver: { _ in nil }, modelSettings: { .seeded },
-                  sessionResolver: { nil }, usageReaders: [:], knownProjects: file)
+                  sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none, knownProjects: file)
     }
 
     private func call(_ server: MCPServer, _ tool: String, _ arguments: [String: Any]) throws -> (text: String, isError: Bool) {
@@ -227,7 +227,7 @@ final class CrossProjectTasksTests: XCTestCase {
             environment: ["LINKC_AGENT": "claude", "LINKC_SESSION": "home-claude"],
             ancestorResolver: { _ in nil }, modelSettings: { .seeded },
             sessionResolver: { nil }, usageReaders: [:],
-            closeAnswerWait: wait, knownProjects: file
+            closeAnswerWait: wait, modelLists: TestModelLists.none, knownProjects: file
         )
         let result = try call(server, "linkc_close_worker", ["task_id": task.shortId])
         let recorded = try XCTUnwrap(awayInbox.task(id: task.id)?.closeRequest)
@@ -300,7 +300,7 @@ final class CrossProjectTasksTests: XCTestCase {
             },
             environment: ["LINKC_AGENT": "claude", "LINKC_SESSION": "home-claude"],
             ancestorResolver: { _ in nil }, modelSettings: { .seeded },
-            sessionResolver: { nil }, usageReaders: [:], knownProjects: file
+            sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none, knownProjects: file
         )
         let switched = try call(switching, "linkc_switch_model", ["model": model, "task_id": task.id])
         XCTAssertFalse(switched.isError, switched.text)
@@ -329,7 +329,7 @@ final class CrossProjectTasksTests: XCTestCase {
                   environment: ["LINKC_AGENT": agent, "LINKC_SESSION": session],
                   ancestorResolver: { _ in nil }, modelSettings: { .seeded },
                   sessionResolver: { nil }, usageReaders: [:],
-                  openCodeModels: openCodeModels, knownProjects: file)
+                  openCodeModels: openCodeModels, modelLists: TestModelLists.none, knownProjects: file)
     }
 
     /// The codex worker that holds tasks in `away`.
@@ -450,7 +450,7 @@ final class CrossProjectTasksTests: XCTestCase {
         let unresolved = MCPServer(workspaceRoot: home.path, inboxStore: homeInbox,
                                    environment: ["LINKC_AGENT": "claude"],
                                    ancestorResolver: { _ in nil }, modelSettings: { .seeded },
-                                   sessionResolver: { nil }, usageReaders: [:], knownProjects: file)
+                                   sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none, knownProjects: file)
         let startedBlind = try call(unresolved, "linkc_start_task", ["task_id": task.shortId])
         let completedBlind = try call(unresolved, "linkc_complete_task", [
             "task_id": task.shortId, "status": "done", "summary": "I answered myself"
@@ -569,7 +569,8 @@ final class CrossProjectTasksTests: XCTestCase {
         let result = try call(homeServer(), "linkc_delegate_task", ["project": "away", "to": "codex", "prompt": "fix"])
 
         XCTAssertTrue(result.isError, result.text)
-        XCTAssertTrue(result.text.contains("cooldown"), result.text)
+        XCTAssertTrue(result.text.contains("codex is limited until"), result.text)
+        XCTAssertTrue(result.text.contains("(429)"), result.text)
         XCTAssertTrue(try awayInbox.openTasks().isEmpty)
         XCTAssertTrue(try homeInbox.sentTasks().isEmpty)
     }
