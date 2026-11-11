@@ -152,6 +152,12 @@ final class AgentModelCatalogTests: XCTestCase {
         XCTAssertEqual(AgentModelCatalog.launchArguments(model: "default", for: .cursor), ["--model", "default"])
     }
 
+    /// OpenCode 2.2.5's TUI has no `--model` flag; its model goes in its inline config instead.
+    func testOpenCodeTakesNoModelArgument() {
+        XCTAssertEqual(AgentModelCatalog.launchArguments(model: "opencode/big-pickle", for: .opencode), [])
+        XCTAssertEqual(AgentModelCatalog.launchArguments(model: "gpt-5.6-sol", for: .codex), ["--model", "gpt-5.6-sol"])
+    }
+
     func testCodableAndIdentifiableAgentModelInfo() throws {
         let original = AgentModelInfo(id: "custom-id", displayName: "Custom Model", isFreeOrSubscription: true, isDefault: false)
         XCTAssertEqual(original.id, "custom-id")
@@ -173,5 +179,12 @@ final class AgentModelCatalogTests: XCTestCase {
         XCTAssertEqual(AgentModelCatalog.models(for: .grok).map(\.id), ["grok-4.7-medium", "grok-4.7-low", "grok-4.7-xhigh"])
         XCTAssertEqual(AgentModelCatalog.defaultModel(for: .grok).id, "grok-4.7-medium")
         XCTAssertTrue(AgentModelCatalog.isFreeOrSubscription(model: "grok-4.7-low", for: .grok))
+    }
+
+    func testOpenCodeSuggestsItsFreeTiers() {
+        XCTAssertEqual(AgentModelCatalog.models(for: .opencode).map(\.id),
+                       ["opencode/big-pickle", "opencode/deepseek-v4.1-flash-free", "opencode/nemotron-3.5-super-vl-free"])
+        XCTAssertEqual(AgentModelCatalog.models(for: .opencode).last?.displayName, "Nemotron 3.5 Super VL Free")
+        XCTAssertEqual(AgentModelCatalog.defaultModel(for: .opencode).id, "opencode/big-pickle")
     }
 }

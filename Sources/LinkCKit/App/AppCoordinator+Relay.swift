@@ -311,6 +311,7 @@ extension AppCoordinator {
             NSLog("[linkC relay] dispatchTasks: open tasks — %@", String(describing: error))
             return false
         }
+        forgetOpenCodeRefusals(in: norm, of: .task, keeping: Set(queued.map(\.id)))
         guard !queued.isEmpty else { return false }
 
         var loggedInjectionWait = false
@@ -352,6 +353,37 @@ extension AppCoordinator {
                 // frame typed into a booting TUI is lost — the worker never sees the task. The session
                 // stays `.starting` until its agent is really running: Claude's SessionStart hook, or
                 // `sampleAgentStates` for every other kind.
+                if task.toAgent == .opencode {
+                    let tier = task.tier ?? defaultTier(for: .opencode)
+                    switch openCodeModelAvailability(in: workspacePath, tier: tier) {
+                    case .checking:
+                        continue
+                    case .available:
+                        break
+                    case .refused(let reason):
+                        // Waiting will not make OpenCode list the model: end the task with the reason, rather
+                        // than leave it queued for an hour behind a generic "undelivered".
+                        do {
+                            try inboxStore.expireTaskAndNotify(
+                                taskId: task.id, reason: reason, notifyBody: "expired — \(reason)", timeout: Self.relayLockTimeout
+                            )
+                            logTaskEnded(task, as: "expired", reason: reason)
+                            lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
+                            notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: workspacePath)
+                        } catch {
+                            if isRelayLockTimeout(error) { return true }
+                            NSLog("[linkC relay] dispatchTasks: task %@ OpenCode refusal — %@", task.shortId, String(describing: error))
+                        }
+                        continue
+                    case .uncheckable(let reason):
+                        // The listing failed, so nothing is known about the model: the task waits (and expires
+                        // on its own like any queued task), and its delegator is told once.
+                        reportOpenCodeSpawnRefusal(reason, from: task.fromAgent, taskId: task.id,
+                                                   key: OpenCodeRefusalKey(workspace: norm, kind: .task, id: task.id),
+                                                   workspacePath: workspacePath, inboxStore: inboxStore)
+                        continue
+                    }
+                }
                 do {
                     _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt, tier: task.tier, asWorker: true)
                 } catch {
@@ -482,6 +514,7 @@ extension AppCoordinator {
         if undeliveredNoticesReported[norm]?.isEmpty == true {
             undeliveredNoticesReported.removeValue(forKey: norm)
         }
+        forgetOpenCodeRefusals(in: norm, of: .message, keeping: stillQueued)
 
         guard !pending.isEmpty else { return false }
 
@@ -526,6 +559,33 @@ extension AppCoordinator {
                     continue
                 }
                 let goal: String? = message.kind == .task ? message.prompt : nil
+                if message.toAgent == .opencode {
+                    let tier = defaultTier(for: .opencode)
+                    switch openCodeModelAvailability(in: workspacePath, tier: tier) {
+                    case .checking:
+                        continue
+                    case .available:
+                        break
+                    case .refused(let reason):
+                        // Waiting will not make OpenCode list the model: fail the message, and tell its sender.
+                        do {
+                            try inboxStore.markMessageFailed(id: message.id, timeout: Self.relayLockTimeout)
+                        } catch {
+                            if isRelayLockTimeout(error) { return true }
+                            NSLog("[linkC relay] dispatchMessages: message %@ OpenCode refusal — %@", message.id, String(describing: error))
+                            continue
+                        }
+                        lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
+                        announceOpenCodeRefusal(reason, notice: reason, from: .opencode, to: message.fromAgent,
+                                                taskId: message.taskId, inboxStore: inboxStore)
+                        continue
+                    case .uncheckable(let reason):
+                        reportOpenCodeSpawnRefusal(reason, from: message.fromAgent, taskId: message.taskId,
+                                                   key: OpenCodeRefusalKey(workspace: norm, kind: .message, id: message.id),
+                                                   workspacePath: workspacePath, inboxStore: inboxStore)
+                        continue
+                    }
+                }
                 do {
                     _ = try spawnTeammate(in: workspacePath, agent: message.toAgent, goal: goal, asWorker: true)
                 } catch {
@@ -589,6 +649,67 @@ extension AppCoordinator {
             injectMessageBatch(batch, into: group.session)
         }
         return false
+    }
+
+    /// One queued task or message OpenCode was asked to start: the key a refusal is reported under.
+    struct OpenCodeRefusalKey: Hashable {
+        enum Kind { case task, message }
+        let workspace: String
+        let kind: Kind
+        let id: String
+    }
+
+    static let openCodeRefusalTitle = "linkC: OpenCode could not start"
+
+    /// Forgets the refusals reported in `workspace` for `kind` of item that are no longer queued, so a
+    /// report stays marked only while its item waits.
+    private func forgetOpenCodeRefusals(in workspace: String, of kind: OpenCodeRefusalKey.Kind, keeping queued: Set<String>) {
+        func stillQueued(_ key: OpenCodeRefusalKey) -> Bool {
+            key.workspace != workspace || key.kind != kind || queued.contains(key.id)
+        }
+        openCodeRefusalUsersTold = openCodeRefusalUsersTold.filter(stillQueued)
+        openCodeRefusalNoticesSent = openCodeRefusalNoticesSent.filter(stillQueued)
+    }
+
+    /// Reports that OpenCode could not be asked about `key`'s model: the user is told on the first pass,
+    /// whether or not the sender's notice can be written, and the notice is tried on every pass until it
+    /// lands, so it is never lost. The item stays queued, so every later pass meets it again.
+    private func reportOpenCodeSpawnRefusal(
+        _ reason: String, from delegator: AgentKind, taskId: String?, key: OpenCodeRefusalKey,
+        workspacePath: String, inboxStore: InboxStore
+    ) {
+        if openCodeRefusalUsersTold.insert(key).inserted {
+            // A "last known problem" marker only: whether to report is decided by `key`.
+            lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
+            notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: workspacePath)
+        }
+        guard !openCodeRefusalNoticesSent.contains(key) else { return }
+        if enqueueOpenCodeRefusalNotice(reason, from: .opencode, to: delegator, taskId: taskId, inboxStore: inboxStore) {
+            openCodeRefusalNoticesSent.insert(key)
+        }
+    }
+
+    /// Sends `notice` to `delegator` and tells the user `reason`, whether or not the notice could be written.
+    private func announceOpenCodeRefusal(
+        _ reason: String, notice: String, from sender: AgentKind, to delegator: AgentKind, taskId: String?,
+        inboxStore: InboxStore
+    ) {
+        _ = enqueueOpenCodeRefusalNotice(notice, from: sender, to: delegator, taskId: taskId, inboxStore: inboxStore)
+        notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: inboxStore.workspaceRoot)
+    }
+
+    /// Whether `notice` reached `delegator`'s inbox; a failure is logged.
+    private func enqueueOpenCodeRefusalNotice(
+        _ notice: String, from sender: AgentKind, to delegator: AgentKind, taskId: String?, inboxStore: InboxStore
+    ) -> Bool {
+        do {
+            _ = try inboxStore.enqueue(from: sender, to: delegator, kind: .notice, taskId: taskId, body: notice,
+                                       timeout: Self.relayLockTimeout)
+            return true
+        } catch {
+            NSLog("[linkC relay] OpenCode model refusal notice — %@", String(describing: error))
+            return false
+        }
     }
 
     /// Whether a queued message is something a tick can act on: a brief spawns an agent, and any
@@ -997,7 +1118,7 @@ extension AppCoordinator {
         }
 
         // Candidates: installed, not limited, not this agent; prefer ones already active here.
-        let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor, .grok]
+        let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor, .grok, .opencode]
         var candidates = supportedPeers.filter { candidate in
             guard candidate != session.agentKind && candidate != currentTask?.fromAgent else { return false }
             do {
@@ -1023,9 +1144,46 @@ extension AppCoordinator {
             let bActive = store.sessions.contains { $0.cwd == norm && $0.agentKind == b && $0.state != .ended }
             return aActive && !bActive
         }
+        // A task on its last hop moves nowhere, so OpenCode is not asked about it: the hop-exhausted
+        // path below tells its delegator.
+        var openCodeRefusal: String?
+        if candidates.first == .opencode, let currentTask, currentTask.hop < 2 {
+            let tier = currentTask.tier ?? defaultTier(for: .opencode)
+            switch openCodeModelAvailability(in: norm, tier: tier) {
+            case .checking:
+                // OpenCode's models are still being listed off the main actor. Forget this screen's scan
+                // so the next tick reads the unchanged screen again from the start; `recordLimit` keeps a
+                // live record as it is, so reading it twice records nothing new. The signature is forgotten
+                // too, but only when this pass set it, which only a pass with no hold in force does: a pass
+                // with one never sets it, so clearing it there would take away the stale-banner guard of
+                // the pass that began the hold.
+                // The hold in force this pass (cleared above because it ended or the worker went quiet)
+                // is put back: the next pass then continues it, meets `limitHoldCap` or a quiet worker
+                // at once, and goes on against the listing. Without it a worker still busy would start
+                // a fresh hold, and a fresh notice, on every listing, and its task would never move.
+                limitScans[sessionId] = nil
+                if held == nil { limitSignatures[sessionId] = nil }
+                limitHolds[sessionId] = held
+                return false
+            case .available:
+                break
+            case .refused(let reason), .uncheckable(let reason):
+                candidates.removeFirst()
+                openCodeRefusal = reason
+            }
+        }
 
         let hop = currentTask?.hop ?? 0
         guard hop < 2, let target = candidates.first else {
+            if let currentTask, let openCodeRefusal {
+                // Once per limit: the session is held in `.error` from here, so this tick is not repeated.
+                announceOpenCodeRefusal(
+                    openCodeRefusal,
+                    notice: "\(session.agentKind.displayName) reached its usage limit, and task \(currentTask.shortId) stays with it: OpenCode can't take it — \(openCodeRefusal)",
+                    from: session.agentKind, to: currentTask.fromAgent, taskId: currentTask.id, inboxStore: inboxStore)
+                store.updateState(id: session.id, to: .error)
+                return true
+            }
             if let currentTask, let tier = currentTask.tier {
                 // No peer can serve this tier. Cancelling the task and announcing a reroute
                 // would be a lie — nothing was rerouted, and the hop copy could never be

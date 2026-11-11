@@ -24,6 +24,19 @@ public enum LaunchMode: String, Sendable, CaseIterable {
 /// glue is covered by AppCoordinatorIntegrationTests via injected doubles.
 @MainActor
 public final class AppCoordinator {
+    public typealias OpenCodeModelLister = @Sendable (_ folder: String) async throws -> [String]
+
+    enum OpenCodeModelAvailability: Equatable {
+        case checking
+        case available
+        /// A permanent answer: no model is configured for the tier, or the model is not among those
+        /// OpenCode lists.
+        case refused(String)
+        /// The listing itself failed (OpenCode missing, a non-zero exit, a timeout, no models), so
+        /// nothing is known about the model.
+        case uncheckable(String)
+    }
+
     public let store = SessionStore()
     public let terminals: TerminalSessionManager
     /// Previous sessions that are no longer live — the sidebar's Earlier section.
@@ -87,6 +100,38 @@ public final class AppCoordinator {
     /// coordinator can't see. Invoked on the main actor.
     private let isWatching: @MainActor @Sendable (String) -> Bool
     let agentPathResolver: (@Sendable (AgentKind) -> String?)?
+    /// Lists models away from the main actor. Results are reused briefly so the once-per-second
+    /// relay never blocks on OpenCode, while withdrawn free models are noticed within seconds.
+    let openCodeModels: OpenCodeModelLister
+    private struct OpenCodeModelListing {
+        enum ListingResult {
+            case success([String])
+            case failure(String)
+        }
+        let checkedAt: Date
+        let result: ListingResult
+    }
+    private var openCodeModelListings: [String: OpenCodeModelListing] = [:]
+    private var openCodeModelChecksInFlight: Set<String> = []
+    static let openCodeModelListingMaxAge: TimeInterval = 5
+    /// A failed listing is kept longer, so a broken OpenCode is listed at most once a minute per folder.
+    static let openCodeModelFailedListingMaxAge: TimeInterval = 60
+    /// How long the app waits for `opencode models`: less than the 20 s `linkc` waits for its open
+    /// request, so the command hears "could not check" rather than nothing. Public: it is read by the
+    /// public initializer's default `openCodeModels`.
+    public static let openCodeModelListingTimeout: TimeInterval = 10
+    var openCodeModelCheckCount = 0
+    /// OpenCode refusals the user has been told of, one per queued task or message, so a pass that meets the
+    /// same one again says nothing to them. Pruned by the dispatch passes to what is still queued.
+    var openCodeRefusalUsersTold: Set<OpenCodeRefusalKey> = []
+    /// OpenCode refusals whose notice has reached the delegator's inbox. A notice that could not be written is
+    /// missing here, so every later pass tries it again. Pruned like `openCodeRefusalUsersTold`.
+    var openCodeRefusalNoticesSent: Set<OpenCodeRefusalKey> = []
+    /// Lists OpenCode's sessions as `opencode session list --format json --standalone` run in a
+    /// folder prints them. A seam, so a test can play the listing; the real one runs off the main thread.
+    var openCodeSessionList: @Sendable (_ executable: String, _ folder: String) async throws -> String = {
+        try await AppCoordinator.listOpenCodeSessions(executable: $0, folder: $1)
+    }
     /// Runs task gates and verifications off the main actor; injected so tests can script verdicts.
     let verifier: any TaskVerifier
     /// Workspaces with a verification run in flight, mapped to the task id running there — at
@@ -214,7 +259,7 @@ public final class AppCoordinator {
     private var consumerTask: Task<Void, Never>?
     /// The one loop behind every periodic sample: the sessions, the relay and, while `panelVisible`,
     /// the app's own sampling (`panelSweep`). Its spacing follows `TickCadence`.
-    private var sweepTicker: SweepTicker?
+    var sweepTicker: SweepTicker?
     /// Wakes `sweepTicker` when a workspace's inbox file is replaced, so a new delegation never
     /// waits out the slow interval. A burst of writes still makes one pass: the ticker holds
     /// woken passes `TickCadence.minimumWakeGap` apart. Watches the workspaces the relay works on:
@@ -268,6 +313,11 @@ public final class AppCoordinator {
         sweepClock: any Clock<Duration> = ContinuousClock(),
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
         openRequests: OpenRequestStore? = nil,
+        openCodeModels: @escaping OpenCodeModelLister = { folder in
+            try await Task.detached {
+                try MCPServer.listOpenCodeModels(in: folder, timeout: AppCoordinator.openCodeModelListingTimeout)
+            }.value
+        },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -291,6 +341,7 @@ public final class AppCoordinator {
         self.sweepClock = sweepClock
         self.mcpWorkspaces = mcpWorkspaces
         self.openRequests = openRequests
+        self.openCodeModels = openCodeModels
         self.isWatching = isWatching
         self.statusLines = StatusLineFeed(
             directory: settingsDir.appendingPathComponent("status-lines", isDirectory: true),
@@ -298,6 +349,42 @@ public final class AppCoordinator {
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.
         syncRestorables()
+    }
+
+    func openCodeModelAvailability(in folder: String, tier: ModelTier) -> OpenCodeModelAvailability {
+        guard let model = resolvedModel(for: .opencode, tier: tier) else {
+            return .refused("no model configured for opencode tier \(tier.rawValue) — set it in linkC's Settings > Models")
+        }
+        let norm = ProjectPath.canonical(folder)
+        if let listing = openCodeModelListings[norm] {
+            let age = now().timeIntervalSince(listing.checkedAt)
+            switch listing.result {
+            case .success(let models) where age <= Self.openCodeModelListingMaxAge:
+                guard models.contains(model) else {
+                    return .refused("\(model) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings")
+                }
+                return .available
+            case .failure(let reason) where age <= Self.openCodeModelFailedListingMaxAge:
+                return .uncheckable("could not check opencode tier \(tier.rawValue)'s model \(model) against the models OpenCode lists — \(reason)")
+            case .success, .failure:
+                break
+            }
+        }
+        if openCodeModelChecksInFlight.insert(norm).inserted {
+            let lister = openCodeModels
+            Task { [weak self] in
+                let result: OpenCodeModelListing.ListingResult
+                do { result = .success(try await lister(norm)) }
+                catch { result = .failure(String(describing: error)) }
+                guard let self else { return }
+                self.openCodeModelListings[norm] = OpenCodeModelListing(checkedAt: self.now(), result: result)
+                self.openCodeModelChecksInFlight.remove(norm)
+                self.openCodeModelCheckCount += 1
+                // The pass that was waiting for this answer need not wait out an idle interval.
+                self.sweepTicker?.wake()
+            }
+        }
+        return .checking
     }
 
     /// Production initializer — builds the real hook server, notification center, and settings
@@ -622,7 +709,7 @@ public final class AppCoordinator {
     /// Remove a session everywhere it leaves state behind: the store, its terminal (dropped,
     /// not killed — the process is already dead here), its per-session settings file, its
     /// notification dedupe entry, and its usage-tracker dictionaries. Idempotent.
-    private func cleanup(sessionId: String) {
+    func cleanup(sessionId: String) {
         let wasWorker = store.session(id: sessionId)?.isWorker ?? false
         store.remove(id: sessionId)
         terminals.remove(sessionId)
@@ -782,8 +869,9 @@ public final class AppCoordinator {
             throw LinkCError.process("a tier can only pin a new session; \(mode) reuses an existing session's model")
         }
         let (model, modelTier) = try launchModel(for: agent, tier: tier)
+        // A continued OpenCode session keeps the model it last ran on, which linkC does not know.
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
-                                   model: model, modelTier: modelTier,
+                                   model: agent == .opencode && mode == .continueLast ? nil : model, modelTier: modelTier,
                                    claudeSessionId: resumeId, isWorker: asWorker)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent, select: false)
@@ -812,6 +900,9 @@ public final class AppCoordinator {
             var env: [String: String] = ["LINKC_SESSION": session.id]
             if agent == .grok {
                 env.merge(try grokEnvironment()) { _, grok in grok }
+            }
+            if agent == .opencode {
+                env.merge(try openCodeEnvironment(model: model)) { _, openCode in openCode }
             }
 
             if agent == .claude {
@@ -869,11 +960,17 @@ public final class AppCoordinator {
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
             }
 
-            try terminal.start(
-                executable: executable,
-                args: args,
-                env: env
-            )
+            if agent == .opencode, mode == .continueLast {
+                // OpenCode's own `--continue` can open another folder's session. This folder's is
+                // found first; the terminal starts when the listing is back.
+                continueOpenCode(session: session, terminal: terminal, executable: executable, args: args, env: env)
+            } else {
+                try terminal.start(
+                    executable: executable,
+                    args: args,
+                    env: env
+                )
+            }
             if select { terminals.select(session.id) }
             // Record the now-live session so it survives a quit/crash and can be restored.
             manifest.upsert(RestorableSession(
@@ -897,20 +994,20 @@ public final class AppCoordinator {
     }
 
     /// The model a launch pins, and the tier it came from. A tier with no model leaves a session
-    /// unpinned — except Grok, which always names its model: on a fresh `~/.cursor-grok`, Cursor's
-    /// own default is Auto, not Grok. With no tier, Grok runs on its default tier's model but
+    /// unpinned — except Grok and OpenCode, which always name their model: on a fresh `~/.cursor-grok`,
+    /// Cursor's own default is Auto, not Grok. With no tier, Grok runs on its default tier's model but
     /// records no tier, so a Grok session the user opened is, like any other, never handed a
     /// delegated task (`Session.canCarry`). A tier with no model refuses the launch rather than
     /// run on whatever Cursor would pick.
     private func launchModel(for agent: AgentKind, tier: ModelTier?) throws -> (model: String?, tier: ModelTier?) {
-        guard agent == .grok else {
+        guard AgentKind.alwaysNamesModel.contains(agent) else {
             let model = tier.flatMap { resolvedModel(for: agent, tier: $0) }
             return (model, model == nil ? nil : tier)
         }
         let settings = modelSettings()
-        let grokTier = tier ?? settings.defaultTier(for: .grok)
-        guard let model = settings.model(for: .grok, tier: grokTier) else {
-            throw LinkCError.process("no model configured for grok tier \(grokTier.rawValue) — set it in linkC settings")
+        let launchTier = tier ?? settings.defaultTier(for: agent)
+        guard let model = settings.model(for: agent, tier: launchTier) else {
+            throw LinkCError.process("no model configured for \(agent.rawValue) tier \(launchTier.rawValue) — set it in linkC settings")
         }
         return (model, tier)
     }
@@ -1181,7 +1278,7 @@ public final class AppCoordinator {
                 store.updateState(id: session.id, to: .ready)
             }
 
-            let liveActivity = screen.liveActivity()
+            let liveActivity = screen.liveActivity(agent: currentSession.agentKind)
             let isWorking = liveActivity != nil && !liveActivity!.isEmpty
 
             if isWorking {

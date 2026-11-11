@@ -41,8 +41,8 @@ public struct ScreenSnapshot: Sendable {
     }
 
     /// The live activity or spinner phrase, nil when no turn is running.
-    public func liveActivity() -> String? {
-        TerminalPreview.liveActivity(from: rows)
+    public func liveActivity(agent: AgentKind) -> String? {
+        TerminalPreview.liveActivity(from: rows, agent: agent)
     }
 
     /// Whether Codex's footer says terminals it started are still running.

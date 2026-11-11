@@ -20,6 +20,23 @@ extension AppCoordinator {
         let pending = openRequests.pending()
         guard !pending.isEmpty else { return }
         for request in pending {
+            if request.agent == .opencode, request.task != nil {
+                let tier = request.tier ?? defaultTier(for: .opencode)
+                switch openCodeModelAvailability(in: request.folder, tier: tier) {
+                case .checking:
+                    continue
+                case .available:
+                    break
+                case .refused(let reason), .uncheckable(let reason):
+                    do {
+                        try openRequests.withdraw(request.id)
+                        try openRequests.answer(request.id, with: .refused(reason))
+                    } catch {
+                        NSLog("[linkC] OpenCode request %@ could not be refused — %@", request.id, String(describing: error))
+                    }
+                    continue
+                }
+            }
             // Withdrawn before it is acted on, so a request whose answer can't be written is never opened twice.
             do {
                 try openRequests.withdraw(request.id)

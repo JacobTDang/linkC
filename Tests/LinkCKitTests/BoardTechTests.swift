@@ -62,6 +62,11 @@ final class BoardTechTests: XCTestCase {
         XCTAssertNil(BoardTech.resolve(BoardComponent(name: "codex", kind: .service)))
     }
 
+    func testAComponentNamedOpenCodeIsTheOpenCodeAgent() {
+        XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "OpenCode", kind: .service)), .opencode)
+        XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "x", kind: .service, tech: "opencode")), .opencode)
+    }
+
     /// A component named like an agent still draws its explicit `tech`: inference from the name
     /// — agent names included — only applies when `tech` is nil or empty. `agent(for:)` checks
     /// `tech` first and never falls back to the name once `tech` is set to something else.

@@ -48,6 +48,12 @@ public enum AgentModelCatalog: Sendable {
                 AgentModelInfo(id: "grok-4.7-low", displayName: "Grok 4.7 Low", isFreeOrSubscription: true, isDefault: false),
                 AgentModelInfo(id: "grok-4.7-xhigh", displayName: "Grok 4.7 Extra High", isFreeOrSubscription: true, isDefault: false)
             ]
+        case .opencode:
+            return [
+                AgentModelInfo(id: "opencode/big-pickle", displayName: "Big Pickle", isFreeOrSubscription: true, isDefault: true),
+                AgentModelInfo(id: "opencode/deepseek-v4.1-flash-free", displayName: "DeepSeek V4.1 Flash Free", isFreeOrSubscription: true, isDefault: false),
+                AgentModelInfo(id: "opencode/nemotron-3.5-super-vl-free", displayName: "Nemotron 3.5 Super VL Free", isFreeOrSubscription: true, isDefault: false)
+            ]
         case .shell:
             return []
         }
@@ -93,8 +99,9 @@ public enum AgentModelCatalog: Sendable {
         "/model \(model)"
     }
 
-    /// Generates CLI launch arguments for specifying the model.
+    /// Generates CLI launch arguments for specifying the model. OpenCode 2.2.5's TUI has no model
+    /// flag — it refuses one — so its model goes in its inline config (`MCPRegistrar.openCodeConfigContent`).
     public static func launchArguments(model: String, for agent: AgentKind) -> [String] {
-        ["--model", model]
+        agent == .opencode ? [] : ["--model", model]
     }
 }

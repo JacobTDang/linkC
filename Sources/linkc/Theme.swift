@@ -29,6 +29,7 @@ enum Theme {
         case .cursor: return Color(red: 0/255, green: 229/255, blue: 255/255)  // #00E5FF
         case .codex: return Color(red: 16/255, green: 163/255, blue: 127/255)  // #10A37F
         case .grok: return Color(red: 229/255, green: 229/255, blue: 234/255)  // #E5E5EA
+        case .opencode: return Color(red: 250/255, green: 178/255, blue: 131/255) // #FAB283
         case .shell: return Color(white: 0.55)
         }
     }

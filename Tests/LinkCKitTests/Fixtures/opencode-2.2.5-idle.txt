@@ -1,0 +1,39 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                            ▄
+                           █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+                           █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+                           ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+
+
+         ┃
+         ┃  Ask anything… "What is the tech stack of this project?"
+         ┃
+         ┃  Build auto · Big Pickle OpenCode
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         /…/65d23432-96…/scratchpad/v2-probe:main  shift+tab agents  ctrl+p commands
+
+
+
+
+
+
+
+
+
+
+
+
+  ⊙ 6 MCP /mcps                                                                      2.2.5

@@ -1,7 +1,7 @@
 import SwiftUI
 import LinkCKit
 
-/// Compact micro-badge showing the active AI CLI agent (CLAUDE, AGY, CURSOR, CODEX, GROK, SHELL).
+/// Compact micro-badge showing the active AI CLI agent (CLAUDE, AGY, CURSOR, CODEX, GROK, OPENCODE, SHELL).
 struct AgentPill: View {
     let agent: AgentKind
     var isSelected: Bool = false

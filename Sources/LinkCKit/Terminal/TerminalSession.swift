@@ -388,7 +388,7 @@ public final class TerminalSession {
     /// The live activity or spinner phrase from the terminal's visible screen, as plain text.
     /// Returns nil when the PTY was never started or no activity indicator is found.
     public func liveActivityLine() -> String? {
-        screenSnapshot().liveActivity()
+        screenSnapshot().liveActivity(agent: agentKind)
     }
 
     /// Whether the visible screen is an agent's folder-trust dialog. false when the PTY was never

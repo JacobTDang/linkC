@@ -8,7 +8,7 @@ public enum LinkCCommand {
         Usage: linkc <agent> [--tier light|standard|deep] [--task] [--] [prompt ...]
 
         Opens <agent> in a new linkC window, in the current folder, with the prompt typed in.
-          <agent>   claude, codex, agy, cursor or grok
+          <agent>   claude, codex, agy, cursor, grok or opencode
           --tier    the model tier (default: unpinned, as linkC's panel opens it; with --task, the agent's
                     default tier in linkC's Settings > Models)
           --task    for an agent handing off work: the new session carries the prompt as a task
@@ -19,7 +19,7 @@ public enum LinkCCommand {
         """
 
     /// The agents the command opens: every kind but the shell.
-    static let agents: [AgentKind] = [.claude, .codex, .agy, .cursor, .grok]
+    static let agents: [AgentKind] = [.claude, .codex, .agy, .cursor, .grok, .opencode]
 
     public struct Invocation: Equatable, Sendable {
         public let agent: AgentKind

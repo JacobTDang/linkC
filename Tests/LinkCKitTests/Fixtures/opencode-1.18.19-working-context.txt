@@ -1,0 +1,39 @@
+  ┃      through every storm the coast could send. He knew its moods the way other men
+  ┃      knew their wives.
+  ┃    2
+  ┃    3 The night the sea rose, the wind came screaming off the point before the
+  ┃      warning bell had finished ringing. Elias climbed the spiral stairs with his
+  ┃      lantern swinging, counted the hundred and twelve steps as he always did, and
+  ┃      found the great lens trembling in its housing. A hairline crack had opened in
+  ┃      the brass, weeping oil onto the glass.
+  ┃    4
+  ┃    5 He worked through the dark with his fingers and his breath, sealing the seam
+  ┃      with wax and cloth torn from his own coat. Salt burned his eyes. The tower
+  ┃      shook. Below, the black water chewed at the rocks, and somewhere out in that
+  ┃      nothing a ship was running blind toward the shallows.
+  ┃    6
+  ┃    7 At the last he set the flame and stepped back, and the beam swung out across
+  ┃      the waste of water, steady as a heartbeat.
+  ┃    8
+  ┃    9 By dawn the storm had spent itself. A fishing boat limped into the harbor, its
+  ┃      crew three men who would never know his name. Elias watched them from the
+  ┃      gallery, then went down to sleep. The light had held. That was enough.
+  ┃   10
+  ┃
+
+     + Thought: 590ms
+
+  ┃
+  ┃  $ wc -w story.txt
+  ┃
+  ┃  226 story.txt
+  ┃
+
+     ▣  Build · DeepSeek V4.1 Flash Free
+
+  ┃
+  ┃
+  ┃
+  ┃  Build auto · DeepSeek V4.1 Flash Free OpenCode
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝■■■■■■  esc interrupt                                    44.9K (22%)  ctrl+p commands

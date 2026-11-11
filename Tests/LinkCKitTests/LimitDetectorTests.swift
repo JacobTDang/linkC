@@ -273,6 +273,18 @@ final class LimitDetectorTests: XCTestCase {
         XCTAssertNotNil(LimitDetector.detectLimit(inOutput: "Rate limit " + "reached. Try again later.", agent: .grok))
     }
 
+    /// OpenCode's free-tier cap, in the words its own retry code shows. A plain 429 is a retry
+    /// OpenCode makes by itself, not a cap.
+    func testOpenCodesFreeTierCapIsALimitButA429IsNot() {
+        let cap = LimitDetector.detectLimit(inOutput: "Free usage " + "exceeded, subscribe to Go", agent: .opencode)
+        XCTAssertEqual(cap?.agent, .opencode)
+        XCTAssertEqual(cap?.cooldown, LimitDetector.defaultCooldown)
+        XCTAssertNotNil(LimitDetector.detectLimit(inOutput: "Free limit " + "reached", agent: .opencode))
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "429 Too Many " + "Requests, retrying in 2s", agent: .opencode))
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "Free usage " + "exceeded, subscribe to Go", agent: .codex),
+                     "the phrase is OpenCode's alone")
+    }
+
     // MARK: - Normal Output & Isolation Tests
 
     func testNormalOutputReturnsNil() {

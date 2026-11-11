@@ -315,6 +315,24 @@ public final class InboxStore: Sendable {
         }
     }
 
+    /// Marks a queued message as failed: it will not be delivered, and leaves the pending queue. A message
+    /// in any other state is refused, not overwritten: a delivered one went out, and a failed one is over.
+    public func markMessageFailed(id: String, timeout: TimeInterval = 5.0) throws {
+        try withFileLock(timeout: timeout) {
+            var inbox = try loadUnlocked()
+            guard let index = inbox.messages.firstIndex(where: { $0.id == id }) else {
+                throw LinkCError.server("Message with ID \(id) not found in inbox")
+            }
+            let status = inbox.messages[index].status
+            guard status == .queued else {
+                throw LinkCError.server("Message with ID \(id) is \(status.rawValue), not queued: only a queued message can be marked failed")
+            }
+            inbox.messages[index].status = .failed
+            inbox.updatedAt = Date()
+            try saveUnlocked(inbox)
+        }
+    }
+
     /// Records a rate limit or exhaustion cooldown for an agent kind. A limit is re-detected
     /// from the same terminal output on every relay tick until something actually clears it —
     /// a successful reroute, a person's own intervention, or the cooldown simply expiring — so

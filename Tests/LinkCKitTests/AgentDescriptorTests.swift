@@ -122,13 +122,40 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(AgentDescriptor.grokConfigDirectory(home: home).path, "/Users/someone/.cursor-grok")
         XCTAssertEqual(AgentDescriptor.environment(for: .grok, home: home),
                        ["CURSOR_CONFIG_DIR": "/Users/someone/.cursor-grok", "LINKC_WORKER": "grok"])
-        for kind in AgentKind.allCases where kind != .grok {
+        for kind in AgentKind.allCases where kind != .grok && kind != .opencode {
             XCTAssertEqual(AgentDescriptor.environment(for: kind, home: home), [:], "\(kind)")
         }
     }
 
     func testPeersAreEveryAgentButAShell() {
-        XCTAssertEqual(AgentKind.peers, [.claude, .agy, .cursor, .codex, .grok])
-        XCTAssertEqual(AgentKind.peerList, "claude, agy, cursor, codex, grok")
+        XCTAssertEqual(AgentKind.peers, [.claude, .agy, .cursor, .codex, .grok, .opencode])
+        XCTAssertEqual(AgentKind.peerList, "claude, agy, cursor, codex, grok, opencode")
+    }
+
+    /// OpenCode runs its own binary, on a private server of its own, with every permission approved. It never gets `--continue`:
+    /// that takes the newest session of the whole project, in whatever folder it ran.
+    func testOpenCodeIsItsOwnAgentWithEveryPermissionApproved() {
+        XCTAssertEqual(AgentKind.opencode.pillText, "OPENCODE")
+        XCTAssertEqual(AgentKind.opencode.displayName, "OpenCode")
+        XCTAssertEqual(AgentKind.opencode.shortName, "OpenCode")
+        XCTAssertEqual(AgentKind.opencode.brandColorHex, "#FAB283")
+        let opencode = AgentDescriptor.descriptor(for: .opencode)
+        XCTAssertEqual(opencode.kind, .opencode)
+        XCTAssertEqual(opencode.binaryName, "opencode")
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        XCTAssertEqual(opencode.defaultCandidatePaths,
+                       ["/opt/homebrew/bin/opencode", "/usr/local/bin/opencode", "\(home)/.opencode/bin/opencode"])
+        for mode in [LaunchMode.new, .continueLast, .resume] {
+            XCTAssertEqual(AgentDescriptor.arguments(for: .opencode, mode: mode, sessionId: "S-1"), ["--standalone", "--auto"], "\(mode)")
+        }
+    }
+
+    /// With a newer release out, OpenCode opens on an update dialog, and the first text linkC types
+    /// would answer it.
+    func testAnOpenCodeTerminalTurnsOffTheUpdateDialog() {
+        XCTAssertEqual(AgentDescriptor.openCodeAutoUpdateKey, "OPENCODE_DISABLE_AUTOUPDATE")
+        XCTAssertEqual(AgentDescriptor.openCodeConfigContentKey, "OPENCODE_CONFIG_CONTENT")
+        XCTAssertEqual(AgentDescriptor.environment(for: .opencode, home: URL(fileURLWithPath: "/Users/someone")),
+                       ["OPENCODE_DISABLE_AUTOUPDATE": "1"])
     }
 }

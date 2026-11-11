@@ -146,6 +146,7 @@ public final class MCPServer: Sendable {
     public typealias SessionResolver = @Sendable () -> String?
     public typealias WorkerResolver = @Sendable () -> String?
     public typealias UsageReader = @Sendable () -> AgentUsage
+    public typealias OpenCodeModelLister = @Sendable (_ folder: String) throws -> [String]
 
     /// How `linkc_close_worker` waits for linkC's answer to its request: it polls the task every
     /// `interval` seconds, up to `timeout`, calling `sleep` between polls. A seam, so a test can
@@ -197,6 +198,9 @@ public final class MCPServer: Sendable {
     /// a different reader is swapped in for an agent later.
     public let warnCapableAgents: Set<AgentKind>
     public let closeAnswerWait: CloseAnswerWait
+    /// The models OpenCode offers in a folder, read on every OpenCode delegation: a free model can
+    /// go at any time, and OpenCode runs a session whose model it does not know on whatever it picks.
+    public let openCodeModels: OpenCodeModelLister
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -208,7 +212,7 @@ public final class MCPServer: Sendable {
     public static let targetAgentTools: Set<String> = ["linkc_switch_model", "linkc_get_models"]
 
     public static let unidentifiedCallerMessage =
-        "Cannot identify calling agent; pass agent: \"claude\" | \"agy\" | \"cursor\" | \"codex\" | \"grok\"."
+        "Cannot identify calling agent; pass agent: \"claude\" | \"agy\" | \"cursor\" | \"codex\" | \"grok\" | \"opencode\"."
 
     /// `linkc_edit_board`'s `steps` schema description: the only place an agent can discover the
     /// step grammar, so it names every verb's fields exactly, one short line each, matching
@@ -247,7 +251,8 @@ public final class MCPServer: Sendable {
         workerResolver: @escaping WorkerResolver = { AncestorWorkerCache.value },
         usageReaders: [AgentKind: UsageReader] = MCPServer.defaultUsageReaders(),
         warnCapableAgents: Set<AgentKind> = MCPServer.defaultWarnCapableAgents,
-        closeAnswerWait: CloseAnswerWait = .standard
+        closeAnswerWait: CloseAnswerWait = .standard,
+        openCodeModels: @escaping OpenCodeModelLister = { try MCPServer.listOpenCodeModels(in: $0) }
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -261,6 +266,7 @@ public final class MCPServer: Sendable {
         self.usageReaders = usageReaders
         self.warnCapableAgents = warnCapableAgents
         self.closeAnswerWait = closeAnswerWait
+        self.openCodeModels = openCodeModels
     }
 
     /// The real readers, wired to each agent's own on-disk records. `agy` and `cursor` write
@@ -287,7 +293,8 @@ public final class MCPServer: Sendable {
             .claude: claude,
             .agy: { .unavailable(.agy, reason: "agy writes no local session records") },
             .cursor: { .unavailable(.cursor, reason: "cursor writes no local session records") },
-            .grok: { .unavailable(.grok, reason: "Grok runs on the Cursor plan, which writes no local session records") }
+            .grok: { .unavailable(.grok, reason: "Grok runs on the Cursor plan, which writes no local session records") },
+            .opencode: { .unavailable(.opencode, reason: "OpenCode's free models publish no quota locally") }
         ]
     }
 
@@ -299,6 +306,46 @@ public final class MCPServer: Sendable {
     /// registered. `agy` and `cursor` are absent from `defaultUsageReaders()` entirely and so
     /// cannot warn regardless.
     public static let defaultWarnCapableAgents: Set<AgentKind> = [.codex, .claude]
+
+    /// `opencode models`, on a private server so listing never starts OpenCode's shared background
+    /// service when it is not running.
+    static let openCodeModelsArguments = ["models", "--standalone"]
+
+    /// The models `opencode models` lists in `folder` — a project's own config can add providers.
+    /// Throws when OpenCode is missing, the listing fails or does not answer in time, or it lists
+    /// no models. `executable` is OpenCode's path, nil when it is not installed.
+    public static func listOpenCodeModels(
+        in folder: String,
+        executable: String? = AgentDescriptor.resolveExecutable(for: .opencode),
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        timeout: TimeInterval = 60
+    ) throws -> [String] {
+        guard let executable else {
+            throw LinkCError.process("Executable for \(AgentKind.opencode.pillText) not found")
+        }
+        let result: ProcessResult
+        do {
+            result = try LiveProcessRunner.runCapturingSync(
+                executable: executable, args: openCodeModelsArguments, cwd: URL(fileURLWithPath: folder),
+                env: AgentDescriptor.environment(for: .opencode, home: home),
+                timeout: timeout)
+        } catch ProcessRunnerError.timedOut(let seconds) {
+            throw LinkCError.process("`opencode models` did not answer within \(seconds) seconds")
+        }
+        guard result.status == 0 else {
+            throw LinkCError.process("`opencode models` exited \(result.status): \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        let models = parseOpenCodeModels(result.stdout)
+        guard !models.isEmpty else { throw LinkCError.process("`opencode models` listed no models") }
+        return models
+    }
+
+    /// The model ids in `opencode models`' output: its non-empty lines, trimmed.
+    static func parseOpenCodeModels(_ stdout: String) -> [String] {
+        stdout.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 
     /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified),
     /// then a caller that resolved as Cursor inside a terminal linkC marked as Grok is Grok.
@@ -887,6 +934,23 @@ public final class MCPServer: Sendable {
                             isError: true)
                     }
                 }
+                if toAgent == .opencode, let tier, let model = settings.model(for: .opencode, tier: tier) {
+                    let offered: [String]
+                    do {
+                        offered = try openCodeModels(workspaceRoot)
+                    } catch {
+                        return toolResultResponse(
+                            id: id,
+                            text: "Error: could not check opencode tier \(tier.rawValue)'s model \(model) against the models OpenCode lists — \(error)",
+                            isError: true)
+                    }
+                    guard offered.contains(model) else {
+                        return toolResultResponse(
+                            id: id,
+                            text: "Error: \(model) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings.",
+                            isError: true)
+                    }
+                }
 
                 let task: TaskRecord
                 do {
@@ -1024,6 +1088,10 @@ public final class MCPServer: Sendable {
                 guard agent != .shell else {
                     return toolResultResponse(id: id, text: "Error: Cannot switch model on shell session.", isError: true)
                 }
+                guard agent != .opencode else {
+                    // OpenCode has no `/model <id>` command: typed in, it goes to the model as a prompt.
+                    return toolResultResponse(id: id, text: "Error: opencode cannot switch a running session's model — delegate at another tier instead.", isError: true)
+                }
                 guard let model = args["model"] as? String, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'model'.", isError: true)
                 }
@@ -1065,7 +1133,7 @@ public final class MCPServer: Sendable {
                     }
                     targetAgents = [a]
                 } else {
-                    targetAgents = [.claude, .codex, .agy, .cursor, .grok]
+                    targetAgents = [.claude, .codex, .agy, .cursor, .grok, .opencode]
                 }
 
                 let settings = modelSettings()
@@ -1095,6 +1163,9 @@ public final class MCPServer: Sendable {
                         let marker = tier == settings.defaultTier(for: agent) ? " — default" : ""
                         text += "- **\(tier.rawValue)**: \(id)\(marker)\n"
                     }
+                    if agent == .opencode {
+                        text += "- opencode cannot switch a running session's model; delegate at another tier\n"
+                    }
                     text += "\n"
                 }
                 text += "Edit these in linkC settings under MODELS.\n"
@@ -1110,7 +1181,7 @@ public final class MCPServer: Sendable {
                 let now = Date()
                 var text = "# Agent Usage\n\n"
 
-                for agent in [AgentKind.codex, .claude, .agy, .cursor, .grok] {
+                for agent in [AgentKind.codex, .claude, .agy, .cursor, .grok, .opencode] {
                     let usage = usageReaders[agent]?() ?? .unavailable(agent, reason: "no usage reader configured for this agent")
                     text += Self.renderUsageSection(usage, now: now)
                 }

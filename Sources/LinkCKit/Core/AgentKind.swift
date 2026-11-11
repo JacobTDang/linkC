@@ -7,6 +7,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
     case cursor
     case codex
     case grok
+    case opencode
     case shell
 
     /// Concise uppercase badge text for pills and cards.
@@ -17,6 +18,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .cursor: return "CURSOR"
         case .codex: return "CODEX"
         case .grok: return "GROK"
+        case .opencode: return "OPENCODE"
         case .shell: return "SHELL"
         }
     }
@@ -29,6 +31,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .cursor: return "#00E5FF"    // cyan / neon
         case .codex: return "#10A37F"     // openAI emerald
         case .grok: return "#E5E5EA"      // xAI's mark is monochrome; light on the dark panel
+        case .opencode: return "#FAB283"  // the accent of OpenCode's default theme
         case .shell: return "#8E8E93"     // neutral grey
         }
     }
@@ -41,6 +44,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .cursor: return "Cursor Agent"
         case .codex: return "Codex"
         case .grok: return "Grok (via Cursor)"
+        case .opencode: return "OpenCode"
         case .shell: return "Terminal (zsh)"
         }
     }
@@ -53,6 +57,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .cursor: return "Cursor"
         case .codex: return "Codex"
         case .grok: return "Grok"
+        case .opencode: return "OpenCode"
         case .shell: return "Terminal"
         }
     }
@@ -64,8 +69,13 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
     /// Every agent that can take a task: all but a plain shell, in declaration order.
     public static var peers: [AgentKind] { allCases.filter { $0 != .shell } }
 
-    /// `peers` as text, for tool descriptions and errors: "claude, agy, cursor, codex, grok".
+    /// `peers` as text, for tool descriptions and errors: "claude, agy, cursor, codex, grok, opencode".
     public static var peerList: String { peers.map(\.rawValue).joined(separator: ", ") }
+
+    /// Agents every launch names a model for, a tier or not, because their CLI's own default is not
+    /// theirs: Grok's Cursor defaults to Auto, and OpenCode runs a session whose model it does not
+    /// know on whatever it picks, which may be the user's local model.
+    public static let alwaysNamesModel: Set<AgentKind> = [.grok, .opencode]
 }
 
 /// Metadata and argument specifications for AI CLI agents.
@@ -139,6 +149,26 @@ public struct AgentDescriptor: Sendable {
                 continueArgs: cursor.continueArgs,
                 resumeArgs: cursor.resumeArgs
             )
+        case .opencode:
+            return AgentDescriptor(
+                kind: .opencode,
+                binaryName: "opencode",
+                defaultCandidatePaths: [
+                    "/opt/homebrew/bin/opencode",
+                    "/usr/local/bin/opencode",
+                    home.appendingPathComponent(".opencode/bin/opencode")
+                ],
+                // A private server for this session, so its environment — the model and linkC's tools in
+                // `OPENCODE_CONFIG_CONTENT`, `LINKC_SESSION` — reaches it; the shared background service has
+                // the environment of whatever started it. Every permission approved that the config does not deny.
+                yoloFlags: ["--standalone", "--auto"],
+                // OpenCode's own `--continue` takes the newest session of the whole project — every
+                // worktree of a repo is one project — and moves into that session's folder. linkC
+                // passes `--session <id>` for this folder's own session instead (AppCoordinator+OpenCode).
+                // OpenCode has no session-picker flag.
+                continueArgs: [],
+                resumeArgs: []
+            )
         case .shell:
             return AgentDescriptor(
                 kind: .shell,
@@ -182,14 +212,28 @@ public struct AgentDescriptor: Sendable {
         home.appendingPathComponent(grokConfigFolderName, isDirectory: true)
     }
 
-    /// What `kind`'s terminal needs beyond `LINKC_SESSION`. Only Grok needs anything: its own
-    /// Cursor folder, and the mark linkC's tool server reads to tell it from Cursor.
+    /// The variable that keeps OpenCode from opening on its "Update Available" dialog.
+    public static let openCodeAutoUpdateKey = "OPENCODE_DISABLE_AUTOUPDATE"
+
+    /// The variable OpenCode reads inline config from, merged over its `opencode.json`.
+    public static let openCodeConfigContentKey = "OPENCODE_CONFIG_CONTENT"
+
+    /// What `kind`'s terminal needs beyond `LINKC_SESSION`. Grok: its own Cursor folder, and the
+    /// mark linkC's tool server reads to tell it from Cursor. OpenCode: no update dialog — with a
+    /// newer release out, OpenCode opens on one, and the first text linkC types (a worker's task)
+    /// would answer it. linkC adds OpenCode's inline tool config at launch (AppCoordinator+OpenCode).
     public static func environment(for kind: AgentKind, home: URL) -> [String: String] {
-        guard kind == .grok else { return [:] }
-        return [
-            "CURSOR_CONFIG_DIR": grokConfigDirectory(home: home).path,
-            AgentKind.workerEnvironmentKey: AgentKind.grok.rawValue
-        ]
+        switch kind {
+        case .grok:
+            return [
+                "CURSOR_CONFIG_DIR": grokConfigDirectory(home: home).path,
+                AgentKind.workerEnvironmentKey: AgentKind.grok.rawValue
+            ]
+        case .opencode:
+            return [openCodeAutoUpdateKey: "1"]
+        default:
+            return [:]
+        }
     }
 
     /// Resolve an absolute executable path on disk for the agent.

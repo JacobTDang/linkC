@@ -118,7 +118,17 @@ public enum TerminalPreview {
     /// the footer below it is what says the turn is running, and the phrase is the spinner row
     /// above the box. Without that marker the box ends the scan, because everything above it may
     /// be a finished turn's output.
-    public static func liveActivity(from rows: [String]) -> String? {
+    public static func liveActivity(from rows: [String], agent: AgentKind) -> String? {
+        // OpenCode's input box has none of the prompt markers the generic scan stops at, so only
+        // a session known to be OpenCode may use its dedicated reader.
+        if agent == .opencode, let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
+        return genericLiveActivity(from: rows)
+    }
+
+    /// The pre-OpenCode reader. Kept separate so the fixture sweep can prove every other agent's
+    /// screen still reads exactly as it did before agent-kind gating.
+    static func genericLiveActivity(from rows: [String]) -> String? {
+
         let recent = Array(rows.suffix(12).reversed())
         var footerSaysWorking = false
         for (index, row) in recent.enumerated() {
@@ -245,6 +255,7 @@ public enum TerminalPreview {
         let text = visibleText(row)
         guard !text.isEmpty else { return false }
         if isWorkingFooter(text) { return true }
+        if OpenCodeScreen.isProgressRow(text) { return true }
         if text.contains("esc to interrupt") { return true }
         if hasSpinnerTokenCounter(text) { return true }
         // The same running-spinner shape without a token counter — the thinking-phase row
@@ -405,7 +416,7 @@ public enum TerminalPreview {
     }
 
     /// A row with box-drawing and block glyphs removed and surrounding whitespace trimmed.
-    private static func visibleText(_ row: String) -> String {
+    static func visibleText(_ row: String) -> String {
         let stripped = row.unicodeScalars.filter { !isBoxDrawing($0) }
         return String(String.UnicodeScalarView(stripped)).trimmingCharacters(in: .whitespaces)
     }

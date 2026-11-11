@@ -1,0 +1,39 @@
+
+
+
+
+
+
+
+
+
+
+
+
+                                                            ▄
+                           █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+                           █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+                           ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+
+
+         ┃
+         ┃  Ask anything... "Fix a TODO in the codebase"
+         ┃
+         ┃  Build auto · DeepSeek V4.1 Flash Free OpenCode
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         tab agents  ctrl+p commands
+
+
+
+
+
+
+
+
+
+
+
+
+  /private/tmp/agent-0501/-Users-user_name-Projects-linkC/      ⊙ 4 MCP /status    1.18.19
+  65d23432-9669-4f94-979d-931668e62d0c/scratchpad/capture/
+  repo-92:main
