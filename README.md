@@ -162,6 +162,23 @@ task that stalls: no start after 10 minutes, a question left unanswered for 5 mi
 screen change for 15 minutes. When one of those trips, linkC tells both you and the agent that
 handed off the task.
 
+### Discord
+
+linkC can post its events to a Discord channel, so you can follow your agents from your phone:
+- an agent finishing, needing permission or input, or ending with an error;
+- a task delivered, done, failed, expired or cancelled;
+- a worker closing;
+- rate limits, and watched services going down or coming back.
+
+In Settings > Discord, paste a channel's webhook URL (Discord: channel settings > Integrations > Webhooks)
+as the default. A project can have its own webhook: its events, and those of its subfolders and worktrees, go
+there instead and never to the default.
+Name the webhook "linkC" in Discord: its posts show that name. Webhook URLs are kept in your Keychain. linkC
+only posts; nothing in Discord reaches your agents. Each event is a small card, green when something finished,
+yellow when an agent needs you, red when something failed; information posts silently. Posts are paced to
+Discord's limits, and a burst of events arrives as one digest. A webhook that Discord reports as deleted stops
+posting, and linkC tells you so.
+
 ### Usage and limits
 
 The **Usage** section shows what each agent has left, including its 5-hour and 7-day windows
@@ -196,8 +213,8 @@ is active, and that session's tab is selected. Click a notification to jump to i
 
 - **Tool servers** — your Docker containers and Compose projects: start, stop, restart, and open
   their logs in a terminal.
-- **Settings** — launch at login, the keyboard shortcut, per-tier models, the usage footer, and
-  watched endpoints.
+- **Settings** — launch at login, the keyboard shortcut, per-tier models, the usage footer,
+  watched endpoints, and Discord webhooks.
 - **Servers** (sidebar) — your running Docker servers.
 - **Cloud** (sidebar) — your Oracle Cloud instances, Supabase projects, and watched endpoints.
 
@@ -326,6 +343,7 @@ swift test                                     # run the unit and integration te
 | `Sources/LinkCKit/Blackboard` | The shared state of a project: the inbox, tasks, messages, notes and handoffs. |
 | `Sources/LinkCKit/Board` | The Board model: edits, merges, layout, arrow routing, component kinds and logos. |
 | `Sources/LinkCKit/Config` | Integrations: Docker, Oracle Cloud, Supabase, MCP server health, skills and watched endpoints. |
+| `Sources/LinkCKit/Discord` | Discord: events, webhook URLs in the Keychain, the paced queue and the message cards. |
 | `Sources/LinkCKit/Core` | Domain models, agent kinds, model tiers, the session store and project grouping. |
 | `Sources/LinkCKit/Git` | The Git commands for verified tasks. |
 | `Sources/LinkCKit/Hooks` | Claude Code hooks: the event decoder, the local HTTP server and the settings composer. |

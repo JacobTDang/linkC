@@ -90,6 +90,10 @@ public final class NotificationManager {
     /// Invoked with a session id when the user clicks a notification.
     public var onActivate: ((String) -> Void)?
 
+    /// Told every event linkC posts, for Discord (spec 2026-11-05 §2). The app wires it to its
+    /// `DiscordNotifier`.
+    public var onEvent: ((LinkCEvent) -> Void)?
+
     public init(
         sink: NotificationSink = UNNotificationSink(),
         now: @escaping () -> Date = Date.init,
@@ -139,18 +143,53 @@ public final class NotificationManager {
         }
         lastDelivery[session.id] = (state: session.state, at: timestamp)
         sink.deliver(id: session.id, title: "linkC", body: body)
+        onEvent?(LinkCEvent(
+            kind: .sessionState, tone: Self.tone(for: session.state),
+            title: "\(session.agentKind.shortName) · \(body)", body: "",
+            project: ProjectPath.canonical(session.cwd), at: timestamp))
     }
 
     /// Post an alert that isn't about a session (a watched service changing state). No
     /// dedupe here on purpose: the caller only reports genuine CHANGES, so coalescing
     /// would swallow a real down→up→down flap.
-    public func postAlert(id: String, title: String, body: String) {
+    public func postAlert(id: String, title: String, body: String, tone: LinkCEvent.Tone) {
         sink.deliver(id: id, title: title, body: body)
+        onEvent?(LinkCEvent(kind: .service, tone: tone, title: Self.eventTitle(title), body: body,
+                            project: nil, at: now()))
     }
 
-    /// Post a generic alert notification with an auto-generated identifier.
-    public func post(title: String, body: String) {
+    /// Post a generic alert notification with an auto-generated identifier. `project` is the folder it
+    /// concerns, which routes its Discord post; nil when it concerns none.
+    public func post(title: String, body: String, project: String?, tone: LinkCEvent.Tone = .needsYou) {
         sink.deliver(id: "\(AppCoordinator.alertIdPrefix)\(UUID().uuidString)", title: title, body: body)
+        onEvent?(LinkCEvent(kind: .alert, tone: tone, title: Self.eventTitle(title), body: body,
+                            project: project.map(ProjectPath.canonical), at: now()))
+    }
+
+    /// An event for Discord only: task changes and closed workers, which would make macOS
+    /// notifications noisy (spec §2).
+    public func postEvent(_ event: LinkCEvent) {
+        onEvent?(event)
+    }
+
+    /// A macOS notification that is never forwarded to Discord: linkC's own word about itself, such as
+    /// a webhook that stopped or an update notice.
+    public func postLocal(title: String, body: String) {
+        sink.deliver(id: "\(AppCoordinator.alertIdPrefix)\(UUID().uuidString)", title: title, body: body)
+    }
+
+    nonisolated static func tone(for state: SessionState) -> LinkCEvent.Tone {
+        switch state {
+        case .finished: .done
+        case .waitingPermission, .waitingIdle: .needsYou
+        case .error: .failed
+        default: .info
+        }
+    }
+
+    /// Discord posts as "linkC" already: the macOS title's "linkC: " prefix is dropped there.
+    nonisolated static func eventTitle(_ title: String) -> String {
+        title.hasPrefix("linkC: ") ? String(title.dropFirst("linkC: ".count)) : title
     }
 
     /// Drop a session's dedupe entry. Called when a session is removed/ended so the
