@@ -27,7 +27,7 @@ final class MCPServerOpenCodeTests: XCTestCase {
                   environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
                   modelSettings: { models }, sessionResolver: { nil }, usageReaders: [:],
                   openCodeModels: openCodeModels,
-                  modelLists: TestModelLists.none)
+                  kiloModels: { _ in [] }, modelLists: TestModelLists.none)
     }
 
     /// Records the folders OpenCode's models were listed in.

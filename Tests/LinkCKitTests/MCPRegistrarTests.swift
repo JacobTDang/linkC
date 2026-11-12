@@ -620,4 +620,90 @@ final class MCPRegistrarTests: XCTestCase {
         let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
         XCTAssertEqual(root["model"] as? String, "ollama/qwen3.8:27b-32k")
     }
+
+    // MARK: - The inline config pins the model past what the user's own files say
+
+    private let kiloModel = "kilo/kilo-auto/free"
+    private let kiloSmallModel = "kilo/nvidia/nemotron-3.5-lightning:free"
+
+    private func inlineRoot(_ content: String) throws -> [String: Any] {
+        try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
+    }
+
+    /// Kilo's TUI takes `agent.<name>.model` ahead of the top-level `model`, and the pick persisted in
+    /// its state ahead of that, so a top-level `model` alone leaves a paid pick running.
+    func testKiloInlineConfigPinsEveryBuiltInAgentToTheSessionsModel() throws {
+        let content = try MCPRegistrar.kiloConfigContent(
+            inherited: nil, binaryPath: "/bin/linkc-mcp", model: kiloModel, smallModel: kiloSmallModel)
+        let root = try inlineRoot(content)
+        XCTAssertEqual(root["model"] as? String, kiloModel)
+        let agents = try XCTUnwrap(root["agent"] as? [String: [String: Any]])
+        XCTAssertEqual(Set(agents.keys), Set(AgentDescriptor.kiloAgents))
+        for (name, settings) in agents {
+            XCTAssertEqual(settings["model"] as? String, kiloModel, "agent \(name)")
+        }
+    }
+
+    func testKiloInlineConfigNamesEveryAgentKiloHas() {
+        XCTAssertEqual(
+            AgentDescriptor.kiloAgents.sorted(),
+            ["ask", "code", "compaction", "debug", "explore", "general", "orchestrator", "plan", "summary", "title"],
+            "`kilo agent list` on 7.8.27")
+    }
+
+    /// Kilo's own default small model, `kilo-auto/small`, is not free.
+    func testKiloInlineConfigPinsTheSmallModel() throws {
+        let content = try MCPRegistrar.kiloConfigContent(
+            inherited: nil, binaryPath: "/bin/linkc-mcp", model: kiloModel, smallModel: kiloSmallModel)
+        XCTAssertEqual(try inlineRoot(content)["small_model"] as? String, kiloSmallModel)
+    }
+
+    func testKiloInlineConfigOverridesAnInheritedAgentModelAndKeepsItsOtherSettings() throws {
+        let inherited = #"{"small_model":"kilo/kilo-auto/small","agent":{"code":{"model":"kilo/anthropic/claude-opus-5","prompt":"be brief"},"mine":{"model":"kilo/x/y:free"}}}"#
+        let content = try MCPRegistrar.kiloConfigContent(
+            inherited: inherited, binaryPath: "/bin/linkc-mcp", model: kiloModel, smallModel: kiloSmallModel)
+        let root = try inlineRoot(content)
+        let agents = try XCTUnwrap(root["agent"] as? [String: [String: Any]])
+        XCTAssertEqual(agents["code"]?["model"] as? String, kiloModel)
+        XCTAssertEqual(agents["code"]?["prompt"] as? String, "be brief")
+        XCTAssertEqual(agents["mine"]?["model"] as? String, "kilo/x/y:free", "an agent linkC does not know is left as it was")
+        XCTAssertEqual(root["small_model"] as? String, kiloSmallModel)
+    }
+
+    func testKiloInlineConfigRefusesAnInheritedAgentThatIsNotATable() {
+        XCTAssertThrowsError(try MCPRegistrar.kiloConfigContent(
+            inherited: #"{"agent":{"code":"fast"}}"#, binaryPath: "/bin/linkc-mcp",
+            model: kiloModel, smallModel: kiloSmallModel)) { error in
+            XCTAssertTrue(String(describing: error).contains("KILO_CONFIG_CONTENT"), "\(error)")
+        }
+    }
+
+    /// OpenCode's TUI takes a user-global `agent.build.model` ahead of the inline top-level `model` too.
+    func testOpenCodeInlineConfigPinsEveryAgentThatRunsOnTheSessionsModel() throws {
+        let content = try MCPRegistrar.openCodeConfigContent(
+            inherited: #"{"agent":{"build":{"model":"anthropic/claude-opus-5","steps":9}}}"#,
+            binaryPath: "/bin/linkc-mcp", model: "opencode/big-pickle")
+        let root = try inlineRoot(content)
+        let agents = try XCTUnwrap(root["agent"] as? [String: [String: Any]])
+        XCTAssertEqual(Set(agents.keys), Set(AgentDescriptor.openCodeAgents))
+        for (name, settings) in agents {
+            XCTAssertEqual(settings["model"] as? String, "opencode/big-pickle", "agent \(name)")
+        }
+        XCTAssertEqual(agents["build"]?["steps"] as? Int, 9)
+    }
+
+    func testOpenCodeAgentsAreTheOnesOpenCodeRunsOnTheSessionsModel() {
+        XCTAssertEqual(
+            AgentDescriptor.openCodeAgents.sorted(),
+            ["build", "compaction", "explore", "general", "plan", "summary"],
+            "`opencode debug agents --standalone` on 2.2.5, less `title`, which runs on the user's small model")
+    }
+
+    func testWithNoModelOpenCodePinsNoAgent() throws {
+        let content = try MCPRegistrar.openCodeConfigContent(
+            inherited: #"{"agent":{"build":{"model":"ollama/qwen3.8:27b"}}}"#, binaryPath: "/bin/linkc-mcp", model: nil)
+        let agents = try XCTUnwrap(try inlineRoot(content)["agent"] as? [String: [String: Any]])
+        XCTAssertEqual(agents["build"]?["model"] as? String, "ollama/qwen3.8:27b")
+        XCTAssertEqual(agents.count, 1)
+    }
 }

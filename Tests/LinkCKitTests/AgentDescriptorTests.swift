@@ -169,7 +169,7 @@ final class AgentDescriptorTests: XCTestCase {
         let kilo = AgentDescriptor.descriptor(for: .kilo)
         XCTAssertEqual(kilo.kind, .kilo)
         XCTAssertEqual(kilo.binaryName, "kilo")
-        XCTAssertEqual(kilo.defaultCandidatePaths, ["/opt/homebrew/bin/kilo", "/usr/local/bin/kilo"])
+        XCTAssertEqual(kilo.defaultCandidatePaths, ["\(NSHomeDirectory())/.kilo/bin/kilo", "/opt/homebrew/bin/kilo", "/usr/local/bin/kilo"])
         XCTAssertEqual(kilo.continueArgs, [])
         XCTAssertEqual(kilo.resumeArgs, [])
         for mode in [LaunchMode.new, .continueLast, .resume] {

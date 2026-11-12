@@ -127,6 +127,15 @@ public enum TerminalPreview {
         return genericLiveActivity(from: rows)
     }
 
+    /// Kilo's modal permission and provider-connect screens both require the user to choose before
+    /// the terminal can accept another task.
+    public static func isPermissionPrompt(_ rows: [String], agent: AgentKind) -> Bool {
+        guard agent == .kilo else { return false }
+        let text = rows.map(visibleText).joined(separator: "\n")
+        return (text.contains("Permission required") && text.contains("Allow once") && text.contains("Reject"))
+            || text.contains("Connect a provider")
+    }
+
     /// The pre-OpenCode reader. Kept separate so the fixture sweep can prove every other agent's
     /// screen still reads exactly as it did before agent-kind gating.
     static func genericLiveActivity(from rows: [String]) -> String? {

@@ -1543,7 +1543,8 @@ public final class AppCoordinator {
 
             // A folder-trust dialog has no spinner, so it read as an idle session and the relay
             // typed briefs into it. Hold the session as needing the user until it is answered.
-            if screen.showsTrustPrompt() {
+            if screen.showsTrustPrompt()
+                || TerminalPreview.isPermissionPrompt(screen.rows, agent: currentSession.agentKind) {
                 if currentSession.state != .waitingPermission {
                     store.updateState(id: session.id, to: .waitingPermission)
                     let updated = store.session(id: session.id) ?? currentSession
@@ -1557,8 +1558,7 @@ public final class AppCoordinator {
                 }
                 continue
             }
-            // Only the trust dialog puts a screen-read session in `.waitingPermission`, so once it
-            // is gone the session is ready for input again.
+            // Once the modal prompt is gone the session is ready for input again.
             if currentSession.state == .waitingPermission {
                 store.updateState(id: session.id, to: .ready)
             }

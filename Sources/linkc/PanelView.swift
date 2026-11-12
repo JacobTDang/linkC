@@ -280,6 +280,7 @@ struct LauncherMenu: View {
                 Button("New Cursor Agent session…") { model.newSession(agent: .cursor, mode: .new) }
                 Button("New Grok session…") { model.newSession(agent: .grok, mode: .new) }
                 Button("New OpenCode session…") { model.newSession(agent: .opencode, mode: .new) }
+                Button("New Kilo session…") { model.newSession(agent: .kilo, mode: .new) }
                 Button("New Codex session…") { model.newSession(agent: .codex, mode: .new) }
             }
             Section("Terminal") {
@@ -291,6 +292,7 @@ struct LauncherMenu: View {
                 Button("Antigravity (agy)") { model.newSession(agent: .agy, mode: .continueLast) }
                 Button("Cursor Agent") { model.newSession(agent: .cursor, mode: .continueLast) }
                 Button("Grok") { model.newSession(agent: .grok, mode: .continueLast) }
+                Button("Kilo") { model.newSession(agent: .kilo, mode: .continueLast) }
                 Button("Codex") { model.newSession(agent: .codex, mode: .continueLast) }
             }
             Menu("Resume…") {

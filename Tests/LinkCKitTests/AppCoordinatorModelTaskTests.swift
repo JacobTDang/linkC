@@ -53,6 +53,7 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         installed: Set<AgentKind>? = nil,
         models: AgentModelSettings = .seeded,
         openCodeModels: @escaping AppCoordinator.OpenCodeModelLister = { _ in ["opencode/big-pickle"] },
+        kiloModels: @escaping AppCoordinator.OpenCodeModelLister = { _ in [] },
         lists: @escaping @Sendable () throws -> [AgentKind: AgentModelList] = TestModelLists.none
     ) -> AppCoordinator {
         let agentPath = agent ?? mockAgent
@@ -74,6 +75,7 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
             injectionGap: 0,
             turnEndQuietPeriod: 0,
             openCodeModels: openCodeModels,
+            kiloModels: kiloModels,
             isWatching: { _ in false }
         )
     }

@@ -178,6 +178,7 @@ public struct AgentDescriptor: Sendable {
                 kind: .kilo,
                 binaryName: "kilo",
                 defaultCandidatePaths: [
+                    "\(home)/.kilo/bin/kilo",
                     "/opt/homebrew/bin/kilo",
                     "/usr/local/bin/kilo"
                 ],
@@ -238,6 +239,17 @@ public struct AgentDescriptor: Sendable {
 
     /// The variable OpenCode reads inline config from, merged over its `opencode.json`.
     public static let openCodeConfigContentKey = "OPENCODE_CONFIG_CONTENT"
+
+    /// OpenCode's agents that run on the session's model (`opencode debug agents --standalone`, 2.2.5),
+    /// less `title`, which runs on the user's own small model. OpenCode's TUI takes an agent's own
+    /// `model` ahead of the top-level one, so linkC pins each of them.
+    public static let openCodeAgents = ["build", "compaction", "explore", "general", "plan", "summary"]
+
+    /// Every agent Kilo has built in (`kilo agent list`, 7.8.27). Kilo's TUI takes `agent.<name>.model`
+    /// ahead of the pick it persisted and the top-level `model`, so linkC pins each of them.
+    public static let kiloAgents = [
+        "ask", "code", "compaction", "debug", "explore", "general", "orchestrator", "plan", "summary", "title"
+    ]
 
     /// The variable that keeps Kilo from opening on its "Update Available" dialog.
     public static let kiloAutoUpdateKey = "KILO_DISABLE_AUTOUPDATE"

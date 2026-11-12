@@ -10,7 +10,7 @@ final class MCPServerTests: XCTestCase {
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("linkc-mcp-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
+        server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], kiloModels: { _ in [] }, modelLists: TestModelLists.none)
     }
 
     override func tearDownWithError() throws {
@@ -568,7 +568,7 @@ final class MCPServerTests: XCTestCase {
             ancestorResolver: { _ in nil },
             sessionResolver: { nil },
             usageReaders: [:],
-            modelLists: TestModelLists.none
+            kiloModels: { _ in [] }, modelLists: TestModelLists.none
         )
         let req = """
         {"jsonrpc": "2.0", "id": 90, "method": "tools/call", "params": {"name": "linkc_switch_model", "arguments": {"agent": "  claude  ", "model": "haiku"}}}

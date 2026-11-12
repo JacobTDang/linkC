@@ -287,7 +287,7 @@ final class LimitDetectorTests: XCTestCase {
 
     /// Kilo's free-tier banner uses its own wording ("Rate limit exceeded"), not OpenCode's.
     func testKilosRateLimitExceededIsALimitButA429IsNot() {
-        let cap = LimitDetector.detectLimit(inOutput: "Rate limit " + "exceeded", agent: .kilo)
+        let cap = LimitDetector.detectLimit(inOutput: "  ● Rate limit " + "exceeded  ", agent: .kilo)
         XCTAssertEqual(cap?.agent, .kilo)
         XCTAssertEqual(cap?.cooldown, LimitDetector.defaultCooldown)
         XCTAssertNil(LimitDetector.detectLimit(inOutput: "429 Too Many " + "Requests, retrying in 2s", agent: .kilo))

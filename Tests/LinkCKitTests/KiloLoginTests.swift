@@ -5,21 +5,21 @@ import XCTest
 final class KiloLoginTests: XCTestCase {
     func testMissingLoginPhrasesAreRecognised() {
         for phrase in [
-            "Error: not logged in",
             "Unauthorized — please sign in",
-            "Connect a provider",
-            "run /connect to continue",
             "login required before listing models",
             "not authenticated",
         ] {
             XCTAssertTrue(KiloLogin.looksLikeMissingLogin(phrase), phrase)
         }
         XCTAssertFalse(KiloLogin.looksLikeMissingLogin("`kilo models` exited 1: provider offline"))
+        XCTAssertFalse(KiloLogin.looksLikeMissingLogin("Connect a provider"))
+        XCTAssertFalse(KiloLogin.looksLikeMissingLogin("run /connect to continue"))
+        XCTAssertFalse(KiloLogin.looksLikeMissingLogin("not logged in"))
         XCTAssertFalse(KiloLogin.looksLikeMissingLogin(""))
     }
 
     func testReportingAppendsTheConnectRemedyOnce() {
-        let raw = "Error: not " + "logged in"
+        let raw = "Unauthorized"
         let reported = KiloLogin.reporting(raw)
         XCTAssertTrue(reported.contains(raw), reported)
         XCTAssertTrue(reported.contains(KiloLogin.remedy), reported)
@@ -27,23 +27,23 @@ final class KiloLoginTests: XCTestCase {
         XCTAssertEqual(KiloLogin.reporting("provider offline"), "provider offline")
     }
 
-    func testListKiloModelsAugmentsALoginFailureExit() throws {
+    func testListKiloModelsAugmentsAnActualAuthenticationFailureExit() throws {
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent("linkc-kilo-login-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temp) }
         let stub = temp.appendingPathComponent("stub-kilo.sh")
-        try ("#!/bin/sh\necho 'not logged in' >&2\nexit 1\n").write(to: stub, atomically: true, encoding: .utf8)
+        try ("#!/bin/sh\necho 'Unauthorized' >&2\nexit 1\n").write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
 
         XCTAssertThrowsError(try MCPServer.listKiloModels(in: temp.path, executable: stub.path, home: temp)) { error in
             let text = String(describing: error)
-            XCTAssertTrue(text.contains("not logged in"), text)
+            XCTAssertTrue(text.contains("Unauthorized"), text)
             XCTAssertTrue(text.contains("run `kilo`, then `/connect`"), text)
         }
     }
 
-    func testListKiloModelsAugmentsAnEmptyListThatSaysConnect() throws {
+    func testConnectScreenTextDoesNotInventAnAuthenticationRemedy() throws {
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent("linkc-kilo-login-empty-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
@@ -55,7 +55,7 @@ final class KiloLoginTests: XCTestCase {
         XCTAssertThrowsError(try MCPServer.listKiloModels(in: temp.path, executable: stub.path, home: temp)) { error in
             let text = String(describing: error)
             XCTAssertTrue(text.contains("Connect a provider"), text)
-            XCTAssertTrue(text.contains("run `kilo`, then `/connect`"), text)
+            XCTAssertFalse(text.contains("run `kilo`, then `/connect`"), text)
         }
     }
 
@@ -72,7 +72,7 @@ final class KiloLoginTests: XCTestCase {
             modelSettings: { .seeded },
             sessionResolver: { nil },
             usageReaders: [:],
-            kiloModels: { _ in throw LinkCError.process("Error: not " + "logged in") },
+            kiloModels: { _ in throw LinkCError.process("Unauthorized") },
             modelLists: TestModelLists.none)
 
         let request: [String: Any] = [
@@ -87,15 +87,15 @@ final class KiloLoginTests: XCTestCase {
         let result = try XCTUnwrap(json["result"] as? [String: Any])
         let text = (result["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
         XCTAssertEqual(result["isError"] as? Bool, true)
-        XCTAssertTrue(text.contains("not logged in"), text)
+        XCTAssertTrue(text.contains("Unauthorized"), text)
         XCTAssertTrue(text.contains("run `kilo`, then `/connect`"), text)
         XCTAssertTrue(try InboxStore(workspaceRoot: temp.path).openTasks().isEmpty)
     }
 
     func testListingParserAugmentsALoginStyleEmptyOutput() {
-        XCTAssertThrowsError(try ModelListParser.listing("Error: not " + "logged in\n", for: .kilo)) { error in
+        XCTAssertThrowsError(try ModelListParser.listing("Unauthorized\n", for: .kilo)) { error in
             let text = String(describing: error)
-            XCTAssertTrue(text.contains("not logged in"), text)
+            XCTAssertTrue(text.contains("Unauthorized"), text)
             XCTAssertTrue(text.contains("run `kilo`, then `/connect`"), text)
         }
     }

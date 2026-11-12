@@ -9,16 +9,12 @@ public enum KiloLogin {
     public static func looksLikeMissingLogin(_ text: String) -> Bool {
         let lower = text.lowercased()
         let needles = [
-            "not logged in",
             "unauthorized",
             "not authenticated",
             "login required",
             "please log in",
             "please login",
             "sign in",
-            "/connect",
-            "connect a provider",
-            "connect provider",
         ]
         return needles.contains { lower.contains($0) }
     }

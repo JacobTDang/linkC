@@ -56,6 +56,7 @@ final class AppCoordinatorKiloTests: XCTestCase {
             modelLists: TestModelLists.none,
             deliverySettle: 0,
             turnEndQuietPeriod: 0.0,
+            kiloModels: { _ in [] },
             isWatching: { _ in false }
         )
     }
@@ -107,6 +108,53 @@ final class AppCoordinatorKiloTests: XCTestCase {
         XCTAssertEqual(session.model, "kilo/nvidia/nemotron-3-ultra-550b-a55b:free")
         XCTAssertEqual(session.modelTier, .deep)
         XCTAssertEqual(try kiloConfig(of: session)["model"] as? String, "kilo/nvidia/nemotron-3-ultra-550b-a55b:free")
+    }
+
+    /// Kilo's TUI takes `agent.<name>.model` ahead of the top-level `model`, and the pick it persisted
+    /// ahead of that: a past paid pick would beat a top-level model alone. Every agent is pinned, and
+    /// the small model too, whose own default is not free.
+    func testAKiloSessionPinsEveryAgentAndTheSmallModelToFreeModels() throws {
+        let coordinator = try makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .kilo, mode: .new, tier: .deep)
+
+        let config = try kiloConfig(of: session)
+        let agents = try XCTUnwrap(config["agent"] as? [String: [String: Any]])
+        XCTAssertEqual(Set(agents.keys), Set(AgentDescriptor.kiloAgents))
+        for (name, settings) in agents {
+            let model = try XCTUnwrap(settings["model"] as? String, name)
+            XCTAssertEqual(model, "kilo/nvidia/nemotron-3-ultra-550b-a55b:free", "agent \(name)")
+            XCTAssertTrue(KiloFreeModels.isFree(model), "agent \(name)")
+        }
+        let small = try XCTUnwrap(config["small_model"] as? String)
+        XCTAssertEqual(small, "kilo/nvidia/nemotron-3.5-lightning:free", "the light tier's model")
+        XCTAssertTrue(KiloFreeModels.isFree(small))
+    }
+
+    /// Without a light model there is no free small model to pin, and Kilo's own default is not free.
+    func testAKiloSessionWithNoLightModelIsRefused() throws {
+        var models = AgentModelSettings.seeded
+        models.setModel("", for: .kilo, tier: .light)
+        let coordinator = try makeCoordinator(models: models)
+        defer { coordinator.shutdown() }
+
+        XCTAssertThrowsError(try coordinator.newSession(cwd: tempDir.path, agent: .kilo, mode: .new)) { error in
+            XCTAssertTrue(String(describing: error).contains("no model configured for kilo tier light"), String(describing: error))
+        }
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "a refused launch leaves no session behind")
+    }
+
+    func testAKiloSessionWhoseLightModelIsNotFreeIsRefused() throws {
+        var models = AgentModelSettings.seeded
+        models.setModel("kilo/anthropic/claude-opus-5", for: .kilo, tier: .light)
+        let coordinator = try makeCoordinator(models: models)
+        defer { coordinator.shutdown() }
+
+        XCTAssertThrowsError(try coordinator.newSession(cwd: tempDir.path, agent: .kilo, mode: .new)) { error in
+            XCTAssertTrue(String(describing: error).contains("kilo/anthropic/claude-opus-5 is not a free Kilo model"), String(describing: error))
+        }
+        XCTAssertTrue(coordinator.store.sessions.isEmpty)
     }
 
     func testAKiloTerminalHasLinkCsToolsInline() throws {
@@ -267,7 +315,8 @@ final class AppCoordinatorKiloTests: XCTestCase {
     /// written as part of starting a session (K2 registers MCP there; K1 does not).
     func testKiloConfigContentIsInlineOnly() throws {
         let content = try MCPRegistrar.kiloConfigContent(
-            inherited: nil, binaryPath: "/tmp/linkc-mcp", model: "kilo/kilo-auto/free")
+            inherited: nil, binaryPath: "/tmp/linkc-mcp", model: "kilo/kilo-auto/free",
+            smallModel: "kilo/nvidia/nemotron-3.5-lightning:free")
         XCTAssertTrue(content.contains("\"model\":\"kilo/kilo-auto/free\""))
         XCTAssertTrue(content.contains("\"LINKC_AGENT\":\"kilo\""))
         XCTAssertFalse(content.contains("\n"), "one line, for the environment")

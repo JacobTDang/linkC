@@ -34,11 +34,20 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/someone/.opencode/bin/opencode"), .opencode)
     }
 
-    /// Homebrew and `/usr/local` both ship `kilo`.
-    func testKiloIsDetectedByItsBinary() {
+    /// `kilo` is an npm script: `node /opt/homebrew/bin/kilo` starts the real binary, `.kilo`, in the
+    /// package's `bin` folder, and the kernel names that one. The node process in front of it, by its
+    /// exec path, is no agent.
+    func testKiloIsDetectedByTheBinaryItsNodeScriptStarts() {
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/lib/node_modules/@kilocode/cli/bin/.kilo"), .kilo)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/someone/.nvm/versions/node/v24.1.0/lib/node_modules/@kilocode/cli/bin/.kilo"), .kilo)
+        XCTAssertNil(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/node"))
+    }
+
+    /// The path a user starts it by, as an installer or a link may name it.
+    func testKiloIsDetectedByTheNameItIsStartedBy() {
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/kilo"), .kilo)
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/usr/local/bin/kilo"), .kilo)
-        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/Cellar/kilo/7.8.27/bin/kilo"), .kilo)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/someone/.kilo/bin/kilo"), .kilo)
     }
 
     func testProcessTreeInspectionReturnsNilForEmptyChildren() {

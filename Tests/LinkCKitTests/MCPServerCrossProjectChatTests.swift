@@ -66,7 +66,7 @@ final class MCPServerCrossProjectChatTests: XCTestCase {
         if let session { env["LINKC_SESSION"] = session }
         return MCPServer(workspaceRoot: home.path, inboxStore: homeInbox, environment: env,
                          ancestorResolver: { _ in nil }, modelSettings: { .seeded },
-                         sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none, knownProjects: file)
+                         sessionResolver: { nil }, usageReaders: [:], kiloModels: { _ in [] }, modelLists: TestModelLists.none, knownProjects: file)
     }
 
     private func awayServer(session: String? = "away-codex") -> MCPServer {
@@ -74,7 +74,7 @@ final class MCPServerCrossProjectChatTests: XCTestCase {
         if let session { env["LINKC_SESSION"] = session }
         return MCPServer(workspaceRoot: away.path, inboxStore: awayInbox, environment: env,
                          ancestorResolver: { _ in nil }, modelSettings: { .seeded },
-                         sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none, knownProjects: file)
+                         sessionResolver: { nil }, usageReaders: [:], kiloModels: { _ in [] }, modelLists: TestModelLists.none, knownProjects: file)
     }
 
     private func call(_ server: MCPServer, _ tool: String, _ arguments: [String: Any]) throws -> (text: String, isError: Bool) {

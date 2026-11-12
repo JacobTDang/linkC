@@ -145,6 +145,15 @@ public struct MCPRegistrar: Sendable {
         }
     }
 
+    /// `value` of `key` in `source`: empty when it is absent; throws when it is not a table.
+    private static func table(_ value: Any?, key: String, of source: String) throws -> [String: Any] {
+        switch value {
+        case nil: return [:]
+        case let table as [String: Any]: return table
+        default: throw LinkCError.process("\(source) has \"\(key)\" that is not a table, so linkC cannot pin its model")
+        }
+    }
+
     /// Registers linkC's server in OpenCode's config, keeping every other key. Writes only when the
     /// entry differs from the one already there, and never over a file it could not read.
     public static func registerOpenCodeServer(configFile: URL, serverName: String = MCPRegistrar.serverName, binaryPath: String) throws {
@@ -176,32 +185,42 @@ public struct MCPRegistrar: Sendable {
 
     /// `OPENCODE_CONFIG_CONTENT` for a terminal linkC starts OpenCode in: `inherited` — a value
     /// already in linkC's own environment — with linkC's server added to its `mcp` table and, when
-    /// given, `model` as the session's model. One line.
+    /// given, `model` as the session's model, on top level and on every agent that runs on it (a
+    /// user-global `agent.build.model` would otherwise beat the top-level one). One line.
     /// Throws when `inherited` is not a JSON object.
     public static func openCodeConfigContent(inherited: String?, binaryPath: String, model: String?) throws -> String {
         try inlineOpenCodeStyleConfigContent(
             inherited: inherited,
             source: "\(AgentDescriptor.openCodeConfigContentKey) in linkC's environment",
             entry: openCodeEntry(binaryPath: binaryPath),
-            model: model)
+            model: model,
+            agents: AgentDescriptor.openCodeAgents)
     }
 
     /// `KILO_CONFIG_CONTENT` for a terminal linkC starts Kilo in — same shape as OpenCode's inline
     /// config. Complements `registerKiloServer`, which merges into the on-disk global file.
-    public static func kiloConfigContent(inherited: String?, binaryPath: String, model: String?) throws -> String {
+    /// Kilo takes an agent's own `model` ahead of the pick it persisted and the top-level `model`, so
+    /// `model` is on every agent as well as on top level, and `smallModel` replaces Kilo's own small
+    /// model, which is not free. Both must be free ids: the caller checks.
+    public static func kiloConfigContent(inherited: String?, binaryPath: String, model: String, smallModel: String) throws -> String {
         try inlineOpenCodeStyleConfigContent(
             inherited: inherited,
             source: "\(AgentDescriptor.kiloConfigContentKey) in linkC's environment",
             entry: kiloEntry(binaryPath: binaryPath),
-            model: model)
+            model: model,
+            smallModel: smallModel,
+            agents: AgentDescriptor.kiloAgents)
     }
 
-    /// Shared JSON builder for OpenCode-style inline config (`mcp` + optional `model`), one line.
+    /// Shared JSON builder for OpenCode-style inline config: `mcp`, and the model pinned when given — on
+    /// top level, as `small_model` when `smallModel` is, and as the model of each of `agents`. One line.
     private static func inlineOpenCodeStyleConfigContent(
         inherited: String?,
         source: String,
         entry: [String: Any],
-        model: String?
+        model: String?,
+        smallModel: String? = nil,
+        agents: [String]
     ) throws -> String {
         var root: [String: Any] = [:]
         if let inherited, !inherited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -219,7 +238,17 @@ public struct MCPRegistrar: Sendable {
         var mcp = try mcpTable(in: root, of: source)
         mcp[serverName] = entry
         root["mcp"] = mcp
-        if let model { root["model"] = model }
+        if let model {
+            root["model"] = model
+            var agentTable = try table(root["agent"], key: "agent", of: source)
+            for name in agents {
+                var settings = try table(agentTable[name], key: "agent.\(name)", of: source)
+                settings["model"] = model
+                agentTable[name] = settings
+            }
+            root["agent"] = agentTable
+        }
+        if let smallModel { root["small_model"] = smallModel }
         let data = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys, .withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
     }

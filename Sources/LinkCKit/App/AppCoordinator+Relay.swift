@@ -1506,11 +1506,11 @@ extension AppCoordinator {
         }
         // A task on its last hop moves nowhere, so OpenCode/Kilo is not asked about it: the hop-exhausted
         // path below tells its delegator.
-        var openCodeRefusal: String?
-        if let first = candidates.first, first == .opencode || first == .kilo,
-           let currentTask, currentTask.hop < 2 {
-            let tier = currentTask.tier ?? defaultTier(for: first)
-            let availability = first == .kilo
+        var modelRefusal: (agent: AgentKind, reason: String)?
+        while let candidate = candidates.first, candidate == .opencode || candidate == .kilo,
+              let currentTask, currentTask.hop < 2 {
+            let tier = currentTask.tier ?? defaultTier(for: candidate)
+            let availability = candidate == .kilo
                 ? kiloModelAvailability(in: norm, tier: tier)
                 : openCodeModelAvailability(in: norm, tier: tier)
             switch availability {
@@ -1533,17 +1533,19 @@ extension AppCoordinator {
                 break
             case .refused(let reason), .uncheckable(let reason):
                 candidates.removeFirst()
-                openCodeRefusal = reason
+                modelRefusal = (candidate, reason)
+                continue
             }
+            break
         }
 
         let hop = currentTask?.hop ?? 0
         guard hop < 2, let target = candidates.first else {
-            if let currentTask, let openCodeRefusal {
+            if let currentTask, let modelRefusal {
                 // Once per limit: the session is held in `.error` from here, so this tick is not repeated.
                 announceOpenCodeRefusal(
-                    openCodeRefusal,
-                    notice: "\(session.agentKind.displayName) reached its usage limit, and task \(currentTask.shortId) stays with it: OpenCode can't take it — \(openCodeRefusal)",
+                    modelRefusal.reason,
+                    notice: "\(session.agentKind.displayName) reached its usage limit, and task \(currentTask.shortId) stays with it: \(modelRefusal.agent.displayName) can't take it — \(modelRefusal.reason)",
                     from: session.agentKind, to: currentTask.fromAgent, taskId: currentTask.id, inboxStore: inboxStore)
                 store.updateState(id: session.id, to: .error)
                 return true

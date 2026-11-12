@@ -21,11 +21,13 @@ final class KiloScreenTests: XCTestCase {
         XCTAssertTrue(rows.contains { $0.contains("Permission required") }, rows.joined(separator: "\n"))
         XCTAssertTrue(rows.contains { $0.contains("Allow once") }, "permission choices")
         XCTAssertTrue(rows.contains { $0.contains("Reject") }, "permission choices")
+        XCTAssertTrue(TerminalPreview.isPermissionPrompt(rows, agent: .kilo))
     }
 
     func testTheConnectFixtureNamesConnectAProvider() throws {
         let rows = try screen("connect")
         XCTAssertTrue(rows.contains { $0.contains("Connect a provider") }, rows.joined(separator: "\n"))
+        XCTAssertTrue(TerminalPreview.isPermissionPrompt(rows, agent: .kilo))
     }
 
     /// Live free-tier exhaustion was not forced; the fixture is idle chrome plus Kilo's own
@@ -41,5 +43,10 @@ final class KiloScreenTests: XCTestCase {
         XCTAssertEqual(match?.cooldown, LimitDetector.defaultCooldown)
         XCTAssertNil(LimitDetector.detectLimit(inOutput: frame, agent: .opencode),
                      "the phrase is Kilo's alone")
+    }
+
+    func testQuotedOrSourceTextDoesNotLookLikeKilosOwnRateLimitBanner() {
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "The transcript says rate limit exceeded here.", agent: .kilo))
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: #"let message = \"Rate limit exceeded\""#, agent: .kilo))
     }
 }
