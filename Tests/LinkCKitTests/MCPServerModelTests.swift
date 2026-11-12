@@ -72,6 +72,24 @@ final class MCPServerModelTests: XCTestCase {
         XCTAssertTrue(text.contains("gpt-5.6-sol"), "Expected the seeded codex standard model: \(text)")
     }
 
+    /// Claude's default call names no agent, so it must see every agent it can delegate to: Crush
+    /// is one, with its free tiers.
+    func testGetModelsWithNoAgentIncludesEveryPeerAgentIncludingCrush() throws {
+        let req = """
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "linkc_get_models"}}
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(server.handleMessage(req))
+        let result = (try JSONSerialization.jsonObject(with: resData) as? [String: Any])?["result"] as? [String: Any]
+        let text = ((result?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+
+        for agent in AgentKind.peers {
+            XCTAssertTrue(text.contains("## \(agent.displayName)\n"), "Missing the \(agent.displayName) section: \(text)")
+        }
+        XCTAssertTrue(text.contains("## Crush\n"), text)
+        XCTAssertTrue(text.contains(":free"), "Crush's free tier models should be listed: \(text)")
+    }
+
     /// A tier nobody has configured must say so, rather than rendering as an empty value that
     /// reads like a model name.
     func testGetModelsMarksAnUnconfiguredTierAsNotSet() throws {

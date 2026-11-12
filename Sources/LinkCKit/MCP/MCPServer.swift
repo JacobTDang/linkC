@@ -1119,7 +1119,7 @@ public final class MCPServer: Sendable {
                     }
                     targetAgents = [a]
                 } else {
-                    targetAgents = [.claude, .codex, .agy, .cursor, .grok, .opencode]
+                    targetAgents = AgentKind.peers
                 }
 
                 let settings = modelSettings()
@@ -1215,7 +1215,7 @@ public final class MCPServer: Sendable {
                 let now = Date()
                 var text = "# Agent Usage\n\n"
 
-                for agent in [AgentKind.codex, .claude, .agy, .cursor, .grok, .opencode] {
+                for agent in [AgentKind.codex, .claude] + AgentKind.peers.filter({ $0 != .codex && $0 != .claude }) {
                     let usage = usageReaders[agent]?() ?? .unavailable(agent, reason: "no usage reader configured for this agent")
                     text += Self.renderUsageSection(usage, now: now)
                 }

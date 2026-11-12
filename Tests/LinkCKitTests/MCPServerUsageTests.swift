@@ -51,6 +51,16 @@ final class MCPServerUsageTests: XCTestCase {
         XCTAssertFalse(res.text.contains("Default Model"), "the default-model line is gone: \(res.text)")
     }
 
+    /// Every peer agent has a section, so Crush's usage is not silently missing.
+    func testItHasASectionForEveryPeerAgentIncludingCrush() throws {
+        let res = try call(server(readers: [:]), "linkc_get_usage_status")
+
+        XCTAssertFalse(res.isError, res.text)
+        for agent in AgentKind.peers {
+            XCTAssertTrue(res.text.contains(agent.displayName), "no section for \(agent.displayName): \(res.text)")
+        }
+    }
+
     func testAThrowingReaderStillReturnsAResult() throws {
         let res = try call(server(readers: [.codex: { AgentUsage.unavailable(.codex, reason: "reader failed") }]),
                            "linkc_get_usage_status")
