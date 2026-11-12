@@ -146,6 +146,10 @@ final class MCPRegistrarTests: XCTestCase {
         // 5. OpenCode config ~/.config/opencode/opencode.json
         let openCodeJson = tempDir.appendingPathComponent(".config/opencode/opencode.json")
         XCTAssertTrue(FileManager.default.fileExists(atPath: openCodeJson.path))
+
+        // 6. Kilo config ~/.config/kilo/kilo.jsonc (created when neither jsonc nor json exists)
+        let kiloJsonc = tempDir.appendingPathComponent(".config/kilo/kilo.jsonc")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kiloJsonc.path))
     }
 
     func testRegisterServerWritesEnv() throws {
@@ -235,6 +239,10 @@ final class MCPRegistrarTests: XCTestCase {
         XCTAssertEqual(try env("\(agyConfigDir)/antigravity-cli/mcp.json")?["LINKC_AGENT"], "agy")
         let codexToml = try String(contentsOf: tempDir.appendingPathComponent(".codex/config.toml"), encoding: .utf8)
         XCTAssertTrue(codexToml.contains("LINKC_AGENT = \"codex\""))
+        let kiloRoot = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: tempDir.appendingPathComponent(".config/kilo/kilo.jsonc"))) as? [String: Any]
+        let kiloEntry = (kiloRoot?["mcp"] as? [String: Any])?["linkc-multiplier"] as? [String: Any]
+        XCTAssertEqual(kiloEntry?["environment"] as? [String: String], ["LINKC_AGENT": "kilo"])
     }
 
     /// The writer every other agent's JSON config goes through used to read a file it could not
@@ -450,6 +458,118 @@ final class MCPRegistrarTests: XCTestCase {
         try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/bin/linkc-mcp")
         let entry = try XCTUnwrap(try openCodeEntry(in: MCPRegistrar.openCodeConfigFile(home: tempDir)))
         XCTAssertEqual(entry["environment"] as? [String: String], ["LINKC_AGENT": "opencode"])
+    }
+
+    // MARK: - Kilo
+
+    private var kiloDir: URL { tempDir.appendingPathComponent(".config/kilo") }
+    private var kiloJsonc: URL { kiloDir.appendingPathComponent("kilo.jsonc") }
+    private var kiloJson: URL { kiloDir.appendingPathComponent("kilo.json") }
+
+    private func kiloEntry(in file: URL) throws -> [String: Any]? {
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        return (root["mcp"] as? [String: Any])?["linkc-multiplier"] as? [String: Any]
+    }
+
+    /// Prefer `kilo.jsonc` when it is present; otherwise `kilo.json`; otherwise create `kilo.jsonc`.
+    func testKiloConfigFilePrefersJsoncThenJsonThenCreatesJsonc() throws {
+        try FileManager.default.createDirectory(at: kiloDir, withIntermediateDirectories: true)
+
+        XCTAssertEqual(MCPRegistrar.kiloConfigFile(home: tempDir), kiloJsonc,
+                       "with neither file present, register creates kilo.jsonc")
+
+        try "{}".write(to: kiloJson, atomically: true, encoding: .utf8)
+        XCTAssertEqual(MCPRegistrar.kiloConfigFile(home: tempDir), kiloJson,
+                       "kilo.json is used when it is the only file present")
+
+        try "{}".write(to: kiloJsonc, atomically: true, encoding: .utf8)
+        XCTAssertEqual(MCPRegistrar.kiloConfigFile(home: tempDir), kiloJsonc,
+                       "kilo.jsonc wins when both are present")
+    }
+
+    func testKiloIsRegisteredInOpenCodesShapeInAFileThatDidNotExist() throws {
+        try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/Users/someone/.local/bin/linkc-mcp")
+
+        let entry = try XCTUnwrap(try kiloEntry(in: kiloJsonc))
+        XCTAssertEqual(entry["type"] as? String, "local")
+        XCTAssertEqual(entry["command"] as? [String], ["/Users/someone/.local/bin/linkc-mcp"])
+        XCTAssertEqual(entry["environment"] as? [String: String], ["LINKC_AGENT": "kilo"])
+        XCTAssertEqual(entry["enabled"] as? Bool, true)
+    }
+
+    /// The user's providers, model and other servers stay.
+    func testRegisteringWithKiloKeepsEveryOtherKey() throws {
+        try FileManager.default.createDirectory(at: kiloDir, withIntermediateDirectories: true)
+        let initial = """
+        {
+          "model": "kilo/kilo-auto/free",
+          "provider": {"kilo": {"options": {"baseURL": "https://api.kilo.ai"}}},
+          "mcp": {"jobs": {"type": "local", "command": ["python3", "/x/server.py"], "enabled": true}}
+        }
+        """
+        try initial.write(to: kiloJsonc, atomically: true, encoding: .utf8)
+
+        try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/bin/linkc-mcp")
+
+        let text = try String(contentsOf: kiloJsonc, encoding: .utf8)
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertEqual(root["model"] as? String, "kilo/kilo-auto/free")
+        XCTAssertNotNil((root["provider"] as? [String: Any])?["kilo"])
+        let mcp = try XCTUnwrap(root["mcp"] as? [String: Any])
+        XCTAssertEqual((mcp["jobs"] as? [String: Any])?["command"] as? [String], ["python3", "/x/server.py"])
+        XCTAssertNotNil(mcp["linkc-multiplier"])
+    }
+
+    func testAnUnchangedKiloEntryIsNotRewritten() throws {
+        try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/bin/linkc-mcp")
+        let compact = #"{"mcp":{"linkc-multiplier":{"command":["/bin/linkc-mcp"],"enabled":true,"environment":{"LINKC_AGENT":"kilo"},"type":"local"}}}"#
+        try compact.write(to: kiloJsonc, atomically: true, encoding: .utf8)
+
+        try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/bin/linkc-mcp")
+
+        XCTAssertEqual(try String(contentsOf: kiloJsonc, encoding: .utf8), compact)
+    }
+
+    /// Kilo's config is JSONC. linkC cannot rewrite comments, so it leaves such a file exactly as it is.
+    func testAKiloFileThatIsNotPlainJSONIsLeftByteForByte() throws {
+        try FileManager.default.createDirectory(at: kiloDir, withIntermediateDirectories: true)
+        let commented = "{\n  // my default\n  \"model\": \"kilo/kilo-auto/free\",\n}\n"
+        try commented.write(to: kiloJsonc, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/bin/linkc-mcp")) { error in
+            XCTAssertTrue(String(describing: error).contains(self.kiloJsonc.path), "\(error)")
+        }
+        XCTAssertEqual(try String(contentsOf: kiloJsonc, encoding: .utf8), commented)
+    }
+
+    func testAKiloMCPTableThatIsNotATableIsRefused() throws {
+        try FileManager.default.createDirectory(at: kiloDir, withIntermediateDirectories: true)
+        let odd = #"{"mcp":["not","a","table"]}"#
+        try odd.write(to: kiloJsonc, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/bin/linkc-mcp"))
+        XCTAssertEqual(try String(contentsOf: kiloJsonc, encoding: .utf8), odd)
+    }
+
+    func testRegisterAllRegistersWithKilo() throws {
+        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/bin/linkc-mcp")
+        let file = MCPRegistrar.kiloConfigFile(home: tempDir)
+        XCTAssertEqual(file.lastPathComponent, "kilo.jsonc")
+        let entry = try XCTUnwrap(try kiloEntry(in: file))
+        XCTAssertEqual(entry["environment"] as? [String: String], ["LINKC_AGENT": "kilo"])
+    }
+
+    func testRegisterAllUsesExistingKiloJsonWhenJsoncIsAbsent() throws {
+        try FileManager.default.createDirectory(at: kiloDir, withIntermediateDirectories: true)
+        try #"{"model":"kilo/kilo-auto/free"}"#.write(to: kiloJson, atomically: true, encoding: .utf8)
+
+        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/bin/linkc-mcp")
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: kiloJsonc.path), "must not create jsonc beside an existing json")
+        let entry = try XCTUnwrap(try kiloEntry(in: kiloJson))
+        XCTAssertEqual(entry["environment"] as? [String: String], ["LINKC_AGENT": "kilo"])
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: kiloJson)) as? [String: Any])
+        XCTAssertEqual(root["model"] as? String, "kilo/kilo-auto/free")
     }
 
     // MARK: - OpenCode's inline config

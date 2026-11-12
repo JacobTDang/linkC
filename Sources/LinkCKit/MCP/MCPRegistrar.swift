@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 /// Automatically configures and registers the `linkc-mcp` multiplier server
-/// across Claude Code, Cursor, Codex, Antigravity, and OpenCode configuration files.
+/// across Claude Code, Cursor, Codex, Antigravity, OpenCode, and Kilo configuration files.
 public struct MCPRegistrar: Sendable {
     /// The name linkC's tool server is registered under in every agent's config.
     public static let serverName = "linkc-multiplier"
@@ -109,6 +109,18 @@ public struct MCPRegistrar: Sendable {
         home.appendingPathComponent(".config/opencode/opencode.json")
     }
 
+    /// Kilo's global config file under `home`: prefer `kilo.jsonc` when it exists, else `kilo.json`
+    /// when that exists, else the path where a new `kilo.jsonc` will be created.
+    public static func kiloConfigFile(home: URL) -> URL {
+        let dir = home.appendingPathComponent(".config/kilo", isDirectory: true)
+        let jsonc = dir.appendingPathComponent("kilo.jsonc")
+        let json = dir.appendingPathComponent("kilo.json")
+        let fm = FileManager.default
+        if fm.fileExists(atPath: jsonc.path) { return jsonc }
+        if fm.fileExists(atPath: json.path) { return json }
+        return jsonc
+    }
+
     /// linkC's server as an entry of OpenCode's `mcp` table — OpenCode's own shape, not `mcpServers`.
     public static func openCodeEntry(binaryPath: String) -> [String: Any] {
         openCodeStyleEntry(binaryPath: binaryPath, agent: .opencode)
@@ -136,9 +148,24 @@ public struct MCPRegistrar: Sendable {
     /// Registers linkC's server in OpenCode's config, keeping every other key. Writes only when the
     /// entry differs from the one already there, and never over a file it could not read.
     public static func registerOpenCodeServer(configFile: URL, serverName: String = MCPRegistrar.serverName, binaryPath: String) throws {
+        try registerOpenCodeStyleServer(
+            configFile: configFile, serverName: serverName, entry: openCodeEntry(binaryPath: binaryPath))
+    }
+
+    /// Registers linkC's server in Kilo's config under `mcp`, in OpenCode's shape. Same merge and
+    /// JSONC rules as OpenCode: keeps every other key, skips a rewrite when the entry is unchanged,
+    /// and never overwrites a file that is not plain JSON.
+    public static func registerKiloServer(configFile: URL, serverName: String = MCPRegistrar.serverName, binaryPath: String) throws {
+        try registerOpenCodeStyleServer(
+            configFile: configFile, serverName: serverName, entry: kiloEntry(binaryPath: binaryPath))
+    }
+
+    /// Shared writer for OpenCode-style `mcp` tables (OpenCode and Kilo).
+    private static func registerOpenCodeStyleServer(
+        configFile: URL, serverName: String, entry: [String: Any]
+    ) throws {
         var root = try readJSONObject(at: configFile)
         var mcp = try mcpTable(in: root, of: configFile.path)
-        let entry = openCodeEntry(binaryPath: binaryPath)
         if let existing = mcp[serverName] as? [String: Any], NSDictionary(dictionary: existing).isEqual(to: entry) { return }
         mcp[serverName] = entry
         root["mcp"] = mcp
@@ -160,7 +187,7 @@ public struct MCPRegistrar: Sendable {
     }
 
     /// `KILO_CONFIG_CONTENT` for a terminal linkC starts Kilo in — same shape as OpenCode's inline
-    /// config. Does not write `~/.config/kilo` (that is K2).
+    /// config. Complements `registerKiloServer`, which merges into the on-disk global file.
     public static func kiloConfigContent(inherited: String?, binaryPath: String, model: String?) throws -> String {
         try inlineOpenCodeStyleConfigContent(
             inherited: inherited,
@@ -336,6 +363,11 @@ public struct MCPRegistrar: Sendable {
         // OpenCode: ~/.config/opencode/opencode.json, in its own `mcp` shape
         if let f = attemptRegistration("~/.config/opencode/opencode.json", {
             try registerOpenCodeServer(configFile: openCodeConfigFile(home: home), binaryPath: binaryPath)
+        }) { failures.append(f) }
+        // Kilo: ~/.config/kilo/kilo.jsonc (or kilo.json when that is the file present), OpenCode's `mcp` shape
+        let kiloFile = kiloConfigFile(home: home)
+        if let f = attemptRegistration("~/.config/kilo/\(kiloFile.lastPathComponent)", {
+            try registerKiloServer(configFile: kiloFile, binaryPath: binaryPath)
         }) { failures.append(f) }
 
         guard failures.isEmpty else {
