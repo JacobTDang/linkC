@@ -135,6 +135,27 @@ final class CrushSessionConfigTests: XCTestCase {
         XCTAssertNoThrow(try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free))
     }
 
+    /// Crush merges a project `crush.json` / `.crush.json` that sets no model, so its key is usable.
+    func testAKeyInAProjectConfigLetsThePreparationProceed() throws {
+        try FileManager.default.removeItem(at: userConfig.appendingPathComponent("crush.json"))
+        try write(#"{"providers":{"openrouter":{"api_key":"sk-or-project"}}}"#, to: project.appendingPathComponent("crush.json"))
+        XCTAssertNoThrow(try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free))
+    }
+
+    func testAKeyInAHiddenProjectConfigAboveTheCwdLetsThePreparationProceed() throws {
+        try FileManager.default.removeItem(at: userConfig.appendingPathComponent("crush.json"))
+        try write(#"{"providers":{"openrouter":{"api_key":"sk-or-project"}}}"#, to: project.appendingPathComponent(".crush.json"))
+        let nested = project.appendingPathComponent("a/b")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        XCTAssertNoThrow(try makeConfig().prepare(sessionId: "S1", cwd: nested.path, model: free))
+    }
+
+    func testAProjectConfigWithABlankKeyStillCountsAsMissing() throws {
+        try FileManager.default.removeItem(at: userConfig.appendingPathComponent("crush.json"))
+        try write(#"{"providers":{"openrouter":{"api_key":" "}}}"#, to: project.appendingPathComponent("crush.json"))
+        assertRefuses(containing: addKey)
+    }
+
     /// Crush's own OpenRouter entry reads `$OPENROUTER_API_KEY`.
     func testTheEnvironmentsKeyCountsWhenTheConfigNamesNone() throws {
         try FileManager.default.removeItem(at: userConfig.appendingPathComponent("crush.json"))

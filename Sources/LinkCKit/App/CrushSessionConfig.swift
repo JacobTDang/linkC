@@ -101,7 +101,7 @@ public struct CrushSessionConfig: Sendable {
         }
         let pin = try Self.split(model)
         try refuseUserCrushrc()
-        try refuseProjectModels(from: cwd)
+        let projectConfigs = try refuseProjectModels(from: cwd)
 
         var config = try readObject(user.config.appendingPathComponent(Self.configFileName))
         var models = config["models"] as? [String: Any] ?? [:]
@@ -110,7 +110,7 @@ public struct CrushSessionConfig: Sendable {
         models["small"] = entry
         config["models"] = models
         let dataFiles = try readUserData()
-        guard hasOpenRouterKey(config: config, dataFiles: dataFiles) else {
+        guard hasOpenRouterKey(config: config, dataFiles: dataFiles, projectConfigs: projectConfigs) else {
             throw LinkCError.process("Crush has no OpenRouter key, so it cannot run a free model — add an OpenRouter key to Crush (open crush and enter it, or set providers.openrouter.api_key in \(user.config.appendingPathComponent(Self.configFileName).path)), then try again")
         }
 
@@ -215,14 +215,15 @@ public struct CrushSessionConfig: Sendable {
     // MARK: - The OpenRouter key
 
     /// Whether Crush would find a non-empty OpenRouter key: in the global config, in the `crush.json`
-    /// it saves in its data folder, or, where either names a `$VARIABLE` or neither names a key, in
+    /// it saves in its data folder, in an applicable project `crush.json` / `.crush.json` (Crush reads
+    /// those itself at run time), or, where any names a `$VARIABLE` or none names a key, in
     /// `$OPENROUTER_API_KEY`.
-    private func hasOpenRouterKey(config: [String: Any], dataFiles: [(name: String, data: Data)]) -> Bool {
+    private func hasOpenRouterKey(config: [String: Any], dataFiles: [(name: String, data: Data)], projectConfigs: [[String: Any]]) -> Bool {
         var saved: [String: Any] = [:]
         if let file = dataFiles.first(where: { $0.name == Self.configFileName }) {
             saved = (try? JSONSerialization.jsonObject(with: file.data)) as? [String: Any] ?? [:]
         }
-        let named = [config, saved].compactMap { Self.openRouterKey(in: $0) }
+        let named = ([config, saved] + projectConfigs).compactMap { Self.openRouterKey(in: $0) }
         if named.isEmpty { return !(environment["OPENROUTER_API_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         return named.contains { value in
             if value.hasPrefix("$") {
@@ -252,9 +253,11 @@ public struct CrushSessionConfig: Sendable {
 
     /// Crush merges project configs over the global one. A project's own `models` would run the session
     /// on a model linkC did not choose, and a `crushrc` is a script that could set one in ways its text
-    /// does not show, so any crushrc is refused. Looks in the folder and every one above it.
-    private func refuseProjectModels(from cwd: String) throws {
+    /// does not show, so any crushrc is refused. Looks in the folder and every one above it. Returns the
+    /// project `crush.json` / `.crush.json` objects it passed, which may carry a provider key.
+    private func refuseProjectModels(from cwd: String) throws -> [[String: Any]] {
         var dir = URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL
+        var accepted: [[String: Any]] = []
         while true {
             for name in Self.projectFileNames {
                 let file = dir.appendingPathComponent(name)
@@ -262,19 +265,16 @@ public struct CrushSessionConfig: Sendable {
                 if file.lastPathComponent.hasSuffix("rc") {
                     throw LinkCError.process("\(file.path) is a Crush crushrc script, which can set a model linkC cannot see, so it will not launch Crush with it — remove it to run Crush from linkC here")
                 }
-                if try setsModel(file) {
+                let object = try readObject(file)
+                if !((object["models"] as? [String: Any])?.isEmpty ?? true) {
                     throw LinkCError.process("\(file.path) sets a Crush model, which would override the free model linkC pins for this session — remove it to run Crush from linkC here")
                 }
+                accepted.append(object)
             }
             let parent = dir.deletingLastPathComponent().standardizedFileURL
-            if parent.path == dir.path { return }
+            if parent.path == dir.path { return accepted }
             dir = parent
         }
-    }
-
-    private func setsModel(_ file: URL) throws -> Bool {
-        let object = try readObject(file)
-        return !((object["models"] as? [String: Any])?.isEmpty ?? true)
     }
 
     // MARK: - Writing
