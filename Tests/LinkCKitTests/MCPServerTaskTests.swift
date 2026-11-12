@@ -646,6 +646,21 @@ final class MCPServerTaskTests: XCTestCase {
         XCTAssertNil(task.tier)
     }
 
+    func testFreebuffAcceptsNoTierOrModelAndRefusesEither() throws {
+        let plain = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
+                                ["to": "freebuff", "prompt": "Deep research the architecture"])
+        XCTAssertFalse(plain.isError, plain.text)
+        XCTAssertNil(try XCTUnwrap(inbox.openTasks().first).tier)
+
+        for extra in [["tier": "deep"], ["model": "anything"]] {
+            var args = ["to": "freebuff", "prompt": "Deep research the architecture"]
+            args.merge(extra) { _, new in new }
+            let result = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task", args)
+            XCTAssertTrue(result.isError, result.text)
+            XCTAssertTrue(result.text.contains("Freebuff has no tiers; it runs its own default model."), result.text)
+        }
+    }
+
     func testDelegateToGrokTakesItsDefaultTier() throws {
         let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task",
                               ["to": "grok", "prompt": "Rename a file"])
@@ -691,7 +706,7 @@ final class MCPServerTaskTests: XCTestCase {
     func testAnUnknownAgentErrorNamesGrok() throws {
         let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task", ["to": "gork", "prompt": "x"])
         XCTAssertTrue(res.isError)
-        XCTAssertTrue(res.text.contains("Supported agents: claude, agy, cursor, codex, grok, opencode."), res.text)
+        XCTAssertTrue(res.text.contains("Supported agents: claude, agy, cursor, codex, grok, opencode, freebuff."), res.text)
     }
 
     func testACappedTargetOffersGrokInstead() throws {

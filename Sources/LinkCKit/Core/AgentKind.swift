@@ -81,6 +81,8 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
     /// theirs: Grok's Cursor defaults to Auto, and OpenCode runs a session whose model it does not
     /// know on whatever it picks, which may be the user's local model.
     public static let alwaysNamesModel: Set<AgentKind> = [.grok, .opencode]
+
+    public var isLongTaskOnly: Bool { self == .freebuff }
 }
 
 /// Metadata and argument specifications for AI CLI agents.

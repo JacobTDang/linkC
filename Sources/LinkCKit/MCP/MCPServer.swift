@@ -568,7 +568,7 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_delegate_task",
-                "description": "Delegate a coding task, subtask, or follow-up prompt to a peer agent (e.g. \(AgentKind.peerList)), claiming files and enqueuing the prompt for delivery.",
+                "description": "Delegate a coding task, subtask, or follow-up prompt to a peer agent (e.g. \(AgentKind.peerList)), claiming files and enqueuing the prompt for delivery. Freebuff is only for long-running work (deep research, large implementations, reverse engineering), because a Freebuff session costs the same however short it is.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -650,7 +650,7 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_get_models",
-                "description": "List all available free-tier and subscription-included models for an agent or all agents, indicating the default model and current rate-limit cooldowns.",
+                "description": "List all available free-tier and subscription-included models for an agent or all agents, indicating the default model and current rate-limit cooldowns. Freebuff is only for long-running work (deep research, large implementations, reverse engineering), because a Freebuff session costs the same however short it is.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -1060,6 +1060,9 @@ public final class MCPServer: Sendable {
                     // OpenCode has no `/model <id>` command: typed in, it goes to the model as a prompt.
                     return toolResultResponse(id: id, text: "Error: opencode cannot switch a running session's model — delegate at another tier instead.", isError: true)
                 }
+                guard agent != .freebuff else {
+                    return toolResultResponse(id: id, text: "Error: Freebuff has no tiers; it runs its own default model.", isError: true)
+                }
                 guard let model = args["model"] as? String, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'model'.", isError: true)
                 }
@@ -1168,6 +1171,10 @@ public final class MCPServer: Sendable {
                     }
                     if agent == .cursor {
                         text += "- cursor cannot be pinned to a model\n\n"
+                        continue
+                    }
+                    if agent == .freebuff {
+                        text += "- Freebuff has no tiers; it runs its own default model.\n\n"
                         continue
                     }
                     text += "### Tiers\n"
@@ -1532,7 +1539,7 @@ public final class MCPServer: Sendable {
         }
         let agyLimits = try inboxStore.liveLimits(agent: .agy, timeout: lockTimeout)
         var parts: [String] = []
-        for peer in AgentKind.peers {
+        for peer in AgentKind.peers where !peer.isLongTaskOnly {
             if peer == .agy {
                 for pool in ["gemini", "claude-gpt"] {
                     // The pool this refusal is about is limited; so is any pool a live limit covers.
@@ -1877,6 +1884,9 @@ public final class MCPServer: Sendable {
         guard let prompt = args["prompt"] as? String, !prompt.isEmpty else {
             return toolResultResponse(id: id, text: "Error: Missing required argument 'prompt'.", isError: true)
         }
+        if toAgent == .freebuff, args["tier"] != nil || args["model"] != nil {
+            return toolResultResponse(id: id, text: "Error: Freebuff has no tiers; it runs its own default model.", isError: true)
+        }
 
         let files = args["files"] as? [String] ?? []
         let force = args["force"] as? Bool ?? false
@@ -1990,8 +2000,8 @@ public final class MCPServer: Sendable {
             }
             tier = parsed
             model = nil
-        } else if toAgent == .cursor {
-            // Cursor was never tiered; an omitted tier keeps working exactly as before.
+        } else if toAgent == .cursor || toAgent == .freebuff {
+            // Cursor and Freebuff are untiered; an omitted tier keeps working exactly as before.
             tier = nil
             model = nil
         } else {

@@ -165,6 +165,8 @@ final class AgentDescriptorTests: XCTestCase {
         for mode in [LaunchMode.new, .continueLast, .resume] {
             XCTAssertFalse(AgentDescriptor.arguments(for: .freebuff, mode: mode).contains("--trust-agents"))
         }
+        XCTAssertTrue(AgentKind.freebuff.isLongTaskOnly)
+        XCTAssertTrue(AgentKind.allCases.filter { $0 != .freebuff }.allSatisfy { !$0.isLongTaskOnly })
     }
 
     /// With a newer release out, OpenCode opens on an update dialog, and the first text linkC types

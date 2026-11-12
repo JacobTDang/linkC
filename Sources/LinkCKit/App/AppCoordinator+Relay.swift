@@ -1463,8 +1463,9 @@ extension AppCoordinator {
         }
 
         // Candidates: installed, not limited for this task's tier model, not this agent; prefer ones already active here.
-        let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor, .grok, .opencode]
+        let supportedPeers = AgentKind.peers
         var candidates = supportedPeers.filter { candidate in
+            guard !candidate.isLongTaskOnly else { return false }
             guard candidate != session.agentKind && candidate != currentTask?.fromAgent else { return false }
             do {
                 let peerModel = currentTask?.tier.flatMap { resolvedModel(for: candidate, tier: $0) }

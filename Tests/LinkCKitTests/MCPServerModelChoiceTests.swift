@@ -272,6 +272,19 @@ final class MCPServerModelChoiceTests: XCTestCase {
         XCTAssertTrue(text.contains("model-lists.json is corrupt"), text)
     }
 
+    func testLimitRefusalNeverOffersFreebuffAsNotLimited() throws {
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        try inbox.recordLimit(agent: .claude, reason: "quota", cooldown: 3600)
+        let limit = try XCTUnwrap(try inbox.isAgentLimited(agent: .claude))
+
+        let text = try MCPServer.limitRefusal(
+            agent: .claude, limit: limit, model: nil,
+            readLists: { [:] }, settings: .seeded, inboxStore: inbox)
+
+        XCTAssertTrue(text.contains("Not limited:"), text)
+        XCTAssertFalse(text.lowercased().contains("freebuff"), text)
+    }
+
     func testTierAndModelTogetherAreRefused() throws {
         let result = try call(server(), "linkc_delegate_task", [
             "to": "agy", "prompt": "x", "tier": "standard", "model": "claude-opus-4-6-thinking",

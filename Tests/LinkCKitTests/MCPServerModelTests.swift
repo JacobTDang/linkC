@@ -428,6 +428,9 @@ final class MCPServerModelTests: XCTestCase {
         }
         let delegate = tools.first { $0["name"] as? String == "linkc_delegate_task" }?["description"] as? String ?? ""
         XCTAssertTrue(delegate.contains("grok"), delegate)
+        XCTAssertTrue(delegate.contains("Freebuff is only for long-running work"), delegate)
+        let getModels = tools.first { $0["name"] as? String == "linkc_get_models" }?["description"] as? String ?? ""
+        XCTAssertTrue(getModels.contains("Freebuff is only for long-running work"), getModels)
     }
 
     func testTheUsageReportHasAGrokSection() throws {

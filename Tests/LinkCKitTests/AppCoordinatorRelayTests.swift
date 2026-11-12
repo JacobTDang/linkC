@@ -4373,6 +4373,33 @@ final class AppCoordinatorRelayTests: XCTestCase {
     }
 
     @MainActor
+    func testRerouteNeverSelectsFreebuff() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let scriptPath = tempDir.appendingPathComponent("mock_agent.sh").path
+        let coordinator = makeCoordinator(agentPathResolver: { agent in
+            if agent == .cursor || agent == .freebuff { return scriptPath }
+            return nil
+        })
+        defer { coordinator.shutdown() }
+
+        let cursorSession = try coordinator.newSession(cwd: ws, agent: .cursor)
+        coordinator.store.updateState(id: cursorSession.id, to: Self.turnOver)
+        let task = try inbox.createTask(from: .claude, to: .cursor, prompt: "Refactor router", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: cursorSession.id)
+
+        coordinator.terminals.sendInput(sessionId: cursorSession.id, text: "Rate limit reached\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: cursorSession.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: cursorSession.id))
+        XCTAssertFalse(try inbox.openTasks().contains(where: { $0.hop == 1 }),
+                       "Freebuff must not be chosen as an automatic fallback")
+    }
+
+    @MainActor
     func testTurnEndedWithoutReportIsDebouncedByQuietPeriod() async throws {
         let ws = tempDir.path
         let inbox = InboxStore(workspaceRoot: ws)

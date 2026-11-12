@@ -18,7 +18,7 @@ final class OpenCodeScreenGatingTests: XCTestCase {
         XCTAssertFalse(others.isEmpty)
         for name in others {
             let rows = try CodexScreenFixture.rows(name)
-            for agent in AgentKind.allCases where agent != .opencode {
+            for agent in AgentKind.allCases where agent != .opencode && agent != .freebuff {
                 XCTAssertEqual(
                     TerminalPreview.liveActivity(from: rows, agent: agent),
                     TerminalPreview.genericLiveActivity(from: rows),
@@ -34,7 +34,7 @@ final class OpenCodeScreenGatingTests: XCTestCase {
         let generic = try XCTUnwrap(TerminalPreview.genericLiveActivity(from: rows), "the generic reader takes the stray row for a phrase")
         XCTAssertEqual(OpenCodeScreen.turn(in: rows), .idle, "OpenCode's reader says the turn is over")
 
-        for agent in AgentKind.allCases where agent != .opencode {
+        for agent in AgentKind.allCases where agent != .opencode && agent != .freebuff {
             XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: agent), generic, "\(agent)")
         }
         XCTAssertNil(TerminalPreview.liveActivity(from: rows, agent: .opencode))
