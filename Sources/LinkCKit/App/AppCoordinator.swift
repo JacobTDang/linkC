@@ -1476,7 +1476,8 @@ public final class AppCoordinator {
 
             // A folder-trust dialog has no spinner, so it read as an idle session and the relay
             // typed briefs into it. Hold the session as needing the user until it is answered.
-            if screen.showsTrustPrompt() {
+            if screen.showsTrustPrompt()
+                || (currentSession.agentKind == .freebuff && FreebuffScreen.isWaitingForUser(in: screen.rows)) {
                 if currentSession.state != .waitingPermission {
                     store.updateState(id: session.id, to: .waitingPermission)
                     let updated = store.session(id: session.id) ?? currentSession

@@ -1,0 +1,11 @@
+ ┌──────────────────────────────────────────────────────────────────┐
+ │ May use data for AI training                                     │
+ │ Session active                                                   │
+ └──────────────────────────────────────────────────────────────────┘
+   [03:17 PM]
+   Reply with exactly OK. ⎘
+ thinking...                                                     ■ Esc
+╭────────────────────────────────────────────────────────────────────╮
+│  ▍Add to the current task (/ for commands)                         │
+╰────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash Fast • high · /private/tmp · /model to change · Chat: Reply with exactly OK.

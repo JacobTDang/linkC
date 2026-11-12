@@ -122,6 +122,7 @@ public enum TerminalPreview {
         // OpenCode's input box has none of the prompt markers the generic scan stops at, so only
         // a session known to be OpenCode may use its dedicated reader.
         if agent == .opencode, let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
+        if agent == .freebuff { return FreebuffScreen.activity(in: rows) }
         return genericLiveActivity(from: rows)
     }
 

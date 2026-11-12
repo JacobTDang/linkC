@@ -1,0 +1,11 @@
+╭──────────────────────── Some questions for you ────────────────────╮
+│▼ What would you like me to focus on next?                          │
+│  ○ Explain this codebase                                           │
+│  ○ Fix a bug                                                       │
+│  ○ Add a feature                                                   │
+│  ○ Review recent changes                                           │
+│╭──────────╮                                                        │
+││  Submit  │    ↑↓ navigate • Enter select                          │
+│╰──────────╯                                                        │
+╰────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash Fast • high · /private/tmp · /model to change

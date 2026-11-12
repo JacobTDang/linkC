@@ -117,6 +117,13 @@ public struct LimitDetector: Sendable {
         LimitRule(canonicalPattern: "OpenCode free limit reached", regexPattern: "\\bfree limit reached\\b")
     ]
 
+    private static let freebuffRules: [LimitRule] = [
+        LimitRule(canonicalPattern: "Freebuff weekly limit reached", regexPattern: "\\bweekly limit reached\\b"),
+        LimitRule(canonicalPattern: "Freebuff five hour limit reached", regexPattern: "\\b5 hour limit reached\\b"),
+        LimitRule(canonicalPattern: "Freebuff subscription limit reached", regexPattern: "\\bsubscription limit reached\\b"),
+        LimitRule(canonicalPattern: "Freebuff out of credits", regexPattern: "\\bout of credits\\b")
+    ]
+
     private static func rules(for agent: AgentKind) -> [LimitRule] {
         switch agent {
         case .claude: return claudeRules
@@ -125,7 +132,7 @@ public struct LimitDetector: Sendable {
         // Grok runs Cursor's CLI, so a Grok terminal shows Cursor's caps.
         case .cursor, .grok: return cursorRules
         case .opencode: return openCodeRules
-        case .freebuff: return []
+        case .freebuff: return freebuffRules
         case .shell: return []
         }
     }
