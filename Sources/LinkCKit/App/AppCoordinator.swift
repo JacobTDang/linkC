@@ -491,7 +491,7 @@ public final class AppCoordinator {
             Task { [weak self] in
                 let result: OpenCodeModelListing.ListingResult
                 do { result = .success(try await lister(norm)) }
-                catch { result = .failure(String(describing: error)) }
+                catch { result = .failure(KiloLogin.reporting(String(describing: error))) }
                 guard let self else { return }
                 self.kiloModelListings[norm] = OpenCodeModelListing(checkedAt: self.now(), result: result)
                 self.kiloModelChecksInFlight.remove(norm)

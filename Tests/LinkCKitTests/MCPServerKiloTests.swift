@@ -157,11 +157,14 @@ final class MCPServerKiloTests: XCTestCase {
     }
 
     func testAListingWithNoFreeModelsThrows() throws {
-        for body in ["exit 0\n", "printf 'kilo/anthropic/claude-sonnet-5\\n'\n"] {
-            let stub = try stubKilo(body)
-            XCTAssertThrowsError(try MCPServer.listKiloModels(in: tempDir.path, executable: stub, home: tempDir), body) { error in
-                XCTAssertEqual(String(describing: error), "`kilo models` listed no free models")
-            }
+        let stubEmpty = try stubKilo("exit 0\n")
+        XCTAssertThrowsError(try MCPServer.listKiloModels(in: tempDir.path, executable: stubEmpty, home: tempDir)) { error in
+            XCTAssertEqual(String(describing: error), "`kilo models` listed no free models")
+        }
+        let stubPaid = try stubKilo("printf 'kilo/anthropic/claude-sonnet-5\\n'\n")
+        XCTAssertThrowsError(try MCPServer.listKiloModels(in: tempDir.path, executable: stubPaid, home: tempDir)) { error in
+            XCTAssertEqual(String(describing: error),
+                           "`kilo models` listed no free models: kilo/anthropic/claude-sonnet-5")
         }
     }
 

@@ -399,10 +399,18 @@ public final class MCPServer: Sendable {
             throw LinkCError.process("`kilo models` did not answer within \(seconds) seconds")
         }
         guard result.status == 0 else {
-            throw LinkCError.process("`kilo models` exited \(result.status): \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+            let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw LinkCError.process(KiloLogin.reporting("`kilo models` exited \(result.status): \(stderr)"))
         }
         let models = parseKiloModels(result.stdout)
-        guard !models.isEmpty else { throw LinkCError.process("`kilo models` listed no free models") }
+        guard !models.isEmpty else {
+            let first = result.stdout.split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+            let base = first.map { "`kilo models` listed no free models: \($0)" }
+                ?? "`kilo models` listed no free models"
+            throw LinkCError.process(KiloLogin.reporting(base))
+        }
         return models
     }
 
@@ -2039,7 +2047,7 @@ public final class MCPServer: Sendable {
                 } catch {
                     return toolResultResponse(
                         id: id,
-                        text: "Error: could not check \(listed.id) against the models Kilo lists — \(error)",
+                        text: "Error: could not check \(listed.id) against the models Kilo lists — \(KiloLogin.reporting(String(describing: error)))",
                         isError: true)
                 }
                 guard offered.contains(where: { $0.caseInsensitiveCompare(listed.id) == .orderedSame }) else {
@@ -2132,7 +2140,7 @@ public final class MCPServer: Sendable {
             } catch {
                 return toolResultResponse(
                     id: id,
-                    text: "Error: could not check kilo tier \(tier.rawValue)'s model \(tierModel) against the models Kilo lists — \(error)",
+                    text: "Error: could not check kilo tier \(tier.rawValue)'s model \(tierModel) against the models Kilo lists — \(KiloLogin.reporting(String(describing: error)))",
                     isError: true)
             }
             guard offered.contains(tierModel) else {

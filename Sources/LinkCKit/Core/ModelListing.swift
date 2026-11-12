@@ -100,7 +100,8 @@ public enum ModelListParser {
             let first = output.split(whereSeparator: \.isNewline)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .first { !$0.isEmpty }
-            throw LinkCError.process("\(agent.rawValue) models listed nothing: \(first ?? "(no output)")")
+            let message = "\(agent.rawValue) models listed nothing: \(first ?? "(no output)")"
+            throw LinkCError.process(agent == .kilo ? KiloLogin.reporting(message) : message)
         }
         return models
     }
