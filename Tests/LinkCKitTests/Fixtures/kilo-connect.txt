@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+                    Connect a provider                               esc
+
+                    Search
+
+                    Popular
+         ┃        ✓ Kilo Gateway (Recommended)
+         ┃  Ask     Anthropic (Claude Max or API key)
+         ┃          GitHub Copilot
+         ┃  Code    OpenAI / Codex (ChatGPT login or API key)
+         ╹▀▀▀▀▀▀    Google                                                  ▀▀▀▀▀▀▀▀
+                    Anaconda Desktop (Local models)                         commands
+
+                    Providers
+            ● Mo    302.AI
+              Ki    Abacus                                                  ncode
+              co    abliteration.ai                                         ilo
+              di    above.dev
+                    AgentRouter
+
+
+            ● Tip Configure local or remote MCP servers in the mcp config section
+
+
+
+
+
+
+  ~/Projects/linkC/.worktrees/kilo-agent:feat/kilo-agent                            7.8.27
+

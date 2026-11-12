@@ -285,15 +285,16 @@ final class LimitDetectorTests: XCTestCase {
                      "the phrase is OpenCode's alone")
     }
 
-    /// Kilo's UI is OpenCode's, so the same free-cap phrases apply.
-    func testKilosFreeTierCapIsALimitButA429IsNot() {
-        let cap = LimitDetector.detectLimit(inOutput: "Free usage " + "exceeded, subscribe to Go", agent: .kilo)
+    /// Kilo's free-tier banner uses its own wording ("Rate limit exceeded"), not OpenCode's.
+    func testKilosRateLimitExceededIsALimitButA429IsNot() {
+        let cap = LimitDetector.detectLimit(inOutput: "Rate limit " + "exceeded", agent: .kilo)
         XCTAssertEqual(cap?.agent, .kilo)
         XCTAssertEqual(cap?.cooldown, LimitDetector.defaultCooldown)
-        XCTAssertNotNil(LimitDetector.detectLimit(inOutput: "Free limit " + "reached", agent: .kilo))
         XCTAssertNil(LimitDetector.detectLimit(inOutput: "429 Too Many " + "Requests, retrying in 2s", agent: .kilo))
-        XCTAssertNil(LimitDetector.detectLimit(inOutput: "Free usage " + "exceeded, subscribe to Go", agent: .codex),
-                     "the phrase is Kilo's alone among non-OpenCode agents")
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "Rate limit " + "exceeded", agent: .opencode),
+                     "OpenCode keeps its own free-usage phrases")
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "Free usage " + "exceeded, subscribe to Go", agent: .kilo),
+                     "OpenCode's free-usage phrase is not Kilo's")
     }
 
     // MARK: - Normal Output & Isolation Tests

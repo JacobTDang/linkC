@@ -1,0 +1,43 @@
+
+
+
+
+
+
+
+
+
+
+                     ██  ██ ██🬺🬏   ██  ██   ██🬺🬏     ████ ██     ██🬺🬏
+                     ████🬺🬏 ▀▀██   ██  ▀▀ ██▀▀██   ██▀▀▀▀ ██     ▀▀██
+                     ██  ██ ██████ 🬁🬬████ 🬁🬬██▀▀   🬁🬬████ 🬁🬬████ ██████
+                     ▀▀  ▀▀ ▀▀▀▀▀▀   ▀▀▀▀   ▀▀       ▀▀▀▀   ▀▀▀▀ ▀▀▀▀▀▀
+
+
+         ┃
+         ┃  Ask anything... "Fix broken tests"
+         ┃
+         ┃  Code  auto · NVIDIA: Nemotron 3.5 Lightning (free) Kilo Gateway
+         ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                                        ctrl+t variants  tab agents  ctrl+p commands
+
+
+            ● Rate limit exceeded
+              Free model requests are limited. Try again later.
+
+            ● Move your opencode configuration
+              Kilo no longer falls back to opencode configuration. Found opencode
+              config at /Users/jacobdang/.config/opencode. Move it into a .kilo
+              directory (project) or /Users/jacobdang/.config/kilo (global).
+
+
+
+             ● Tip Use /sessions or ctrl+x l to list, pin, and continue sessions
+
+
+
+
+
+
+  ~/Projects/linkC/.worktrees/kilo-agent:feat/kilo-agent                            7.8.27
+

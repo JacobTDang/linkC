@@ -98,9 +98,12 @@ final class OpenCodeScreenTests: XCTestCase {
         XCTAssertEqual(TerminalPreview.progressSignature(rows: rows), TerminalPreview.progressSignature(rows: redrawn))
     }
 
-    /// Every screen fixture that is not OpenCode's, whatever agent it was captured from.
+    /// Every screen fixture that is not OpenCode's or Kilo's. Kilo's TUI matches OpenCode's chrome,
+    /// so its fixtures may legitimately return a turn from `OpenCodeScreen.turn`.
     func testOtherAgentsScreensAreNotOpenCodes() throws {
-        let others = CodexScreenFixture.allNames().filter { !$0.hasPrefix("opencode-") }
+        let others = CodexScreenFixture.allNames().filter {
+            !$0.hasPrefix("opencode-") && !$0.hasPrefix("kilo-")
+        }
         XCTAssertFalse(others.isEmpty, "no other agent's screens to check")
         for name in others {
             XCTAssertNil(OpenCodeScreen.turn(in: try CodexScreenFixture.rows(name)), name)
