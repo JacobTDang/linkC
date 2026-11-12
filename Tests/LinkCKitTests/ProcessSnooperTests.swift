@@ -27,6 +27,12 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertNil(ProcessSnooper.detectAgent(inPath: ""))
     }
 
+    func testCrushIsDetectedByItsLinkAndItsRealBinary() {
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/crush"), .crush)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/Cellar/crush/0.101.0/bin/crush"), .crush)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/someone/go/bin/crush"), .crush)
+    }
+
     /// Homebrew links `opencode` to a versioned Cellar binary; the installer puts it in ~/.opencode/bin.
     func testOpenCodeIsDetectedByItsLinkAndItsRealBinary() {
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/opencode"), .opencode)

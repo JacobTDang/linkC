@@ -128,8 +128,8 @@ final class AgentDescriptorTests: XCTestCase {
     }
 
     func testPeersAreEveryAgentButAShell() {
-        XCTAssertEqual(AgentKind.peers, [.claude, .agy, .cursor, .codex, .grok, .opencode])
-        XCTAssertEqual(AgentKind.peerList, "claude, agy, cursor, codex, grok, opencode")
+        XCTAssertEqual(AgentKind.peers, [.claude, .agy, .cursor, .codex, .grok, .opencode, .crush])
+        XCTAssertEqual(AgentKind.peerList, "claude, agy, cursor, codex, grok, opencode, crush")
     }
 
     /// OpenCode runs its own binary, on a private server of its own, with every permission approved. It never gets `--continue`:
@@ -157,5 +157,36 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(AgentDescriptor.openCodeConfigContentKey, "OPENCODE_CONFIG_CONTENT")
         XCTAssertEqual(AgentDescriptor.environment(for: .opencode, home: URL(fileURLWithPath: "/Users/someone")),
                        ["OPENCODE_DISABLE_AUTOUPDATE": "1"])
+    }
+
+    /// Crush runs its own binary with every permission approved. It never gets `--continue` or
+    /// `--session`: a resumed conversation keeps the model it last ran on, which may be a paid one.
+    func testCrushIsItsOwnAgentWithEveryPermissionApproved() {
+        XCTAssertEqual(AgentKind.crush.rawValue, "crush")
+        XCTAssertEqual(AgentKind.crush.pillText, "CRUSH")
+        XCTAssertEqual(AgentKind.crush.displayName, "Crush")
+        XCTAssertEqual(AgentKind.crush.shortName, "Crush")
+        XCTAssertEqual(AgentKind.crush.brandColorHex, "#6B50FF")
+        let crush = AgentDescriptor.descriptor(for: .crush)
+        XCTAssertEqual(crush.kind, .crush)
+        XCTAssertEqual(crush.binaryName, "crush")
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        XCTAssertEqual(crush.defaultCandidatePaths,
+                       ["/opt/homebrew/bin/crush", "/usr/local/bin/crush", "\(home)/.local/bin/crush", "\(home)/go/bin/crush"])
+        XCTAssertEqual(crush.continueArgs, [])
+        XCTAssertEqual(crush.resumeArgs, [])
+        for mode in [LaunchMode.new, .continueLast, .resume] {
+            XCTAssertEqual(AgentDescriptor.arguments(for: .crush, mode: mode, sessionId: "S-1"), ["--yolo"], "\(mode)")
+        }
+    }
+
+    /// Crush's per-session config folders come at launch (AppCoordinator+Crush), not from the descriptor.
+    func testACrushTerminalsDescriptorEnvironmentIsEmpty() {
+        XCTAssertEqual(AgentDescriptor.environment(for: .crush, home: URL(fileURLWithPath: "/Users/someone")), [:])
+    }
+
+    /// Crush's own default is the user's, so every launch names a model.
+    func testEveryCrushLaunchNamesAModel() {
+        XCTAssertTrue(AgentKind.alwaysNamesModel.contains(.crush))
     }
 }

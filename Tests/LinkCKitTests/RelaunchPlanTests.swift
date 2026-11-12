@@ -41,6 +41,12 @@ final class RelaunchPlanTests: XCTestCase {
         XCTAssertEqual(result, RelaunchPlan(relaunch: ["W", "U"], toEarlier: [], drop: []))
     }
 
+    /// Crush never resumes either: a restore opens a new conversation, pinned to the free default.
+    func testEveryCrushEntryInAFolderComesBackOnItsOwnNewConversation() {
+        let result = plan([makeEntry("A", .crush), makeEntry("B", .crush), makeEntry("W", .crush, worker: true)], holding: ["W"])
+        XCTAssertEqual(result, RelaunchPlan(relaunch: ["A", "B", "W"], toEarlier: [], drop: []))
+    }
+
     func testDifferentAgentsInOneFolderEachContinue() {
         let result = plan([makeEntry("A", .agy), makeEntry("B", .cursor), makeEntry("C", .codex)])
         XCTAssertEqual(result.relaunch, ["A", "B", "C"])

@@ -184,7 +184,8 @@ enum ModelListCommands {
             return try await captureCursorModels()
         case .opencode:
             return try await capture(agent: .opencode, args: MCPServer.openCodeModelsArguments)
-        case .claude, .codex, .shell:
+        // Crush's `crush models` listing is a later step (the free-model rule has to come with it).
+        case .claude, .codex, .crush, .shell:
             throw LinkCError.process("\(agent.rawValue) has no model listing command")
         }
     }

@@ -691,7 +691,7 @@ final class MCPServerTaskTests: XCTestCase {
     func testAnUnknownAgentErrorNamesGrok() throws {
         let res = try mcpCall(server(as: .claude, models: .seeded), "linkc_delegate_task", ["to": "gork", "prompt": "x"])
         XCTAssertTrue(res.isError)
-        XCTAssertTrue(res.text.contains("Supported agents: claude, agy, cursor, codex, grok, opencode."), res.text)
+        XCTAssertTrue(res.text.contains("Supported agents: claude, agy, cursor, codex, grok, opencode, crush."), res.text)
     }
 
     func testACappedTargetOffersGrokInstead() throws {

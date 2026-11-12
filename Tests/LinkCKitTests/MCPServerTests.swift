@@ -532,6 +532,7 @@ final class MCPServerTests: XCTestCase {
         try inboxStore.recordLimit(agent: .cursor, reason: "429", cooldown: 600)
         try inboxStore.recordLimit(agent: .grok, reason: "Usage cap", cooldown: 600)
         try inboxStore.recordLimit(agent: .opencode, reason: "Free limit", cooldown: 600)
+        try inboxStore.recordLimit(agent: .crush, reason: "Free limit", cooldown: 600)
 
         let req = """
         {"jsonrpc": "2.0", "id": 40, "method": "tools/call", "params": {"name": "linkc_delegate_task", "arguments": {"to": "codex", "prompt": "build feature"}}}

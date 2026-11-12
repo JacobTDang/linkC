@@ -280,6 +280,7 @@ struct LauncherMenu: View {
                 Button("New Cursor Agent session…") { model.newSession(agent: .cursor, mode: .new) }
                 Button("New Grok session…") { model.newSession(agent: .grok, mode: .new) }
                 Button("New OpenCode session…") { model.newSession(agent: .opencode, mode: .new) }
+                Button("New Crush session…") { model.newSession(agent: .crush, mode: .new) }
                 Button("New Codex session…") { model.newSession(agent: .codex, mode: .new) }
             }
             Section("Terminal") {

@@ -21,4 +21,9 @@ final class AgentModelCatalogTests: XCTestCase {
         XCTAssertEqual(AgentModelCatalog.launchArguments(model: "opencode/big-pickle", for: .opencode), [])
         XCTAssertEqual(AgentModelCatalog.launchArguments(model: "gpt-5.6-sol", for: .codex), ["--model", "gpt-5.6-sol"])
     }
+
+    /// Crush's TUI has no model flag either; its model is pinned through a per-session config.
+    func testCrushTakesNoModelArgument() {
+        XCTAssertEqual(AgentModelCatalog.launchArguments(model: "openrouter/nvidia/nemotron-3.5-super-vl:free", for: .crush), [])
+    }
 }

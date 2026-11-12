@@ -1055,9 +1055,10 @@ public final class MCPServer: Sendable {
                 guard agent != .shell else {
                     return toolResultResponse(id: id, text: "Error: Cannot switch model on shell session.", isError: true)
                 }
-                guard agent != .opencode else {
-                    // OpenCode has no `/model <id>` command: typed in, it goes to the model as a prompt.
-                    return toolResultResponse(id: id, text: "Error: opencode cannot switch a running session's model — delegate at another tier instead.", isError: true)
+                guard agent != .opencode, agent != .crush else {
+                    // OpenCode and Crush have no `/model <id>` command: typed in, it goes to the model as a
+                    // prompt. Crush's session is also pinned to its free model by its own config.
+                    return toolResultResponse(id: id, text: "Error: \(agent.rawValue) cannot switch a running session's model — delegate at another tier instead.", isError: true)
                 }
                 guard let model = args["model"] as? String, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'model'.", isError: true)
@@ -1196,8 +1197,8 @@ public final class MCPServer: Sendable {
                             text += line + "\n"
                         }
                     }
-                    if agent == .opencode {
-                        text += "- opencode cannot switch a running session's model; delegate at another tier\n"
+                    if agent == .opencode || agent == .crush {
+                        text += "- \(agent.rawValue) cannot switch a running session's model; delegate at another tier\n"
                     }
                     text += "\n"
                 }
