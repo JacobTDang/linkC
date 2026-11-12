@@ -409,4 +409,82 @@ final class AppCoordinatorCrushTests: XCTestCase {
         XCTAssertEqual(coordinator.restorables.map(\.linkcId), ["CR1"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("argv-CR1").path))
     }
+
+    // MARK: - A refused Crush launch on the delegation path
+
+    private func withNoOpenRouterKey() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil, "OPENROUTER_API_KEY is set in this environment")
+        try #"{"options":{"disable_metrics":true}}"#.write(to: userConfig.appendingPathComponent("crush.json"), atomically: true, encoding: .utf8)
+    }
+
+    private func crushRefusals(_ sink: RecordingSink) -> [(id: String, title: String, body: String)] {
+        sink.deliveries.filter { $0.title == AppCoordinator.crushRefusalTitle }
+    }
+
+    /// Spec 4.3: a missing key "is reported at once ... never left to wait in the queue". A task that
+    /// names only a tier is the normal way Claude delegates; it must fail, not sit queued for an hour.
+    func testATierTaskForCrushWithNoOpenRouterKeyFailsAtOnceAndTheDelegatorAndJacobAreTold() throws {
+        try withNoOpenRouterKey()
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .crush, tier: .standard, prompt: "brief", files: [])
+
+        for _ in 0..<3 { coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox) }
+
+        let record = try XCTUnwrap(try inbox.task(id: task.id))
+        XCTAssertEqual(record.state, .failed, "a refused launch is never left queued")
+        XCTAssertTrue(record.cancelReason?.contains("add an OpenRouter key to Crush") ?? false, record.cancelReason ?? "no reason")
+        let notices = try inbox.load().messages.filter { $0.kind != .task && $0.toAgent == .claude }
+        XCTAssertEqual(notices.count, 1, "the delegator is told once, and no second launch is tried")
+        XCTAssertTrue(notices.first?.prompt.contains("add an OpenRouter key to Crush") ?? false, notices.first?.prompt ?? "no notice")
+        let told = crushRefusals(sink)
+        XCTAssertEqual(told.count, 1, "Jacob is told once")
+        XCTAssertTrue(told.first?.body.contains("add an OpenRouter key to Crush") ?? false, told.first?.body ?? "no notification")
+        XCTAssertTrue(coordinator.store.sessions.isEmpty)
+        XCTAssertEqual(coordinator.lastSpawnFailure?.agent, .crush)
+    }
+
+    /// A project that sets its own Crush model can never be launched under linkC's free pin: the task
+    /// fails with the file named, whatever the key.
+    func testATierTaskForCrushInAProjectThatSetsItsOwnModelFailsAtOnce() throws {
+        try #"{"models":{"large":{"provider":"openrouter","model":"anthropic/claude-opus-4.5"}}}"#
+            .write(to: tempDir.appendingPathComponent("crush.json"), atomically: true, encoding: .utf8)
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .crush, tier: .deep, prompt: "brief", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+
+        let record = try XCTUnwrap(try inbox.task(id: task.id))
+        XCTAssertEqual(record.state, .failed)
+        XCTAssertTrue(record.cancelReason?.contains("crush.json") ?? false, record.cancelReason ?? "no reason")
+        XCTAssertEqual(crushRefusals(sink).count, 1)
+    }
+
+    /// The same for the one message kind that still spawns an agent, a brief sent to Crush.
+    func testABriefForCrushWithNoOpenRouterKeyFailsAtOnceAndItsSenderIsTold() throws {
+        try withNoOpenRouterKey()
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        var seeded = Inbox(workspacePath: tempDir.path)
+        seeded.messages = [PendingMessage(id: "legacy-crush", fromAgent: .claude, toAgent: .crush,
+                                          prompt: "Old style brief", status: .queued, kind: .task)]
+        try inbox.saveRaw(seeded)
+
+        for _ in 0..<3 { coordinator.dispatchMessages(workspacePath: tempDir.path, inboxStore: inbox) }
+
+        let messages = try inbox.load().messages
+        XCTAssertEqual(messages.first { $0.id == "legacy-crush" }?.status, .failed)
+        let notices = messages.filter { $0.kind == .notice && $0.toAgent == .claude }
+        XCTAssertEqual(notices.count, 1)
+        XCTAssertTrue(notices.first?.prompt.contains("add an OpenRouter key to Crush") ?? false, notices.first?.prompt ?? "no notice")
+        XCTAssertEqual(crushRefusals(sink).count, 1)
+        XCTAssertTrue(coordinator.store.sessions.isEmpty)
+    }
 }
