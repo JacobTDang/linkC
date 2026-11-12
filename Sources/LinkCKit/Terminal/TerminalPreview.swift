@@ -122,6 +122,8 @@ public enum TerminalPreview {
         // OpenCode's input box has none of the prompt markers the generic scan stops at, so only
         // a session known to be OpenCode may use its dedicated reader.
         if agent == .opencode, let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
+        // Crush's footer, not its spinner (gone while text streams), says a turn runs.
+        if agent == .crush, let state = CrushScreen.state(in: rows) { return state == .working ? "Working" : nil }
         return genericLiveActivity(from: rows)
     }
 
@@ -256,6 +258,7 @@ public enum TerminalPreview {
         guard !text.isEmpty else { return false }
         if isWorkingFooter(text) { return true }
         if OpenCodeScreen.isProgressRow(text) { return true }
+        if CrushScreen.isSpinnerRow(text) { return true }
         if text.contains("esc to interrupt") { return true }
         if hasSpinnerTokenCounter(text) { return true }
         // The same running-spinner shape without a token counter — the thinking-phase row

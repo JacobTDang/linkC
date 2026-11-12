@@ -1,0 +1,30 @@
+
+╭────────────────────────────────────────────╮
+│  Permission Required ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  │
+│                                            │
+│ Tool bash                                  │
+│ Path /tmp/crush-cap/mock/proj			│
+│ Desc Create a probe file			│
+│                                            │
+│                                            │
+│   touch c4-probe.txt                       │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│   Allow      Allow for Session      Deny   │
+│                                            │
+│ ←/→ choose • enter confirm • esc exit      │
+╰────────────────────────────────────────────╯

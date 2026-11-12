@@ -117,6 +117,17 @@ public struct LimitDetector: Sendable {
         LimitRule(canonicalPattern: "OpenCode free limit reached", regexPattern: "\\bfree limit reached\\b")
     ]
 
+    /// Crush on OpenRouter's free tier, read from its real error screen (v0.101.0, `Fixtures/crush-*-ratelimit.txt`).
+    /// Crush retries a 429 by itself and shows only a spinner meanwhile; once the retries are spent it
+    /// shows "ERROR  Too Many Requests" and OpenRouter's own message, and a status line "retry error:
+    /// too many requests: …". Neither screen states when the cap clears: OpenRouter resets the daily
+    /// one at 00:00 UTC, so a daily cap waits hours; any other 429 gets the default cooldown. A narrow screen wraps the id ("free-models-per-" / "day").
+    private static let crushRules: [LimitRule] = [
+        LimitRule(canonicalPattern: "OpenRouter free-tier daily cap", regexPattern: "\\bfree-models-per-\\s*day\\b", cooldown: 6 * 3600),
+        LimitRule(canonicalPattern: "Crush too many requests",
+                  regexPattern: "\\b(?:error\\s+too many requests|retry error: too many requests)\\b")
+    ]
+
     private static func rules(for agent: AgentKind) -> [LimitRule] {
         switch agent {
         case .claude: return claudeRules
@@ -125,8 +136,7 @@ public struct LimitDetector: Sendable {
         // Grok runs Cursor's CLI, so a Grok terminal shows Cursor's caps.
         case .cursor, .grok: return cursorRules
         case .opencode: return openCodeRules
-        // Crush's limit messages are read from its real screens in a later step.
-        case .crush: return []
+        case .crush: return crushRules
         case .shell: return []
         }
     }

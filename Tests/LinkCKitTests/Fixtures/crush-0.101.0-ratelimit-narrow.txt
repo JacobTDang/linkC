@@ -1,0 +1,29 @@
+
+   Charm™ CRUSH ╱╱╱ ~/t/c/m/proj • ~14% • c…
+
+ │ Say done
+
+   Done.
+
+   ◇ Google: Gemma 4 31B (free) via OpenRout
+
+ │ Say hi again
+
+    ERROR  Too Many Requests
+
+   Rate limit exceeded: free-models-per-
+   day. Add 10 credits to unlock 1000 free
+   model requests per day
+
+
+
+
+
+
+
+
+  !  Go crazy
+ :::
+ :::
+
+  YOLO MODE   tab focus chat • shift+tab mode

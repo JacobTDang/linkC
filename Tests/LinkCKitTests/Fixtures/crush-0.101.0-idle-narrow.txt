@@ -1,0 +1,29 @@
+
+  ╱╱╱╱╱╱  Charm™                     v0.101.
+  ╱╱╱╱╱╱ ▄▀▀▀▀ █▀▀▀▄ █   █ ▄▀▀▀▀▀▀▀▀▀▀▀ █
+  ╱╱╱╱╱╱ █     █▀▀▀▄ █   █ ▀▀▀▀▀▀▀▀▀▀▀█ █▀▀▀
+  ╱╱╱╱╱╱  ▀▀▀▀ ▀   ▀  ▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀  ▀
+
+  /tmp/crush-cap/mock/proj
+
+  ◇ Google: Gemma 4 31B (free)
+    via OpenRouter
+
+  LSPs          MCPs          Skills
+
+  None          None          ● access-
+                              protected-
+                              vercel-
+                              deployment
+                              ● agent-
+                              browser
+                              ● ai-gateway
+                              ● ai-sdk
+                              ● auth
+                              ● automations
+
+  !  Go crazy
+ :::
+ :::
+
+  YOLO MODE   tab change focus …
