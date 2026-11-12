@@ -23,13 +23,22 @@ final class LinkCCommandTests: XCTestCase {
     }
 
     func testEveryAgentCanBeOpened() throws {
-        for agent in [AgentKind.claude, .codex, .agy, .cursor, .grok, .opencode] {
+        for agent in [AgentKind.claude, .codex, .agy, .cursor, .grok, .opencode, .crush] {
             XCTAssertEqual(try open([agent.rawValue]).agent, agent)
         }
     }
 
-    func testTheUsageNamesOpenCode() {
-        XCTAssertTrue(LinkCCommand.usage.contains("claude, codex, agy, cursor, grok or opencode"), LinkCCommand.usage)
+    func testLinkcCrushOpensCrushWithItsPromptAndTier() throws {
+        let invocation = try open(["crush", "--tier", "light", "fix", "it"])
+        XCTAssertEqual(invocation.agent, .crush)
+        XCTAssertEqual(invocation.tier, .light)
+        XCTAssertEqual(invocation.prompt, "fix it")
+        XCTAssertTrue(try open(["crush", "--task", "hand off"]).task)
+    }
+
+    func testTheUsageNamesOpenCodeAndCrush() {
+        XCTAssertTrue(LinkCCommand.usage.contains("claude, codex, agy, cursor, grok, opencode or crush"), LinkCCommand.usage)
+        XCTAssertEqual(usageError(["nope"]), "unknown agent \"nope\": use claude, codex, agy, cursor, grok, opencode, crush")
     }
 
     func testThePromptIsTheRemainingWordsJoined() throws {

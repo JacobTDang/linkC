@@ -213,10 +213,76 @@ final class CrushSessionConfigTests: XCTestCase {
         assertRefuses(containing: rc.path)
     }
 
+    /// A crushrc is a shell script: a model can be set by a sourced file, a function or a variable, none
+    /// of which a scan for a `model` line sees. Any crushrc that applies is refused.
+    func testAProjectCrushrcThatSetsNoVisibleModelIsStillRefused() throws {
+        let rc = project.appendingPathComponent("crushrc")
+        try write("#!/usr/bin/env bash\noption skill-path ./skills\n", to: rc)
+        assertRefuses(containing: rc.path)
+    }
+
+    func testAProjectCrushrcThatSourcesAnotherFileIsRefused() throws {
+        let rc = project.appendingPathComponent(".crushrc")
+        try write("#!/usr/bin/env bash\nsource ./other-settings.sh\nm=model; $m large openrouter/x\n", to: rc)
+        assertRefuses(containing: rc.path)
+    }
+
+    func testACrushrcInAFolderAboveTheProjectIsRefused() throws {
+        let nested = project.appendingPathComponent("a/b", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let rc = project.appendingPathComponent("crushrc")
+        try write("# nothing here\n", to: rc)
+
+        XCTAssertThrowsError(try makeConfig().prepare(sessionId: "S1", cwd: nested.path, model: free)) { error in
+            XCTAssertTrue(String(describing: error).contains(rc.path), "\(error)")
+        }
+    }
+
     func testProjectConfigsThatSetNoModelAreFine() throws {
         try write(#"{"mcp":{"x":{"type":"stdio","command":"y"}},"models":{}}"#, to: project.appendingPathComponent("crush.json"))
-        try write("#!/usr/bin/env bash\noption skill-path ./skills\n", to: project.appendingPathComponent("crushrc"))
         XCTAssertNoThrow(try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free))
+    }
+
+    // MARK: - A stale session folder
+
+    private func writeStale(_ text: String, under sessionId: String) throws -> URL {
+        let data = sessions.appendingPathComponent("\(sessionId)/data", isDirectory: true)
+        try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+        let stale = data.appendingPathComponent("crush.json")
+        try write(text, to: stale)
+        return stale
+    }
+
+    private let stalePaid = #"{"models":{"large":{"provider":"openrouter","model":"anthropic/claude-opus-4.5"}}}"#
+
+    /// Makes the stale file impossible to delete: its folder can no longer be written to.
+    private func lockStale(_ stale: URL) throws {
+        let folder = stale.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
+        addTeardownBlock {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+        }
+    }
+
+    func testAStaleDataFileWithAPaidModelDoesNotSurviveIntoThePreparedFolders() throws {
+        _ = try writeStale(stalePaid, under: "S1")
+
+        let env = try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free)
+
+        let data = URL(fileURLWithPath: try XCTUnwrap(env["CRUSH_GLOBAL_DATA"]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: data.appendingPathComponent("crush.json").path),
+                       "the prepared data folder holds only the user's files, and the user has no crush.json there")
+    }
+
+    func testAStaleFolderThatCannotBeDeletedFailsThePreparationInsteadOfLaunchingOnIt() throws {
+        let stale = try writeStale(stalePaid, under: "S1")
+        try lockStale(stale)
+
+        XCTAssertThrowsError(try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free)) { error in
+            XCTAssertTrue(String(describing: error).contains(sessions.appendingPathComponent("S1").path), "\(error)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessions.appendingPathComponent("S1/config/crush.json").path),
+                       "no pinned config was written beside the stale data")
     }
 
     // MARK: - Cleanup
@@ -226,11 +292,11 @@ final class CrushSessionConfigTests: XCTestCase {
         _ = try config.prepare(sessionId: "S1", cwd: project.path, model: free)
         _ = try config.prepare(sessionId: "S2", cwd: project.path, model: free)
 
-        config.remove(sessionId: "S1")
+        try config.remove(sessionId: "S1")
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessions.appendingPathComponent("S1").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: sessions.appendingPathComponent("S2/config/crush.json").path))
-        config.remove(sessionId: "S1") // idempotent
+        XCTAssertNoThrow(try config.remove(sessionId: "S1")) // idempotent
     }
 
     func testSweepRemovesEveryLeftOverSessionFolder() throws {
@@ -238,8 +304,29 @@ final class CrushSessionConfigTests: XCTestCase {
         _ = try config.prepare(sessionId: "S1", cwd: project.path, model: free)
         _ = try config.prepare(sessionId: "S2", cwd: project.path, model: free)
 
-        config.sweep()
+        try config.sweep()
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessions.path))
+    }
+
+    func testAFailedRemoveThrowsNamingTheFolderAndTheNextPrepareStillRefusesIt() throws {
+        let stale = try writeStale(stalePaid, under: "S1")
+        try lockStale(stale)
+        let config = makeConfig()
+
+        XCTAssertThrowsError(try config.remove(sessionId: "S1")) { error in
+            XCTAssertTrue(String(describing: error).contains(sessions.appendingPathComponent("S1").path), "\(error)")
+        }
+        XCTAssertThrowsError(try config.prepare(sessionId: "S1", cwd: project.path, model: free),
+                             "a folder that could not be deleted is never reused")
+    }
+
+    func testAFailedSweepThrowsNamingTheRoot() throws {
+        let stale = try writeStale(stalePaid, under: "S1")
+        try lockStale(stale)
+
+        XCTAssertThrowsError(try makeConfig().sweep()) { error in
+            XCTAssertTrue(String(describing: error).contains(sessions.path), "\(error)")
+        }
     }
 }

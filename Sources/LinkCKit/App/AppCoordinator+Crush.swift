@@ -15,6 +15,18 @@ extension AppCoordinator {
         return try crushSessions.prepare(sessionId: sessionId, cwd: cwd, model: model)
     }
 
+    /// Runs a deletion of Crush's per-session folders and says so, in the log and to the user, when it
+    /// fails: a folder left behind may hold a model that overrides the free one. Nothing launches on
+    /// it afterwards (`CrushSessionConfig.prepare` refuses a folder it cannot delete).
+    func reportCrushCleanup(_ delete: () throws -> Void) {
+        do {
+            try delete()
+        } catch {
+            NSLog("[linkC] %@", String(describing: error))
+            notifications.postLocal(title: "linkC: could not delete a Crush session's folder", body: String(describing: error))
+        }
+    }
+
     /// Says that a Crush session was brought back as a new conversation, in the log and to the
     /// user: its old one would have run on whatever model it last used.
     func tellCrushStartedFresh(title: String, folder: String) {

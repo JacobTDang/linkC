@@ -509,7 +509,7 @@ public final class AppCoordinator {
 
     public func start() throws {
         sweepOrphanedSettingsFiles()
-        crushSessions?.sweep()
+        if let crushSessions { reportCrushCleanup { try crushSessions.sweep() } }
         statusLines.sweep()
         // Registration rewrites every agent's real config, so it needs a home to write to.
         if let userHome {
@@ -874,7 +874,7 @@ public final class AppCoordinator {
         terminals.remove(sessionId)
         let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
         try? FileManager.default.removeItem(at: settingsFile)
-        crushSessions?.remove(sessionId: sessionId)
+        if let crushSessions { reportCrushCleanup { try crushSessions.remove(sessionId: sessionId) } }
         statusLines.unwatch(sessionId: sessionId)
         notifications.forget(sessionId)
         screenSignatures.removeValue(forKey: sessionId)

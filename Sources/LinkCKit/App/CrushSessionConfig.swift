@@ -41,8 +41,13 @@ public struct CrushDirectories: Sendable, Equatable {
 /// - `<data folder>/crush.json`, read after the global config, where Crush saves a model picked in
 ///   its TUI. The session gets its own data folder (`CRUSH_GLOBAL_DATA`), a copy of the user's with
 ///   `models` dropped from that file.
-/// - a `crush.json`, `.crush.json`, `crushrc` or `.crushrc` in the project, and a `crushrc` beside
-///   the global `crush.json`. A launch that finds one setting a model is refused, never run unpinned.
+/// - a `crush.json` or `.crush.json` in the project that sets a model, and any `crushrc` or `.crushrc`
+///   in the project or above it, or a `crushrc` beside the global `crush.json`. A crushrc is a shell
+///   script whose effect linkC cannot read off its text, so one that applies is refused whatever it
+///   says. A launch that finds one is refused, never run unpinned.
+///
+/// A session folder that exists when a session is prepared is deleted first; if it cannot be deleted
+/// whole, the preparation fails, so a stale `data/crush.json` is never launched on.
 ///
 /// The user's own files are only ever read.
 public struct CrushSessionConfig: Sendable {
@@ -103,9 +108,11 @@ public struct CrushSessionConfig: Sendable {
         let session = folder(for: sessionId)
         let configFolder = session.appendingPathComponent("config", isDirectory: true)
         let dataFolder = session.appendingPathComponent("data", isDirectory: true)
+        // A folder left from before may hold a `data/crush.json` that names a paid model, and only the
+        // files below are rewritten over it. It goes first, and if it cannot, nothing launches on it.
+        try Self.removeFolder(session)
         do {
             let fm = FileManager.default
-            try? fm.removeItem(at: session)
             for dir in [configFolder, dataFolder] {
                 try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             }
@@ -120,23 +127,31 @@ public struct CrushSessionConfig: Sendable {
         return [Self.configKey: configFolder.path, Self.dataKey: dataFolder.path]
     }
 
-    /// Deletes one session's folders. Idempotent.
-    func remove(sessionId: String) {
+    /// Deletes one session's folders. Idempotent. Throws, naming the folder, when it cannot be deleted
+    /// whole; `prepare` for that id then refuses to run until it is.
+    func remove(sessionId: String) throws {
         guard !sessionId.isEmpty, !sessionId.contains("/"), sessionId != ".", sessionId != ".." else { return }
-        removeFolder(folder(for: sessionId))
+        try Self.removeFolder(folder(for: sessionId))
     }
 
-    /// Deletes every session's folders: the leftovers of a linkC that quit or crashed.
-    func sweep() {
-        removeFolder(root)
+    /// Deletes every session's folders: the leftovers of a linkC that quit or crashed. Throws, naming
+    /// the folder, when they cannot be deleted whole.
+    func sweep() throws {
+        try Self.removeFolder(root)
     }
 
-    private func removeFolder(_ url: URL) {
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
+    /// Deletes `url` and checks that it is gone: a folder left half-deleted could keep a file that
+    /// overrides the pin.
+    private static func removeFolder(_ url: URL) throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return }
         do {
-            try FileManager.default.removeItem(at: url)
+            try fm.removeItem(at: url)
         } catch {
-            NSLog("[linkC] could not delete Crush's per-session folder %@ — %@", url.path, String(describing: error))
+            throw LinkCError.process("could not delete Crush's per-session folder \(url.path), which may hold a model that overrides the free one — \(error.localizedDescription)")
+        }
+        guard !fm.fileExists(atPath: url.path) else {
+            throw LinkCError.process("could not delete Crush's per-session folder \(url.path), which may hold a model that overrides the free one")
         }
     }
 
@@ -198,14 +213,18 @@ public struct CrushSessionConfig: Sendable {
         throw LinkCError.process("\(rc.path) exists, and Crush applies a crushrc over crush.json, so linkC cannot pin a free model past it — move its settings into crush.json to run Crush from linkC")
     }
 
-    /// Crush merges project configs over the global one. A project's own `models`, or `model` line,
-    /// would run the session on a model linkC did not choose. Looks in the folder and every one above it.
+    /// Crush merges project configs over the global one. A project's own `models` would run the session
+    /// on a model linkC did not choose, and a `crushrc` is a script that could set one in ways its text
+    /// does not show, so any crushrc is refused. Looks in the folder and every one above it.
     private func refuseProjectModels(from cwd: String) throws {
         var dir = URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL
         while true {
             for name in Self.projectFileNames {
                 let file = dir.appendingPathComponent(name)
                 guard FileManager.default.fileExists(atPath: file.path) else { continue }
+                if file.lastPathComponent.hasSuffix("rc") {
+                    throw LinkCError.process("\(file.path) is a Crush crushrc script, which can set a model linkC cannot see, so it will not launch Crush with it — remove it to run Crush from linkC here")
+                }
                 if try setsModel(file) {
                     throw LinkCError.process("\(file.path) sets a Crush model, which would override the free model linkC pins for this session — remove it to run Crush from linkC here")
                 }
@@ -217,16 +236,6 @@ public struct CrushSessionConfig: Sendable {
     }
 
     private func setsModel(_ file: URL) throws -> Bool {
-        if file.lastPathComponent.hasSuffix("rc") {
-            let text: String
-            do { text = try String(contentsOf: file, encoding: .utf8) } catch {
-                throw LinkCError.process("could not read \(file.path) — \(error.localizedDescription)")
-            }
-            return text.split(whereSeparator: \.isNewline).contains { line in
-                let words = line.split(whereSeparator: \.isWhitespace)
-                return words.first == "model"
-            }
-        }
         let object = try readObject(file)
         return !((object["models"] as? [String: Any])?.isEmpty ?? true)
     }

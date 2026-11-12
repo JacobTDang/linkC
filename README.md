@@ -168,7 +168,7 @@ read but not changed.
 ### Opening an agent from a terminal
 
 `linkc <agent> "prompt"` (installed by `build-app.sh` at `~/.local/bin/linkc`) opens claude, codex,
-agy, cursor, grok or opencode in a new linkC window, in the folder you ran it from, with the prompt
+agy, cursor, grok, opencode or crush in a new linkC window, in the folder you ran it from, with the prompt
 typed in. Exiting the agent closes the window. `--tier light|standard|deep` picks the model tier.
 An agent can add `--task` to hand the prompt off as a task: the new session is a worker it can
 follow with `linkc_get_task` and close with `linkc_close_worker`. A task worker opens in the panel,

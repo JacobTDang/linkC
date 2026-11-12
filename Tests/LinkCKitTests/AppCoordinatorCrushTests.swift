@@ -251,6 +251,42 @@ final class AppCoordinatorCrushTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sessionsRoot.appendingPathComponent("\(second.id)/config/crush.json").path))
     }
 
+    private func lockFolder(_ folder: URL) throws {
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
+        addTeardownBlock { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path) }
+    }
+
+    func testAFolderThatCannotBeDeletedWhenTheSessionEndsIsReportedToTheUser() throws {
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .crush, mode: .new)
+        let folder = sessionsRoot.appendingPathComponent(session.id)
+        let data = folder.appendingPathComponent("data")
+        try "{}".write(to: data.appendingPathComponent("crush.json"), atomically: true, encoding: .utf8)
+        try lockFolder(data)
+
+        coordinator.cleanup(sessionId: session.id, end: .stopped)
+
+        let notice = try XCTUnwrap(sink.deliveries.first { $0.title == "linkC: could not delete a Crush session's folder" })
+        XCTAssertTrue(notice.body.contains(folder.path), notice.body)
+    }
+
+    func testAFolderThatCannotBeSweptAtStartIsReportedToTheUser() throws {
+        let leftover = sessionsRoot.appendingPathComponent("DEAD/data", isDirectory: true)
+        try FileManager.default.createDirectory(at: leftover, withIntermediateDirectories: true)
+        try "{}".write(to: leftover.appendingPathComponent("crush.json"), atomically: true, encoding: .utf8)
+        try lockFolder(leftover)
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink)
+        defer { coordinator.shutdown() }
+
+        try coordinator.start()
+
+        let notice = try XCTUnwrap(sink.deliveries.first { $0.title == "linkC: could not delete a Crush session's folder" })
+        XCTAssertTrue(notice.body.contains(sessionsRoot.path), notice.body)
+    }
+
     func testAFolderLeftByACrashIsSweptAtStart() throws {
         let leftover = sessionsRoot.appendingPathComponent("DEAD/config", isDirectory: true)
         try FileManager.default.createDirectory(at: leftover, withIntermediateDirectories: true)
