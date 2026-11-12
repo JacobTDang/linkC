@@ -119,7 +119,7 @@ final class MCPRegistrarTests: XCTestCase {
     }
 
     func testRegisterAllWritesToExpectedConfigFiles() throws {
-        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp")
+        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp", environment: [:])
 
         // 1. Claude Code root config ~/.claude.json
         let claudeJson = tempDir.appendingPathComponent(".claude.json")
@@ -211,7 +211,7 @@ final class MCPRegistrarTests: XCTestCase {
         try FileManager.default.createDirectory(
             at: tempDir.appendingPathComponent(".claude.json"), withIntermediateDirectories: true)
 
-        XCTAssertThrowsError(try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp")) { error in
+        XCTAssertThrowsError(try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp", environment: [:])) { error in
             XCTAssertTrue("\(error)".contains("~/.claude.json"), "\(error)")
         }
 
@@ -222,7 +222,7 @@ final class MCPRegistrarTests: XCTestCase {
     }
 
     func testRegisterAllSetsAgentIdentityPerClient() throws {
-        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp")
+        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/custom/bin/linkc-mcp", environment: [:])
         func env(_ rel: String) throws -> [String: String]? {
             let json = try JSONSerialization.jsonObject(with: Data(contentsOf: tempDir.appendingPathComponent(rel))) as? [String: Any]
             return ((json?["mcpServers"] as? [String: Any])?["linkc-multiplier"] as? [String: Any])?["env"] as? [String: String]
@@ -447,9 +447,126 @@ final class MCPRegistrarTests: XCTestCase {
     }
 
     func testRegisterAllRegistersWithOpenCode() throws {
-        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/bin/linkc-mcp")
+        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/bin/linkc-mcp", environment: [:])
         let entry = try XCTUnwrap(try openCodeEntry(in: MCPRegistrar.openCodeConfigFile(home: tempDir)))
         XCTAssertEqual(entry["environment"] as? [String: String], ["LINKC_AGENT": "opencode"])
+    }
+
+    // MARK: - Crush
+
+    private var crushFile: URL { tempDir.appendingPathComponent(".config/crush/crush.json") }
+
+    private func crushEntry(in file: URL) throws -> [String: Any]? {
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        return (root["mcp"] as? [String: Any])?["linkc-multiplier"] as? [String: Any]
+    }
+
+    func testCrushIsRegisteredAsAStdioServerInAFileThatDidNotExist() throws {
+        try MCPRegistrar.registerCrushServer(configFile: crushFile, binaryPath: "/Users/someone/.local/bin/linkc-mcp")
+
+        let entry = try XCTUnwrap(try crushEntry(in: crushFile))
+        XCTAssertEqual(entry["type"] as? String, "stdio")
+        XCTAssertEqual(entry["command"] as? String, "/Users/someone/.local/bin/linkc-mcp")
+        XCTAssertEqual(entry["args"] as? [String], [])
+        XCTAssertEqual(entry["env"] as? [String: String], ["LINKC_AGENT": "crush"])
+    }
+
+    /// The user's providers, models and other servers stay; the schema URL stays readable.
+    func testRegisteringWithCrushKeepsEveryOtherKeyAndServer() throws {
+        try FileManager.default.createDirectory(at: crushFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let initial = """
+        {
+          "$schema": "https://charm.land/crush.json",
+          "providers": {"openrouter": {"api_key": "secret"}},
+          "mcp": {"jobs": {"type": "stdio", "command": "python3", "args": ["/x/server.py"]}}
+        }
+        """
+        try initial.write(to: crushFile, atomically: true, encoding: .utf8)
+
+        try MCPRegistrar.registerCrushServer(configFile: crushFile, binaryPath: "/bin/linkc-mcp")
+
+        let text = try String(contentsOf: crushFile, encoding: .utf8)
+        XCTAssertTrue(text.contains("\"https://charm.land/crush.json\""), "slashes are not escaped: \(text)")
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertNotNil((root["providers"] as? [String: Any])?["openrouter"])
+        let mcp = try XCTUnwrap(root["mcp"] as? [String: Any])
+        XCTAssertEqual((mcp["jobs"] as? [String: Any])?["args"] as? [String], ["/x/server.py"])
+        XCTAssertEqual((mcp["linkc-multiplier"] as? [String: Any])?["type"] as? String, "stdio")
+    }
+
+    func testAnUnchangedCrushEntryIsNotRewritten() throws {
+        try FileManager.default.createDirectory(at: crushFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let compact = #"{"mcp":{"linkc-multiplier":{"args":[],"command":"/bin/linkc-mcp","env":{"LINKC_AGENT":"crush"},"type":"stdio"}}}"#
+        try compact.write(to: crushFile, atomically: true, encoding: .utf8)
+
+        try MCPRegistrar.registerCrushServer(configFile: crushFile, binaryPath: "/bin/linkc-mcp")
+
+        XCTAssertEqual(try String(contentsOf: crushFile, encoding: .utf8), compact)
+    }
+
+    func testAStaleCrushEntryIsReplaced() throws {
+        try MCPRegistrar.registerCrushServer(configFile: crushFile, binaryPath: "/old/linkc-mcp")
+        try MCPRegistrar.registerCrushServer(configFile: crushFile, binaryPath: "/new/linkc-mcp")
+        XCTAssertEqual(try crushEntry(in: crushFile)?["command"] as? String, "/new/linkc-mcp")
+    }
+
+    /// Crush's config that linkC cannot parse is left exactly as it is, and the failure names it.
+    func testACrushFileThatIsNotPlainJSONIsLeftByteForByteAndReported() throws {
+        try FileManager.default.createDirectory(at: crushFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let broken = "{\n  \"providers\": {},\n  // note\n}\n"
+        try broken.write(to: crushFile, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerCrushServer(configFile: crushFile, binaryPath: "/bin/linkc-mcp")) { error in
+            XCTAssertTrue(String(describing: error).contains(self.crushFile.path), "\(error)")
+        }
+        XCTAssertEqual(try String(contentsOf: crushFile, encoding: .utf8), broken)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: crushFile.deletingLastPathComponent().path), ["crush.json"])
+    }
+
+    func testACrushConfigThatCannotBeReadIsLeftAloneAndReported() throws {
+        try FileManager.default.createDirectory(at: crushFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let secret = #"{"providers":{}}"#
+        try secret.write(to: crushFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: crushFile.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: crushFile.path) }
+
+        XCTAssertThrowsError(try MCPRegistrar.registerCrushServer(configFile: crushFile, binaryPath: "/bin/linkc-mcp"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: crushFile.path)
+        XCTAssertEqual(try String(contentsOf: crushFile, encoding: .utf8), secret)
+    }
+
+    func testACrushMCPTableThatIsNotATableIsRefused() throws {
+        try FileManager.default.createDirectory(at: crushFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let odd = #"{"mcp":["not","a","table"]}"#
+        try odd.write(to: crushFile, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerCrushServer(configFile: crushFile, binaryPath: "/bin/linkc-mcp"))
+        XCTAssertEqual(try String(contentsOf: crushFile, encoding: .utf8), odd)
+    }
+
+    func testCrushsConfigFileFollowsItsOwnFolderVariables() {
+        let home = URL(fileURLWithPath: "/h", isDirectory: true)
+        XCTAssertEqual(MCPRegistrar.crushConfigFile(home: home, environment: [:]).path, "/h/.config/crush/crush.json")
+        XCTAssertEqual(MCPRegistrar.crushConfigFile(home: home, environment: ["XDG_CONFIG_HOME": "/x"]).path, "/x/crush/crush.json")
+        XCTAssertEqual(MCPRegistrar.crushConfigFile(home: home, environment: ["CRUSH_GLOBAL_CONFIG": "/c", "XDG_CONFIG_HOME": "/x"]).path, "/c/crush.json")
+    }
+
+    func testRegisterAllRegistersWithCrush() throws {
+        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/bin/linkc-mcp", environment: [:])
+        let entry = try XCTUnwrap(try crushEntry(in: crushFile))
+        XCTAssertEqual(entry["env"] as? [String: String], ["LINKC_AGENT": "crush"])
+    }
+
+    func testRegisterAllNamesCrushWhenItsConfigCannotBeRead() throws {
+        try FileManager.default.createDirectory(at: crushFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let broken = "{ not json"
+        try broken.write(to: crushFile, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/bin/linkc-mcp", environment: [:])) { error in
+            XCTAssertTrue("\(error)".contains("crush.json"), "\(error)")
+        }
+        XCTAssertEqual(try String(contentsOf: crushFile, encoding: .utf8), broken)
+        XCTAssertNotNil(try openCodeEntry(in: openCodeFile), "the other clients are still registered")
     }
 
     // MARK: - OpenCode's inline config

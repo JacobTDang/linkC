@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 /// Automatically configures and registers the `linkc-mcp` multiplier server
-/// across Claude Code, Cursor, Codex, Antigravity, and OpenCode configuration files.
+/// across Claude Code, Cursor, Codex, Antigravity, OpenCode, and Crush configuration files.
 public struct MCPRegistrar: Sendable {
     /// The name linkC's tool server is registered under in every agent's config.
     public static let serverName = "linkc-multiplier"
@@ -138,6 +138,33 @@ public struct MCPRegistrar: Sendable {
             to: configFile)
     }
 
+    /// Crush's global config file: `crush.json` in the folder `CRUSH_GLOBAL_CONFIG` or
+    /// `XDG_CONFIG_HOME` names, else `~/.config/crush/crush.json` — the file Crush itself reads, and
+    /// the one a session's pinned copy is made from.
+    public static func crushConfigFile(home: URL, environment: [String: String]) -> URL {
+        CrushDirectories.standard(home: home, environment: environment).config.appendingPathComponent("crush.json")
+    }
+
+    /// linkC's server as an entry of Crush's `mcp` table.
+    public static func crushEntry(binaryPath: String) -> [String: Any] {
+        ["type": "stdio", "command": binaryPath, "args": [String](),
+         "env": ["LINKC_AGENT": AgentKind.crush.rawValue]]
+    }
+
+    /// Registers linkC's server in Crush's config, keeping every other key and server. Writes only
+    /// when the entry differs from the one already there, and never over a file it could not read.
+    public static func registerCrushServer(configFile: URL, serverName: String = MCPRegistrar.serverName, binaryPath: String) throws {
+        var root = try readJSONObject(at: configFile)
+        var mcp = try mcpTable(in: root, of: configFile.path)
+        let entry = crushEntry(binaryPath: binaryPath)
+        if let existing = mcp[serverName] as? [String: Any], NSDictionary(dictionary: existing).isEqual(to: entry) { return }
+        mcp[serverName] = entry
+        root["mcp"] = mcp
+        try writeAtomically(
+            try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+            to: configFile)
+    }
+
     /// `OPENCODE_CONFIG_CONTENT` for a terminal linkC starts OpenCode in: `inherited` — a value
     /// already in linkC's own environment — with linkC's server added to its `mcp` table and, when
     /// given, `model` as the session's model. One line.
@@ -243,7 +270,8 @@ public struct MCPRegistrar: Sendable {
 
     public static func registerAll(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
-        binaryPath: String = defaultBinaryPath()
+        binaryPath: String = defaultBinaryPath(),
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws {
         var failures: [String] = []
 
@@ -304,6 +332,11 @@ public struct MCPRegistrar: Sendable {
         // OpenCode: ~/.config/opencode/opencode.json, in its own `mcp` shape
         if let f = attemptRegistration("~/.config/opencode/opencode.json", {
             try registerOpenCodeServer(configFile: openCodeConfigFile(home: home), binaryPath: binaryPath)
+        }) { failures.append(f) }
+        // Crush: crush.json in its config folder (~/.config/crush by default), in its own `mcp` shape
+        let crushFile = crushConfigFile(home: home, environment: environment)
+        if let f = attemptRegistration("crush.json (\(crushFile.path))", {
+            try registerCrushServer(configFile: crushFile, binaryPath: binaryPath)
         }) { failures.append(f) }
 
         guard failures.isEmpty else {
