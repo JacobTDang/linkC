@@ -34,6 +34,33 @@ final class MCPRegistrarTests: XCTestCase {
         XCTAssertEqual(server?["args"] as? [String], [])
     }
 
+    func testFreebuffIsRegisteredInAgentsMCPWithoutDroppingOtherServers() throws {
+        let configFile = tempDir.appendingPathComponent(".agents/mcp.json")
+        try FileManager.default.createDirectory(at: configFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"mcpServers":{"kept":{"command":"kept"}}}"#.write(to: configFile, atomically: true, encoding: .utf8)
+
+        try MCPRegistrar.registerFreebuffServer(configFile: configFile, binaryPath: "/bin/linkc-mcp")
+
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: configFile)) as? [String: Any])
+        let servers = try XCTUnwrap(root["mcpServers"] as? [String: Any])
+        XCTAssertNotNil(servers["kept"])
+        let linkc = try XCTUnwrap(servers[MCPRegistrar.serverName] as? [String: Any])
+        XCTAssertEqual(linkc["command"] as? String, "/bin/linkc-mcp")
+        XCTAssertEqual(linkc["env"] as? [String: String], ["LINKC_AGENT": "freebuff"])
+    }
+
+    func testUnreadableFreebuffConfigIsReportedAndLeftUntouched() throws {
+        let configFile = tempDir.appendingPathComponent(".agents/mcp.json")
+        try FileManager.default.createDirectory(at: configFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let invalid = "{ not json"
+        try invalid.write(to: configFile, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerFreebuffServer(configFile: configFile, binaryPath: "/bin/linkc-mcp")) { error in
+            XCTAssertTrue("\(error)".contains(configFile.path), "\(error)")
+        }
+        XCTAssertEqual(try String(contentsOf: configFile, encoding: .utf8), invalid)
+    }
+
     func testRegisterPreservesExistingServers() throws {
         let configFile = tempDir.appendingPathComponent("cursor-mcp.json")
         let initial: [String: Any] = [

@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 /// Automatically configures and registers the `linkc-mcp` multiplier server
-/// across Claude Code, Cursor, Codex, Antigravity, and OpenCode configuration files.
+/// across Claude Code, Cursor, Codex, Antigravity, OpenCode, and Freebuff configuration files.
 public struct MCPRegistrar: Sendable {
     /// The name linkC's tool server is registered under in every agent's config.
     public static let serverName = "linkc-multiplier"
@@ -102,6 +102,22 @@ public struct MCPRegistrar: Sendable {
         mcpServers[serverName] = entry
         root["mcpServers"] = mcpServers
         try writeAtomically(try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]), to: configFile)
+    }
+
+    public static func freebuffConfigFile(home: URL) -> URL {
+        home.appendingPathComponent(".agents/mcp.json")
+    }
+
+    public static func registerFreebuffServer(
+        configFile: URL,
+        serverName: String = MCPRegistrar.serverName,
+        binaryPath: String
+    ) throws {
+        try registerServer(
+            configFile: configFile,
+            serverName: serverName,
+            binaryPath: binaryPath,
+            env: ["LINKC_AGENT": AgentKind.freebuff.rawValue])
     }
 
     /// OpenCode's global config file.
@@ -304,6 +320,10 @@ public struct MCPRegistrar: Sendable {
         // OpenCode: ~/.config/opencode/opencode.json, in its own `mcp` shape
         if let f = attemptRegistration("~/.config/opencode/opencode.json", {
             try registerOpenCodeServer(configFile: openCodeConfigFile(home: home), binaryPath: binaryPath)
+        }) { failures.append(f) }
+        // Freebuff: ~/.agents/mcp.json, in the shared `mcpServers` shape.
+        if let f = attemptRegistration("~/.agents/mcp.json", {
+            try registerFreebuffServer(configFile: freebuffConfigFile(home: home), binaryPath: binaryPath)
         }) { failures.append(f) }
 
         guard failures.isEmpty else {

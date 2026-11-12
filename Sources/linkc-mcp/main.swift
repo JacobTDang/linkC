@@ -7,7 +7,7 @@ if args.contains("--install") || args.contains("install") {
     let binaryPath = args.count > 2 ? args[2] : MCPRegistrar.defaultBinaryPath()
     do {
         try MCPRegistrar.registerAll(binaryPath: binaryPath)
-        FileHandle.standardError.write(Data("✓ linkc-multiplier MCP registered across Claude, Cursor, Codex, Antigravity, and OpenCode\n".utf8))
+        FileHandle.standardError.write(Data("✓ linkc-multiplier MCP registered across Claude, Cursor, Codex, Antigravity, OpenCode, and Freebuff\n".utf8))
         exit(0)
     } catch {
         FileHandle.standardError.write(Data("Error registering MCP server: \(error.localizedDescription)\n".utf8))
@@ -21,7 +21,7 @@ if args.contains("--help") || args.contains("-h") {
 
     Usage:
       linkc-mcp            Run stdio MCP server for current working directory
-      linkc-mcp --install  Register server with Claude, Cursor, Codex, Antigravity, and OpenCode
+      linkc-mcp --install  Register server with Claude, Cursor, Codex, Antigravity, OpenCode, and Freebuff
 
     """
     FileHandle.standardError.write(Data(help.utf8))
