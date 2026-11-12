@@ -40,4 +40,3 @@
 
 
   ~/Projects/linkC/.worktrees/kilo-agent:feat/kilo-agent                            7.8.27
-
