@@ -31,13 +31,13 @@ final class MCPServerCrossProjectReadTests: XCTestCase {
     private func homeServer() -> MCPServer {
         MCPServer(workspaceRoot: home.path, environment: ["LINKC_AGENT": "claude"],
                   ancestorResolver: { _ in nil }, modelSettings: { .seeded },
-                  sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none, knownProjects: file)
+                  sessionResolver: { nil }, usageReaders: [:], kiloModels: { _ in [] }, modelLists: TestModelLists.none, knownProjects: file)
     }
 
     private func awayServer() -> MCPServer {
         MCPServer(workspaceRoot: away.path, environment: ["LINKC_AGENT": "codex"],
                   ancestorResolver: { _ in nil }, modelSettings: { .seeded },
-                  sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none, knownProjects: file)
+                  sessionResolver: { nil }, usageReaders: [:], kiloModels: { _ in [] }, modelLists: TestModelLists.none, knownProjects: file)
     }
 
     private func call(_ server: MCPServer, _ tool: String, _ arguments: [String: Any] = [:]) throws -> (text: String, isError: Bool) {

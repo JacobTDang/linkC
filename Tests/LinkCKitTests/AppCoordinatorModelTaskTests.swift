@@ -53,6 +53,7 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         installed: Set<AgentKind>? = nil,
         models: AgentModelSettings = .seeded,
         openCodeModels: @escaping AppCoordinator.OpenCodeModelLister = { _ in ["opencode/big-pickle"] },
+        kiloModels: @escaping AppCoordinator.OpenCodeModelLister = { _ in [] },
         lists: @escaping @Sendable () throws -> [AgentKind: AgentModelList] = TestModelLists.none
     ) -> AppCoordinator {
         let agentPath = agent ?? mockAgent
@@ -74,6 +75,7 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
             injectionGap: 0,
             turnEndQuietPeriod: 0,
             openCodeModels: openCodeModels,
+            kiloModels: kiloModels,
             isWatching: { _ in false }
         )
     }
@@ -396,7 +398,7 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         let reason = try XCTUnwrap(failed.cancelReason)
         XCTAssertTrue(reason.hasPrefix("agy's Gemini pool is limited until "), reason)
         XCTAssertTrue(reason.hasSuffix(" (quota exceeded). That is after this task would expire in the queue; "
-                                       + "delegate it again then, or to: claude, agy's Claude/GPT pool, cursor, codex, grok, opencode."),
+                                       + "delegate it again then, or to: claude, agy's Claude/GPT pool, cursor, codex, grok, opencode, kilo."),
                       reason)
         let told = try inbox.load().messages.filter { $0.taskId == task.id && $0.toAgent == .claude }
         XCTAssertTrue(told.contains { $0.prompt.contains("failed") && $0.prompt.contains(reason) },

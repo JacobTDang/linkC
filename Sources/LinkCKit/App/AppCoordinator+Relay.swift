@@ -608,13 +608,17 @@ extension AppCoordinator {
             }
             return false
         }
-        if task.toAgent == .opencode {
+        if task.toAgent == .opencode || task.toAgent == .kilo {
             let availability: OpenCodeModelAvailability
             if let model = task.model {
-                availability = openCodeModelAvailability(
-                    in: workspacePath, model: model, subject: model, remedy: "pick another free model")
+                availability = task.toAgent == .kilo
+                    ? kiloModelAvailability(in: workspacePath, model: model, subject: model, remedy: "pick another free model")
+                    : openCodeModelAvailability(in: workspacePath, model: model, subject: model, remedy: "pick another free model")
             } else {
-                availability = openCodeModelAvailability(in: workspacePath, tier: task.tier ?? defaultTier(for: .opencode))
+                let tier = task.tier ?? defaultTier(for: task.toAgent)
+                availability = task.toAgent == .kilo
+                    ? kiloModelAvailability(in: workspacePath, tier: tier)
+                    : openCodeModelAvailability(in: workspacePath, tier: tier)
             }
             switch availability {
             case .checking:
@@ -622,7 +626,7 @@ extension AppCoordinator {
             case .available:
                 break
             case .refused(let reason):
-                // Waiting will not make OpenCode list the model: end the task with the reason, rather
+                // Waiting will not make the agent list the model: end the task with the reason, rather
                 // than leave it queued for an hour behind a generic "undelivered". A task that names
                 // its model fails: it was asked for something that cannot run.
                 do {
@@ -635,11 +639,12 @@ extension AppCoordinator {
                             taskId: task.id, reason: reason, notifyBody: "expired — \(reason)", timeout: Self.relayLockTimeout)
                         logTaskEnded(task, as: "expired", reason: reason)
                     }
-                    lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
-                    notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: workspacePath)
+                    lastSpawnFailure = SpawnFailure(agent: task.toAgent, workspacePath: workspacePath, error: reason)
+                    notifications.post(title: Self.freeAgentRefusalTitle(for: task.toAgent), body: reason, project: workspacePath)
                 } catch {
                     if isRelayLockTimeout(error) { return true }
-                    NSLog("[linkC relay] dispatchTasks: task %@ OpenCode refusal — %@", task.shortId, String(describing: error))
+                    NSLog("[linkC relay] dispatchTasks: task %@ %@ refusal — %@",
+                          task.shortId, task.toAgent.rawValue, String(describing: error))
                 }
                 return false
             case .uncheckable(let reason):
@@ -647,7 +652,7 @@ extension AppCoordinator {
                 // on its own like any queued task), and its delegator is told once.
                 reportOpenCodeSpawnRefusal(reason, from: task.fromAgent, taskId: task.id,
                                            key: OpenCodeRefusalKey(workspace: ProjectPath.canonical(workspacePath), kind: .task, id: task.id),
-                                           workspacePath: workspacePath, inboxStore: inboxStore)
+                                           workspacePath: workspacePath, inboxStore: inboxStore, agent: task.toAgent)
                 return false
             }
         }
@@ -858,30 +863,34 @@ extension AppCoordinator {
                     continue
                 }
                 let goal: String? = message.kind == .task ? message.prompt : nil
-                if message.toAgent == .opencode {
-                    let tier = defaultTier(for: .opencode)
-                    switch openCodeModelAvailability(in: workspacePath, tier: tier) {
+                if message.toAgent == .opencode || message.toAgent == .kilo {
+                    let tier = defaultTier(for: message.toAgent)
+                    let availability = message.toAgent == .kilo
+                        ? kiloModelAvailability(in: workspacePath, tier: tier)
+                        : openCodeModelAvailability(in: workspacePath, tier: tier)
+                    switch availability {
                     case .checking:
                         continue
                     case .available:
                         break
                     case .refused(let reason):
-                        // Waiting will not make OpenCode list the model: fail the message, and tell its sender.
+                        // Waiting will not make the agent list the model: fail the message, and tell its sender.
                         do {
                             try inboxStore.markMessageFailed(id: message.id, timeout: Self.relayLockTimeout)
                         } catch {
                             if isRelayLockTimeout(error) { return true }
-                            NSLog("[linkC relay] dispatchMessages: message %@ OpenCode refusal — %@", message.id, String(describing: error))
+                            NSLog("[linkC relay] dispatchMessages: message %@ %@ refusal — %@",
+                                  message.id, message.toAgent.rawValue, String(describing: error))
                             continue
                         }
-                        lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
-                        announceOpenCodeRefusal(reason, notice: reason, from: .opencode, to: message.fromAgent,
+                        lastSpawnFailure = SpawnFailure(agent: message.toAgent, workspacePath: workspacePath, error: reason)
+                        announceOpenCodeRefusal(reason, notice: reason, from: message.toAgent, to: message.fromAgent,
                                                 taskId: message.taskId, inboxStore: inboxStore)
                         continue
                     case .uncheckable(let reason):
                         reportOpenCodeSpawnRefusal(reason, from: message.fromAgent, taskId: message.taskId,
                                                    key: OpenCodeRefusalKey(workspace: norm, kind: .message, id: message.id),
-                                                   workspacePath: workspacePath, inboxStore: inboxStore)
+                                                   workspacePath: workspacePath, inboxStore: inboxStore, agent: message.toAgent)
                         continue
                     }
                 }
@@ -979,6 +988,11 @@ extension AppCoordinator {
     }
 
     static let openCodeRefusalTitle = "linkC: OpenCode could not start"
+    static let kiloRefusalTitle = "linkC: Kilo could not start"
+
+    private static func freeAgentRefusalTitle(for agent: AgentKind) -> String {
+        agent == .kilo ? kiloRefusalTitle : openCodeRefusalTitle
+    }
 
     /// Forgets the refusals reported in `workspace` for `kind` of item that are no longer queued, so a
     /// report stays marked only while its item waits.
@@ -990,20 +1004,20 @@ extension AppCoordinator {
         openCodeRefusalNoticesSent = openCodeRefusalNoticesSent.filter(stillQueued)
     }
 
-    /// Reports that OpenCode could not be asked about `key`'s model: the user is told on the first pass,
-    /// whether or not the sender's notice can be written, and the notice is tried on every pass until it
-    /// lands, so it is never lost. The item stays queued, so every later pass meets it again.
+    /// Reports that a free-only agent could not be asked about `key`'s model: the user is told on the
+    /// first pass, whether or not the sender's notice can be written, and the notice is tried on every
+    /// pass until it lands, so it is never lost. The item stays queued, so every later pass meets it again.
     private func reportOpenCodeSpawnRefusal(
         _ reason: String, from delegator: AgentKind, taskId: String?, key: OpenCodeRefusalKey,
-        workspacePath: String, inboxStore: InboxStore
+        workspacePath: String, inboxStore: InboxStore, agent: AgentKind = .opencode
     ) {
         if openCodeRefusalUsersTold.insert(key).inserted {
             // A "last known problem" marker only: whether to report is decided by `key`.
-            lastSpawnFailure = SpawnFailure(agent: .opencode, workspacePath: workspacePath, error: reason)
-            notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: workspacePath)
+            lastSpawnFailure = SpawnFailure(agent: agent, workspacePath: workspacePath, error: reason)
+            notifications.post(title: Self.freeAgentRefusalTitle(for: agent), body: reason, project: workspacePath)
         }
         guard !openCodeRefusalNoticesSent.contains(key) else { return }
-        if enqueueDelegatorNotice(reason, from: .opencode, to: delegator, taskId: taskId, inboxStore: inboxStore) {
+        if enqueueDelegatorNotice(reason, from: agent, to: delegator, taskId: taskId, inboxStore: inboxStore) {
             openCodeRefusalNoticesSent.insert(key)
         }
     }
@@ -1014,7 +1028,7 @@ extension AppCoordinator {
         inboxStore: InboxStore
     ) {
         _ = enqueueDelegatorNotice(notice, from: sender, to: delegator, taskId: taskId, inboxStore: inboxStore)
-        notifications.post(title: Self.openCodeRefusalTitle, body: reason, project: inboxStore.workspaceRoot)
+        notifications.post(title: Self.freeAgentRefusalTitle(for: sender), body: reason, project: inboxStore.workspaceRoot)
     }
 
     /// Whether `notice` reached `delegator`'s inbox; a failure is logged.
@@ -1470,7 +1484,7 @@ extension AppCoordinator {
         }
 
         // Candidates: installed, not limited for this task's tier model, not this agent; prefer ones already active here.
-        let supportedPeers = AgentKind.peers
+        let supportedPeers: [AgentKind] = [.claude, .codex, .agy, .cursor, .grok, .opencode, .kilo]
         var candidates = supportedPeers.filter { candidate in
             guard !candidate.isLongTaskOnly else { return false }
             guard candidate != session.agentKind && candidate != currentTask?.fromAgent else { return false }
@@ -1498,14 +1512,18 @@ extension AppCoordinator {
             let bActive = store.sessions.contains { $0.cwd == norm && $0.agentKind == b && $0.state != .ended }
             return aActive && !bActive
         }
-        // A task on its last hop moves nowhere, so OpenCode is not asked about it: the hop-exhausted
+        // A task on its last hop moves nowhere, so OpenCode/Kilo is not asked about it: the hop-exhausted
         // path below tells its delegator.
-        var openCodeRefusal: String?
-        if candidates.first == .opencode, let currentTask, currentTask.hop < 2 {
-            let tier = currentTask.tier ?? defaultTier(for: .opencode)
-            switch openCodeModelAvailability(in: norm, tier: tier) {
+        var modelRefusal: (agent: AgentKind, reason: String)?
+        while let candidate = candidates.first, candidate == .opencode || candidate == .kilo,
+              let currentTask, currentTask.hop < 2 {
+            let tier = currentTask.tier ?? defaultTier(for: candidate)
+            let availability = candidate == .kilo
+                ? kiloModelAvailability(in: norm, tier: tier)
+                : openCodeModelAvailability(in: norm, tier: tier)
+            switch availability {
             case .checking:
-                // OpenCode's models are still being listed off the main actor. Forget this screen's scan
+                // Free-model listing is still running off the main actor. Forget this screen's scan
                 // so the next tick reads the unchanged screen again from the start; `recordLimit` keeps a
                 // live record as it is, so reading it twice records nothing new. The signature is forgotten
                 // too, but only when this pass set it, which only a pass with no hold in force does: a pass
@@ -1523,17 +1541,19 @@ extension AppCoordinator {
                 break
             case .refused(let reason), .uncheckable(let reason):
                 candidates.removeFirst()
-                openCodeRefusal = reason
+                modelRefusal = (candidate, reason)
+                continue
             }
+            break
         }
 
         let hop = currentTask?.hop ?? 0
         guard hop < 2, let target = candidates.first else {
-            if let currentTask, let openCodeRefusal {
+            if let currentTask, let modelRefusal {
                 // Once per limit: the session is held in `.error` from here, so this tick is not repeated.
                 announceOpenCodeRefusal(
-                    openCodeRefusal,
-                    notice: "\(session.agentKind.displayName) reached its usage limit, and task \(currentTask.shortId) stays with it: OpenCode can't take it — \(openCodeRefusal)",
+                    modelRefusal.reason,
+                    notice: "\(session.agentKind.displayName) reached its usage limit, and task \(currentTask.shortId) stays with it: \(modelRefusal.agent.displayName) can't take it — \(modelRefusal.reason)",
                     from: session.agentKind, to: currentTask.fromAgent, taskId: currentTask.id, inboxStore: inboxStore)
                 store.updateState(id: session.id, to: .error)
                 return true

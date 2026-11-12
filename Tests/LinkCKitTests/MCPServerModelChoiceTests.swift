@@ -48,6 +48,7 @@ final class MCPServerModelChoiceTests: XCTestCase {
             sessionResolver: { nil },
             usageReaders: [:],
             openCodeModels: openCodeModels,
+            kiloModels: { _ in [] },
             modelLists: readLists)
     }
 

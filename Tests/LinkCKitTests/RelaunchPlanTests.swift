@@ -41,6 +41,12 @@ final class RelaunchPlanTests: XCTestCase {
         XCTAssertEqual(result, RelaunchPlan(relaunch: ["W", "U"], toEarlier: [], drop: []))
     }
 
+    /// Kilo never resumes: each entry opens its own new conversation, so none contests another.
+    func testEveryKiloEntryInAFolderComesBackOnItsOwnNewConversation() {
+        let result = plan([makeEntry("A", .kilo), makeEntry("B", .kilo)])
+        XCTAssertEqual(result, RelaunchPlan(relaunch: ["A", "B"], toEarlier: [], drop: []))
+    }
+
     func testDifferentAgentsInOneFolderEachContinue() {
         let result = plan([makeEntry("A", .agy), makeEntry("B", .cursor), makeEntry("C", .codex)])
         XCTAssertEqual(result.relaunch, ["A", "B", "C"])

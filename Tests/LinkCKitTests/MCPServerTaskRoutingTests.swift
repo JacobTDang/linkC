@@ -22,7 +22,7 @@ final class MCPServerTaskRoutingTests: XCTestCase {
     private func server(modelSwitcher: MCPServer.ModelSwitcher? = nil) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox, modelSwitcher: modelSwitcher,
                   environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
-                  modelSettings: { .seeded }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
+                  modelSettings: { .seeded }, sessionResolver: { nil }, usageReaders: [:], kiloModels: { _ in [] }, modelLists: TestModelLists.none)
     }
 
     private func call(_ server: MCPServer, _ tool: String, _ arguments: [String: Any]) throws -> (text: String, isError: Bool) {

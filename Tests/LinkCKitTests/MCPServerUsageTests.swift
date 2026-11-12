@@ -21,7 +21,7 @@ final class MCPServerUsageTests: XCTestCase {
     private func server(readers: [AgentKind: MCPServer.UsageReader]) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                   environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
-                  modelSettings: { .seeded }, sessionResolver: { nil }, usageReaders: readers, modelLists: TestModelLists.none)
+                  modelSettings: { .seeded }, sessionResolver: { nil }, usageReaders: readers, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
     }
 
     private func call(_ server: MCPServer, _ name: String, _ args: [String: Any] = [:]) throws -> (text: String, isError: Bool) {

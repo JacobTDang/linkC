@@ -103,6 +103,8 @@ public final class AppCoordinator {
     /// Lists models away from the main actor. Results are reused briefly so the once-per-second
     /// relay never blocks on OpenCode, while withdrawn free models are noticed within seconds.
     let openCodeModels: OpenCodeModelLister
+    /// Same role as `openCodeModels`, for Kilo's free-model listing.
+    let kiloModels: OpenCodeModelLister
     private struct OpenCodeModelListing {
         enum ListingResult {
             case success([String])
@@ -113,14 +115,17 @@ public final class AppCoordinator {
     }
     private var openCodeModelListings: [String: OpenCodeModelListing] = [:]
     private var openCodeModelChecksInFlight: Set<String> = []
+    private var kiloModelListings: [String: OpenCodeModelListing] = [:]
+    private var kiloModelChecksInFlight: Set<String> = []
     static let openCodeModelListingMaxAge: TimeInterval = 5
     /// A failed listing is kept longer, so a broken OpenCode is listed at most once a minute per folder.
     static let openCodeModelFailedListingMaxAge: TimeInterval = 60
-    /// How long the app waits for `opencode models`: less than the 20 s `linkc` waits for its open
-    /// request, so the command hears "could not check" rather than nothing. Public: it is read by the
-    /// public initializer's default `openCodeModels`.
+    /// How long the app waits for `opencode models` / `kilo models`: less than the 20 s `linkc` waits
+    /// for its open request, so the command hears "could not check" rather than nothing. Public: it is
+    /// read by the public initializer's default listers.
     public static let openCodeModelListingTimeout: TimeInterval = 10
     var openCodeModelCheckCount = 0
+    var kiloModelCheckCount = 0
     /// OpenCode refusals the user has been told of, one per queued task or message, so a pass that meets the
     /// same one again says nothing to them. Pruned by the dispatch passes to what is still queued.
     var openCodeRefusalUsersTold: Set<OpenCodeRefusalKey> = []
@@ -357,6 +362,11 @@ public final class AppCoordinator {
                 try MCPServer.listOpenCodeModels(in: folder, timeout: AppCoordinator.openCodeModelListingTimeout)
             }.value
         },
+        kiloModels: @escaping OpenCodeModelLister = { folder in
+            try await Task.detached {
+                try MCPServer.listKiloModels(in: folder, timeout: AppCoordinator.openCodeModelListingTimeout)
+            }.value
+        },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -385,6 +395,7 @@ public final class AppCoordinator {
         self.sidebarProjects = sidebarProjects
         self.openRequests = openRequests
         self.openCodeModels = openCodeModels
+        self.kiloModels = kiloModels
         self.isWatching = isWatching
         self.statusLines = StatusLineFeed(
             directory: settingsDir.appendingPathComponent("status-lines", isDirectory: true),
@@ -438,6 +449,53 @@ public final class AppCoordinator {
                 self.openCodeModelChecksInFlight.remove(norm)
                 self.openCodeModelCheckCount += 1
                 // The pass that was waiting for this answer need not wait out an idle interval.
+                self.sweepTicker?.wake()
+            }
+        }
+        return .checking
+    }
+
+    func kiloModelAvailability(in folder: String, tier: ModelTier) -> OpenCodeModelAvailability {
+        guard let model = resolvedModel(for: .kilo, tier: tier) else {
+            return .refused("no model configured for kilo tier \(tier.rawValue) — set it in linkC's Settings > Models")
+        }
+        return kiloModelAvailability(
+            in: folder, model: model, subject: "\(model) (kilo tier \(tier.rawValue))",
+            checked: "kilo tier \(tier.rawValue)'s model \(model)", remedy: "set the tier in linkC settings")
+    }
+
+    /// Whether Kilo may run `model` in `folder` right now: free, and listed by Kilo itself.
+    func kiloModelAvailability(
+        in folder: String, model: String, subject: String, checked: String? = nil, remedy: String
+    ) -> OpenCodeModelAvailability {
+        guard KiloFreeModels.isFree(model) else {
+            return .refused("\(subject) is not free — Kilo runs free models only; \(remedy)")
+        }
+        let norm = ProjectPath.canonical(folder)
+        if let listing = kiloModelListings[norm] {
+            let age = now().timeIntervalSince(listing.checkedAt)
+            switch listing.result {
+            case .success(let models) where age <= Self.openCodeModelListingMaxAge:
+                guard models.contains(model) else {
+                    return .refused("\(subject) is not among the models Kilo lists — free models come and go; \(remedy)")
+                }
+                return .available
+            case .failure(let reason) where age <= Self.openCodeModelFailedListingMaxAge:
+                return .uncheckable("could not check \(checked ?? subject) against the models Kilo lists — \(reason)")
+            case .success, .failure:
+                break
+            }
+        }
+        if kiloModelChecksInFlight.insert(norm).inserted {
+            let lister = kiloModels
+            Task { [weak self] in
+                let result: OpenCodeModelListing.ListingResult
+                do { result = .success(try await lister(norm)) }
+                catch { result = .failure(KiloLogin.reporting(String(describing: error))) }
+                guard let self else { return }
+                self.kiloModelListings[norm] = OpenCodeModelListing(checkedAt: self.now(), result: result)
+                self.kiloModelChecksInFlight.remove(norm)
+                self.kiloModelCheckCount += 1
                 self.sweepTicker?.wake()
             }
         }
@@ -1062,11 +1120,11 @@ public final class AppCoordinator {
         guard (tier == nil && model == nil) || mode == .new else {
             throw LinkCError.process("a tier can only pin a new session; \(mode) reuses an existing session's model")
         }
-        // OpenCode never resumes a conversation: its own would keep whatever model it last ran on,
-        // which linkC cannot see and which may not be free. Continue, Resume and a restore all open
-        // a new conversation in the folder, on the default tier's model.
-        let opensFresh = agent == .opencode && mode != .new
-        let mode: LaunchMode = agent == .opencode ? .new : mode
+        // OpenCode and Kilo never resume a conversation: their own would keep whatever model they
+        // last ran on, which linkC cannot see and which may not be free. Continue, Resume and a
+        // restore all open a new conversation in the folder, on the default tier's model.
+        let opensFresh = (agent == .opencode || agent == .kilo) && mode != .new
+        let mode: LaunchMode = (agent == .opencode || agent == .kilo) ? .new : mode
         let resolved: (model: String?, tier: ModelTier?)
         if let model {
             resolved = (model, nil)
@@ -1075,10 +1133,13 @@ public final class AppCoordinator {
         }
         let model = resolved.model
         let modelTier = resolved.tier
-        // OpenCode runs free models only, whichever way the model was chosen: the New menu, a
-        // teammate, a worker, or a tier that was set to a paid model.
+        // OpenCode and Kilo run free models only, whichever way the model was chosen: the New menu,
+        // a teammate, a worker, or a tier that was set to a paid model.
         if agent == .opencode, let model, !OpenCodeFreeModels.isFree(model) {
             throw LinkCError.process("\(model) is not a free OpenCode model")
+        }
+        if agent == .kilo, let model, !KiloFreeModels.isFree(model) {
+            throw LinkCError.process("\(model) is not a free Kilo model")
         }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
                                    model: model, modelTier: modelTier,
@@ -1113,6 +1174,9 @@ public final class AppCoordinator {
             }
             if agent == .opencode {
                 env.merge(try openCodeEnvironment(model: model)) { _, openCode in openCode }
+            }
+            if agent == .kilo {
+                env.merge(try kiloEnvironment(model: model)) { _, kilo in kilo }
             }
 
             if agent == .claude {
@@ -1176,7 +1240,10 @@ public final class AppCoordinator {
                 env: env
             )
             if select { terminals.select(session.id) }
-            if opensFresh { tellOpenCodeStartedFresh(title: title, folder: cwd) }
+            if opensFresh {
+                if agent == .opencode { tellOpenCodeStartedFresh(title: title, folder: cwd) }
+                if agent == .kilo { tellKiloStartedFresh(title: title, folder: cwd) }
+            }
             // Record the now-live session so it survives a quit/crash and can be restored.
             manifest.upsert(RestorableSession(
                 linkcId: session.id,
@@ -1311,11 +1378,11 @@ public final class AppCoordinator {
         // RECENT conversation for that agent. Refuse whichever way this entry would collide with
         // a session already live (including one restored moments ago in the same Restore-all
         // pass, or one a relaunch already brought back onto this entry's id/folder); the card
-        // stays and the user can restore it individually later. OpenCode never resumes — it opens a
-        // new conversation — so it collides with nothing.
+        // stays and the user can restore it individually later. OpenCode and Kilo never resume —
+        // they open a new conversation — so they collide with nothing.
         let resumesById = targetAgent == .claude && !(r.claudeSessionId ?? "").isEmpty
         let folder = ProjectPath.canonical(r.cwd)
-        if targetAgent != .opencode, store.sessions.contains(where: { live in
+        if targetAgent != .opencode && targetAgent != .kilo, store.sessions.contains(where: { live in
             resumesById
                 ? live.claudeSessionId == r.claudeSessionId
                 : live.agentKind == targetAgent && live.cwd == folder
@@ -1477,7 +1544,8 @@ public final class AppCoordinator {
             // A folder-trust dialog has no spinner, so it read as an idle session and the relay
             // typed briefs into it. Hold the session as needing the user until it is answered.
             if screen.showsTrustPrompt()
-                || (currentSession.agentKind == .freebuff && FreebuffScreen.isWaitingForUser(in: screen.rows)) {
+                || (currentSession.agentKind == .freebuff && FreebuffScreen.isWaitingForUser(in: screen.rows))
+                || TerminalPreview.isPermissionPrompt(screen.rows, agent: currentSession.agentKind) {
                 if currentSession.state != .waitingPermission {
                     store.updateState(id: session.id, to: .waitingPermission)
                     let updated = store.session(id: session.id) ?? currentSession
@@ -1491,8 +1559,7 @@ public final class AppCoordinator {
                 }
                 continue
             }
-            // Only the trust dialog puts a screen-read session in `.waitingPermission`, so once it
-            // is gone the session is ready for input again.
+            // Once the modal prompt is gone the session is ready for input again.
             if currentSession.state == .waitingPermission {
                 store.updateState(id: session.id, to: .ready)
             }

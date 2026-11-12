@@ -119,12 +119,23 @@ public enum TerminalPreview {
     /// above the box. Without that marker the box ends the scan, because everything above it may
     /// be a finished turn's output.
     public static func liveActivity(from rows: [String], agent: AgentKind) -> String? {
-        // OpenCode's input box has none of the prompt markers the generic scan stops at, so only
-        // a session known to be OpenCode may use its dedicated reader.
-        if agent == .opencode, let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
+        // OpenCode's (and Kilo's) input box has none of the prompt markers the generic scan stops
+        // at, so only a session known to be OpenCode or Kilo may use that dedicated reader.
+        if agent == .opencode || agent == .kilo, let turn = OpenCodeScreen.turn(in: rows) {
+            return turn.phrase
+        }
         if agent == .freebuff { return FreebuffScreen.activity(in: rows) }
         if FreebuffScreen.looksLikeFreebuff(rows) { return nil }
         return genericLiveActivity(from: rows)
+    }
+
+    /// Kilo's modal permission and provider-connect screens both require the user to choose before
+    /// the terminal can accept another task.
+    public static func isPermissionPrompt(_ rows: [String], agent: AgentKind) -> Bool {
+        guard agent == .kilo else { return false }
+        let text = rows.map(visibleText).joined(separator: "\n")
+        return (text.contains("Permission required") && text.contains("Allow once") && text.contains("Reject"))
+            || text.contains("Connect a provider")
     }
 
     /// The pre-OpenCode reader. Kept separate so the fixture sweep can prove every other agent's

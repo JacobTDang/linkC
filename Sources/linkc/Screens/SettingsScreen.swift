@@ -72,7 +72,7 @@ struct SettingsScreen: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.horizontal, 4)
                     }
-                    ForEach([AgentKind.claude, .codex, .agy, .grok, .opencode], id: \.self) { agent in
+                    ForEach([AgentKind.claude, .codex, .agy, .grok, .opencode, .kilo], id: \.self) { agent in
                         let lists = refresher?.lists ?? [:]
                         let choices = TierModelChoices.make(
                             agent: agent, lists: lists, settings: model.preferences.agentModels,

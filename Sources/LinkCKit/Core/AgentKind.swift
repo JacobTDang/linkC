@@ -9,6 +9,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
     case grok
     case opencode
     case freebuff
+    case kilo
     case shell
 
     /// Concise uppercase badge text for pills and cards.
@@ -21,6 +22,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .grok: return "GROK"
         case .opencode: return "OPENCODE"
         case .freebuff: return "FREEBUFF"
+        case .kilo: return "KILO"
         case .shell: return "SHELL"
         }
     }
@@ -35,6 +37,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .grok: return "#E5E5EA"      // xAI's mark is monochrome; light on the dark panel
         case .opencode: return "#FAB283"  // the accent of OpenCode's default theme
         case .freebuff: return "#FBF0DF"  // warm cream used by Freebuff's own UI
+        case .kilo: return "#617A91"      // kilo.ai UI accent
         case .shell: return "#8E8E93"     // neutral grey
         }
     }
@@ -49,6 +52,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .grok: return "Grok (via Cursor)"
         case .opencode: return "OpenCode"
         case .freebuff: return "Freebuff"
+        case .kilo: return "Kilo"
         case .shell: return "Terminal (zsh)"
         }
     }
@@ -63,6 +67,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .grok: return "Grok"
         case .opencode: return "OpenCode"
         case .freebuff: return "Freebuff"
+        case .kilo: return "Kilo"
         case .shell: return "Terminal"
         }
     }
@@ -78,9 +83,9 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
     public static var peerList: String { peers.map(\.rawValue).joined(separator: ", ") }
 
     /// Agents every launch names a model for, a tier or not, because their CLI's own default is not
-    /// theirs: Grok's Cursor defaults to Auto, and OpenCode runs a session whose model it does not
-    /// know on whatever it picks, which may be the user's local model.
-    public static let alwaysNamesModel: Set<AgentKind> = [.grok, .opencode]
+    /// theirs: Grok's Cursor defaults to Auto, and OpenCode/Kilo run a session whose model they do
+    /// not know on whatever they pick, which may not be free.
+    public static let alwaysNamesModel: Set<AgentKind> = [.grok, .opencode, .kilo]
 
     public var isLongTaskOnly: Bool { self == .freebuff }
 }
@@ -188,6 +193,24 @@ public struct AgentDescriptor: Sendable {
                 continueArgs: ["--continue"],
                 resumeArgs: ["--continue"]
             )
+        case .kilo:
+            return AgentDescriptor(
+                kind: .kilo,
+                binaryName: "kilo",
+                defaultCandidatePaths: [
+                    "\(home)/.kilo/bin/kilo",
+                    "/opt/homebrew/bin/kilo",
+                    "/usr/local/bin/kilo"
+                ],
+                // Every permission approved that the config does not deny. Kilo 7.8.27 has no
+                // `--standalone`; `--auto` is the yolo flag.
+                yoloFlags: ["--auto"],
+                // linkC never resumes a Kilo conversation: it would run on whatever model it last
+                // used, which linkC cannot see and which may not be free. Continue, Resume and a
+                // restore open a new conversation instead (AppCoordinator.launch).
+                continueArgs: [],
+                resumeArgs: []
+            )
         case .shell:
             return AgentDescriptor(
                 kind: .shell,
@@ -237,10 +260,27 @@ public struct AgentDescriptor: Sendable {
     /// The variable OpenCode reads inline config from, merged over its `opencode.json`.
     public static let openCodeConfigContentKey = "OPENCODE_CONFIG_CONTENT"
 
+    /// OpenCode's agents that run on the session's model (`opencode debug agents --standalone`, 2.2.5),
+    /// less `title`, which runs on the user's own small model. OpenCode's TUI takes an agent's own
+    /// `model` ahead of the top-level one, so linkC pins each of them.
+    public static let openCodeAgents = ["build", "compaction", "explore", "general", "plan", "summary"]
+
+    /// Every agent Kilo has built in (`kilo agent list`, 7.8.27). Kilo's TUI takes `agent.<name>.model`
+    /// ahead of the pick it persisted and the top-level `model`, so linkC pins each of them.
+    public static let kiloAgents = [
+        "ask", "code", "compaction", "debug", "explore", "general", "orchestrator", "plan", "summary", "title"
+    ]
+
+    /// The variable that keeps Kilo from opening on its "Update Available" dialog.
+    public static let kiloAutoUpdateKey = "KILO_DISABLE_AUTOUPDATE"
+
+    /// The variable Kilo reads inline config from, merged over its `kilo.jsonc`.
+    public static let kiloConfigContentKey = "KILO_CONFIG_CONTENT"
+
     /// What `kind`'s terminal needs beyond `LINKC_SESSION`. Grok: its own Cursor folder, and the
-    /// mark linkC's tool server reads to tell it from Cursor. OpenCode: no update dialog — with a
-    /// newer release out, OpenCode opens on one, and the first text linkC types (a worker's task)
-    /// would answer it. linkC adds OpenCode's inline tool config at launch (AppCoordinator+OpenCode).
+    /// mark linkC's tool server reads to tell it from Cursor. OpenCode/Kilo: no update dialog — with a
+    /// newer release out, they open on one, and the first text linkC types (a worker's task)
+    /// would answer it. linkC adds their inline tool config at launch.
     public static func environment(for kind: AgentKind, home: URL) -> [String: String] {
         switch kind {
         case .grok:
@@ -250,6 +290,8 @@ public struct AgentDescriptor: Sendable {
             ]
         case .opencode:
             return [openCodeAutoUpdateKey: "1"]
+        case .kilo:
+            return [kiloAutoUpdateKey: "1"]
         default:
             return [:]
         }

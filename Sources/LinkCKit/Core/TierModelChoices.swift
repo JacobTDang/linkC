@@ -51,7 +51,11 @@ public struct TierModelChoices: Equatable, Sendable {
         now: Date = Date()
     ) -> TierModelChoices {
         let available = ModelListCache.available(for: agent, lists: lists, settings: settings)
-            .filter { agent != .opencode || OpenCodeFreeModels.isFree($0.id) }
+            .filter {
+                if agent == .opencode { return OpenCodeFreeModels.isFree($0.id) }
+                if agent == .kilo { return KiloFreeModels.isFree($0.id) }
+                return true
+            }
         let ids = available.map(\.id)
         var labels = ids
         labels.append(otherLabel)
@@ -84,9 +88,17 @@ public struct TierModelChoices: Equatable, Sendable {
     public static func validationError(forTypedId id: String, agent: AgentKind) -> String? {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        guard agent == .opencode else { return nil }
-        guard OpenCodeFreeModels.isFree(trimmed) else {
-            return "\(trimmed) is not a free OpenCode model"
+        if agent == .opencode {
+            guard OpenCodeFreeModels.isFree(trimmed) else {
+                return "\(trimmed) is not a free OpenCode model"
+            }
+            return nil
+        }
+        if agent == .kilo {
+            guard KiloFreeModels.isFree(trimmed) else {
+                return "\(trimmed) is not a free Kilo model"
+            }
+            return nil
         }
         return nil
     }

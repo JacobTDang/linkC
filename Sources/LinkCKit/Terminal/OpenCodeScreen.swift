@@ -1,6 +1,7 @@
 import Foundation
 
 /// OpenCode's TUI, read from its screen rows (OpenCode 2.2.5 and 1.18.19; `Fixtures/opencode-*.txt`).
+/// Kilo's TUI matches this chrome (`Fixtures/kilo-*.txt`), so Kilo sessions reuse the same reader.
 /// Its input box ends on a heavy edge ("╹▀▀▀…") with a footer under it. While a turn runs, the
 /// footer opens with an 8-glyph progress bar of "⬝"/"■" — followed by the interrupt hint, though a
 /// narrow screen can show the bar alone; once the turn ends, the footer shows the folder path.

@@ -173,6 +173,10 @@ final class MCPRegistrarTests: XCTestCase {
         // 5. OpenCode config ~/.config/opencode/opencode.json
         let openCodeJson = tempDir.appendingPathComponent(".config/opencode/opencode.json")
         XCTAssertTrue(FileManager.default.fileExists(atPath: openCodeJson.path))
+
+        // 6. Kilo config ~/.config/kilo/kilo.jsonc (created when neither jsonc nor json exists)
+        let kiloJsonc = tempDir.appendingPathComponent(".config/kilo/kilo.jsonc")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kiloJsonc.path))
     }
 
     func testRegisterServerWritesEnv() throws {
@@ -262,6 +266,10 @@ final class MCPRegistrarTests: XCTestCase {
         XCTAssertEqual(try env("\(agyConfigDir)/antigravity-cli/mcp.json")?["LINKC_AGENT"], "agy")
         let codexToml = try String(contentsOf: tempDir.appendingPathComponent(".codex/config.toml"), encoding: .utf8)
         XCTAssertTrue(codexToml.contains("LINKC_AGENT = \"codex\""))
+        let kiloRoot = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: tempDir.appendingPathComponent(".config/kilo/kilo.jsonc"))) as? [String: Any]
+        let kiloEntry = (kiloRoot?["mcp"] as? [String: Any])?["linkc-multiplier"] as? [String: Any]
+        XCTAssertEqual(kiloEntry?["environment"] as? [String: String], ["LINKC_AGENT": "kilo"])
     }
 
     /// The writer every other agent's JSON config goes through used to read a file it could not
@@ -479,6 +487,118 @@ final class MCPRegistrarTests: XCTestCase {
         XCTAssertEqual(entry["environment"] as? [String: String], ["LINKC_AGENT": "opencode"])
     }
 
+    // MARK: - Kilo
+
+    private var kiloDir: URL { tempDir.appendingPathComponent(".config/kilo") }
+    private var kiloJsonc: URL { kiloDir.appendingPathComponent("kilo.jsonc") }
+    private var kiloJson: URL { kiloDir.appendingPathComponent("kilo.json") }
+
+    private func kiloEntry(in file: URL) throws -> [String: Any]? {
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        return (root["mcp"] as? [String: Any])?["linkc-multiplier"] as? [String: Any]
+    }
+
+    /// Prefer `kilo.jsonc` when it is present; otherwise `kilo.json`; otherwise create `kilo.jsonc`.
+    func testKiloConfigFilePrefersJsoncThenJsonThenCreatesJsonc() throws {
+        try FileManager.default.createDirectory(at: kiloDir, withIntermediateDirectories: true)
+
+        XCTAssertEqual(MCPRegistrar.kiloConfigFile(home: tempDir), kiloJsonc,
+                       "with neither file present, register creates kilo.jsonc")
+
+        try "{}".write(to: kiloJson, atomically: true, encoding: .utf8)
+        XCTAssertEqual(MCPRegistrar.kiloConfigFile(home: tempDir), kiloJson,
+                       "kilo.json is used when it is the only file present")
+
+        try "{}".write(to: kiloJsonc, atomically: true, encoding: .utf8)
+        XCTAssertEqual(MCPRegistrar.kiloConfigFile(home: tempDir), kiloJsonc,
+                       "kilo.jsonc wins when both are present")
+    }
+
+    func testKiloIsRegisteredInOpenCodesShapeInAFileThatDidNotExist() throws {
+        try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/Users/someone/.local/bin/linkc-mcp")
+
+        let entry = try XCTUnwrap(try kiloEntry(in: kiloJsonc))
+        XCTAssertEqual(entry["type"] as? String, "local")
+        XCTAssertEqual(entry["command"] as? [String], ["/Users/someone/.local/bin/linkc-mcp"])
+        XCTAssertEqual(entry["environment"] as? [String: String], ["LINKC_AGENT": "kilo"])
+        XCTAssertEqual(entry["enabled"] as? Bool, true)
+    }
+
+    /// The user's providers, model and other servers stay.
+    func testRegisteringWithKiloKeepsEveryOtherKey() throws {
+        try FileManager.default.createDirectory(at: kiloDir, withIntermediateDirectories: true)
+        let initial = """
+        {
+          "model": "kilo/kilo-auto/free",
+          "provider": {"kilo": {"options": {"baseURL": "https://api.kilo.ai"}}},
+          "mcp": {"jobs": {"type": "local", "command": ["python3", "/x/server.py"], "enabled": true}}
+        }
+        """
+        try initial.write(to: kiloJsonc, atomically: true, encoding: .utf8)
+
+        try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/bin/linkc-mcp")
+
+        let text = try String(contentsOf: kiloJsonc, encoding: .utf8)
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertEqual(root["model"] as? String, "kilo/kilo-auto/free")
+        XCTAssertNotNil((root["provider"] as? [String: Any])?["kilo"])
+        let mcp = try XCTUnwrap(root["mcp"] as? [String: Any])
+        XCTAssertEqual((mcp["jobs"] as? [String: Any])?["command"] as? [String], ["python3", "/x/server.py"])
+        XCTAssertNotNil(mcp["linkc-multiplier"])
+    }
+
+    func testAnUnchangedKiloEntryIsNotRewritten() throws {
+        try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/bin/linkc-mcp")
+        let compact = #"{"mcp":{"linkc-multiplier":{"command":["/bin/linkc-mcp"],"enabled":true,"environment":{"LINKC_AGENT":"kilo"},"type":"local"}}}"#
+        try compact.write(to: kiloJsonc, atomically: true, encoding: .utf8)
+
+        try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/bin/linkc-mcp")
+
+        XCTAssertEqual(try String(contentsOf: kiloJsonc, encoding: .utf8), compact)
+    }
+
+    /// Kilo's config is JSONC. linkC cannot rewrite comments, so it leaves such a file exactly as it is.
+    func testAKiloFileThatIsNotPlainJSONIsLeftByteForByte() throws {
+        try FileManager.default.createDirectory(at: kiloDir, withIntermediateDirectories: true)
+        let commented = "{\n  // my default\n  \"model\": \"kilo/kilo-auto/free\",\n}\n"
+        try commented.write(to: kiloJsonc, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/bin/linkc-mcp")) { error in
+            XCTAssertTrue(String(describing: error).contains(self.kiloJsonc.path), "\(error)")
+        }
+        XCTAssertEqual(try String(contentsOf: kiloJsonc, encoding: .utf8), commented)
+    }
+
+    func testAKiloMCPTableThatIsNotATableIsRefused() throws {
+        try FileManager.default.createDirectory(at: kiloDir, withIntermediateDirectories: true)
+        let odd = #"{"mcp":["not","a","table"]}"#
+        try odd.write(to: kiloJsonc, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try MCPRegistrar.registerKiloServer(configFile: kiloJsonc, binaryPath: "/bin/linkc-mcp"))
+        XCTAssertEqual(try String(contentsOf: kiloJsonc, encoding: .utf8), odd)
+    }
+
+    func testRegisterAllRegistersWithKilo() throws {
+        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/bin/linkc-mcp")
+        let file = MCPRegistrar.kiloConfigFile(home: tempDir)
+        XCTAssertEqual(file.lastPathComponent, "kilo.jsonc")
+        let entry = try XCTUnwrap(try kiloEntry(in: file))
+        XCTAssertEqual(entry["environment"] as? [String: String], ["LINKC_AGENT": "kilo"])
+    }
+
+    func testRegisterAllUsesExistingKiloJsonWhenJsoncIsAbsent() throws {
+        try FileManager.default.createDirectory(at: kiloDir, withIntermediateDirectories: true)
+        try #"{"model":"kilo/kilo-auto/free"}"#.write(to: kiloJson, atomically: true, encoding: .utf8)
+
+        try MCPRegistrar.registerAll(home: tempDir, binaryPath: "/bin/linkc-mcp")
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: kiloJsonc.path), "must not create jsonc beside an existing json")
+        let entry = try XCTUnwrap(try kiloEntry(in: kiloJson))
+        XCTAssertEqual(entry["environment"] as? [String: String], ["LINKC_AGENT": "kilo"])
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: kiloJson)) as? [String: Any])
+        XCTAssertEqual(root["model"] as? String, "kilo/kilo-auto/free")
+    }
+
     // MARK: - OpenCode's inline config
 
     private func inlineEntries(_ content: String) throws -> [String: Any] {
@@ -526,5 +646,91 @@ final class MCPRegistrarTests: XCTestCase {
         let content = try MCPRegistrar.openCodeConfigContent(inherited: inherited, binaryPath: "/bin/linkc-mcp", model: nil)
         let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
         XCTAssertEqual(root["model"] as? String, "ollama/qwen3.8:27b-32k")
+    }
+
+    // MARK: - The inline config pins the model past what the user's own files say
+
+    private let kiloModel = "kilo/kilo-auto/free"
+    private let kiloSmallModel = "kilo/nvidia/nemotron-3.5-lightning:free"
+
+    private func inlineRoot(_ content: String) throws -> [String: Any] {
+        try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
+    }
+
+    /// Kilo's TUI takes `agent.<name>.model` ahead of the top-level `model`, and the pick persisted in
+    /// its state ahead of that, so a top-level `model` alone leaves a paid pick running.
+    func testKiloInlineConfigPinsEveryBuiltInAgentToTheSessionsModel() throws {
+        let content = try MCPRegistrar.kiloConfigContent(
+            inherited: nil, binaryPath: "/bin/linkc-mcp", model: kiloModel, smallModel: kiloSmallModel)
+        let root = try inlineRoot(content)
+        XCTAssertEqual(root["model"] as? String, kiloModel)
+        let agents = try XCTUnwrap(root["agent"] as? [String: [String: Any]])
+        XCTAssertEqual(Set(agents.keys), Set(AgentDescriptor.kiloAgents))
+        for (name, settings) in agents {
+            XCTAssertEqual(settings["model"] as? String, kiloModel, "agent \(name)")
+        }
+    }
+
+    func testKiloInlineConfigNamesEveryAgentKiloHas() {
+        XCTAssertEqual(
+            AgentDescriptor.kiloAgents.sorted(),
+            ["ask", "code", "compaction", "debug", "explore", "general", "orchestrator", "plan", "summary", "title"],
+            "`kilo agent list` on 7.8.27")
+    }
+
+    /// Kilo's own default small model, `kilo-auto/small`, is not free.
+    func testKiloInlineConfigPinsTheSmallModel() throws {
+        let content = try MCPRegistrar.kiloConfigContent(
+            inherited: nil, binaryPath: "/bin/linkc-mcp", model: kiloModel, smallModel: kiloSmallModel)
+        XCTAssertEqual(try inlineRoot(content)["small_model"] as? String, kiloSmallModel)
+    }
+
+    func testKiloInlineConfigOverridesAnInheritedAgentModelAndKeepsItsOtherSettings() throws {
+        let inherited = #"{"small_model":"kilo/kilo-auto/small","agent":{"code":{"model":"kilo/anthropic/claude-opus-5","prompt":"be brief"},"mine":{"model":"kilo/x/y:free"}}}"#
+        let content = try MCPRegistrar.kiloConfigContent(
+            inherited: inherited, binaryPath: "/bin/linkc-mcp", model: kiloModel, smallModel: kiloSmallModel)
+        let root = try inlineRoot(content)
+        let agents = try XCTUnwrap(root["agent"] as? [String: [String: Any]])
+        XCTAssertEqual(agents["code"]?["model"] as? String, kiloModel)
+        XCTAssertEqual(agents["code"]?["prompt"] as? String, "be brief")
+        XCTAssertEqual(agents["mine"]?["model"] as? String, "kilo/x/y:free", "an agent linkC does not know is left as it was")
+        XCTAssertEqual(root["small_model"] as? String, kiloSmallModel)
+    }
+
+    func testKiloInlineConfigRefusesAnInheritedAgentThatIsNotATable() {
+        XCTAssertThrowsError(try MCPRegistrar.kiloConfigContent(
+            inherited: #"{"agent":{"code":"fast"}}"#, binaryPath: "/bin/linkc-mcp",
+            model: kiloModel, smallModel: kiloSmallModel)) { error in
+            XCTAssertTrue(String(describing: error).contains("KILO_CONFIG_CONTENT"), "\(error)")
+        }
+    }
+
+    /// OpenCode's TUI takes a user-global `agent.build.model` ahead of the inline top-level `model` too.
+    func testOpenCodeInlineConfigPinsEveryAgentThatRunsOnTheSessionsModel() throws {
+        let content = try MCPRegistrar.openCodeConfigContent(
+            inherited: #"{"agent":{"build":{"model":"anthropic/claude-opus-5","steps":9}}}"#,
+            binaryPath: "/bin/linkc-mcp", model: "opencode/big-pickle")
+        let root = try inlineRoot(content)
+        let agents = try XCTUnwrap(root["agent"] as? [String: [String: Any]])
+        XCTAssertEqual(Set(agents.keys), Set(AgentDescriptor.openCodeAgents))
+        for (name, settings) in agents {
+            XCTAssertEqual(settings["model"] as? String, "opencode/big-pickle", "agent \(name)")
+        }
+        XCTAssertEqual(agents["build"]?["steps"] as? Int, 9)
+    }
+
+    func testOpenCodeAgentsAreTheOnesOpenCodeRunsOnTheSessionsModel() {
+        XCTAssertEqual(
+            AgentDescriptor.openCodeAgents.sorted(),
+            ["build", "compaction", "explore", "general", "plan", "summary"],
+            "`opencode debug agents --standalone` on 2.2.5, less `title`, which runs on the user's small model")
+    }
+
+    func testWithNoModelOpenCodePinsNoAgent() throws {
+        let content = try MCPRegistrar.openCodeConfigContent(
+            inherited: #"{"agent":{"build":{"model":"ollama/qwen3.8:27b"}}}"#, binaryPath: "/bin/linkc-mcp", model: nil)
+        let agents = try XCTUnwrap(try inlineRoot(content)["agent"] as? [String: [String: Any]])
+        XCTAssertEqual(agents["build"]?["model"] as? String, "ollama/qwen3.8:27b")
+        XCTAssertEqual(agents.count, 1)
     }
 }

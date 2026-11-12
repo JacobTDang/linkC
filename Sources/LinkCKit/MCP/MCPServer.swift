@@ -203,6 +203,8 @@ public final class MCPServer: Sendable {
     /// The models OpenCode offers in a folder, read on every OpenCode delegation: a free model can
     /// go at any time, and OpenCode runs a session whose model it does not know on whatever it picks.
     public let openCodeModels: OpenCodeModelLister
+    /// The models Kilo offers in a folder, read on every Kilo delegation — same role as `openCodeModels`.
+    public let kiloModels: OpenCodeModelLister
     /// Live model lists from the app's cache. The MCP server never runs a CLI to list models.
     public let modelLists: @Sendable () throws -> [AgentKind: AgentModelList]
     /// The app's list of known projects, which a `project` argument names one of (spec 2026-11-11
@@ -220,7 +222,7 @@ public final class MCPServer: Sendable {
     public static let targetAgentTools: Set<String> = ["linkc_switch_model", "linkc_get_models"]
 
     public static let unidentifiedCallerMessage =
-        "Cannot identify calling agent; pass agent: \"claude\" | \"agy\" | \"cursor\" | \"codex\" | \"grok\" | \"opencode\" | \"freebuff\"."
+        "Cannot identify calling agent; pass agent: \"claude\" | \"agy\" | \"cursor\" | \"codex\" | \"grok\" | \"opencode\" | \"freebuff\" | \"kilo\"."
 
     /// `linkc_edit_board`'s `steps` schema description: the only place an agent can discover the
     /// step grammar, so it names every verb's fields exactly, one short line each, matching
@@ -261,6 +263,7 @@ public final class MCPServer: Sendable {
         warnCapableAgents: Set<AgentKind> = MCPServer.defaultWarnCapableAgents,
         closeAnswerWait: CloseAnswerWait = .standard,
         openCodeModels: @escaping OpenCodeModelLister = { try MCPServer.listOpenCodeModels(in: $0) },
+        kiloModels: @escaping OpenCodeModelLister = { try MCPServer.listKiloModels(in: $0) },
         modelLists: @escaping @Sendable () throws -> [AgentKind: AgentModelList] = {
             try ModelListCache.applicationSupport.read()
         },
@@ -279,6 +282,7 @@ public final class MCPServer: Sendable {
         self.warnCapableAgents = warnCapableAgents
         self.closeAnswerWait = closeAnswerWait
         self.openCodeModels = openCodeModels
+        self.kiloModels = kiloModels
         self.modelLists = modelLists
         self.knownProjects = knownProjects
     }
@@ -320,7 +324,8 @@ public final class MCPServer: Sendable {
             .cursor: { .unavailable(.cursor, reason: "cursor writes no local session records") },
             .grok: { .unavailable(.grok, reason: "Grok runs on the Cursor plan, which writes no local session records") },
             .opencode: { .unavailable(.opencode, reason: "OpenCode's free models publish no quota locally") },
-            .freebuff: { .unavailable(.freebuff, reason: "Freebuff publishes no quota locally") }
+            .freebuff: { .unavailable(.freebuff, reason: "Freebuff publishes no quota locally") },
+            .kilo: { .unavailable(.kilo, reason: "Kilo's free models publish no quota locally") }
         ]
     }
 
@@ -336,6 +341,9 @@ public final class MCPServer: Sendable {
     /// `opencode models`, on a private server so listing never starts OpenCode's shared background
     /// service when it is not running.
     static let openCodeModelsArguments = ["models", "--standalone"]
+
+    /// `kilo models` — one free id per line after filtering (no `--standalone` in kilo 7.8.27).
+    static let kiloModelsArguments = ["models"]
 
     /// The models `opencode models` lists in `folder` — a project's own config can add providers.
     /// Throws when OpenCode is missing, the listing fails or does not answer in time, or it lists
@@ -369,6 +377,47 @@ public final class MCPServer: Sendable {
     /// The free model ids in `opencode models`' output: its non-empty lines, trimmed, free only.
     static func parseOpenCodeModels(_ stdout: String) -> [String] {
         ModelListParser.openCode(stdout).map(\.id)
+    }
+
+    /// The free models `kilo models` lists in `folder`. Throws when Kilo is missing, the listing
+    /// fails or times out, or it lists no free models.
+    public static func listKiloModels(
+        in folder: String,
+        executable: String? = AgentDescriptor.resolveExecutable(for: .kilo),
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        timeout: TimeInterval = 60
+    ) throws -> [String] {
+        guard let executable else {
+            throw LinkCError.process("Executable for \(AgentKind.kilo.pillText) not found")
+        }
+        let result: ProcessResult
+        do {
+            result = try LiveProcessRunner.runCapturingSync(
+                executable: executable, args: kiloModelsArguments, cwd: URL(fileURLWithPath: folder),
+                env: AgentDescriptor.environment(for: .kilo, home: home),
+                timeout: timeout)
+        } catch ProcessRunnerError.timedOut(let seconds) {
+            throw LinkCError.process("`kilo models` did not answer within \(seconds) seconds")
+        }
+        guard result.status == 0 else {
+            let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw LinkCError.process(KiloLogin.reporting("`kilo models` exited \(result.status): \(stderr)"))
+        }
+        let models = parseKiloModels(result.stdout)
+        guard !models.isEmpty else {
+            let first = result.stdout.split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+            let base = first.map { "`kilo models` listed no free models: \($0)" }
+                ?? "`kilo models` listed no free models"
+            throw LinkCError.process(KiloLogin.reporting(base))
+        }
+        return models
+    }
+
+    /// The free model ids in `kilo models`' output.
+    static func parseKiloModels(_ stdout: String) -> [String] {
+        ModelListParser.kilo(stdout).map(\.id)
     }
 
     /// Identity: explicit `agent` arg → `LINKC_AGENT` env → ancestor process → `.shell` (unidentified),
@@ -1063,6 +1112,9 @@ public final class MCPServer: Sendable {
                 guard agent != .freebuff else {
                     return toolResultResponse(id: id, text: "Error: Freebuff has no tiers; it runs its own default model.", isError: true)
                 }
+                guard agent != .kilo else {
+                    return toolResultResponse(id: id, text: "Error: kilo cannot switch a running session's model — delegate at another tier instead.", isError: true)
+                }
                 guard let model = args["model"] as? String, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return toolResultResponse(id: id, text: "Error: Missing required argument 'model'.", isError: true)
                 }
@@ -1122,7 +1174,7 @@ public final class MCPServer: Sendable {
                     }
                     targetAgents = [a]
                 } else {
-                    targetAgents = [.claude, .codex, .agy, .cursor, .grok, .opencode, .freebuff]
+                    targetAgents = [.claude, .codex, .agy, .cursor, .grok, .opencode, .freebuff, .kilo]
                 }
 
                 let settings = modelSettings()
@@ -1207,6 +1259,9 @@ public final class MCPServer: Sendable {
                     if agent == .opencode {
                         text += "- opencode cannot switch a running session's model; delegate at another tier\n"
                     }
+                    if agent == .kilo {
+                        text += "- kilo cannot switch a running session's model; delegate at another tier\n"
+                    }
                     text += "\n"
                 }
                 text += "Edit tier defaults in linkC settings under MODELS.\n"
@@ -1222,7 +1277,7 @@ public final class MCPServer: Sendable {
                 let now = Date()
                 var text = "# Agent Usage\n\n"
 
-                for agent in [AgentKind.codex, .claude, .agy, .cursor, .grok, .opencode, .freebuff] {
+                for agent in [AgentKind.codex, .claude, .agy, .cursor, .grok, .opencode, .freebuff, .kilo] {
                     let usage = usageReaders[agent]?() ?? .unavailable(agent, reason: "no usage reader configured for this agent")
                     text += Self.renderUsageSection(usage, now: now)
                 }
@@ -1967,6 +2022,13 @@ public final class MCPServer: Sendable {
                     text: "Error: \(modelArg) is not free — OpenCode runs free models only. Free models: \(free)",
                     isError: true)
             }
+            if toAgent == .kilo, !KiloFreeModels.isFree(modelArg) {
+                let free = choosable.filter { KiloFreeModels.isFree($0.id) }.map(\.id).joined(separator: ", ")
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(modelArg) is not free — Kilo runs free models only. Free models: \(free)",
+                    isError: true)
+            }
             // The listed spelling is what is stored and launched, whatever case it was typed in.
             guard let listed = choosable.first(where: { $0.id.caseInsensitiveCompare(modelArg) == .orderedSame }) else {
                 let ids = choosable.map(\.id).joined(separator: ", ")
@@ -1989,6 +2051,23 @@ public final class MCPServer: Sendable {
                     return toolResultResponse(
                         id: id,
                         text: "Error: \(listed.id) is not among the models OpenCode lists — free models come and go; pick another.",
+                        isError: true)
+                }
+            }
+            if toAgent == .kilo {
+                let offered: [String]
+                do {
+                    offered = try kiloModels(destRoot)
+                } catch {
+                    return toolResultResponse(
+                        id: id,
+                        text: "Error: could not check \(listed.id) against the models Kilo lists — \(KiloLogin.reporting(String(describing: error)))",
+                        isError: true)
+                }
+                guard offered.contains(where: { $0.caseInsensitiveCompare(listed.id) == .orderedSame }) else {
+                    return toolResultResponse(
+                        id: id,
+                        text: "Error: \(listed.id) is not among the models Kilo lists — free models come and go; pick another.",
                         isError: true)
                 }
             }
@@ -2027,6 +2106,14 @@ public final class MCPServer: Sendable {
                     isError: true)
             }
         }
+        if toAgent == .kilo, let tier, let tierModel = settings.model(for: .kilo, tier: tier) {
+            guard KiloFreeModels.isFree(tierModel) else {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(tierModel) (kilo tier \(tier.rawValue)) is not free — Kilo runs free models only; set the tier in linkC settings.",
+                    isError: true)
+            }
+        }
         // A tier whose model the agent's own list no longer has would start a worker the CLI
         // rejects. Refused now; an agent never listed (or whose last listing failed) is not blocked.
         if let tier, let tierModel = settings.model(for: toAgent, tier: tier),
@@ -2057,6 +2144,23 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(
                     id: id,
                     text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings.",
+                    isError: true)
+            }
+        }
+        if toAgent == .kilo, let tier, let tierModel = settings.model(for: .kilo, tier: tier) {
+            let offered: [String]
+            do {
+                offered = try kiloModels(destRoot)
+            } catch {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: could not check kilo tier \(tier.rawValue)'s model \(tierModel) against the models Kilo lists — \(KiloLogin.reporting(String(describing: error)))",
+                    isError: true)
+            }
+            guard offered.contains(tierModel) else {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(tierModel) (kilo tier \(tier.rawValue)) is not among the models Kilo lists — free models come and go; set the tier in linkC settings.",
                     isError: true)
             }
         }

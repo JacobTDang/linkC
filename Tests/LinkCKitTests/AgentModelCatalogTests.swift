@@ -21,4 +21,9 @@ final class AgentModelCatalogTests: XCTestCase {
         XCTAssertEqual(AgentModelCatalog.launchArguments(model: "opencode/big-pickle", for: .opencode), [])
         XCTAssertEqual(AgentModelCatalog.launchArguments(model: "gpt-5.6-sol", for: .codex), ["--model", "gpt-5.6-sol"])
     }
+
+    /// Kilo's TUI has no `--model` flag; its model goes in `KILO_CONFIG_CONTENT` instead.
+    func testKiloTakesNoModelArgument() {
+        XCTAssertEqual(AgentModelCatalog.launchArguments(model: "kilo/kilo-auto/free", for: .kilo), [])
+    }
 }

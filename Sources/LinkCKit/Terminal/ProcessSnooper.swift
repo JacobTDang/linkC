@@ -23,6 +23,10 @@ public struct ProcessSnooper: Sendable {
             return .opencode
         case "freebuff":
             return .freebuff
+        case "kilo", ".kilo":
+            // `kilo` is a node script that starts the real binary, `.kilo`, beside it; that binary is
+            // the process the kernel names, and its parent is `node`.
+            return .kilo
         default:
             if trimmed.contains("/claude/versions/") {
                 return .claude

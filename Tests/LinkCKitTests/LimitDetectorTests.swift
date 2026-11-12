@@ -285,6 +285,18 @@ final class LimitDetectorTests: XCTestCase {
                      "the phrase is OpenCode's alone")
     }
 
+    /// Kilo's free-tier banner uses its own wording ("Rate limit exceeded"), not OpenCode's.
+    func testKilosRateLimitExceededIsALimitButA429IsNot() {
+        let cap = LimitDetector.detectLimit(inOutput: "  ● Rate limit " + "exceeded  ", agent: .kilo)
+        XCTAssertEqual(cap?.agent, .kilo)
+        XCTAssertEqual(cap?.cooldown, LimitDetector.defaultCooldown)
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "429 Too Many " + "Requests, retrying in 2s", agent: .kilo))
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "Rate limit " + "exceeded", agent: .opencode),
+                     "OpenCode keeps its own free-usage phrases")
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "Free usage " + "exceeded, subscribe to Go", agent: .kilo),
+                     "OpenCode's free-usage phrase is not Kilo's")
+    }
+
     // MARK: - Normal Output & Isolation Tests
 
     func testNormalOutputReturnsNil() {

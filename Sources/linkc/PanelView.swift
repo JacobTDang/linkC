@@ -281,6 +281,7 @@ struct LauncherMenu: View {
                 Button("New Grok session…") { model.newSession(agent: .grok, mode: .new) }
                 Button("New OpenCode session…") { model.newSession(agent: .opencode, mode: .new) }
                 Button("New Freebuff session…") { model.newSession(agent: .freebuff, mode: .new) }
+                Button("New Kilo session…") { model.newSession(agent: .kilo, mode: .new) }
                 Button("New Codex session…") { model.newSession(agent: .codex, mode: .new) }
             }
             Section("Terminal") {
@@ -293,6 +294,7 @@ struct LauncherMenu: View {
                 Button("Cursor Agent") { model.newSession(agent: .cursor, mode: .continueLast) }
                 Button("Grok") { model.newSession(agent: .grok, mode: .continueLast) }
                 Button("Freebuff") { model.newSession(agent: .freebuff, mode: .continueLast) }
+                Button("Kilo") { model.newSession(agent: .kilo, mode: .continueLast) }
                 Button("Codex") { model.newSession(agent: .codex, mode: .continueLast) }
             }
             Menu("Resume…") {

@@ -123,6 +123,15 @@ public struct LimitDetector: Sendable {
         LimitRule(canonicalPattern: "Freebuff free session ended", regexPattern: "\\byour free session ended\\b")
     ]
 
+    /// Kilo's free-tier cap in the binary's own banner wording ("Rate limit exceeded" / "Free model
+    /// requests are limited"). OpenCode's "free usage exceeded" phrases are absent from Kilo 7.8.27.
+    private static let kiloRules: [LimitRule] = [
+        LimitRule(
+            canonicalPattern: "Kilo rate limit exceeded",
+            regexPattern: "^\\s*●\\s+rate limit exceeded\\s*$",
+            options: [.caseInsensitive, .anchorsMatchLines])
+    ]
+
     private static func rules(for agent: AgentKind) -> [LimitRule] {
         switch agent {
         case .claude: return claudeRules
@@ -132,6 +141,7 @@ public struct LimitDetector: Sendable {
         case .cursor, .grok: return cursorRules
         case .opencode: return openCodeRules
         case .freebuff: return freebuffRules
+        case .kilo: return kiloRules
         case .shell: return []
         }
     }
