@@ -125,6 +125,7 @@ public struct LimitDetector: Sendable {
         // Grok runs Cursor's CLI, so a Grok terminal shows Cursor's caps.
         case .cursor, .grok: return cursorRules
         case .opencode: return openCodeRules
+        case .freebuff: return []
         case .shell: return []
         }
     }

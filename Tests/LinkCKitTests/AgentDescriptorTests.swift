@@ -128,8 +128,8 @@ final class AgentDescriptorTests: XCTestCase {
     }
 
     func testPeersAreEveryAgentButAShell() {
-        XCTAssertEqual(AgentKind.peers, [.claude, .agy, .cursor, .codex, .grok, .opencode])
-        XCTAssertEqual(AgentKind.peerList, "claude, agy, cursor, codex, grok, opencode")
+        XCTAssertEqual(AgentKind.peers, [.claude, .agy, .cursor, .codex, .grok, .opencode, .freebuff])
+        XCTAssertEqual(AgentKind.peerList, "claude, agy, cursor, codex, grok, opencode, freebuff")
     }
 
     /// OpenCode runs its own binary, on a private server of its own, with every permission approved. It never gets `--continue`:
@@ -147,6 +147,23 @@ final class AgentDescriptorTests: XCTestCase {
                        ["/opt/homebrew/bin/opencode", "/usr/local/bin/opencode", "\(home)/.opencode/bin/opencode"])
         for mode in [LaunchMode.new, .continueLast, .resume] {
             XCTAssertEqual(AgentDescriptor.arguments(for: .opencode, mode: mode, sessionId: "S-1"), ["--standalone", "--auto"], "\(mode)")
+        }
+    }
+
+    func testFreebuffUsesItsOwnUntieredCLIAndContinuesWithoutTrustingAgents() {
+        XCTAssertEqual(AgentKind.freebuff.pillText, "FREEBUFF")
+        XCTAssertEqual(AgentKind.freebuff.displayName, "Freebuff")
+        XCTAssertEqual(AgentKind.freebuff.shortName, "Freebuff")
+        let descriptor = AgentDescriptor.descriptor(for: .freebuff)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        XCTAssertEqual(descriptor.binaryName, "freebuff")
+        XCTAssertEqual(descriptor.defaultCandidatePaths,
+                       ["\(home)/.local/bin/freebuff", "/opt/homebrew/bin/freebuff", "/usr/local/bin/freebuff"])
+        XCTAssertEqual(AgentDescriptor.arguments(for: .freebuff, mode: .new), [])
+        XCTAssertEqual(AgentDescriptor.arguments(for: .freebuff, mode: .continueLast), ["--continue"])
+        XCTAssertEqual(AgentDescriptor.arguments(for: .freebuff, mode: .resume), ["--continue"])
+        for mode in [LaunchMode.new, .continueLast, .resume] {
+            XCTAssertFalse(AgentDescriptor.arguments(for: .freebuff, mode: mode).contains("--trust-agents"))
         }
     }
 

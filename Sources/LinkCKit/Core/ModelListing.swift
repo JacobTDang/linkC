@@ -83,7 +83,7 @@ public enum ModelListParser {
         case .cursor: models = Self.cursor(output)
         case .grok: models = Self.grok(fromCursor: output)
         case .opencode: models = Self.openCode(output)
-        case .claude, .codex, .shell:
+        case .claude, .codex, .freebuff, .shell:
             throw LinkCError.process("\(agent.rawValue) has no model listing command")
         }
         guard !models.isEmpty else {
@@ -102,7 +102,7 @@ public enum ModelListParser {
             return ["haiku", "sonnet", "opus"].map { ListedModel(id: $0, name: $0) }
         case .codex:
             return ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"].map { ListedModel(id: $0, name: $0) }
-        case .agy, .cursor, .grok, .opencode, .shell:
+        case .agy, .cursor, .grok, .opencode, .freebuff, .shell:
             return nil
         }
     }

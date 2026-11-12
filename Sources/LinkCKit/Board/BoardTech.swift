@@ -133,6 +133,7 @@ public enum BoardTech {
         "antigravity": .agy,
         "agy": .agy,
         "opencode": .opencode,
+        "freebuff": .freebuff,
     ]
 
     /// `component.tech`, or nil when it is unset or empty — "no tech" either way, for inference

@@ -8,6 +8,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
     case codex
     case grok
     case opencode
+    case freebuff
     case shell
 
     /// Concise uppercase badge text for pills and cards.
@@ -19,6 +20,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .codex: return "CODEX"
         case .grok: return "GROK"
         case .opencode: return "OPENCODE"
+        case .freebuff: return "FREEBUFF"
         case .shell: return "SHELL"
         }
     }
@@ -32,6 +34,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .codex: return "#10A37F"     // openAI emerald
         case .grok: return "#E5E5EA"      // xAI's mark is monochrome; light on the dark panel
         case .opencode: return "#FAB283"  // the accent of OpenCode's default theme
+        case .freebuff: return "#FBF0DF"  // warm cream used by Freebuff's own UI
         case .shell: return "#8E8E93"     // neutral grey
         }
     }
@@ -45,6 +48,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .codex: return "Codex"
         case .grok: return "Grok (via Cursor)"
         case .opencode: return "OpenCode"
+        case .freebuff: return "Freebuff"
         case .shell: return "Terminal (zsh)"
         }
     }
@@ -58,6 +62,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .codex: return "Codex"
         case .grok: return "Grok"
         case .opencode: return "OpenCode"
+        case .freebuff: return "Freebuff"
         case .shell: return "Terminal"
         }
     }
@@ -167,6 +172,19 @@ public struct AgentDescriptor: Sendable {
                 // restore open a new conversation instead (AppCoordinator.launch).
                 continueArgs: [],
                 resumeArgs: []
+            )
+        case .freebuff:
+            return AgentDescriptor(
+                kind: .freebuff,
+                binaryName: "freebuff",
+                defaultCandidatePaths: [
+                    home.appendingPathComponent(".local/bin/freebuff"),
+                    "/opt/homebrew/bin/freebuff",
+                    "/usr/local/bin/freebuff"
+                ],
+                yoloFlags: [],
+                continueArgs: ["--continue"],
+                resumeArgs: ["--continue"]
             )
         case .shell:
             return AgentDescriptor(
