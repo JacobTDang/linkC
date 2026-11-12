@@ -205,6 +205,15 @@ final class MCPServerOpenCodeTests: XCTestCase {
         XCTAssertTrue(result.text.contains("opencode cannot switch a running session's model — delegate at another tier instead"), result.text)
     }
 
+    /// Crush has no `/model <id>` command either, and its running session is pinned to a free model:
+    /// the text would go to the model as a prompt.
+    func testCrushsModelCannotBeSwitchedInARunningSession() throws {
+        let result = try call(makeServer(), "linkc_switch_model",
+                              ["agent": "crush", "model": "openrouter/nvidia/nemotron-3.5-lightning:free"])
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.text.contains("crush cannot switch a running session's model — delegate at another tier instead"), result.text)
+    }
+
     func testTheModelReportSaysOpenCodeCannotSwitch() throws {
         let report = try call(makeServer(), "linkc_get_models", ["agent": "opencode"])
         XCTAssertTrue(report.text.contains("- opencode cannot switch a running session's model; delegate at another tier\n"), report.text)

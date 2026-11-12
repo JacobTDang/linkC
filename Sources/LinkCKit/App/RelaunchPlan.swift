@@ -5,9 +5,9 @@ import Foundation
 /// anything.
 ///
 /// Two sessions must never land on one conversation. A Claude entry with an id resumes exactly
-/// that conversation; every other entry but OpenCode's can only continue its folder's newest
-/// conversation for its agent, so at most one per folder and agent may. An OpenCode entry opens a
-/// new conversation, so every one comes back. Whenever entries compete, the user's own
+/// that conversation; every other entry but OpenCode's and Crush's can only continue its folder's
+/// newest conversation for its agent, so at most one per folder and agent may. An OpenCode or Crush
+/// entry opens a new conversation, so every one comes back. Whenever entries compete, the user's own
 /// session wins over a worker; among the user's (or, with none, among workers) the last in
 /// manifest order wins, since it was launched most recently.
 public struct RelaunchPlan: Equatable, Sendable {
@@ -83,13 +83,13 @@ public struct RelaunchPlan: Equatable, Sendable {
         entry.agentKind == .claude && !(entry.claudeSessionId ?? "").isEmpty
     }
 
-    /// Two entries with the same key would open the same conversation. OpenCode and Kilo never
+    /// Two entries with the same key would open the same conversation. OpenCode, Kilo and Crush never
     /// resume one: each entry opens its own new conversation, so its key is its own.
     private static func contestKey(_ entry: RestorableSession) -> String {
         if resumesClaudeById(entry), let id = entry.claudeSessionId {
             return "id|\(id)"
         }
-        if entry.agentKind == .opencode || entry.agentKind == .kilo {
+        if entry.agentKind == .opencode || entry.agentKind == .kilo || entry.agentKind == .crush {
             return "new|\(entry.linkcId)"
         }
         return "continue|\(folder(entry))|\(entry.agentKind.rawValue)"

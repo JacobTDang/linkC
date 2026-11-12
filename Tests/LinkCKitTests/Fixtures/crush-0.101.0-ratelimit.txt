@@ -1,0 +1,29 @@
+
+   Charm™ CRUSH ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ ~/t/c/m/proj • 0% • ctrl+d open
+
+ │ Say hi
+
+    ERROR  Too Many Requests
+
+   Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model
+   requests per day
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  !  Go crazy
+ :::
+ :::
+
+ ERROR  retry error: too many requests: Rate limit exceeded: free-models-per-day. Add 10 c…

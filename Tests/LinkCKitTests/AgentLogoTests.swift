@@ -21,7 +21,7 @@ final class AgentLogoTests: XCTestCase {
     }
 
     /// Cursor's, Grok's, OpenCode's, Freebuff's and Kilo's marks are one colour (the files draw in
-    /// `currentColor`); the rest are drawn as they are.
+    /// `currentColor`); the rest, Crush's included, are drawn in their own colour.
     func testOnlyCursorGrokOpenCodeFreebuffAndKiloAreTintedByTheApp() {
         XCTAssertEqual(AgentKind.allCases.filter { $0.logo?.isTemplate == true }, [.cursor, .grok, .opencode, .freebuff, .kilo])
     }

@@ -26,4 +26,9 @@ final class AgentModelCatalogTests: XCTestCase {
     func testKiloTakesNoModelArgument() {
         XCTAssertEqual(AgentModelCatalog.launchArguments(model: "kilo/kilo-auto/free", for: .kilo), [])
     }
+
+    /// Crush's TUI has no model flag either; its model is pinned through a per-session config.
+    func testCrushTakesNoModelArgument() {
+        XCTAssertEqual(AgentModelCatalog.launchArguments(model: "openrouter/nvidia/nemotron-3.5-super-vl:free", for: .crush), [])
+    }
 }

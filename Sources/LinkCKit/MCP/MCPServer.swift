@@ -1105,9 +1105,10 @@ public final class MCPServer: Sendable {
                 guard agent != .shell else {
                     return toolResultResponse(id: id, text: "Error: Cannot switch model on shell session.", isError: true)
                 }
-                guard agent != .opencode else {
-                    // OpenCode has no `/model <id>` command: typed in, it goes to the model as a prompt.
-                    return toolResultResponse(id: id, text: "Error: opencode cannot switch a running session's model — delegate at another tier instead.", isError: true)
+                guard agent != .opencode, agent != .crush else {
+                    // OpenCode and Crush have no `/model <id>` command: typed in, it goes to the model as a
+                    // prompt. Crush's session is also pinned to its free model by its own config.
+                    return toolResultResponse(id: id, text: "Error: \(agent.rawValue) cannot switch a running session's model — delegate at another tier instead.", isError: true)
                 }
                 guard agent != .freebuff else {
                     return toolResultResponse(id: id, text: "Error: Freebuff has no tiers; it runs its own default model.", isError: true)
@@ -1174,7 +1175,7 @@ public final class MCPServer: Sendable {
                     }
                     targetAgents = [a]
                 } else {
-                    targetAgents = [.claude, .codex, .agy, .cursor, .grok, .opencode, .freebuff, .kilo]
+                    targetAgents = AgentKind.peers
                 }
 
                 let settings = modelSettings()
@@ -1256,8 +1257,8 @@ public final class MCPServer: Sendable {
                             text += line + "\n"
                         }
                     }
-                    if agent == .opencode {
-                        text += "- opencode cannot switch a running session's model; delegate at another tier\n"
+                    if agent == .opencode || agent == .crush {
+                        text += "- \(agent.rawValue) cannot switch a running session's model; delegate at another tier\n"
                     }
                     if agent == .kilo {
                         text += "- kilo cannot switch a running session's model; delegate at another tier\n"
@@ -1277,7 +1278,7 @@ public final class MCPServer: Sendable {
                 let now = Date()
                 var text = "# Agent Usage\n\n"
 
-                for agent in [AgentKind.codex, .claude, .agy, .cursor, .grok, .opencode, .freebuff, .kilo] {
+                for agent in [AgentKind.codex, .claude] + AgentKind.peers.filter({ $0 != .codex && $0 != .claude }) {
                     let usage = usageReaders[agent]?() ?? .unavailable(agent, reason: "no usage reader configured for this agent")
                     text += Self.renderUsageSection(usage, now: now)
                 }
@@ -2029,6 +2030,13 @@ public final class MCPServer: Sendable {
                     text: "Error: \(modelArg) is not free — Kilo runs free models only. Free models: \(free)",
                     isError: true)
             }
+            if toAgent == .crush, !CrushFreeModels.isFree(modelArg) {
+                let free = choosable.filter { CrushFreeModels.isFree($0.id) }.map(\.id).joined(separator: ", ")
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(modelArg) is not free — Crush runs free models only. Free models: \(free)",
+                    isError: true)
+            }
             // The listed spelling is what is stored and launched, whatever case it was typed in.
             guard let listed = choosable.first(where: { $0.id.caseInsensitiveCompare(modelArg) == .orderedSame }) else {
                 let ids = choosable.map(\.id).joined(separator: ", ")
@@ -2111,6 +2119,14 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(
                     id: id,
                     text: "Error: \(tierModel) (kilo tier \(tier.rawValue)) is not free — Kilo runs free models only; set the tier in linkC settings.",
+                    isError: true)
+            }
+        }
+        if toAgent == .crush, let tier, let tierModel = settings.model(for: .crush, tier: tier) {
+            guard CrushFreeModels.isFree(tierModel) else {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(tierModel) (crush tier \(tier.rawValue)) is not free — Crush runs free models only; set the tier in linkC settings.",
                     isError: true)
             }
         }

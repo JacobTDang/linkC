@@ -10,6 +10,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
     case opencode
     case freebuff
     case kilo
+    case crush
     case shell
 
     /// Concise uppercase badge text for pills and cards.
@@ -23,6 +24,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .opencode: return "OPENCODE"
         case .freebuff: return "FREEBUFF"
         case .kilo: return "KILO"
+        case .crush: return "CRUSH"
         case .shell: return "SHELL"
         }
     }
@@ -38,6 +40,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .opencode: return "#FAB283"  // the accent of OpenCode's default theme
         case .freebuff: return "#FBF0DF"  // warm cream used by Freebuff's own UI
         case .kilo: return "#617A91"      // kilo.ai UI accent
+        case .crush: return "#6B50FF"     // Charple, the primary of Crush's own theme
         case .shell: return "#8E8E93"     // neutral grey
         }
     }
@@ -53,6 +56,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .opencode: return "OpenCode"
         case .freebuff: return "Freebuff"
         case .kilo: return "Kilo"
+        case .crush: return "Crush"
         case .shell: return "Terminal (zsh)"
         }
     }
@@ -68,6 +72,7 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
         case .opencode: return "OpenCode"
         case .freebuff: return "Freebuff"
         case .kilo: return "Kilo"
+        case .crush: return "Crush"
         case .shell: return "Terminal"
         }
     }
@@ -79,13 +84,14 @@ public enum AgentKind: String, Sendable, CaseIterable, Codable {
     /// Every agent that can take a task: all but a plain shell, in declaration order.
     public static var peers: [AgentKind] { allCases.filter { $0 != .shell } }
 
-    /// `peers` as text, for tool descriptions and errors: "claude, agy, cursor, codex, grok, opencode".
+    /// `peers` as text, for tool descriptions and errors: "claude, agy, cursor, codex, grok, opencode, crush".
     public static var peerList: String { peers.map(\.rawValue).joined(separator: ", ") }
 
     /// Agents every launch names a model for, a tier or not, because their CLI's own default is not
-    /// theirs: Grok's Cursor defaults to Auto, and OpenCode/Kilo run a session whose model they do
-    /// not know on whatever they pick, which may not be free.
-    public static let alwaysNamesModel: Set<AgentKind> = [.grok, .opencode, .kilo]
+    /// theirs: Grok's Cursor defaults to Auto, OpenCode and Kilo run a session whose model they do
+    /// not know on whatever they pick, which may not be free, and Crush runs the user's own large
+    /// model, which may be a paid one.
+    public static let alwaysNamesModel: Set<AgentKind> = [.grok, .opencode, .kilo, .crush]
 
     public var isLongTaskOnly: Bool { self == .freebuff }
 }
@@ -208,6 +214,24 @@ public struct AgentDescriptor: Sendable {
                 // linkC never resumes a Kilo conversation: it would run on whatever model it last
                 // used, which linkC cannot see and which may not be free. Continue, Resume and a
                 // restore open a new conversation instead (AppCoordinator.launch).
+                continueArgs: [],
+                resumeArgs: []
+            )
+        case .crush:
+            return AgentDescriptor(
+                kind: .crush,
+                binaryName: "crush",
+                defaultCandidatePaths: [
+                    "/opt/homebrew/bin/crush",
+                    "/usr/local/bin/crush",
+                    home.appendingPathComponent(".local/bin/crush"),
+                    home.appendingPathComponent("go/bin/crush")
+                ],
+                // Every permission prompt skipped; Crush still blocks dangerous commands (`-y`, not `-yy`).
+                yoloFlags: ["--yolo"],
+                // linkC never resumes a Crush conversation: `--continue` and `--session` reopen it on
+                // the model it last ran, which linkC cannot see and which may not be free. Continue,
+                // Resume and a restore open a new conversation instead (AppCoordinator.launch).
                 continueArgs: [],
                 resumeArgs: []
             )

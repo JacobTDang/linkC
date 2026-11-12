@@ -72,7 +72,7 @@ struct SettingsScreen: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.horizontal, 4)
                     }
-                    ForEach([AgentKind.claude, .codex, .agy, .grok, .opencode, .kilo], id: \.self) { agent in
+                    ForEach([AgentKind.claude, .codex, .agy, .grok, .opencode, .kilo, .crush], id: \.self) { agent in
                         let lists = refresher?.lists ?? [:]
                         let choices = TierModelChoices.make(
                             agent: agent, lists: lists, settings: model.preferences.agentModels,
@@ -443,7 +443,7 @@ private struct SettingRow<Control: View>: View {
 
 /// One tier's model picker: listed ids, plus "Other…" which reveals a text field for a typed id.
 /// Typed text commits on submit or blur — never per keystroke — so a half-typed id is never the
-/// live mapping a relay tick could launch with. OpenCode refuses a non-free typed id.
+/// live mapping a relay tick could launch with. OpenCode and Crush refuse a non-free typed id.
 private struct TierModelField: View {
     let preferences: AppPreferences
     let agent: AgentKind
@@ -521,7 +521,7 @@ private struct TierModelField: View {
 
     private func commit(force value: String? = nil) {
         let next = (value ?? text).trimmingCharacters(in: .whitespacesAndNewlines)
-        // A non-free OpenCode id is not written; the refusal stays under the field, with the typed text.
+        // A non-free OpenCode or Crush id is not written; the refusal stays under the field, with the typed text.
         guard TierModelChoices.validationError(forTypedId: next, agent: agent) == nil else { return }
         guard next != currentValue else { return }
         var edited = preferences.agentModels

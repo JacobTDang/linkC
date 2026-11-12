@@ -671,6 +671,23 @@ extension AppCoordinator {
             lastSpawnFailure = SpawnFailure(agent: task.toAgent, workspacePath: workspacePath, error: String(describing: error))
             NSLog("[linkC relay] dispatchTasks: task %@ could not spawn %@ — %@",
                   task.shortId, task.toAgent.displayName, String(describing: error))
+            // A Crush launch that throws is a refusal Jacob must act on (no OpenRouter key, a project
+            // crushrc or model override, an unreadable config): retrying it every pass changes nothing,
+            // so the task fails now, whether or not it names a model, and its delegator and Jacob are
+            // told what to fix. It is never left queued for the hour the queue would hold it.
+            if task.toAgent == .crush {
+                let reason = String(describing: error)
+                do {
+                    try inboxStore.failTaskAndNotify(
+                        taskId: task.id, reason: reason, notifyBody: "failed — \(reason)", timeout: Self.relayLockTimeout)
+                    logTaskEnded(task, as: "failed", reason: reason)
+                    notifications.post(title: Self.crushRefusalTitle, body: reason, project: workspacePath)
+                } catch {
+                    if isRelayLockTimeout(error) { return true }
+                    NSLog("[linkC relay] dispatchTasks: task %@ Crush refusal — %@", task.shortId, String(describing: error))
+                }
+                return false
+            }
             // A task that names its model fails with the launch's own error: starting the same
             // worker on every pass would only repeat it until the queue expires the task.
             if let model = task.model {
@@ -900,6 +917,20 @@ extension AppCoordinator {
                     lastSpawnFailure = SpawnFailure(agent: message.toAgent, workspacePath: workspacePath, error: String(describing: error))
                     NSLog("[linkC relay] dispatchMessages: message %@ could not spawn %@ — %@",
                           message.id, message.toAgent.displayName, String(describing: error))
+                    // A refused Crush launch does not mend by waiting: the brief fails, its sender is told
+                    // what to fix, and so is Jacob.
+                    if message.toAgent == .crush {
+                        let reason = String(describing: error)
+                        do {
+                            try inboxStore.markMessageFailed(id: message.id, timeout: Self.relayLockTimeout)
+                        } catch {
+                            if isRelayLockTimeout(error) { return true }
+                            NSLog("[linkC relay] dispatchMessages: message %@ Crush refusal — %@", message.id, String(describing: error))
+                            continue
+                        }
+                        announceOpenCodeRefusal(reason, notice: reason, from: .crush, to: message.fromAgent,
+                                                taskId: message.taskId, inboxStore: inboxStore, title: Self.crushRefusalTitle)
+                    }
                 }
                 continue
             }
@@ -989,9 +1020,14 @@ extension AppCoordinator {
 
     static let openCodeRefusalTitle = "linkC: OpenCode could not start"
     static let kiloRefusalTitle = "linkC: Kilo could not start"
+    static let crushRefusalTitle = "linkC: Crush could not start"
 
     private static func freeAgentRefusalTitle(for agent: AgentKind) -> String {
-        agent == .kilo ? kiloRefusalTitle : openCodeRefusalTitle
+        switch agent {
+        case .kilo: return kiloRefusalTitle
+        case .crush: return crushRefusalTitle
+        default: return openCodeRefusalTitle
+        }
     }
 
     /// Forgets the refusals reported in `workspace` for `kind` of item that are no longer queued, so a
@@ -1025,10 +1061,10 @@ extension AppCoordinator {
     /// Sends `notice` to `delegator` and tells the user `reason`, whether or not the notice could be written.
     private func announceOpenCodeRefusal(
         _ reason: String, notice: String, from sender: AgentKind, to delegator: AgentKind, taskId: String?,
-        inboxStore: InboxStore
+        inboxStore: InboxStore, title: String? = nil
     ) {
         _ = enqueueDelegatorNotice(notice, from: sender, to: delegator, taskId: taskId, inboxStore: inboxStore)
-        notifications.post(title: Self.freeAgentRefusalTitle(for: sender), body: reason, project: inboxStore.workspaceRoot)
+        notifications.post(title: title ?? Self.freeAgentRefusalTitle(for: sender), body: reason, project: inboxStore.workspaceRoot)
     }
 
     /// Whether `notice` reached `delegator`'s inbox; a failure is logged.

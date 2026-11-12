@@ -62,6 +62,11 @@ final class BoardTechTests: XCTestCase {
         XCTAssertNil(BoardTech.resolve(BoardComponent(name: "codex", kind: .service)))
     }
 
+    func testAComponentNamedCrushIsTheCrushAgent() {
+        XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "Crush", kind: .service)), .crush)
+        XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "x", kind: .service, tech: "crush")), .crush)
+    }
+
     func testAComponentNamedOpenCodeIsTheOpenCodeAgent() {
         XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "OpenCode", kind: .service)), .opencode)
         XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "x", kind: .service, tech: "opencode")), .opencode)

@@ -63,6 +63,9 @@ public final class AppCoordinator {
     /// home — the test suite used to add each of its temp folders to the developer's own config, over
     /// ten thousand entries, and rewrite every agent's MCP config on each run.
     private let userHome: URL?
+    /// Where Crush's per-session config folders are made, and the user's own to copy from. Nil when linkC
+    /// has no home folder for Crush's config: a Crush launch then fails loud, never runs unpinned.
+    let crushSessions: CrushSessionConfig?
     /// Where the selected session is remembered between launches. nil remembers nothing: only the
     /// production initializer passes `.standard`, so a test never reads or writes the real domain —
     /// a shared global that made `testStartRestoresTabSelectionFromUserDefaults` depend on which
@@ -340,6 +343,7 @@ public final class AppCoordinator {
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         claudeJsonURL: URL? = nil,
         userHome: URL? = nil,
+        crushDirectories: CrushDirectories? = nil,
         defaults: UserDefaults? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
@@ -379,6 +383,11 @@ public final class AppCoordinator {
         self.agentPathResolver = agentPathResolver
         self.claudeJsonURL = claudeJsonURL
         self.userHome = userHome
+        if let directories = crushDirectories ?? userHome.map({ CrushDirectories.standard(home: $0, environment: ProcessInfo.processInfo.environment) }) {
+            self.crushSessions = CrushSessionConfig(user: directories, root: settingsDir.appendingPathComponent("crush-sessions", isDirectory: true))
+        } else {
+            self.crushSessions = nil
+        }
         self.defaults = defaults
         self.verifier = verifier
         self.modelSettings = modelSettings
@@ -558,6 +567,7 @@ public final class AppCoordinator {
 
     public func start() throws {
         sweepOrphanedSettingsFiles()
+        if let crushSessions { reportCrushCleanup { try crushSessions.sweep() } }
         statusLines.sweep()
         // Registration rewrites every agent's real config, so it needs a home to write to.
         if let userHome {
@@ -922,6 +932,7 @@ public final class AppCoordinator {
         terminals.remove(sessionId)
         let settingsFile = settingsDir.appendingPathComponent("session-\(sessionId).json")
         try? FileManager.default.removeItem(at: settingsFile)
+        if let crushSessions { reportCrushCleanup { try crushSessions.remove(sessionId: sessionId) } }
         statusLines.unwatch(sessionId: sessionId)
         notifications.forget(sessionId)
         screenSignatures.removeValue(forKey: sessionId)
@@ -1120,11 +1131,12 @@ public final class AppCoordinator {
         guard (tier == nil && model == nil) || mode == .new else {
             throw LinkCError.process("a tier can only pin a new session; \(mode) reuses an existing session's model")
         }
-        // OpenCode and Kilo never resume a conversation: their own would keep whatever model they
-        // last ran on, which linkC cannot see and which may not be free. Continue, Resume and a
+        // OpenCode, Kilo and Crush never resume a conversation: their own would keep whatever model
+        // they last ran on, which linkC cannot see and which may not be free. Continue, Resume and a
         // restore all open a new conversation in the folder, on the default tier's model.
-        let opensFresh = (agent == .opencode || agent == .kilo) && mode != .new
-        let mode: LaunchMode = (agent == .opencode || agent == .kilo) ? .new : mode
+        let neverResumes = agent == .opencode || agent == .kilo || agent == .crush
+        let opensFresh = neverResumes && mode != .new
+        let mode: LaunchMode = neverResumes ? .new : mode
         let resolved: (model: String?, tier: ModelTier?)
         if let model {
             resolved = (model, nil)
@@ -1140,6 +1152,9 @@ public final class AppCoordinator {
         }
         if agent == .kilo, let model, !KiloFreeModels.isFree(model) {
             throw LinkCError.process("\(model) is not a free Kilo model")
+        }
+        if agent == .crush, let model, !CrushFreeModels.isFree(model) {
+            throw LinkCError.process("\(model) is not a free Crush model")
         }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
                                    model: model, modelTier: modelTier,
@@ -1177,6 +1192,9 @@ public final class AppCoordinator {
             }
             if agent == .kilo {
                 env.merge(try kiloEnvironment(model: model)) { _, kilo in kilo }
+            }
+            if agent == .crush {
+                env.merge(try crushEnvironment(sessionId: session.id, cwd: cwd, model: model)) { _, crush in crush }
             }
 
             if agent == .claude {
@@ -1243,6 +1261,7 @@ public final class AppCoordinator {
             if opensFresh {
                 if agent == .opencode { tellOpenCodeStartedFresh(title: title, folder: cwd) }
                 if agent == .kilo { tellKiloStartedFresh(title: title, folder: cwd) }
+                if agent == .crush { tellCrushStartedFresh(title: title, folder: cwd) }
             }
             // Record the now-live session so it survives a quit/crash and can be restored.
             manifest.upsert(RestorableSession(
@@ -1378,11 +1397,11 @@ public final class AppCoordinator {
         // RECENT conversation for that agent. Refuse whichever way this entry would collide with
         // a session already live (including one restored moments ago in the same Restore-all
         // pass, or one a relaunch already brought back onto this entry's id/folder); the card
-        // stays and the user can restore it individually later. OpenCode and Kilo never resume —
+        // stays and the user can restore it individually later. OpenCode, Kilo and Crush never resume —
         // they open a new conversation — so they collide with nothing.
         let resumesById = targetAgent == .claude && !(r.claudeSessionId ?? "").isEmpty
         let folder = ProjectPath.canonical(r.cwd)
-        if targetAgent != .opencode && targetAgent != .kilo, store.sessions.contains(where: { live in
+        if targetAgent != .opencode, targetAgent != .kilo, targetAgent != .crush, store.sessions.contains(where: { live in
             resumesById
                 ? live.claudeSessionId == r.claudeSessionId
                 : live.agentKind == targetAgent && live.cwd == folder

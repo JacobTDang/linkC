@@ -297,6 +297,62 @@ final class LimitDetectorTests: XCTestCase {
                      "OpenCode's free-usage phrase is not Kilo's")
     }
 
+    // MARK: - Crush (read from captured v0.101.0 screens)
+
+    private func crushText(_ name: String) throws -> String {
+        try CodexScreenFixture.rows("crush-0.101.0-\(name)").joined(separator: "\n")
+    }
+
+    /// OpenRouter's free-tier daily cap as Crush prints it once its retries are spent. The screen
+    /// states no reset time, so the cooldown is a fixed wait of hours and the banner holds none.
+    func testCrushsFreeTierDailyCapIsALimit() throws {
+        for name in ["ratelimit", "ratelimit-narrow"] {
+            let cap = try XCTUnwrap(LimitDetector.detectLimit(inOutput: try crushText(name), agent: .crush), name)
+            XCTAssertEqual(cap.agent, .crush, name)
+            XCTAssertEqual(cap.matchedPattern, "OpenRouter free-tier daily cap", name)
+            XCTAssertEqual(cap.cooldown, 6 * 3600, name)
+            XCTAssertTrue(cap.bannerText.lowercased().contains("free-models-per"), cap.bannerText)
+        }
+    }
+
+    /// A 429 that is not the daily cap (the per-minute one, say) is still Crush's own error screen,
+    /// and clears sooner.
+    func testCrushsOtherTooManyRequestsErrorIsAShortLimit() {
+        let screen = " ERROR  Too Many Requests\n Provider returned error\n"
+        let cap = LimitDetector.detectLimit(inOutput: screen, agent: .crush)
+        XCTAssertEqual(cap?.matchedPattern, "Crush too many requests")
+        XCTAssertEqual(cap?.cooldown, LimitDetector.defaultCooldown)
+    }
+
+    /// While Crush retries, its screen shows a spinner and no error: not a limit yet.
+    func testCrushRetryingAfterA429IsNotYetALimit() throws {
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: try crushText("ratelimit-retrying"), agent: .crush))
+    }
+
+    func testNoOtherCrushScreenIsALimit() throws {
+        for name in ["idle", "idle-narrow", "done", "done-narrow", "working-thinking", "working-streaming", "working-narrow",
+                     "permission", "permission-narrow", "nokey-no-provider", "nokey-model-picker", "nokey-enter-key"] {
+            XCTAssertNil(LimitDetector.detectLimit(inOutput: try crushText(name), agent: .crush), name)
+        }
+    }
+
+    /// The wording is Crush's alone, and prose that mentions a 429 is not its error screen.
+    func testCrushsLimitWordsBelongToCrushAlone() throws {
+        let screen = try crushText("ratelimit")
+        // Codex and Cursor read "Rate limit exceeded" as their own; the rest have nothing like it.
+        for agent in [AgentKind.claude, .agy, .opencode, .shell] {
+            XCTAssertNil(LimitDetector.detectLimit(inOutput: screen, agent: agent), "\(agent)")
+        }
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "the API said Too Many Requests, so I will retry", agent: .crush))
+    }
+
+    /// Text linkC typed into the terminal and the terminal echoed back is not Crush's banner.
+    func testCrushsBannerQuotedInAnInjectedPromptIsIgnored() throws {
+        let quoted = "ERROR  Too Many Requests"
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "│ " + quoted, agent: .crush, ignoringInjected: [quoted]))
+        XCTAssertNotNil(LimitDetector.detectLimit(inOutput: quoted, agent: .crush))
+    }
+
     // MARK: - Normal Output & Isolation Tests
 
     func testNormalOutputReturnsNil() {

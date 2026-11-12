@@ -23,7 +23,9 @@ final class OpenCodeScreenGatingTests: XCTestCase {
         XCTAssertFalse(others.isEmpty)
         for name in others {
             let rows = try CodexScreenFixture.rows(name)
-            for agent in AgentKind.allCases where !openCodeFamily.contains(agent) && agent != .freebuff {
+            // Crush's own screens have their own reader, which `CrushScreenTests` covers.
+            for agent in AgentKind.allCases where !openCodeFamily.contains(agent) && agent != .freebuff
+                && !(agent == .crush && name.hasPrefix("crush-")) {
                 XCTAssertEqual(
                     TerminalPreview.liveActivity(from: rows, agent: agent),
                     TerminalPreview.genericLiveActivity(from: rows),

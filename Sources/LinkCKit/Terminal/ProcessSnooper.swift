@@ -27,6 +27,8 @@ public struct ProcessSnooper: Sendable {
             // `kilo` is a node script that starts the real binary, `.kilo`, beside it; that binary is
             // the process the kernel names, and its parent is `node`.
             return .kilo
+        case "crush":
+            return .crush
         default:
             if trimmed.contains("/claude/versions/") {
                 return .claude

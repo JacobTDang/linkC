@@ -10,7 +10,8 @@ public enum AgentModelCatalog: Sendable {
 
     /// Generates CLI launch arguments for specifying the model. OpenCode 2.2.5's TUI has no model
     /// flag — it refuses one — so its model goes in its inline config (`MCPRegistrar.openCodeConfigContent`).
+    /// Crush's TUI has none either: its model goes in a per-session config (`CrushSessionConfig`).
     public static func launchArguments(model: String, for agent: AgentKind) -> [String] {
-        agent == .opencode || agent == .kilo ? [] : ["--model", model]
+        agent == .opencode || agent == .kilo || agent == .crush ? [] : ["--model", model]
     }
 }

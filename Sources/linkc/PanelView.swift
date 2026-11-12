@@ -282,6 +282,7 @@ struct LauncherMenu: View {
                 Button("New OpenCode session…") { model.newSession(agent: .opencode, mode: .new) }
                 Button("New Freebuff session…") { model.newSession(agent: .freebuff, mode: .new) }
                 Button("New Kilo session…") { model.newSession(agent: .kilo, mode: .new) }
+                Button("New Crush session…") { model.newSession(agent: .crush, mode: .new) }
                 Button("New Codex session…") { model.newSession(agent: .codex, mode: .new) }
             }
             Section("Terminal") {

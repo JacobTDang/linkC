@@ -56,6 +56,13 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
                 "light": "kilo/nvidia/nemotron-3.5-lightning:free",
                 "standard": "kilo/kilo-auto/free",
                 "deep": "kilo/nvidia/nemotron-3-ultra-550b-a55b:free"
+            ],
+            // Crush's free OpenRouter models, as `crush models` listed them (2026-11-12). Crush pins
+            // the model through a per-session config (CrushSessionConfig) and refuses a non-free one.
+            AgentKind.crush.rawValue: [
+                "light": "openrouter/nvidia/nemotron-3.5-lightning:free",
+                "standard": "openrouter/nvidia/nemotron-3.5-super-vl:free",
+                "deep": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
             ]
         ],
         defaultTiers: [
@@ -64,7 +71,8 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             AgentKind.agy.rawValue: ModelTier.standard.rawValue,
             AgentKind.grok.rawValue: ModelTier.standard.rawValue,
             AgentKind.opencode.rawValue: ModelTier.standard.rawValue,
-            AgentKind.kilo.rawValue: ModelTier.standard.rawValue
+            AgentKind.kilo.rawValue: ModelTier.standard.rawValue,
+            AgentKind.crush.rawValue: ModelTier.standard.rawValue
         ]
     )
 
