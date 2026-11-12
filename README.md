@@ -132,12 +132,16 @@ agent's list. A verified task also carries a test command: linkC runs it itself,
 counts as done if the tests fail before it and pass after.
 
 linkC reads each agent's models from its own CLI (`agy models`, `cursor-agent models`,
-`opencode models`) at launch, every 6 hours and when Settings opens. Claude and Codex, which have
+`opencode models`, `kilo models`, `crush models`) at launch, every 6 hours and when Settings opens. Claude and Codex, which have
 no list command, use a short list of checked ids. Each tier in **Settings > Models** picks from that
 list, or takes a typed id under "Other…". OpenCode is limited to its free models: `-free` models,
 Big Pickle and local Ollama models; any other OpenCode model is refused wherever it is set or
 launched, and OpenCode's Continue and restore start a new conversation on the free default model
-instead of resuming one. A model that does not exist, is not free, is rate-limited or is rejected
+instead of resuming one. Kilo and Crush follow the same free-only rule with their own free models,
+and linkC pins each of their sessions to the chosen free model, so a model picked earlier in the
+CLI itself cannot take over. Freebuff is for long-running work only (deep research, large
+implementations, reverse engineering), since a short session costs the same as a long one: linkC
+never sends it a task on its own, and only an agent that asks for it gets it. A model that does not exist, is not free, is rate-limited or is rejected
 at launch is reported to the delegating agent at once, with the reason and what is not limited.
 
 When no agent of the right kind is free, linkC launches one to carry the task, so several workers of
@@ -255,6 +259,9 @@ is active, and that session's tab is selected. Click a notification to jump to i
 | Cursor Agent | `cursor` | linkC reads the terminal screen every second while the panel is open or work is in flight, every five seconds otherwise. |
 | Grok | `cursor` | Cursor Agent on a Grok 4.7 model, in its own settings folder (`~/.cursor-grok`). linkC reads the terminal screen as it does for Cursor Agent. |
 | OpenCode | `opencode` | OpenCode on one of its free models, picked per tier in Settings > Models. linkC reads the terminal screen as it does for Codex. |
+| Freebuff | `freebuff` | Freebuff on its own default model (DeepSeek V4.1 Flash), within its free daily hours. For long-running work only: linkC never routes a task to it on its own, and it takes no tier or model. |
+| Kilo | `kilo` | Kilo on one of its free models (`:free`, `-free`, or a `/free` router), pinned per session. Free models need no Kilo login. |
+| Crush | `crush` | Crush on OpenRouter's free models (`openrouter/…:free`) for both its large and small model, pinned per session. Needs your free OpenRouter key in Crush. |
 
 ## Requirements
 
