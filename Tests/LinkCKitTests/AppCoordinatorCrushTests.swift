@@ -189,6 +189,21 @@ final class AppCoordinatorCrushTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessionsRoot.path), "no config was written for it")
     }
 
+    /// Without Jacob's OpenRouter key Crush would stop on its provider dialog, and a task sent to it
+    /// would wait in the queue for good. The launch fails at once, saying what to do.
+    func testACrushLaunchWithNoOpenRouterKeyFailsAtOnceTellingJacobToAddOne() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil, "OPENROUTER_API_KEY is set in this environment")
+        try #"{"options":{"disable_metrics":true}}"#.write(to: userConfig.appendingPathComponent("crush.json"), atomically: true, encoding: .utf8)
+        let coordinator = try makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        XCTAssertThrowsError(try coordinator.newSession(cwd: tempDir.path, agent: .crush, mode: .new)) { error in
+            XCTAssertTrue(String(describing: error).contains("add an OpenRouter key to Crush"), String(describing: error))
+        }
+        XCTAssertTrue(coordinator.store.sessions.isEmpty, "no session is left waiting")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionsRoot.path))
+    }
+
     func testACrushLaunchWithNoFoldersToPinThroughFailsLoud() throws {
         let coordinator = try makeCoordinator(withCrushDirectories: false)
         defer { coordinator.shutdown() }

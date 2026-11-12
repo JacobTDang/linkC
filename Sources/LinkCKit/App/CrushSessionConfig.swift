@@ -49,6 +49,10 @@ public struct CrushDirectories: Sendable, Equatable {
 /// A session folder that exists when a session is prepared is deleted first; if it cannot be deleted
 /// whole, the preparation fails, so a stale `data/crush.json` is never launched on.
 ///
+/// Crush stops on a provider dialog when it has no OpenRouter key, and a task sent to it would wait
+/// for good. A preparation that finds no key (in the user's `crush.json`, in a key Crush saved in its
+/// data folder, or in `$OPENROUTER_API_KEY`) fails at once with "add an OpenRouter key to Crush".
+///
 /// The user's own files are only ever read.
 public struct CrushSessionConfig: Sendable {
     public static let configKey = "CRUSH_GLOBAL_CONFIG"
@@ -61,9 +65,13 @@ public struct CrushSessionConfig: Sendable {
     /// The folder the per-session folders live in: `<root>/<session id>/{config,data}`.
     public let root: URL
 
-    public init(user: CrushDirectories, root: URL) {
+    /// The environment Crush will run in: its OpenRouter entry reads `$OPENROUTER_API_KEY`.
+    let environment: [String: String]
+
+    public init(user: CrushDirectories, root: URL, environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.user = user
         self.root = root
+        self.environment = environment
     }
 
     /// Crush runs free models only (`CrushFreeModels`).
@@ -102,6 +110,9 @@ public struct CrushSessionConfig: Sendable {
         models["small"] = entry
         config["models"] = models
         let dataFiles = try readUserData()
+        guard hasOpenRouterKey(config: config, dataFiles: dataFiles) else {
+            throw LinkCError.process("Crush has no OpenRouter key, so it cannot run a free model — add an OpenRouter key to Crush (open crush and enter it, or set providers.openrouter.api_key in \(user.config.appendingPathComponent(Self.configFileName).path)), then try again")
+        }
 
         let session = folder(for: sessionId)
         let configFolder = session.appendingPathComponent("config", isDirectory: true)
@@ -199,6 +210,34 @@ public struct CrushSessionConfig: Sendable {
             }
         }
         return files
+    }
+
+    // MARK: - The OpenRouter key
+
+    /// Whether Crush would find a non-empty OpenRouter key: in the global config, in the `crush.json`
+    /// it saves in its data folder, or, where either names a `$VARIABLE` or neither names a key, in
+    /// `$OPENROUTER_API_KEY`.
+    private func hasOpenRouterKey(config: [String: Any], dataFiles: [(name: String, data: Data)]) -> Bool {
+        var saved: [String: Any] = [:]
+        if let file = dataFiles.first(where: { $0.name == Self.configFileName }) {
+            saved = (try? JSONSerialization.jsonObject(with: file.data)) as? [String: Any] ?? [:]
+        }
+        let named = [config, saved].compactMap { Self.openRouterKey(in: $0) }
+        if named.isEmpty { return !(environment["OPENROUTER_API_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return named.contains { value in
+            if value.hasPrefix("$") {
+                let name = String(value.dropFirst().trimmingCharacters(in: CharacterSet(charactersIn: "{}")))
+                return !(environment[name] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return true
+        }
+    }
+
+    /// `providers.openrouter.api_key` when it is a non-blank string.
+    private static func openRouterKey(in object: [String: Any]) -> String? {
+        let provider = (object["providers"] as? [String: Any])?["openrouter"] as? [String: Any]
+        guard let key = (provider?["api_key"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else { return nil }
+        return key
     }
 
     // MARK: - Things that would override the pin

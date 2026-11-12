@@ -23,6 +23,8 @@ final class CrushSessionConfigTests: XCTestCase {
         for dir in [userConfig!, userData!, project!] {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
+        // Every test starts with a user who has a key; the ones about a missing key take it away.
+        try writeKeyedUserConfig()
     }
 
     override func tearDownWithError() throws {
@@ -30,8 +32,14 @@ final class CrushSessionConfigTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func makeConfig() -> CrushSessionConfig {
-        CrushSessionConfig(user: CrushDirectories(config: userConfig, data: userData), root: sessions)
+    /// `environment` is empty unless a test says otherwise: the real shell's OPENROUTER_API_KEY must not count.
+    private func makeConfig(environment: [String: String] = [:]) -> CrushSessionConfig {
+        CrushSessionConfig(user: CrushDirectories(config: userConfig, data: userData), root: sessions, environment: environment)
+    }
+
+    /// A user crush.json that holds a key, so a test about something else is not stopped at the key check.
+    private func writeKeyedUserConfig() throws {
+        try write(#"{"providers":{"openrouter":{"api_key":"sk-or-user-key"}}}"#, to: userConfig.appendingPathComponent("crush.json"))
     }
 
     private func write(_ text: String, to url: URL) throws {
@@ -90,11 +98,63 @@ final class CrushSessionConfigTests: XCTestCase {
         XCTAssertEqual((config["options"] as? [String: Bool]), ["disable_metrics": true])
     }
 
-    func testAMissingUserConfigGivesAConfigWithOnlyThePin() throws {
+    func testAKeyOnlyUserConfigGivesAConfigWithTheKeyAndThePin() throws {
         let env = try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free)
 
         let config = try json(URL(fileURLWithPath: try XCTUnwrap(env["CRUSH_GLOBAL_CONFIG"])).appendingPathComponent("crush.json"))
-        XCTAssertEqual(Set(config.keys), ["models"])
+        XCTAssertEqual(Set(config.keys), ["models", "providers"])
+    }
+
+    // MARK: - No OpenRouter key
+
+    private let addKey = "add an OpenRouter key to Crush"
+
+    func testAMissingUserConfigFailsAtOnceTellingJacobToAddAnOpenRouterKey() throws {
+        try FileManager.default.removeItem(at: userConfig.appendingPathComponent("crush.json"))
+        assertRefuses(containing: addKey)
+    }
+
+    func testAConfigWithNoOpenRouterKeyFailsAtOnce() throws {
+        try write(#"{"providers":{"anthropic":{"api_key":"sk-ant"}},"options":{}}"#, to: userConfig.appendingPathComponent("crush.json"))
+        assertRefuses(containing: addKey)
+        try write(#"{"providers":{"openrouter":{"api_key":"  "}}}"#, to: userConfig.appendingPathComponent("crush.json"))
+        assertRefuses(containing: addKey)
+        try write(#"{"providers":{"openrouter":{"disable":false}}}"#, to: userConfig.appendingPathComponent("crush.json"))
+        assertRefuses(containing: addKey)
+    }
+
+    func testAKeyInTheConfigLetsThePreparationProceed() throws {
+        try write(userConfigText, to: userConfig.appendingPathComponent("crush.json"))
+        XCTAssertNoThrow(try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free))
+    }
+
+    /// Crush saves a key typed into its TUI in `<data>/crush.json`.
+    func testAKeySavedInTheDataFolderLetsThePreparationProceed() throws {
+        try FileManager.default.removeItem(at: userConfig.appendingPathComponent("crush.json"))
+        try write(#"{"providers":{"openrouter":{"api_key":"sk-or-saved"}}}"#, to: userData.appendingPathComponent("crush.json"))
+        XCTAssertNoThrow(try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free))
+    }
+
+    /// Crush's own OpenRouter entry reads `$OPENROUTER_API_KEY`.
+    func testTheEnvironmentsKeyCountsWhenTheConfigNamesNone() throws {
+        try FileManager.default.removeItem(at: userConfig.appendingPathComponent("crush.json"))
+        XCTAssertNoThrow(try makeConfig(environment: ["OPENROUTER_API_KEY": "sk-or-env"])
+            .prepare(sessionId: "S1", cwd: project.path, model: free))
+        try FileManager.default.removeItem(at: sessions)
+        XCTAssertThrowsError(try makeConfig(environment: ["OPENROUTER_API_KEY": ""]).prepare(sessionId: "S2", cwd: project.path, model: free))
+    }
+
+    func testAConfigKeyThatNamesAnEmptyVariableIsMissing() throws {
+        try write(#"{"providers":{"openrouter":{"api_key":"$OPENROUTER_API_KEY"}}}"#, to: userConfig.appendingPathComponent("crush.json"))
+        assertRefuses(containing: addKey)
+        XCTAssertNoThrow(try makeConfig(environment: ["OPENROUTER_API_KEY": "sk-or-env"]).prepare(sessionId: "S1", cwd: project.path, model: free))
+    }
+
+    func testAMissingKeyIsReportedBeforeAnythingIsWritten() throws {
+        try FileManager.default.removeItem(at: userConfig.appendingPathComponent("crush.json"))
+        try write(#"{"options":{}}"#, to: userData.appendingPathComponent("providers.json"))
+        assertRefuses(containing: addKey)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessions.path))
     }
 
     func testTheUsersOwnFilesAreNeverTouched() throws {
@@ -174,7 +234,7 @@ final class CrushSessionConfigTests: XCTestCase {
 
     func testAnEmptyUserConfigReadsAsNothing() throws {
         try write("  \n", to: userConfig.appendingPathComponent("crush.json"))
-        XCTAssertNoThrow(try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free))
+        XCTAssertNoThrow(try makeConfig(environment: ["OPENROUTER_API_KEY": "sk-or-env"]).prepare(sessionId: "S1", cwd: project.path, model: free))
     }
 
     func testADataFileThatIsNotAJSONObjectIsRefusedByName() throws {
