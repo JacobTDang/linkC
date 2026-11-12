@@ -1954,6 +1954,13 @@ public final class MCPServer: Sendable {
                     text: "Error: \(modelArg) is not free — OpenCode runs free models only. Free models: \(free)",
                     isError: true)
             }
+            if toAgent == .crush, !CrushFreeModels.isFree(modelArg) {
+                let free = choosable.filter { CrushFreeModels.isFree($0.id) }.map(\.id).joined(separator: ", ")
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(modelArg) is not free — Crush runs free models only. Free models: \(free)",
+                    isError: true)
+            }
             // The listed spelling is what is stored and launched, whatever case it was typed in.
             guard let listed = choosable.first(where: { $0.id.caseInsensitiveCompare(modelArg) == .orderedSame }) else {
                 let ids = choosable.map(\.id).joined(separator: ", ")
@@ -2011,6 +2018,14 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(
                     id: id,
                     text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not free — OpenCode runs free models only; set the tier in linkC settings.",
+                    isError: true)
+            }
+        }
+        if toAgent == .crush, let tier, let tierModel = settings.model(for: .crush, tier: tier) {
+            guard CrushFreeModels.isFree(tierModel) else {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: \(tierModel) (crush tier \(tier.rawValue)) is not free — Crush runs free models only; set the tier in linkC settings.",
                     isError: true)
             }
         }

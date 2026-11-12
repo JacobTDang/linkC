@@ -1093,7 +1093,7 @@ public final class AppCoordinator {
         if agent == .opencode, let model, !OpenCodeFreeModels.isFree(model) {
             throw LinkCError.process("\(model) is not a free OpenCode model")
         }
-        if agent == .crush, let model, !CrushSessionConfig.isFree(model) {
+        if agent == .crush, let model, !CrushFreeModels.isFree(model) {
             throw LinkCError.process("\(model) is not a free Crush model")
         }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,

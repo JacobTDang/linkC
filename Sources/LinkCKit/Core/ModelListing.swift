@@ -15,7 +15,7 @@ public struct ListedModel: Codable, Equatable, Sendable {
 public enum ModelListParser {
     /// Agents whose models come from a CLI listing. Claude and Codex have fixed lists (`fixed(for:)`).
     /// Grok has no listing of its own: it reuses Cursor's.
-    public static let listedAgents: [AgentKind] = [.agy, .cursor, .grok, .opencode]
+    public static let listedAgents: [AgentKind] = [.agy, .cursor, .grok, .opencode, .crush]
 
     private static let zeroWidth: CharacterSet = {
         var set = CharacterSet()
@@ -73,6 +73,15 @@ public enum ModelListParser {
         }
     }
 
+    /// `crush models`: one `provider/model` id per line; free OpenRouter models only; name = id.
+    public static func crush(_ output: String) -> [ListedModel] {
+        output.split(whereSeparator: \.isNewline).compactMap { line in
+            let id = clean(String(line))
+            guard !id.isEmpty, CrushFreeModels.isFree(id) else { return nil }
+            return ListedModel(id: id, name: id)
+        }
+    }
+
     /// What `agent`'s CLI printed, as models. Output that yields none is an error, never an empty
     /// list: a CLI that printed text but no models (an error line, a changed format) must not pass
     /// for one that has none. Throws for an agent that has no listing command.
@@ -83,7 +92,8 @@ public enum ModelListParser {
         case .cursor: models = Self.cursor(output)
         case .grok: models = Self.grok(fromCursor: output)
         case .opencode: models = Self.openCode(output)
-        case .claude, .codex, .crush, .shell:
+        case .crush: models = Self.crush(output)
+        case .claude, .codex, .shell:
             throw LinkCError.process("\(agent.rawValue) has no model listing command")
         }
         guard !models.isEmpty else {
@@ -117,6 +127,20 @@ public enum OpenCodeFreeModels {
         if trimmed == "opencode/big-pickle" { return true }
         if trimmed.hasPrefix("opencode/"), trimmed.hasSuffix("-free") { return true }
         return false
+    }
+}
+
+/// Crush's free-only rule: an OpenRouter model whose id ends in `:free` (`openrouter/<model>:free`).
+/// The one rule every Crush path uses: the `crush models` parser, the Settings picker, delegation,
+/// launch, and the per-session config that pins the model.
+public enum CrushFreeModels {
+    public static let provider = "openrouter/"
+    public static let suffix = ":free"
+
+    public static func isFree(_ id: String) -> Bool {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix(provider) && trimmed.hasSuffix(suffix)
+            && trimmed.count > provider.count + suffix.count
     }
 }
 

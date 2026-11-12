@@ -66,6 +66,8 @@ final class ModelListRefresherTests: XCTestCase {
                     return "Available models\n\nauto - Auto\ngrok-4.7-low - Grok 4.7  Low\n"
                 case .opencode:
                     return "opencode/big-pickle\nopencode/claude-sonnet-5\n"
+                case .crush:
+                    return "openrouter/nvidia/nemotron-3.5-lightning:free\nopenrouter/anthropic/claude-opus-4.5\n"
                 default:
                     XCTFail("unexpected agent \(agent)")
                     return ""
@@ -83,6 +85,7 @@ final class ModelListRefresherTests: XCTestCase {
         XCTAssertEqual(lists[.cursor]?.models.map(\.id), ["auto", "grok-4.7-low"])
         XCTAssertEqual(lists[.grok]?.models.map(\.id), ["grok-4.7-low"])
         XCTAssertEqual(lists[.opencode]?.models.map(\.id), ["opencode/big-pickle"])
+        XCTAssertEqual(lists[.crush]?.models.map(\.id), ["openrouter/nvidia/nemotron-3.5-lightning:free"])
         XCTAssertNil(lists[.claude])
         XCTAssertNil(lists[.codex])
     }

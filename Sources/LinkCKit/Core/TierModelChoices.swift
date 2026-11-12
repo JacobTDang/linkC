@@ -1,7 +1,7 @@
 import Foundation
 
 /// The rules behind each Settings tier picker: which options to show, when "Other…" is selected,
-/// and whether a typed OpenCode id is free. The view only renders this.
+/// and whether a typed OpenCode or Crush id is free. The view only renders this.
 public struct TierModelChoices: Equatable, Sendable {
     public static let otherLabel = "Other…"
 
@@ -52,6 +52,7 @@ public struct TierModelChoices: Equatable, Sendable {
     ) -> TierModelChoices {
         let available = ModelListCache.available(for: agent, lists: lists, settings: settings)
             .filter { agent != .opencode || OpenCodeFreeModels.isFree($0.id) }
+            .filter { agent != .crush || CrushFreeModels.isFree($0.id) }
         let ids = available.map(\.id)
         var labels = ids
         labels.append(otherLabel)
@@ -84,11 +85,14 @@ public struct TierModelChoices: Equatable, Sendable {
     public static func validationError(forTypedId id: String, agent: AgentKind) -> String? {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        guard agent == .opencode else { return nil }
-        guard OpenCodeFreeModels.isFree(trimmed) else {
-            return "\(trimmed) is not a free OpenCode model"
+        switch agent {
+        case .opencode:
+            return OpenCodeFreeModels.isFree(trimmed) ? nil : "\(trimmed) is not a free OpenCode model"
+        case .crush:
+            return CrushFreeModels.isFree(trimmed) ? nil : "\(trimmed) is not a free Crush model"
+        default:
+            return nil
         }
-        return nil
     }
 
     /// What to warn about under the field when `id` is not in `agent`'s live list, or nil. Only a list

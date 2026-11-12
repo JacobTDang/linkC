@@ -66,20 +66,18 @@ public struct CrushSessionConfig: Sendable {
         self.root = root
     }
 
-    /// Crush runs free models only: an OpenRouter model whose id ends in `:free`.
+    /// Crush runs free models only (`CrushFreeModels`).
     public static func isFree(_ id: String) -> Bool {
-        (try? split(id)) != nil
+        CrushFreeModels.isFree(id)
     }
 
     /// `openrouter/nvidia/x:free` as Crush's `{"provider": "openrouter", "model": "nvidia/x:free"}`.
     static func split(_ id: String) throws -> (provider: String, model: String) {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        let provider = "openrouter/"
-        let free = ":free"
-        guard trimmed.hasPrefix(provider), trimmed.hasSuffix(free), trimmed.count > provider.count + free.count else {
+        guard CrushFreeModels.isFree(trimmed) else {
             throw LinkCError.process("\(id) is not a free Crush model")
         }
-        return ("openrouter", String(trimmed.dropFirst(provider.count)))
+        return ("openrouter", String(trimmed.dropFirst(CrushFreeModels.provider.count)))
     }
 
     func folder(for sessionId: String) -> URL {
