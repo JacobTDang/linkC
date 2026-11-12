@@ -15,7 +15,7 @@ public struct ListedModel: Codable, Equatable, Sendable {
 public enum ModelListParser {
     /// Agents whose models come from a CLI listing. Claude and Codex have fixed lists (`fixed(for:)`).
     /// Grok has no listing of its own: it reuses Cursor's.
-    public static let listedAgents: [AgentKind] = [.agy, .cursor, .grok, .opencode]
+    public static let listedAgents: [AgentKind] = [.agy, .cursor, .grok, .opencode, .kilo]
 
     private static let zeroWidth: CharacterSet = {
         var set = CharacterSet()
@@ -73,6 +73,15 @@ public enum ModelListParser {
         }
     }
 
+    /// `kilo models`: one id per line; free only (spec §4.3); name = id.
+    public static func kilo(_ output: String) -> [ListedModel] {
+        output.split(whereSeparator: \.isNewline).compactMap { line in
+            let id = clean(String(line))
+            guard !id.isEmpty, KiloFreeModels.isFree(id) else { return nil }
+            return ListedModel(id: id, name: id)
+        }
+    }
+
     /// What `agent`'s CLI printed, as models. Output that yields none is an error, never an empty
     /// list: a CLI that printed text but no models (an error line, a changed format) must not pass
     /// for one that has none. Throws for an agent that has no listing command.
@@ -83,8 +92,8 @@ public enum ModelListParser {
         case .cursor: models = Self.cursor(output)
         case .grok: models = Self.grok(fromCursor: output)
         case .opencode: models = Self.openCode(output)
-        case .claude, .codex, .kilo, .shell:
-            // Kilo's `kilo models` listing lands in K3; until then it has no listing command.
+        case .kilo: models = Self.kilo(output)
+        case .claude, .codex, .shell:
             throw LinkCError.process("\(agent.rawValue) has no model listing command")
         }
         guard !models.isEmpty else {
@@ -121,8 +130,8 @@ public enum OpenCodeFreeModels {
     }
 }
 
-/// Kilo's free-only rule (spec §4.3): `kilo/…` and either ends in `:free`, ends in `-free`, or
-/// the last path component is `free`. K3 will harden this against live `kilo models` output.
+/// Kilo's free-only rule (spec §4.3): starts with `kilo/` and either ends in `:free`, ends in
+/// `-free`, or the last path component is `free`.
 public enum KiloFreeModels {
     public static func isFree(_ id: String) -> Bool {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)

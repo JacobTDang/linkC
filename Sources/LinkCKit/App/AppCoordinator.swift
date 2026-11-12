@@ -103,6 +103,8 @@ public final class AppCoordinator {
     /// Lists models away from the main actor. Results are reused briefly so the once-per-second
     /// relay never blocks on OpenCode, while withdrawn free models are noticed within seconds.
     let openCodeModels: OpenCodeModelLister
+    /// Same role as `openCodeModels`, for Kilo's free-model listing.
+    let kiloModels: OpenCodeModelLister
     private struct OpenCodeModelListing {
         enum ListingResult {
             case success([String])
@@ -113,14 +115,17 @@ public final class AppCoordinator {
     }
     private var openCodeModelListings: [String: OpenCodeModelListing] = [:]
     private var openCodeModelChecksInFlight: Set<String> = []
+    private var kiloModelListings: [String: OpenCodeModelListing] = [:]
+    private var kiloModelChecksInFlight: Set<String> = []
     static let openCodeModelListingMaxAge: TimeInterval = 5
     /// A failed listing is kept longer, so a broken OpenCode is listed at most once a minute per folder.
     static let openCodeModelFailedListingMaxAge: TimeInterval = 60
-    /// How long the app waits for `opencode models`: less than the 20 s `linkc` waits for its open
-    /// request, so the command hears "could not check" rather than nothing. Public: it is read by the
-    /// public initializer's default `openCodeModels`.
+    /// How long the app waits for `opencode models` / `kilo models`: less than the 20 s `linkc` waits
+    /// for its open request, so the command hears "could not check" rather than nothing. Public: it is
+    /// read by the public initializer's default listers.
     public static let openCodeModelListingTimeout: TimeInterval = 10
     var openCodeModelCheckCount = 0
+    var kiloModelCheckCount = 0
     /// OpenCode refusals the user has been told of, one per queued task or message, so a pass that meets the
     /// same one again says nothing to them. Pruned by the dispatch passes to what is still queued.
     var openCodeRefusalUsersTold: Set<OpenCodeRefusalKey> = []
@@ -357,6 +362,11 @@ public final class AppCoordinator {
                 try MCPServer.listOpenCodeModels(in: folder, timeout: AppCoordinator.openCodeModelListingTimeout)
             }.value
         },
+        kiloModels: @escaping OpenCodeModelLister = { folder in
+            try await Task.detached {
+                try MCPServer.listKiloModels(in: folder, timeout: AppCoordinator.openCodeModelListingTimeout)
+            }.value
+        },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -385,6 +395,7 @@ public final class AppCoordinator {
         self.sidebarProjects = sidebarProjects
         self.openRequests = openRequests
         self.openCodeModels = openCodeModels
+        self.kiloModels = kiloModels
         self.isWatching = isWatching
         self.statusLines = StatusLineFeed(
             directory: settingsDir.appendingPathComponent("status-lines", isDirectory: true),
@@ -438,6 +449,53 @@ public final class AppCoordinator {
                 self.openCodeModelChecksInFlight.remove(norm)
                 self.openCodeModelCheckCount += 1
                 // The pass that was waiting for this answer need not wait out an idle interval.
+                self.sweepTicker?.wake()
+            }
+        }
+        return .checking
+    }
+
+    func kiloModelAvailability(in folder: String, tier: ModelTier) -> OpenCodeModelAvailability {
+        guard let model = resolvedModel(for: .kilo, tier: tier) else {
+            return .refused("no model configured for kilo tier \(tier.rawValue) — set it in linkC's Settings > Models")
+        }
+        return kiloModelAvailability(
+            in: folder, model: model, subject: "\(model) (kilo tier \(tier.rawValue))",
+            checked: "kilo tier \(tier.rawValue)'s model \(model)", remedy: "set the tier in linkC settings")
+    }
+
+    /// Whether Kilo may run `model` in `folder` right now: free, and listed by Kilo itself.
+    func kiloModelAvailability(
+        in folder: String, model: String, subject: String, checked: String? = nil, remedy: String
+    ) -> OpenCodeModelAvailability {
+        guard KiloFreeModels.isFree(model) else {
+            return .refused("\(subject) is not free — Kilo runs free models only; \(remedy)")
+        }
+        let norm = ProjectPath.canonical(folder)
+        if let listing = kiloModelListings[norm] {
+            let age = now().timeIntervalSince(listing.checkedAt)
+            switch listing.result {
+            case .success(let models) where age <= Self.openCodeModelListingMaxAge:
+                guard models.contains(model) else {
+                    return .refused("\(subject) is not among the models Kilo lists — free models come and go; \(remedy)")
+                }
+                return .available
+            case .failure(let reason) where age <= Self.openCodeModelFailedListingMaxAge:
+                return .uncheckable("could not check \(checked ?? subject) against the models Kilo lists — \(reason)")
+            case .success, .failure:
+                break
+            }
+        }
+        if kiloModelChecksInFlight.insert(norm).inserted {
+            let lister = kiloModels
+            Task { [weak self] in
+                let result: OpenCodeModelListing.ListingResult
+                do { result = .success(try await lister(norm)) }
+                catch { result = .failure(String(describing: error)) }
+                guard let self else { return }
+                self.kiloModelListings[norm] = OpenCodeModelListing(checkedAt: self.now(), result: result)
+                self.kiloModelChecksInFlight.remove(norm)
+                self.kiloModelCheckCount += 1
                 self.sweepTicker?.wake()
             }
         }

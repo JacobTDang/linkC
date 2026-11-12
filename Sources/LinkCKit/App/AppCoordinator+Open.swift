@@ -20,9 +20,12 @@ extension AppCoordinator {
         let pending = openRequests.pending()
         guard !pending.isEmpty else { return }
         for request in pending {
-            if request.agent == .opencode, request.task != nil {
-                let tier = request.tier ?? defaultTier(for: .opencode)
-                switch openCodeModelAvailability(in: request.folder, tier: tier) {
+            if (request.agent == .opencode || request.agent == .kilo), request.task != nil {
+                let tier = request.tier ?? defaultTier(for: request.agent)
+                let availability = request.agent == .kilo
+                    ? kiloModelAvailability(in: request.folder, tier: tier)
+                    : openCodeModelAvailability(in: request.folder, tier: tier)
+                switch availability {
                 case .checking:
                     continue
                 case .available:
@@ -32,7 +35,8 @@ extension AppCoordinator {
                         try openRequests.withdraw(request.id)
                         try openRequests.answer(request.id, with: .refused(reason))
                     } catch {
-                        NSLog("[linkC] OpenCode request %@ could not be refused — %@", request.id, String(describing: error))
+                        NSLog("[linkC] %@ request %@ could not be refused — %@",
+                              request.agent.rawValue, request.id, String(describing: error))
                     }
                     continue
                 }
