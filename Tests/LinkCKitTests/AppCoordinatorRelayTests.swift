@@ -3067,6 +3067,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         models.setModel("", for: .agy, tier: .light)
         models.setModel("", for: .grok, tier: .light)
         models.setModel("", for: .opencode, tier: .light)
+        models.setModel("", for: .kilo, tier: .light)
         let coordinator = makeCoordinator(models: models)
         defer { coordinator.shutdown() }
 
@@ -3104,6 +3105,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         models.setModel("", for: .agy, tier: .light)
         models.setModel("", for: .grok, tier: .light)
         models.setModel("", for: .opencode, tier: .light)
+        models.setModel("", for: .kilo, tier: .light)
         let coordinator = makeCoordinator(models: models)
         defer { coordinator.shutdown() }
 
@@ -3162,6 +3164,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         models.setModel("", for: .cursor, tier: .standard)
         models.setModel("", for: .grok, tier: .standard)
         models.setModel("", for: .opencode, tier: .standard)
+        models.setModel("", for: .kilo, tier: .standard)
         let coordinator = makeCoordinator(models: models)
         defer { coordinator.shutdown() }
 

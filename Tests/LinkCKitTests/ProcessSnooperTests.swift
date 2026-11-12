@@ -34,6 +34,13 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/someone/.opencode/bin/opencode"), .opencode)
     }
 
+    /// Homebrew and `/usr/local` both ship `kilo`.
+    func testKiloIsDetectedByItsBinary() {
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/kilo"), .kilo)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/usr/local/bin/kilo"), .kilo)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/Cellar/kilo/7.8.27/bin/kilo"), .kilo)
+    }
+
     func testProcessTreeInspectionReturnsNilForEmptyChildren() {
         // PID 0 (kernel task) or invalid negative PID has no child agent
         XCTAssertNil(ProcessSnooper.detectAgent(inProcessTreeOf: -1))

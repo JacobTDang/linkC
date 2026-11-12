@@ -122,14 +122,14 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(AgentDescriptor.grokConfigDirectory(home: home).path, "/Users/someone/.cursor-grok")
         XCTAssertEqual(AgentDescriptor.environment(for: .grok, home: home),
                        ["CURSOR_CONFIG_DIR": "/Users/someone/.cursor-grok", "LINKC_WORKER": "grok"])
-        for kind in AgentKind.allCases where kind != .grok && kind != .opencode {
+        for kind in AgentKind.allCases where kind != .grok && kind != .opencode && kind != .kilo {
             XCTAssertEqual(AgentDescriptor.environment(for: kind, home: home), [:], "\(kind)")
         }
     }
 
     func testPeersAreEveryAgentButAShell() {
-        XCTAssertEqual(AgentKind.peers, [.claude, .agy, .cursor, .codex, .grok, .opencode])
-        XCTAssertEqual(AgentKind.peerList, "claude, agy, cursor, codex, grok, opencode")
+        XCTAssertEqual(AgentKind.peers, [.claude, .agy, .cursor, .codex, .grok, .opencode, .kilo])
+        XCTAssertEqual(AgentKind.peerList, "claude, agy, cursor, codex, grok, opencode, kilo")
     }
 
     /// OpenCode runs its own binary, on a private server of its own, with every permission approved. It never gets `--continue`:
@@ -157,5 +157,33 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(AgentDescriptor.openCodeConfigContentKey, "OPENCODE_CONFIG_CONTENT")
         XCTAssertEqual(AgentDescriptor.environment(for: .opencode, home: URL(fileURLWithPath: "/Users/someone")),
                        ["OPENCODE_DISABLE_AUTOUPDATE": "1"])
+    }
+
+    /// Kilo runs its own binary with `--auto` and never continues a conversation: that would keep
+    /// whatever model it last used, which linkC cannot see and which may not be free.
+    func testKiloIsItsOwnAgentWithEveryPermissionApproved() {
+        XCTAssertEqual(AgentKind.kilo.pillText, "KILO")
+        XCTAssertEqual(AgentKind.kilo.displayName, "Kilo")
+        XCTAssertEqual(AgentKind.kilo.shortName, "Kilo")
+        XCTAssertEqual(AgentKind.kilo.brandColorHex, "#617A91")
+        let kilo = AgentDescriptor.descriptor(for: .kilo)
+        XCTAssertEqual(kilo.kind, .kilo)
+        XCTAssertEqual(kilo.binaryName, "kilo")
+        XCTAssertEqual(kilo.defaultCandidatePaths, ["/opt/homebrew/bin/kilo", "/usr/local/bin/kilo"])
+        XCTAssertEqual(kilo.continueArgs, [])
+        XCTAssertEqual(kilo.resumeArgs, [])
+        for mode in [LaunchMode.new, .continueLast, .resume] {
+            XCTAssertEqual(AgentDescriptor.arguments(for: .kilo, mode: mode, sessionId: "S-1"), ["--auto"], "\(mode)")
+        }
+    }
+
+    /// With a newer release out, Kilo opens on an update dialog, and the first text linkC types
+    /// would answer it. The model is pinned through `KILO_CONFIG_CONTENT`.
+    func testAKiloTerminalTurnsOffTheUpdateDialogAndPinsViaConfigContent() {
+        XCTAssertEqual(AgentDescriptor.kiloAutoUpdateKey, "KILO_DISABLE_AUTOUPDATE")
+        XCTAssertEqual(AgentDescriptor.kiloConfigContentKey, "KILO_CONFIG_CONTENT")
+        XCTAssertEqual(AgentDescriptor.environment(for: .kilo, home: URL(fileURLWithPath: "/Users/someone")),
+                       ["KILO_DISABLE_AUTOUPDATE": "1"])
+        XCTAssertTrue(AgentKind.alwaysNamesModel.contains(.kilo))
     }
 }

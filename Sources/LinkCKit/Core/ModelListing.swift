@@ -83,7 +83,8 @@ public enum ModelListParser {
         case .cursor: models = Self.cursor(output)
         case .grok: models = Self.grok(fromCursor: output)
         case .opencode: models = Self.openCode(output)
-        case .claude, .codex, .shell:
+        case .claude, .codex, .kilo, .shell:
+            // Kilo's `kilo models` listing lands in K3; until then it has no listing command.
             throw LinkCError.process("\(agent.rawValue) has no model listing command")
         }
         guard !models.isEmpty else {
@@ -102,7 +103,7 @@ public enum ModelListParser {
             return ["haiku", "sonnet", "opus"].map { ListedModel(id: $0, name: $0) }
         case .codex:
             return ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"].map { ListedModel(id: $0, name: $0) }
-        case .agy, .cursor, .grok, .opencode, .shell:
+        case .agy, .cursor, .grok, .opencode, .kilo, .shell:
             return nil
         }
     }
@@ -117,6 +118,17 @@ public enum OpenCodeFreeModels {
         if trimmed == "opencode/big-pickle" { return true }
         if trimmed.hasPrefix("opencode/"), trimmed.hasSuffix("-free") { return true }
         return false
+    }
+}
+
+/// Kilo's free-only rule (spec §4.3): `kilo/…` and either ends in `:free`, ends in `-free`, or
+/// the last path component is `free`. K3 will harden this against live `kilo models` output.
+public enum KiloFreeModels {
+    public static func isFree(_ id: String) -> Bool {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("kilo/") else { return false }
+        if trimmed.hasSuffix(":free") || trimmed.hasSuffix("-free") { return true }
+        return (trimmed as NSString).lastPathComponent == "free"
     }
 }
 

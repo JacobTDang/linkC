@@ -1062,11 +1062,11 @@ public final class AppCoordinator {
         guard (tier == nil && model == nil) || mode == .new else {
             throw LinkCError.process("a tier can only pin a new session; \(mode) reuses an existing session's model")
         }
-        // OpenCode never resumes a conversation: its own would keep whatever model it last ran on,
-        // which linkC cannot see and which may not be free. Continue, Resume and a restore all open
-        // a new conversation in the folder, on the default tier's model.
-        let opensFresh = agent == .opencode && mode != .new
-        let mode: LaunchMode = agent == .opencode ? .new : mode
+        // OpenCode and Kilo never resume a conversation: their own would keep whatever model they
+        // last ran on, which linkC cannot see and which may not be free. Continue, Resume and a
+        // restore all open a new conversation in the folder, on the default tier's model.
+        let opensFresh = (agent == .opencode || agent == .kilo) && mode != .new
+        let mode: LaunchMode = (agent == .opencode || agent == .kilo) ? .new : mode
         let resolved: (model: String?, tier: ModelTier?)
         if let model {
             resolved = (model, nil)
@@ -1075,10 +1075,13 @@ public final class AppCoordinator {
         }
         let model = resolved.model
         let modelTier = resolved.tier
-        // OpenCode runs free models only, whichever way the model was chosen: the New menu, a
-        // teammate, a worker, or a tier that was set to a paid model.
+        // OpenCode and Kilo run free models only, whichever way the model was chosen: the New menu,
+        // a teammate, a worker, or a tier that was set to a paid model.
         if agent == .opencode, let model, !OpenCodeFreeModels.isFree(model) {
             throw LinkCError.process("\(model) is not a free OpenCode model")
+        }
+        if agent == .kilo, let model, !KiloFreeModels.isFree(model) {
+            throw LinkCError.process("\(model) is not a free Kilo model")
         }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
                                    model: model, modelTier: modelTier,
@@ -1113,6 +1116,9 @@ public final class AppCoordinator {
             }
             if agent == .opencode {
                 env.merge(try openCodeEnvironment(model: model)) { _, openCode in openCode }
+            }
+            if agent == .kilo {
+                env.merge(try kiloEnvironment(model: model)) { _, kilo in kilo }
             }
 
             if agent == .claude {
@@ -1176,7 +1182,10 @@ public final class AppCoordinator {
                 env: env
             )
             if select { terminals.select(session.id) }
-            if opensFresh { tellOpenCodeStartedFresh(title: title, folder: cwd) }
+            if opensFresh {
+                if agent == .opencode { tellOpenCodeStartedFresh(title: title, folder: cwd) }
+                if agent == .kilo { tellKiloStartedFresh(title: title, folder: cwd) }
+            }
             // Record the now-live session so it survives a quit/crash and can be restored.
             manifest.upsert(RestorableSession(
                 linkcId: session.id,
@@ -1311,11 +1320,11 @@ public final class AppCoordinator {
         // RECENT conversation for that agent. Refuse whichever way this entry would collide with
         // a session already live (including one restored moments ago in the same Restore-all
         // pass, or one a relaunch already brought back onto this entry's id/folder); the card
-        // stays and the user can restore it individually later. OpenCode never resumes — it opens a
-        // new conversation — so it collides with nothing.
+        // stays and the user can restore it individually later. OpenCode and Kilo never resume —
+        // they open a new conversation — so they collide with nothing.
         let resumesById = targetAgent == .claude && !(r.claudeSessionId ?? "").isEmpty
         let folder = ProjectPath.canonical(r.cwd)
-        if targetAgent != .opencode, store.sessions.contains(where: { live in
+        if targetAgent != .opencode && targetAgent != .kilo, store.sessions.contains(where: { live in
             resumesById
                 ? live.claudeSessionId == r.claudeSessionId
                 : live.agentKind == targetAgent && live.cwd == folder

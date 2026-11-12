@@ -51,6 +51,11 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             AgentKind.grok.rawValue: ["light": "grok-4.7-low", "standard": "grok-4.7-medium", "deep": "grok-4.7-xhigh"],
             AgentKind.opencode.rawValue: [
                 "light": "opencode/deepseek-v4.1-flash-free", "standard": "opencode/big-pickle", "deep": "opencode/nemotron-3.5-super-vl-free"
+            ],
+            AgentKind.kilo.rawValue: [
+                "light": "kilo/nvidia/nemotron-3.5-lightning:free",
+                "standard": "kilo/kilo-auto/free",
+                "deep": "kilo/nvidia/nemotron-3-ultra-550b-a55b:free"
             ]
         ],
         defaultTiers: [
@@ -58,7 +63,8 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             AgentKind.codex.rawValue: ModelTier.standard.rawValue,
             AgentKind.agy.rawValue: ModelTier.standard.rawValue,
             AgentKind.grok.rawValue: ModelTier.standard.rawValue,
-            AgentKind.opencode.rawValue: ModelTier.standard.rawValue
+            AgentKind.opencode.rawValue: ModelTier.standard.rawValue,
+            AgentKind.kilo.rawValue: ModelTier.standard.rawValue
         ]
     )
 

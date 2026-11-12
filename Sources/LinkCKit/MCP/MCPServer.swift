@@ -319,7 +319,8 @@ public final class MCPServer: Sendable {
             .agy: { .unavailable(.agy, reason: "agy writes no local session records") },
             .cursor: { .unavailable(.cursor, reason: "cursor writes no local session records") },
             .grok: { .unavailable(.grok, reason: "Grok runs on the Cursor plan, which writes no local session records") },
-            .opencode: { .unavailable(.opencode, reason: "OpenCode's free models publish no quota locally") }
+            .opencode: { .unavailable(.opencode, reason: "OpenCode's free models publish no quota locally") },
+            .kilo: { .unavailable(.kilo, reason: "Kilo's free models publish no quota locally") }
         ]
     }
 
@@ -1118,7 +1119,7 @@ public final class MCPServer: Sendable {
                     }
                     targetAgents = [a]
                 } else {
-                    targetAgents = [.claude, .codex, .agy, .cursor, .grok, .opencode]
+                    targetAgents = [.claude, .codex, .agy, .cursor, .grok, .opencode, .kilo]
                 }
 
                 let settings = modelSettings()
@@ -1214,7 +1215,7 @@ public final class MCPServer: Sendable {
                 let now = Date()
                 var text = "# Agent Usage\n\n"
 
-                for agent in [AgentKind.codex, .claude, .agy, .cursor, .grok, .opencode] {
+                for agent in [AgentKind.codex, .claude, .agy, .cursor, .grok, .opencode, .kilo] {
                     let usage = usageReaders[agent]?() ?? .unavailable(agent, reason: "no usage reader configured for this agent")
                     text += Self.renderUsageSection(usage, now: now)
                 }

@@ -185,4 +185,27 @@ final class AgentModelStoreTests: XCTestCase {
         XCTAssertEqual(settings.model(for: .opencode, tier: .standard), "opencode/big-pickle")
         XCTAssertEqual(settings.defaultTier(for: .opencode), .standard)
     }
+
+    func testKiloIsSeededOnFreeModelsWithStandardAsItsDefault() {
+        let seeded = AgentModelSettings.seeded
+        XCTAssertEqual(seeded.model(for: .kilo, tier: .light), "kilo/nvidia/nemotron-3.5-lightning:free")
+        XCTAssertEqual(seeded.model(for: .kilo, tier: .standard), "kilo/kilo-auto/free")
+        XCTAssertEqual(seeded.model(for: .kilo, tier: .deep), "kilo/nvidia/nemotron-3-ultra-550b-a55b:free")
+        XCTAssertEqual(seeded.defaultTier(for: .kilo), .standard)
+    }
+
+    /// A models.json saved before Kilo existed names no Kilo tiers. Loading it must still give
+    /// Kilo its seeded models, or every delegation to Kilo would be refused.
+    func testAFileSavedBeforeKiloExistedLoadsKiloFromTheSeed() throws {
+        let store = AgentModelStore(directory: dir)
+        let json = """
+        {"models":{"grok":{"light":"grok-4.7-low","standard":"grok-4.7-medium","deep":"grok-4.7-xhigh"}},
+         "defaultTiers":{"grok":"standard"}}
+        """
+        try json.write(toFile: store.path, atomically: true, encoding: .utf8)
+
+        let settings = store.load()
+        XCTAssertEqual(settings.model(for: .kilo, tier: .standard), "kilo/kilo-auto/free")
+        XCTAssertEqual(settings.defaultTier(for: .kilo), .standard)
+    }
 }

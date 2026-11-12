@@ -65,6 +65,8 @@ final class BoardTechTests: XCTestCase {
     func testAComponentNamedOpenCodeIsTheOpenCodeAgent() {
         XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "OpenCode", kind: .service)), .opencode)
         XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "x", kind: .service, tech: "opencode")), .opencode)
+        XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "Kilo", kind: .service)), .kilo)
+        XCTAssertEqual(BoardTech.agent(for: BoardComponent(name: "x", kind: .service, tech: "kilo")), .kilo)
     }
 
     /// A component named like an agent still draws its explicit `tech`: inference from the name

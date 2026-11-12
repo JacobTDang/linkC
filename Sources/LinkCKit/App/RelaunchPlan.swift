@@ -83,13 +83,13 @@ public struct RelaunchPlan: Equatable, Sendable {
         entry.agentKind == .claude && !(entry.claudeSessionId ?? "").isEmpty
     }
 
-    /// Two entries with the same key would open the same conversation. OpenCode never resumes one:
-    /// each entry opens its own new conversation, so its key is its own.
+    /// Two entries with the same key would open the same conversation. OpenCode and Kilo never
+    /// resume one: each entry opens its own new conversation, so its key is its own.
     private static func contestKey(_ entry: RestorableSession) -> String {
         if resumesClaudeById(entry), let id = entry.claudeSessionId {
             return "id|\(id)"
         }
-        if entry.agentKind == .opencode {
+        if entry.agentKind == .opencode || entry.agentKind == .kilo {
             return "new|\(entry.linkcId)"
         }
         return "continue|\(folder(entry))|\(entry.agentKind.rawValue)"

@@ -20,9 +20,9 @@ final class AgentLogoTests: XCTestCase {
         }
     }
 
-    /// Cursor's, Grok's and OpenCode's marks are one colour (the files draw in `currentColor`); the
-    /// rest are drawn as they are.
-    func testOnlyCursorGrokAndOpenCodeAreTintedByTheApp() {
-        XCTAssertEqual(AgentKind.allCases.filter { $0.logo?.isTemplate == true }, [.cursor, .grok, .opencode])
+    /// Cursor's, Grok's, OpenCode's and Kilo's marks are one colour (the files draw in `currentColor`);
+    /// the rest are drawn as they are.
+    func testOnlyCursorGrokOpenCodeAndKiloAreTintedByTheApp() {
+        XCTAssertEqual(AgentKind.allCases.filter { $0.logo?.isTemplate == true }, [.cursor, .grok, .opencode, .kilo])
     }
 }

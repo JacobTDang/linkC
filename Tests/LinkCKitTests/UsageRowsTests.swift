@@ -48,9 +48,9 @@ final class UsageRowsTests: XCTestCase {
             claude: reading(.claude, percent: 37, plan: nil),
             codex: reading(percent: 68),
             limits: [.cursor: cap(.cursor, clearsIn: 10_800), .grok: cap(.grok, clearsIn: 3600),
-                     .opencode: cap(.opencode, clearsIn: 1800),
+                     .opencode: cap(.opencode, clearsIn: 1800), .kilo: cap(.kilo, clearsIn: 900),
                      .agy: cap(.agy, clearsIn: 600)])
-        XCTAssertEqual(result.rows.map(\.agent), [.claude, .codex, .cursor, .grok, .opencode, .agy])
+        XCTAssertEqual(result.rows.map(\.agent), [.claude, .codex, .cursor, .grok, .opencode, .kilo, .agy])
         XCTAssertTrue(result.unknown.isEmpty)
     }
 
@@ -185,7 +185,7 @@ final class UsageRowsTests: XCTestCase {
 
     func testAgentsWithNoSourceAreListedWithTheirReason() {
         let result = build(codex: reading(percent: nil, weekPercent: nil, reason: "no session records found"))
-        XCTAssertEqual(result.unknown.map(\.agent), [.claude, .codex, .cursor, .grok, .opencode, .agy])
+        XCTAssertEqual(result.unknown.map(\.agent), [.claude, .codex, .cursor, .grok, .opencode, .kilo, .agy])
         XCTAssertEqual(result.unknown.first { $0.agent == .claude }?.reason,
                        "no reading yet — a Claude session reports after its first reply")
         XCTAssertEqual(result.unknown.first { $0.agent == .codex }?.reason, "no session records found")
@@ -194,6 +194,8 @@ final class UsageRowsTests: XCTestCase {
                        "Grok runs on the Cursor plan, which publishes no quota locally — only a cap linkC sees in its terminal")
         XCTAssertEqual(result.unknown.first { $0.agent == .opencode }?.reason,
                        "OpenCode's free models publish no quota locally — only a cap linkC sees in its terminal")
+        XCTAssertEqual(result.unknown.first { $0.agent == .kilo }?.reason,
+                       "Kilo's free models publish no quota locally — only a cap linkC sees in its terminal")
         XCTAssertEqual(result.unknown.first { $0.agent == .agy }?.reason.isEmpty, false)
     }
 

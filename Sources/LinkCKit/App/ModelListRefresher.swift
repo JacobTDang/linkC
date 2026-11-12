@@ -184,7 +184,8 @@ enum ModelListCommands {
             return try await captureCursorModels()
         case .opencode:
             return try await capture(agent: .opencode, args: MCPServer.openCodeModelsArguments)
-        case .claude, .codex, .shell:
+        case .claude, .codex, .kilo, .shell:
+            // Kilo's `kilo models` listing lands in K3.
             throw LinkCError.process("\(agent.rawValue) has no model listing command")
         }
     }

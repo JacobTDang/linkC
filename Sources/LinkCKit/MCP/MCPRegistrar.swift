@@ -111,8 +111,17 @@ public struct MCPRegistrar: Sendable {
 
     /// linkC's server as an entry of OpenCode's `mcp` table — OpenCode's own shape, not `mcpServers`.
     public static func openCodeEntry(binaryPath: String) -> [String: Any] {
+        openCodeStyleEntry(binaryPath: binaryPath, agent: .opencode)
+    }
+
+    /// linkC's server as an entry of Kilo's `mcp` table — same shape as OpenCode's.
+    public static func kiloEntry(binaryPath: String) -> [String: Any] {
+        openCodeStyleEntry(binaryPath: binaryPath, agent: .kilo)
+    }
+
+    private static func openCodeStyleEntry(binaryPath: String, agent: AgentKind) -> [String: Any] {
         ["type": "local", "command": [binaryPath],
-         "environment": ["LINKC_AGENT": AgentKind.opencode.rawValue], "enabled": true]
+         "environment": ["LINKC_AGENT": agent.rawValue], "enabled": true]
     }
 
     /// `root`'s `mcp` table: empty when it has none; throws when it has one that is not a table.
@@ -143,7 +152,30 @@ public struct MCPRegistrar: Sendable {
     /// given, `model` as the session's model. One line.
     /// Throws when `inherited` is not a JSON object.
     public static func openCodeConfigContent(inherited: String?, binaryPath: String, model: String?) throws -> String {
-        let source = "\(AgentDescriptor.openCodeConfigContentKey) in linkC's environment"
+        try inlineOpenCodeStyleConfigContent(
+            inherited: inherited,
+            source: "\(AgentDescriptor.openCodeConfigContentKey) in linkC's environment",
+            entry: openCodeEntry(binaryPath: binaryPath),
+            model: model)
+    }
+
+    /// `KILO_CONFIG_CONTENT` for a terminal linkC starts Kilo in — same shape as OpenCode's inline
+    /// config. Does not write `~/.config/kilo` (that is K2).
+    public static func kiloConfigContent(inherited: String?, binaryPath: String, model: String?) throws -> String {
+        try inlineOpenCodeStyleConfigContent(
+            inherited: inherited,
+            source: "\(AgentDescriptor.kiloConfigContentKey) in linkC's environment",
+            entry: kiloEntry(binaryPath: binaryPath),
+            model: model)
+    }
+
+    /// Shared JSON builder for OpenCode-style inline config (`mcp` + optional `model`), one line.
+    private static func inlineOpenCodeStyleConfigContent(
+        inherited: String?,
+        source: String,
+        entry: [String: Any],
+        model: String?
+    ) throws -> String {
         var root: [String: Any] = [:]
         if let inherited, !inherited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let parsed: Any
@@ -158,7 +190,7 @@ public struct MCPRegistrar: Sendable {
             root = object
         }
         var mcp = try mcpTable(in: root, of: source)
-        mcp[serverName] = openCodeEntry(binaryPath: binaryPath)
+        mcp[serverName] = entry
         root["mcp"] = mcp
         if let model { root["model"] = model }
         let data = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys, .withoutEscapingSlashes])

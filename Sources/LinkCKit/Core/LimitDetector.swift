@@ -117,6 +117,12 @@ public struct LimitDetector: Sendable {
         LimitRule(canonicalPattern: "OpenCode free limit reached", regexPattern: "\\bfree limit reached\\b")
     ]
 
+    /// Kilo's UI is OpenCode's fork, so the same free-cap phrases apply.
+    private static let kiloRules: [LimitRule] = [
+        LimitRule(canonicalPattern: "Kilo free usage exceeded", regexPattern: "\\bfree usage exceeded\\b"),
+        LimitRule(canonicalPattern: "Kilo free limit reached", regexPattern: "\\bfree limit reached\\b")
+    ]
+
     private static func rules(for agent: AgentKind) -> [LimitRule] {
         switch agent {
         case .claude: return claudeRules
@@ -125,6 +131,7 @@ public struct LimitDetector: Sendable {
         // Grok runs Cursor's CLI, so a Grok terminal shows Cursor's caps.
         case .cursor, .grok: return cursorRules
         case .opencode: return openCodeRules
+        case .kilo: return kiloRules
         case .shell: return []
         }
     }

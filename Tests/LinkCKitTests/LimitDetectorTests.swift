@@ -285,6 +285,17 @@ final class LimitDetectorTests: XCTestCase {
                      "the phrase is OpenCode's alone")
     }
 
+    /// Kilo's UI is OpenCode's, so the same free-cap phrases apply.
+    func testKilosFreeTierCapIsALimitButA429IsNot() {
+        let cap = LimitDetector.detectLimit(inOutput: "Free usage " + "exceeded, subscribe to Go", agent: .kilo)
+        XCTAssertEqual(cap?.agent, .kilo)
+        XCTAssertEqual(cap?.cooldown, LimitDetector.defaultCooldown)
+        XCTAssertNotNil(LimitDetector.detectLimit(inOutput: "Free limit " + "reached", agent: .kilo))
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "429 Too Many " + "Requests, retrying in 2s", agent: .kilo))
+        XCTAssertNil(LimitDetector.detectLimit(inOutput: "Free usage " + "exceeded, subscribe to Go", agent: .codex),
+                     "the phrase is Kilo's alone among non-OpenCode agents")
+    }
+
     // MARK: - Normal Output & Isolation Tests
 
     func testNormalOutputReturnsNil() {
