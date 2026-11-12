@@ -292,6 +292,7 @@ struct LauncherMenu: View {
                 Button("Antigravity (agy)") { model.newSession(agent: .agy, mode: .continueLast) }
                 Button("Cursor Agent") { model.newSession(agent: .cursor, mode: .continueLast) }
                 Button("Grok") { model.newSession(agent: .grok, mode: .continueLast) }
+                Button("Freebuff") { model.newSession(agent: .freebuff, mode: .continueLast) }
                 Button("Codex") { model.newSession(agent: .codex, mode: .continueLast) }
             }
             Menu("Resume…") {

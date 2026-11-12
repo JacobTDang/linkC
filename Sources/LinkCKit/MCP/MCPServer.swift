@@ -1884,6 +1884,9 @@ public final class MCPServer: Sendable {
         guard let prompt = args["prompt"] as? String, !prompt.isEmpty else {
             return toolResultResponse(id: id, text: "Error: Missing required argument 'prompt'.", isError: true)
         }
+        if isQuestion, toAgent == .freebuff {
+            return toolResultResponse(id: id, text: "Error: Freebuff is for long-running work; ask another agent.", isError: true)
+        }
         if toAgent == .freebuff, args["tier"] != nil || args["model"] != nil {
             return toolResultResponse(id: id, text: "Error: Freebuff has no tiers; it runs its own default model.", isError: true)
         }

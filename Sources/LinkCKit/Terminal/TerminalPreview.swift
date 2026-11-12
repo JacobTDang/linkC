@@ -123,6 +123,7 @@ public enum TerminalPreview {
         // a session known to be OpenCode may use its dedicated reader.
         if agent == .opencode, let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
         if agent == .freebuff { return FreebuffScreen.activity(in: rows) }
+        if FreebuffScreen.looksLikeFreebuff(rows) { return nil }
         return genericLiveActivity(from: rows)
     }
 
@@ -271,9 +272,13 @@ public enum TerminalPreview {
     /// unchanged — but any other change, including a percentage, byte count, tally, an ETA
     /// counting down, or a size written with an "m" or "h" suffix, does not.
     public static func progressSignature(rows: [String]) -> String {
+        let isFreebuff = FreebuffScreen.looksLikeFreebuff(rows)
         let kept = rows
             .filter { !isLiveMarkerRow($0) }
-            .map(normalizingElapsedTime)
+            .map { row in
+                let normalized = normalizingElapsedTime(row)
+                return isFreebuff ? bareElapsedFooter.replacingMatches(in: normalized, with: "#") : normalized
+            }
         return String(kept.joined(separator: "\n").hashValue)
     }
 
@@ -284,6 +289,7 @@ public enum TerminalPreview {
     private static let elapsedTime = try! NSRegularExpression(
         pattern: #"(?:(?<=\()|(?<=· ))\d+(\.\d+)?\s?(ms|s|m|h)(\s\d+(\.\d+)?\s?(ms|s|m|h))*\b"#
     )
+    private static let bareElapsedFooter = try! NSRegularExpression(pattern: #"^\s*\d+(?:\.\d+)?s\s*$"#)
 
     /// `row` with each elapsed-time reading replaced by "#".
     static func normalizingElapsedTime(_ row: String) -> String {

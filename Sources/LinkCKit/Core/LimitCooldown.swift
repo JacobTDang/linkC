@@ -79,6 +79,11 @@ public enum LimitCooldown {
         pattern: "\\bin\\s+(\\d+)\\s*h(?:ours?)?\\s*(\\d+)\\s*m(?:in(?:utes?)?)?\\b",
         options: [.caseInsensitive]
     )
+    /// Freebuff's weekly reset, in source/UI forms: "in 6 days", "in 1 day 4h", or "in 6d 4h".
+    private static let daysRegex = try! NSRegularExpression(
+        pattern: "\\bin\\s+(\\d+)\\s*(?:d|days?)(?:\\s+(\\d+)\\s*h(?:ours?)?)?\\b",
+        options: [.caseInsensitive]
+    )
     /// "in 1 hour" — hours only.
     private static let hoursOnlyRegex = try! NSRegularExpression(
         pattern: "\\bin\\s+(\\d+)\\s*h(?:ours?)?\\b",
@@ -106,6 +111,18 @@ public enum LimitCooldown {
     /// Tried most-specific first: a bare "in 2h 10m" would also satisfy the hours-only pattern
     /// (matching just the "2h" and stopping), so the combined form must be checked before it.
     private static func parseDuration(_ text: String) -> TimeInterval? {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        if let result = daysRegex.firstMatch(in: text, options: [], range: range),
+           let daysRange = Range(result.range(at: 1), in: text),
+           let days = Int(text[daysRange]) {
+            let hours: Int
+            if let hoursRange = Range(result.range(at: 2), in: text) {
+                hours = Int(text[hoursRange]) ?? 0
+            } else {
+                hours = 0
+            }
+            return TimeInterval(days * 86400 + hours * 3600)
+        }
         if let groups = firstMatch(hoursAndMinutesRegex, in: text, groups: 2),
            let hours = Int(groups[0]), let minutes = Int(groups[1]) {
             return TimeInterval(hours * 3600 + minutes * 60)

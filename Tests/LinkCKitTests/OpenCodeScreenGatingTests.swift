@@ -14,7 +14,9 @@ final class OpenCodeScreenGatingTests: XCTestCase {
     }
 
     func testEveryNonOpenCodeFixtureStillUsesTheGenericReader() throws {
-        let others = CodexScreenFixture.allNames().filter { !$0.hasPrefix("opencode-") }
+        let others = CodexScreenFixture.allNames().filter {
+            !$0.hasPrefix("opencode-") && !$0.hasPrefix("freebuff-")
+        }
         XCTAssertFalse(others.isEmpty)
         for name in others {
             let rows = try CodexScreenFixture.rows(name)

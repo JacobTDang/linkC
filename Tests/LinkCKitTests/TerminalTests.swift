@@ -955,4 +955,11 @@ final class TerminalPreviewTests: XCTestCase {
             TerminalPreview.progressSignature(rows: after)
         )
     }
+
+    func testProgressSignatureIgnoresFreebuffsBareFooterTimer() {
+        XCTAssertEqual(
+            TerminalPreview.progressSignature(rows: ["Working on the task", "12s", "DeepSeek V4.1 Flash Fast · /tmp/project · /model to change"]),
+            TerminalPreview.progressSignature(rows: ["Working on the task", "13s", "DeepSeek V4.1 Flash Fast · /tmp/project · /model to change"])
+        )
+    }
 }

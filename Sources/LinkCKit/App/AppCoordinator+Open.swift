@@ -73,9 +73,12 @@ extension AppCoordinator {
         }
         let tier: ModelTier?
         if let requested = request.tier {
+            guard request.agent != .freebuff else {
+                return .refused("Freebuff has no tiers; it runs its own default model.")
+            }
             guard request.agent != .cursor else { return .refused("cursor cannot be pinned to a model") }
             tier = requested
-        } else if request.task != nil, request.agent != .cursor {
+        } else if request.task != nil, request.agent != .cursor, request.agent != .freebuff {
             // A worker is pinned as delegation pins it. The user's own session opens as the panel opens
             // one: unpinned, so the relay never hands it a delegated task. Cursor was never tiered.
             tier = defaultTier(for: request.agent)

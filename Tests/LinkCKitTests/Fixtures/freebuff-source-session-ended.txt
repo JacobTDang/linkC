@@ -1,0 +1,1 @@
+Your free session ended, so the agent stopped here. Send a message to start a new session and continue.

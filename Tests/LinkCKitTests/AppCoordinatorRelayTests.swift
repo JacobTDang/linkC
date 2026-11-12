@@ -1757,6 +1757,45 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(sink.deliveries.contains { $0.title == "linkC: Codex Rate Limited" && $0.body.contains("429 Too Many Requests") })
     }
 
+    @MainActor
+    func testFreebuffLimitDuringAWorkingTaskIsReportedImmediatelyAndNeverAsDone() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let worker = try coordinator.newSession(cwd: ws, agent: .freebuff)
+        coordinator.store.updateState(id: worker.id, to: .working)
+        let task = try inbox.createTask(from: .claude, to: .freebuff, prompt: "Deep research", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+
+        let rows = try CodexScreenFixture.rows("freebuff-source-session-limit")
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: worker.id, screen: ScreenSnapshot(rows: rows)))
+        XCTAssertNotEqual(try inbox.task(id: task.id)?.state, .done)
+        let notice = try XCTUnwrap(inbox.load().messages.first { $0.kind == .notice && $0.taskId == task.id })
+        XCTAssertTrue(notice.prompt.contains("Freebuff reached usage limit"), notice.prompt)
+        XCTAssertFalse(notice.prompt.contains("Free fallback model"), notice.prompt)
+        XCTAssertNotNil(try inbox.isAgentLimited(agent: .freebuff))
+    }
+
+    @MainActor
+    func testCursorLimitNoticeDoesNotClaimItHasAFallbackTier() throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let worker = try coordinator.newSession(cwd: ws, agent: .cursor)
+        coordinator.store.updateState(id: worker.id, to: Self.turnOver)
+        let task = try inbox.createTask(from: .claude, to: .cursor, prompt: "Investigate", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(
+            for: worker.id,
+            screen: ScreenSnapshot(rows: ["Rate limit reached. Try again later."])
+        ))
+        let notice = try XCTUnwrap(inbox.load().messages.first { $0.kind == .notice && $0.taskId == task.id })
+        XCTAssertFalse(notice.prompt.contains("Free fallback model"), notice.prompt)
+    }
+
     /// The reroute notice must name the fallback from the live, user-editable model settings —
     /// not `AgentModelCatalog`'s hardcoded list, which is stale seed data (it still names models
     /// no provider serves any more).
@@ -4369,7 +4408,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let claudeInbound = try inbox.fetchPending().filter { $0.toAgent == .claude }
         let notice = try XCTUnwrap(claudeInbound.first)
         XCTAssertEqual(notice.kind, .notice)
-        XCTAssertTrue(notice.prompt.contains("fallback"))
+        XCTAssertTrue(notice.prompt.contains("Cursor Agent reached usage limit"), notice.prompt)
+        XCTAssertFalse(notice.prompt.contains("Free fallback model"), notice.prompt)
     }
 
     @MainActor

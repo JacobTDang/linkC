@@ -1421,7 +1421,8 @@ extension AppCoordinator {
         // A busy worker keeps its task for now: the peer would start in a checkout the worker is
         // still using. The reroute goes ahead once the worker is quiet, or after `limitHoldCap`.
         let holdForTask = held.flatMap { $0.taskId == currentTask?.id ? $0 : nil }
-        if let currentTask, let busy = activity(of: session, screen: screen),
+        if session.agentKind != .freebuff,
+           let currentTask, let busy = activity(of: session, screen: screen),
            holdBack(match, task: currentTask, of: session, busy: busy, since: holdForTask, at: tickNow, inboxStore: inboxStore) {
             return false
         }
@@ -1446,18 +1447,24 @@ extension AppCoordinator {
             // "Claude 3.5 Sonnet" and "GPT-4o" long after those model ids stopped resolving).
             // `.light` is each agent's cheapest configured tier — the same one a real reroute
             // would actually fall back to.
-            let fallback = self.resolvedModel(for: session.agentKind, tier: .light) ?? "fallback"
+            let fallbackNotice: String
+            if session.agentKind == .cursor || session.agentKind == .freebuff {
+                fallbackNotice = ""
+            } else {
+                let fallback = self.resolvedModel(for: session.agentKind, tier: .light) ?? "fallback"
+                fallbackNotice = " Free fallback model '\(fallback)' is available."
+            }
             do {
                 _ = try inboxStore.enqueue(
                     from: session.agentKind, to: currentTask.fromAgent, kind: .notice, taskId: currentTask.id,
-                    body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available. Task \(currentTask.shortId) paused."
+                    body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'.\(fallbackNotice) Task \(currentTask.shortId) paused."
                 )
             } catch {
                 NSLog("[linkC relay] checkLimitsAndReroute: task %@ notice — %@", currentTask.shortId, String(describing: error))
             }
             self.notifications.post(
                 title: "linkC: \(session.agentKind.displayName) Rate Limited",
-                body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'. Free fallback model '\(fallback)' is available.",
+                body: "\(session.agentKind.displayName) reached usage limit: '\(match.matchedPattern)'.\(fallbackNotice)",
                 project: session.cwd
             )
         }
