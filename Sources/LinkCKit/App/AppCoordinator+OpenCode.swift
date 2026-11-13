@@ -16,11 +16,53 @@ extension AppCoordinator {
         return env
     }
 
-    /// Says that an OpenCode session was brought back as a new conversation, in the log and to the
-    /// user: its old one would have run on whatever model it last used.
-    func tellOpenCodeStartedFresh(title: String, folder: String) {
-        let message = "OpenCode starts a new conversation on restore, so it only ever runs a free model."
-        NSLog("[linkC] %@ (%@): %@", title, folder, message)
-        notifications.postLocal(title: "linkC: OpenCode started a new conversation", body: "\(title): \(message)")
+    /// The OpenCode conversation a launch opens.
+    struct OpenCodeConversationChoice: Equatable {
+        /// The id passed to `--session`.
+        let id: String
+        /// The free model the reopened conversation last ran on; nil when the conversation is new.
+        let model: String?
+        /// Why the user gets a new conversation instead of an earlier one; nil when they do not.
+        let notice: String?
+    }
+
+    /// The conversation an OpenCode launch opens. A new session gets a new conversation, named by
+    /// linkC. A continue or a restore reopens `conversationId`, or without one the folder's newest
+    /// conversation that no session or card holds, but only when that conversation last ran on a
+    /// free model: OpenCode reopens a conversation on its own model, ahead of linkC's pin. Throws
+    /// when OpenCode cannot say which conversations the folder has or which model one ran on.
+    func openCodeConversation(mode: LaunchMode, conversationId: String?, cwd: String) throws -> OpenCodeConversationChoice {
+        guard mode != .new else {
+            return OpenCodeConversationChoice(id: OpenCodeConversations.newId(), model: nil, notice: nil)
+        }
+        let candidate: String
+        if let conversationId, !conversationId.isEmpty {
+            candidate = conversationId
+        } else {
+            let held = Set(store.sessions.filter { $0.agentKind == .opencode }.compactMap(\.claudeSessionId))
+                .union(manifest.entries.filter { $0.agentKind == .opencode }.compactMap(\.claudeSessionId))
+            guard let newest = try openCodeConversations.conversations(cwd).first(where: { !held.contains($0) }) else {
+                return OpenCodeConversationChoice(id: OpenCodeConversations.newId(), model: nil,
+                                                  notice: "OpenCode has no earlier conversation here, so it started a new one.")
+            }
+            candidate = newest
+        }
+        // A conversation OpenCode has not saved never got a message: `--session` creates it under this id.
+        guard let model = try openCodeConversations.model(candidate, cwd) else {
+            return OpenCodeConversationChoice(id: candidate, model: nil, notice: nil)
+        }
+        guard OpenCodeFreeModels.isFree(model) else {
+            return OpenCodeConversationChoice(
+                id: OpenCodeConversations.newId(), model: nil,
+                notice: "its last conversation ran on \(model), which is not free, so OpenCode started a new one.")
+        }
+        return OpenCodeConversationChoice(id: candidate, model: model, notice: nil)
+    }
+
+    /// Says why an OpenCode session that was meant to continue got a new conversation, in the log
+    /// and to the user.
+    func tellOpenCodeStartedFresh(title: String, folder: String, reason: String) {
+        NSLog("[linkC] %@ (%@): %@", title, folder, reason)
+        notifications.postLocal(title: "linkC: OpenCode started a new conversation", body: "\(title): \(reason)")
     }
 }

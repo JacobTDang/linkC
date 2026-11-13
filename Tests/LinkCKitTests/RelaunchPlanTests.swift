@@ -30,10 +30,31 @@ final class RelaunchPlanTests: XCTestCase {
         XCTAssertEqual(result, RelaunchPlan(relaunch: ["B", "C"], toEarlier: ["A"], drop: []))
     }
 
-    /// OpenCode never resumes: each entry opens its own new conversation, so none contests another.
-    func testEveryOpenCodeEntryInAFolderComesBackOnItsOwnNewConversation() {
+    /// Without an id, each OpenCode entry continues a conversation no other session holds, so none
+    /// contests another.
+    func testEveryOpenCodeEntryWithoutAnIdComesBack() {
         let result = plan([makeEntry("A", .opencode), makeEntry("B", .opencode)])
         XCTAssertEqual(result, RelaunchPlan(relaunch: ["A", "B"], toEarlier: [], drop: []))
+    }
+
+    func testOpenCodeEntriesOnDifferentConversationsAllComeBack() {
+        let result = plan([makeEntry("A", .opencode, conversation: "ses_a"), makeEntry("B", .opencode, conversation: "ses_b")])
+        XCTAssertEqual(result, RelaunchPlan(relaunch: ["A", "B"], toEarlier: [], drop: []))
+    }
+
+    func testTwoOpenCodeEntriesOnOneConversationBringBackOnlyTheLast() {
+        let result = plan([makeEntry("A", .opencode, conversation: "ses_a"), makeEntry("B", .opencode, conversation: "ses_a")])
+        XCTAssertEqual(result, RelaunchPlan(relaunch: ["B"], toEarlier: ["A"], drop: []))
+    }
+
+    /// The id is the agent's own: a Claude id reopens Claude's conversation, an OpenCode id OpenCode's.
+    func testAConversationIdOnlyReopensForItsOwnAgent() {
+        let openCode = makeEntry("A", .opencode, conversation: "ses_a")
+        XCTAssertEqual(RelaunchPlan.conversationToReopen(openCode, as: .opencode), "ses_a")
+        XCTAssertNil(RelaunchPlan.conversationToReopen(openCode, as: .claude))
+        XCTAssertEqual(RelaunchPlan.conversationToReopen(makeEntry("B", conversation: "c1"), as: .claude), "c1")
+        XCTAssertNil(RelaunchPlan.conversationToReopen(makeEntry("C", .codex, conversation: "x"), as: .codex))
+        XCTAssertNil(RelaunchPlan.conversationToReopen(makeEntry("D", .opencode, conversation: ""), as: .opencode))
     }
 
     func testAnOpenCodeWorkerHoldingATaskComesBackBesideTheUsersOwnSession() {

@@ -34,7 +34,8 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
     /// variables an OpenCode terminal adds to `env-<LINKC_SESSION>`, then waits for input like a TUI.
     var stubAgent: URL { tempDir.appendingPathComponent("stub-opencode.sh") }
 
-    func makeCoordinator(models: AgentModelSettings = .seeded, sink: NotificationSink = RecordingSink()) throws -> AppCoordinator {
+    func makeCoordinator(models: AgentModelSettings = .seeded, sink: NotificationSink = RecordingSink(),
+                         conversations: OpenCodeConversationReader = .unavailable) throws -> AppCoordinator {
         let script = "#!/bin/sh\n"
             + "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv-$LINKC_SESSION\"\n"
             + "printf 'OPENCODE_DISABLE_AUTOUPDATE=%s\\nOPENCODE_CONFIG_CONTENT=%s\\n' \"$OPENCODE_DISABLE_AUTOUPDATE\" \"$OPENCODE_CONFIG_CONTENT\" > \"$(dirname \"$0\")/env-$LINKC_SESSION\"\n"
@@ -57,6 +58,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
             deliverySettle: 0,
             turnEndQuietPeriod: 0.0,
             kiloModels: { _ in [] },
+            openCodeConversations: conversations,
             isWatching: { _ in false }
         )
     }
@@ -96,7 +98,8 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         XCTAssertEqual(session.agentKind, .opencode)
         XCTAssertEqual(session.model, "opencode/big-pickle")
         XCTAssertNil(session.modelTier, "a tier the user never asked for must not make their session a task carrier")
-        XCTAssertEqual(launchedLines("argv", of: session, count: 2), ["--standalone", "--auto"], "no --model: OpenCode 2.2.5 refuses it")
+        XCTAssertEqual(launchedLines("argv", of: session, count: 4), ["--standalone", "--auto", "--session", try XCTUnwrap(session.claudeSessionId)],
+                       "no --model: OpenCode 2.2.5 refuses it")
         XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/big-pickle")
     }
 
@@ -150,101 +153,162 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         XCTAssertTrue(coordinator.store.sessions.isEmpty, "a refused launch leaves no session behind")
     }
 
-    // MARK: - OpenCode never resumes
+    // MARK: - OpenCode reopens its own conversation
 
-    /// OpenCode's own `--continue` resumes a conversation on whatever model it last ran, which
-    /// linkC cannot see and which could be a paid one. So every path that would resume one opens a
-    /// new conversation in the same folder, on the free default-tier model.
-    private func assertOpensFresh(_ session: Session, file: StaticString = #filePath, line: UInt = #line) throws {
-        XCTAssertEqual(launchedLines("argv", of: session, count: 2), ["--standalone", "--auto"],
-                       "no --continue, --session or --conversation", file: file, line: line)
-        XCTAssertEqual(session.model, "opencode/big-pickle", file: file, line: line)
-        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/big-pickle", file: file, line: line)
+    /// OpenCode's answers about its conversations, as a test sets them.
+    final class FakeConversations: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _models: [String: String] = [:]
+        private var _newestFirst: [String] = []
+        private var _failure: String?
+        private var _asked: [String] = []
+
+        /// Conversation id → the model it last ran on. An id that is absent is one OpenCode does not have.
+        var models: [String: String] {
+            get { lock.lock(); defer { lock.unlock() }; return _models }
+            set { lock.lock(); _models = newValue; lock.unlock() }
+        }
+        /// The folder's conversations, newest first.
+        var newestFirst: [String] {
+            get { lock.lock(); defer { lock.unlock() }; return _newestFirst }
+            set { lock.lock(); _newestFirst = newValue; lock.unlock() }
+        }
+        /// When set, OpenCode cannot answer, for this reason.
+        var failure: String? {
+            get { lock.lock(); defer { lock.unlock() }; return _failure }
+            set { lock.lock(); _failure = newValue; lock.unlock() }
+        }
+        var asked: [String] { lock.lock(); defer { lock.unlock() }; return _asked }
+
+        private func answer<T>(_ question: String, _ value: () -> T) throws -> T {
+            lock.lock(); defer { lock.unlock() }
+            _asked.append(question)
+            if let reason = _failure { throw LinkCError.process(reason) }
+            return value()
+        }
+
+        var reader: OpenCodeConversationReader {
+            OpenCodeConversationReader(
+                model: { id, _ in try self.answer("export \(id)") { self._models[id] } },
+                conversations: { _ in try self.answer("list") { self._newestFirst } })
+        }
     }
 
-    func testContinuingOpenCodeOpensANewConversationOnTheFreeDefaultModel() throws {
-        let coordinator = try makeCoordinator()
-        defer { coordinator.shutdown() }
-
-        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
-
-        try assertOpensFresh(session)
-        XCTAssertNil(session.modelTier, "a tier the user never asked for must not make their session a task carrier")
-    }
-
-    func testResumingOpenCodeOpensANewConversationOnTheFreeDefaultModel() throws {
-        let coordinator = try makeCoordinator()
-        defer { coordinator.shutdown() }
-
-        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .resume)
-
-        try assertOpensFresh(session)
-    }
+    private let freeModel = "opencode/deepseek-v4.1-flash-free"
 
     /// The manifest of a linkC that quit with an OpenCode session live in `tempDir`.
-    private func seedOpenCodeEntry(id: String = "OC1", worker: Bool = false) {
+    private func seedOpenCodeEntry(id: String = "OC1", conversation: String? = nil, worker: Bool = false) {
         WorkspaceManifest(directory: tempDir.appendingPathComponent("settings"))
-            .upsert(RestorableSession(linkcId: id, cwd: tempDir.path, title: "proj", agentKind: .opencode,
-                                      wasActiveOnQuit: true, isWorker: worker))
+            .upsert(RestorableSession(linkcId: id, claudeSessionId: conversation, cwd: tempDir.path, title: "proj",
+                                      agentKind: .opencode, wasActiveOnQuit: true, isWorker: worker))
     }
 
-    func testARelaunchRestoresAnOpenCodeSessionAsANewConversationOnTheFreeDefaultModel() throws {
-        seedOpenCodeEntry()
+    private func card(conversation: String? = nil) -> RestorableSession {
+        RestorableSession(linkcId: "OC-old", claudeSessionId: conversation, cwd: tempDir.path, title: "proj",
+                          agentKind: .opencode, wasActiveOnQuit: false, endedAt: Date())
+    }
+
+    /// The conversation the session's OpenCode was started on: the id after `--session`.
+    private func openedConversation(_ session: Session, file: StaticString = #filePath, line: UInt = #line) -> String? {
+        let argv = launchedLines("argv", of: session, count: 4)
+        XCTAssertEqual(Array(argv.prefix(3)), ["--standalone", "--auto", "--session"], file: file, line: line)
+        return argv.count == 4 ? argv[3] : nil
+    }
+
+    private func newConversationNotices(_ sink: RecordingSink) -> [String] {
+        sink.deliveries.filter { $0.title == "linkC: OpenCode started a new conversation" }.map(\.body)
+    }
+
+    /// linkC names each new conversation, so that a restore can reopen exactly that one.
+    func testANewOpenCodeSessionGetsItsOwnConversationId() throws {
         let coordinator = try makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new)
+
+        let id = try XCTUnwrap(session.claudeSessionId)
+        XCTAssertTrue(id.hasPrefix("ses_linkc"), id)
+        XCTAssertEqual(openedConversation(session), id)
+        let entry = WorkspaceManifest(directory: tempDir.appendingPathComponent("settings")).entries.first { $0.linkcId == session.id }
+        XCTAssertEqual(entry?.claudeSessionId, id, "the manifest keeps the id for the next restore")
+    }
+
+    func testARelaunchReopensTheSessionsOwnConversationOnItsFreeModel() throws {
+        seedOpenCodeEntry(conversation: "ses_linkcmine")
+        let fake = FakeConversations()
+        fake.models = ["ses_linkcmine": freeModel]
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink, conversations: fake.reader)
         defer { coordinator.shutdown() }
 
         coordinator.restoreActiveSessions()
 
         let session = try XCTUnwrap(coordinator.store.session(id: "OC1"))
-        try assertOpensFresh(session)
-        XCTAssertTrue(coordinator.restorables.isEmpty, "the entry came back live")
+        XCTAssertEqual(openedConversation(session), "ses_linkcmine")
+        XCTAssertEqual(session.claudeSessionId, "ses_linkcmine")
+        XCTAssertEqual(session.model, freeModel, "the conversation keeps its own model")
+        XCTAssertNil(session.modelTier)
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, freeModel)
+        XCTAssertEqual(fake.asked, ["export ses_linkcmine"])
+        XCTAssertEqual(newConversationNotices(sink), [])
     }
 
-    /// The user is told: a restored OpenCode session is not the conversation they left.
-    func testARestoredOpenCodeSessionSaysItStartedFresh() throws {
-        seedOpenCodeEntry()
+    func testRestoringAnOpenCodeCardReopensItsConversation() throws {
+        let fake = FakeConversations()
+        fake.models = ["ses_linkcmine": freeModel]
+        let coordinator = try makeCoordinator(conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.restore(card(conversation: "ses_linkcmine"))
+
+        XCTAssertEqual(openedConversation(session), "ses_linkcmine")
+        XCTAssertTrue(coordinator.restorables.isEmpty)
+    }
+
+    /// OpenCode would reopen a conversation on the model it last ran on, ahead of linkC's pin. One the
+    /// user moved to a paid model is therefore not reopened, and the user is told why.
+    func testAConversationOnAPaidModelIsNotReopened() throws {
+        seedOpenCodeEntry(conversation: "ses_linkcpaid")
+        let fake = FakeConversations()
+        fake.models = ["ses_linkcpaid": "anthropic/claude-opus-4"]
         let sink = RecordingSink()
-        let coordinator = try makeCoordinator(sink: sink)
+        let coordinator = try makeCoordinator(sink: sink, conversations: fake.reader)
         defer { coordinator.shutdown() }
 
         coordinator.restoreActiveSessions()
 
-        let notice = try XCTUnwrap(sink.deliveries.first { $0.title == "linkC: OpenCode started a new conversation" })
-        XCTAssertEqual(notice.body, "proj: OpenCode starts a new conversation on restore, so it only ever runs a free model.")
+        let session = try XCTUnwrap(coordinator.store.session(id: "OC1"))
+        let id = try XCTUnwrap(session.claudeSessionId)
+        XCTAssertNotEqual(id, "ses_linkcpaid")
+        XCTAssertTrue(id.hasPrefix("ses_linkc"), id)
+        XCTAssertEqual(openedConversation(session), id)
+        XCTAssertEqual(session.model, "opencode/big-pickle")
+        XCTAssertEqual(newConversationNotices(sink),
+                       ["proj: its last conversation ran on anthropic/claude-opus-4, which is not free, so OpenCode started a new one."])
     }
 
-    func testRestoringAnOpenCodeCardOpensANewConversationOnTheFreeDefaultModel() throws {
-        let coordinator = try makeCoordinator()
+    /// A conversation that never got a message is not saved yet; OpenCode creates it under the same id.
+    func testAConversationOpenCodeHasNotSavedOpensUnderTheSameId() throws {
+        seedOpenCodeEntry(conversation: "ses_linkcempty")
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink, conversations: FakeConversations().reader)
         defer { coordinator.shutdown() }
-        let card = RestorableSession(linkcId: "OC-old", cwd: tempDir.path, title: "proj", agentKind: .opencode,
-                                     wasActiveOnQuit: false, endedAt: Date())
 
-        let session = try coordinator.restore(card)
+        coordinator.restoreActiveSessions()
 
-        try assertOpensFresh(session)
+        let session = try XCTUnwrap(coordinator.store.session(id: "OC1"))
+        XCTAssertEqual(openedConversation(session), "ses_linkcempty")
+        XCTAssertEqual(session.model, "opencode/big-pickle")
+        XCTAssertEqual(newConversationNotices(sink), [])
     }
 
-    /// Every OpenCode conversation is new, so a live one in the folder is no reason to refuse.
-    func testRestoringAnOpenCodeCardNextToALiveOneIsNotRefused() throws {
-        let coordinator = try makeCoordinator()
-        defer { coordinator.shutdown() }
-        let live = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new)
-        let card = RestorableSession(linkcId: "OC-old", cwd: tempDir.path, title: "proj", agentKind: .opencode,
-                                     wasActiveOnQuit: false, endedAt: Date())
-
-        let restored = try coordinator.restore(card)
-
-        XCTAssertNotEqual(restored.id, live.id)
-        XCTAssertEqual(coordinator.store.sessions.filter { $0.agentKind == .opencode }.count, 2)
-    }
-
-    /// A paid default model must not slip in through a restore: the entry stays under Earlier, and
-    /// OpenCode never starts.
-    func testARestoreWhoseDefaultModelIsNotFreeStaysUnderEarlier() throws {
-        seedOpenCodeEntry()
-        var models = AgentModelSettings.seeded
-        models.setModel("anthropic/claude-opus-4", for: .opencode, tier: .standard)
-        let coordinator = try makeCoordinator(models: models)
+    /// When OpenCode cannot say which model a conversation ran on, linkC does not guess: the entry
+    /// stays under Earlier and OpenCode never starts.
+    func testARelaunchWhoseLookupFailsStaysUnderEarlier() throws {
+        seedOpenCodeEntry(conversation: "ses_linkcmine")
+        let fake = FakeConversations()
+        fake.failure = "database is locked"
+        let coordinator = try makeCoordinator(conversations: fake.reader)
         defer { coordinator.shutdown() }
 
         coordinator.restoreActiveSessions()
@@ -254,7 +318,138 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("argv-OC1").path))
     }
 
-    /// Other agents keep their own continue and restore: only OpenCode's is replaced.
+    func testRestoringACardWhoseLookupFailsSaysWhy() throws {
+        let fake = FakeConversations()
+        fake.failure = "database is locked"
+        let coordinator = try makeCoordinator(conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        XCTAssertThrowsError(try coordinator.restore(card(conversation: "ses_linkcmine"))) { error in
+            XCTAssertTrue(String(describing: error).contains("database is locked"), String(describing: error))
+        }
+        XCTAssertTrue(coordinator.store.sessions.isEmpty)
+    }
+
+    /// Two sessions never share a conversation.
+    func testRestoringACardWhoseConversationIsAlreadyOpenIsRefused() throws {
+        let fake = FakeConversations()
+        fake.models = ["ses_linkcmine": freeModel]
+        let coordinator = try makeCoordinator(conversations: fake.reader)
+        defer { coordinator.shutdown() }
+        _ = try coordinator.restore(card(conversation: "ses_linkcmine"))
+
+        XCTAssertThrowsError(try coordinator.restore(card(conversation: "ses_linkcmine")))
+        XCTAssertEqual(coordinator.store.sessions.count, 1)
+    }
+
+    /// Sessions saved before linkC named its conversations continue the folder's newest one.
+    func testAnEntryWithNoConversationIdContinuesTheFoldersNewest() throws {
+        seedOpenCodeEntry()
+        let fake = FakeConversations()
+        fake.newestFirst = ["ses_new", "ses_old"]
+        fake.models = ["ses_new": freeModel, "ses_old": freeModel]
+        let coordinator = try makeCoordinator(conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        coordinator.restoreActiveSessions()
+
+        let session = try XCTUnwrap(coordinator.store.session(id: "OC1"))
+        XCTAssertEqual(openedConversation(session), "ses_new")
+        XCTAssertEqual(session.claudeSessionId, "ses_new")
+    }
+
+    /// An entry saved before linkC named conversations never takes the one another entry reopens.
+    func testAnEntryWithNoIdLeavesTheConversationAnotherEntryReopens() throws {
+        seedOpenCodeEntry(id: "OLD")
+        seedOpenCodeEntry(id: "NEW", conversation: "ses_new")
+        let fake = FakeConversations()
+        fake.newestFirst = ["ses_new", "ses_old"]
+        fake.models = ["ses_new": freeModel, "ses_old": freeModel]
+        let coordinator = try makeCoordinator(conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        coordinator.restoreActiveSessions()
+
+        XCTAssertEqual(openedConversation(try XCTUnwrap(coordinator.store.session(id: "OLD"))), "ses_old")
+        XCTAssertEqual(openedConversation(try XCTUnwrap(coordinator.store.session(id: "NEW"))), "ses_new")
+    }
+
+    /// Continue last… continues the folder's newest conversation that no session has open.
+    func testContinuingSkipsAConversationAlreadyOpen() throws {
+        let fake = FakeConversations()
+        fake.newestFirst = ["ses_new", "ses_old"]
+        fake.models = ["ses_new": freeModel, "ses_old": freeModel]
+        let coordinator = try makeCoordinator(conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        let first = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
+        let second = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
+
+        XCTAssertEqual(openedConversation(first), "ses_new")
+        XCTAssertEqual(openedConversation(second), "ses_old")
+        XCTAssertNil(first.modelTier, "a tier the user never asked for must not make their session a task carrier")
+    }
+
+    func testResumingOpenCodeContinuesTheFoldersNewest() throws {
+        let fake = FakeConversations()
+        fake.newestFirst = ["ses_new"]
+        fake.models = ["ses_new": freeModel]
+        let coordinator = try makeCoordinator(conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .resume)
+
+        XCTAssertEqual(openedConversation(session), "ses_new")
+    }
+
+    func testContinuingAFolderWithNoConversationStartsANewOne() throws {
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink, conversations: FakeConversations().reader)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
+
+        let id = try XCTUnwrap(session.claudeSessionId)
+        XCTAssertTrue(id.hasPrefix("ses_linkc"), id)
+        XCTAssertEqual(openedConversation(session), id)
+        XCTAssertEqual(session.model, "opencode/big-pickle")
+        XCTAssertEqual(newConversationNotices(sink),
+                       ["\(tempDir.lastPathComponent): OpenCode has no earlier conversation here, so it started a new one."])
+    }
+
+    /// A paid default model must not slip in through a restore: the entry stays under Earlier, and
+    /// OpenCode never starts.
+    func testARestoreWhoseDefaultModelIsNotFreeStaysUnderEarlier() throws {
+        seedOpenCodeEntry()
+        var models = AgentModelSettings.seeded
+        models.setModel("anthropic/claude-opus-4", for: .opencode, tier: .standard)
+        let fake = FakeConversations()
+        let coordinator = try makeCoordinator(models: models, conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        coordinator.restoreActiveSessions()
+
+        XCTAssertEqual(fake.asked, ["list"], "the restore got as far as the model check")
+        XCTAssertNil(coordinator.store.session(id: "OC1"))
+        XCTAssertEqual(coordinator.restorables.map(\.linkcId), ["OC1"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("argv-OC1").path))
+    }
+
+    /// An OpenCode conversation id means nothing to another agent.
+    func testRestoringAnOpenCodeCardAsCodexPassesNoConversation() throws {
+        let fake = FakeConversations()
+        let coordinator = try makeCoordinator(conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.restore(card(conversation: "ses_linkcmine"), as: .codex)
+
+        let expected = AgentDescriptor.arguments(for: .codex, mode: .continueLast, sessionId: session.id)
+        XCTAssertEqual(launchedLines("argv", of: session, count: expected.count), expected)
+        XCTAssertNil(session.claudeSessionId)
+        XCTAssertEqual(fake.asked, [])
+    }
+
+    /// Other agents keep their own continue and restore.
     func testRestoringACodexSessionStillResumesItsLastConversation() throws {
         let coordinator = try makeCoordinator()
         defer { coordinator.shutdown() }

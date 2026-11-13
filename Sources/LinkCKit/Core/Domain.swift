@@ -99,6 +99,8 @@ public struct HookEvent: Sendable, Equatable {
 public struct Session: Sendable, Identifiable, Equatable {
     /// linkC's own id (UUID string), injected as `LINKC_SESSION` and the kitty `linkc_session` user var.
     public let id: String
+    /// The agent's own conversation id: Claude's, once a hook event has bound it, or the OpenCode
+    /// conversation linkC opened (`OpenCodeConversations`).
     public var claudeSessionId: String?
     public private(set) var cwd: String
     public var title: String
