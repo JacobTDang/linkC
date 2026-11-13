@@ -162,8 +162,8 @@ public final class ModelListRefresher {
         }
     }
 
-    /// Production runner: `agy models`, `cursor-agent models`, `opencode models --standalone`.
-    /// Grok reuses Cursor's listing. Claude and Codex have fixed lists and are not run.
+    /// Production runner: `agy models`, `cursor-agent models`, `opencode models --standalone`,
+    /// `kilo models`, `crush models`. Grok reuses Cursor's listing. Claude and Codex have fixed lists and are not run.
     public nonisolated static func liveRunner(_ agent: AgentKind) async throws -> String {
         try await ModelListCommands.run(for: agent)
     }
@@ -184,7 +184,11 @@ enum ModelListCommands {
             return try await captureCursorModels()
         case .opencode:
             return try await capture(agent: .opencode, args: MCPServer.openCodeModelsArguments)
-        case .claude, .codex, .shell:
+        case .kilo:
+            return try await capture(agent: .kilo, args: MCPServer.kiloModelsArguments)
+        case .crush:
+            return try await capture(agent: .crush, args: ["models"])
+        case .claude, .codex, .freebuff, .shell:
             throw LinkCError.process("\(agent.rawValue) has no model listing command")
         }
     }

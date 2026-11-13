@@ -108,6 +108,20 @@ final class LimitCooldownTests: XCTestCase {
         XCTAssertEqual(result, now.addingTimeInterval(3600))
     }
 
+    func testInDaysDuration() {
+        let now = date(hour: 9, minute: 0)
+        for (text, seconds) in [
+            ("resets in 6 days", TimeInterval(6 * 86400)),
+            ("resets in 1 day 4h", TimeInterval(28 * 3600)),
+            ("resets in 6d 4h", TimeInterval(148 * 3600)),
+        ] {
+            XCTAssertEqual(
+                LimitCooldown.expiry(bannerText: text, usage: nil, now: now, calendar: calendar, fallback: 900),
+                now.addingTimeInterval(seconds), text
+            )
+        }
+    }
+
     /// No usage window and no parseable banner text: the fixed fallback applies exactly as it
     /// does today.
     func testFallsBackToTheGivenCooldownWhenNothingElseApplies() {

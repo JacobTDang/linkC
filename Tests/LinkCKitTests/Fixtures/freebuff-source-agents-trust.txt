@@ -1,0 +1,3 @@
+Agents and mcp.json found in this repository.
+These run with your permissions and can read your environment. Only load them if you trust this repository.
+Load and run these? [y/N]

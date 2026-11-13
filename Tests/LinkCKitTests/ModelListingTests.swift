@@ -129,6 +129,49 @@ final class ModelListingTests: XCTestCase {
         XCTAssertFalse(OpenCodeFreeModels.isFree(""))
     }
 
+    private let kiloOutput = """
+        kilo/nvidia/nemotron-3.5-super-vl:free
+        kilo/reflection/beam-free
+        kilo/kilo-auto/free
+        kilo/openrouter/free
+        kilo/nvidia/nemotron-3.5-lightning:free
+        kilo/anthropic/claude-sonnet-5
+        anthropic/claude-opus-5
+        """
+
+    func testKiloParserKeepsFreeOnlyAndUsesIdAsName() {
+        let models = ModelListParser.kilo(kiloOutput)
+        XCTAssertEqual(models.map(\.id), [
+            "kilo/nvidia/nemotron-3.5-super-vl:free",
+            "kilo/reflection/beam-free",
+            "kilo/kilo-auto/free",
+            "kilo/openrouter/free",
+            "kilo/nvidia/nemotron-3.5-lightning:free",
+        ])
+        XCTAssertEqual(models.map(\.name), models.map(\.id))
+        XCTAssertFalse(models.contains { $0.id == "kilo/anthropic/claude-sonnet-5" })
+        XCTAssertFalse(models.contains { $0.id == "anthropic/claude-opus-5" })
+    }
+
+    func testKiloFreeRule() {
+        XCTAssertTrue(KiloFreeModels.isFree("kilo/nvidia/nemotron-3.5-super-vl:free"))
+        XCTAssertTrue(KiloFreeModels.isFree("kilo/reflection/beam-free"))
+        XCTAssertTrue(KiloFreeModels.isFree("kilo/kilo-auto/free"))
+        XCTAssertTrue(KiloFreeModels.isFree("kilo/openrouter/free"))
+        XCTAssertFalse(KiloFreeModels.isFree("kilo/anthropic/claude-sonnet-5"))
+        XCTAssertFalse(KiloFreeModels.isFree("opencode/beam-free"))
+        XCTAssertFalse(KiloFreeModels.isFree("anthropic/claude-opus-5"))
+        XCTAssertFalse(KiloFreeModels.isFree(""))
+        XCTAssertFalse(KiloFreeModels.isFree("kilo/"))
+    }
+
+    func testKiloListingThrowsWhenNothingIsFree() {
+        XCTAssertThrowsError(try ModelListParser.listing("kilo/anthropic/claude-sonnet-5\n", for: .kilo)) { error in
+            XCTAssertEqual(String(describing: error), "kilo models listed nothing: kilo/anthropic/claude-sonnet-5")
+        }
+        XCTAssertEqual(try ModelListParser.listing(kiloOutput, for: .kilo).count, 5)
+    }
+
     func testAgyPools() {
         XCTAssertEqual(ModelPool.pool(of: "gemini-3.8-flash-medium", agent: .agy), "gemini")
         XCTAssertEqual(ModelPool.pool(of: "claude-opus-4-6-thinking", agent: .agy), "claude-gpt")
@@ -148,9 +191,10 @@ final class ModelListingTests: XCTestCase {
         XCTAssertEqual(ModelListParser.fixed(for: .codex)?.map(\.id), [
             "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra",
         ])
-        for agent: AgentKind in [.agy, .cursor, .grok, .opencode, .shell] {
+        for agent: AgentKind in [.agy, .cursor, .grok, .opencode, .kilo, .shell] {
             XCTAssertNil(ModelListParser.fixed(for: agent), agent.rawValue)
         }
+        XCTAssertTrue(ModelListParser.listedAgents.contains(.kilo))
     }
 
     /// A non-free OpenCode id is refused with "not free", even when the listing still names it.
@@ -225,5 +269,75 @@ final class ModelListingTests: XCTestCase {
         }
         XCTAssertTrue(reason.contains("not free"), reason)
         XCTAssertTrue(reason.contains("opencode/claude-sonnet-5"), reason)
+    }
+
+    /// A non-free Kilo id is refused with "not free", even when the listing still names it.
+    func testANonFreeKiloModelIsRefusedEvenWhenListed() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-kilo-listing-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        var settings = AgentModelSettings.seeded
+        settings.setModel("kilo/anthropic/claude-sonnet-5", for: .kilo, tier: .standard)
+        let frozen = settings
+        let server = MCPServer(
+            workspaceRoot: temp.path,
+            inboxStore: InboxStore(workspaceRoot: temp.path),
+            environment: ["LINKC_AGENT": "claude"],
+            ancestorResolver: { _ in nil },
+            modelSettings: { frozen },
+            sessionResolver: { nil },
+            usageReaders: [:],
+            kiloModels: { _ in ["kilo/anthropic/claude-sonnet-5", "kilo/kilo-auto/free"] },
+            modelLists: TestModelLists.none)
+
+        let request: [String: Any] = [
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": [
+                "name": "linkc_delegate_task",
+                "arguments": ["to": "kilo", "prompt": "Add a test.", "tier": "standard"],
+            ],
+        ]
+        let data = try XCTUnwrap(server.handleMessage(try JSONSerialization.data(withJSONObject: request)))
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let result = try XCTUnwrap(json["result"] as? [String: Any])
+        let text = (result["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+        XCTAssertEqual(result["isError"] as? Bool, true)
+        XCTAssertTrue(text.contains("not free"), text)
+        XCTAssertTrue(text.contains("kilo/anthropic/claude-sonnet-5"), text)
+        XCTAssertTrue(try InboxStore(workspaceRoot: temp.path).openTasks().isEmpty)
+    }
+
+    /// App-side availability refuses a non-free id before it asks Kilo what it lists.
+    @MainActor
+    func testAppCoordinatorRefusesANonFreeKiloModelBeforeListing() {
+        var settings = AgentModelSettings.seeded
+        settings.setModel("kilo/anthropic/claude-sonnet-5", for: .kilo, tier: .standard)
+        let frozen = settings
+        let settingsDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkc-kilo-listing-settings-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+        let coordinator = AppCoordinator(
+            terminals: TerminalSessionManager(),
+            hookServer: HookServer.forTesting(),
+            notifications: NotificationManager(sink: NullSink(), now: { Date() }),
+            claudePath: "/x/claude",
+            settingsDir: settingsDir,
+            userSettingsURL: settingsDir.appendingPathComponent("user-settings.json"),
+            manifestDir: settingsDir.appendingPathComponent("manifest"),
+            modelSettings: { frozen },
+            modelLists: TestModelLists.none,
+            kiloModels: { _ in
+                XCTFail("Kilo's models were listed for a non-free id")
+                return []
+            },
+            isWatching: { _ in false })
+        let availability = coordinator.kiloModelAvailability(in: "/tmp", tier: .standard)
+        guard case .refused(let reason) = availability else {
+            return XCTFail("expected refused, got \(availability)")
+        }
+        XCTAssertTrue(reason.contains("not free"), reason)
+        XCTAssertTrue(reason.contains("kilo/anthropic/claude-sonnet-5"), reason)
     }
 }

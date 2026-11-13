@@ -117,6 +117,32 @@ public struct LimitDetector: Sendable {
         LimitRule(canonicalPattern: "OpenCode free limit reached", regexPattern: "\\bfree limit reached\\b")
     ]
 
+    private static let freebuffRules: [LimitRule] = [
+        LimitRule(canonicalPattern: "Freebuff session limit reached", regexPattern: "\\bsession limit reached\\b"),
+        LimitRule(canonicalPattern: "Freebuff has less than an hour left", regexPattern: "\\byou have less than an hour left\\b"),
+        LimitRule(canonicalPattern: "Freebuff free session ended", regexPattern: "\\byour free session ended\\b")
+    ]
+
+    /// Kilo's free-tier cap in the binary's own banner wording ("Rate limit exceeded" / "Free model
+    /// requests are limited"). OpenCode's "free usage exceeded" phrases are absent from Kilo 7.8.27.
+    private static let kiloRules: [LimitRule] = [
+        LimitRule(
+            canonicalPattern: "Kilo rate limit exceeded",
+            regexPattern: "^\\s*●\\s+rate limit exceeded\\s*$",
+            options: [.caseInsensitive, .anchorsMatchLines])
+    ]
+
+    /// Crush on OpenRouter's free tier, read from its real error screen (v0.101.0, `Fixtures/crush-*-ratelimit.txt`).
+    /// Crush retries a 429 by itself and shows only a spinner meanwhile; once the retries are spent it
+    /// shows "ERROR  Too Many Requests" and OpenRouter's own message, and a status line "retry error:
+    /// too many requests: …". Neither screen states when the cap clears: OpenRouter resets the daily
+    /// one at 00:00 UTC, so a daily cap waits hours; any other 429 gets the default cooldown. A narrow screen wraps the id ("free-models-per-" / "day").
+    private static let crushRules: [LimitRule] = [
+        LimitRule(canonicalPattern: "OpenRouter free-tier daily cap", regexPattern: "\\bfree-models-per-\\s*day\\b", cooldown: 6 * 3600),
+        LimitRule(canonicalPattern: "Crush too many requests",
+                  regexPattern: "\\b(?:error\\s+too many requests|retry error: too many requests)\\b")
+    ]
+
     private static func rules(for agent: AgentKind) -> [LimitRule] {
         switch agent {
         case .claude: return claudeRules
@@ -125,6 +151,9 @@ public struct LimitDetector: Sendable {
         // Grok runs Cursor's CLI, so a Grok terminal shows Cursor's caps.
         case .cursor, .grok: return cursorRules
         case .opencode: return openCodeRules
+        case .freebuff: return freebuffRules
+        case .kilo: return kiloRules
+        case .crush: return crushRules
         case .shell: return []
         }
     }
@@ -210,14 +239,15 @@ public struct LimitDetector: Sendable {
         return result
     }
 
-    /// The line holding `matchRange` and the line after it, trimmed of surrounding whitespace.
-    private static func bannerLines(around matchRange: NSRange, in text: String) -> String {
+    /// The line holding `matchRange` and the next few lines, trimmed of surrounding whitespace.
+    /// Freebuff draws its reset beneath a model/plan row, rather than directly under the error.
+    private static func bannerLines(around matchRange: NSRange, in text: String, followingLineCount: Int) -> String {
         let lines = text.components(separatedBy: "\n")
         var offset = 0
         for (index, line) in lines.enumerated() {
             let length = (line as NSString).length
             if matchRange.location < offset + length + 1 {
-                let banner = lines[index...min(index + 1, lines.count - 1)]
+                let banner = lines[index...min(index + followingLineCount, lines.count - 1)]
                 return banner.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")
             }
             offset += length + 1
@@ -240,6 +270,10 @@ public struct LimitDetector: Sendable {
 
         let cleanText = withoutInjected(stripAnsi(text), injected: injected)
         guard !cleanText.isEmpty else { return nil }
+        if agent != .freebuff,
+           cleanText.contains("freebuff.com/plans") || cleanText.contains("Your free session ended") {
+            return nil
+        }
 
         let range = NSRange(cleanText.startIndex..<cleanText.endIndex, in: cleanText)
         for rule in agentRules {
@@ -248,7 +282,11 @@ public struct LimitDetector: Sendable {
                     agent: agent,
                     matchedPattern: rule.canonicalPattern,
                     cooldown: rule.cooldown ?? defaultCooldown,
-                    bannerText: bannerLines(around: found.range, in: cleanText)
+                    bannerText: bannerLines(
+                        around: found.range,
+                        in: cleanText,
+                        followingLineCount: agent == .freebuff ? 4 : 1
+                    )
                 )
             }
         }

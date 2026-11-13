@@ -20,9 +20,12 @@ extension AppCoordinator {
         let pending = openRequests.pending()
         guard !pending.isEmpty else { return }
         for request in pending {
-            if request.agent == .opencode, request.task != nil {
-                let tier = request.tier ?? defaultTier(for: .opencode)
-                switch openCodeModelAvailability(in: request.folder, tier: tier) {
+            if (request.agent == .opencode || request.agent == .kilo), request.task != nil {
+                let tier = request.tier ?? defaultTier(for: request.agent)
+                let availability = request.agent == .kilo
+                    ? kiloModelAvailability(in: request.folder, tier: tier)
+                    : openCodeModelAvailability(in: request.folder, tier: tier)
+                switch availability {
                 case .checking:
                     continue
                 case .available:
@@ -32,7 +35,8 @@ extension AppCoordinator {
                         try openRequests.withdraw(request.id)
                         try openRequests.answer(request.id, with: .refused(reason))
                     } catch {
-                        NSLog("[linkC] OpenCode request %@ could not be refused — %@", request.id, String(describing: error))
+                        NSLog("[linkC] %@ request %@ could not be refused — %@",
+                              request.agent.rawValue, request.id, String(describing: error))
                     }
                     continue
                 }
@@ -73,9 +77,12 @@ extension AppCoordinator {
         }
         let tier: ModelTier?
         if let requested = request.tier {
+            guard request.agent != .freebuff else {
+                return .refused("Freebuff has no tiers; it runs its own default model.")
+            }
             guard request.agent != .cursor else { return .refused("cursor cannot be pinned to a model") }
             tier = requested
-        } else if request.task != nil, request.agent != .cursor {
+        } else if request.task != nil, request.agent != .cursor, request.agent != .freebuff {
             // A worker is pinned as delegation pins it. The user's own session opens as the panel opens
             // one: unpinned, so the relay never hands it a delegated task. Cursor was never tiered.
             tier = defaultTier(for: request.agent)

@@ -21,7 +21,7 @@ final class MCPServerUsageTests: XCTestCase {
     private func server(readers: [AgentKind: MCPServer.UsageReader]) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path, inboxStore: inbox,
                   environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
-                  modelSettings: { .seeded }, sessionResolver: { nil }, usageReaders: readers, modelLists: TestModelLists.none)
+                  modelSettings: { .seeded }, sessionResolver: { nil }, usageReaders: readers, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
     }
 
     private func call(_ server: MCPServer, _ name: String, _ args: [String: Any] = [:]) throws -> (text: String, isError: Bool) {
@@ -49,6 +49,16 @@ final class MCPServerUsageTests: XCTestCase {
         XCTAssertTrue(res.text.contains("agy writes no local session records"), res.text)
         XCTAssertFalse(res.text.contains("gpt-4o"), "the stale catalog must not appear: \(res.text)")
         XCTAssertFalse(res.text.contains("Default Model"), "the default-model line is gone: \(res.text)")
+    }
+
+    /// Every peer agent has a section, so Crush's usage is not silently missing.
+    func testItHasASectionForEveryPeerAgentIncludingCrush() throws {
+        let res = try call(server(readers: [:]), "linkc_get_usage_status")
+
+        XCTAssertFalse(res.isError, res.text)
+        for agent in AgentKind.peers {
+            XCTAssertTrue(res.text.contains(agent.displayName), "no section for \(agent.displayName): \(res.text)")
+        }
     }
 
     func testAThrowingReaderStillReturnsAResult() throws {

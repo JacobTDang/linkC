@@ -15,7 +15,7 @@ public struct ListedModel: Codable, Equatable, Sendable {
 public enum ModelListParser {
     /// Agents whose models come from a CLI listing. Claude and Codex have fixed lists (`fixed(for:)`).
     /// Grok has no listing of its own: it reuses Cursor's.
-    public static let listedAgents: [AgentKind] = [.agy, .cursor, .grok, .opencode]
+    public static let listedAgents: [AgentKind] = [.agy, .cursor, .grok, .opencode, .kilo, .crush]
 
     private static let zeroWidth: CharacterSet = {
         var set = CharacterSet()
@@ -73,6 +73,24 @@ public enum ModelListParser {
         }
     }
 
+    /// `kilo models`: one id per line; free only (spec §4.3); name = id.
+    public static func kilo(_ output: String) -> [ListedModel] {
+        output.split(whereSeparator: \.isNewline).compactMap { line in
+            let id = clean(String(line))
+            guard !id.isEmpty, KiloFreeModels.isFree(id) else { return nil }
+            return ListedModel(id: id, name: id)
+        }
+    }
+
+    /// `crush models`: one `provider/model` id per line; free OpenRouter models only; name = id.
+    public static func crush(_ output: String) -> [ListedModel] {
+        output.split(whereSeparator: \.isNewline).compactMap { line in
+            let id = clean(String(line))
+            guard !id.isEmpty, CrushFreeModels.isFree(id) else { return nil }
+            return ListedModel(id: id, name: id)
+        }
+    }
+
     /// What `agent`'s CLI printed, as models. Output that yields none is an error, never an empty
     /// list: a CLI that printed text but no models (an error line, a changed format) must not pass
     /// for one that has none. Throws for an agent that has no listing command.
@@ -83,14 +101,17 @@ public enum ModelListParser {
         case .cursor: models = Self.cursor(output)
         case .grok: models = Self.grok(fromCursor: output)
         case .opencode: models = Self.openCode(output)
-        case .claude, .codex, .shell:
+        case .kilo: models = Self.kilo(output)
+        case .crush: models = Self.crush(output)
+        case .claude, .codex, .freebuff, .shell:
             throw LinkCError.process("\(agent.rawValue) has no model listing command")
         }
         guard !models.isEmpty else {
             let first = output.split(whereSeparator: \.isNewline)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .first { !$0.isEmpty }
-            throw LinkCError.process("\(agent.rawValue) models listed nothing: \(first ?? "(no output)")")
+            let message = "\(agent.rawValue) models listed nothing: \(first ?? "(no output)")"
+            throw LinkCError.process(agent == .kilo ? KiloLogin.reporting(message) : message)
         }
         return models
     }
@@ -102,7 +123,7 @@ public enum ModelListParser {
             return ["haiku", "sonnet", "opus"].map { ListedModel(id: $0, name: $0) }
         case .codex:
             return ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"].map { ListedModel(id: $0, name: $0) }
-        case .agy, .cursor, .grok, .opencode, .shell:
+        case .agy, .cursor, .grok, .opencode, .freebuff, .kilo, .crush, .shell:
             return nil
         }
     }
@@ -117,6 +138,31 @@ public enum OpenCodeFreeModels {
         if trimmed == "opencode/big-pickle" { return true }
         if trimmed.hasPrefix("opencode/"), trimmed.hasSuffix("-free") { return true }
         return false
+    }
+}
+
+/// Kilo's free-only rule (spec §4.3): starts with `kilo/` and either ends in `:free`, ends in
+/// `-free`, or the last path component is `free`.
+public enum KiloFreeModels {
+    public static func isFree(_ id: String) -> Bool {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("kilo/") else { return false }
+        if trimmed.hasSuffix(":free") || trimmed.hasSuffix("-free") { return true }
+        return (trimmed as NSString).lastPathComponent == "free"
+    }
+}
+
+/// Crush's free-only rule: an OpenRouter model whose id ends in `:free` (`openrouter/<model>:free`).
+/// The one rule every Crush path uses: the `crush models` parser, the Settings picker, delegation,
+/// launch, and the per-session config that pins the model.
+public enum CrushFreeModels {
+    public static let provider = "openrouter/"
+    public static let suffix = ":free"
+
+    public static func isFree(_ id: String) -> Bool {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix(provider) && trimmed.hasSuffix(suffix)
+            && trimmed.count > provider.count + suffix.count
     }
 }
 

@@ -1,0 +1,30 @@
+
+  ╱╱╱╱╱╱  Charm™                      v0.101.0 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+  ╱╱╱╱╱╱ ▄▀▀▀▀ █▀▀▀▄ █   █ ▄▀▀▀▀ █           █ ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+  ╱╱╱╱╱╱ █     █▀▀▀▄ █   █ ▀▀▀▀█ █▀▀▀▀▀▀▀▀▀▀▀█ ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+  ╱╱╱╱╱╱  ▀▀▀▀ ▀   ▀  ▀▀▀  ▀▀▀▀  ▀           ▀ ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+
+
+
+
+
+ To start, let's choose a provider and model.
+
+ > Find your fave
+
+ Google: Gemma 4 31B (free)                                           │
+ Google: Nano Banana 2.1                                              │
+ IBM: Granite 4.2 8B                                                  │
+ LiquidAI: LFM2.5-2.6B                                                │
+ LiquidAI: LFM2.5-2.6B (free)                                         │
+ LiquidAI: LFM2.5-24B-A2B                                             │
+ LiquidAI: LFM3-1.7B                                                  │
+ LiquidAI: LFM3-1.7B (free)                                           ┃
+ Meituan: LongCat 2.0                                                 │
+ Meta: Llama 3.1 8B Instruct                                          │
+ Meta: Llama 3.3 70B Instruct                                         │
+ Meta: Llama 4 Maverick                                               │
+ Meta: Llama 4 Scout                                                  │
+ Meta: Muse Ember                                                     │
+
+ ↑/↓ choose • enter confirm

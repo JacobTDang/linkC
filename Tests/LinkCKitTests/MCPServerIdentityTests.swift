@@ -27,14 +27,14 @@ final class MCPServerIdentityTests: XCTestCase {
     }
 
     func testExplicitAgentArgumentWins() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in (.agy, 77) }, sessionResolver: { nil }, modelLists: TestModelLists.none)
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in (.agy, 77) }, sessionResolver: { nil }, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
         let caller = server.resolveCaller(["agent": "cursor", "pid": 5])
         XCTAssertEqual(caller.agent, .cursor)
         XCTAssertEqual(caller.pid, 5)
     }
 
     func testEnvironmentIsUsedWhenNoArgument() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, modelLists: TestModelLists.none)
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "codex"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
         let caller = server.resolveCaller([:])
         XCTAssertEqual(caller.agent, .codex)
         XCTAssertEqual(caller.pid, getppid())
@@ -43,7 +43,7 @@ final class MCPServerIdentityTests: XCTestCase {
     /// The environment OpenCode's registration hands the tool server is what names OpenCode.
     func testOpenCodeIsTheCallerWhenItsRegistrationSaysSo() throws {
         let registered = try XCTUnwrap(MCPRegistrar.openCodeEntry(binaryPath: "/bin/linkc-mcp")["environment"] as? [String: String])
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: registered, ancestorResolver: { _ in nil }, sessionResolver: { nil }, modelLists: TestModelLists.none)
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: registered, ancestorResolver: { _ in nil }, sessionResolver: { nil }, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
         let caller = server.resolveCaller([:])
         XCTAssertEqual(caller.agent, .opencode)
         XCTAssertTrue(caller.isIdentified)
@@ -51,21 +51,21 @@ final class MCPServerIdentityTests: XCTestCase {
     }
 
     func testAncestorResolverIsUsedWhenNoArgumentOrEnvironment() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in (.agy, 77) }, sessionResolver: { nil }, modelLists: TestModelLists.none)
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in (.agy, 77) }, sessionResolver: { nil }, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
         let caller = server.resolveCaller([:])
         XCTAssertEqual(caller.agent, .agy)
         XCTAssertEqual(caller.pid, 77)
     }
 
     func testUnidentifiedCallerIsShellNotClaude() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in nil }, sessionResolver: { nil }, modelLists: TestModelLists.none)
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in nil }, sessionResolver: { nil }, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
         let caller = server.resolveCaller([:])
         XCTAssertEqual(caller.agent, .shell)
         XCTAssertFalse(caller.isIdentified)
     }
 
     func testUnidentifiedCallerCanReadButNotWrite() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in nil }, sessionResolver: { nil }, modelLists: TestModelLists.none)
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: [:], ancestorResolver: { _ in nil }, sessionResolver: { nil }, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
         let read = try call(server, "linkc_get_project_context")
         XCTAssertFalse(read.isError)
         let write = try call(server, "linkc_broadcast_intent", ["goal": "x"])
@@ -76,7 +76,7 @@ final class MCPServerIdentityTests: XCTestCase {
     }
 
     func testEveryIdentifiedCallHeartbeatsTheBlackboard() throws {
-        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "cursor"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, modelLists: TestModelLists.none)
+        let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "cursor"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
         _ = try call(server, "linkc_get_models")
         let board = try server.store.load()
         let rec = try XCTUnwrap(board.activeAgents.first { $0.agentKind == .cursor })
@@ -89,7 +89,7 @@ final class MCPServerIdentityTests: XCTestCase {
                                       worker: String? = "grok",
                                       ancestor: (agent: AgentKind, pid: pid_t)? = nil) -> MCPServer {
         MCPServer(workspaceRoot: tempDir.path, environment: environment,
-                  ancestorResolver: { _ in ancestor }, sessionResolver: { nil }, workerResolver: { worker }, modelLists: TestModelLists.none)
+                  ancestorResolver: { _ in ancestor }, sessionResolver: { nil }, workerResolver: { worker }, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
     }
 
     func testCursorsRegistrationInsideAGrokTerminalIsGrok() {
@@ -142,7 +142,7 @@ final class MCPServerIdentityTests: XCTestCase {
     /// simply not in a Grok terminal.
     func testTheDefaultWorkerResolverReadsNoRealProcessUnderXCTest() {
         let server = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "cursor"],
-                               ancestorResolver: { _ in nil }, sessionResolver: { nil }, modelLists: TestModelLists.none)
+                               ancestorResolver: { _ in nil }, sessionResolver: { nil }, kiloModels: { _ in [] }, modelLists: TestModelLists.none)
         XCTAssertEqual(server.resolveCaller([:]).agent, .cursor)
     }
 }

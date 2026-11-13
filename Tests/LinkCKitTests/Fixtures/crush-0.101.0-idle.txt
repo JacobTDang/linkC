@@ -1,0 +1,29 @@
+
+  ╱╱╱╱╱╱  Charm™                   v0.101.0 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+  ╱╱╱╱╱╱ ▄▀▀▀▀ █▀▀▀▀▀▀▀▀▄ █   █ ▄▀▀▀▀ █   █ ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+  ╱╱╱╱╱╱ █     █▀▀▀▀▀▀▀▀▄ █   █ ▀▀▀▀█ █▀▀▀█ ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+  ╱╱╱╱╱╱  ▀▀▀▀ ▀        ▀  ▀▀▀  ▀▀▀▀  ▀   ▀ ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+
+  /tmp/crush-cap/mock/proj
+
+  ◇ Google: Gemma 4 31B (free) via OpenRouter
+
+  LSPs                         MCPs                         Skills
+
+  None                         None                         ● access-protected-vercel-
+                                                            deployment
+                                                            ● agent-browser
+                                                            ● ai-gateway
+                                                            ● ai-sdk
+                                                            ● auth
+                                                            ● automations
+                                                            ● bootstrap
+                                                            ● brag
+                                                            ● brag-slim
+                                                            ● brainstorming
+
+  !  Go crazy
+ :::
+ :::
+
+  YOLO MODE   tab change focus • / or ctrl+p commands • shift+tab mode • ctrl+l models …

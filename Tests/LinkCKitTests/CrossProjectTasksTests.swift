@@ -175,6 +175,15 @@ final class CrossProjectTasksTests: XCTestCase {
         XCTAssertEqual(try homeInbox.sentTasks().first?.taskId, task.id)
     }
 
+    func testAskRefusesFreebuffBecauseItIsOnlyForLongRunningWork() throws {
+        let result = try call(homeServer(), "linkc_ask", [
+            "project": "away", "to": "freebuff", "question": "Quick status?"
+        ])
+        XCTAssertTrue(result.isError, result.text)
+        XCTAssertTrue(result.text.contains("Freebuff is for long-running work; ask another agent."), result.text)
+        XCTAssertTrue(try awayInbox.openTasks().isEmpty)
+    }
+
     func testAskRefusesMissingArgsAndVerify() throws {
         XCTAssertTrue(try call(homeServer(), "linkc_ask", ["question": "x"]).isError)
         XCTAssertTrue(try call(homeServer(), "linkc_ask", ["project": "away"]).isError)

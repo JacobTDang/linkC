@@ -1,0 +1,29 @@
+
+   Charm™ CRUSH ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ ~/t/c/m/proj • 0% • ctrl+d open
+
+ │ Create the probe file
+
+   ● Bash Create a probe file (took=0s)
+
+     touch c4-probe.txt
+                   ╭─────────────────────────────────────────────────────╮
+   Requesting permi│  Permission Required ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  │
+                   │                                                     │
+                   │ Tool bash                                           │
+                   │ Path /tmp/crush-cap/mock/proj                       │
+                   │ Desc Create a probe file                            │
+                   │                                                     │
+                   │                                                     │
+                   │   touch c4-probe.txt                                │
+                   │                                                     │
+                   │                                                     │
+                   │            Allow      Allow for Session      Deny   │
+                   │                                                     │
+                   │ ←/→ choose • enter confirm • esc exit               │
+                   ╰─────────────────────────────────────────────────────╯
+
+   > Prrrrrrrr...
+ :::
+ :::
+
+ esc cancel • tab focus chat • shift+tab mode • / or ctrl+p commands • ctrl+l models …

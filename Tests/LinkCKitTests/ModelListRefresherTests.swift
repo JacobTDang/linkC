@@ -40,6 +40,7 @@ final class ModelListRefresherTests: XCTestCase {
     private nonisolated static let agyOutput = "Fetching available models...\ngemini-3.8-flash-medium\tFlash\n"
     private nonisolated static let cursorOutput = "Available models\n\nauto - Auto\ngrok-4.7-low - Grok 4.7  Low\n"
     private nonisolated static let openCodeOutput = "opencode/big-pickle\nopencode/claude-sonnet-5\n"
+    private nonisolated static let kiloOutput = "kilo/kilo-auto/free\nkilo/anthropic/claude-sonnet-5\n"
 
     /// A runner that answers each agent with its usual listing and records what it was asked.
     private func scripted(_ log: RunLog) -> ModelListRefresher.Runner {
@@ -49,6 +50,7 @@ final class ModelListRefresherTests: XCTestCase {
             case .agy: return Self.agyOutput
             case .cursor, .grok: return Self.cursorOutput
             case .opencode: return Self.openCodeOutput
+            case .kilo: return Self.kiloOutput
             default: throw LinkCError.process("unexpected agent \(agent)")
             }
         }
@@ -66,6 +68,10 @@ final class ModelListRefresherTests: XCTestCase {
                     return "Available models\n\nauto - Auto\ngrok-4.7-low - Grok 4.7  Low\n"
                 case .opencode:
                     return "opencode/big-pickle\nopencode/claude-sonnet-5\n"
+                case .kilo:
+                    return "kilo/kilo-auto/free\nkilo/anthropic/claude-sonnet-5\n"
+                case .crush:
+                    return "openrouter/nvidia/nemotron-3.5-lightning:free\nopenrouter/anthropic/claude-opus-4.5\n"
                 default:
                     XCTFail("unexpected agent \(agent)")
                     return ""
@@ -83,6 +89,8 @@ final class ModelListRefresherTests: XCTestCase {
         XCTAssertEqual(lists[.cursor]?.models.map(\.id), ["auto", "grok-4.7-low"])
         XCTAssertEqual(lists[.grok]?.models.map(\.id), ["grok-4.7-low"])
         XCTAssertEqual(lists[.opencode]?.models.map(\.id), ["opencode/big-pickle"])
+        XCTAssertEqual(lists[.kilo]?.models.map(\.id), ["kilo/kilo-auto/free"])
+        XCTAssertEqual(lists[.crush]?.models.map(\.id), ["openrouter/nvidia/nemotron-3.5-lightning:free"])
         XCTAssertNil(lists[.claude])
         XCTAssertNil(lists[.codex])
     }
@@ -225,6 +233,8 @@ final class ModelListRefresherTests: XCTestCase {
                 switch agent {
                 case .agy: return "Error: not logged in\n"
                 case .cursor, .grok: return Self.cursorOutput
+                case .opencode: return Self.openCodeOutput
+                case .kilo: return Self.kiloOutput
                 default: return Self.openCodeOutput
                 }
             },
@@ -238,7 +248,7 @@ final class ModelListRefresherTests: XCTestCase {
         XCTAssertEqual(lists[.agy]?.fetchedAt, Date(timeIntervalSince1970: 1))
     }
 
-    /// The same rule for every agent: Grok finding no `grok-` model in Cursor's list, OpenCode no free one.
+    /// The same rule for every agent: Grok finding no `grok-` model in Cursor's list, OpenCode/Kilo no free one.
     func testEveryAgentsEmptyParseIsAnError() async throws {
         let refresher = ModelListRefresher(
             cache: cache,
@@ -246,7 +256,9 @@ final class ModelListRefresherTests: XCTestCase {
                 switch agent {
                 case .agy: return Self.agyOutput
                 case .cursor, .grok: return "Available models\n\nauto - Auto\n"
-                default: return "opencode/claude-sonnet-5\n"
+                case .opencode: return "opencode/claude-sonnet-5\n"
+                case .kilo: return "kilo/anthropic/claude-sonnet-5\n"
+                default: return Self.openCodeOutput
                 }
             },
             sleep: { _ in })
@@ -258,13 +270,21 @@ final class ModelListRefresherTests: XCTestCase {
         XCTAssertNil(lists[.cursor]?.error)
         XCTAssertEqual(lists[.grok]?.error, "grok models listed nothing: Available models")
         XCTAssertEqual(lists[.opencode]?.error, "opencode models listed nothing: opencode/claude-sonnet-5")
+        XCTAssertEqual(lists[.kilo]?.error, "kilo models listed nothing: kilo/anthropic/claude-sonnet-5")
         XCTAssertEqual(lists[.grok]?.models, [])
     }
 
     func testABlankListingIsAnErrorToo() async throws {
         let refresher = ModelListRefresher(
             cache: cache,
-            runner: { agent in agent == .agy ? "  \n" : Self.openCodeOutput },
+            runner: { agent in
+                switch agent {
+                case .agy: return "  \n"
+                case .opencode: return Self.openCodeOutput
+                case .kilo: return Self.kiloOutput
+                default: return Self.cursorOutput
+                }
+            },
             sleep: { _ in })
 
         await refresher.refreshNow()
@@ -281,7 +301,7 @@ final class ModelListRefresherTests: XCTestCase {
             runner: { agent in
                 log.record(agent)
                 if flag.withLock({ $0 }) { throw LinkCError.process("\(agent.rawValue) offline") }
-                return agent == .agy ? Self.agyOutput : agent == .opencode ? Self.openCodeOutput : Self.cursorOutput
+                return Self.scriptedListing(for: agent)
             },
             sleep: { _ in })
         await refresher.refreshNow()
@@ -354,7 +374,7 @@ final class ModelListRefresherTests: XCTestCase {
             runner: { agent in
                 log.record(agent)
                 while !release.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(5)) }
-                return agent == .agy ? Self.agyOutput : agent == .opencode ? Self.openCodeOutput : Self.cursorOutput
+                return Self.scriptedListing(for: agent)
             },
             sleep: { _ in })
 
@@ -369,6 +389,16 @@ final class ModelListRefresherTests: XCTestCase {
         XCTAssertFalse(refresher.isRefreshing)
         XCTAssertEqual(log.count(.agy), 1)
         XCTAssertEqual(log.count(.opencode), 1)
+        XCTAssertEqual(log.count(.kilo), 1)
+    }
+
+    private nonisolated static func scriptedListing(for agent: AgentKind) -> String {
+        switch agent {
+        case .agy: return agyOutput
+        case .opencode: return openCodeOutput
+        case .kilo: return kiloOutput
+        default: return cursorOutput
+        }
     }
 
     private struct NullSink: NotificationSink {

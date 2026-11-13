@@ -21,7 +21,7 @@ final class MCPServerListProjectsTests: XCTestCase {
 
     private func server(env: [String: String] = ["LINKC_AGENT": "claude"]) -> MCPServer {
         MCPServer(workspaceRoot: here.path, environment: env, ancestorResolver: { _ in nil },
-                  modelSettings: { .seeded }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none, knownProjects: file)
+                  modelSettings: { .seeded }, sessionResolver: { nil }, usageReaders: [:], kiloModels: { _ in [] }, modelLists: TestModelLists.none, knownProjects: file)
     }
 
     private func call(_ server: MCPServer, _ tool: String = "linkc_list_projects",

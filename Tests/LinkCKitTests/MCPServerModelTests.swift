@@ -12,7 +12,7 @@ final class MCPServerModelTests: XCTestCase {
             .appendingPathComponent("linkc-mcp-model-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         inboxStore = InboxStore(workspaceRoot: tempDir.path)
-        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
+        server = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore, environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil }, sessionResolver: { nil }, usageReaders: [:], kiloModels: { _ in [] }, modelLists: TestModelLists.none)
     }
 
     override func tearDownWithError() throws {
@@ -72,6 +72,24 @@ final class MCPServerModelTests: XCTestCase {
         XCTAssertTrue(text.contains("gpt-5.6-sol"), "Expected the seeded codex standard model: \(text)")
     }
 
+    /// Claude's default call names no agent, so it must see every agent it can delegate to: Crush
+    /// is one, with its free tiers.
+    func testGetModelsWithNoAgentIncludesEveryPeerAgentIncludingCrush() throws {
+        let req = """
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "linkc_get_models"}}
+        """.data(using: .utf8)!
+
+        let resData = try XCTUnwrap(server.handleMessage(req))
+        let result = (try JSONSerialization.jsonObject(with: resData) as? [String: Any])?["result"] as? [String: Any]
+        let text = ((result?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+
+        for agent in AgentKind.peers {
+            XCTAssertTrue(text.contains("## \(agent.displayName)\n"), "Missing the \(agent.displayName) section: \(text)")
+        }
+        XCTAssertTrue(text.contains("## Crush\n"), text)
+        XCTAssertTrue(text.contains(":free"), "Crush's free tier models should be listed: \(text)")
+    }
+
     /// A tier nobody has configured must say so, rather than rendering as an empty value that
     /// reads like a model name.
     func testGetModelsMarksAnUnconfiguredTierAsNotSet() throws {
@@ -80,7 +98,7 @@ final class MCPServerModelTests: XCTestCase {
         let settings = edited   // a @Sendable closure cannot capture a var
         let bare = MCPServer(workspaceRoot: tempDir.path, inboxStore: inboxStore,
                              environment: ["LINKC_AGENT": "claude"], ancestorResolver: { _ in nil },
-                             modelSettings: { settings }, sessionResolver: { nil }, usageReaders: [:], modelLists: TestModelLists.none)
+                             modelSettings: { settings }, sessionResolver: { nil }, usageReaders: [:], kiloModels: { _ in [] }, modelLists: TestModelLists.none)
 
         let req = """
         {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "linkc_get_models", "arguments": {"agent": "codex"}}}
@@ -193,7 +211,7 @@ final class MCPServerModelTests: XCTestCase {
             modelSettings: { box.value },
             sessionResolver: { nil },
             usageReaders: [:],
-            modelLists: TestModelLists.none
+            kiloModels: { _ in [] }, modelLists: TestModelLists.none
         )
 
         let before = try getModelsText(liveServer)
@@ -222,7 +240,7 @@ final class MCPServerModelTests: XCTestCase {
             modelSettings: { .seeded },
             sessionResolver: { nil },
             usageReaders: [:],
-            modelLists: TestModelLists.none
+            kiloModels: { _ in [] }, modelLists: TestModelLists.none
         )
         let req = """
         {
@@ -317,7 +335,7 @@ final class MCPServerModelTests: XCTestCase {
             ancestorResolver: { _ in nil },
             sessionResolver: { nil },
             usageReaders: [:],
-            modelLists: TestModelLists.none
+            kiloModels: { _ in [] }, modelLists: TestModelLists.none
         )
 
         let req = """
@@ -428,6 +446,9 @@ final class MCPServerModelTests: XCTestCase {
         }
         let delegate = tools.first { $0["name"] as? String == "linkc_delegate_task" }?["description"] as? String ?? ""
         XCTAssertTrue(delegate.contains("grok"), delegate)
+        XCTAssertTrue(delegate.contains("Freebuff is only for long-running work"), delegate)
+        let getModels = tools.first { $0["name"] as? String == "linkc_get_models" }?["description"] as? String ?? ""
+        XCTAssertTrue(getModels.contains("Freebuff is only for long-running work"), getModels)
     }
 
     func testTheUsageReportHasAGrokSection() throws {
@@ -465,6 +486,7 @@ final class MCPServerModelTests: XCTestCase {
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
             modelLists: TestModelLists.none,
+            kiloModels: { _ in [] },
             isWatching: { _ in false }
         )
 

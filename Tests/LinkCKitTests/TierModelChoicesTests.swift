@@ -67,6 +67,33 @@ final class TierModelChoicesTests: XCTestCase {
             forTypedId: "hand-typed", agent: .claude))
     }
 
+    func testKiloOptionsAreFreeOnly() {
+        let lists: [AgentKind: AgentModelList] = [
+            .kilo: AgentModelList(
+                models: [
+                    ListedModel(id: "kilo/kilo-auto/free", name: "kilo/kilo-auto/free"),
+                    ListedModel(id: "kilo/anthropic/claude-sonnet-5", name: "kilo/anthropic/claude-sonnet-5"),
+                    ListedModel(id: "kilo/reflection/beam-free", name: "kilo/reflection/beam-free"),
+                ],
+                fetchedAt: Date(),
+                error: nil),
+        ]
+        var settings = AgentModelSettings.seeded
+        settings.setModel("kilo/anthropic/claude-sonnet-5", for: .kilo, tier: .deep)
+        let choices = TierModelChoices.make(
+            agent: .kilo, lists: lists, settings: settings, current: "kilo/kilo-auto/free")
+        XCTAssertTrue(choices.optionLabels.contains("kilo/kilo-auto/free"))
+        XCTAssertTrue(choices.optionLabels.contains("kilo/reflection/beam-free"))
+        XCTAssertFalse(choices.optionLabels.contains("kilo/anthropic/claude-sonnet-5"))
+    }
+
+    func testTypedNonFreeKiloIdIsRefused() {
+        let error = TierModelChoices.validationError(
+            forTypedId: "kilo/anthropic/claude-sonnet-5", agent: .kilo)
+        XCTAssertEqual(error, "kilo/anthropic/claude-sonnet-5 is not a free Kilo model")
+        XCTAssertNil(TierModelChoices.validationError(forTypedId: "kilo/kilo-auto/free", agent: .kilo))
+    }
+
     func testShowsListAgeAndError() {
         let fetched = Date(timeIntervalSince1970: 1_700_000_000)
         let lists: [AgentKind: AgentModelList] = [
@@ -145,5 +172,22 @@ final class TierModelChoicesTests: XCTestCase {
         XCTAssertNil(free.validationError)
         XCTAssertEqual(free.warning,
                        "opencode/gone-free is not in opencode's list (read 30s ago). Delegation refuses it until opencode lists it.")
+    }
+
+    func testKiloNonFreeStaysRefusedAndAFreeUnlistedIdWarns() {
+        let fetched = Date(timeIntervalSince1970: 1_700_000_000)
+        let lists: [AgentKind: AgentModelList] = [.kilo: liveList(["kilo/kilo-auto/free"], fetchedAt: fetched)]
+        let now = fetched.addingTimeInterval(30)
+
+        let paid = TierModelChoices.make(
+            agent: .kilo, lists: lists, settings: .seeded, current: "kilo/anthropic/claude-sonnet-5", now: now)
+        XCTAssertEqual(paid.validationError, "kilo/anthropic/claude-sonnet-5 is not a free Kilo model")
+        XCTAssertNil(paid.warning)
+
+        let free = TierModelChoices.make(
+            agent: .kilo, lists: lists, settings: .seeded, current: "kilo/gone/free", now: now)
+        XCTAssertNil(free.validationError)
+        XCTAssertEqual(free.warning,
+                       "kilo/gone/free is not in kilo's list (read 30s ago). Delegation refuses it until kilo lists it.")
     }
 }

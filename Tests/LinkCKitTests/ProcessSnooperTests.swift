@@ -27,11 +27,33 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertNil(ProcessSnooper.detectAgent(inPath: ""))
     }
 
+    func testCrushIsDetectedByItsLinkAndItsRealBinary() {
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/crush"), .crush)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/Cellar/crush/0.101.0/bin/crush"), .crush)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/someone/go/bin/crush"), .crush)
+    }
+
     /// Homebrew links `opencode` to a versioned Cellar binary; the installer puts it in ~/.opencode/bin.
     func testOpenCodeIsDetectedByItsLinkAndItsRealBinary() {
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/opencode"), .opencode)
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/Cellar/opencode/1.18.19/bin/opencode"), .opencode)
         XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/someone/.opencode/bin/opencode"), .opencode)
+    }
+
+    /// `kilo` is an npm script: `node /opt/homebrew/bin/kilo` starts the real binary, `.kilo`, in the
+    /// package's `bin` folder, and the kernel names that one. The node process in front of it, by its
+    /// exec path, is no agent.
+    func testKiloIsDetectedByTheBinaryItsNodeScriptStarts() {
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/lib/node_modules/@kilocode/cli/bin/.kilo"), .kilo)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/someone/.nvm/versions/node/v24.1.0/lib/node_modules/@kilocode/cli/bin/.kilo"), .kilo)
+        XCTAssertNil(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/node"))
+    }
+
+    /// The path a user starts it by, as an installer or a link may name it.
+    func testKiloIsDetectedByTheNameItIsStartedBy() {
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/opt/homebrew/bin/kilo"), .kilo)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/usr/local/bin/kilo"), .kilo)
+        XCTAssertEqual(ProcessSnooper.detectAgent(inPath: "/Users/someone/.kilo/bin/kilo"), .kilo)
     }
 
     func testProcessTreeInspectionReturnsNilForEmptyChildren() {

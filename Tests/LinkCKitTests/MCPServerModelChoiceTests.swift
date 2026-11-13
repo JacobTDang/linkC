@@ -48,6 +48,7 @@ final class MCPServerModelChoiceTests: XCTestCase {
             sessionResolver: { nil },
             usageReaders: [:],
             openCodeModels: openCodeModels,
+            kiloModels: { _ in [] },
             modelLists: readLists)
     }
 
@@ -270,6 +271,19 @@ final class MCPServerModelChoiceTests: XCTestCase {
         XCTAssertTrue(text.contains("agy's Gemini pool is limited until"), text)
         XCTAssertTrue(text.contains("model lists could not be read"), text)
         XCTAssertTrue(text.contains("model-lists.json is corrupt"), text)
+    }
+
+    func testLimitRefusalNeverOffersFreebuffAsNotLimited() throws {
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        try inbox.recordLimit(agent: .claude, reason: "quota", cooldown: 3600)
+        let limit = try XCTUnwrap(try inbox.isAgentLimited(agent: .claude))
+
+        let text = try MCPServer.limitRefusal(
+            agent: .claude, limit: limit, model: nil,
+            readLists: { [:] }, settings: .seeded, inboxStore: inbox)
+
+        XCTAssertTrue(text.contains("Not limited:"), text)
+        XCTAssertFalse(text.lowercased().contains("freebuff"), text)
     }
 
     func testTierAndModelTogetherAreRefused() throws {

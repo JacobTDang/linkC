@@ -1,8 +1,9 @@
 import XCTest
 @testable import LinkCKit
 
-/// OpenCode's screen reader runs only for OpenCode sessions: its input box has none of the prompt
-/// markers the generic scan stops at, so every other agent keeps reading screens the way it always did.
+/// OpenCode's screen reader runs for OpenCode and Kilo sessions (same TUI chrome): its input box
+/// has none of the prompt markers the generic scan stops at, so every other agent keeps reading
+/// screens the way it always did.
 final class OpenCodeScreenGatingTests: XCTestCase {
     /// A finished OpenCode turn with a stray row above its input box. The generic reader takes the
     /// row for a spinner phrase; OpenCode's own reader knows from the footer that the turn is over.
@@ -13,12 +14,18 @@ final class OpenCodeScreenGatingTests: XCTestCase {
         return rows
     }
 
+    private var openCodeFamily: Set<AgentKind> { [.opencode, .kilo] }
+
     func testEveryNonOpenCodeFixtureStillUsesTheGenericReader() throws {
-        let others = CodexScreenFixture.allNames().filter { !$0.hasPrefix("opencode-") }
+        let others = CodexScreenFixture.allNames().filter {
+            !$0.hasPrefix("opencode-") && !$0.hasPrefix("freebuff-") && !$0.hasPrefix("kilo-")
+        }
         XCTAssertFalse(others.isEmpty)
         for name in others {
             let rows = try CodexScreenFixture.rows(name)
-            for agent in AgentKind.allCases where agent != .opencode {
+            // Crush's own screens have their own reader, which `CrushScreenTests` covers.
+            for agent in AgentKind.allCases where !openCodeFamily.contains(agent) && agent != .freebuff
+                && !(agent == .crush && name.hasPrefix("crush-")) {
                 XCTAssertEqual(
                     TerminalPreview.liveActivity(from: rows, agent: agent),
                     TerminalPreview.genericLiveActivity(from: rows),
@@ -34,10 +41,12 @@ final class OpenCodeScreenGatingTests: XCTestCase {
         let generic = try XCTUnwrap(TerminalPreview.genericLiveActivity(from: rows), "the generic reader takes the stray row for a phrase")
         XCTAssertEqual(OpenCodeScreen.turn(in: rows), .idle, "OpenCode's reader says the turn is over")
 
-        for agent in AgentKind.allCases where agent != .opencode {
+        for agent in AgentKind.allCases where !openCodeFamily.contains(agent) && agent != .freebuff {
             XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: agent), generic, "\(agent)")
         }
         XCTAssertNil(TerminalPreview.liveActivity(from: rows, agent: .opencode))
+        XCTAssertNil(TerminalPreview.liveActivity(from: rows, agent: .kilo),
+                     "Kilo shares OpenCode's reader")
     }
 
     func testAnOpenCodeLookingScreenInANonOpenCodeSessionIsNotReadAsOpenCode() throws {
@@ -45,6 +54,7 @@ final class OpenCodeScreenGatingTests: XCTestCase {
 
         XCTAssertNil(TerminalPreview.liveActivity(from: rows, agent: .codex))
         XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .opencode), "Working")
+        XCTAssertEqual(TerminalPreview.liveActivity(from: rows, agent: .kilo), "Working")
     }
 
     /// What a session does with its screen follows its own agent kind, both when asked for its

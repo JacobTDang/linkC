@@ -1,0 +1,13 @@
+ ┌──────────────────────────────────────────────────────────────────┐
+ │ May use data for AI training                                     │
+ │ Your first message starts the session.                           │
+ │ ✦ Refer friends → earn hours:                                    │
+ │ ⎘ Copy invite link  Learn More ↵                                 │
+ └──────────────────────────────────────────────────────────────────┘
+ Try one of these:
+ → Explain this codebase
+╭────────────────────────────────────────────────────────────────────╮
+│  ▍Enter a coding task or / for commands                            │
+╰────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash Fast • high · /private/tmp · /model to change · Chat: New chat
+ ← for history · ? for help

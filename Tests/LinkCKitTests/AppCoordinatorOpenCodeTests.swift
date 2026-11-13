@@ -56,6 +56,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
             modelLists: TestModelLists.none,
             deliverySettle: 0,
             turnEndQuietPeriod: 0.0,
+            kiloModels: { _ in [] },
             isWatching: { _ in false }
         )
     }
@@ -97,6 +98,21 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         XCTAssertNil(session.modelTier, "a tier the user never asked for must not make their session a task carrier")
         XCTAssertEqual(launchedLines("argv", of: session, count: 2), ["--standalone", "--auto"], "no --model: OpenCode 2.2.5 refuses it")
         XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/big-pickle")
+    }
+
+    /// A user-global `agent.build.model` beats the inline top-level `model` in OpenCode's TUI, so every
+    /// agent that runs on the session's model is pinned to it.
+    func testAnOpenCodeSessionPinsEveryAgentToTheSessionsModel() throws {
+        let coordinator = try makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new, tier: .deep)
+
+        let agents = try XCTUnwrap(try openCodeConfig(of: session)["agent"] as? [String: [String: Any]])
+        XCTAssertEqual(Set(agents.keys), Set(AgentDescriptor.openCodeAgents))
+        for (name, settings) in agents {
+            XCTAssertEqual(settings["model"] as? String, "opencode/nemotron-3.5-super-vl-free", "agent \(name)")
+        }
     }
 
     func testAnOpenCodeSessionOnATierRunsOnThatTiersModel() throws {

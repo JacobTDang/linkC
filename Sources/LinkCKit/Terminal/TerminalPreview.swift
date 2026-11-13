@@ -119,10 +119,25 @@ public enum TerminalPreview {
     /// above the box. Without that marker the box ends the scan, because everything above it may
     /// be a finished turn's output.
     public static func liveActivity(from rows: [String], agent: AgentKind) -> String? {
-        // OpenCode's input box has none of the prompt markers the generic scan stops at, so only
-        // a session known to be OpenCode may use its dedicated reader.
-        if agent == .opencode, let turn = OpenCodeScreen.turn(in: rows) { return turn.phrase }
+        // OpenCode's (and Kilo's) input box has none of the prompt markers the generic scan stops
+        // at, so only a session known to be OpenCode or Kilo may use that dedicated reader.
+        if agent == .opencode || agent == .kilo, let turn = OpenCodeScreen.turn(in: rows) {
+            return turn.phrase
+        }
+        // Crush's footer, not its spinner (gone while text streams), says a turn runs.
+        if agent == .crush, let state = CrushScreen.state(in: rows) { return state == .working ? "Working" : nil }
+        if agent == .freebuff { return FreebuffScreen.activity(in: rows) }
+        if FreebuffScreen.looksLikeFreebuff(rows) { return nil }
         return genericLiveActivity(from: rows)
+    }
+
+    /// Kilo's modal permission and provider-connect screens both require the user to choose before
+    /// the terminal can accept another task.
+    public static func isPermissionPrompt(_ rows: [String], agent: AgentKind) -> Bool {
+        guard agent == .kilo else { return false }
+        let text = rows.map(visibleText).joined(separator: "\n")
+        return (text.contains("Permission required") && text.contains("Allow once") && text.contains("Reject"))
+            || text.contains("Connect a provider")
     }
 
     /// The pre-OpenCode reader. Kept separate so the fixture sweep can prove every other agent's
@@ -256,6 +271,7 @@ public enum TerminalPreview {
         guard !text.isEmpty else { return false }
         if isWorkingFooter(text) { return true }
         if OpenCodeScreen.isProgressRow(text) { return true }
+        if CrushScreen.isSpinnerRow(text) { return true }
         if text.contains("esc to interrupt") { return true }
         if hasSpinnerTokenCounter(text) { return true }
         // The same running-spinner shape without a token counter — the thinking-phase row
@@ -270,9 +286,13 @@ public enum TerminalPreview {
     /// unchanged — but any other change, including a percentage, byte count, tally, an ETA
     /// counting down, or a size written with an "m" or "h" suffix, does not.
     public static func progressSignature(rows: [String]) -> String {
+        let isFreebuff = FreebuffScreen.looksLikeFreebuff(rows)
         let kept = rows
             .filter { !isLiveMarkerRow($0) }
-            .map(normalizingElapsedTime)
+            .map { row in
+                let normalized = normalizingElapsedTime(row)
+                return isFreebuff ? bareElapsedFooter.replacingMatches(in: normalized, with: "#") : normalized
+            }
         return String(kept.joined(separator: "\n").hashValue)
     }
 
@@ -283,6 +303,7 @@ public enum TerminalPreview {
     private static let elapsedTime = try! NSRegularExpression(
         pattern: #"(?:(?<=\()|(?<=· ))\d+(\.\d+)?\s?(ms|s|m|h)(\s\d+(\.\d+)?\s?(ms|s|m|h))*\b"#
     )
+    private static let bareElapsedFooter = try! NSRegularExpression(pattern: #"^\s*\d+(?:\.\d+)?s\s*$"#)
 
     /// `row` with each elapsed-time reading replaced by "#".
     static func normalizingElapsedTime(_ row: String) -> String {
