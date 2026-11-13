@@ -7,8 +7,8 @@ import XCTest
 @MainActor
 final class AppCoordinatorCrushTests: XCTestCase {
     nonisolated(unsafe) private var tempDir: URL!
-    private var userConfig: URL { tempDir.appendingPathComponent("user-crush-config") }
-    private var userData: URL { tempDir.appendingPathComponent("user-crush-data") }
+    nonisolated private var userConfig: URL { tempDir.appendingPathComponent("user-crush-config") }
+    nonisolated private var userData: URL { tempDir.appendingPathComponent("user-crush-data") }
     private var sessionsRoot: URL { tempDir.appendingPathComponent("settings/crush-sessions") }
     private let standard = "openrouter/nvidia/nemotron-3.5-super-vl:free"
     private let userConfigText = #"{"providers":{"openrouter":{"api_key":"sk-or-user-key"}},"models":{"large":{"provider":"anthropic","model":"claude-opus-4-5"}}}"#
