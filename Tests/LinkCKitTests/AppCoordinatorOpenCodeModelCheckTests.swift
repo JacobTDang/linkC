@@ -212,7 +212,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
     /// cooldown has lapsed, the same old banner (redrawn over, so the screen is read again) must
     /// not arm a new limit.
     func testAnOldBannerDoesNotRearmALimitWhenTheTaskEndedWhileTheListingRan() async throws {
-        let lister = ModelLister(.models(["opencode/big-pickle"]), held: true)
+        let lister = ModelLister(.models(["opencode/deepseek-v4.1-flash-free"]), held: true)
         let coordinator = makeCoordinator(lister: lister)
         defer { stopAll(coordinator) }
         let (terminal, task, inbox) = try limitedCodexSession(
@@ -250,7 +250,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
     /// Reading a screen again because a listing was pending must not outlast that listing: after the
     /// task ended during it, the unchanged screen is skipped by the scan cache on every later tick.
     func testAnUnchangedScreenIsSkippedAgainAfterTheTaskEndedWhileTheListingRan() async throws {
-        let lister = ModelLister(.models(["opencode/big-pickle"]), held: true)
+        let lister = ModelLister(.models(["opencode/deepseek-v4.1-flash-free"]), held: true)
         let coordinator = makeCoordinator(lister: lister)
         defer { stopAll(coordinator) }
         let (terminal, task, inbox) = try limitedCodexSession(in: coordinator, screen: banner)
@@ -273,7 +273,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
     /// The same when the listing resolves with the task still in flight: the reroute goes ahead, and
     /// the unchanged screen is skipped again afterwards.
     func testAnUnchangedScreenIsSkippedAgainAfterAListingResolvedTheReroute() async throws {
-        let lister = ModelLister(.models(["opencode/big-pickle"]), held: true)
+        let lister = ModelLister(.models(["opencode/deepseek-v4.1-flash-free"]), held: true)
         let coordinator = makeCoordinator(lister: lister)
         defer { stopAll(coordinator) }
         let (terminal, _, inbox) = try limitedCodexSession(in: coordinator, screen: banner)
@@ -299,7 +299,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
     /// is still busy, over and over. A second hold would leave the task and the session where they were.
     func testAHeldRerouteThatReachedItsCapIsNotHeldAgainWhileOpenCodesModelsAreListed() async throws {
         let clock = ControllableClock()
-        let lister = ModelLister(.models(["opencode/big-pickle"]), held: true)
+        let lister = ModelLister(.models(["opencode/deepseek-v4.1-flash-free"]), held: true)
         let coordinator = makeCoordinator(lister: lister, now: clock.now)
         defer { stopAll(coordinator) }
         let (terminal, task, inbox) = try limitedCodexSession(in: coordinator, screen: banner)
@@ -335,7 +335,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
     /// changes nothing the rules read must not arm the limit again.
     func testAnOldBannerDoesNotRearmALimitAfterAHeldRerouteWaitedForTheListing() async throws {
         let clock = ControllableClock()
-        let lister = ModelLister(.models(["opencode/big-pickle"]), held: true)
+        let lister = ModelLister(.models(["opencode/deepseek-v4.1-flash-free"]), held: true)
         let coordinator = makeCoordinator(lister: lister, now: clock.now)
         defer { stopAll(coordinator) }
         let (terminal, _, inbox) = try limitedCodexSession(
@@ -377,7 +377,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
     }
 
     func testAModelOpenCodeDoesNotListLeavesTheTaskWithItsAgentAndSaysSo() async throws {
-        let lister = ModelLister(.models(["opencode/deepseek-v4.1-flash-free"]))
+        let lister = ModelLister(.models(["opencode/big-pickle"]))
         let coordinator = makeCoordinator(lister: lister)
         defer { stopAll(coordinator) }
         let (terminal, task, inbox) = try limitedCodexSession(in: coordinator, screen: banner)
@@ -388,7 +388,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
         XCTAssertTrue(coordinator.checkLimitsAndReroute(for: "S1", screen: screen))
 
         try assertTheTaskStaysAndTheDelegatorIsTold(
-            task, inbox: inbox, reason: "opencode/big-pickle (opencode tier standard) is not among the models OpenCode lists")
+            task, inbox: inbox, reason: "opencode/deepseek-v4.1-flash-free (opencode tier light) is not among the models OpenCode lists")
         XCTAssertEqual(coordinator.store.session(id: "S1")?.state, .error)
         XCTAssertEqual(sink.refusals().count, 1)
     }
@@ -406,7 +406,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
 
         try assertTheTaskStaysAndTheDelegatorIsTold(
             task, inbox: inbox,
-            reason: "could not check opencode tier standard's model opencode/big-pickle against the models OpenCode lists — "
+            reason: "could not check opencode tier light's model opencode/deepseek-v4.1-flash-free against the models OpenCode lists — "
                 + "`opencode models` did not answer within 10.0 seconds")
         XCTAssertEqual(coordinator.store.session(id: "S1")?.state, .error)
     }
@@ -414,7 +414,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
     /// A task on its last hop cannot move whatever OpenCode lists: the hop-exhausted path runs at
     /// once, with no listing to wait for and no OpenCode refusal to report.
     func testATaskOnItsLastHopRunsTheHopExhaustedPathNotTheOpenCodeRefusal() async throws {
-        let lister = ModelLister(.models(["opencode/deepseek-v4.1-flash-free"]))
+        let lister = ModelLister(.models(["opencode/big-pickle"]))
         let coordinator = makeCoordinator(lister: lister)
         defer { stopAll(coordinator) }
         let (terminal, task, inbox) = try limitedCodexSession(in: coordinator, screen: banner, hop: 2)
@@ -617,7 +617,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
     }
 
     func testAMessageForOpenCodeWhoseModelIsNotListedFailsAndItsSenderIsToldOnce() async throws {
-        let lister = ModelLister(.models(["opencode/deepseek-v4.1-flash-free"]))
+        let lister = ModelLister(.models(["opencode/big-pickle"]))
         let coordinator = makeCoordinator(lister: lister)
         defer { stopAll(coordinator) }
         let inbox = try queueLegacyBriefs()
@@ -626,7 +626,7 @@ final class AppCoordinatorOpenCodeModelCheckTests: XCTestCase {
         try await waitForListing(coordinator)
         for _ in 0..<3 { coordinator.dispatchMessages(workspacePath: folder, inboxStore: inbox) }
 
-        let reason = "opencode/big-pickle (opencode tier standard) is not among the models OpenCode lists"
+        let reason = "opencode/deepseek-v4.1-flash-free (opencode tier light) is not among the models OpenCode lists"
         let messages = try inbox.load().messages
         XCTAssertEqual(messages.first { $0.id == "legacy-claude" }?.status, .failed)
         let told = messages.filter { $0.kind == .notice && $0.toAgent == .claude }

@@ -1131,7 +1131,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             id: "legacy-opencode", fromAgent: .claude, toAgent: .opencode,
             prompt: "Old style brief", status: .queued, kind: .task)]
         try inbox.saveRaw(seeded)
-        let coordinator = makeCoordinator(openCodeModels: { _ in ["opencode/deepseek-v4.1-flash-free"] })
+        let coordinator = makeCoordinator(openCodeModels: { _ in ["opencode/big-pickle"] })
         defer { coordinator.shutdown() }
 
         coordinator.processPendingMessages(workspacePath: ws)
@@ -1142,7 +1142,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertTrue(coordinator.store.sessions.isEmpty)
         let failure = try XCTUnwrap(coordinator.lastSpawnFailure)
         XCTAssertEqual(failure.agent, .opencode)
-        XCTAssertTrue(failure.error.contains("opencode/big-pickle"), failure.error)
+        XCTAssertTrue(failure.error.contains("opencode/deepseek-v4.1-flash-free"), failure.error)
         XCTAssertTrue(failure.error.contains("is not among the models OpenCode lists"), failure.error)
     }
 
@@ -1613,7 +1613,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             userHome: tempDir.appendingPathComponent("home"),
             modelSettings: { .seeded },
             modelLists: TestModelLists.none,
-            openCodeModels: { _ in ["opencode/big-pickle"] },
+            openCodeModels: { _ in ["opencode/deepseek-v4.1-flash-free"] },
             isWatching: { _ in false }
         )
         defer { coordinator.shutdown() }
@@ -1634,7 +1634,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertFalse(coordinator.checkLimitsAndReroute(for: claudeSession.id, screen: limitScreen), "the listing starts off the main actor")
         let checked = try await waitUntil { coordinator.openCodeModelCheckCount > 0 }
         XCTAssertTrue(checked)
-        XCTAssertEqual(coordinator.openCodeModelAvailability(in: ws, tier: .standard), .available)
+        XCTAssertEqual(coordinator.openCodeModelAvailability(in: ws, tier: .light), .available)
         XCTAssertTrue(coordinator.checkLimitsAndReroute(for: claudeSession.id, screen: limitScreen))
         let copy = try XCTUnwrap(inbox.load().tasks.first { $0.hop == 1 })
         XCTAssertEqual(copy.toAgent, .opencode)

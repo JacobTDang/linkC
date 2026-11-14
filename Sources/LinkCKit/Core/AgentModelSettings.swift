@@ -70,7 +70,8 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             AgentKind.codex.rawValue: ModelTier.standard.rawValue,
             AgentKind.agy.rawValue: ModelTier.standard.rawValue,
             AgentKind.grok.rawValue: ModelTier.standard.rawValue,
-            AgentKind.opencode.rawValue: ModelTier.standard.rawValue,
+            // OpenCode opens on Light: DeepSeek V4.1 Flash.
+            AgentKind.opencode.rawValue: ModelTier.light.rawValue,
             AgentKind.kilo.rawValue: ModelTier.standard.rawValue,
             AgentKind.crush.rawValue: ModelTier.standard.rawValue
         ]

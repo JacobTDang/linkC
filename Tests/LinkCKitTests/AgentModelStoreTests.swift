@@ -163,12 +163,12 @@ final class AgentModelStoreTests: XCTestCase {
         XCTAssertEqual(settings.defaultTier(for: .grok), .light)
     }
 
-    func testOpenCodeIsSeededOnFreeModelsWithStandardAsItsDefault() {
+    func testOpenCodeIsSeededOnFreeModelsWithDeepSeekAsItsDefault() {
         let seeded = AgentModelSettings.seeded
         XCTAssertEqual(seeded.model(for: .opencode, tier: .light), "opencode/deepseek-v4.1-flash-free")
         XCTAssertEqual(seeded.model(for: .opencode, tier: .standard), "opencode/big-pickle")
         XCTAssertEqual(seeded.model(for: .opencode, tier: .deep), "opencode/nemotron-3.5-super-vl-free")
-        XCTAssertEqual(seeded.defaultTier(for: .opencode), .standard)
+        XCTAssertEqual(seeded.defaultTier(for: .opencode), .light)
     }
 
     /// A models.json saved before OpenCode existed names no OpenCode tiers. Loading it must still
@@ -183,7 +183,7 @@ final class AgentModelStoreTests: XCTestCase {
 
         let settings = store.load()
         XCTAssertEqual(settings.model(for: .opencode, tier: .standard), "opencode/big-pickle")
-        XCTAssertEqual(settings.defaultTier(for: .opencode), .standard)
+        XCTAssertEqual(settings.defaultTier(for: .opencode), .light)
     }
 
     func testKiloIsSeededOnFreeModelsWithStandardAsItsDefault() {
