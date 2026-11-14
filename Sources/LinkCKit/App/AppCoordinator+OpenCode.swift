@@ -20,7 +20,8 @@ extension AppCoordinator {
     struct OpenCodeConversationChoice: Equatable {
         /// The id passed to `--session`.
         let id: String
-        /// The free model the reopened conversation last ran on; nil when the conversation is new.
+        /// The model the reopened conversation last ran on, which is the default tier's; nil when the
+        /// conversation is new.
         let model: String?
         /// Why the user gets a new conversation instead of an earlier one; nil when they do not.
         let notice: String?
@@ -28,9 +29,10 @@ extension AppCoordinator {
 
     /// The conversation an OpenCode launch opens. A new session gets a new conversation, named by
     /// linkC. A continue or a restore reopens `conversationId`, or without one the folder's newest
-    /// conversation that no session or card holds, but only when that conversation last ran on a
-    /// free model: OpenCode reopens a conversation on its own model, ahead of linkC's pin. Throws
-    /// when OpenCode cannot say which conversations the folder has or which model one ran on.
+    /// conversation that no session or card holds, but only when that conversation last ran on the
+    /// default tier's model: OpenCode reopens a conversation on its own model, ahead of linkC's pin.
+    /// Throws when OpenCode cannot say which conversations the folder has or which model one ran on,
+    /// or when the default tier has no model.
     func openCodeConversation(mode: LaunchMode, conversationId: String?, cwd: String) throws -> OpenCodeConversationChoice {
         guard mode != .new else {
             return OpenCodeConversationChoice(id: OpenCodeConversations.newId(), model: nil, notice: nil)
@@ -51,10 +53,14 @@ extension AppCoordinator {
         guard let model = try openCodeConversations.model(candidate, cwd) else {
             return OpenCodeConversationChoice(id: candidate, model: nil, notice: nil)
         }
-        guard OpenCodeFreeModels.isFree(model) else {
+        let tier = defaultTier(for: .opencode)
+        guard let defaultModel = resolvedModel(for: .opencode, tier: tier) else {
+            throw LinkCError.process("no model configured for opencode tier \(tier.rawValue) — set it in linkC settings")
+        }
+        guard model == defaultModel else {
             return OpenCodeConversationChoice(
                 id: OpenCodeConversations.newId(), model: nil,
-                notice: "its last conversation ran on \(model), which is not free, so OpenCode started a new one.")
+                notice: "its last conversation ran on \(model), not the default \(defaultModel), so OpenCode started a new one.")
         }
         return OpenCodeConversationChoice(id: candidate, model: model, notice: nil)
     }

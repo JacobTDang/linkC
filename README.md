@@ -136,9 +136,10 @@ linkC reads each agent's models from its own CLI (`agy models`, `cursor-agent mo
 no list command, use a short list of checked ids. Each tier in **Settings > Models** picks from that
 list, or takes a typed id under "Other…". OpenCode is limited to its free models: `-free` models,
 Big Pickle and local Ollama models; any other OpenCode model is refused wherever it is set or
-launched. OpenCode's Continue and restore reopen the session's own conversation (or, for Continue,
-the folder's newest one no session has open) only if it last ran on a free model; otherwise they
-start a new conversation on the free default model and say why. Kilo and Crush follow the same free-only rule with their own free models,
+launched. OpenCode's default tier is Light (DeepSeek V4.1 Flash). OpenCode's Continue and restore
+reopen the session's own conversation (or, for Continue, the folder's newest one no session has
+open) only if it last ran on the default tier's model; otherwise they start a new conversation on
+that model and say why. Kilo and Crush follow the same free-only rule with their own free models,
 and linkC pins each of their sessions to the chosen free model, so a model picked earlier in the
 CLI itself cannot take over. Freebuff is for long-running work only (deep research, large
 implementations, reverse engineering), since a short session costs the same as a long one: linkC

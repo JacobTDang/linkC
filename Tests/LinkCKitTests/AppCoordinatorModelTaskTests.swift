@@ -529,7 +529,7 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
     /// non-free model there is refused too.
     func testLaunchRefusesAPersistedNonFreeOpenCodeTierModel() throws {
         var settings = AgentModelSettings.seeded
-        settings.setModel("opencode/claude-sonnet-5", for: .opencode, tier: .standard)
+        settings.setModel("opencode/claude-sonnet-5", for: .opencode, tier: .light)
         let coordinator = makeCoordinator(models: settings)
         defer { coordinator.shutdown() }
 
@@ -537,7 +537,7 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
             XCTAssertTrue(String(describing: error).contains("opencode/claude-sonnet-5 is not a free OpenCode model"),
                           String(describing: error))
         }
-        XCTAssertThrowsError(try coordinator.spawnTeammate(in: tempDir.path, agent: .opencode, tier: .standard,
+        XCTAssertThrowsError(try coordinator.spawnTeammate(in: tempDir.path, agent: .opencode, tier: .light,
                                                            asWorker: true))
         XCTAssertTrue(coordinator.store.sessions.isEmpty)
     }

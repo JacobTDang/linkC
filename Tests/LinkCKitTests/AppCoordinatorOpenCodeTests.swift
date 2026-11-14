@@ -96,11 +96,11 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new)
 
         XCTAssertEqual(session.agentKind, .opencode)
-        XCTAssertEqual(session.model, "opencode/big-pickle")
+        XCTAssertEqual(session.model, "opencode/deepseek-v4.1-flash-free")
         XCTAssertNil(session.modelTier, "a tier the user never asked for must not make their session a task carrier")
         XCTAssertEqual(launchedLines("argv", of: session, count: 4), ["--standalone", "--auto", "--session", try XCTUnwrap(session.claudeSessionId)],
                        "no --model: OpenCode 2.2.5 refuses it")
-        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/big-pickle")
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode/deepseek-v4.1-flash-free")
     }
 
     /// A user-global `agent.build.model` beats the inline top-level `model` in OpenCode's TUI, so every
@@ -142,12 +142,12 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
 
     func testAnOpenCodeSessionWithNoModelForItsTierIsRefused() throws {
         var models = AgentModelSettings.seeded
-        models.setModel("", for: .opencode, tier: .standard)
+        models.setModel("", for: .opencode, tier: .light)
         let coordinator = try makeCoordinator(models: models)
         defer { coordinator.shutdown() }
 
         XCTAssertThrowsError(try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new)) { error in
-            XCTAssertTrue(String(describing: error).contains("no model configured for opencode tier standard — set it in linkC settings"),
+            XCTAssertTrue(String(describing: error).contains("no model configured for opencode tier light — set it in linkC settings"),
                           String(describing: error))
         }
         XCTAssertTrue(coordinator.store.sessions.isEmpty, "a refused launch leaves no session behind")
@@ -194,7 +194,8 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         }
     }
 
-    private let freeModel = "opencode/deepseek-v4.1-flash-free"
+    /// The model of OpenCode's default tier in the seeded settings.
+    private let defaultModel = "opencode/deepseek-v4.1-flash-free"
 
     /// The manifest of a linkC that quit with an OpenCode session live in `tempDir`.
     private func seedOpenCodeEntry(id: String = "OC1", conversation: String? = nil, worker: Bool = false) {
@@ -233,10 +234,10 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         XCTAssertEqual(entry?.claudeSessionId, id, "the manifest keeps the id for the next restore")
     }
 
-    func testARelaunchReopensTheSessionsOwnConversationOnItsFreeModel() throws {
+    func testARelaunchReopensTheSessionsOwnConversationOnTheDefaultModel() throws {
         seedOpenCodeEntry(conversation: "ses_linkcmine")
         let fake = FakeConversations()
-        fake.models = ["ses_linkcmine": freeModel]
+        fake.models = ["ses_linkcmine": defaultModel]
         let sink = RecordingSink()
         let coordinator = try makeCoordinator(sink: sink, conversations: fake.reader)
         defer { coordinator.shutdown() }
@@ -246,16 +247,16 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         let session = try XCTUnwrap(coordinator.store.session(id: "OC1"))
         XCTAssertEqual(openedConversation(session), "ses_linkcmine")
         XCTAssertEqual(session.claudeSessionId, "ses_linkcmine")
-        XCTAssertEqual(session.model, freeModel, "the conversation keeps its own model")
+        XCTAssertEqual(session.model, defaultModel, "the conversation keeps its own model")
         XCTAssertNil(session.modelTier)
-        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, freeModel)
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, defaultModel)
         XCTAssertEqual(fake.asked, ["export ses_linkcmine"])
         XCTAssertEqual(newConversationNotices(sink), [])
     }
 
     func testRestoringAnOpenCodeCardReopensItsConversation() throws {
         let fake = FakeConversations()
-        fake.models = ["ses_linkcmine": freeModel]
+        fake.models = ["ses_linkcmine": defaultModel]
         let coordinator = try makeCoordinator(conversations: fake.reader)
         defer { coordinator.shutdown() }
 
@@ -265,8 +266,8 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         XCTAssertTrue(coordinator.restorables.isEmpty)
     }
 
-    /// OpenCode would reopen a conversation on the model it last ran on, ahead of linkC's pin. One the
-    /// user moved to a paid model is therefore not reopened, and the user is told why.
+    /// OpenCode would reopen a conversation on the model it last ran on, ahead of linkC's pin. One that
+    /// ran on any model but the default is therefore not reopened, and the user is told why.
     func testAConversationOnAPaidModelIsNotReopened() throws {
         seedOpenCodeEntry(conversation: "ses_linkcpaid")
         let fake = FakeConversations()
@@ -282,9 +283,66 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         XCTAssertNotEqual(id, "ses_linkcpaid")
         XCTAssertTrue(id.hasPrefix("ses_linkc"), id)
         XCTAssertEqual(openedConversation(session), id)
-        XCTAssertEqual(session.model, "opencode/big-pickle")
+        XCTAssertEqual(session.model, defaultModel)
         XCTAssertEqual(newConversationNotices(sink),
-                       ["proj: its last conversation ran on anthropic/claude-opus-4, which is not free, so OpenCode started a new one."])
+                       ["proj: its last conversation ran on anthropic/claude-opus-4, not the default opencode/deepseek-v4.1-flash-free, so OpenCode started a new one."])
+    }
+
+    func testAConversationOnAnotherFreeModelIsNotReopened() throws {
+        seedOpenCodeEntry(conversation: "ses_linkcpickle")
+        let fake = FakeConversations()
+        fake.models = ["ses_linkcpickle": "opencode/big-pickle"]
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink, conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        coordinator.restoreActiveSessions()
+
+        let session = try XCTUnwrap(coordinator.store.session(id: "OC1"))
+        let id = try XCTUnwrap(session.claudeSessionId)
+        XCTAssertNotEqual(id, "ses_linkcpickle")
+        XCTAssertEqual(openedConversation(session), id)
+        XCTAssertEqual(session.model, defaultModel)
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, defaultModel)
+        XCTAssertEqual(newConversationNotices(sink),
+                       ["proj: its last conversation ran on opencode/big-pickle, not the default opencode/deepseek-v4.1-flash-free, so OpenCode started a new one."])
+    }
+
+    /// The default is the one in Settings > Models, not a fixed model.
+    func testAConversationOnTheDefaultTheUserChoseIsReopened() throws {
+        seedOpenCodeEntry(conversation: "ses_linkcpickle")
+        var models = AgentModelSettings.seeded
+        models.setDefaultTier(.standard, for: .opencode)
+        let fake = FakeConversations()
+        fake.models = ["ses_linkcpickle": "opencode/big-pickle"]
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(models: models, sink: sink, conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        coordinator.restoreActiveSessions()
+
+        let session = try XCTUnwrap(coordinator.store.session(id: "OC1"))
+        XCTAssertEqual(openedConversation(session), "ses_linkcpickle")
+        XCTAssertEqual(session.model, "opencode/big-pickle")
+        XCTAssertEqual(newConversationNotices(sink), [])
+    }
+
+    /// Continue does not reach past the folder's newest conversation for an older one on the default.
+    func testContinuingWhenTheNewestConversationIsOnAnotherModelStartsANewOne() throws {
+        let fake = FakeConversations()
+        fake.newestFirst = ["ses_new", "ses_old"]
+        fake.models = ["ses_new": "opencode/big-pickle", "ses_old": defaultModel]
+        let sink = RecordingSink()
+        let coordinator = try makeCoordinator(sink: sink, conversations: fake.reader)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .continueLast)
+
+        let id = try XCTUnwrap(session.claudeSessionId)
+        XCTAssertFalse(["ses_new", "ses_old"].contains(id), id)
+        XCTAssertEqual(openedConversation(session), id)
+        XCTAssertEqual(session.model, defaultModel)
+        XCTAssertEqual(newConversationNotices(sink).count, 1)
     }
 
     /// A conversation that never got a message is not saved yet; OpenCode creates it under the same id.
@@ -298,7 +356,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
 
         let session = try XCTUnwrap(coordinator.store.session(id: "OC1"))
         XCTAssertEqual(openedConversation(session), "ses_linkcempty")
-        XCTAssertEqual(session.model, "opencode/big-pickle")
+        XCTAssertEqual(session.model, defaultModel)
         XCTAssertEqual(newConversationNotices(sink), [])
     }
 
@@ -333,7 +391,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
     /// Two sessions never share a conversation.
     func testRestoringACardWhoseConversationIsAlreadyOpenIsRefused() throws {
         let fake = FakeConversations()
-        fake.models = ["ses_linkcmine": freeModel]
+        fake.models = ["ses_linkcmine": defaultModel]
         let coordinator = try makeCoordinator(conversations: fake.reader)
         defer { coordinator.shutdown() }
         _ = try coordinator.restore(card(conversation: "ses_linkcmine"))
@@ -347,7 +405,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         seedOpenCodeEntry()
         let fake = FakeConversations()
         fake.newestFirst = ["ses_new", "ses_old"]
-        fake.models = ["ses_new": freeModel, "ses_old": freeModel]
+        fake.models = ["ses_new": defaultModel, "ses_old": defaultModel]
         let coordinator = try makeCoordinator(conversations: fake.reader)
         defer { coordinator.shutdown() }
 
@@ -364,7 +422,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         seedOpenCodeEntry(id: "NEW", conversation: "ses_new")
         let fake = FakeConversations()
         fake.newestFirst = ["ses_new", "ses_old"]
-        fake.models = ["ses_new": freeModel, "ses_old": freeModel]
+        fake.models = ["ses_new": defaultModel, "ses_old": defaultModel]
         let coordinator = try makeCoordinator(conversations: fake.reader)
         defer { coordinator.shutdown() }
 
@@ -378,7 +436,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
     func testContinuingSkipsAConversationAlreadyOpen() throws {
         let fake = FakeConversations()
         fake.newestFirst = ["ses_new", "ses_old"]
-        fake.models = ["ses_new": freeModel, "ses_old": freeModel]
+        fake.models = ["ses_new": defaultModel, "ses_old": defaultModel]
         let coordinator = try makeCoordinator(conversations: fake.reader)
         defer { coordinator.shutdown() }
 
@@ -393,7 +451,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
     func testResumingOpenCodeContinuesTheFoldersNewest() throws {
         let fake = FakeConversations()
         fake.newestFirst = ["ses_new"]
-        fake.models = ["ses_new": freeModel]
+        fake.models = ["ses_new": defaultModel]
         let coordinator = try makeCoordinator(conversations: fake.reader)
         defer { coordinator.shutdown() }
 
@@ -412,7 +470,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         let id = try XCTUnwrap(session.claudeSessionId)
         XCTAssertTrue(id.hasPrefix("ses_linkc"), id)
         XCTAssertEqual(openedConversation(session), id)
-        XCTAssertEqual(session.model, "opencode/big-pickle")
+        XCTAssertEqual(session.model, defaultModel)
         XCTAssertEqual(newConversationNotices(sink),
                        ["\(tempDir.lastPathComponent): OpenCode has no earlier conversation here, so it started a new one."])
     }
@@ -422,7 +480,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
     func testARestoreWhoseDefaultModelIsNotFreeStaysUnderEarlier() throws {
         seedOpenCodeEntry()
         var models = AgentModelSettings.seeded
-        models.setModel("anthropic/claude-opus-4", for: .opencode, tier: .standard)
+        models.setModel("anthropic/claude-opus-4", for: .opencode, tier: .light)
         let fake = FakeConversations()
         let coordinator = try makeCoordinator(models: models, conversations: fake.reader)
         defer { coordinator.shutdown() }
