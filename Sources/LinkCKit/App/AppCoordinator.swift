@@ -108,6 +108,9 @@ public final class AppCoordinator {
     let openCodeModels: OpenCodeModelLister
     /// Same role as `openCodeModels`, for Kilo's free-model listing.
     let kiloModels: OpenCodeModelLister
+    /// Asks OpenCode which conversations a folder has and which model each last ran on, before a
+    /// continue or a restore reopens one. Only the production initializer asks the real `opencode`.
+    let openCodeConversations: OpenCodeConversationReader
     private struct OpenCodeModelListing {
         enum ListingResult {
             case success([String])
@@ -371,6 +374,7 @@ public final class AppCoordinator {
                 try MCPServer.listKiloModels(in: folder, timeout: AppCoordinator.openCodeModelListingTimeout)
             }.value
         },
+        openCodeConversations: OpenCodeConversationReader = .unavailable,
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         self.terminals = terminals
@@ -405,6 +409,7 @@ public final class AppCoordinator {
         self.openRequests = openRequests
         self.openCodeModels = openCodeModels
         self.kiloModels = kiloModels
+        self.openCodeConversations = openCodeConversations
         self.isWatching = isWatching
         self.statusLines = StatusLineFeed(
             directory: settingsDir.appendingPathComponent("status-lines", isDirectory: true),
@@ -540,6 +545,7 @@ public final class AppCoordinator {
             knownProjectsFile: .applicationSupport,
             sidebarProjects: sidebarProjects,
             openRequests: .applicationSupport,
+            openCodeConversations: .live(timeout: AppCoordinator.openCodeModelListingTimeout),
             isWatching: isWatching
         )
     }
@@ -1131,18 +1137,24 @@ public final class AppCoordinator {
         guard (tier == nil && model == nil) || mode == .new else {
             throw LinkCError.process("a tier can only pin a new session; \(mode) reuses an existing session's model")
         }
-        // OpenCode, Kilo and Crush never resume a conversation: their own would keep whatever model
-        // they last ran on, which linkC cannot see and which may not be free. Continue, Resume and a
-        // restore all open a new conversation in the folder, on the default tier's model.
-        let neverResumes = agent == .opencode || agent == .kilo || agent == .crush
+        // Kilo and Crush never resume a conversation: their own would keep whatever model they last
+        // ran on, which linkC cannot see and which may not be free. Continue, Resume and a restore
+        // all open a new conversation in the folder, on the default tier's model. OpenCode reopens
+        // a conversation only after asking which model it ran on (`openCodeConversation`).
+        let neverResumes = agent == .kilo || agent == .crush
         let opensFresh = neverResumes && mode != .new
-        let mode: LaunchMode = neverResumes ? .new : mode
+        let openCode = agent == .opencode ? try openCodeConversation(mode: mode, conversationId: resumeId, cwd: cwd) : nil
+        let mode: LaunchMode = neverResumes || openCode != nil ? .new : mode
         let resolved: (model: String?, tier: ModelTier?)
         if let model {
             resolved = (model, nil)
+        } else if let reopened = openCode?.model {
+            resolved = (reopened, nil)
         } else {
             resolved = try launchModel(for: agent, tier: tier, mode: mode)
         }
+        // The agent's own conversation id: Claude's to resume, or the OpenCode conversation opened.
+        let conversationId = openCode?.id ?? resumeId
         let model = resolved.model
         let modelTier = resolved.tier
         // OpenCode and Kilo run free models only, whichever way the model was chosen: the New menu,
@@ -1158,7 +1170,7 @@ public final class AppCoordinator {
         }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
                                    model: model, modelTier: modelTier,
-                                   claudeSessionId: resumeId, isWorker: asWorker)
+                                   claudeSessionId: conversationId, isWorker: asWorker)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent, select: false)
             // A terminated child = an ended session: prune everything when the child exits.
@@ -1250,6 +1262,7 @@ public final class AppCoordinator {
                 executable = resolved
                 args = AgentDescriptor.arguments(for: agent, mode: mode, sessionId: session.id)
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (openCode.map { OpenCodeConversations.launchArguments(conversationId: $0.id) } ?? [])
             }
 
             try terminal.start(
@@ -1258,15 +1271,17 @@ public final class AppCoordinator {
                 env: env
             )
             if select { terminals.select(session.id) }
+            if let notice = openCode?.notice {
+                tellOpenCodeStartedFresh(title: title, folder: cwd, reason: notice)
+            }
             if opensFresh {
-                if agent == .opencode { tellOpenCodeStartedFresh(title: title, folder: cwd) }
                 if agent == .kilo { tellKiloStartedFresh(title: title, folder: cwd) }
                 if agent == .crush { tellCrushStartedFresh(title: title, folder: cwd) }
             }
             // Record the now-live session so it survives a quit/crash and can be restored.
             manifest.upsert(RestorableSession(
                 linkcId: session.id,
-                claudeSessionId: resumeId,
+                claudeSessionId: conversationId,
                 cwd: cwd,
                 title: title,
                 agentKind: agent,
@@ -1348,7 +1363,7 @@ public final class AppCoordinator {
                         title: r.title,
                         agent: r.agentKind,
                         mode: .continueLast,
-                        resumeId: r.agentKind == .claude ? r.claudeSessionId : nil,
+                        resumeId: RelaunchPlan.conversationToReopen(r, as: r.agentKind),
                         id: r.linkcId,
                         asWorker: r.isWorker,
                         select: !r.isWorker
@@ -1384,27 +1399,27 @@ public final class AppCoordinator {
         return holding
     }
 
-    /// Resume a previous session as a fresh live one. Uses `claude --resume <id>` when the claude
-    /// conversation id was captured, else `--continue` in the folder. On success the old
-    /// restorable is consumed (the new live session carries its own fresh manifest entry).
-    /// If `as: agent` is provided, overrides the session's recorded agent kind.
+    /// Resume a previous session as a fresh live one. Uses `claude --resume <id>` or
+    /// `opencode --session <id>` when the conversation id is known, else the agent's own continue in
+    /// the folder. On success the old restorable is consumed (the new live session carries its own
+    /// fresh manifest entry). If `as: agent` is provided, overrides the session's recorded agent kind.
     @discardableResult
     public func restore(_ r: RestorableSession, as agent: AgentKind? = nil) throws -> Session {
         let targetAgent = agent ?? r.agentKind
-        // Two live sessions must never land on one conversation. A Claude entry with a captured
-        // id resumes exactly that id; anything else — a Claude entry with no id, or any other
-        // agent — falls back to `--continue`/`resume --last`, which attaches to the folder's MOST
-        // RECENT conversation for that agent. Refuse whichever way this entry would collide with
-        // a session already live (including one restored moments ago in the same Restore-all
-        // pass, or one a relaunch already brought back onto this entry's id/folder); the card
-        // stays and the user can restore it individually later. OpenCode, Kilo and Crush never resume —
-        // they open a new conversation — so they collide with nothing.
-        let resumesById = targetAgent == .claude && !(r.claudeSessionId ?? "").isEmpty
+        // Two live sessions must never land on one conversation. An entry with a known conversation
+        // id reopens exactly that one. Without one, Claude, Codex, agy, Cursor, Grok and Freebuff
+        // continue the folder's MOST RECENT conversation for their agent. Refuse whichever way this
+        // entry would collide with a session already live (including one restored moments ago in the
+        // same Restore-all pass, or one a relaunch already brought back onto this entry's id/folder);
+        // the card stays and the user can restore it individually later. Without an id, OpenCode
+        // continues the newest conversation no session has open, and Kilo and Crush open a new one,
+        // so they collide with nothing.
+        let conversationId = RelaunchPlan.conversationToReopen(r, as: targetAgent)
         let folder = ProjectPath.canonical(r.cwd)
-        if targetAgent != .opencode, targetAgent != .kilo, targetAgent != .crush, store.sessions.contains(where: { live in
-            resumesById
-                ? live.claudeSessionId == r.claudeSessionId
-                : live.agentKind == targetAgent && live.cwd == folder
+        let findsItsOwn: Set<AgentKind> = [.opencode, .kilo, .crush]
+        if store.sessions.contains(where: { live in
+            if let conversationId { return live.claudeSessionId == conversationId }
+            return !findsItsOwn.contains(targetAgent) && live.agentKind == targetAgent && live.cwd == folder
         }) {
             throw LinkCError.process(
                 "a \(targetAgent.displayName) conversation is already open in \(r.title) — restore this one after it ends, or dismiss it"
@@ -1415,7 +1430,7 @@ public final class AppCoordinator {
             title: r.title,
             agent: targetAgent,
             mode: .continueLast,
-            resumeId: targetAgent == .claude ? r.claudeSessionId : nil,
+            resumeId: conversationId,
             select: true
         )
         manifest.remove(linkcId: r.linkcId)

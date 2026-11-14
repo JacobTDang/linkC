@@ -8,8 +8,10 @@ import Observation
 public struct RestorableSession: Codable, Equatable, Identifiable, Sendable {
     /// linkC's own session id (the `LINKC_SESSION` value). Stable across the session's life.
     public let linkcId: String
-    /// claude's real conversation id, once a hook event has bound it. `nil` → fall back to
-    /// `claude --continue` in the folder rather than `--resume <id>`.
+    /// The agent's own conversation id: claude's, once a hook event has bound it, or the OpenCode
+    /// conversation linkC opened. `nil` → fall back to continuing in the folder rather than
+    /// reopening by id (`RelaunchPlan.conversationToReopen`). The key keeps its old name, so a
+    /// manifest written before OpenCode used it still reads.
     public var claudeSessionId: String?
     public let cwd: String
     public let title: String

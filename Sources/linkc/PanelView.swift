@@ -296,6 +296,7 @@ struct LauncherMenu: View {
                 Button("Grok") { model.newSession(agent: .grok, mode: .continueLast) }
                 Button("Freebuff") { model.newSession(agent: .freebuff, mode: .continueLast) }
                 Button("Kilo") { model.newSession(agent: .kilo, mode: .continueLast) }
+                Button("OpenCode") { model.newSession(agent: .opencode, mode: .continueLast) }
                 Button("Codex") { model.newSession(agent: .codex, mode: .continueLast) }
             }
             Menu("Resume…") {

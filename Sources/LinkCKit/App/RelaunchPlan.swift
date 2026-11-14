@@ -4,12 +4,13 @@ import Foundation
 /// Earlier, or drop it. Pure — every input is a value — so each rule is tested without launching
 /// anything.
 ///
-/// Two sessions must never land on one conversation. A Claude entry with an id resumes exactly
-/// that conversation; every other entry but OpenCode's and Crush's can only continue its folder's
-/// newest conversation for its agent, so at most one per folder and agent may. An OpenCode or Crush
-/// entry opens a new conversation, so every one comes back. Whenever entries compete, the user's own
-/// session wins over a worker; among the user's (or, with none, among workers) the last in
-/// manifest order wins, since it was launched most recently.
+/// Two sessions must never land on one conversation. A Claude or OpenCode entry with an id reopens
+/// exactly that conversation. An OpenCode entry without one continues the folder's newest
+/// conversation that no session has open, and a Kilo or Crush entry opens a new one, so every one of
+/// those comes back. Every other entry can only continue its folder's newest conversation for its
+/// agent, so at most one per folder and agent may. Whenever entries compete, the user's own session
+/// wins over a worker; among the user's (or, with none, among workers) the last in manifest order
+/// wins, since it was launched most recently.
 public struct RelaunchPlan: Equatable, Sendable {
     /// Entries to launch again, in manifest order.
     public let relaunch: [String]
@@ -80,14 +81,26 @@ public struct RelaunchPlan: Equatable, Sendable {
     }
 
     private static func resumesClaudeById(_ entry: RestorableSession) -> Bool {
-        entry.agentKind == .claude && !(entry.claudeSessionId ?? "").isEmpty
+        entry.agentKind == .claude && conversationToReopen(entry, as: .claude) != nil
     }
 
-    /// Two entries with the same key would open the same conversation. OpenCode, Kilo and Crush never
-    /// resume one: each entry opens its own new conversation, so its key is its own.
+    /// The agents whose conversation linkC reopens by its id.
+    static let reopensById: Set<AgentKind> = [.claude, .opencode]
+
+    /// The conversation `entry` reopens when it comes back as `agent`: its recorded id, for Claude
+    /// and OpenCode. Nil when it has none, or comes back as another agent, to whom the id means nothing.
+    public static func conversationToReopen(_ entry: RestorableSession, as agent: AgentKind) -> String? {
+        guard agent == entry.agentKind, reopensById.contains(agent),
+              let id = entry.claudeSessionId, !id.isEmpty else { return nil }
+        return id
+    }
+
+    /// Two entries with the same key would open the same conversation. Without an id, an OpenCode
+    /// entry continues a conversation no session has open, and a Kilo or Crush entry opens a new
+    /// one, so its key is its own.
     private static func contestKey(_ entry: RestorableSession) -> String {
-        if resumesClaudeById(entry), let id = entry.claudeSessionId {
-            return "id|\(id)"
+        if let id = conversationToReopen(entry, as: entry.agentKind) {
+            return "id|\(entry.agentKind.rawValue)|\(id)"
         }
         if entry.agentKind == .opencode || entry.agentKind == .kilo || entry.agentKind == .crush {
             return "new|\(entry.linkcId)"
