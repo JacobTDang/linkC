@@ -1052,11 +1052,42 @@ public final class AppCoordinator {
                           asWorker: asWorker, select: select)
     }
 
+    /// Resolves an OpenCode model id to prefer Go's free pool if Go is connected:
+    /// an `opencode/<name>` model resolves to `opencode-go/<name>` if that exact id is listed and free.
+    /// A tier set to an `opencode-go/*` model is used as is.
+    func resolveOpenCodeGoModel(_ model: String, logSubstitution: Bool = false) -> String {
+        guard model.hasPrefix("opencode/") else { return model }
+        let name = String(model.dropFirst("opencode/".count))
+        let candidate = "opencode-go/\(name)"
+
+        let openCodeList: [ListedModel]
+        if let models = (try? modelLists())?[.opencode]?.models, !models.isEmpty {
+            openCodeList = models
+        } else if let inMemory = modelListRefresher?.lists[.opencode]?.models, !inMemory.isEmpty {
+            openCodeList = inMemory
+        } else {
+            return model
+        }
+
+        let hasGoModels = openCodeList.contains { $0.id.hasPrefix("opencode-go/") }
+        guard hasGoModels else { return model }
+
+        let isListed = openCodeList.contains { $0.id == candidate }
+        guard isListed && OpenCodeFreeModels.isFree(candidate) else { return model }
+
+        if logSubstitution {
+            NSLog("[linkC] preferring OpenCode Go free model: substituted %@ with %@", model, candidate)
+        }
+        return candidate
+    }
+
     /// The model configured for `agent` at `tier`, or nil when the mapping has no entry — a
     /// missing or emptied model, not a substitute. Shared by `launch` (which then leaves the
     /// session unpinned) and the relay's dispatch (which refuses to spawn at all).
     func resolvedModel(for agent: AgentKind, tier: ModelTier) -> String? {
-        modelSettings().model(for: agent, tier: tier)
+        guard let base = modelSettings().model(for: agent, tier: tier) else { return nil }
+        guard agent == .opencode else { return base }
+        return resolveOpenCodeGoModel(base, logSubstitution: false)
     }
 
     /// The tier `model` belongs to for `agent`, or nil when nothing maps to it — used to
@@ -1322,9 +1353,10 @@ public final class AppCoordinator {
         }
         let settings = modelSettings()
         let launchTier = tier ?? settings.defaultTier(for: agent)
-        guard let model = settings.model(for: agent, tier: launchTier) else {
+        guard let baseModel = settings.model(for: agent, tier: launchTier) else {
             throw LinkCError.process("no model configured for \(agent.rawValue) tier \(launchTier.rawValue) — set it in linkC settings")
         }
+        let model = agent == .opencode ? resolveOpenCodeGoModel(baseModel, logSubstitution: true) : baseModel
         return (model, tier)
     }
 
