@@ -396,7 +396,7 @@ public final class AppCoordinator {
         self.verifier = verifier
         self.modelSettings = modelSettings
         self.modelLists = modelLists
-        self.modelListRefresher = modelListRefresher
+        self.modelListRefresher = modelListRefresher ?? ModelListRefresher(authRunner: ModelListRefresher.liveAuthRunner)
         self.usageReaders = usageReaders
         self.injectionGap = injectionGap
         self.deliverySettle = deliverySettle

@@ -129,14 +129,21 @@ public enum ModelListParser {
     }
 }
 
-/// OpenCode's free-only rule: `opencode/*-free`, `opencode/big-pickle`, and `ollama/*`.
+/// OpenCode's free-only rule: an id ending in `-free` under any provider (`opencode/`, `opencode-go/`, …),
+/// `opencode/big-pickle`, or a local `ollama/*` model. Everything else is refused.
 public enum OpenCodeFreeModels {
     public static func isFree(_ id: String) -> Bool {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         if trimmed.hasPrefix("ollama/") { return true }
         if trimmed == "opencode/big-pickle" { return true }
-        if trimmed.hasPrefix("opencode/"), trimmed.hasSuffix("-free") { return true }
+        if trimmed.hasSuffix("-free") {
+            if let slashIndex = trimmed.firstIndex(of: "/"),
+               slashIndex > trimmed.startIndex,
+               trimmed.endIndex > trimmed.index(after: slashIndex) {
+                return true
+            }
+        }
         return false
     }
 }
