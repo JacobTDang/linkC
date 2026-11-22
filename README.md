@@ -132,11 +132,20 @@ agent's list. A verified task also carries a test command: linkC runs it itself,
 counts as done if the tests fail before it and pass after.
 
 linkC reads each agent's models from its own CLI (`agy models`, `cursor-agent models`,
-`opencode models`, `kilo models`, `crush models`) at launch, every 6 hours and when Settings opens. Claude and Codex, which have
+`opencode models`, `kilo models`, `crush models`) at launch, every 6 hours, when Settings opens and
+when you press Refresh under **Settings > Models**. OpenCode is listed again when the integrations
+`opencode auth list` shows change (checked every 5 minutes), so connecting OpenCode Go brings in its
+models. Claude and Codex, which have
 no list command, use a short list of checked ids. Each tier in **Settings > Models** picks from that
-list, or takes a typed id under "Other…". OpenCode is limited to its free models: `-free` models,
-Big Pickle and local Ollama models; any other OpenCode model is refused wherever it is set or
-launched. OpenCode's Continue and restore reopen the session's own conversation (or, for Continue,
+list, or takes a typed id under "Other…". OpenCode is limited to its free models: `-free` models of
+any provider (`opencode/…-free`, `opencode-go/…-free`), Big Pickle and local Ollama models; any
+other OpenCode model, including OpenCode Go's paid ones, is refused wherever it is set or launched.
+While OpenCode Go is connected, a tier set to `opencode/<name>` runs on `opencode-go/<name>` when Go
+lists that free model, since Go's free models are capped apart from the anonymous free tier. OpenCode's
+anonymous free tier, OpenCode Go and Ollama are separate quota pools: when OpenCode shows its free
+cap ("Free usage limit reached", "You've used today's free messages"), linkC records a limit on that
+pool only and tells the delegating agent which model hit it and which free OpenCode models are still
+usable. OpenCode's Continue and restore reopen the session's own conversation (or, for Continue,
 the folder's newest one no session has open) only if it last ran on a free model; otherwise they
 start a new conversation on the free default model and say why. Kilo and Crush follow the same free-only rule with their own free models,
 and linkC pins each of their sessions to the chosen free model, so a model picked earlier in the
