@@ -511,6 +511,21 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
         XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode-go/hy4-flash-free")
     }
 
+    /// Lists that cannot be read say nothing about Go, so the tier's own free model runs; Settings >
+    /// Models shows why the lists could not be read.
+    func testATierRunsOnItsOwnModelWhenTheModelListsCannotBeRead() throws {
+        var settings = AgentModelSettings.seeded
+        settings.setModel("opencode/hy4-flash-free", for: .opencode, tier: .standard)
+        let coordinator = try makeCoordinator(
+            models: settings,
+            modelLists: { throw LinkCError.process("model-lists.json can't be read") })
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new, tier: .standard)
+
+        XCTAssertEqual(session.model, "opencode/hy4-flash-free")
+    }
+
     func testOpenCodeTierKeepsGoModelAsIs() throws {
         let openCodeModels = AgentModelList(
             models: [
