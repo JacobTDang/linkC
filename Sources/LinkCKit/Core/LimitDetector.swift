@@ -109,12 +109,15 @@ public struct LimitDetector: Sendable {
     ]
 
     /// OpenCode's free-tier cap, in the words its own retry code gives it (read from the 1.18.19
-    /// binary: "Free usage exceeded, subscribe to Go", under a "Free limit reached" title). Its
-    /// 429 and overload messages are left out: OpenCode retries those by itself, and one retry
-    /// would bench it for the whole cooldown.
+    /// binary: "Free usage exceeded, subscribe to Go", under a "Free limit reached" title). 2.2.5
+    /// says "Free usage limit reached" and shows "You've used today's free messages. They reset at
+    /// …". Its 429 and overload messages are left out: OpenCode retries those by itself, and one
+    /// retry would bench it for the whole cooldown.
     private static let openCodeRules: [LimitRule] = [
         LimitRule(canonicalPattern: "OpenCode free usage exceeded", regexPattern: "\\bfree usage exceeded\\b"),
-        LimitRule(canonicalPattern: "OpenCode free limit reached", regexPattern: "\\bfree limit reached\\b")
+        LimitRule(canonicalPattern: "OpenCode free usage limit reached", regexPattern: "\\bfree usage limit reached\\b"),
+        LimitRule(canonicalPattern: "OpenCode free limit reached", regexPattern: "\\bfree limit reached\\b"),
+        LimitRule(canonicalPattern: "OpenCode free messages used", regexPattern: "\\byou(?:'|’)ve used today(?:'|’)s free messages\\b")
     ]
 
     private static let freebuffRules: [LimitRule] = [

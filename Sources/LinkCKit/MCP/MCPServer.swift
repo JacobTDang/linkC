@@ -1593,19 +1593,23 @@ public final class MCPServer: Sendable {
             lists = [:]
             caveat = " (The model lists could not be read: \(error).)"
         }
-        let agyLimits = try inboxStore.liveLimits(agent: .agy, timeout: lockTimeout)
         var parts: [String] = []
         for peer in AgentKind.peers where !peer.isLongTaskOnly {
-            if peer == .agy {
-                for pool in ["gemini", "claude-gpt"] {
+            let pools = ModelPool.pools(for: peer)
+            if !pools.isEmpty {
+                let peerLimits = try inboxStore.liveLimits(agent: peer, timeout: lockTimeout)
+                for pool in pools {
                     // The pool this refusal is about is limited; so is any pool a live limit covers.
-                    if agent == .agy, pool == limit.pool { continue }
-                    if agyLimits.contains(where: { $0.pool == nil || $0.pool == pool }) { continue }
-                    let ids = ModelListCache.available(for: .agy, lists: lists, settings: settings)
-                        .filter { ModelPool.pool(of: $0.id, agent: .agy) == pool }
+                    if agent == peer, pool == limit.pool { continue }
+                    if peerLimits.contains(where: { $0.pool == nil || $0.pool == pool }) { continue }
+                    let ids = ModelListCache.available(for: peer, lists: lists, settings: settings)
+                        .filter { ModelPool.pool(of: $0.id, agent: peer) == pool }
                         .map(\.id)
+                    // OpenCode lists Go's models only while Go is connected, and Ollama's only when it
+                    // is installed: a pool with nothing listed is not one the user has.
+                    if peer == .opencode, ids.isEmpty { continue }
                     let listed = ids.isEmpty ? "" : " (\(ids.joined(separator: ", ")))"
-                    parts.append("agy's \(ModelPool.displayName(pool)) pool\(listed)")
+                    parts.append("\(peer.rawValue)'s \(ModelPool.displayName(pool)) pool\(listed)")
                 }
             } else if peer != agent, try inboxStore.isAgentLimited(agent: peer, timeout: lockTimeout) == nil {
                 parts.append(peer.rawValue)

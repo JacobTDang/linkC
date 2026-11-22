@@ -398,7 +398,9 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         let reason = try XCTUnwrap(failed.cancelReason)
         XCTAssertTrue(reason.hasPrefix("agy's Gemini pool is limited until "), reason)
         XCTAssertTrue(reason.hasSuffix(" (quota exceeded). That is after this task would expire in the queue; "
-                                       + "delegate it again then, or to: claude, agy's Claude/GPT pool, cursor, codex, grok, opencode, kilo, crush."),
+                                       + "delegate it again then, or to: claude, agy's Claude/GPT pool, cursor, codex, grok, "
+                                       + "opencode's OpenCode pool (opencode/deepseek-v4.1-flash-free, opencode/big-pickle, "
+                                       + "opencode/nemotron-3.5-super-vl-free), kilo, crush."),
                       reason)
         let told = try inbox.load().messages.filter { $0.taskId == task.id && $0.toAgent == .claude }
         XCTAssertTrue(told.contains { $0.prompt.contains("failed") && $0.prompt.contains(reason) },

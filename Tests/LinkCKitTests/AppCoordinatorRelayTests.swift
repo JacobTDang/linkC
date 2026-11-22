@@ -68,6 +68,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         openCodeModels: @escaping AppCoordinator.OpenCodeModelLister = { _ in
             AgentModelSettings.seeded.models[AgentKind.opencode.rawValue]?.values.map { $0 } ?? []
         },
+        modelLists: @escaping @MainActor @Sendable () throws -> [AgentKind: AgentModelList] = TestModelLists.none,
         sweepClock: any Clock<Duration> = ContinuousClock(),
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
         knownProjectsFile: KnownProjectsFile? = nil,
@@ -104,7 +105,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             userHome: userHome,
             verifier: verifier,
             modelSettings: { models },
-            modelLists: TestModelLists.none,
+            modelLists: modelLists,
             // The mock negotiates paste almost immediately, but a 2s settle margin would still
             // make every dispatch test wait for real. Zero by default; a settle test overrides
             // both this and `now` to prove the threshold without sleeping through it.
@@ -5298,6 +5299,53 @@ final class AppCoordinatorRelayTests: XCTestCase {
         _ = try InboxStore(workspaceRoot: folder).enqueue(from: .claude, to: .codex, kind: .peerNote, body: "hello")
         await coordinator.runSweepTickForTests()
         XCTAssertTrue(coordinator.relayWork.isEmpty, "open work: the sweep relayed the folder")
+    }
+
+    /// OpenCode's free-tier cap is a usage limit on its anonymous pool only. The delegator hears which
+    /// model hit it and which free OpenCode models are still usable, and the task is never reported
+    /// as a turn that ended without a report.
+    @MainActor
+    func testOpenCodesFreeCapIsALimitNotATurnThatEndedWithoutAReport() async throws {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let openCodeModels = AgentModelList(
+            models: [
+                ListedModel(id: "opencode-go/hy4-flash-free", name: "opencode-go/hy4-flash-free"),
+                ListedModel(id: "opencode-go/beam-free", name: "opencode-go/beam-free"),
+                ListedModel(id: "opencode/hy4-flash-free", name: "opencode/hy4-flash-free")
+            ],
+            fetchedAt: Date(),
+            error: nil
+        )
+        let coordinator = makeCoordinator(modelLists: { [.opencode: openCodeModels] })
+        defer { coordinator.shutdown() }
+        let worker = try coordinator.newSession(cwd: ws, agent: .opencode, mode: .new, model: "opencode/hy4-flash-free", asWorker: true)
+        coordinator.store.updateState(id: worker.id, to: .finished)
+        let task = try inbox.createTask(from: .claude, to: .opencode, model: "opencode/hy4-flash-free", prompt: "Build task", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: worker.id)
+        try inbox.markTaskStarted(taskId: task.id)
+        coordinator.terminals.sendInput(sessionId: worker.id, text: "You’ve used today’s free messages. They reset at 5:59 PM.\n")
+        let shown = try await waitUntil {
+            coordinator.terminals.session(id: worker.id)?.recentOutput(lines: 10).contains("free messages") ?? false
+        }
+        XCTAssertTrue(shown, "the mock agent never printed the banner")
+
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: worker.id))
+        XCTAssertEqual(coordinator.relayTurnEnd(sessionId: worker.id, workspacePath: ws), 0,
+                       "a task a limit keeps with its worker is not a turn that ended without a report")
+
+        let limits = try inbox.liveLimits(agent: .opencode)
+        XCTAssertEqual(limits.map(\.pool), ["opencode"])
+        XCTAssertEqual(limits.first?.reason, "OpenCode free messages used")
+        XCTAssertNil(try inbox.isAgentLimited(agent: .opencode, model: "opencode-go/hy4-flash-free"), "Go's free models are not capped")
+        let messages = try inbox.load().messages
+        XCTAssertFalse(messages.contains { $0.prompt.contains("turn ended without a report") })
+        let notices = messages.filter { $0.kind == .notice && $0.toAgent == .claude && $0.taskId == task.id }
+        XCTAssertEqual(notices.count, 1)
+        let text = try XCTUnwrap(notices.first).prompt
+        XCTAssertTrue(text.contains("usage limit on model opencode/hy4-flash-free"), text)
+        XCTAssertTrue(text.contains("OpenCode free messages used"), text)
+        XCTAssertTrue(text.contains("opencode's OpenCode Go pool (opencode-go/hy4-flash-free, opencode-go/beam-free)"), text)
     }
 }
 

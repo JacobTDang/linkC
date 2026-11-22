@@ -196,6 +196,19 @@ final class ModelListingTests: XCTestCase {
         XCTAssertEqual(ModelPool.displayName("claude-gpt"), "Claude/GPT")
     }
 
+    func testOpenCodePools() {
+        XCTAssertEqual(ModelPool.pool(of: "opencode/hy4-flash-free", agent: .opencode), "opencode")
+        XCTAssertEqual(ModelPool.pool(of: "opencode/big-pickle", agent: .opencode), "opencode")
+        XCTAssertEqual(ModelPool.pool(of: "opencode-go/hy4-flash-free", agent: .opencode), "opencode-go")
+        XCTAssertEqual(ModelPool.pool(of: "opencode-go/beam-free", agent: .opencode), "opencode-go")
+        XCTAssertEqual(ModelPool.pool(of: "ollama/qwen3.8:27b-32k", agent: .opencode), "ollama")
+        XCTAssertNil(ModelPool.pool(of: "unknown-model", agent: .opencode))
+
+        XCTAssertEqual(ModelPool.displayName("opencode"), "OpenCode")
+        XCTAssertEqual(ModelPool.displayName("opencode-go"), "OpenCode Go")
+        XCTAssertEqual(ModelPool.displayName("ollama"), "Ollama")
+    }
+
     func testFixedListsForClaudeAndCodex() {
         XCTAssertEqual(ModelListParser.fixed(for: .claude)?.map(\.id), ["haiku", "sonnet", "opus"])
         XCTAssertEqual(ModelListParser.fixed(for: .codex)?.map(\.id), [

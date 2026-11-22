@@ -173,21 +173,44 @@ public enum CrushFreeModels {
     }
 }
 
-/// agy's quota pools: Gemini vs Claude/GPT. Nil for every other agent, and for an unknown agy id.
+/// Quota pools: models of one agent that are capped separately. agy's Gemini vs Claude/GPT, and
+/// OpenCode's anonymous free tier (`opencode/*`), OpenCode Go (`opencode-go/*`) and local Ollama
+/// (`ollama/*`). Every other agent has one quota.
 public enum ModelPool {
-    /// agy: "gemini" for gemini-…, "claude-gpt" for claude-… and gpt-oss-…, nil otherwise; nil for every other agent.
+    /// `agent`'s pools, in the order a notice names them; empty for an agent with one quota.
+    public static func pools(for agent: AgentKind) -> [String] {
+        switch agent {
+        case .agy: return ["gemini", "claude-gpt"]
+        case .opencode: return ["opencode-go", "opencode", "ollama"]
+        default: return []
+        }
+    }
+
+    /// The pool `model` draws on, or nil for an agent with one quota and for a model in none of its pools.
     public static func pool(of model: String, agent: AgentKind) -> String? {
-        guard agent == .agy else { return nil }
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if trimmed.hasPrefix("gemini-") { return "gemini" }
-        if trimmed.hasPrefix("claude-") || trimmed.hasPrefix("gpt-oss-") { return "claude-gpt" }
-        return nil
+        switch agent {
+        case .agy:
+            if trimmed.hasPrefix("gemini-") { return "gemini" }
+            if trimmed.hasPrefix("claude-") || trimmed.hasPrefix("gpt-oss-") { return "claude-gpt" }
+            return nil
+        case .opencode:
+            if trimmed.hasPrefix("opencode-go/") { return "opencode-go" }
+            if trimmed.hasPrefix("opencode/") { return "opencode" }
+            if trimmed.hasPrefix("ollama/") { return "ollama" }
+            return nil
+        default:
+            return nil
+        }
     }
 
     public static func displayName(_ pool: String) -> String {
         switch pool {
         case "gemini": return "Gemini"
         case "claude-gpt": return "Claude/GPT"
+        case "opencode": return "OpenCode"
+        case "opencode-go": return "OpenCode Go"
+        case "ollama": return "Ollama"
         default: return pool
         }
     }
