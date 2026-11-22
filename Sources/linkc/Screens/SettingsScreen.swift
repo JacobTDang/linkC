@@ -55,10 +55,24 @@ struct SettingsScreen: View {
                         .fixedSize()
                     }
 
-                    SectionHeader(title: "MODELS").padding(.top, 6)
+                    let refresher = model.coordinator?.modelListRefresher
+                    HStack {
+                        SectionHeader(title: "MODELS")
+                        if refresher?.isRefreshing == true {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Button("Refresh") {
+                                Task { await refresher?.refreshNow() }
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.accent)
+                        }
+                    }
+                    .padding(.top, 6)
                     // The refresher is observable: this view redraws when a refresh ends, and never reads
                     // the cache file itself.
-                    let refresher = model.coordinator?.modelListRefresher
                     if refresher?.isRefreshing == true {
                         Text("Refreshing the model lists…")
                             .font(.system(size: 10))

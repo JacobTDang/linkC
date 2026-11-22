@@ -1321,7 +1321,8 @@ extension AppCoordinator {
     /// to the delegator — once per task. Reads no terminal output. Returns the number notified.
     /// A task whose reroute is held back for a limit match is skipped: it is about to move, and the
     /// line would be stale by the time the delegator reads it. `checkLimitsAndReroute` sends it if
-    /// the banner leaves the screen and the task stays.
+    /// the banner leaves the screen and the task stays. A task a limit keeps with its worker (one
+    /// that names its model) is skipped too: its delegator was already told why it stopped.
     @discardableResult
     public func relayTurnEnd(sessionId: String, workspacePath: String) -> Int {
         guard let session = store.session(id: sessionId), session.agentKind != .shell else { return 0 }
@@ -1339,7 +1340,8 @@ extension AppCoordinator {
         for task in open where task.assigneeSessionId == sessionId
             && (task.state == .delivered || task.state == .started)
             && !task.unreportedTurnEndNotified
-            && limitHolds[sessionId]?.taskId != task.id {
+            && limitHolds[sessionId]?.taskId != task.id
+            && limitHeldModelTasks[sessionId] != task.id {
             do {
                 try echo(
                     // The line is read when the delegator is next idle, so it names the state at turn
@@ -1789,7 +1791,7 @@ extension AppCoordinator {
         var why = "\(session.agentKind.displayName) reached its usage limit on model \(model)."
         do {
             if let limit = try inboxStore.isAgentLimited(agent: session.agentKind, model: model, timeout: Self.relayLockTimeout) {
-                why = try MCPServer.limitRefusal(
+                why += try " " + MCPServer.limitRefusal(
                     agent: session.agentKind, limit: limit, model: model, readLists: modelLists,
                     settings: liveModelSettings(), inboxStore: inboxStore, lockTimeout: Self.relayLockTimeout)
             }

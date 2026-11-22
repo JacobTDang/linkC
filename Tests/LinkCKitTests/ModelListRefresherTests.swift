@@ -248,6 +248,73 @@ final class ModelListRefresherTests: XCTestCase {
         XCTAssertEqual(lists[.agy]?.fetchedAt, Date(timeIntervalSince1970: 1))
     }
 
+    func testOpenCodeRelistedWhenAuthIntegrationsChange() async throws {
+        let log = RunLog()
+        let authLog = RunLog()
+        let authOutputs = OSAllocatedUnfairLock(initialState: [
+            "OpenCode Console  Personal  stored\n",
+            "OpenCode Go       OpenCode Go stored\nOpenCode Console  Personal  stored\n"
+        ])
+
+        let refresher = ModelListRefresher(
+            cache: cache,
+            runner: scripted(log),
+            authRunner: { agent in
+                authLog.record(agent)
+                return authOutputs.withLock { outputs in
+                    if outputs.count > 1 {
+                        return outputs.removeFirst()
+                    }
+                    return outputs.first ?? ""
+                }
+            },
+            sleep: { _ in },
+            authSleep: { _ in }
+        )
+
+        XCTAssertEqual(log.count(.opencode), 0)
+
+        // First auth check records initial integrations
+        await refresher.checkOpenCodeAuth()
+        XCTAssertEqual(authLog.count(.opencode), 1)
+        XCTAssertEqual(log.count(.opencode), 0, "first check records baseline, no re-list yet")
+
+        // Second auth check sees OpenCode Go added, triggers refreshNow() which re-lists OpenCode
+        await refresher.checkOpenCodeAuth()
+        XCTAssertEqual(authLog.count(.opencode), 2)
+        XCTAssertEqual(log.count(.opencode), 1, "changed auth integrations trigger re-list of models")
+    }
+
+    func testAuthMonitoringLoopRefreshesOnIntegrationChange() async throws {
+        let log = RunLog()
+        let authCalls = OSAllocatedUnfairLock(initialState: 0)
+        let authSleeps = SleepLog()
+
+        let refresher = ModelListRefresher(
+            cache: cache,
+            runner: scripted(log),
+            authRunner: { agent in
+                let count = authCalls.withLock { n -> Int in n += 1; return n }
+                if count == 1 {
+                    return "OpenCode Console  Personal  stored\n"
+                } else {
+                    return "OpenCode Go  OpenCode Go  stored\nOpenCode Console  Personal  stored\n"
+                }
+            },
+            sleep: { _ in throw CancellationError() },
+            authSleep: { duration in
+                authSleeps.record(duration)
+                if authSleeps.durations.count >= 2 { throw CancellationError() }
+            },
+            authInterval: .seconds(10)
+        )
+
+        await refresher.start()
+
+        XCTAssertTrue(authSleeps.durations.contains(.seconds(10)))
+        XCTAssertGreaterThanOrEqual(log.count(.opencode), 1)
+    }
+
     /// The same rule for every agent: Grok finding no `grok-` model in Cursor's list, OpenCode/Kilo no free one.
     func testEveryAgentsEmptyParseIsAnError() async throws {
         let refresher = ModelListRefresher(

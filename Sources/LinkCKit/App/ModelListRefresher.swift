@@ -10,6 +10,8 @@ import Observation
 @Observable
 public final class ModelListRefresher {
     public static let defaultInterval: Duration = .seconds(21_600)
+    /// How often `opencode auth list` is compared: each check starts an OpenCode process.
+    public static let defaultAuthInterval: Duration = .seconds(300)
 
     public typealias Runner = @Sendable (AgentKind) async throws -> String
     public typealias Sleeper = @Sendable (Duration) async throws -> Void
@@ -32,10 +34,15 @@ public final class ModelListRefresher {
 
     @ObservationIgnored private let cache: ModelListCache
     @ObservationIgnored private let runner: Runner
+    @ObservationIgnored private let authRunner: Runner?
     @ObservationIgnored private let sleep: Sleeper
+    @ObservationIgnored private let authSleep: Sleeper
     @ObservationIgnored private let interval: Duration
+    @ObservationIgnored private let authInterval: Duration
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private var loopTask: Task<Void, Never>?
+    @ObservationIgnored private var authLoopTask: Task<Void, Never>?
+    @ObservationIgnored private var lastAuthIntegrations: [String]?
 
     /// Agents whose models come from a CLI listing.
     public static var listedAgents: [AgentKind] { ModelListParser.listedAgents }
@@ -43,21 +50,46 @@ public final class ModelListRefresher {
     public init(
         cache: ModelListCache = .applicationSupport,
         runner: @escaping Runner = ModelListRefresher.liveRunner,
+        authRunner: Runner? = nil,
         sleep: @escaping Sleeper = { try await Task.sleep(for: $0) },
+        authSleep: @escaping Sleeper = { try await Task.sleep(for: $0) },
         interval: Duration = ModelListRefresher.defaultInterval,
+        authInterval: Duration = ModelListRefresher.defaultAuthInterval,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.cache = cache
         self.runner = runner
+        self.authRunner = authRunner
         self.sleep = sleep
+        self.authSleep = authSleep
         self.interval = interval
+        self.authInterval = authInterval
         self.now = now
         if let read = readCache() { lists = read }
     }
 
-    /// Starts the loop: refresh once, then sleep `interval` and repeat. Cancelling stops it.
+    /// Starts the loop: refresh once, then sleep `interval` and repeat. When `authRunner` is
+    /// configured, also monitors OpenCode auth on `authInterval`. Cancelling stops it.
     public func start() async {
         loopTask?.cancel()
+        authLoopTask?.cancel()
+
+        if authRunner != nil {
+            authLoopTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    await self.checkOpenCodeAuth()
+                    do {
+                        try await self.authSleep(self.authInterval)
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        NSLog("[linkC models] auth sleep failed — %@", String(describing: error))
+                    }
+                }
+            }
+        }
+
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -78,6 +110,41 @@ public final class ModelListRefresher {
     public func stop() {
         loopTask?.cancel()
         loopTask = nil
+        authLoopTask?.cancel()
+        authLoopTask = nil
+    }
+
+    /// Checks `opencode auth list --standalone` (names only) and re-lists OpenCode models when
+    /// the connected integrations differ from the last check.
+    public func checkOpenCodeAuth() async {
+        guard let authRunner else { return }
+        do {
+            let output = try await authRunner(.opencode)
+            let current = Self.integrationNames(from: output)
+            if let last = lastAuthIntegrations, last != current {
+                NSLog("[linkC models] opencode integrations changed from %@ to %@; refreshing", last, current)
+                await refreshNow()
+            }
+            lastAuthIntegrations = current
+        } catch is CancellationError {
+            return
+        } catch {
+            NSLog("[linkC models] opencode auth check failed — %@", String(describing: error))
+        }
+    }
+
+    /// Extracts integration names from `opencode auth list --standalone` output (e.g. "OpenCode Go", "OpenCode Console").
+    public static func integrationNames(from output: String) -> [String] {
+        output.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .map { line in
+                if let match = try? NSRegularExpression(pattern: "\\s{2,}").firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) {
+                    let nameRange = Range(NSRange(location: 0, length: match.range.location), in: line) ?? line.startIndex..<line.endIndex
+                    return String(line[nameRange]).trimmingCharacters(in: .whitespaces)
+                }
+                return line
+            }
     }
 
     /// Lists every CLI agent now and writes the cache. A failure keeps the last models and sets
@@ -167,6 +234,11 @@ public final class ModelListRefresher {
     public nonisolated static func liveRunner(_ agent: AgentKind) async throws -> String {
         try await ModelListCommands.run(for: agent)
     }
+
+    /// Production auth runner: `opencode auth list --standalone`.
+    public nonisolated static func liveAuthRunner(_ agent: AgentKind) async throws -> String {
+        try await ModelListCommands.runAuth(for: agent)
+    }
 }
 
 private extension String {
@@ -190,6 +262,15 @@ enum ModelListCommands {
             return try await capture(agent: .crush, args: ["models"])
         case .claude, .codex, .freebuff, .shell:
             throw LinkCError.process("\(agent.rawValue) has no model listing command")
+        }
+    }
+
+    static func runAuth(for agent: AgentKind) async throws -> String {
+        switch agent {
+        case .opencode:
+            return try await capture(agent: .opencode, args: ["auth", "list", "--standalone"])
+        default:
+            throw LinkCError.process("\(agent.rawValue) has no auth listing command")
         }
     }
 

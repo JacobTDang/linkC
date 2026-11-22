@@ -123,9 +123,19 @@ final class ModelListingTests: XCTestCase {
         XCTAssertTrue(OpenCodeFreeModels.isFree("opencode/beam-free"))
         XCTAssertTrue(OpenCodeFreeModels.isFree("opencode/big-pickle"))
         XCTAssertTrue(OpenCodeFreeModels.isFree("ollama/qwen3.8:27b-32k"))
+        XCTAssertTrue(OpenCodeFreeModels.isFree("opencode-go/beam-free"))
+        XCTAssertTrue(OpenCodeFreeModels.isFree("opencode-go/hy4-flash-free"))
+        XCTAssertTrue(OpenCodeFreeModels.isFree("opencode-go/iceman-contributor-free"))
+        XCTAssertTrue(OpenCodeFreeModels.isFree("opencode-go/longcat-2.5-free"))
+        XCTAssertTrue(OpenCodeFreeModels.isFree("other-provider/custom-model-free"))
         XCTAssertFalse(OpenCodeFreeModels.isFree("opencode/claude-sonnet-5"))
         XCTAssertFalse(OpenCodeFreeModels.isFree("anthropic/claude-opus-5"))
         XCTAssertFalse(OpenCodeFreeModels.isFree("opencode/big-pickle-paid"))
+        XCTAssertFalse(OpenCodeFreeModels.isFree("opencode-go/glm-5.3"))
+        XCTAssertFalse(OpenCodeFreeModels.isFree("opencode-go/kimi-k3"))
+        XCTAssertFalse(OpenCodeFreeModels.isFree("opencode-go/deepseek-v4.1-flash"))
+        XCTAssertFalse(OpenCodeFreeModels.isFree("opencode-go/minimax-m3"))
+        XCTAssertFalse(OpenCodeFreeModels.isFree("-free"))
         XCTAssertFalse(OpenCodeFreeModels.isFree(""))
     }
 
@@ -184,6 +194,19 @@ final class ModelListingTests: XCTestCase {
         }
         XCTAssertEqual(ModelPool.displayName("gemini"), "Gemini")
         XCTAssertEqual(ModelPool.displayName("claude-gpt"), "Claude/GPT")
+    }
+
+    func testOpenCodePools() {
+        XCTAssertEqual(ModelPool.pool(of: "opencode/hy4-flash-free", agent: .opencode), "opencode")
+        XCTAssertEqual(ModelPool.pool(of: "opencode/big-pickle", agent: .opencode), "opencode")
+        XCTAssertEqual(ModelPool.pool(of: "opencode-go/hy4-flash-free", agent: .opencode), "opencode-go")
+        XCTAssertEqual(ModelPool.pool(of: "opencode-go/beam-free", agent: .opencode), "opencode-go")
+        XCTAssertEqual(ModelPool.pool(of: "ollama/qwen3.8:27b-32k", agent: .opencode), "ollama")
+        XCTAssertNil(ModelPool.pool(of: "unknown-model", agent: .opencode))
+
+        XCTAssertEqual(ModelPool.displayName("opencode"), "OpenCode")
+        XCTAssertEqual(ModelPool.displayName("opencode-go"), "OpenCode Go")
+        XCTAssertEqual(ModelPool.displayName("ollama"), "Ollama")
     }
 
     func testFixedListsForClaudeAndCodex() {

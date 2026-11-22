@@ -285,6 +285,28 @@ final class LimitDetectorTests: XCTestCase {
                      "the phrase is OpenCode's alone")
     }
 
+    func testOpenCodeFreeUsageLimitPhrasesAreDetected() {
+        let cap1 = LimitDetector.detectLimit(
+            inOutput: "AI.Error: Free usage limit reached. Free models work in OpenCode", agent: .opencode)
+        XCTAssertEqual(cap1?.agent, .opencode)
+        XCTAssertEqual(cap1?.matchedPattern, "OpenCode free usage limit reached")
+
+        let cap2 = LimitDetector.detectLimit(
+            inOutput: "Free limit reached", agent: .opencode)
+        XCTAssertEqual(cap2?.agent, .opencode)
+        XCTAssertEqual(cap2?.matchedPattern, "OpenCode free limit reached")
+
+        let cap3 = LimitDetector.detectLimit(
+            inOutput: "You've used today's free messages. They reset at 5:59 PM.", agent: .opencode)
+        XCTAssertEqual(cap3?.agent, .opencode)
+        XCTAssertEqual(cap3?.matchedPattern, "OpenCode free messages used")
+
+        let cap4 = LimitDetector.detectLimit(
+            inOutput: "You’ve used today’s free messages. They reset at 5:59 PM.", agent: .opencode)
+        XCTAssertEqual(cap4?.agent, .opencode)
+        XCTAssertEqual(cap4?.matchedPattern, "OpenCode free messages used")
+    }
+
     /// Kilo's free-tier banner uses its own wording ("Rate limit exceeded"), not OpenCode's.
     func testKilosRateLimitExceededIsALimitButA429IsNot() {
         let cap = LimitDetector.detectLimit(inOutput: "  ● Rate limit " + "exceeded  ", agent: .kilo)

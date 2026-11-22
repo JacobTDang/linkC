@@ -244,6 +244,13 @@ final class ModelPoolLimitTests: XCTestCase {
         XCTAssertNil(try store.isAgentLimited(agent: .agy, model: "Claude-Opus-4-6-Thinking"))
     }
 
+    func testOpenCodePoolLimitSeparation() throws {
+        try store.recordLimit(agent: .opencode, reason: "quota", cooldown: 3600, pool: "opencode")
+        XCTAssertNotNil(try store.isAgentLimited(agent: .opencode, model: "opencode/hy4-flash-free"))
+        XCTAssertNil(try store.isAgentLimited(agent: .opencode, model: "opencode-go/hy4-flash-free"))
+        XCTAssertNil(try store.isAgentLimited(agent: .opencode, model: "ollama/qwen3.8:27b-32k"))
+    }
+
     // MARK: - A task's tier does not make two tasks different
 
     /// Dedupe compares the prompt, the target and the model, as before models existed: the same

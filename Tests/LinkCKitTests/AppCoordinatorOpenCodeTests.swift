@@ -35,7 +35,8 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
     var stubAgent: URL { tempDir.appendingPathComponent("stub-opencode.sh") }
 
     func makeCoordinator(models: AgentModelSettings = .seeded, sink: NotificationSink = RecordingSink(),
-                         conversations: OpenCodeConversationReader = .unavailable) throws -> AppCoordinator {
+                         conversations: OpenCodeConversationReader = .unavailable,
+                         modelLists: @escaping @MainActor @Sendable () throws -> [AgentKind: AgentModelList] = TestModelLists.none) throws -> AppCoordinator {
         let script = "#!/bin/sh\n"
             + "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv-$LINKC_SESSION\"\n"
             + "printf 'OPENCODE_DISABLE_AUTOUPDATE=%s\\nOPENCODE_CONFIG_CONTENT=%s\\n' \"$OPENCODE_DISABLE_AUTOUPDATE\" \"$OPENCODE_CONFIG_CONTENT\" > \"$(dirname \"$0\")/env-$LINKC_SESSION\"\n"
@@ -54,7 +55,7 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
             manifestDir: settingsDir,
             agentPathResolver: { _ in agent },
             modelSettings: { models },
-            modelLists: TestModelLists.none,
+            modelLists: modelLists,
             deliverySettle: 0,
             turnEndQuietPeriod: 0.0,
             kiloModels: { _ in [] },
@@ -473,5 +474,126 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
 
         XCTAssertEqual(launchedLines("env", of: session, count: 2),
                        ["OPENCODE_DISABLE_AUTOUPDATE=", "OPENCODE_CONFIG_CONTENT="])
+    }
+
+    /// Only the production init wires a live model-list refresher: one here would read the real
+    /// model-list cache and run the real `opencode`.
+    func testACoordinatorGivenNoRefresherHasNone() throws {
+        let coordinator = try makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        XCTAssertNil(coordinator.modelListRefresher)
+    }
+
+    func testOpenCodeTierSubstitutesWithMatchingGoFreeModelWhenGoConnected() throws {
+        let openCodeModels = AgentModelList(
+            models: [
+                ListedModel(id: "opencode-go/hy4-flash-free", name: "Hy4 Flash Free"),
+                ListedModel(id: "opencode-go/beam-free", name: "Beam Free"),
+                ListedModel(id: "opencode/hy4-flash-free", name: "Hy4 Flash Free")
+            ],
+            fetchedAt: Date(),
+            error: nil
+        )
+        var settings = AgentModelSettings.seeded
+        settings.setModel("opencode/hy4-flash-free", for: .opencode, tier: .standard)
+
+        let coordinator = try makeCoordinator(
+            models: settings,
+            modelLists: { [.opencode: openCodeModels] }
+        )
+        defer { coordinator.shutdown() }
+
+        XCTAssertEqual(coordinator.resolvedModel(for: .opencode, tier: .standard), "opencode-go/hy4-flash-free")
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new, tier: .standard)
+        XCTAssertEqual(session.model, "opencode-go/hy4-flash-free")
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode-go/hy4-flash-free")
+    }
+
+    /// Lists that cannot be read say nothing about Go, so the tier's own free model runs; Settings >
+    /// Models shows why the lists could not be read.
+    func testATierRunsOnItsOwnModelWhenTheModelListsCannotBeRead() throws {
+        var settings = AgentModelSettings.seeded
+        settings.setModel("opencode/hy4-flash-free", for: .opencode, tier: .standard)
+        let coordinator = try makeCoordinator(
+            models: settings,
+            modelLists: { throw LinkCError.process("model-lists.json can't be read") })
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new, tier: .standard)
+
+        XCTAssertEqual(session.model, "opencode/hy4-flash-free")
+    }
+
+    func testOpenCodeTierKeepsGoModelAsIs() throws {
+        let openCodeModels = AgentModelList(
+            models: [
+                ListedModel(id: "opencode-go/hy4-flash-free", name: "Hy4 Flash Free")
+            ],
+            fetchedAt: Date(),
+            error: nil
+        )
+        var settings = AgentModelSettings.seeded
+        settings.setModel("opencode-go/hy4-flash-free", for: .opencode, tier: .standard)
+
+        let coordinator = try makeCoordinator(
+            models: settings,
+            modelLists: { [.opencode: openCodeModels] }
+        )
+        defer { coordinator.shutdown() }
+
+        XCTAssertEqual(coordinator.resolvedModel(for: .opencode, tier: .standard), "opencode-go/hy4-flash-free")
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .opencode, mode: .new, tier: .standard)
+        XCTAssertEqual(session.model, "opencode-go/hy4-flash-free")
+        XCTAssertEqual(try openCodeConfig(of: session)["model"] as? String, "opencode-go/hy4-flash-free")
+    }
+
+    func testOpenCodeTierDoesNotSubstituteWhenGoNotConnectedOrModelNotListed() throws {
+        let openCodeModelsWithoutGo = AgentModelList(
+            models: [
+                ListedModel(id: "opencode/hy4-flash-free", name: "Hy4 Flash Free")
+            ],
+            fetchedAt: Date(),
+            error: nil
+        )
+        var settings = AgentModelSettings.seeded
+        settings.setModel("opencode/hy4-flash-free", for: .opencode, tier: .standard)
+
+        let coordinator1 = try makeCoordinator(
+            models: settings,
+            modelLists: { [.opencode: openCodeModelsWithoutGo] }
+        )
+        defer { coordinator1.shutdown() }
+
+        XCTAssertEqual(coordinator1.resolvedModel(for: .opencode, tier: .standard), "opencode/hy4-flash-free")
+
+        let session1 = try coordinator1.newSession(cwd: tempDir.path, agent: .opencode, mode: .new, tier: .standard)
+        XCTAssertEqual(session1.model, "opencode/hy4-flash-free")
+        XCTAssertEqual(try openCodeConfig(of: session1)["model"] as? String, "opencode/hy4-flash-free")
+
+        // Also test when Go is connected, but the model has no matching go counterpart
+        let openCodeModelsWithOtherGo = AgentModelList(
+            models: [
+                ListedModel(id: "opencode-go/beam-free", name: "Beam Free"),
+                ListedModel(id: "opencode/flint-40b-free", name: "Flint 40B Free")
+            ],
+            fetchedAt: Date(),
+            error: nil
+        )
+        var settings2 = AgentModelSettings.seeded
+        settings2.setModel("opencode/flint-40b-free", for: .opencode, tier: .standard)
+
+        let coordinator2 = try makeCoordinator(
+            models: settings2,
+            modelLists: { [.opencode: openCodeModelsWithOtherGo] }
+        )
+        defer { coordinator2.shutdown() }
+
+        XCTAssertEqual(coordinator2.resolvedModel(for: .opencode, tier: .standard), "opencode/flint-40b-free")
+
+        let session2 = try coordinator2.newSession(cwd: tempDir.path, agent: .opencode, mode: .new, tier: .standard)
+        XCTAssertEqual(session2.model, "opencode/flint-40b-free")
     }
 }
