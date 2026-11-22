@@ -396,7 +396,7 @@ public final class AppCoordinator {
         self.verifier = verifier
         self.modelSettings = modelSettings
         self.modelLists = modelLists
-        self.modelListRefresher = modelListRefresher ?? ModelListRefresher(authRunner: ModelListRefresher.liveAuthRunner)
+        self.modelListRefresher = modelListRefresher
         self.usageReaders = usageReaders
         self.injectionGap = injectionGap
         self.deliverySettle = deliverySettle
@@ -539,7 +539,7 @@ public final class AppCoordinator {
             userHome: FileManager.default.homeDirectoryForCurrentUser,
             defaults: .standard,
             modelSettings: modelSettings,
-            modelListRefresher: ModelListRefresher(),
+            modelListRefresher: ModelListRefresher(authRunner: ModelListRefresher.liveAuthRunner),
             usageReaders: MCPServer.defaultUsageReaders(),
             mcpWorkspaces: { MCPWorkspaceRegistry.applicationSupport.liveWorkspaces() },
             knownProjectsFile: .applicationSupport,
@@ -1061,19 +1061,17 @@ public final class AppCoordinator {
         let candidate = "opencode-go/\(name)"
 
         let openCodeList: [ListedModel]
-        if let models = (try? modelLists())?[.opencode]?.models, !models.isEmpty {
-            openCodeList = models
-        } else if let inMemory = modelListRefresher?.lists[.opencode]?.models, !inMemory.isEmpty {
-            openCodeList = inMemory
-        } else {
+        do {
+            openCodeList = try modelLists()[.opencode]?.models ?? []
+        } catch {
+            // Settings > Models shows why the lists cannot be read; the tier's own model still runs.
+            NSLog("[linkC] could not read the model lists to look for OpenCode Go, so %@ runs as configured — %@",
+                  model, String(describing: error))
             return model
         }
 
-        let hasGoModels = openCodeList.contains { $0.id.hasPrefix("opencode-go/") }
-        guard hasGoModels else { return model }
-
-        let isListed = openCodeList.contains { $0.id == candidate }
-        guard isListed && OpenCodeFreeModels.isFree(candidate) else { return model }
+        // OpenCode lists `opencode-go/*` models only while Go is connected.
+        guard openCodeList.contains(where: { $0.id == candidate }), OpenCodeFreeModels.isFree(candidate) else { return model }
 
         if logSubstitution {
             NSLog("[linkC] preferring OpenCode Go free model: substituted %@ with %@", model, candidate)
@@ -1082,7 +1080,8 @@ public final class AppCoordinator {
     }
 
     /// The model configured for `agent` at `tier`, or nil when the mapping has no entry — a
-    /// missing or emptied model, not a substitute. Shared by `launch` (which then leaves the
+    /// missing or emptied model, not a substitute. For OpenCode, the Go copy of the model when Go
+    /// lists one (`resolveOpenCodeGoModel`). Shared by `launch` (which then leaves the
     /// session unpinned) and the relay's dispatch (which refuses to spawn at all).
     func resolvedModel(for agent: AgentKind, tier: ModelTier) -> String? {
         guard let base = modelSettings().model(for: agent, tier: tier) else { return nil }

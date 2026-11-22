@@ -476,6 +476,15 @@ final class AppCoordinatorOpenCodeTests: XCTestCase {
                        ["OPENCODE_DISABLE_AUTOUPDATE=", "OPENCODE_CONFIG_CONTENT="])
     }
 
+    /// Only the production init wires a live model-list refresher: one here would read the real
+    /// model-list cache and run the real `opencode`.
+    func testACoordinatorGivenNoRefresherHasNone() throws {
+        let coordinator = try makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        XCTAssertNil(coordinator.modelListRefresher)
+    }
+
     func testOpenCodeTierSubstitutesWithMatchingGoFreeModelWhenGoConnected() throws {
         let openCodeModels = AgentModelList(
             models: [

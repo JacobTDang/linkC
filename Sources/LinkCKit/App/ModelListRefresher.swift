@@ -10,7 +10,8 @@ import Observation
 @Observable
 public final class ModelListRefresher {
     public static let defaultInterval: Duration = .seconds(21_600)
-    public static let defaultAuthInterval: Duration = .seconds(30)
+    /// How often `opencode auth list` is compared: each check starts an OpenCode process.
+    public static let defaultAuthInterval: Duration = .seconds(300)
 
     public typealias Runner = @Sendable (AgentKind) async throws -> String
     public typealias Sleeper = @Sendable (Duration) async throws -> Void
