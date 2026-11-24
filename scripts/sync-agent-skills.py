@@ -7,11 +7,13 @@ Bi-directional synchronization of agent skills across:
 - Antigravity CLI (~/.gemini/config/skills)
 - Cursor (~/.cursor/skills)
 - Codex (~/.codex/skills)
+- OpenCode (~/.config/opencode/skills)
+- Crush (~/.config/crush/skills)
+- Kilo (~/.config/kilo/skills)
 
-Also imports skills from active Claude plugins:
-- superpowers (14 skills)
-- frontend-design
-- skill-creator
+Also imports skills from:
+- linkC repository skills/ directory
+- Active Claude plugins (superpowers, frontend-design, skill-creator, etc.)
 """
 
 import os
@@ -20,6 +22,8 @@ import json
 from pathlib import Path
 
 HOME = Path.home()
+REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_SKILLS_DIR = REPO_ROOT / "skills"
 
 # Agent target directories
 TARGET_DIRS = {
@@ -27,6 +31,9 @@ TARGET_DIRS = {
     "agy": HOME / ".gemini" / "config" / "skills",
     "cursor": HOME / ".cursor" / "skills",
     "codex": HOME / ".codex" / "skills",
+    "opencode": HOME / ".config" / "opencode" / "skills",
+    "crush": HOME / ".config" / "crush" / "skills",
+    "kilo": HOME / ".config" / "kilo" / "skills",
 }
 
 # Ignored directory names or prefixes
@@ -45,7 +52,20 @@ def get_canonical_skills():
     """
     skills = {}
 
-    # 1. Harvest from all agent personal directories
+    # 1. Harvest from repo skills/ folder if present
+    if REPO_SKILLS_DIR.exists():
+        for entry in REPO_SKILLS_DIR.iterdir():
+            if entry.name in IGNORED_NAMES or entry.name.startswith("."):
+                continue
+            try:
+                real_path = entry.resolve()
+                if (real_path / "SKILL.md").exists():
+                    if entry.name not in skills:
+                        skills[entry.name] = real_path
+            except Exception:
+                continue
+
+    # 2. Harvest from all agent personal directories
     for agent_name, agent_dir in TARGET_DIRS.items():
         if not agent_dir.exists():
             continue
@@ -61,7 +81,7 @@ def get_canonical_skills():
             except Exception:
                 continue
 
-    # 2. Harvest from Claude plugins (superpowers, frontend-design, skill-creator, etc.)
+    # 3. Harvest from Claude plugins (superpowers, frontend-design, skill-creator, etc.)
     plugins_installed_file = HOME / ".claude" / "plugins" / "installed_plugins.json"
     if plugins_installed_file.exists():
         try:
