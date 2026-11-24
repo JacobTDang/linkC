@@ -1,0 +1,6 @@
+{
+  "name": "linkc-agents",
+  "version": "0.1.0",
+  "description": "Splits the filetree pane: the bottom half shows linkC's sessions in this repo",
+  "types": "./types/index.d.ts"
+}
