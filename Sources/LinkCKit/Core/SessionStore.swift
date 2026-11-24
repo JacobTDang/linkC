@@ -113,12 +113,6 @@ public final class SessionStore {
         sessions[idx].modelTier = modelTier
     }
 
-    /// Update a session's title.
-    public func updateTitle(id: String, to newTitle: String) {
-        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
-        sessions[idx].title = newTitle
-    }
-
     /// Update a session's detected agent kind if it changes dynamically.
     public func updateAgentKind(id: String, to agentKind: AgentKind) {
         guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }

@@ -86,9 +86,7 @@ extension AppCoordinator {
         // Git summary
         let gitSummary = gitStatusSummary(in: folder)
 
-        // Resolved goal: explicit ?? open tasks / blackboard ?? source session title (if not empty)
-        let resolvedGoal = resolveHandoffGoal(workspacePath: folder, explicit: goal)
-            ?? (!sourceSession.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? sourceSession.title : nil)
+        let resolvedGoal = try handoffGoal(of: sourceSession, in: folder, explicit: goal)
 
         // Compose and write HANDOFF.md
         try HandoffComposer.writeHandoffSync(
@@ -120,5 +118,22 @@ extension AppCoordinator {
         openingPrompts[newSession.id] = OpeningPrompt(text: promptText, since: now())
 
         return newSession
+    }
+
+    /// The goal a handoff from `session` continues: the one given, else the newest task the session
+    /// carries. Never another session's task or the board's goal, which are other agents' work, and
+    /// never the session's title, which is its folder's name.
+    private func handoffGoal(of session: Session, in folder: String, explicit: String?) throws -> String? {
+        if let explicit = explicit?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
+            return explicit
+        }
+        let carried: [TaskRecord]
+        do {
+            carried = try InboxStore(workspaceRoot: folder).openTasks()
+                .filter { $0.assigneeSessionId == session.id && ($0.state == .delivered || $0.state == .started) }
+        } catch {
+            throw LinkCError.process("could not read the tasks \(session.agentKind.displayName) carries — \(error)")
+        }
+        return carried.last?.prompt
     }
 }

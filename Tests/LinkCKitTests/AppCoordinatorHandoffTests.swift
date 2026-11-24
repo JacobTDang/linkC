@@ -48,6 +48,11 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         )
     }
 
+    /// The memo a handoff to `session` left.
+    private func handoffMemo(for session: Session) throws -> String {
+        try String(contentsOf: URL(fileURLWithPath: folder).appendingPathComponent(".linkc/HANDOFF.md"), encoding: .utf8)
+    }
+
     private struct NullSink: NotificationSink {
         func deliver(id: String, title: String, body: String) {}
     }
@@ -62,7 +67,6 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         defer { stopAll(coordinator) }
 
         let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
-        coordinator.store.updateTitle(id: s1.id, to: "Implement Feature X")
 
         let s2 = try coordinator.handoff(from: s1.id, to: .codex, tier: .standard, goal: "Finish implementing Feature X")
 
@@ -85,22 +89,50 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         XCTAssertTrue(prompt?.text.contains("Finish implementing Feature X") ?? false)
     }
 
-    func testHandoffFallsBackToSourceTitleWhenNoExplicitOrResolvedGoal() throws {
+    /// The goal is the source session's own. A worker's brief in the folder is that worker's work, the
+    /// board's goal is whoever posted last, and the folder name is no goal at all: with none of its own,
+    /// the memo and the prompt name none.
+    func testWithNoGoalOfItsOwnTheHandoffNamesNone() throws {
         let coordinator = makeCoordinator()
         defer { stopAll(coordinator) }
 
         let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
-        coordinator.store.updateTitle(id: s1.id, to: "Refactor Database Layer")
+        let worker = try coordinator.newSession(cwd: folder, agent: .codex, mode: .new)
+        let inbox = InboxStore(workspaceRoot: folder)
+        let brief = try inbox.createTask(from: .claude, to: .codex, fromSessionId: s1.id,
+                                         prompt: "Worker B's brief", files: [])
+        try inbox.markTaskDelivered(taskId: brief.id, sessionId: worker.id)
+        _ = try BlackboardStore(workspaceRoot: folder).broadcastIntent(
+            agentKind: .codex, pid: 4242, goal: "The board's goal", files: [])
 
-        let s2 = try coordinator.handoff(from: s1.id, to: .codex, tier: .standard)
+        let s2 = try coordinator.handoff(from: s1.id, to: .codex)
 
-        let handoffURL = URL(fileURLWithPath: folder).appendingPathComponent(".linkc/HANDOFF.md")
-        let memo = try String(contentsOf: handoffURL, encoding: .utf8)
-        XCTAssertTrue(memo.contains("Refactor Database Layer"))
+        let memo = try handoffMemo(for: s2)
+        XCTAssertTrue(memo.contains("## Goal\n(None recorded)"), memo)
+        let prompt = try XCTUnwrap(coordinator.openingPrompts[s2.id]?.text)
+        XCTAssertFalse(prompt.contains("continue working on"), prompt)
+        XCTAssertTrue(prompt.hasSuffix("and continue."), prompt)
+    }
 
-        let prompt = coordinator.openingPrompts[s2.id]
-        XCTAssertNotNil(prompt)
-        XCTAssertTrue(prompt?.text.contains("Refactor Database Layer") ?? false)
+    /// A task the source session carries is its goal, whatever else is open in the folder.
+    func testATaskTheSessionCarriesIsItsGoal() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        let worker = try coordinator.newSession(cwd: folder, agent: .codex, mode: .new)
+        let inbox = InboxStore(workspaceRoot: folder)
+        let own = try inbox.createTask(from: .codex, to: .claude, prompt: "Ship the cache clock", files: [])
+        try inbox.markTaskDelivered(taskId: own.id, sessionId: s1.id)
+        let other = try inbox.createTask(from: .claude, to: .codex, fromSessionId: s1.id,
+                                         prompt: "Worker B's brief", files: [])
+        try inbox.markTaskDelivered(taskId: other.id, sessionId: worker.id)
+
+        let s2 = try coordinator.handoff(from: s1.id, to: .codex)
+
+        XCTAssertTrue(try handoffMemo(for: s2).contains("## Goal\nShip the cache clock"))
+        let prompt = try XCTUnwrap(coordinator.openingPrompts[s2.id]?.text)
+        XCTAssertTrue(prompt.hasSuffix("continue working on: Ship the cache clock"), prompt)
     }
 
     func testHandoffRefusesUnknownSourceSession() throws {
@@ -176,7 +208,6 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         defer { stopAll(coordinator) }
 
         let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
-        coordinator.store.updateTitle(id: s1.id, to: "Session 1 Task")
 
         let req = OpenRequest(
             agent: .codex,
