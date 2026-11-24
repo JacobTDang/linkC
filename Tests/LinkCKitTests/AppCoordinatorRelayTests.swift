@@ -4760,6 +4760,22 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(projects[0].sessions.first?.activity, .idle)
     }
 
+    /// The action line comes from the session's terminal, which the app reads: the sweep publishes
+    /// what the app's reader returns.
+    @MainActor
+    func testSweepPublishesTheActionTheAppReads() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "busy", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .working)
+        coordinator.sessionAction = { $0.id == "L1" ? "Running the full test suite" : nil }
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.read().first?.sessions.first?.action, "Running the full test suite")
+    }
+
     @MainActor
     func testProjectsFileIsRewrittenOnlyWhenContentsChange() async throws {
         let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))

@@ -34,6 +34,43 @@ final class KnownProjectsPublisherTests: XCTestCase {
         XCTAssertTrue(projectC.sessions.isEmpty)
     }
 
+    /// What a panel beside a session needs to show the other sessions: title, state, since when,
+    /// model, whether linkC started it for a task, and the action its row reads.
+    func testEachSessionCarriesWhatItsRowShows() throws {
+        let path = "/tmp/linkc-pub-detail-\(UUID().uuidString)"
+        let since = Date(timeIntervalSince1970: 1_790_000_000)
+        let sessions = [
+            Session(id: "A", cwd: path, title: "Fix glyphs", state: .working, stateChangedAt: since,
+                    agentKind: .claude, model: "claude-opus-5-5"),
+            Session(id: "B", cwd: path, title: "OpenCode default", state: .waitingPermission, stateChangedAt: since,
+                    agentKind: .codex, isWorker: true),
+            Session(id: "C", cwd: path, title: "Idle one", state: .finished, stateChangedAt: since, agentKind: .agy),
+        ]
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions,
+                                                       action: { "  \($0.title) step  " })
+
+        let open = try XCTUnwrap(projects.first).sessions
+        XCTAssertEqual(open.map(\.title), ["Fix glyphs", "OpenCode default", "Idle one"])
+        XCTAssertEqual(open.map(\.state), ["working", "waitingPermission", "finished"])
+        XCTAssertEqual(open.map(\.since), Array(repeating: "2026-09-21T14:13:20Z", count: 3))
+        XCTAssertEqual(open.map(\.model), ["claude-opus-5-5", nil, nil])
+        XCTAssertEqual(open.map(\.worker), [false, true, false])
+        XCTAssertEqual(open.map(\.action), ["Fix glyphs step", "OpenCode default step", nil])
+    }
+
+    /// Reading an action reads the session's terminal: one whose state shows none is never asked.
+    func testOnlyAWorkingOrPermissionWaitingSessionIsAskedForItsAction() {
+        let path = "/tmp/linkc-pub-ask-\(UUID().uuidString)"
+        let sessions = SessionState.allCases.filter { $0 != .ended }.map {
+            Session(id: $0.rawValue, cwd: path, title: $0.rawValue, state: $0)
+        }
+        var asked: [String] = []
+        _ = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions,
+                                           action: { asked.append($0.id); return nil })
+        XCTAssertEqual(asked.sorted(), ["waitingPermission", "working"])
+    }
+
     func testEndedSessionIsLeftOut() {
         let path = "/tmp/linkc-pub-ended-\(UUID().uuidString)"
         let sessions = [

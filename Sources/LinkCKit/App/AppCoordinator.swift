@@ -306,6 +306,9 @@ public final class AppCoordinator {
     private let mcpWorkspaces: @MainActor @Sendable () -> Set<String>
     /// Where the app publishes known projects for out-of-process MCP servers. Nil: publish nothing (tests).
     private let knownProjectsFile: KnownProjectsFile?
+    /// A session's action line, read from its terminal by the app, for `projects.json`. Asked only
+    /// of a session working or waiting on a permission.
+    public var sessionAction: ((Session) -> String?)?
     /// Sidebar project paths (`SidebarState.projectOrder`), folded into the known-projects list.
     private let sidebarProjects: @MainActor @Sendable () -> [String]
     /// Last contents written to `knownProjectsFile`, so a rewrite only happens when they change.
@@ -746,7 +749,8 @@ public final class AppCoordinator {
 
     private func publishKnownProjects(sidebar: [String], mcpFolders: Set<String>) {
         guard let knownProjectsFile else { return }
-        let projects = KnownProjectsPublisher.projects(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions)
+        let projects = KnownProjectsPublisher.projects(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions,
+                                                       action: { [sessionAction] in sessionAction?($0) })
         // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
         // contents next changed, and every MCP server would report linkC as not running.
         if lastPublishedProjects == projects,

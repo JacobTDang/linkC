@@ -261,6 +261,9 @@ final class AppModel {
             self.discord = discord
             try coordinator.start()
             coordinator.usageTracker = usage
+            // The action line a session's row reads also goes to projects.json, for a panel beside
+            // another session.
+            coordinator.sessionAction = { [weak self] in self?.currentActivity($0) }
             coordinator.panelSweep = { [weak self] in
                 await self?.sampleShells()
                 self?.sampleSidebar()

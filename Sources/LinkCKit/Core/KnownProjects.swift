@@ -15,11 +15,30 @@ public struct KnownProject: Codable, Equatable, Sendable {
         /// still reads in an older server.
         public let agent: String
         public let activity: Activity
+        /// What the session's row shows, for a panel beside another session. Absent in a file an
+        /// older app wrote.
+        public let title: String?
+        /// `SessionState.rawValue`, finer than `activity`: a permission wait reads apart from work.
+        public let state: String?
+        /// When `state` began, ISO 8601.
+        public let since: String?
+        public let model: String?
+        /// linkC started the session to carry a delegated task.
+        public let worker: Bool?
+        /// The action line the session's sidebar row reads while it works or waits on a permission.
+        public let action: String?
 
-        public init(id: String, agent: String, activity: Activity) {
+        public init(id: String, agent: String, activity: Activity, title: String? = nil, state: String? = nil,
+                    since: String? = nil, model: String? = nil, worker: Bool? = nil, action: String? = nil) {
             self.id = id
             self.agent = agent
             self.activity = activity
+            self.title = title
+            self.state = state
+            self.since = since
+            self.model = model
+            self.worker = worker
+            self.action = action
         }
 
         public var agentKind: AgentKind? { AgentKind(rawValue: agent) }

@@ -28,6 +28,27 @@ final class KnownProjectsTests: XCTestCase {
         XCTAssertEqual(try file.read(), projects)
     }
 
+    func testASessionsRowDetailsRoundTrip() throws {
+        let file = KnownProjectsFile(url: dir.appendingPathComponent("projects.json"))
+        let open = KnownProject.OpenSession(id: "S1", agent: "claude", activity: .busy, title: "Fix glyphs",
+                                            state: "working", since: "2026-09-21T14:13:20Z", model: "claude-opus-5-5",
+                                            worker: true, action: "Running tests…")
+        try file.write([project("/p/a", [open])])
+        XCTAssertEqual(try file.read().first?.sessions, [open])
+    }
+
+    /// An older app, or a server reading a file such an app wrote, has no row details.
+    func testAFileWithoutRowDetailsStillReads() throws {
+        let url = dir.appendingPathComponent("projects.json")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(#"{"projects":[{"path":"/p/a","sessions":[{"id":"S1","agent":"codex","activity":"idle"}]}]}"#.utf8)
+            .write(to: url)
+        let open = try XCTUnwrap(try KnownProjectsFile(url: url).read().first?.sessions.first)
+        XCTAssertEqual(open, KnownProject.OpenSession(id: "S1", agent: "codex", activity: .idle))
+        XCTAssertNil(open.title)
+        XCTAssertNil(open.since)
+    }
+
     func testAMissingFileMeansLinkCIsNotRunning() {
         let file = KnownProjectsFile(url: dir.appendingPathComponent("projects.json"))
         XCTAssertThrowsError(try file.read()) { error in
