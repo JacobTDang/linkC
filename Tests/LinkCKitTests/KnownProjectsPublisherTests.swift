@@ -116,6 +116,28 @@ final class KnownProjectsPublisherTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(projects.first).sessions.map(\.title), ["Fix the glyphs", "Claude 2"])
     }
 
+    func testEachSessionCarriesWhenItsPromptCacheGoesCold() throws {
+        let path = "/tmp/linkc-pub-cache-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "A", cwd: path, title: "exact", state: .finished, agentKind: .claude),
+            Session(id: "B", cwd: path, title: "guessed", state: .finished, agentKind: .codex),
+            Session(id: "C", cwd: path, title: "unknown", state: .finished, agentKind: .agy),
+        ]
+        let at = Date(timeIntervalSince1970: 1_790_003_600)
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions, cache: {
+            switch $0.id {
+            case "A": CacheExpiry(at: at, isEstimate: false)
+            case "B": CacheExpiry(at: at, isEstimate: true)
+            default: nil
+            }
+        })
+
+        let open = try XCTUnwrap(projects.first).sessions
+        XCTAssertEqual(open.map(\.cacheExpiresAt), ["2026-09-21T15:13:20Z", "2026-09-21T15:13:20Z", nil])
+        XCTAssertEqual(open.map(\.cacheEstimate), [nil, true, nil], "an exact expiry leaves the flag out")
+    }
+
     func testEndedSessionIsLeftOut() {
         let path = "/tmp/linkc-pub-ended-\(UUID().uuidString)"
         let sessions = [

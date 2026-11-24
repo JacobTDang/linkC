@@ -8,6 +8,12 @@ final class ClaudeSessionStatusTests: XCTestCase {
         XCTAssertEqual(status.modelId, "claude-opus-5-5")
     }
 
+    func testThePromptCacheExpiryIsWhenTheReportSaysItGoesCold() throws {
+        let body = #"{"prompt_cache":{"warm":true,"ttl":"1h","expires_at":1795560237}}"#
+        let status = try ClaudeSessionStatus.decode(Data(body.utf8))
+        XCTAssertEqual(status.cacheExpiresAt, Date(timeIntervalSince1970: 1_795_560_237))
+    }
+
     func testAReportWithoutAModelHasNone() throws {
         let status = try ClaudeSessionStatus.decode(Data(#"{"session_id":"c1"}"#.utf8))
         XCTAssertNil(status.modelId)

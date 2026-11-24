@@ -5,22 +5,32 @@ import Foundation
 public struct ClaudeSessionStatus: Equatable, Sendable {
     /// The model's id, such as "claude-opus-5-5": the same form as a session's launch model.
     public let modelId: String?
+    /// When the session's prompt cache goes cold, as the report says.
+    public let cacheExpiresAt: Date?
 
-    public init(modelId: String?) {
+    public init(modelId: String?, cacheExpiresAt: Date? = nil) {
         self.modelId = modelId
+        self.cacheExpiresAt = cacheExpiresAt
     }
 
     private struct Report: Decodable {
         struct Model: Decodable {
             let id: String?
         }
+        struct PromptCache: Decodable {
+            /// Epoch seconds.
+            let expires_at: Double?
+        }
         let model: Model?
+        let prompt_cache: PromptCache?
     }
 
     /// Throws when the report is not JSON; a field it lacks is nil.
     public static func decode(_ body: Data) throws -> ClaudeSessionStatus {
         let report = try JSONDecoder().decode(Report.self, from: body)
-        return ClaudeSessionStatus(modelId: report.model?.id)
+        return ClaudeSessionStatus(
+            modelId: report.model?.id,
+            cacheExpiresAt: report.prompt_cache?.expires_at.map(Date.init(timeIntervalSince1970:)))
     }
 }
 

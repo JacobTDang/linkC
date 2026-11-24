@@ -765,7 +765,12 @@ public final class AppCoordinator {
                                                            usageTracker?.sessionAgents(session.id).filter(\.isRunning).count ?? 0
                                                        },
                                                        liveModel: { [sessionStatuses] in sessionStatuses.status(for: $0.id)?.modelId },
-                                                       title: { titles[$0.id] })
+                                                       title: { titles[$0.id] },
+                                                       cache: { [sessionStatuses] session in
+                                                           CacheClock.expiry(
+                                                               for: session,
+                                                               reported: sessionStatuses.status(for: session.id)?.cacheExpiresAt)
+                                                       })
         // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
         // contents next changed, and every MCP server would report linkC as not running.
         if lastPublishedProjects == projects,

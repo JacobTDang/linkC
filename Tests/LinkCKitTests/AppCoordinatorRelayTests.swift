@@ -4833,6 +4833,24 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(try file.read().first?.sessions.first?.model, "claude-opus-5-5")
     }
 
+    /// A Claude session's status line says when its prompt cache goes cold; the sweep publishes it.
+    @MainActor
+    func testSweepPublishesWhenTheStatusLineSaysTheCacheGoesCold() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "warm", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .finished)
+        coordinator.sessionStatuses.accept(
+            sessionId: "L1", body: Data(#"{"prompt_cache":{"warm":true,"expires_at":1790003600}}"#.utf8))
+
+        await coordinator.runSweepTickForTests()
+
+        let open = try XCTUnwrap(try file.read().first?.sessions.first)
+        XCTAssertEqual(open.cacheExpiresAt, "2026-09-21T15:13:20Z")
+        XCTAssertNil(open.cacheEstimate)
+    }
+
     @MainActor
     func testProjectsFileIsRewrittenOnlyWhenContentsChange() async throws {
         let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
