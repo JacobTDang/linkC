@@ -274,6 +274,33 @@ test('a card is in its agent’s colour: the working line shimmers in that tone,
   await ui.unmount()
 })
 
+test('your own card shows this session’s last step and what each subagent is doing', async ($, on) => {
+  engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'ME', agent: 'claude', activity: 'busy' }] }] }))
+  on('tool.call', () => ({ result: {} }))
+  on('agent.spawn', () => ({ agentId: 'a1', model: 'claude-sonnet-5-5' }))
+  on('turn.complete', () => ({ text: '', reason: 'answer' }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const line = async () => {
+    const ui = await $.ui.mount(PANE)
+    const text = (await ui.findAll({ type: 'Client' })).map(c => (c.props.props as { text?: string }).text)
+    await ui.unmount()
+    return text
+  }
+
+  await $.tool.call({ tool: 'Bash', command: 'swift test', description: 'Run the test suite' })
+  expect(await line()).toEqual(['Run the test suite'])
+
+  await $.agent.spawn({
+    tool_use_id: 't1', prompt: 'review the PR', description: 'code-review', subagentType: 'general-purpose',
+    provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-opus-5-5', background: true,
+  } as unknown as Parameters<typeof $.agent.spawn>[0])
+  await $.tool.call({ tool: 'Grep', pattern: 'SwiftTerm', agentId: 'a1' })
+  expect(await line()).toEqual(['Run the test suite · code-review: Searching SwiftTerm'])
+
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 'u1' })
+  expect(await line()).toEqual(['Run the test suite'])
+})
+
 test('a model id reads as a person names it', () => {
   expect(modelLabel('Opus 5.5')).toBe('Opus 5.5')
   expect(modelLabel('claude-opus-5-5')).toBe('Opus 5.5')

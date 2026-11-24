@@ -22,8 +22,11 @@ export type Agents = { rows: AgentRow[]; error: string | null; me: string | null
 /** One meter in the band above the prompt: `context`, or a plan limit such as `7d`. */
 export type Meter = { label: string; percent: number }
 
+/** What this session itself is doing right now: its last step, and each running subagent's. */
+export type SelfActivity = { main: string | null; subagents: { id: string; name: string; activity: string | null }[] }
+
 declare module 'claude-code' {
   interface PluginState {
-    'linkc-agents': { agents: Shaped<Agents>; meters: Shaped<Meter[]>; isCompacting: boolean }
+    'linkc-agents': { agents: Shaped<Agents>; meters: Shaped<Meter[]>; isCompacting: boolean; self: Shaped<SelfActivity> }
   }
 }

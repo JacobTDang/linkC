@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage } from 'claude-code'
 
-import type { AgentRow, Agents, Meter } from '../types'
+import type { AgentRow, Agents, Meter, SelfActivity } from '../types'
 import type { ShimmerProps } from './shimmer'
 
 const FILETREE = 'filetree'
@@ -72,6 +72,34 @@ const agents = atom({ plugin: 'linkc-agents', key: 'agents' } as const, { rows: 
 })
 
 const meters = atom({ plugin: 'linkc-agents', key: 'meters' } as const, [], { shape: 'meters-1' })
+const self = atom({ plugin: 'linkc-agents', key: 'self' } as const, { main: null, subagents: [] } as SelfActivity, {
+  shape: 'self-1',
+})
+
+const basename = (path: unknown) => (typeof path === 'string' ? path.split('/').pop() || path : '')
+
+/** A tool call as a short phrase, the way a footer reads a step: what it does, not its arguments. */
+function toolLabel(e: { tool: string } & Record<string, unknown>): string {
+  const text = (key: string) => (typeof e[key] === 'string' ? (e[key] as string) : '')
+  switch (e.tool) {
+    case 'Bash': return text('description') || `$ ${text('command')}`
+    case 'Read': return `Reading ${basename(e.file_path)}`
+    case 'Edit': case 'MultiEdit': return `Editing ${basename(e.file_path)}`
+    case 'Write': return `Writing ${basename(e.file_path)}`
+    case 'Grep': return `Searching ${text('pattern')}`
+    case 'Glob': return `Finding ${text('pattern')}`
+    case 'WebSearch': return `Searching the web for ${text('query')}`
+    case 'WebFetch': return 'Reading a web page'
+    default: return e.tool.startsWith('mcp__') ? `Using ${e.tool.split('__').pop()}` : e.tool
+  }
+}
+
+/** Your own card's line: this session's last step, then the first running subagent and its step. */
+function selfDetail(s: SelfActivity): string {
+  const [first, ...rest] = s.subagents
+  const sub = first ? `${first.name}${first.activity ? `: ${first.activity}` : ''}${rest.length ? ` +${rest.length}` : ''}` : ''
+  return [s.main, sub].filter(Boolean).join(' · ')
+}
 const isCompacting = atom({ plugin: 'linkc-agents', key: 'isCompacting' } as const, false)
 
 const BAR_CELLS = 8
@@ -296,8 +324,38 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) await refreshMeters($)
+    if (e.agentId === undefined) {
+      await refreshMeters($)
+      await update($, self, s => ({ ...s, main: null }))
+    } else {
+      const done = e.agentId
+      await update($, self, s => ({ ...s, subagents: s.subagents.filter(a => a.id !== done) }))
+    }
     return next(e)
+  })
+
+  // What this session and its subagents do, for your own card: each tool call is its maker's step.
+  on('tool.call', async ($, e, next) => {
+    if (e.tool !== 'Agent') {
+      const label = toolLabel(e as { tool: string } & Record<string, unknown>)
+      const maker = e.agentId
+      await update($, self, s =>
+        maker === undefined
+          ? { ...s, main: label }
+          : { ...s, subagents: s.subagents.map(a => (a.id === maker ? { ...a, activity: label } : a)) },
+      )
+    }
+    return next(e)
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (started.deny === undefined) {
+      const id = started.agentId ?? e.tool_use_id
+      const name = e.description || e.subagentType
+      await update($, self, s => ({ ...s, subagents: [...s.subagents.filter(a => a.id !== id), { id, name, activity: null }] }))
+    }
+    return started
   })
 
   // The band above the prompt: every meter in one box, label, bar and padded percent, so the
@@ -347,6 +405,8 @@ export const register: Register = on => {
     const top = Math.max(5, Math.floor(body / 2))
     const tree = await next({ ...e, props: { ...e.props, scroll: e.props.scroll && { ...e.props.scroll, bodyRows: top } } })
     const { rows, error, me } = await read($, agents)
+    // This session knows its own steps first-hand, ahead of what linkC publishes about it.
+    const mine = selfDetail(await read($, self))
     const now = Date.now()
     // A rule, the header and a blank line, then three rows a card: its two lines and a gap.
     const fits = Math.max(1, Math.floor((body - top - 3 + 1) / 3))
@@ -372,11 +432,13 @@ export const register: Register = on => {
         {shown.map(row => {
           const tone = AGENT_TONE[row.agent] ?? GREY
           const bar = tone.solid
-          const state = stateOf(row)
+          const isMe = row.id === me
+          const published = stateOf(row)
+          const ownWork = isMe && mine !== '' && !published.needsYou
+          const state = ownWork ? (STATES.working ?? published) : published
           // A card at work or waiting on you is in its full tone; one at rest is dimmed.
           const titleColor = state.rank <= WORKING_RANK ? tone.solid : (tone.dim[3] ?? MUTED)
-          const isMe = row.id === me
-          const detail = detailOf(row, state)
+          const detail = ownWork ? mine : detailOf(row, state)
           const cache = cacheLabel(row, now)
           return (
             <Box flexDirection="column">
