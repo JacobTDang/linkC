@@ -617,11 +617,11 @@ public final class MCPServer: Sendable {
             ],
             [
                 "name": "linkc_delegate_task",
-                "description": "Delegate a coding task, subtask, or follow-up prompt to a peer agent (e.g. \(AgentKind.peerList)), claiming files and enqueuing the prompt for delivery. Freebuff is only for long-running work (deep research, large implementations, reverse engineering), because a Freebuff session costs the same however short it is.",
+                "description": "Delegate a coding task, subtask, or follow-up prompt to a peer agent (e.g. \(AgentKind.peerList)), claiming files and enqueuing the prompt for delivery. Omit `to` (or pass \"auto\") to let linkC pick the agent, tier and effort. Freebuff is only for long-running work (deep research, large implementations, reverse engineering), because a Freebuff session costs the same however short it is.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList))"],
+                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList)), or \"auto\" / omitted to let linkC route"],
                         "prompt": ["type": "string", "description": "Task instructions and context to inject into recipient's terminal"],
                         "files": ["type": "array", "items": ["type": "string"], "description": "Optional list of files the delegated task will touch"],
                         "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
@@ -629,6 +629,7 @@ public final class MCPServer: Sendable {
                         "force": ["type": "boolean", "description": "Override an existing lease held by another assignee"],
                         "tier": ["type": "string", "description": "Model tier for this task: light, standard or deep. Defaults to the agent's configured default tier. Pass tier or model, not both."],
                         "model": ["type": "string", "description": "A specific model of the target agent, as an alternative to tier. Must be one the agent lists. Pass tier or model, not both."],
+                        "effort": ["type": "string", "description": "Reasoning effort for the worker launch: low, medium, high, xhigh or max. Defaults to the agent's configured effort for the tier. Ignored for agents that cannot take an effort from linkC."],
                         "project": ["type": "string", "description": "Optional. Another project's folder name or path; the task is created there."],
                         "verify": [
                             "type": "object",
@@ -643,7 +644,7 @@ public final class MCPServer: Sendable {
                             "required": ["branch", "base_sha", "command", "test_paths"]
                         ]
                     ],
-                    "required": ["to", "prompt"]
+                    "required": ["prompt"]
                 ]
             ],
             [
@@ -1932,23 +1933,8 @@ public final class MCPServer: Sendable {
                 return toolResultResponse(id: id, text: "Error: \(crossProject.name)'s folder \(crossProject.path) no longer exists.", isError: true)
             }
         }
-        guard let toStr = args["to"] as? String, !toStr.isEmpty else {
-            return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
-        }
-        guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
-            return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
-        }
-        guard toAgent != .shell else {
-            return toolResultResponse(id: id, text: "Error: Cannot delegate tasks to interactive terminal shell. Target an AI CLI agent (\(AgentKind.peerList)).", isError: true)
-        }
         guard let prompt = args["prompt"] as? String, !prompt.isEmpty else {
             return toolResultResponse(id: id, text: "Error: Missing required argument 'prompt'.", isError: true)
-        }
-        if isQuestion, toAgent == .freebuff {
-            return toolResultResponse(id: id, text: "Error: Freebuff is for long-running work; ask another agent.", isError: true)
-        }
-        if toAgent == .freebuff, args["tier"] != nil || args["model"] != nil {
-            return toolResultResponse(id: id, text: "Error: Freebuff has no tiers; it runs its own default model.", isError: true)
         }
 
         let files = args["files"] as? [String] ?? []
@@ -1971,6 +1957,119 @@ public final class MCPServer: Sendable {
         // Read once per request: a stable view of the mapping for the whole handler,
         // never cached across calls — the next request reads whatever is on disk then.
         let settings = modelSettings()
+
+        // `to` omitted or "auto" → pure Router picks agent, tier and effort. An explicit `to`
+        // keeps today's behaviour. When routing, tier/model/effort from the caller are refused
+        // so the tool result's reason is the whole story.
+        let toRaw: String?
+        if let raw = args["to"] {
+            guard let text = raw as? String else {
+                return toolResultResponse(id: id, text: "Error: to must be a string.", isError: true)
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            toRaw = trimmed.isEmpty ? nil : trimmed
+        } else {
+            toRaw = nil
+        }
+        let autoRoute = toRaw == nil || toRaw?.lowercased() == "auto"
+        var routeReason: String?
+
+        let toAgent: AgentKind
+        if autoRoute {
+            if isQuestion {
+                return toolResultResponse(id: id, text: "Error: an ask needs an explicit `to` agent — auto-routing is for linkc_delegate_task.", isError: true)
+            }
+            if args["tier"] != nil || args["model"] != nil || args["effort"] != nil {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: when to is auto (or omitted), omit tier, model and effort — the router picks them.",
+                    isError: true)
+            }
+            do {
+                let decision = try routeTask(prompt: prompt, settings: settings, destStore: destStore)
+                toAgent = decision.agent
+                routeReason = decision.reason
+                // Stash the router's tier/effort into args so the shared resolution below sees them
+                // the same way an explicit caller would.
+                var routed = args
+                routed["tier"] = decision.tier.rawValue
+                if let effort = decision.effort {
+                    routed["effort"] = effort.rawValue
+                }
+                // Fall through using a local copy — see tierArg / effortArg resolution below.
+                return try createDelegatedTaskResolved(
+                    id: id, caller: caller, args: routed, destStore: destStore, destRoot: destRoot,
+                    crossProject: crossProject, isQuestion: isQuestion,
+                    toAgent: toAgent, prompt: prompt, files: files, force: force,
+                    verification: verification, settings: settings, routeReason: routeReason)
+            } catch {
+                return toolResultResponse(id: id, text: "Error: \(error.localizedDescription)", isError: true)
+            }
+        } else {
+            guard let parsed = AgentKind(rawValue: toRaw!.lowercased()) else {
+                return toolResultResponse(id: id, text: "Error: Unknown agent '\(toRaw!)'. Supported agents: \(AgentKind.peerList).", isError: true)
+            }
+            toAgent = parsed
+        }
+        guard toAgent != .shell else {
+            return toolResultResponse(id: id, text: "Error: Cannot delegate tasks to interactive terminal shell. Target an AI CLI agent (\(AgentKind.peerList)).", isError: true)
+        }
+        if isQuestion, toAgent == .freebuff {
+            return toolResultResponse(id: id, text: "Error: Freebuff is for long-running work; ask another agent.", isError: true)
+        }
+        if toAgent == .freebuff, args["tier"] != nil || args["model"] != nil {
+            return toolResultResponse(id: id, text: "Error: Freebuff has no tiers; it runs its own default model.", isError: true)
+        }
+
+        return try createDelegatedTaskResolved(
+            id: id, caller: caller, args: args, destStore: destStore, destRoot: destRoot,
+            crossProject: crossProject, isQuestion: isQuestion,
+            toAgent: toAgent, prompt: prompt, files: files, force: force,
+            verification: verification, settings: settings, routeReason: nil)
+    }
+
+    /// Gathers live limits and usage, then asks the pure `Router` for an agent/tier/effort.
+    private func routeTask(
+        prompt: String, settings: AgentModelSettings, destStore: InboxStore
+    ) throws -> RouterDecision {
+        let installed = AgentKind.peers.filter { AgentDescriptor.resolveExecutable(for: $0) != nil }
+        guard !installed.isEmpty else {
+            throw LinkCError.process("no agent CLI is installed to route to")
+        }
+        var limits: [RouterLimit] = []
+        for agent in installed {
+            for limit in try destStore.liveLimits(agent: agent) {
+                limits.append(RouterLimit(agent: limit.agent, pool: limit.pool))
+            }
+        }
+        var tight = Set<AgentKind>()
+        for agent in installed {
+            if usageReaders[agent]?().windowNeedingWarning != nil {
+                tight.insert(agent)
+            }
+        }
+        return try Router.route(
+            prompt: prompt, installed: installed, settings: settings,
+            limits: limits, usageTight: tight, activeInFolder: nil)
+    }
+
+    /// Shared body after `to` (and optional auto-route) has been resolved.
+    private func createDelegatedTaskResolved(
+        id: Any?,
+        caller: MCPCaller,
+        args: [String: Any],
+        destStore: InboxStore,
+        destRoot: String,
+        crossProject: (name: String, path: String)?,
+        isQuestion: Bool,
+        toAgent: AgentKind,
+        prompt: String,
+        files: [String],
+        force: Bool,
+        verification: Verification?,
+        settings: AgentModelSettings,
+        routeReason: String?
+    ) throws -> Data? {
         let modelArg: String?
         if let raw = args["model"] {
             guard let text = raw as? String else {
@@ -1995,6 +2094,16 @@ public final class MCPServer: Sendable {
         }
         if modelArg != nil, tierArg != nil {
             return toolResultResponse(id: id, text: "Error: pass tier or model, not both", isError: true)
+        }
+        let effortArg: String?
+        if let raw = args["effort"] {
+            guard let text = raw as? String else {
+                return toolResultResponse(id: id, text: "Error: effort must be low, medium, high, xhigh or max.", isError: true)
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            effortArg = trimmed.isEmpty ? nil : trimmed
+        } else {
+            effortArg = nil
         }
 
         // The cache is read only by a check that needs it: a model named by hand, or a tier of
@@ -2185,6 +2294,31 @@ public final class MCPServer: Sendable {
             }
         }
 
+        // Effort: explicit arg, else the agent's configured effort for the tier (when it supports one).
+        let effort: ReasoningEffort?
+        if let effortArg {
+            guard let parsed = ReasoningEffort(rawValue: effortArg.lowercased()) else {
+                return toolResultResponse(
+                    id: id, text: "Error: effort must be low, medium, high, xhigh or max.", isError: true)
+            }
+            switch AgentEffortSupport.forAgent(toAgent) {
+            case .unsupported(let reason):
+                return toolResultResponse(id: id, text: "Error: \(reason)", isError: true)
+            case .levels(let levels):
+                guard levels.contains(parsed) else {
+                    return toolResultResponse(
+                        id: id,
+                        text: "Error: \(toAgent.rawValue) does not accept effort \(parsed.rawValue) — supported: \(levels.map(\.rawValue).joined(separator: ", ")).",
+                        isError: true)
+                }
+                effort = parsed
+            }
+        } else if let tier, case .levels = AgentEffortSupport.forAgent(toAgent) {
+            effort = settings.effort(for: toAgent, tier: tier) ?? ReasoningEffort.default(for: tier)
+        } else {
+            effort = nil
+        }
+
         // The limit that applies is the one in the project that does the work, for the model it would run.
         let limitModel = model ?? tier.flatMap { settings.model(for: toAgent, tier: $0) }
         if let limitStatus = try destStore.isAgentLimited(agent: toAgent, model: limitModel) {
@@ -2198,7 +2332,7 @@ public final class MCPServer: Sendable {
         let task = try destStore.createTask(
             from: caller.agent, to: toAgent,
             fromSessionId: callerSessionId(),
-            tier: tier, model: model,
+            tier: tier, model: model, effort: effort,
             prompt: prompt, files: files,
             hop: try newTaskHop(),
             force: force, verification: verification,
@@ -2220,13 +2354,14 @@ public final class MCPServer: Sendable {
             }
         }
 
+        let routeNote = routeReason.map { " Routed: \($0)." } ?? ""
         let successText: String
         if let crossProject {
-            successText = "Task \(task.shortId) queued for \(toAgent.displayName) in \(crossProject.name). Track with linkc_get_task(\"\(task.id)\")."
+            successText = "Task \(task.shortId) queued for \(toAgent.displayName) in \(crossProject.name).\(routeNote) Track with linkc_get_task(\"\(task.id)\")."
         } else if let verification {
-            successText = "Task \(task.shortId) created. linkC will confirm the tests fail at \(VerificationRunner.short(verification.baseSha)) before delivery."
+            successText = "Task \(task.shortId) created.\(routeNote) linkC will confirm the tests fail at \(VerificationRunner.short(verification.baseSha)) before delivery."
         } else {
-            successText = "Task \(task.id) queued for \(toAgent.displayName). It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
+            successText = "Task \(task.id) queued for \(toAgent.displayName).\(routeNote) It will be delivered when \(toAgent.displayName) is idle. Track with linkc_get_task(\"\(task.id)\")."
         }
 
         var usageNote = ""

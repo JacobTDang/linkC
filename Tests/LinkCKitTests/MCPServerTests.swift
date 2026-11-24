@@ -444,16 +444,16 @@ final class MCPServerTests: XCTestCase {
     }
 
     func testDelegateTaskValidationErrors() throws {
-        // Missing 'to'
+        // Omitting `to` now auto-routes; an empty `to` is treated the same.
         let req1 = """
-        {"jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": {"name": "linkc_delegate_task", "arguments": {"prompt": "do something"}}}
+        {"jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": {"name": "linkc_delegate_task", "arguments": {"to": "auto", "prompt": "do something", "tier": "light"}}}
         """.data(using: .utf8)!
         let res1 = try XCTUnwrap(server.handleMessage(req1))
         let json1 = try JSONSerialization.jsonObject(with: res1) as? [String: Any]
         let resResult1 = json1?["result"] as? [String: Any]
         XCTAssertEqual(resResult1?["isError"] as? Bool, true)
         let text1 = ((resResult1?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
-        XCTAssertTrue(text1.contains("Missing required argument 'to'"))
+        XCTAssertTrue(text1.contains("omit tier"), text1)
 
         // Unknown agent
         let req2 = """

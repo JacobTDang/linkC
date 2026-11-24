@@ -106,7 +106,7 @@ hand off work and share context with each other:
 
 | Tool | Purpose |
 |---|---|
-| `linkc_delegate_task` | Give a task to another agent, with an optional model tier or one of the agent's listed models, and optional verification. With `project`, the task goes to an agent in another project. |
+| `linkc_delegate_task` | Give a task to another agent, with an optional model tier or one of the agent's listed models, optional reasoning effort, and optional verification. Omit `to` (or pass `auto`) to let linkC pick the agent, tier and effort from the prompt and live limits. With `project`, the task goes to an agent in another project. |
 | `linkc_ask` | Ask an agent in another project a question. The answer, at most 1,000 characters, comes back to the session that asked. |
 | `linkc_list_projects` | List the other projects linkC knows, with each open session's agent and whether it is idle or busy. |
 | `linkc_start_task` | Accept a task that linkC delivered. |
@@ -128,8 +128,17 @@ hand off work and share context with each other:
 linkC delivers tasks and messages by typing them into the receiving agent's terminal — every
 message queued for one agent goes in as a single paste. A task can carry a model tier (light,
 standard or deep), configured per agent in **Settings > Models**, or a single model from that
-agent's list. A verified task also carries a test command: linkC runs it itself, and the work only
-counts as done if the tests fail before it and pass after.
+agent's list. Each tier also has a reasoning effort (defaults: light → low, standard → medium,
+deep → high). Claude and Antigravity get `--effort`; Codex gets `-c model_reasoning_effort=…`;
+Crush gets a `reasoning_effort` key in its per-session config. Cursor Agent / Grok bake effort into
+model ids and cannot be pinned by linkC; OpenCode and Kilo's TUIs have no effort flag — Settings
+says so beside those agents. When `linkc_delegate_task` omits `to` (or passes `auto`), a pure
+router picks the agent, tier and effort from the prompt (trivial edits → light; web research /
+browsing → light on a browse-capable agent, preferring agy; ordinary work → standard; architecture,
+hard debugging, security, migrations → deep), skips limited agents and pools, prefers usage
+headroom, and ties to the agent already active in the folder. A verified task also carries a test
+command: linkC runs it itself, and the work only counts as done if the tests fail before it and
+pass after.
 
 linkC reads each agent's models from its own CLI (`agy models`, `cursor-agent models`,
 `opencode models`, `kilo models`, `crush models`) at launch, every 6 hours, when Settings opens and
@@ -254,7 +263,7 @@ is active, and that session's tab is selected. Click a notification to jump to i
 
 - **Tool servers** — your Docker containers and Compose projects: start, stop, restart, and open
   their logs in a terminal.
-- **Settings** — launch at login, the keyboard shortcut, per-tier models, the usage footer,
+- **Settings** — launch at login, the keyboard shortcut, per-tier models and effort, the usage footer,
   watched endpoints, and Discord webhooks.
 - **Servers** (sidebar) — your running Docker servers.
 - **Cloud** (sidebar) — your Oracle Cloud instances, Supabase projects, and watched endpoints.

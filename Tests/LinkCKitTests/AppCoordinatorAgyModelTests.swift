@@ -89,9 +89,11 @@ final class AppCoordinatorAgyModelTests: XCTestCase {
 
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .agy, mode: .new, tier: .light)
 
-        XCTAssertEqual(launchedArguments(of: session, count: yolo.count + 2),
-                       yolo + ["--model", "gemini-3.8-flash-low"])
-        XCTAssertEqual(session.model, "gemini-3.8-flash-low")
+        // Light's configured id is gemini-3.8-flash-low; launch strips the effort suffix and
+        // passes --effort low so agy cannot see a conflicting leveled id + effort flag.
+        XCTAssertEqual(launchedArguments(of: session, count: yolo.count + 4),
+                       yolo + ["--model", "gemini-3.8-flash", "--effort", "low"])
+        XCTAssertEqual(session.model, "gemini-3.8-flash")
         XCTAssertEqual(session.modelTier, .light)
     }
 
