@@ -27,9 +27,12 @@ public struct KnownProject: Codable, Equatable, Sendable {
         public let worker: Bool?
         /// The action line the session's sidebar row reads while it works or waits on a permission.
         public let action: String?
+        /// Subagents still running, absent when none: a session whose own turn ended can still be at work.
+        public let subagents: Int?
 
         public init(id: String, agent: String, activity: Activity, title: String? = nil, state: String? = nil,
-                    since: String? = nil, model: String? = nil, worker: Bool? = nil, action: String? = nil) {
+                    since: String? = nil, model: String? = nil, worker: Bool? = nil, action: String? = nil,
+                    subagents: Int? = nil) {
             self.id = id
             self.agent = agent
             self.activity = activity
@@ -39,6 +42,7 @@ public struct KnownProject: Codable, Equatable, Sendable {
             self.model = model
             self.worker = worker
             self.action = action
+            self.subagents = subagents
         }
 
         public var agentKind: AgentKind? { AgentKind(rawValue: agent) }

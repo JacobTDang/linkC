@@ -4776,6 +4776,31 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(try file.read().first?.sessions.first?.action, "Running the full test suite")
     }
 
+    /// The subagents a session's transcript shows running are counted in its row.
+    @MainActor
+    func testSweepPublishesTheSessionsRunningSubagents() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "fan-out", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .finished)
+        let transcript = tempDir.appendingPathComponent("t.jsonl")
+        let spawn = """
+        {"type":"assistant","timestamp":"2026-07-23T04:00:00Z","message":{"content":[\
+        {"type":"tool_use","id":"toolu_A","name":"Agent",\
+        "input":{"description":"Survey","subagent_type":"Explore","prompt":"..."}}]}}
+        """
+        try (spawn + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+        let tracker = UsageTracker(projectsDir: tempDir)
+        tracker.bind(sessionId: "L1", transcriptPath: transcript.path)
+        tracker.refreshSession("L1")
+        coordinator.usageTracker = tracker
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.read().first?.sessions.first?.subagents, 1)
+    }
+
     @MainActor
     func testProjectsFileIsRewrittenOnlyWhenContentsChange() async throws {
         let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))

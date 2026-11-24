@@ -103,8 +103,20 @@ function within(root: string, path: string): string | null {
   return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : null
 }
 
+function subagentWords(count: number): string {
+  return `${count} subagent${count === 1 ? '' : 's'}`
+}
+
+/**
+ * How a card's state reads. A session whose own turn ended while its subagents still run is at
+ * work, not idle or waiting; a permission wait or an error still comes first.
+ */
 function stateOf(row: AgentRow): StateLook {
-  return STATES[row.state ?? row.activity] ?? IDLE
+  const look = STATES[row.state ?? row.activity] ?? IDLE
+  const running = row.subagents ?? 0
+  const isWorking = row.state === 'working' || (row.state === undefined && row.activity === 'busy')
+  if (running === 0 || isWorking || row.state === 'waitingPermission' || row.state === 'error') return look
+  return { glyph: '●', label: `running ${subagentWords(running)}`, color: GREEN, rank: 3 }
 }
 
 async function load($: EngineInterface, file: string, root: string): Promise<Pick<Agents, 'rows' | 'error'>> {
@@ -253,7 +265,7 @@ export const register: Register = on => {
                 <Text color={bar}>{'┃ '}</Text>
                 <Text bold={state.needsYou} color={state.color}>{`${state.glyph} `}</Text>
                 <Box flexGrow={1} flexShrink={1}>
-                  <Text color={state.needsYou ? state.color : MUTED} wrap="truncate-end">{`${row.action ?? state.label}${where}`}</Text>
+                  <Text color={state.needsYou ? state.color : MUTED} wrap="truncate-end">{`${row.action ?? state.label}${row.action && row.subagents ? ` · ${subagentWords(row.subagents)}` : ''}${where}`}</Text>
                 </Box>
                 <Text color={MUTED}>{` ${age(row.since, now)} `}</Text>
               </Box>

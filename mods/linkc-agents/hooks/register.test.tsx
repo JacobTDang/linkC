@@ -27,6 +27,7 @@ const PROJECTS = {
       path: '/repo',
       sessions: [
         { id: 'IDLE', agent: 'codex', activity: 'idle', title: 'Idle one', state: 'ready', since: minutesAgo(12) },
+        { id: 'FAN', agent: 'claude', activity: 'idle', title: 'Fan out', state: 'finished', since: minutesAgo(2), subagents: 2 },
         { id: 'ME', agent: 'claude', activity: 'busy', title: 'Multi-provider', state: 'working', since: minutesAgo(4), action: 'Running the suite' },
       ],
     },
@@ -92,6 +93,16 @@ test('a card reads its action or state, where it runs, its age, and marks this s
   expect(all).toContain(' · you')
   expect(all).toContain(' 4m ')
   expect(all).toContain(' 12m ')
+})
+
+test('a session whose turn ended but whose subagents still run reads as working', async ($, on) => {
+  engine(on, JSON.stringify(PROJECTS))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const all = await texts(await $.ui.mount(PANE))
+
+  expect(all).toContain('running 2 subagents')
+  expect(all.indexOf('Fan out')).toBeLessThan(all.indexOf('Idle one'))
 })
 
 test('a file an older linkC wrote shows the agent and its activity, once', async ($, on) => {

@@ -12,7 +12,8 @@ public enum KnownProjectsPublisher {
     /// anything else → .busy. Each session also carries what its row shows; `action` reads the action
     /// line of a session working or waiting on a permission, and is never asked of another.
     public static func projects(
-        sidebar: [String], mcpFolders: Set<String>, sessions: [Session], action: (Session) -> String? = { _ in nil }
+        sidebar: [String], mcpFolders: Set<String>, sessions: [Session], action: (Session) -> String? = { _ in nil },
+        subagents: (Session) -> Int = { _ in 0 }
     ) -> [KnownProject] {
         let (paths, liveByPath) = resolve(sidebar: sidebar, mcpFolders: mcpFolders, sessions: sessions)
         return paths.sorted().map { path in
@@ -21,6 +22,7 @@ public enum KnownProjectsPublisher {
                 .map { session in
                     let shown = ShownActivity.applies(to: session.state)
                         ? ShownActivity(activity: action(session), state: session.state) : nil
+                    let running = subagents(session)
                     return KnownProject.OpenSession(
                         id: session.id,
                         agent: session.agentKind.rawValue,
@@ -30,7 +32,8 @@ public enum KnownProjectsPublisher {
                         since: session.stateChangedAt.formatted(.iso8601),
                         model: session.model,
                         worker: session.isWorker,
-                        action: shown?.text
+                        action: shown?.text,
+                        subagents: running > 0 ? running : nil
                     )
                 }
             return KnownProject(path: path, sessions: open)

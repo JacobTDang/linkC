@@ -750,7 +750,10 @@ public final class AppCoordinator {
     private func publishKnownProjects(sidebar: [String], mcpFolders: Set<String>) {
         guard let knownProjectsFile else { return }
         let projects = KnownProjectsPublisher.projects(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions,
-                                                       action: { [sessionAction] in sessionAction?($0) })
+                                                       action: { [sessionAction] in sessionAction?($0) },
+                                                       subagents: { [usageTracker] session in
+                                                           usageTracker?.sessionAgents(session.id).filter(\.isRunning).count ?? 0
+                                                       })
         // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
         // contents next changed, and every MCP server would report linkC as not running.
         if lastPublishedProjects == projects,

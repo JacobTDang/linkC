@@ -11,6 +11,7 @@ export type AgentRow = {
   model?: string
   worker?: boolean
   action?: string
+  subagents?: number
 }
 
 /** What the bottom half shows: the repo's sessions, or why they could not be read. */

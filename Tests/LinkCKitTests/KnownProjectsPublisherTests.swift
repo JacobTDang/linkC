@@ -71,6 +71,21 @@ final class KnownProjectsPublisherTests: XCTestCase {
         XCTAssertEqual(asked.sorted(), ["waitingPermission", "working"])
     }
 
+    /// A session whose own turn ended can still be running subagents: its row says how many.
+    func testEachSessionCarriesItsRunningSubagentCount() throws {
+        let path = "/tmp/linkc-pub-subagents-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "BUSY", cwd: path, title: "fan-out", state: .finished),
+            Session(id: "CALM", cwd: path, title: "quiet", state: .finished),
+        ]
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions,
+                                                       subagents: { $0.id == "BUSY" ? 3 : 0 })
+
+        let open = try XCTUnwrap(projects.first).sessions
+        XCTAssertEqual(open.map(\.subagents), [3, nil], "none running leaves the field out")
+    }
+
     func testEndedSessionIsLeftOut() {
         let path = "/tmp/linkc-pub-ended-\(UUID().uuidString)"
         let sessions = [
