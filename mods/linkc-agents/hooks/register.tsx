@@ -198,7 +198,8 @@ function detailOf(row: AgentRow, state: StateLook): string {
     ? [row.action, subagents].filter(Boolean).join(' · ')
     : isAtWork(row) ? (subagents ? `running ${subagents}` : '') : state.label
   const where = placeOf(row.where)
-  return [words, where].filter(Boolean).join(' ')
+  // A session at work that linkC has said nothing about yet still shimmers on something.
+  return [words, where].filter(Boolean).join(' ') || (isAtWork(row) ? '…' : '')
 }
 
 /** When the card's prompt cache goes cold: `~` marks a guess, orange the last five minutes. */

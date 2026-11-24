@@ -248,6 +248,17 @@ test('a working card shows its action, never the word for its state', async ($, 
   await ui.unmount()
 })
 
+test('a working card with nothing to tell yet still shows it works, never an empty line', async ($, on) => {
+  engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'A', agent: 'claude', activity: 'busy' }] }] }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(PANE)
+  const shimmering = (await ui.findAll({ type: 'Client' })).map(c => (c.props.props as { text?: string }).text)
+
+  expect(shimmering).toEqual(['…'])
+  await ui.unmount()
+})
+
 test('a card is in its agent’s colour: the working line shimmers in that tone, as filetree’s do', async ($, on) => {
   engine(on, JSON.stringify(PROJECTS))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
