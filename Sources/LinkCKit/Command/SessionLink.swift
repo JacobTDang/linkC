@@ -7,14 +7,6 @@ public enum SessionLink {
     public static let scheme = "linkc"
     private static let host = "session"
 
-    public static func url(for sessionId: String) -> URL {
-        var parts = URLComponents()
-        parts.scheme = scheme
-        parts.host = host
-        parts.path = "/\(sessionId)"
-        return parts.url!
-    }
-
     /// The session a link names, or nil when it is not a session link.
     public static func sessionId(in url: URL) -> String? {
         guard url.scheme == scheme, url.host == host else { return nil }

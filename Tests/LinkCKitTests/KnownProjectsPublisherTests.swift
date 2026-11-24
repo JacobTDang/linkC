@@ -101,6 +101,21 @@ final class KnownProjectsPublisherTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(projects.first).sessions.map(\.model), ["gemini-3.8-flash-medium", "Opus 5.5"])
     }
 
+    /// A session's own `title` is its folder's name; its row reads the conversation's title, a held
+    /// task's, or the agent's numbered name. The row's wins, so two sessions in one folder differ.
+    func testTheRowsTitleWinsOverTheFolderName() throws {
+        let path = "/tmp/linkc-pub-title-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "A", cwd: path, title: "linkC", state: .ready, agentKind: .claude),
+            Session(id: "B", cwd: path, title: "linkC", state: .ready, agentKind: .claude),
+        ]
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions,
+                                                       title: { ["A": "Fix the glyphs", "B": "Claude 2"][$0.id] })
+
+        XCTAssertEqual(try XCTUnwrap(projects.first).sessions.map(\.title), ["Fix the glyphs", "Claude 2"])
+    }
+
     func testEndedSessionIsLeftOut() {
         let path = "/tmp/linkc-pub-ended-\(UUID().uuidString)"
         let sessions = [

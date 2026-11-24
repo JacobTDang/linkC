@@ -44,14 +44,20 @@ const PROJECTS = {
   ],
 }
 
+const ran =(exitCode: number, stdout: string, stderr = '') =>
+  ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
+
+/** What a process run answers: git finds /repo by default; a test can answer otherwise. */
+type Runner = (argv: readonly string[]) => ReturnType<typeof ran> | { deny: string }
+
 /** The engine around the mod: home, this session's id, its folder in /repo, and linkC's file. */
-function engine(on: On, file: string | Error, seen: { bodyRows?: number; runs?: string[][] } = {}) {
+function engine(on: On, file: string | Error, seen: { bodyRows?: number; runs?: string[][] } = {}, run?: Runner) {
   const clock = mock.clock(on)
   on('env.get', (_, e) => ({ value: { HOME, LINKC_SESSION: 'ME' }[e.name] }))
   on('session.cwd', () => ({ value: '/repo/Sources' }))
   on('process.run', (_, e) => {
     seen.runs?.push([...e.argv])
-    return { value: { exitCode: 0, stdout: '/repo/.git\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return run ? run(e.argv) : ran(0, '/repo/.git\n')
   })
   on('fs.read', (_, e) => {
     if (e.path !== FILE) return { deny: `unexpected read of ${e.path}` }
@@ -138,10 +144,72 @@ test('the shimmer band sweeps along the text, brightest at its centre', () => {
   expect(band.indexOf('d3')).toBe(4)
 })
 
+test('when git cannot run, the pane says so and keeps trying', async ($, on) => {
+  let attempts = 0
+  const clock = engine(on, JSON.stringify(PROJECTS), {}, argv =>
+    argv[0] === 'git' && ++attempts === 1 ? { deny: 'git timed out' } : ran(0, '/repo/.git\n'))
+  await $.session.start({ cwd: '/repo/Sources', surface: 'terminal', isInteractive: true })
+
+  const first = await $.ui.mount(PANE)
+  expect((await texts(first)).some(t => t.includes('git timed out'))).toBe(true)
+  await first.unmount()
+
+  await clock.advance(2_000)
+  expect(await texts(await $.ui.mount(PANE))).toContain('Idle one')
+})
+
+test('git failing for another reason says so instead of narrowing the repo', async ($, on) => {
+  engine(on, JSON.stringify(PROJECTS), {}, () => ran(128, '', 'fatal: detected dubious ownership in repository at /repo\n'))
+  await $.session.start({ cwd: '/repo/Sources', surface: 'terminal', isInteractive: true })
+
+  const all = await texts(await $.ui.mount(PANE))
+  expect(all.some(t => t.includes('dubious ownership'))).toBe(true)
+  expect(all).not.toContain(' No sessions in this repo.')
+})
+
+test('a folder outside git is its own repo, matched by its real path', async ($, on) => {
+  const projects = { projects: [{ path: '/private/scratch', sessions: [{ id: 'S', agent: 'codex', activity: 'idle', title: 'Scratch' }] }] }
+  engine(on, JSON.stringify(projects), {}, argv =>
+    argv[0] === 'git'
+      ? ran(128, '', 'fatal: not a git repository (or any of the parent directories): .git\n')
+      : ran(0, '/private/scratch\n'))
+  await $.session.start({ cwd: '/repo/Sources', surface: 'terminal', isInteractive: true })
+
+  expect(await texts(await $.ui.mount(PANE))).toContain('Scratch')
+})
+
+test('a state this mod does not know reads by the coarse activity', async ($, on) => {
+  const projects = { projects: [{ path: '/repo', sessions: [{ id: 'S', agent: 'claude', activity: 'busy', state: 'compacting', title: 'Squeeze', action: 'Compacting' }] }] }
+  engine(on, JSON.stringify(projects))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(PANE)
+  const shimmering = (await ui.findAll({ type: 'Client' })).map(c => (c.props.props as { text?: string }).text)
+  expect(shimmering).toContain('Compacting')
+  await ui.unmount()
+})
+
+test('a session in a worktree shows the worktree’s name', async ($, on) => {
+  const projects = {
+    projects: [
+      { path: '/repo/.worktrees/fix/Sources', sessions: [{ id: 'A', agent: 'agy', activity: 'idle', title: 'A', state: 'ready' }] },
+      { path: '/repo/.claude/worktrees/feat', sessions: [{ id: 'B', agent: 'cursor', activity: 'idle', title: 'B', state: 'ready' }] },
+    ],
+  }
+  engine(on, JSON.stringify(projects))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const all = await texts(await $.ui.mount(PANE))
+  expect(all).toContain('ready fix')
+  expect(all).toContain('ready feat')
+})
+
 test('a model id reads as a person names it', () => {
   expect(modelLabel('Opus 5.5')).toBe('Opus 5.5')
   expect(modelLabel('claude-opus-5-5')).toBe('Opus 5.5')
   expect(modelLabel('claude-haiku-5-5-20261001')).toBe('Haiku 5.5')
+  expect(modelLabel('claude-opus-4-20250514')).toBe('Opus 4')
+  expect(modelLabel('claude-3-5-sonnet-20241022')).toBe('Sonnet 3.5')
   expect(modelLabel('gemini-3.8-flash-medium')).toBe('gemini-3.8 flash medium')
   expect(modelLabel('gpt-5.5-codex')).toBe('gpt-5.5 codex')
   expect(modelLabel('opencode/big-pickle')).toBe('opencode/big-pickle')

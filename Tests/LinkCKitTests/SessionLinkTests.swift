@@ -4,8 +4,8 @@ import XCTest
 final class SessionLinkTests: XCTestCase {
     func testASessionsLinkNamesTheSession() {
         let id = "68C5073E-35E7-470D-B7B3-137588DF9A7A"
-        XCTAssertEqual(SessionLink.url(for: id).absoluteString, "linkc://session/\(id)")
-        XCTAssertEqual(SessionLink.sessionId(in: SessionLink.url(for: id)), id)
+        // The form the linkc-agents mod writes.
+        XCTAssertEqual(SessionLink.sessionId(in: URL(string: "linkc://session/\(id)")!), id)
     }
 
     func testOnlyALinkcSessionLinkNamesASession() {

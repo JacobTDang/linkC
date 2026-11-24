@@ -14,7 +14,8 @@ public enum KnownProjectsPublisher {
     /// `liveModel` is the model a session runs now where its agent reports one, else its launch model.
     public static func projects(
         sidebar: [String], mcpFolders: Set<String>, sessions: [Session], action: (Session) -> String? = { _ in nil },
-        subagents: (Session) -> Int = { _ in 0 }, liveModel: (Session) -> String? = { _ in nil }
+        subagents: (Session) -> Int = { _ in 0 }, liveModel: (Session) -> String? = { _ in nil },
+        title: (Session) -> String? = { _ in nil }
     ) -> [KnownProject] {
         let (paths, liveByPath) = resolve(sidebar: sidebar, mcpFolders: mcpFolders, sessions: sessions)
         return paths.sorted().map { path in
@@ -28,7 +29,7 @@ public enum KnownProjectsPublisher {
                         id: session.id,
                         agent: session.agentKind.rawValue,
                         activity: activity(for: session.state),
-                        title: session.title,
+                        title: title(session) ?? session.title,
                         state: session.state.rawValue,
                         since: session.stateChangedAt.formatted(.iso8601),
                         model: liveModel(session) ?? session.model,

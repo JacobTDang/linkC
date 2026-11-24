@@ -97,11 +97,29 @@ function meterColor(percent: number): string {
 
 type Stored = { projects: { path: string; sessions: Omit<AgentRow, 'where'>[] }[] }
 
-/** The repo `cwd` is in, through its worktrees to the main checkout; a folder outside git is its own. */
+/**
+ * The repo `cwd` is in, through its worktrees to the main checkout, as a real path (linkC publishes
+ * real paths). A folder outside git is its own repo. Any other git failure throws, so the pane says
+ * why rather than quietly showing a narrower repo.
+ */
 async function repoRoot($: EngineInterface, cwd: string): Promise<string> {
   const run = await $.process.run(['git', '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { timeoutMs: 5_000 })
-  const common = run.exitCode === 0 ? run.stdout.trim() : ''
-  return common.endsWith('/.git') ? common.slice(0, -'/.git'.length) : cwd
+  if (run.exitCode === 0) {
+    const common = run.stdout.trim()
+    return common.endsWith('/.git') ? common.slice(0, -'/.git'.length) : common
+  }
+  if (!/not a git repository/i.test(run.stderr)) {
+    throw new Error(`git cannot read the repo of ${cwd}: ${run.stderr.trim() || `it exited ${run.exitCode}`}`)
+  }
+  const real = await $.process.run(['/bin/realpath', cwd], { timeoutMs: 5_000 })
+  if (real.exitCode !== 0) throw new Error(`cannot resolve ${cwd}: ${real.stderr.trim() || `realpath exited ${real.exitCode}`}`)
+  return real.stdout.trim()
+}
+
+/** Where a card's session runs, shortly: a worktree's name, else the last folder below the repo. */
+function placeOf(where: string): string {
+  if (where === '.') return ''
+  return /(?:^|\/)\.?worktrees\/([^/]+)/.exec(where)?.[1] ?? where.split('/').pop() ?? ''
 }
 
 /** Where `path` sits in `root`: '.' for the root itself, its relative path below it, null outside it. */
@@ -117,8 +135,13 @@ function within(root: string, path: string): string | null {
  */
 export function modelLabel(model: string): string {
   if (/[A-Z ]/.test(model)) return model
-  const claude = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(model)
-  if (claude) return `${claude[1]!.charAt(0).toUpperCase()}${claude[1]!.slice(1)} ${claude[2]}.${claude[3]}`
+  const named = (family: string, major: string, minor: string | undefined) =>
+    `${family.charAt(0).toUpperCase()}${family.slice(1)} ${major}${minor ? `.${minor}` : ''}`
+  // claude-opus-5-5, claude-opus-4-20250514 (no minor, a date), and the older claude-3-5-sonnet-20241022.
+  const current = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(model)
+  if (current) return named(current[1]!, current[2]!, current[3])
+  const older = /^claude-(\d+)(?:-(\d{1,2}))?-([a-z]+)(?:-\d{8})?$/.exec(model)
+  if (older) return named(older[3]!, older[1]!, older[2])
   const parts = model.split('-')
   const version = parts.findIndex(part => /^\d+(\.\d+)*$/.test(part))
   if (version < 0) return model
@@ -145,9 +168,11 @@ function subagentWords(count: number): string {
  * work, not idle or waiting; a permission wait or an error still comes first.
  */
 function stateOf(row: AgentRow): StateLook {
-  const look = STATES[row.state ?? row.activity] ?? IDLE
+  // A state a newer linkC publishes that this mod does not know reads by the coarse activity.
+  const known = row.state !== undefined && row.state in STATES
+  const look = (known ? STATES[row.state!] : STATES[row.activity]) ?? IDLE
   const running = row.subagents ?? 0
-  const isWorking = row.state === 'working' || (row.state === undefined && row.activity === 'busy')
+  const isWorking = row.state === 'working' || (!known && row.activity === 'busy')
   if (running === 0 || isWorking || row.state === 'waitingPermission' || row.state === 'error') return look
   return { glyph: '●', label: `running ${subagentWords(running)}`, color: GREEN, rank: 3 }
 }
@@ -182,22 +207,40 @@ export const register: Register = on => {
     let last = ''
     let cwd = ''
     let root = ''
-    const refresh = async () => {
-      const here = await $.session.cwd()
-      if (here !== cwd) {
-        root = await repoRoot($, here)
-        cwd = here
-      }
-      // The minute is in the value so the ages redraw once a minute even when nothing else changed.
-      const now: Agents = { ...(await load($, file, root)), me, minute: Math.floor(Date.now() / 60_000) }
+    let isRefreshing = false
+    const show = async (now: Agents) => {
       const key = JSON.stringify(now)
       if (key === last) return
       last = key
       await update($, agents, () => now)
     }
-    await refresh()
+    // One at a time: a slow git run must not let an older refresh write after a newer one.
+    const refresh = async () => {
+      if (isRefreshing) return
+      isRefreshing = true
+      // The minute is in the value so the ages redraw once a minute even when nothing else changed.
+      const minute = Math.floor(Date.now() / 60_000)
+      try {
+        const here = await $.session.cwd()
+        if (here !== cwd) {
+          root = await repoRoot($, here)
+          cwd = here
+        }
+        await show({ ...(await load($, file, root)), me, minute })
+      } catch (error) {
+        await show({ rows: [], error: error instanceof Error ? error.message : String(error), me, minute })
+      } finally {
+        isRefreshing = false
+      }
+    }
+    // Armed before the first refresh, so a first refresh that fails is tried again.
     $.clock.every(POLL_MS, () => void refresh())
-    await refreshMeters($)
+    await refresh()
+    try {
+      await refreshMeters($)
+    } catch (error) {
+      $.ui.toast(`linkc-agents could not read this session's usage: ${error instanceof Error ? error.message : String(error)}`)
+    }
     return next(e)
   })
 
@@ -285,7 +328,8 @@ export const register: Register = on => {
           const bar = AGENT_COLOR[row.agent] ?? MUTED
           const state = stateOf(row)
           const isMe = row.id === me
-          const where = row.where === '.' ? '' : ` ${row.where.split('/').pop()}`
+          const place = placeOf(row.where)
+          const where = place ? ` ${place}` : ''
           const detail = `${row.action ?? state.label}${row.action && row.subagents ? ` · ${subagentWords(row.subagents)}` : ''}${where}`
           return (
             <Box flexDirection="column">

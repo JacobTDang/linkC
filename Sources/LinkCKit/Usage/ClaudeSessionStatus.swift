@@ -3,29 +3,24 @@ import Foundation
 /// What one Claude session's status line says about that session itself, apart from the account's
 /// rate limits (`ClaudeRateLimits`): the model it runs now, which a `/model` switch changes.
 public struct ClaudeSessionStatus: Equatable, Sendable {
+    /// The model's id, such as "claude-opus-5-5": the same form as a session's launch model.
     public let modelId: String?
-    /// The model as Claude names it, such as "Opus 5.5".
-    public let modelName: String?
 
-    public init(modelId: String?, modelName: String?) {
+    public init(modelId: String?) {
         self.modelId = modelId
-        self.modelName = modelName
     }
 
     private struct Report: Decodable {
         struct Model: Decodable {
             let id: String?
-            let display_name: String?
         }
         let model: Model?
     }
 
     /// Throws when the report is not JSON; a field it lacks is nil.
-    ///
-    /// Decoded with the plain JSON decoder: `display_name` is spelled as Claude sends it.
     public static func decode(_ body: Data) throws -> ClaudeSessionStatus {
         let report = try JSONDecoder().decode(Report.self, from: body)
-        return ClaudeSessionStatus(modelId: report.model?.id, modelName: report.model?.display_name)
+        return ClaudeSessionStatus(modelId: report.model?.id)
     }
 }
 
@@ -35,6 +30,9 @@ public struct ClaudeSessionStatus: Equatable, Sendable {
 public final class ClaudeSessionStatuses: @unchecked Sendable {
     private let lock = NSLock()
     private var statuses: [String: ClaudeSessionStatus] = [:]
+    /// Each session's last failure said, so a status line that refreshes several times a turn says
+    /// the same failure once. Cleared by a good report, so a failure that comes back is news again.
+    private var lastFailure: [String: String] = [:]
     private let log: @Sendable (String) -> Void
 
     public init(log: @escaping @Sendable (String) -> Void = { NSLog("[linkC] %@", $0) }) {
@@ -47,11 +45,17 @@ public final class ClaudeSessionStatuses: @unchecked Sendable {
         do {
             status = try ClaudeSessionStatus.decode(body)
         } catch {
-            log("session \(sessionId)'s status line could not be read for its model — \(error)")
+            let failure = "session \(sessionId)'s status line could not be read for its model — \(error)"
+            lock.lock()
+            let isNew = lastFailure[sessionId] != failure
+            lastFailure[sessionId] = failure
+            lock.unlock()
+            if isNew { log(failure) }
             return
         }
         lock.lock()
         statuses[sessionId] = status
+        lastFailure[sessionId] = nil
         lock.unlock()
     }
 
@@ -65,6 +69,7 @@ public final class ClaudeSessionStatuses: @unchecked Sendable {
     public func forget(sessionId: String) {
         lock.lock()
         statuses[sessionId] = nil
+        lastFailure[sessionId] = nil
         lock.unlock()
     }
 }

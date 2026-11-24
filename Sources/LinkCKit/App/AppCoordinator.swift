@@ -311,6 +311,9 @@ public final class AppCoordinator {
     /// A session's action line, read from its terminal by the app, for `projects.json`. Asked only
     /// of a session working or waiting on a permission.
     public var sessionAction: ((Session) -> String?)?
+    /// Every live session's row title as the app's sidebar resolves it (conversation title, held task,
+    /// or the agent's numbered name), keyed by session id, for `projects.json`.
+    public var sessionTitles: (() -> [String: String])?
     /// Sidebar project paths (`SidebarState.projectOrder`), folded into the known-projects list.
     private let sidebarProjects: @MainActor @Sendable () -> [String]
     /// Last contents written to `knownProjectsFile`, so a rewrite only happens when they change.
@@ -754,12 +757,15 @@ public final class AppCoordinator {
 
     private func publishKnownProjects(sidebar: [String], mcpFolders: Set<String>) {
         guard let knownProjectsFile else { return }
+        // Resolved once for the whole publish: a title can depend on the other sessions (numbering).
+        let titles = sessionTitles?() ?? [:]
         let projects = KnownProjectsPublisher.projects(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions,
                                                        action: { [sessionAction] in sessionAction?($0) },
                                                        subagents: { [usageTracker] session in
                                                            usageTracker?.sessionAgents(session.id).filter(\.isRunning).count ?? 0
                                                        },
-                                                       liveModel: { [sessionStatuses] in sessionStatuses.status(for: $0.id)?.modelName })
+                                                       liveModel: { [sessionStatuses] in sessionStatuses.status(for: $0.id)?.modelId },
+                                                       title: { titles[$0.id] })
         // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
         // contents next changed, and every MCP server would report linkC as not running.
         if lastPublishedProjects == projects,

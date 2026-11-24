@@ -4801,6 +4801,21 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(try file.read().first?.sessions.first?.subagents, 1)
     }
 
+    /// The sweep publishes the title the app's sidebar row reads, not the session's folder name.
+    @MainActor
+    func testSweepPublishesTheTitleTheAppResolves() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "folder", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        coordinator.sessionTitles = { ["L1": "Fix the glyphs"] }
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.read().first?.sessions.first?.title, "Fix the glyphs")
+    }
+
     /// A Claude session's status line names the model it runs now; the sweep publishes that one.
     @MainActor
     func testSweepPublishesTheModelTheStatusLineNames() async throws {
@@ -4814,7 +4829,8 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         await coordinator.runSweepTickForTests()
 
-        XCTAssertEqual(try file.read().first?.sessions.first?.model, "Opus 5.5")
+        // The id, as the launch model is published: one format for every reader of the file.
+        XCTAssertEqual(try file.read().first?.sessions.first?.model, "claude-opus-5-5")
     }
 
     @MainActor

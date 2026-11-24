@@ -16,19 +16,20 @@ export function shimmerColor(i: number, phase: number, len: number, palette: str
   return palette[level] ?? palette[0] ?? ''
 }
 
-const Shimmer: ClientModule<ShimmerProps, { phase: number; stop?: () => void }> = (props, surface) => {
+const Shimmer: ClientModule<ShimmerProps, { phase: number; isTicking?: true }> = (props, surface) => {
   const { Text } = surface.elements
   let state = surface.state
   if (state === undefined) {
     state = { phase: 0 }
     surface.setState(state)
   }
-  if (!state.stop) {
-    const stop = surface.every(TICK_MS, () => {
+  // One timer for the module's life; the surface ends it when the line goes.
+  if (!state.isTicking) {
+    surface.every(TICK_MS, () => {
       const now = surface.state
       if (now) surface.setState({ ...now, phase: now.phase + 1 })
     })
-    surface.setState({ ...state, stop })
+    surface.setState({ ...state, isTicking: true })
   }
   const chars = [...props.text]
   return (
