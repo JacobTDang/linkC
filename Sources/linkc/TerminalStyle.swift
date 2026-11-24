@@ -8,8 +8,17 @@ enum TerminalStyle {
     /// last: `setupOptions()` re-stamps an opaque layer background on font changes.
     @MainActor static func apply(to session: TerminalSession?) {
         guard let view = session?.terminalView else { return }
-        view.font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
+        view.font = font
         view.nativeBackgroundColor = NSColor.black.withAlphaComponent(0.30)
         view.layer?.backgroundColor = NSColor.clear.cgColor
     }
+
+    /// SF Mono falling back to the installed Nerd Font, worked out once per launch: a Nerd Font
+    /// installed later is picked up at the next launch.
+    @MainActor private static let font: NSFont = {
+        let made = TerminalFont.make(size: 12.5, sfMonoFolder: TerminalFont.sfMonoFolder,
+                                     families: NSFontManager.shared.availableFontFamilies)
+        if let problem = made.problem { NSLog("[linkC] terminal font: %@", problem) }
+        return made.font
+    }()
 }

@@ -46,6 +46,12 @@ it there permanently — a filed terminal stays put regardless of where you `cd`
 each terminal's folder, so restarting one reopens it there. A terminal that exits stays in the
 sidebar, output and all, until you dismiss it.
 
+Live sessions and terminals draw in SF Mono. When a Nerd Font is installed (a "… Nerd Font" or
+"… NF" family), the icons that prompts and tools draw with it (folders, file types, the git branch)
+come from that font, and only the icons do; without one they draw as boxes, as they still do in the
+Terminals screen's previews. linkC picks the font up at launch, so a Nerd Font installed later shows
+after a restart.
+
 ### The Board
 
 Each project has a Board: a diagram of the system that you and your agents build together, kept
