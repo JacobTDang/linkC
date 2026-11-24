@@ -16,16 +16,33 @@ const GREEN = '#7fd88f'
 const ORANGE = '#f5a742'
 const RED = '#fd7e87'
 
-const AGENT_COLOR: Record<string, string> = {
-  claude: PEACH,
-  codex: '#5c9cf5',
-  agy: '#68d0dd',
-  cursor: '#9d83d4',
-  grok: TEXT,
-  opencode: GREEN,
-  kilo: '#e5c07b',
-  crush: RED,
-  freebuff: MUTED,
+/**
+ * filetree's activity tones: `bright` runs from the tone to near white (the shimmer band), `dim` is
+ * the tone at rest.
+ */
+type Tone = { bright: string[]; dim: string[]; solid: string }
+const TONES = {
+  orange: { bright: ['#f97316', '#fb923c', '#fdba74', '#ffedd5'], dim: ['#8e491d', '#a3562a', '#bd7444', '#d29267'], solid: '#f97316' },
+  green: { bright: ['#22c55e', '#4ade80', '#86efac', '#dcfce7'], dim: ['#2e6644', '#1b6838', '#2f7a47', '#4f9a66'], solid: '#4ade80' },
+  teal: { bright: ['#14b8a6', '#2dd4bf', '#5eead4', '#ccfbf1'], dim: ['#1b665f', '#16786f', '#2a9488', '#4fb3a8'], solid: '#2dd4bf' },
+  blue: { bright: ['#3b82f6', '#60a5fa', '#93c5fd', '#dbeafe'], dim: ['#40589c', '#1d4ed8', '#3b6fd1', '#6b93dc'], solid: '#60a5fa' },
+  purple: { bright: ['#a855f7', '#c084fc', '#d8b4fe', '#f3e8ff'], dim: ['#76459d', '#7d3cb2', '#8b47c4', '#a874d6'], solid: '#c084fc' },
+  cyan: { bright: ['#06b6d4', '#22d3ee', '#67e8f9', '#cffafe'], dim: ['#1c6379', '#0e7490', '#2b8ea3', '#5aa9b8'], solid: '#22d3ee' },
+  red: { bright: ['#ef4444', '#f87171', '#fca5a5', '#fee2e2'], dim: ['#954343', '#a43434', '#b54040', '#c96a6a'], solid: '#f87171' },
+} satisfies Record<string, Tone>
+const GREY: Tone = { bright: [MUTED, '#a6a6a6', '#cccccc', '#f2f2f2'], dim: [MUTED, MUTED, MUTED, '#9a9a9a'], solid: '#a6a6a6' }
+
+/** Each agent's tone: its bar, its title, and its working line's shimmer. */
+const AGENT_TONE: Record<string, Tone> = {
+  claude: TONES.orange,
+  codex: TONES.blue,
+  agy: TONES.cyan,
+  cursor: TONES.purple,
+  grok: GREY,
+  opencode: TONES.green,
+  kilo: TONES.teal,
+  crush: TONES.red,
+  freebuff: GREY,
 }
 
 type StateLook = { glyph: string; label: string; color: string; rank: number; needsYou?: true }
@@ -33,8 +50,6 @@ type StateLook = { glyph: string; label: string; color: string; rank: number; ne
 /** The rank of every state at work: working, busy, or running subagents. Its line shimmers. */
 const WORKING_RANK = 3
 
-/** The working line's own grey up to the shimmer band's brightest. */
-const SHIMMER = [MUTED, '#a6a6a6', '#cccccc', '#f2f2f2']
 
 const IDLE: StateLook = { glyph: '○', label: 'idle', color: MUTED, rank: 6 }
 
@@ -167,13 +182,42 @@ function subagentWords(count: number): string {
  * How a card's state reads. A session whose own turn ended while its subagents still run is at
  * work, not idle or waiting; a permission wait or an error still comes first.
  */
+/** A turn running now, as linkC's state or, from an older linkC, its coarse activity says. */
+function isAtWork(row: AgentRow): boolean {
+  const known = row.state !== undefined && row.state in STATES
+  return row.state === 'working' || (!known && row.activity === 'busy')
+}
+
+/**
+ * A card's second line. A session at work shows what it does — its action, or its running
+ * subagents — never the word for its state: the dot and the shimmer already say it works.
+ */
+function detailOf(row: AgentRow, state: StateLook): string {
+  const subagents = row.subagents ? subagentWords(row.subagents) : ''
+  const words = row.action
+    ? [row.action, subagents].filter(Boolean).join(' · ')
+    : isAtWork(row) ? (subagents ? `running ${subagents}` : '') : state.label
+  const where = placeOf(row.where)
+  return [words, where].filter(Boolean).join(' ')
+}
+
+/** When the card's prompt cache goes cold: `~` marks a guess, orange the last five minutes. */
+function cacheLabel(row: AgentRow, now: number): { text: string; color: string } | null {
+  if (!row.cacheExpiresAt) return null
+  const left = Date.parse(row.cacheExpiresAt) - now
+  if (Number.isNaN(left)) return null
+  if (left <= 0) return { text: ' ◷ cold', color: RED }
+  const minutes = Math.ceil(left / 60_000)
+  const span = minutes >= 60 ? `${Math.floor(minutes / 60)}h` : `${minutes}m`
+  return { text: ` ◷ ${row.cacheEstimate ? '~' : ''}${span}`, color: minutes <= 5 ? ORANGE : MUTED }
+}
+
 function stateOf(row: AgentRow): StateLook {
   // A state a newer linkC publishes that this mod does not know reads by the coarse activity.
   const known = row.state !== undefined && row.state in STATES
   const look = (known ? STATES[row.state!] : STATES[row.activity]) ?? IDLE
   const running = row.subagents ?? 0
-  const isWorking = row.state === 'working' || (!known && row.activity === 'busy')
-  if (running === 0 || isWorking || row.state === 'waitingPermission' || row.state === 'error') return look
+  if (running === 0 || isAtWork(row) || row.state === 'waitingPermission' || row.state === 'error') return look
   return { glyph: '●', label: `running ${subagentWords(running)}`, color: GREEN, rank: 3 }
 }
 
@@ -325,22 +369,25 @@ export const register: Register = on => {
         {error && <Text color={RED} wrap="truncate-end">{` ${error}`}</Text>}
         {!error && rows.length === 0 && <Text color={MUTED}>{' No sessions in this repo.'}</Text>}
         {shown.map(row => {
-          const bar = AGENT_COLOR[row.agent] ?? MUTED
+          const tone = AGENT_TONE[row.agent] ?? GREY
+          const bar = tone.solid
           const state = stateOf(row)
+          // A card at work or waiting on you is in its full tone; one at rest is dimmed.
+          const titleColor = state.rank <= WORKING_RANK ? tone.solid : (tone.dim[3] ?? MUTED)
           const isMe = row.id === me
-          const place = placeOf(row.where)
-          const where = place ? ` ${place}` : ''
-          const detail = `${row.action ?? state.label}${row.action && row.subagents ? ` · ${subagentWords(row.subagents)}` : ''}${where}`
+          const detail = detailOf(row, state)
+          const cache = cacheLabel(row, now)
           return (
             <Box flexDirection="column">
               <Box flexDirection="row">
                 <Box flexGrow={1} flexShrink={1}>
                   <Button key={`open-${row.id}`} plain onPress={() => openSession($, row.id)}>
                     <Text color={bar}>{'┃ '}</Text>
-                    <Text bold color={TEXT} wrap="truncate-end">{row.title ?? row.agent}</Text>
+                    <Text bold color={titleColor} wrap="truncate-end">{row.title ?? row.agent}</Text>
                   </Button>
                 </Box>
                 <Text color={MUTED}>{`${row.model ? ` ${modelLabel(row.model)}` : row.title ? ` ${row.agent}` : ''}${row.worker ? ' · worker' : ''}`}</Text>
+                {cache && <Text color={cache.color}>{cache.text}</Text>}
                 {isMe && <Text bold color={PEACH}>{' · you'}</Text>}
                 <Text> </Text>
               </Box>
@@ -354,7 +401,7 @@ export const register: Register = on => {
                 </Box>
                 <Box flexGrow={1} flexShrink={1}>
                   {state.rank === WORKING_RANK && Client ? (
-                    <Client key={`shimmer-${row.id}`} module="./shimmer.tsx" props={{ text: detail, palette: SHIMMER } satisfies ShimmerProps} />
+                    <Client key={`shimmer-${row.id}`} module="./shimmer.tsx" props={{ text: detail, palette: tone.bright } satisfies ShimmerProps} />
                   ) : (
                     <Text color={state.needsYou ? state.color : MUTED} wrap="truncate-end">{detail}</Text>
                   )}

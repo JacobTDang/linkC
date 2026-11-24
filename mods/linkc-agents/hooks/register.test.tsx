@@ -204,6 +204,65 @@ test('a session in a worktree shows the worktree’s name', async ($, on) => {
   expect(all).toContain('ready feat')
 })
 
+test('a card says when its prompt cache goes cold, marking a guess and a cold one', async ($, on) => {
+  const inMinutes = (m: number) => new Date(Date.now() + m * 60_000).toISOString()
+  const projects = {
+    projects: [{
+      path: '/repo',
+      sessions: [
+        { id: 'A', agent: 'claude', activity: 'idle', title: 'Exact', state: 'finished', cacheExpiresAt: inMinutes(3) },
+        { id: 'B', agent: 'codex', activity: 'idle', title: 'Guessed', state: 'finished', cacheExpiresAt: inMinutes(30), cacheEstimate: true },
+        { id: 'C', agent: 'claude', activity: 'idle', title: 'Cold', state: 'finished', cacheExpiresAt: inMinutes(-10) },
+        { id: 'D', agent: 'agy', activity: 'idle', title: 'Unknown', state: 'finished' },
+      ],
+    }],
+  }
+  engine(on, JSON.stringify(projects))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const all = await texts(await $.ui.mount(PANE))
+
+  expect(all).toContain(' ◷ 3m')
+  expect(all).toContain(' ◷ ~30m')
+  expect(all).toContain(' ◷ cold')
+  expect(all.filter(t => t.includes('◷')).length).toBe(3)
+})
+
+test('a working card shows its action, never the word for its state', async ($, on) => {
+  const projects = {
+    projects: [{
+      path: '/repo',
+      sessions: [
+        { id: 'A', agent: 'agy', activity: 'busy' },
+        { id: 'B', agent: 'cursor', activity: 'busy', title: 'No action yet', state: 'working' },
+      ],
+    }],
+  }
+  engine(on, JSON.stringify(projects))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(PANE)
+  const lines = [...(await texts(ui)), ...(await ui.findAll({ type: 'Client' })).map(c => String((c.props.props as { text?: string }).text))]
+
+  expect(lines.some(t => /\b(busy|working)\b/.test(t))).toBe(false)
+  await ui.unmount()
+})
+
+test('a card is in its agent’s colour: the working line shimmers in that tone, as filetree’s do', async ($, on) => {
+  engine(on, JSON.stringify(PROJECTS))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(PANE)
+  const shimmer = (await ui.findAll({ type: 'Client' }))
+    .map(c => c.props.props as { text?: string; palette?: string[] })
+    .find(p => p.text === 'Running the suite')
+
+  expect(shimmer?.palette).toEqual(['#f97316', '#fb923c', '#fdba74', '#ffedd5'])
+  const title = (await ui.findAll({ type: 'Text' })).find(t => t.text === 'Multi-provider')
+  expect(title?.props.color).toBe('#f97316')
+  await ui.unmount()
+})
+
 test('a model id reads as a person names it', () => {
   expect(modelLabel('Opus 5.5')).toBe('Opus 5.5')
   expect(modelLabel('claude-opus-5-5')).toBe('Opus 5.5')
