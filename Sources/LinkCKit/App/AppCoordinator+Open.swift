@@ -66,6 +66,22 @@ extension AppCoordinator {
             return .refused("the request is \(Int(age)) seconds old (linkC was not running to see it in time); run the command again")
         }
         guard request.agent != .shell else { return .refused("a shell is not an agent") }
+        if let handoffFrom = request.handoffFrom {
+            do {
+                let session = try handoff(
+                    from: handoffFrom,
+                    to: request.agent,
+                    tier: request.tier,
+                    model: request.model,
+                    goal: request.goal,
+                    select: false
+                )
+                let name = URL(fileURLWithPath: session.cwd).lastPathComponent
+                return .opened(sessionId: session.id, message: "Handed off to \(request.agent.displayName) in a linkC window (\(name)).")
+            } catch {
+                return .refused(error.localizedDescription)
+            }
+        }
         let folder = ProjectPath.canonical(request.folder)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory) else {
