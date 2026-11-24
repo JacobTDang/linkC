@@ -1005,6 +1005,7 @@ public final class AppCoordinator {
     public func spawnTeammate(
         in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil, tier: ModelTier? = nil,
         model: String? = nil,
+        effort: ReasoningEffort? = nil,
         asWorker: Bool = false
     ) throws -> Session {
         let norm = ProjectPath.canonical(workspacePath)
@@ -1038,18 +1039,19 @@ public final class AppCoordinator {
         // A teammate starts in the background — the relay spawns these while the user is
         // working elsewhere, and selecting one raises the panel over whatever they were doing.
         return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier, model: model,
-                              select: false, asWorker: asWorker)
+                              effort: effort, select: false, asWorker: asWorker)
     }
 
     @discardableResult
     public func newSession(
         cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil,
         model: String? = nil,
+        effort: ReasoningEffort? = nil,
         select: Bool = true, asWorker: Bool = false
     ) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
         return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier, model: model,
-                          asWorker: asWorker, select: select)
+                          effort: effort, asWorker: asWorker, select: select)
     }
 
     /// Resolves an OpenCode model id to prefer Go's free pool if Go is connected:
@@ -1156,6 +1158,7 @@ public final class AppCoordinator {
         id: String? = nil,
         tier: ModelTier? = nil,
         model: String? = nil,
+        effort: ReasoningEffort? = nil,
         asWorker: Bool = false,
         select: Bool
     ) throws -> Session {
@@ -1185,8 +1188,28 @@ public final class AppCoordinator {
         }
         // The agent's own conversation id: Claude's to resume, or the OpenCode conversation opened.
         let conversationId = openCode?.id ?? resumeId
-        let model = resolved.model
+        var model = resolved.model
         let modelTier = resolved.tier
+        // Effort comes from the caller (a task), else from Settings for the tier being launched.
+        // Agents whose CLI has no effort knob stay unset — Settings says so.
+        let launchEffort: ReasoningEffort?
+        if let effort {
+            launchEffort = effort
+        } else if let modelTier, case .levels = AgentEffortSupport.forAgent(agent) {
+            launchEffort = modelSettings().effort(for: agent, tier: modelTier)
+                ?? ReasoningEffort.default(for: modelTier)
+        } else {
+            launchEffort = nil
+        }
+        if let launchEffort, let levels = AgentEffortSupport.forAgent(agent).levels,
+           !levels.contains(launchEffort) {
+            throw LinkCError.process(
+                "\(agent.rawValue) does not accept effort \(launchEffort.rawValue) — supported: \(levels.map(\.rawValue).joined(separator: ", "))")
+        }
+        // agy: strip a baked-in effort suffix so `--effort` cannot conflict with the model id.
+        if agent == .agy, let launchEffort, let currentModel = model {
+            model = AgentModelCatalog.agyModelIdForLaunch(model: currentModel, effort: launchEffort)
+        }
         // OpenCode and Kilo run free models only, whichever way the model was chosen: the New menu,
         // a teammate, a worker, or a tier that was set to a paid model.
         if agent == .opencode, let model, !OpenCodeFreeModels.isFree(model) {
@@ -1236,7 +1259,7 @@ public final class AppCoordinator {
                 env.merge(try kiloEnvironment(model: model)) { _, kilo in kilo }
             }
             if agent == .crush {
-                env.merge(try crushEnvironment(sessionId: session.id, cwd: cwd, model: model)) { _, crush in crush }
+                env.merge(try crushEnvironment(sessionId: session.id, cwd: cwd, model: model, effort: launchEffort)) { _, crush in crush }
             }
 
             if agent == .claude {
@@ -1252,6 +1275,7 @@ public final class AppCoordinator {
                 let settingsPath = try writeSettings(for: session)
                 args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (launchEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
             } else {
                 // Codex and agy open a folder they have not seen on a trust dialog; trust it first, as
                 // `preApproveTrust` does for Claude. Detecting that dialog stays the fallback, so a
@@ -1292,6 +1316,7 @@ public final class AppCoordinator {
                 executable = resolved
                 args = AgentDescriptor.arguments(for: agent, mode: mode, sessionId: session.id)
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (launchEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
                     + (openCode.map { OpenCodeConversations.launchArguments(conversationId: $0.id) } ?? [])
             }
 

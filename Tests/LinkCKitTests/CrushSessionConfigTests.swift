@@ -98,6 +98,27 @@ final class CrushSessionConfigTests: XCTestCase {
         XCTAssertEqual((config["options"] as? [String: Bool]), ["disable_metrics": true])
     }
 
+    /// Crush has no effort flag; the session config carries `reasoning_effort` (low|medium|high).
+    func testTheSessionConfigCarriesReasoningEffortWhenSet() throws {
+        try write(userConfigText, to: userConfig.appendingPathComponent("crush.json"))
+
+        let env = try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free, effort: .high)
+
+        let configDir = try XCTUnwrap(env["CRUSH_GLOBAL_CONFIG"])
+        let config = try json(URL(fileURLWithPath: configDir).appendingPathComponent("crush.json"))
+        XCTAssertEqual(config["reasoning_effort"] as? String, "high")
+    }
+
+    func testTheSessionConfigOmitsReasoningEffortWhenUnset() throws {
+        try write(userConfigText, to: userConfig.appendingPathComponent("crush.json"))
+
+        let env = try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free)
+
+        let configDir = try XCTUnwrap(env["CRUSH_GLOBAL_CONFIG"])
+        let config = try json(URL(fileURLWithPath: configDir).appendingPathComponent("crush.json"))
+        XCTAssertNil(config["reasoning_effort"])
+    }
+
     func testAKeyOnlyUserConfigGivesAConfigWithTheKeyAndThePin() throws {
         let env = try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free)
 

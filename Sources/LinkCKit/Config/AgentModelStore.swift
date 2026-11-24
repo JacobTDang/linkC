@@ -1,26 +1,29 @@
 import Foundation
 
-/// `<Application Support>/linkC/models.json`: which model each tier launches, per agent.
+/// `<Application Support>/linkC/models.json`: which model each tier launches, per agent, and
+/// which reasoning effort each tier uses for agents whose CLI takes one.
 /// ```json
 /// {"models":{"codex":{"light":"gpt-6-luna","standard":"gpt-6-sol","deep":"gpt-6-astra"}},
-///  "defaultTiers":{"codex":"standard"}}
+///  "defaultTiers":{"codex":"standard"},
+///  "efforts":{"codex":{"light":"low","standard":"medium","deep":"high"}}}
 /// ```
-/// Two processes read this: the app, to launch a session with `--model`, and `linkc-mcp`, to
-/// refuse a delegation whose tier has no model. A missing file means "nothing configured yet"
-/// and `load` quietly returns the seeded mapping. An agent the file never names — one added
-/// after the file was saved — takes its seeded tiers too.
+/// Two processes read this: the app, to launch a session with `--model` (and effort), and
+/// `linkc-mcp`, to refuse a delegation whose tier has no model. A missing file means "nothing
+/// configured yet" and `load` quietly returns the seeded mapping. An agent the file never names
+/// — one added after the file was saved — takes its seeded tiers and efforts too.
 ///
 /// The schema decodes leniently, so a file a newer build wrote never looks broken to an older
 /// one: a top-level key this build doesn't know about is kept verbatim and carried forward by
-/// `save`, and `"models"` or `"defaultTiers"` missing entirely takes an empty default instead of
-/// failing the whole file. Only JSON that genuinely can't be read — a permissions/I/O error, or
-/// syntax `JSONSerialization` itself rejects — falls back to the seeded mapping on `load`, and
-/// on `save` is refused outright rather than overwritten, since it may be data this build simply
-/// can't parse yet.
+/// `save`, and `"models"`, `"defaultTiers"` or `"efforts"` missing entirely takes an empty
+/// default instead of failing the whole file. Only JSON that genuinely can't be read — a
+/// permissions/I/O error, or syntax `JSONSerialization` itself rejects — falls back to the
+/// seeded mapping on `load`, and on `save` is refused outright rather than overwritten, since
+/// it may be data this build simply can't parse yet.
 public struct AgentModelStore: Sendable {
     private let fileURL: URL
     private static let modelsKey = "models"
     private static let defaultTiersKey = "defaultTiers"
+    private static let effortsKey = "efforts"
 
     public init(directory: URL) {
         self.fileURL = directory.appendingPathComponent("models.json", isDirectory: false)
@@ -96,8 +99,8 @@ public struct AgentModelStore: Sendable {
     }
 
     /// Whether the file currently at `fileURL` can be read and decoded, and if so, every
-    /// top-level key besides `"models"`/`"defaultTiers"` — carried forward so a newer build's
-    /// fields survive a save.
+    /// top-level key besides `"models"`/`"defaultTiers"`/`"efforts"` — carried forward so a
+    /// newer build's fields survive a save.
     private func readExistingExtras() -> Result<[String: JSONValue], AgentModelStoreRefusal> {
         let data: Data
         do {
@@ -114,9 +117,9 @@ public struct AgentModelStore: Sendable {
         }
     }
 
-    /// Parses `data` as the lenient `models.json` schema. `"models"`/`"defaultTiers"` missing
-    /// entirely takes an empty default rather than failing the whole file; either present with
-    /// the wrong shape, or `data` not being valid JSON at all, throws `AgentModelStoreRefusal`.
+    /// Parses `data` as the lenient `models.json` schema. `"models"`/`"defaultTiers"`/`"efforts"`
+    /// missing entirely takes an empty default rather than failing the whole file; either present
+    /// with the wrong shape, or `data` not being valid JSON at all, throws `AgentModelStoreRefusal`.
     private func parseLenient(_ data: Data) throws -> (settings: AgentModelSettings, extras: [String: JSONValue]) {
         var top: [String: JSONValue]
         do {
@@ -142,7 +145,16 @@ public struct AgentModelStore: Sendable {
         } else {
             defaultTiers = [:]
         }
-        return (AgentModelSettings(models: models, defaultTiers: defaultTiers), top)
+        let efforts: [String: [String: String]]
+        if let value = top.removeValue(forKey: Self.effortsKey) {
+            guard let decoded = value.stringTableOfTables else {
+                throw AgentModelStoreRefusal.unreadable("\"efforts\" is not an object of string tables")
+            }
+            efforts = decoded
+        } else {
+            efforts = [:]
+        }
+        return (AgentModelSettings(models: models, defaultTiers: defaultTiers, efforts: efforts), top)
     }
 
     /// Re-assembles `settings` and `extras` into the same top-level shape `parseLenient` reads,
@@ -153,6 +165,9 @@ public struct AgentModelStore: Sendable {
             JSONValue.object(tiers.mapValues(JSONValue.string))
         })
         top[Self.defaultTiersKey] = .object(settings.defaultTiers.mapValues(JSONValue.string))
+        top[Self.effortsKey] = .object(settings.efforts.mapValues { tiers in
+            JSONValue.object(tiers.mapValues(JSONValue.string))
+        })
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(top)

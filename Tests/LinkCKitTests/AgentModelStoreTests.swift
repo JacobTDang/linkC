@@ -83,6 +83,18 @@ final class AgentModelStoreTests: XCTestCase {
                        "the field that IS present still loads, rather than falling back to seeded entirely")
         XCTAssertEqual(settings.defaultTier(for: .codex), .standard,
                        "the missing \"defaultTiers\" field takes its default")
+        XCTAssertEqual(settings.effort(for: .codex, tier: .deep), .high,
+                       "a file saved before efforts existed still gets the seeded effort table")
+    }
+
+    func testSavedEffortsAreReadBack() throws {
+        let store = AgentModelStore(directory: dir)
+        var settings = AgentModelSettings.seeded
+        settings.setEffort(.max, for: .claude, tier: .deep)
+        guard case .success = store.save(settings) else {
+            return XCTFail("expected the save to succeed")
+        }
+        XCTAssertEqual(AgentModelStore(directory: dir).load().effort(for: .claude, tier: .deep), .max)
     }
 
     func testAnUnreadableFileRefusesTheSaveWithTheExactMessage() throws {

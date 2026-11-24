@@ -94,10 +94,17 @@ public struct CrushSessionConfig: Sendable {
 
     /// Writes the session's folders and returns the environment that points Crush at them. Throws, and
     /// leaves nothing behind, when the model is not free, a file cannot be read, a project config would
-    /// override the pin, or a folder cannot be written.
-    func prepare(sessionId: String, cwd: String, model: String) throws -> [String: String] {
+    /// override the pin, or a folder cannot be written. `effort` becomes Crush's top-level
+    /// `reasoning_effort` key (low|medium|high); Crush has no CLI flag for it.
+    func prepare(sessionId: String, cwd: String, model: String, effort: ReasoningEffort? = nil) throws -> [String: String] {
         guard !sessionId.isEmpty, !sessionId.contains("/"), sessionId != ".", sessionId != ".." else {
             throw LinkCError.process("\"\(sessionId)\" is not a session id Crush's folders can be named for")
+        }
+        if let effort {
+            guard [.low, .medium, .high].contains(effort) else {
+                throw LinkCError.process(
+                    "Crush's reasoning_effort only accepts low, medium or high — not \(effort.rawValue)")
+            }
         }
         let pin = try Self.split(model)
         try refuseUserCrushrc()
@@ -109,6 +116,11 @@ public struct CrushSessionConfig: Sendable {
         models["large"] = entry
         models["small"] = entry
         config["models"] = models
+        if let effort {
+            config["reasoning_effort"] = effort.rawValue
+        } else {
+            config.removeValue(forKey: "reasoning_effort")
+        }
         let dataFiles = try readUserData()
         guard hasOpenRouterKey(config: config, dataFiles: dataFiles, projectConfigs: projectConfigs) else {
             throw LinkCError.process("Crush has no OpenRouter key, so it cannot run a free model — add an OpenRouter key to Crush (open crush and enter it, or set providers.openrouter.api_key in \(user.config.appendingPathComponent(Self.configFileName).path)), then try again")

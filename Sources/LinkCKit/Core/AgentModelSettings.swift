@@ -19,14 +19,23 @@ public enum ModelTier: String, Codable, Sendable, CaseIterable, Equatable {
 }
 
 /// The tier → model id mapping, keyed by `AgentKind.rawValue` so the JSON on disk reads plainly
-/// and an unknown agent in an edited file is ignored rather than fatal.
+/// and an unknown agent in an edited file is ignored rather than fatal. `efforts` is the same
+/// shape for reasoning effort per tier; agents whose CLI has no effort knob are absent.
 public struct AgentModelSettings: Codable, Sendable, Equatable {
     public private(set) var models: [String: [String: String]]
     public private(set) var defaultTiers: [String: String]
+    /// Tier → effort id (`low`/`medium`/`high`/`xhigh`/`max`), per agent. Absent for agents
+    /// that cannot take an effort from linkC.
+    public private(set) var efforts: [String: [String: String]]
 
-    public init(models: [String: [String: String]], defaultTiers: [String: String]) {
+    public init(
+        models: [String: [String: String]],
+        defaultTiers: [String: String],
+        efforts: [String: [String: String]] = [:]
+    ) {
         self.models = models
         self.defaultTiers = defaultTiers
+        self.efforts = efforts
     }
 
     /// Today's models — only ids verified against the real CLIs. `gpt-6-astra` is confirmed
@@ -41,6 +50,7 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
     /// is unconfigured and delegation refuses loudly. All are editable in settings. The opencode ids are
     /// OpenCode's free models as `opencode models --standalone` listed them (2026-11-10).
     /// Free models come and go, so every path that starts a tiered OpenCode worker checks the listing.
+    /// Effort defaults: light=low, standard=medium, deep=high, for every agent whose CLI takes one.
     public static let seeded = AgentModelSettings(
         models: [
             AgentKind.claude.rawValue: ["light": "haiku", "standard": "sonnet", "deep": "opus"],
@@ -73,7 +83,20 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             AgentKind.opencode.rawValue: ModelTier.standard.rawValue,
             AgentKind.kilo.rawValue: ModelTier.standard.rawValue,
             AgentKind.crush.rawValue: ModelTier.standard.rawValue
-        ]
+        ],
+        efforts: {
+            let defaults: [String: String] = [
+                ModelTier.light.rawValue: ReasoningEffort.low.rawValue,
+                ModelTier.standard.rawValue: ReasoningEffort.medium.rawValue,
+                ModelTier.deep.rawValue: ReasoningEffort.high.rawValue
+            ]
+            return [
+                AgentKind.claude.rawValue: defaults,
+                AgentKind.codex.rawValue: defaults,
+                AgentKind.agy.rawValue: defaults,
+                AgentKind.crush.rawValue: defaults
+            ]
+        }()
     )
 
     /// The model id to launch, or nil when this agent has no model for this tier — the caller
@@ -86,6 +109,14 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
 
     public func defaultTier(for agent: AgentKind) -> ModelTier {
         defaultTiers[agent.rawValue].flatMap(ModelTier.init(rawValue:)) ?? .standard
+    }
+
+    /// The reasoning effort for `agent` at `tier`, or nil when that agent has no effort mapping
+    /// (unsupported CLI) or the stored value is empty / unknown.
+    public func effort(for agent: AgentKind, tier: ModelTier) -> ReasoningEffort? {
+        guard let raw = efforts[agent.rawValue]?[tier.rawValue] else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ReasoningEffort(rawValue: trimmed)
     }
 
     /// Which tier a running model belongs to, for a session whose model was switched by hand.
@@ -113,7 +144,8 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
 
     /// `self`, plus `seed`'s mapping for every agent `self` never mentions — how a file saved
     /// before an agent existed picks that agent up. An agent `self` does mention keeps exactly
-    /// what it has, emptied tiers included.
+    /// what it has, emptied tiers included. The same for `efforts`: an agent with no effort table
+    /// yet takes the seed's, so a file saved before efforts existed still gets the defaults.
     public func fillingInAgents(from seed: AgentModelSettings) -> AgentModelSettings {
         var result = self
         for (agent, tiers) in seed.models where result.models[agent] == nil {
@@ -121,6 +153,9 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             if result.defaultTiers[agent] == nil, let tier = seed.defaultTiers[agent] {
                 result.defaultTiers[agent] = tier
             }
+        }
+        for (agent, tiers) in seed.efforts where result.efforts[agent] == nil {
+            result.efforts[agent] = tiers
         }
         return result
     }
@@ -131,5 +166,9 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
 
     public mutating func setDefaultTier(_ tier: ModelTier, for agent: AgentKind) {
         defaultTiers[agent.rawValue] = tier.rawValue
+    }
+
+    public mutating func setEffort(_ effort: ReasoningEffort, for agent: AgentKind, tier: ModelTier) {
+        efforts[agent.rawValue, default: [:]][tier.rawValue] = effort.rawValue
     }
 }

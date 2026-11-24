@@ -664,7 +664,7 @@ extension AppCoordinator {
         }
         do {
             _ = try spawnTeammate(in: workspacePath, agent: task.toAgent, goal: task.prompt,
-                                  tier: task.tier, model: task.model, asWorker: true)
+                                  tier: task.tier, model: task.model, effort: task.effort, asWorker: true)
         } catch {
             // Swallowing this used to leave the task `.queued` forever, retried every second, with
             // nothing anywhere saying why.
