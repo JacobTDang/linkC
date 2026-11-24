@@ -16,7 +16,10 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func server(settings: AgentModelSettings = .seeded) -> MCPServer {
+    private func server(
+        settings: AgentModelSettings = .seeded,
+        installed: Set<AgentKind> = [.claude, .codex, .cursor, .agy, .grok, .opencode, .kilo, .crush]
+    ) -> MCPServer {
         MCPServer(
             workspaceRoot: tempDir.path,
             inboxStore: InboxStore(workspaceRoot: tempDir.path),
@@ -25,6 +28,7 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
             modelSettings: { settings },
             sessionResolver: { nil },
             usageReaders: [:],
+            isAgentInstalled: { installed.contains($0) },
             openCodeModels: { _ in [
                 "opencode/deepseek-v4.1-flash-free", "opencode/big-pickle", "opencode/nemotron-3.5-super-vl-free"
             ] },
@@ -80,6 +84,16 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
         let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
         XCTAssertEqual(task.tier, .light)
         XCTAssertEqual(task.effort, .low)
+    }
+
+    func testAutoRouteWithNoInstalledAgentsReportsError() throws {
+        let result = try call(server(installed: []), "linkc_delegate_task", [
+            "prompt": "Rename a typo in the header",
+        ])
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(
+            result.text.contains("no agent CLI is installed to route to"),
+            result.text)
     }
 
     func testAutoRouteWithExplicitTierIsRefused() throws {

@@ -148,6 +148,10 @@ public final class MCPServer: Sendable {
     public typealias SessionResolver = @Sendable () -> String?
     public typealias WorkerResolver = @Sendable () -> String?
     public typealias UsageReader = @Sendable () -> AgentUsage
+    /// Whether a peer agent's CLI is installed on this machine. Production defaults to
+    /// `AgentDescriptor.resolveExecutable`; tests inject a fixed set so routing does not
+    /// depend on whatever happens to be on PATH.
+    public typealias AgentInstalledChecker = @Sendable (AgentKind) -> Bool
     public typealias OpenCodeModelLister = @Sendable (_ folder: String) throws -> [String]
 
     /// How `linkc_close_worker` waits for linkC's answer to its request: it polls the task every
@@ -193,6 +197,9 @@ public final class MCPServer: Sendable {
     /// can inject exactly the agents it cares about and leave the rest absent — an absent key
     /// renders as "no usage reader configured" rather than falling back to a real reader.
     public let usageReaders: [AgentKind: UsageReader]
+    /// Whether each peer agent's CLI is present. Injected so tests can pin the installed set
+    /// without touching the real PATH; production keeps `AgentDescriptor.resolveExecutable`.
+    public let isAgentInstalled: AgentInstalledChecker
     /// Agents whose registered reader can actually trigger a delegation warning. Declared as
     /// data, next to `usageReaders`, rather than as a hard-coded agent check in the delegate
     /// handler: the handler must consult this set, never an identity check, so that whether a
@@ -260,6 +267,9 @@ public final class MCPServer: Sendable {
         sessionResolver: @escaping SessionResolver = { AncestorSessionCache.value },
         workerResolver: @escaping WorkerResolver = { AncestorWorkerCache.value },
         usageReaders: [AgentKind: UsageReader] = MCPServer.defaultUsageReaders(),
+        isAgentInstalled: @escaping AgentInstalledChecker = {
+            AgentDescriptor.resolveExecutable(for: $0) != nil
+        },
         warnCapableAgents: Set<AgentKind> = MCPServer.defaultWarnCapableAgents,
         closeAnswerWait: CloseAnswerWait = .standard,
         openCodeModels: @escaping OpenCodeModelLister = { try MCPServer.listOpenCodeModels(in: $0) },
@@ -279,6 +289,7 @@ public final class MCPServer: Sendable {
         self.sessionResolver = sessionResolver
         self.workerResolver = workerResolver
         self.usageReaders = usageReaders
+        self.isAgentInstalled = isAgentInstalled
         self.warnCapableAgents = warnCapableAgents
         self.closeAnswerWait = closeAnswerWait
         self.openCodeModels = openCodeModels
@@ -2032,7 +2043,7 @@ public final class MCPServer: Sendable {
     private func routeTask(
         prompt: String, settings: AgentModelSettings, destStore: InboxStore
     ) throws -> RouterDecision {
-        let installed = AgentKind.peers.filter { AgentDescriptor.resolveExecutable(for: $0) != nil }
+        let installed = AgentKind.peers.filter { isAgentInstalled($0) }
         guard !installed.isEmpty else {
             throw LinkCError.process("no agent CLI is installed to route to")
         }
