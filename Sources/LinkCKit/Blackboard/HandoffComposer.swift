@@ -65,18 +65,24 @@ public struct HandoffComposer: Sendable {
         """
     }
 
+    /// Where the memo for a handoff to the session `sessionId` is kept, relative to its workspace: one
+    /// file per handoff, so it never replaces another handoff's memo or the teammate memo in `HANDOFF.md`.
+    public static func sessionMemoPath(for sessionId: String) -> String {
+        ".linkc/handoffs/\(sessionId).md"
+    }
+
     /// Atomically writes content to `<workspacePath>/.linkc/HANDOFF.md`.
     @discardableResult
     public static func writeHandoff(workspacePath: String, content: String) throws -> URL {
+        try writeHandoff(workspacePath: workspacePath, content: content, at: ".linkc/HANDOFF.md")
+    }
+
+    /// Atomically writes content to `<workspacePath>/<relativePath>`, making its folder if needed.
+    @discardableResult
+    public static func writeHandoff(workspacePath: String, content: String, at relativePath: String) throws -> URL {
         let wsURL = URL(fileURLWithPath: (workspacePath as NSString).standardizingPath, isDirectory: true)
-        let linkcDir = wsURL.appendingPathComponent(".linkc", isDirectory: true)
-        let fm = FileManager.default
-
-        if !fm.fileExists(atPath: linkcDir.path) {
-            try fm.createDirectory(at: linkcDir, withIntermediateDirectories: true)
-        }
-
-        let targetURL = linkcDir.appendingPathComponent("HANDOFF.md")
+        let targetURL = wsURL.appendingPathComponent(relativePath, isDirectory: false)
+        try FileManager.default.createDirectory(at: targetURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard let data = content.data(using: .utf8) else {
             throw LinkCError.server("Failed to encode handoff content as UTF-8")
         }

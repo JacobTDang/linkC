@@ -20,6 +20,7 @@ final class AppCoordinatorHandoffTests: XCTestCase {
 
     private func makeCoordinator(models: AgentModelSettings = .seeded,
                                   modelLists: [AgentKind: AgentModelList] = [:],
+                                  missingAgents: Set<AgentKind> = [],
                                   now: @escaping @MainActor @Sendable () -> Date = Date.init) -> AppCoordinator {
         // Each agent's stand-in records the argv it was started with, then waits like an idle agent.
         let argvDir = tempDir.path
@@ -46,7 +47,9 @@ final class AppCoordinatorHandoffTests: XCTestCase {
             settingsDir: settingsDir,
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
-            agentPathResolver: { [tempDir] kind in tempDir!.appendingPathComponent("agents/\(kind.rawValue)").path },
+            agentPathResolver: { [tempDir] kind in
+                missingAgents.contains(kind) ? nil : tempDir!.appendingPathComponent("agents/\(kind.rawValue)").path
+            },
             modelSettings: { models },
             modelLists: { modelLists },
             deliverySettle: 0,
@@ -76,8 +79,11 @@ final class AppCoordinatorHandoffTests: XCTestCase {
 
     /// The memo a handoff to `session` left.
     private func handoffMemo(for session: Session) throws -> String {
-        try String(contentsOf: URL(fileURLWithPath: folder).appendingPathComponent(".linkc/HANDOFF.md"), encoding: .utf8)
+        try String(contentsOf: handoffsFolder.appendingPathComponent("\(session.id).md"), encoding: .utf8)
     }
+
+    private var handoffsFolder: URL { URL(fileURLWithPath: folder).appendingPathComponent(".linkc/handoffs") }
+    private var teammateMemo: URL { URL(fileURLWithPath: folder).appendingPathComponent(".linkc/HANDOFF.md") }
 
     private struct NullSink: NotificationSink {
         func deliver(id: String, title: String, body: String) {}
@@ -101,18 +107,12 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         XCTAssertFalse(s2.isWorker, "Handoff session must be user-owned, not a delegated worker")
         XCTAssertEqual(coordinator.store.session(id: s1.id)?.state, s1.state, "Source session must be left running")
 
-        // HANDOFF.md must exist in cwd/.linkc/HANDOFF.md
-        let handoffURL = URL(fileURLWithPath: folder).appendingPathComponent(".linkc/HANDOFF.md")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: handoffURL.path))
-        let memo = try String(contentsOf: handoffURL, encoding: .utf8)
+        let memo = try handoffMemo(for: s2)
         XCTAssertTrue(memo.contains("[CLAUDE] Claude Code"))
         XCTAssertTrue(memo.contains("Finish implementing Feature X"))
 
-        // Opening prompt must be queued for s2
-        let prompt = coordinator.openingPrompts[s2.id]
-        XCTAssertNotNil(prompt)
-        XCTAssertTrue(prompt?.text.contains(".linkc/HANDOFF.md") ?? false)
-        XCTAssertTrue(prompt?.text.contains("Finish implementing Feature X") ?? false)
+        let prompt = try XCTUnwrap(coordinator.openingPrompts[s2.id]?.text)
+        XCTAssertEqual(prompt, "Please read .linkc/handoffs/\(s2.id).md and continue working on: Finish implementing Feature X")
     }
 
     /// The goal is the source session's own. A worker's brief in the folder is that worker's work, the
@@ -199,6 +199,56 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         let argv = try launchArgv(of: s2)
         XCTAssertEqual(argv.first, agentScript(.codex).path)
         XCTAssertTrue(argv.joined(separator: " ").contains("--model o3-mini"), "\(argv)")
+    }
+
+    /// Each handoff keeps its own memo, named for the new session, so it never replaces the memo a
+    /// teammate or a limit reroute reads from `.linkc/HANDOFF.md`, or another handoff's.
+    func testAHandoffKeepsItsOwnMemoBesideTheTeammateMemo() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+        try FileManager.default.createDirectory(at: teammateMemo.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "a teammate's memo".write(to: teammateMemo, atomically: true, encoding: .utf8)
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        let s2 = try coordinator.handoff(from: s1.id, to: .codex, goal: "first")
+        let s3 = try coordinator.handoff(from: s1.id, to: .codex, goal: "second")
+
+        XCTAssertEqual(try String(contentsOf: teammateMemo, encoding: .utf8), "a teammate's memo")
+        XCTAssertTrue(try handoffMemo(for: s2).contains("## Goal\nfirst"))
+        XCTAssertTrue(try handoffMemo(for: s3).contains("## Goal\nsecond"))
+        XCTAssertEqual(coordinator.openingPrompts[s3.id]?.text,
+                       "Please read .linkc/handoffs/\(s3.id).md and continue working on: second")
+    }
+
+    /// A launch that fails leaves no memo behind, and says which agent could not start.
+    func testAFailedLaunchWritesNoMemo() throws {
+        let coordinator = makeCoordinator(missingAgents: [.codex])
+        defer { stopAll(coordinator) }
+        try FileManager.default.createDirectory(at: teammateMemo.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "a teammate's memo".write(to: teammateMemo, atomically: true, encoding: .utf8)
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        XCTAssertThrowsError(try coordinator.handoff(from: s1.id, to: .codex, goal: "anything")) { error in
+            XCTAssertTrue(error.localizedDescription.hasPrefix("Codex could not start: "), error.localizedDescription)
+        }
+
+        XCTAssertEqual(try String(contentsOf: teammateMemo, encoding: .utf8), "a teammate's memo")
+        let memos = (try? FileManager.default.contentsOfDirectory(atPath: handoffsFolder.path)) ?? []
+        XCTAssertEqual(memos, [])
+    }
+
+    /// A session that has ended has nothing live to hand off.
+    func testHandoffRefusesAnEndedSession() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        coordinator.store.updateState(id: s1.id, to: .ended)
+
+        XCTAssertThrowsError(try coordinator.handoff(from: s1.id, to: .codex)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("has ended"), error.localizedDescription)
+        }
+        XCTAssertEqual(coordinator.store.sessions.map(\.id), [s1.id], "no session was opened")
     }
 
     func testHandoffRefusesUnknownSourceSession() throws {

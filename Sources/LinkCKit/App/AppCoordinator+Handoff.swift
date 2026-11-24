@@ -1,11 +1,11 @@
 import Foundation
 
 extension AppCoordinator {
-    /// Hands off a live session's context to a new session of `agent`.
-    /// Composes and atomically writes `.linkc/HANDOFF.md` from the source session
-    /// (its cwd, agentKind, screen tail 50 lines, git summary, resolved goal, title),
-    /// then opens a new user-owned session of `agent` in the same cwd on that tier/model
-    /// with an opening prompt telling it to read `.linkc/HANDOFF.md` and continue.
+    /// Hands off a live session's context to a new session of `agent`: opens the user's own session of
+    /// `agent` in the same folder, on the tier's model or the model given, then writes the memo from the
+    /// source session (its agent, last 50 lines on screen, git summary and goal) to
+    /// `.linkc/handoffs/<new session id>.md` and queues an opening prompt telling it to read the memo
+    /// and continue.
     ///
     /// Leaves the source session running.
     @discardableResult
@@ -18,7 +18,10 @@ extension AppCoordinator {
         select: Bool = true
     ) throws -> Session {
         guard let sourceSession = store.session(id: sessionId) else {
-            throw LinkCError.process("Session '\(sessionId)' not found")
+            throw LinkCError.process("no linkC session \(sessionId) to hand off")
+        }
+        guard sourceSession.state != .ended else {
+            throw LinkCError.process("\(sourceSession.agentKind.displayName)'s session \(sessionId) has ended; there is nothing live to hand off")
         }
         guard agent != .shell else {
             throw LinkCError.process("a shell is not an agent")
@@ -90,8 +93,7 @@ extension AppCoordinator {
 
         let resolvedGoal = try handoffGoal(of: sourceSession, in: folder, explicit: goal)
 
-        // Compose and write HANDOFF.md
-        try HandoffComposer.writeHandoffSync(
+        let memo = HandoffComposer.compose(
             workspacePath: folder,
             sourceAgent: sourceSession.agentKind,
             lastGoal: resolvedGoal,
@@ -99,22 +101,28 @@ extension AppCoordinator {
             recentTerminalOutput: recentOutput
         )
 
-        // Launch new user-owned session (asWorker: false)
-        let newSession = try newSession(
-            cwd: folder,
-            agent: agent,
-            mode: .new,
-            model: resolvedModelId,
-            select: select,
-            asWorker: false
-        )
+        let newSession: Session
+        do {
+            newSession = try self.newSession(cwd: folder, agent: agent, mode: .new, model: resolvedModelId,
+                                             select: select, asWorker: false)
+        } catch {
+            throw LinkCError.process("\(agent.displayName) could not start: \(error)")
+        }
+        // Written once the session is up and has an id to name the memo for, so a launch that fails
+        // leaves nothing behind.
+        let memoPath = HandoffComposer.sessionMemoPath(for: newSession.id)
+        do {
+            try HandoffComposer.writeHandoff(workspacePath: folder, content: memo, at: memoPath)
+        } catch {
+            stopSession(newSession.id)
+            throw LinkCError.process("the handoff memo \(memoPath) could not be written, so the new session was closed — \(error)")
+        }
 
-        // Opening prompt
         let promptText: String
         if let resolvedGoal, !resolvedGoal.isEmpty {
-            promptText = "Please read .linkc/HANDOFF.md and continue working on: \(resolvedGoal)"
+            promptText = "Please read \(memoPath) and continue working on: \(resolvedGoal)"
         } else {
-            promptText = "Please read .linkc/HANDOFF.md and continue."
+            promptText = "Please read \(memoPath) and continue."
         }
         openingPrompts[newSession.id] = OpeningPrompt(text: promptText, since: now())
 
