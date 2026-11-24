@@ -53,6 +53,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>com.linkc.session-link</string>
+      <key>CFBundleURLSchemes</key><array><string>linkc</string></array>
+    </dict>
+  </array>
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>

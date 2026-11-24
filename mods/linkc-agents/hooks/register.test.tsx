@@ -44,11 +44,14 @@ const PROJECTS = {
 }
 
 /** The engine around the mod: home, this session's id, its folder in /repo, and linkC's file. */
-function engine(on: On, file: string | Error, seen: { bodyRows?: number } = {}) {
+function engine(on: On, file: string | Error, seen: { bodyRows?: number; runs?: string[][] } = {}) {
   const clock = mock.clock(on)
   on('env.get', (_, e) => ({ value: { HOME, LINKC_SESSION: 'ME' }[e.name] }))
   on('session.cwd', () => ({ value: '/repo/Sources' }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '/repo/.git\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('process.run', (_, e) => {
+    seen.runs?.push([...e.argv])
+    return { value: { exitCode: 0, stdout: '/repo/.git\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   on('fs.read', (_, e) => {
     if (e.path !== FILE) return { deny: `unexpected read of ${e.path}` }
     if (file instanceof Error) return { deny: file.message }
@@ -97,6 +100,18 @@ test('a card reads its action or state, where it runs, its age, and marks this s
   expect(all).toContain(' · you')
   expect(all).toContain(' 4m ')
   expect(all).toContain(' 12m ')
+})
+
+test('pressing a card’s title opens that session in linkC', async ($, on) => {
+  const seen: { runs: string[][] } = { runs: [] }
+  engine(on, JSON.stringify(PROJECTS), seen)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'open-ASK' })
+
+  expect(seen.runs).toContainEqual(['open', 'linkc://session/ASK'])
+  await ui.unmount()
 })
 
 test('a model id reads as a person names it', () => {

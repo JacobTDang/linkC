@@ -118,6 +118,17 @@ export function modelLabel(model: string): string {
   return [parts.slice(0, version + 1).join('-'), ...parts.slice(version + 1)].join(' ')
 }
 
+/** Shows a session in linkC as its tab would, through its `linkc://session/<id>` link. */
+async function openSession($: EngineInterface, id: string): Promise<void> {
+  const url = `linkc://session/${id}`
+  try {
+    const run = await $.process.run(['open', url], { timeoutMs: 5_000 })
+    if (run.exitCode !== 0) $.ui.toast(`linkC could not open the session: ${run.stderr.trim() || `open exited ${run.exitCode}`}`)
+  } catch (error) {
+    $.ui.toast(`linkC could not open the session: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 function subagentWords(count: number): string {
   return `${count} subagent${count === 1 ? '' : 's'}`
 }
@@ -232,7 +243,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', plugin: '*', requestId: FILETREE }, async ($, e, next) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const body = e.props.scroll?.bodyRows ?? 40
     const width = e.props.bodyColumns
     const top = Math.max(5, Math.floor(body / 2))
@@ -268,9 +279,11 @@ export const register: Register = on => {
           return (
             <Box flexDirection="column">
               <Box flexDirection="row">
-                <Text color={bar}>{'┃ '}</Text>
                 <Box flexGrow={1} flexShrink={1}>
-                  <Text bold color={TEXT} wrap="truncate-end">{row.title ?? row.agent}</Text>
+                  <Button key={`open-${row.id}`} plain onPress={() => openSession($, row.id)}>
+                    <Text color={bar}>{'┃ '}</Text>
+                    <Text bold color={TEXT} wrap="truncate-end">{row.title ?? row.agent}</Text>
+                  </Button>
                 </Box>
                 <Text color={MUTED}>{`${row.model ? ` ${modelLabel(row.model)}` : row.title ? ` ${row.agent}` : ''}${row.worker ? ' · worker' : ''}`}</Text>
                 {isMe && <Text bold color={PEACH}>{' · you'}</Text>}

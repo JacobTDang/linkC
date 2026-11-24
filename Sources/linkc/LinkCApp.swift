@@ -41,6 +41,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// `linkc://session/<id>` links, registered in Info.plist by build-app.sh.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls { model.openLink(url) }
+    }
+
     /// Re-registers the global shortcut whenever the preference changes — the same
     /// `withObservationTracking` re-arm loop StatusPanelController uses.
     private func observeHotKeyPreference() {
@@ -1417,6 +1422,23 @@ final class AppModel {
     /// treatment without going through this method at all.
     func focus(_ id: String) {
         coordinator?.focusSession(id)
+    }
+
+    /// A `linkc://session/<id>` link followed from outside, such as a linkc-agents card: show that
+    /// session as its tab would. A link to a session that is no longer live brings linkC forward and
+    /// says so, rather than doing nothing.
+    func openLink(_ url: URL) {
+        guard let id = SessionLink.sessionId(in: url) else {
+            NSLog("[linkC] %@ is not a link linkC opens", url.absoluteString)
+            return
+        }
+        guard let coordinator, coordinator.store.session(id: id) != nil else {
+            NSLog("[linkC] the link to session %@ names no live session", id)
+            lastError = "That session has ended."
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        focus(id)
     }
     func stop(_ id: String) { coordinator?.stopSession(id) }
 
