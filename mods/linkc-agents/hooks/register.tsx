@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage } from 'claude-code'
 
 import type { AgentRow, Agents, Meter } from '../types'
+import type { ShimmerProps } from './shimmer'
 
 const FILETREE = 'filetree'
 const POLL_MS = 2000
@@ -28,6 +29,12 @@ const AGENT_COLOR: Record<string, string> = {
 }
 
 type StateLook = { glyph: string; label: string; color: string; rank: number; needsYou?: true }
+
+/** The rank of every state at work: working, busy, or running subagents. Its line shimmers. */
+const WORKING_RANK = 3
+
+/** The working line's own grey up to the shimmer band's brightest. */
+const SHIMMER = [MUTED, '#a6a6a6', '#cccccc', '#f2f2f2']
 
 const IDLE: StateLook = { glyph: '○', label: 'idle', color: MUTED, rank: 6 }
 
@@ -243,7 +250,10 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', plugin: '*', requestId: FILETREE }, async ($, e, next) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    // Only the terminal and the desktop app run client modules; elsewhere the line stays still.
+    const Client = 'Client' in elements ? elements.Client : undefined
     const body = e.props.scroll?.bodyRows ?? 40
     const width = e.props.bodyColumns
     const top = Math.max(5, Math.floor(body / 2))
@@ -276,6 +286,7 @@ export const register: Register = on => {
           const state = stateOf(row)
           const isMe = row.id === me
           const where = row.where === '.' ? '' : ` ${row.where.split('/').pop()}`
+          const detail = `${row.action ?? state.label}${row.action && row.subagents ? ` · ${subagentWords(row.subagents)}` : ''}${where}`
           return (
             <Box flexDirection="column">
               <Box flexDirection="row">
@@ -290,10 +301,19 @@ export const register: Register = on => {
                 <Text> </Text>
               </Box>
               <Box flexDirection="row">
-                <Text color={bar}>{'┃ '}</Text>
-                <Text bold={state.needsYou} color={state.color}>{`${state.glyph} `}</Text>
+                {/* Fixed cells, so a line that has to shrink never eats the space after the bar or the dot. */}
+                <Box width={2} flexShrink={0}>
+                  <Text color={bar}>{'┃'}</Text>
+                </Box>
+                <Box width={2} flexShrink={0}>
+                  <Text bold={state.needsYou} color={state.color}>{state.glyph}</Text>
+                </Box>
                 <Box flexGrow={1} flexShrink={1}>
-                  <Text color={state.needsYou ? state.color : MUTED} wrap="truncate-end">{`${row.action ?? state.label}${row.action && row.subagents ? ` · ${subagentWords(row.subagents)}` : ''}${where}`}</Text>
+                  {state.rank === WORKING_RANK && Client ? (
+                    <Client key={`shimmer-${row.id}`} module="./shimmer.tsx" props={{ text: detail, palette: SHIMMER } satisfies ShimmerProps} />
+                  ) : (
+                    <Text color={state.needsYou ? state.color : MUTED} wrap="truncate-end">{detail}</Text>
+                  )}
                 </Box>
                 <Text color={MUTED}>{` ${age(row.since, now)} `}</Text>
               </Box>

@@ -2,6 +2,7 @@ import type { On, SessionContextBreakdown } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { modelLabel } from './register'
+import { shimmerColor } from './shimmer'
 
 const HOME = '/Users/me'
 const FILE = `${HOME}/Library/Application Support/linkC/projects.json`
@@ -90,9 +91,11 @@ test('a card reads its action or state, where it runs, its age, and marks this s
   engine(on, JSON.stringify(PROJECTS))
   await $.session.start({ cwd: '/repo/Sources', surface: 'terminal', isInteractive: true })
 
-  const all = await texts(await $.ui.mount(PANE))
+  const ui = await $.ui.mount(PANE)
+  const all = await texts(ui)
+  const shimmering = (await ui.findAll({ type: 'Client' })).map(c => (c.props.props as { text?: string }).text)
 
-  expect(all).toContain('Running the suite')
+  expect(shimmering).toContain('Running the suite')
   expect(all).toContain('needs permission fix')
   expect(all).toContain(' gemini-3.8 flash medium · worker')
   expect(all).toContain(' Opus 5.5')
@@ -114,6 +117,27 @@ test('pressing a card’s title opens that session in linkC', async ($, on) => {
   await ui.unmount()
 })
 
+test('a working card’s action shimmers; an idle card’s state does not', async ($, on) => {
+  engine(on, JSON.stringify(PROJECTS))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(PANE)
+  const shimmering = (await ui.findAll({ type: 'Client' })).map(c => (c.props.props as { text?: string }).text)
+
+  expect(shimmering).toContain('Running the suite')
+  expect(shimmering).not.toContain('ready')
+  expect(await texts(ui)).toContain('ready')
+  await ui.unmount()
+})
+
+test('the shimmer band sweeps along the text, brightest at its centre', () => {
+  const palette = ['d0', 'd1', 'd2', 'd3']
+  expect(shimmerColor(5, 0, 20, palette)).toBe('d0')
+  const band = Array.from({ length: 20 }, (_, i) => shimmerColor(i, 5, 20, palette))
+  expect(band.filter(c => c === 'd3').length).toBe(1)
+  expect(band.indexOf('d3')).toBe(4)
+})
+
 test('a model id reads as a person names it', () => {
   expect(modelLabel('Opus 5.5')).toBe('Opus 5.5')
   expect(modelLabel('claude-opus-5-5')).toBe('Opus 5.5')
@@ -127,9 +151,11 @@ test('a session whose turn ended but whose subagents still run reads as working'
   engine(on, JSON.stringify(PROJECTS))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
-  const all = await texts(await $.ui.mount(PANE))
+  const ui = await $.ui.mount(PANE)
+  const all = await texts(ui)
+  const shimmering = (await ui.findAll({ type: 'Client' })).map(c => (c.props.props as { text?: string }).text)
 
-  expect(all).toContain('running 2 subagents')
+  expect(shimmering).toContain('running 2 subagents')
   expect(all.indexOf('Fan out')).toBeLessThan(all.indexOf('Idle one'))
 })
 
