@@ -1417,6 +1417,20 @@ final class AppModel {
     }
     func stop(_ id: String) { coordinator?.stopSession(id) }
 
+    /// Hand off an existing session's context to a new session of `agent`. Surfaces failures in lastError.
+    func handoff(from sessionId: String, to agent: AgentKind, tier: ModelTier? = nil, model: String? = nil) {
+        guard let coordinator else { return }
+        do {
+            lastError = nil
+            let newSession = try coordinator.handoff(from: sessionId, to: agent, tier: tier, model: model)
+            focus(newSession.id)
+            showSelection()
+            recents?.record(newSession.cwd)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     /// Resume a previous session as a fresh live one. Surfaces failures inline (fail loud).
     func restore(_ r: RestorableSession, as agent: AgentKind? = nil) {
         guard let coordinator else { return }
