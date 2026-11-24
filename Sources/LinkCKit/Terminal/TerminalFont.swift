@@ -12,13 +12,28 @@ public enum TerminalFont {
     public static let sfMonoFolder = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app/Contents/Resources/Fonts")
 
     /// The Nerd Font family to draw icons with: the symbols-only font first, then a Mono family,
-    /// which fits each icon in one cell, then any other. Proportional (Propo) families never fit.
+    /// which fits each icon in one cell, then any other. A family counts by its long name ("… Nerd
+    /// Font") or its short one ("… NF", such as MesloLGS NF, which Powerlevel10k installs).
+    /// Proportional families (Propo, NFP) never fit a cell.
     public static func nerdFamily(in families: [String]) -> String? {
-        let nerd = families.filter { $0.contains("Nerd Font") && !$0.hasSuffix("Propo") }
+        let nerd = families.filter { isNerd($0) && !$0.hasSuffix("Propo") && !$0.hasSuffix(" NFP") }
         return nerd.first { $0 == "Symbols Nerd Font Mono" }
-            ?? nerd.first { $0.hasSuffix("Nerd Font Mono") }
+            ?? nerd.first { $0.hasSuffix("Nerd Font Mono") || $0.hasSuffix(" NFM") }
             ?? nerd.first
     }
+
+    private static func isNerd(_ family: String) -> Bool {
+        family.contains("Nerd Font") || family.range(of: #"(^| )NF[MP]?$"#, options: .regularExpression) != nil
+    }
+
+    /// The Private Use Areas, where Nerd Font icons sit. Only these reach the Nerd Font: any other
+    /// character SF Mono lacks (a spinner frame, a prompt arrow) keeps the system's own fallback.
+    private static let iconRanges: CharacterSet = {
+        var set = CharacterSet()
+        set.insert(charactersIn: Unicode.Scalar(0xE000)!...Unicode.Scalar(0xF8FF)!)
+        set.insert(charactersIn: Unicode.Scalar(0xF0000)!...Unicode.Scalar(0x10FFFD)!)
+        return set
+    }()
 
     /// SF Mono at `size`, falling back to the Nerd Font picked from `families`. When there is no
     /// Nerd Font or SF Mono cannot be loaded from `sfMonoFolder`, the system monospaced font, and
@@ -34,7 +49,7 @@ public enum TerminalFont {
             return (system, "SF Mono could not be loaded from \(sfMonoFolder.path), so Nerd Font icons draw as boxes: \(error)")
         }
         let descriptor = NSFontDescriptor(name: sfMonoName, size: size)
-            .addingAttributes([.cascadeList: [NSFontDescriptor(fontAttributes: [.family: family])]])
+            .addingAttributes([.cascadeList: [NSFontDescriptor(fontAttributes: [.family: family, .characterSet: iconRanges])]])
         guard let font = NSFont(descriptor: descriptor, size: size), font.fontName == sfMonoName else {
             return (system, "\(sfMonoName) is not available after loading \(sfMonoFolder.path), so Nerd Font icons draw as boxes")
         }

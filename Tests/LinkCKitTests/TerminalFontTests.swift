@@ -52,23 +52,45 @@ final class TerminalFontTests: XCTestCase {
     /// Font installed on this Mac, so CI skips it.
     @MainActor func testAFolderIconDrawsFromTheNerdFontInEveryStyle() throws {
         let installed = NSFontManager.shared.availableFontFamilies
-        guard installed.contains(where: { $0.contains("Nerd Font") }) else { throw XCTSkip("no Nerd Font installed") }
+        guard let family = TerminalFont.nerdFamily(in: installed) else { throw XCTSkip("no Nerd Font installed") }
         let made = TerminalFont.make(size: 12.5, sfMonoFolder: TerminalFont.sfMonoFolder, families: installed)
+        XCTAssertNil(made.problem)
         let manager = NSFontManager.shared
         let styles: [NSFontTraitMask] = [[], .boldFontMask, .italicFontMask, [.boldFontMask, .italicFontMask]]
         for traits in styles {
             let font = traits.isEmpty ? made.font : manager.convert(made.font, toHaveTrait: traits)
-            let drawnWith = Self.fontDrawing("\u{E5FF}", with: font)
+            let drawnWith = try Self.fontDrawing("\u{E5FF}", with: font)
             XCTAssertNotEqual(drawnWith, "LastResort", "traits \(traits.rawValue)")
-            XCTAssertTrue(NSFont(name: drawnWith, size: 12.5)?.familyName?.contains("Nerd Font") == true,
-                          "traits \(traits.rawValue) drew with \(drawnWith)")
+            XCTAssertEqual(NSFont(name: drawnWith, size: 12.5)?.familyName, family,
+                           "traits \(traits.rawValue) drew with \(drawnWith)")
         }
     }
 
-    private static func fontDrawing(_ text: String, with font: NSFont) -> String {
+    /// Only icons come from the Nerd Font: a character SF Mono lacks outside the icon ranges, such as
+    /// a frame of an agent's spinner, keeps the system's own fallback, so the spinner never changes face.
+    @MainActor func testOnlyIconsComeFromTheNerdFont() throws {
+        let installed = NSFontManager.shared.availableFontFamilies
+        guard let family = TerminalFont.nerdFamily(in: installed) else { throw XCTSkip("no Nerd Font installed") }
+        let made = TerminalFont.make(size: 12.5, sfMonoFolder: TerminalFont.sfMonoFolder, families: installed)
+        for symbol in ["\u{2736}", "\u{276F}", "\u{2819}"] {
+            let drawnWith = try Self.fontDrawing(symbol, with: made.font)
+            XCTAssertNotEqual(NSFont(name: drawnWith, size: 12.5)?.familyName, family, "\(symbol) drew with \(drawnWith)")
+        }
+        XCTAssertEqual(NSFont(name: try Self.fontDrawing("\u{F0354}", with: made.font), size: 12.5)?.familyName, family,
+                       "an icon past U+F0000 still comes from the Nerd Font")
+    }
+
+    /// A Nerd Font named with the short "NF" (MesloLGS NF, which Powerlevel10k installs) counts too.
+    func testANerdFontWithAShortNFNameCounts() {
+        XCTAssertEqual(TerminalFont.nerdFamily(in: ["Menlo", "MesloLGS NF"]), "MesloLGS NF")
+        XCTAssertEqual(TerminalFont.nerdFamily(in: ["Hack NF", "Hack NFM", "Hack NFP"]), "Hack NFM")
+        XCTAssertNil(TerminalFont.nerdFamily(in: ["Hack NFP", "INFO Sans", "ConfNF"]))
+    }
+
+    private static func fontDrawing(_ text: String, with font: NSFont) throws -> String {
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font]))
-        let run = (CTLineGetGlyphRuns(line) as! [CTRun])[0]
-        let runFont = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName] as! CTFont
-        return CTFontCopyPostScriptName(runFont) as String
+        let run = try XCTUnwrap((CTLineGetGlyphRuns(line) as? [CTRun])?.first)
+        let runFont = try XCTUnwrap((CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName])
+        return CTFontCopyPostScriptName(runFont as! CTFont) as String
     }
 }
