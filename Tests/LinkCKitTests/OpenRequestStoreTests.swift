@@ -150,4 +150,57 @@ final class OpenRequestStoreTests: XCTestCase {
         XCTAssertTrue(store.pending().isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: temporary.path))
     }
+
+    /// An older request JSON file lacking `model`, `handoffFrom`, and `goal` decodes with nil values.
+    func testOldRequestFilesWithoutHandoffFieldsStillDecode() throws {
+        try store.prepare()
+        let oldJson = """
+        {
+            "id": "OLD-REQ",
+            "agent": "codex",
+            "folder": "/tmp/project",
+            "prompt": "do work",
+            "tier": "standard",
+            "createdAt": 1800000000000
+        }
+        """
+        try Data(oldJson.utf8).write(to: store.directory.appendingPathComponent("OLD-REQ.json"))
+
+        let pending = store.pending()
+        XCTAssertEqual(pending.count, 1)
+        guard let req = pending.first else { return }
+        XCTAssertEqual(req.id, "OLD-REQ")
+        XCTAssertEqual(req.agent, .codex)
+        XCTAssertEqual(req.folder, "/tmp/project")
+        XCTAssertEqual(req.prompt, "do work")
+        XCTAssertEqual(req.tier, .standard)
+        XCTAssertNil(req.model)
+        XCTAssertNil(req.handoffFrom)
+        XCTAssertNil(req.goal)
+    }
+
+    /// An OpenRequest specifying model, handoffFrom, and goal encodes and decodes properly.
+    func testRequestWithHandoffFieldsRoundTrips() throws {
+        let req = OpenRequest(
+            id: "HANDOFF-REQ",
+            agent: .claude,
+            folder: "/tmp/project",
+            prompt: "continue handoff",
+            tier: nil,
+            task: nil,
+            model: "claude-3-7-sonnet",
+            handoffFrom: "source-sess-123",
+            goal: "finish feature",
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        try store.submit(req)
+
+        let pending = store.pending()
+        XCTAssertEqual(pending.count, 1)
+        guard let loaded = pending.first else { return }
+        XCTAssertEqual(loaded, req)
+        XCTAssertEqual(loaded.model, "claude-3-7-sonnet")
+        XCTAssertEqual(loaded.handoffFrom, "source-sess-123")
+        XCTAssertEqual(loaded.goal, "finish feature")
+    }
 }

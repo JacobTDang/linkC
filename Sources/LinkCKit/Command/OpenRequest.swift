@@ -23,16 +23,25 @@ public struct OpenRequest: Codable, Equatable, Sendable {
     public let tier: ModelTier?
     /// Set by `--task`: the session carries `prompt` as a task pinned to it.
     public let task: TaskOrigin?
+    public let model: String?
+    /// The session id being handed off from, if this request is a handoff.
+    public let handoffFrom: String?
+    /// Explicit goal to continue toward, if specified.
+    public let goal: String?
     public let createdAt: Date
 
     public init(id: String = UUID().uuidString, agent: AgentKind, folder: String, prompt: String?, tier: ModelTier?,
-                task: TaskOrigin?, createdAt: Date = Date()) {
+                task: TaskOrigin?, model: String? = nil, handoffFrom: String? = nil, goal: String? = nil,
+                createdAt: Date = Date()) {
         self.id = id
         self.agent = agent
         self.folder = folder
         self.prompt = prompt
         self.tier = tier
         self.task = task
+        self.model = model
+        self.handoffFrom = handoffFrom
+        self.goal = goal
         self.createdAt = createdAt
     }
 }
