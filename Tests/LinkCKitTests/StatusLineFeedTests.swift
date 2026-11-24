@@ -8,6 +8,7 @@ final class StatusLineFeedTests: XCTestCase {
     private var directory: URL!
     private var feed: StatusLineFeed!
     private var delivered: Recorder<(body: Data, reading: AgentUsage)>!
+    private var reported: Recorder<(sessionId: String, body: Data)>!
     private var logged: Recorder<String>!
 
     /// A lock-guarded list a `@Sendable` callback can append to and a test can wait on.
@@ -82,6 +83,7 @@ final class StatusLineFeedTests: XCTestCase {
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-status-feed-\(UUID().uuidString)", isDirectory: true)
         delivered = Recorder()
+        reported = Recorder()
         logged = Recorder()
     }
 
@@ -99,6 +101,7 @@ final class StatusLineFeedTests: XCTestCase {
         onDeliver: @escaping @Sendable () -> Void = {}
     ) -> StatusLineFeed {
         let delivered = delivered!
+        let reported = reported!
         let logged = logged!
         feed = StatusLineFeed(
             directory: directory,
@@ -106,6 +109,7 @@ final class StatusLineFeedTests: XCTestCase {
                 delivered.record((body, reading))
                 onDeliver()
             },
+            report: { sessionId, body in reported.record((sessionId, body)) },
             log: { logged.record($0) },
             read: read, retryDelay: retryDelay, maxRetries: maxRetries)
         return feed
@@ -182,6 +186,21 @@ final class StatusLineFeedTests: XCTestCase {
 
         XCTAssertTrue(delivered.all.isEmpty)
         XCTAssertTrue(logged.all.isEmpty, "\(logged.all)")
+    }
+
+    /// The model and the prompt cache ride on every report, with rate limits or without.
+    func testEveryNewReportReachesTheOwnerWithItsSession() throws {
+        let file = try makeFeed().watch(sessionId: "s1")
+        let modelOnly = #"{"session_id":"c1","model":{"id":"claude-opus-5-5","display_name":"Opus 5.5"}}"#
+
+        try commandWrites(modelOnly, to: file)
+        XCTAssertTrue(waitUntil { reported.all.count == 1 })
+        try commandWrites(report, to: file)
+        XCTAssertTrue(waitUntil { reported.all.count == 2 })
+
+        XCTAssertEqual(reported.all.map(\.sessionId), ["s1", "s1"])
+        XCTAssertEqual(reported.all.map(\.body), [Data(modelOnly.utf8), Data(report.utf8)])
+        XCTAssertEqual(delivered.all.count, 1, "only the report with windows carries rate limits")
     }
 
     func testTwoSessionsHaveTheirOwnFiles() throws {

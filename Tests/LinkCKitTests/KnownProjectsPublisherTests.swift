@@ -34,6 +34,88 @@ final class KnownProjectsPublisherTests: XCTestCase {
         XCTAssertTrue(projectC.sessions.isEmpty)
     }
 
+    /// What a panel beside a session needs to show the other sessions: title, state, since when,
+    /// model, whether linkC started it for a task, and the action its row reads.
+    func testEachSessionCarriesWhatItsRowShows() throws {
+        let path = "/tmp/linkc-pub-detail-\(UUID().uuidString)"
+        let since = Date(timeIntervalSince1970: 1_790_000_000)
+        let sessions = [
+            Session(id: "A", cwd: path, title: "Fix glyphs", state: .working, stateChangedAt: since,
+                    agentKind: .claude, model: "claude-opus-5-5"),
+            Session(id: "B", cwd: path, title: "OpenCode default", state: .waitingPermission, stateChangedAt: since,
+                    agentKind: .codex, isWorker: true),
+            Session(id: "C", cwd: path, title: "Idle one", state: .finished, stateChangedAt: since, agentKind: .agy),
+        ]
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions,
+                                                       action: { "  \($0.title) step  " })
+
+        let open = try XCTUnwrap(projects.first).sessions
+        XCTAssertEqual(open.map(\.title), ["Fix glyphs", "OpenCode default", "Idle one"])
+        XCTAssertEqual(open.map(\.state), ["working", "waitingPermission", "finished"])
+        XCTAssertEqual(open.map(\.since), Array(repeating: "2026-09-21T14:13:20Z", count: 3))
+        XCTAssertEqual(open.map(\.model), ["claude-opus-5-5", nil, nil])
+        XCTAssertEqual(open.map(\.worker), [false, true, false])
+        XCTAssertEqual(open.map(\.action), ["Fix glyphs step", "OpenCode default step", nil])
+    }
+
+    /// Reading an action reads the session's terminal: one whose state shows none is never asked.
+    func testOnlyAWorkingOrPermissionWaitingSessionIsAskedForItsAction() {
+        let path = "/tmp/linkc-pub-ask-\(UUID().uuidString)"
+        let sessions = SessionState.allCases.filter { $0 != .ended }.map {
+            Session(id: $0.rawValue, cwd: path, title: $0.rawValue, state: $0)
+        }
+        var asked: [String] = []
+        _ = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions,
+                                           action: { asked.append($0.id); return nil })
+        XCTAssertEqual(asked.sorted(), ["waitingPermission", "working"])
+    }
+
+    /// A session whose own turn ended can still be running subagents: its row says how many.
+    func testEachSessionCarriesItsRunningSubagentCount() throws {
+        let path = "/tmp/linkc-pub-subagents-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "BUSY", cwd: path, title: "fan-out", state: .finished),
+            Session(id: "CALM", cwd: path, title: "quiet", state: .finished),
+        ]
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions,
+                                                       subagents: { $0.id == "BUSY" ? 3 : 0 })
+
+        let open = try XCTUnwrap(projects.first).sessions
+        XCTAssertEqual(open.map(\.subagents), [3, nil], "none running leaves the field out")
+    }
+
+    /// The model a session runs now, where its agent reports one, wins over the one it launched on.
+    func testTheLiveModelWinsOverTheLaunchModel() throws {
+        let path = "/tmp/linkc-pub-model-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "LIVE", cwd: path, title: "switched", state: .ready, agentKind: .claude, model: "claude-sonnet-5-5"),
+            Session(id: "LAUNCH", cwd: path, title: "pinned", state: .ready, agentKind: .agy, model: "gemini-3.8-flash-medium"),
+        ]
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions,
+                                                       liveModel: { $0.id == "LIVE" ? "Opus 5.5" : nil })
+
+        // Sessions are listed by id: LAUNCH, then LIVE.
+        XCTAssertEqual(try XCTUnwrap(projects.first).sessions.map(\.model), ["gemini-3.8-flash-medium", "Opus 5.5"])
+    }
+
+    /// A session's own `title` is its folder's name; its row reads the conversation's title, a held
+    /// task's, or the agent's numbered name. The row's wins, so two sessions in one folder differ.
+    func testTheRowsTitleWinsOverTheFolderName() throws {
+        let path = "/tmp/linkc-pub-title-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "A", cwd: path, title: "linkC", state: .ready, agentKind: .claude),
+            Session(id: "B", cwd: path, title: "linkC", state: .ready, agentKind: .claude),
+        ]
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions,
+                                                       title: { ["A": "Fix the glyphs", "B": "Claude 2"][$0.id] })
+
+        XCTAssertEqual(try XCTUnwrap(projects.first).sessions.map(\.title), ["Fix the glyphs", "Claude 2"])
+    }
+
     func testEndedSessionIsLeftOut() {
         let path = "/tmp/linkc-pub-ended-\(UUID().uuidString)"
         let sessions = [

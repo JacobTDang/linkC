@@ -23,6 +23,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelController: StatusPanelController?
     private var tornOffWindows: TornOffWindows?
     private var hotKey: GlobalHotKey?
+    /// Links that arrived before start-up finished: a link can launch linkC, and the session it names
+    /// may be one start-up is about to bring back.
+    private var pendingLinks: [URL] = []
+    private var hasStarted = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar utility: no Dock icon, no main window.
@@ -33,12 +37,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeHotKeyPreference()
         Task {
             await model.start()
+            hasStarted = true
+            let links = pendingLinks
+            pendingLinks = []
+            for url in links { openLink(url) }
             // A failed start-up leaves nothing live, and the panel shows why: no windows to open.
             guard model.setupError == nil else { return }
             // Start-up has restored the terminals and pruned the windows whose terminal or split did
             // not come back, so only live ones open.
             tornOffWindows = TornOffWindows(model: model)
         }
+    }
+
+    /// `linkc://session/<id>` links, registered in Info.plist by build-app.sh.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard hasStarted else {
+            pendingLinks.append(contentsOf: urls)
+            return
+        }
+        for url in urls { openLink(url) }
+    }
+
+    /// Selects the link's session, then shows the panel whatever happened: the session, or why it
+    /// could not be shown. Selecting alone shows nothing when the panel is hidden and the session was
+    /// already selected.
+    private func openLink(_ url: URL) {
+        model.openLink(url)
+        panelController?.present(activating: true)
     }
 
     /// Re-registers the global shortcut whenever the preference changes — the same
@@ -261,6 +286,10 @@ final class AppModel {
             self.discord = discord
             try coordinator.start()
             coordinator.usageTracker = usage
+            // The action line a session's row reads also goes to projects.json, for a panel beside
+            // another session.
+            coordinator.sessionAction = { [weak self] in self?.currentActivity($0) }
+            coordinator.sessionTitles = { [weak self] in self?.sessionTitles ?? [:] }
             coordinator.panelSweep = { [weak self] in
                 await self?.sampleShells()
                 self?.sampleSidebar()
@@ -1414,6 +1443,28 @@ final class AppModel {
     /// treatment without going through this method at all.
     func focus(_ id: String) {
         coordinator?.focusSession(id)
+    }
+
+    /// A `linkc://session/<id>` link followed from outside, such as a linkc-agents card: select that
+    /// session as its tab would. A link to a session that is no longer live says so. Called once
+    /// start-up has finished (`AppDelegate` holds links that arrive before), so a session start-up
+    /// brought back is found; the caller then shows the panel.
+    func openLink(_ url: URL) {
+        guard let id = SessionLink.sessionId(in: url) else {
+            NSLog("[linkC] %@ is not a link linkC opens", url.absoluteString)
+            return
+        }
+        // Only a failed start-up leaves no coordinator, and the panel already says why.
+        guard let coordinator else {
+            NSLog("[linkC] the link to session %@ came while linkC could not start", id)
+            return
+        }
+        guard coordinator.store.session(id: id) != nil else {
+            NSLog("[linkC] the link to session %@ names no live session", id)
+            lastError = "That session has ended."
+            return
+        }
+        focus(id)
     }
     func stop(_ id: String) { coordinator?.stopSession(id) }
 

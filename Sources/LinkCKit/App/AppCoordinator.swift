@@ -292,6 +292,8 @@ public final class AppCoordinator {
     /// Hears each Claude session's status line through a file it writes, and hands the rate limits
     /// to the hook server's status-line path. See `SettingsComposer.statusLineCommand`.
     private let statusLines: StatusLineFeed
+    /// What each Claude session's status line last said about the session itself, such as its model.
+    let sessionStatuses: ClaudeSessionStatuses
     private var consumerTask: Task<Void, Never>?
     /// The one loop behind every periodic sample: the sessions, the relay and, while `panelVisible`,
     /// the app's own sampling (`panelSweep`). Its spacing follows `TickCadence`.
@@ -306,6 +308,12 @@ public final class AppCoordinator {
     private let mcpWorkspaces: @MainActor @Sendable () -> Set<String>
     /// Where the app publishes known projects for out-of-process MCP servers. Nil: publish nothing (tests).
     private let knownProjectsFile: KnownProjectsFile?
+    /// A session's action line, read from its terminal by the app, for `projects.json`. Asked only
+    /// of a session working or waiting on a permission.
+    public var sessionAction: ((Session) -> String?)?
+    /// Every live session's row title as the app's sidebar resolves it (conversation title, held task,
+    /// or the agent's numbered name), keyed by session id, for `projects.json`.
+    public var sessionTitles: (() -> [String: String])?
     /// Sidebar project paths (`SidebarState.projectOrder`), folded into the known-projects list.
     private let sidebarProjects: @MainActor @Sendable () -> [String]
     /// Last contents written to `knownProjectsFile`, so a rewrite only happens when they change.
@@ -411,9 +419,12 @@ public final class AppCoordinator {
         self.kiloModels = kiloModels
         self.openCodeConversations = openCodeConversations
         self.isWatching = isWatching
+        let sessionStatuses = ClaudeSessionStatuses()
+        self.sessionStatuses = sessionStatuses
         self.statusLines = StatusLineFeed(
             directory: settingsDir.appendingPathComponent("status-lines", isDirectory: true),
-            deliver: { [hookServer] body, reading in hookServer.acceptStatusLine(body: body, reading: reading) })
+            deliver: { [hookServer] body, reading in hookServer.acceptStatusLine(body: body, reading: reading) },
+            report: { [sessionStatuses] sessionId, body in sessionStatuses.accept(sessionId: sessionId, body: body) })
         (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: HookEvent.self)
         // Everything the manifest already holds is from a previous run — surface it as restorable.
         syncRestorables()
@@ -746,7 +757,15 @@ public final class AppCoordinator {
 
     private func publishKnownProjects(sidebar: [String], mcpFolders: Set<String>) {
         guard let knownProjectsFile else { return }
-        let projects = KnownProjectsPublisher.projects(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions)
+        // Resolved once for the whole publish: a title can depend on the other sessions (numbering).
+        let titles = sessionTitles?() ?? [:]
+        let projects = KnownProjectsPublisher.projects(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions,
+                                                       action: { [sessionAction] in sessionAction?($0) },
+                                                       subagents: { [usageTracker] session in
+                                                           usageTracker?.sessionAgents(session.id).filter(\.isRunning).count ?? 0
+                                                       },
+                                                       liveModel: { [sessionStatuses] in sessionStatuses.status(for: $0.id)?.modelId },
+                                                       title: { titles[$0.id] })
         // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
         // contents next changed, and every MCP server would report linkC as not running.
         if lastPublishedProjects == projects,
@@ -940,6 +959,7 @@ public final class AppCoordinator {
         try? FileManager.default.removeItem(at: settingsFile)
         if let crushSessions { reportCrushCleanup { try crushSessions.remove(sessionId: sessionId) } }
         statusLines.unwatch(sessionId: sessionId)
+        sessionStatuses.forget(sessionId: sessionId)
         notifications.forget(sessionId)
         screenSignatures.removeValue(forKey: sessionId)
         turnEndDebounce.forget(sessionId: sessionId)
