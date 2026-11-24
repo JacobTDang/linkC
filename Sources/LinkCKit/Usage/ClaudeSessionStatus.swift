@@ -45,7 +45,8 @@ public final class ClaudeSessionStatuses: @unchecked Sendable {
         do {
             status = try ClaudeSessionStatus.decode(body)
         } catch {
-            let failure = "session \(sessionId)'s status line could not be read for its model — \(error)"
+            // Described the same way every time, so the same failure compares equal (`StatusLineFile.describe`).
+            let failure = "session \(sessionId)'s status line could not be read for its model — \(StatusLineFile.describe(error))"
             lock.lock()
             let isNew = lastFailure[sessionId] != failure
             lastFailure[sessionId] = failure
