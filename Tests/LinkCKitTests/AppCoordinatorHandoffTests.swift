@@ -21,21 +21,32 @@ final class AppCoordinatorHandoffTests: XCTestCase {
     private func makeCoordinator(models: AgentModelSettings = .seeded,
                                   modelLists: [AgentKind: AgentModelList] = [:],
                                   now: @escaping @MainActor @Sendable () -> Date = Date.init) -> AppCoordinator {
-        let script = tempDir.appendingPathComponent("mock_agent.sh")
-        try? "#!/bin/sh\nstty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n"
-            .write(to: script, atomically: true, encoding: .utf8)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        // Each agent's stand-in records the argv it was started with, then waits like an idle agent.
+        let argvDir = tempDir.path
+        for kind in AgentKind.allCases {
+            let script = agentScript(kind)
+            try? FileManager.default.createDirectory(at: script.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? """
+            #!/bin/sh
+            printf '%s\\n' "$0" "$@" > "\(argvDir)/argv-$LINKC_SESSION.tmp" && mv "\(argvDir)/argv-$LINKC_SESSION.tmp" "\(argvDir)/argv-$LINKC_SESSION"
+            stty -echo 2>/dev/null
+            printf '\\033[?2004h'
+            exec /bin/cat
+
+            """.write(to: script, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        }
         let settingsDir = tempDir.appendingPathComponent("settings")
         try? FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
         return AppCoordinator(
             terminals: TerminalSessionManager(),
             hookServer: HookServer.forTesting(),
             notifications: NotificationManager(sink: NullSink(), now: { Date() }),
-            claudePath: script.path,
+            claudePath: agentScript(.claude).path,
             settingsDir: settingsDir,
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
-            agentPathResolver: { _ in script.path },
+            agentPathResolver: { [tempDir] kind in tempDir!.appendingPathComponent("agents/\(kind.rawValue)").path },
             modelSettings: { models },
             modelLists: { modelLists },
             deliverySettle: 0,
@@ -46,6 +57,21 @@ final class AppCoordinatorHandoffTests: XCTestCase {
             kiloModels: { _ in ["kilo/free-model"] },
             isWatching: { _ in false }
         )
+    }
+
+    private func agentScript(_ kind: AgentKind) -> URL {
+        tempDir.appendingPathComponent("agents/\(kind.rawValue)")
+    }
+
+    /// The argv `session`'s process started with: its executable, then its arguments.
+    private func launchArgv(of session: Session) throws -> [String] {
+        let url = tempDir.appendingPathComponent("argv-\(session.id)")
+        let deadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: url.path), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        return text.split(separator: "\n").map(String.init)
     }
 
     /// The memo a handoff to `session` left.
@@ -133,6 +159,46 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         XCTAssertTrue(try handoffMemo(for: s2).contains("## Goal\nShip the cache clock"))
         let prompt = try XCTUnwrap(coordinator.openingPrompts[s2.id]?.text)
         XCTAssertTrue(prompt.hasSuffix("continue working on: Ship the cache clock"), prompt)
+    }
+
+    /// A tier picks the model, and the new session runs that model unpinned, as the user's own sessions
+    /// open: a session pinned to the tier would be handed the tasks delegated to it.
+    func testATierHandoffLaunchesTheTiersModelUnpinned() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+        let deep = try XCTUnwrap(AgentModelSettings.seeded.model(for: .codex, tier: .deep))
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        let s2 = try coordinator.handoff(from: s1.id, to: .codex, tier: .deep)
+
+        XCTAssertEqual(s2.agentKind, .codex)
+        XCTAssertEqual(s2.model, deep)
+        XCTAssertNil(s2.modelTier)
+        XCTAssertFalse(s2.isWorker)
+        XCTAssertFalse(s2.canCarry(TaskRecord(fromAgent: .claude, tier: .deep, toAgent: .codex, prompt: "a delegated task")))
+        let argv = try launchArgv(of: s2)
+        XCTAssertEqual(argv.first, agentScript(.codex).path)
+        XCTAssertTrue(argv.joined(separator: " ").contains("--model \(deep)"), "\(argv)")
+    }
+
+    /// A model named for the handoff is launched in the spelling its agent lists, unpinned.
+    func testAModelHandoffLaunchesThatModelUnpinned() throws {
+        let lists: [AgentKind: AgentModelList] = [
+            .codex: AgentModelList(models: [ListedModel(id: "o3-mini", name: "o3-mini")], fetchedAt: Date(), error: nil)
+        ]
+        let coordinator = makeCoordinator(modelLists: lists)
+        defer { stopAll(coordinator) }
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        let s2 = try coordinator.handoff(from: s1.id, to: .codex, model: "O3-Mini")
+
+        XCTAssertEqual(s2.agentKind, .codex)
+        XCTAssertEqual(s2.model, "o3-mini")
+        XCTAssertNil(s2.modelTier)
+        XCTAssertFalse(s2.isWorker)
+        let argv = try launchArgv(of: s2)
+        XCTAssertEqual(argv.first, agentScript(.codex).path)
+        XCTAssertTrue(argv.joined(separator: " ").contains("--model o3-mini"), "\(argv)")
     }
 
     func testHandoffRefusesUnknownSourceSession() throws {

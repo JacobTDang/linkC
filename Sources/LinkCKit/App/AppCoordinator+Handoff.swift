@@ -66,10 +66,12 @@ extension AppCoordinator {
             }
             resolvedModelId = listed.id
         } else if let tier {
-            guard resolvedModel(for: agent, tier: tier) != nil else {
+            // The tier only picks the model. The new session is the user's own and runs unpinned, as one
+            // opened from the panel does: pinned to the tier, the relay would hand it delegated tasks.
+            guard let tierModel = resolvedModel(for: agent, tier: tier) else {
                 throw LinkCError.process("no model configured for \(agent.rawValue) tier \(tier.rawValue) — set it in linkC's Settings > Models")
             }
-            resolvedModelId = nil
+            resolvedModelId = tierModel
         } else {
             resolvedModelId = nil
         }
@@ -102,7 +104,6 @@ extension AppCoordinator {
             cwd: folder,
             agent: agent,
             mode: .new,
-            tier: tier,
             model: resolvedModelId,
             select: select,
             asWorker: false
