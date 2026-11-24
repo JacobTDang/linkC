@@ -1,6 +1,8 @@
 import type { On, SessionContextBreakdown } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
+import { modelLabel } from './register'
+
 const HOME = '/Users/me'
 const FILE = `${HOME}/Library/Application Support/linkC/projects.json`
 
@@ -28,13 +30,13 @@ const PROJECTS = {
       sessions: [
         { id: 'IDLE', agent: 'codex', activity: 'idle', title: 'Idle one', state: 'ready', since: minutesAgo(12) },
         { id: 'FAN', agent: 'claude', activity: 'idle', title: 'Fan out', state: 'finished', since: minutesAgo(2), subagents: 2 },
-        { id: 'ME', agent: 'claude', activity: 'busy', title: 'Multi-provider', state: 'working', since: minutesAgo(4), action: 'Running the suite' },
+        { id: 'ME', agent: 'claude', activity: 'busy', title: 'Multi-provider', state: 'working', since: minutesAgo(4), action: 'Running the suite', model: 'Opus 5.5' },
       ],
     },
     {
       path: '/repo/.worktrees/fix',
       sessions: [
-        { id: 'ASK', agent: 'agy', activity: 'busy', title: 'Fix default', state: 'waitingPermission', since: minutesAgo(1), worker: true },
+        { id: 'ASK', agent: 'agy', activity: 'busy', title: 'Fix default', state: 'waitingPermission', since: minutesAgo(1), worker: true, model: 'gemini-3.8-flash-medium' },
       ],
     },
     { path: '/other', sessions: [{ id: 'ELSE', agent: 'cursor', activity: 'busy', title: 'Elsewhere', state: 'working' }] },
@@ -89,10 +91,21 @@ test('a card reads its action or state, where it runs, its age, and marks this s
 
   expect(all).toContain('Running the suite')
   expect(all).toContain('needs permission fix')
-  expect(all).toContain(' agy · worker')
+  expect(all).toContain(' gemini-3.8 flash medium · worker')
+  expect(all).toContain(' Opus 5.5')
+  expect(all).toContain(' codex')
   expect(all).toContain(' · you')
   expect(all).toContain(' 4m ')
   expect(all).toContain(' 12m ')
+})
+
+test('a model id reads as a person names it', () => {
+  expect(modelLabel('Opus 5.5')).toBe('Opus 5.5')
+  expect(modelLabel('claude-opus-5-5')).toBe('Opus 5.5')
+  expect(modelLabel('claude-haiku-5-5-20261001')).toBe('Haiku 5.5')
+  expect(modelLabel('gemini-3.8-flash-medium')).toBe('gemini-3.8 flash medium')
+  expect(modelLabel('gpt-5.5-codex')).toBe('gpt-5.5 codex')
+  expect(modelLabel('opencode/big-pickle')).toBe('opencode/big-pickle')
 })
 
 test('a session whose turn ended but whose subagents still run reads as working', async ($, on) => {

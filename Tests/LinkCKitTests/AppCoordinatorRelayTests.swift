@@ -4801,6 +4801,22 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(try file.read().first?.sessions.first?.subagents, 1)
     }
 
+    /// A Claude session's status line names the model it runs now; the sweep publishes that one.
+    @MainActor
+    func testSweepPublishesTheModelTheStatusLineNames() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "switched", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        coordinator.sessionStatuses.accept(
+            sessionId: "L1", body: Data(#"{"model":{"id":"claude-opus-5-5","display_name":"Opus 5.5"}}"#.utf8))
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.read().first?.sessions.first?.model, "Opus 5.5")
+    }
+
     @MainActor
     func testProjectsFileIsRewrittenOnlyWhenContentsChange() async throws {
         let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))

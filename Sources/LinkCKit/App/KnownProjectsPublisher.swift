@@ -11,9 +11,10 @@ public enum KnownProjectsPublisher {
     /// live sessions (state != .ended), sorted by id: .starting → .starting; ready/finished/waitingIdle → .idle;
     /// anything else → .busy. Each session also carries what its row shows; `action` reads the action
     /// line of a session working or waiting on a permission, and is never asked of another.
+    /// `liveModel` is the model a session runs now where its agent reports one, else its launch model.
     public static func projects(
         sidebar: [String], mcpFolders: Set<String>, sessions: [Session], action: (Session) -> String? = { _ in nil },
-        subagents: (Session) -> Int = { _ in 0 }
+        subagents: (Session) -> Int = { _ in 0 }, liveModel: (Session) -> String? = { _ in nil }
     ) -> [KnownProject] {
         let (paths, liveByPath) = resolve(sidebar: sidebar, mcpFolders: mcpFolders, sessions: sessions)
         return paths.sorted().map { path in
@@ -30,7 +31,7 @@ public enum KnownProjectsPublisher {
                         title: session.title,
                         state: session.state.rawValue,
                         since: session.stateChangedAt.formatted(.iso8601),
-                        model: session.model,
+                        model: liveModel(session) ?? session.model,
                         worker: session.isWorker,
                         action: shown?.text,
                         subagents: running > 0 ? running : nil

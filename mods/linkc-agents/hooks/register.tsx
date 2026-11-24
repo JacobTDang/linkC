@@ -103,6 +103,21 @@ function within(root: string, path: string): string | null {
   return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : null
 }
 
+/**
+ * A model as a person reads it. A name the agent already gave (`Opus 5.5`) stays; a Claude id reads
+ * as its family and version (`claude-opus-5-5` → `Opus 5.5`); any other id keeps its name and
+ * version joined and spaces the rest (`gemini-3.8-flash-medium` → `gemini-3.8 flash medium`).
+ */
+export function modelLabel(model: string): string {
+  if (/[A-Z ]/.test(model)) return model
+  const claude = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(model)
+  if (claude) return `${claude[1]!.charAt(0).toUpperCase()}${claude[1]!.slice(1)} ${claude[2]}.${claude[3]}`
+  const parts = model.split('-')
+  const version = parts.findIndex(part => /^\d+(\.\d+)*$/.test(part))
+  if (version < 0) return model
+  return [parts.slice(0, version + 1).join('-'), ...parts.slice(version + 1)].join(' ')
+}
+
 function subagentWords(count: number): string {
   return `${count} subagent${count === 1 ? '' : 's'}`
 }
@@ -257,7 +272,7 @@ export const register: Register = on => {
                 <Box flexGrow={1} flexShrink={1}>
                   <Text bold color={TEXT} wrap="truncate-end">{row.title ?? row.agent}</Text>
                 </Box>
-                <Text color={MUTED}>{`${row.title ? ` ${row.agent}` : ''}${row.worker ? ' · worker' : ''}`}</Text>
+                <Text color={MUTED}>{`${row.model ? ` ${modelLabel(row.model)}` : row.title ? ` ${row.agent}` : ''}${row.worker ? ' · worker' : ''}`}</Text>
                 {isMe && <Text bold color={PEACH}>{' · you'}</Text>}
                 <Text> </Text>
               </Box>

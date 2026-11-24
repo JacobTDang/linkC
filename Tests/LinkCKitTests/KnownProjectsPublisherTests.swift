@@ -86,6 +86,21 @@ final class KnownProjectsPublisherTests: XCTestCase {
         XCTAssertEqual(open.map(\.subagents), [3, nil], "none running leaves the field out")
     }
 
+    /// The model a session runs now, where its agent reports one, wins over the one it launched on.
+    func testTheLiveModelWinsOverTheLaunchModel() throws {
+        let path = "/tmp/linkc-pub-model-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "LIVE", cwd: path, title: "switched", state: .ready, agentKind: .claude, model: "claude-sonnet-5-5"),
+            Session(id: "LAUNCH", cwd: path, title: "pinned", state: .ready, agentKind: .agy, model: "gemini-3.8-flash-medium"),
+        ]
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [path], mcpFolders: [], sessions: sessions,
+                                                       liveModel: { $0.id == "LIVE" ? "Opus 5.5" : nil })
+
+        // Sessions are listed by id: LAUNCH, then LIVE.
+        XCTAssertEqual(try XCTUnwrap(projects.first).sessions.map(\.model), ["gemini-3.8-flash-medium", "Opus 5.5"])
+    }
+
     func testEndedSessionIsLeftOut() {
         let path = "/tmp/linkc-pub-ended-\(UUID().uuidString)"
         let sessions = [
