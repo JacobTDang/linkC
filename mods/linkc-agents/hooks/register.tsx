@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, SessionContextUsage } from 'claude-code'
 
-import type { AgentRow, Agents } from '../types'
+import type { AgentRow, Agents, Meter } from '../types'
 
 const FILETREE = 'filetree'
 const POLL_MS = 2000
@@ -48,6 +48,45 @@ const STATES: Record<string, StateLook> = {
 const agents = atom({ plugin: 'linkc-agents', key: 'agents' } as const, { rows: [], error: null, me: null, minute: 0 }, {
   shape: 'agents-2',
 })
+
+const meters = atom({ plugin: 'linkc-agents', key: 'meters' } as const, [], { shape: 'meters-1' })
+const isCompacting = atom({ plugin: 'linkc-agents', key: 'isCompacting' } as const, false)
+
+const BAR_CELLS = 8
+
+/**
+ * How full the context is, against the point where it auto-compacts when that comes before the
+ * window's end, as /context counts it; the plain figure could never reach a warning first.
+ */
+function contextPercent(context: SessionContextUsage): number | null {
+  const compactsAt = context.breakdown?.rawMaxTokens
+  if (context.tokens !== undefined && compactsAt !== undefined && compactsAt > 0 && compactsAt < context.window) {
+    return Math.min(100, Math.round((context.tokens / compactsAt) * 100))
+  }
+  return context.percent ?? null
+}
+
+/** `seven_day` reads `7d`, `five_hour` `5h`; any other kind as its own words. */
+function limitLabel(kind: string): string {
+  const name = kind.toLowerCase()
+  if (name.includes('five') || name.includes('5h')) return '5h'
+  if (name.includes('seven') || name.includes('7d') || name.includes('week')) return '7d'
+  return name.replace(/_/g, ' ')
+}
+
+async function refreshMeters($: EngineInterface): Promise<void> {
+  const usage = await $.session.usage({ breakdown: 'summary' })
+  const context = contextPercent(usage.context)
+  const now: Meter[] = [
+    ...(context === null ? [] : [{ label: 'context', percent: context }]),
+    ...usage.rateLimits.map(limit => ({ label: limitLabel(limit.kind), percent: Math.round(limit.percentUsed) })),
+  ]
+  if (JSON.stringify(now) !== JSON.stringify(await read($, meters))) await update($, meters, () => now)
+}
+
+function meterColor(percent: number): string {
+  return percent >= 90 ? RED : percent >= 70 ? ORANGE : GREEN
+}
 
 type Stored = { projects: { path: string; sessions: Omit<AgentRow, 'where'>[] }[] }
 
@@ -113,7 +152,56 @@ export const register: Register = on => {
     }
     await refresh()
     $.clock.every(POLL_MS, () => void refresh())
+    await refreshMeters($)
     return next(e)
+  })
+
+  // A turn's end and a plan limit's move are when the meters change.
+  on('session.measure', async ($, e, next) => {
+    await refreshMeters($)
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) await refreshMeters($)
+    return next(e)
+  })
+
+  // The band above the prompt: every meter in one box, label, bar and padded percent, so the
+  // columns line up whatever the numbers; Compact beside it while no turn runs.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const shown = await read($, meters)
+    if (e.props.hasSurvey || shown.length === 0) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const canCompact = !e.props.isWorking && !(await read($, isCompacting))
+    // Compacting from the press would end with the press; a timer gives it a dispatch of its own.
+    const compact = () => {
+      void update($, isCompacting, () => true)
+      $.clock.after(1, () =>
+        $.command
+          .run({ command: 'compact' })
+          .catch((error: unknown) => $.ui.toast(`Compacting failed: ${error instanceof Error ? error.message : String(error)}`))
+          .finally(() => update($, isCompacting, () => false)),
+      )
+    }
+
+    return (
+      <Box flexDirection="row" alignItems="center" columnGap={2}>
+        <Box flexDirection="row" borderStyle="round" borderColor={RULE} paddingX={1} columnGap={3}>
+          {shown.map(meter => {
+            const filled = Math.min(BAR_CELLS, Math.round((meter.percent / 100) * BAR_CELLS))
+            return (
+              <Box flexDirection="row" columnGap={1}>
+                <Text color={MUTED}>{meter.label}</Text>
+                <Text color={meterColor(meter.percent)}>{'▰'.repeat(filled) + '▱'.repeat(BAR_CELLS - filled)}</Text>
+                <Text color={TEXT}>{`${meter.percent}%`.padStart(4)}</Text>
+              </Box>
+            )
+          })}
+        </Box>
+        {canCompact && <Button key="compact" label="Compact" hotkey="0" plain dimColor onPress={compact} />}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', plugin: '*', requestId: FILETREE }, async ($, e, next) => {

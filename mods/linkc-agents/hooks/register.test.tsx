@@ -1,5 +1,5 @@
-import type { On } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import type { On, SessionContextBreakdown } from 'claude-code'
+import { expect, mock, test } from 'claude-code/testing'
 
 const HOME = '/Users/me'
 const FILE = `${HOME}/Library/Application Support/linkC/projects.json`
@@ -42,6 +42,7 @@ const PROJECTS = {
 
 /** The engine around the mod: home, this session's id, its folder in /repo, and linkC's file. */
 function engine(on: On, file: string | Error, seen: { bodyRows?: number } = {}) {
+  const clock = mock.clock(on)
   on('env.get', (_, e) => ({ value: { HOME, LINKC_SESSION: 'ME' }[e.name] }))
   on('session.cwd', () => ({ value: '/repo/Sources' }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: '/repo/.git\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
@@ -50,7 +51,6 @@ function engine(on: On, file: string | Error, seen: { bodyRows?: number } = {}) 
     if (file instanceof Error) return { deny: file.message }
     return { value: file }
   })
-  on('clock.every', () => ({ value: undefined }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   // filetree's own drawing, beneath the mod.
   on('ui.render', { component: 'Pane', plugin: '*' }, ($, e) => {
@@ -58,6 +58,7 @@ function engine(on: On, file: string | Error, seen: { bodyRows?: number } = {}) 
     const { Text } = $.ui.resolve(e)
     return <Text>TREE</Text>
   })
+  return clock
 }
 
 const texts = async (ui: { findAll: (q: { type: 'Text' }) => Promise<readonly { text: string }[]> }) =>
@@ -111,4 +112,82 @@ test('an unreadable file says so instead of showing no sessions', async ($, on) 
 
   expect(all.some(t => t.includes('cannot read') && t.includes('linkC is not running'))).toBe(true)
   expect(all).not.toContain(' No sessions in this repo.')
+})
+
+const BAND = {
+  plugin: 'linkc-agents',
+  component: 'AbovePrompt',
+  surface: 'terminal',
+  props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 6, bodyColumns: 120, scroll: { offset: 0, bodyRows: 6 }, view: {} },
+} as const
+
+/** The session's usage: 340k tokens of a 1M window, and 10% of the week spent. */
+function usage(on: On, compactsAt = 1_000_000) {
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { tokens: 340_000, window: 1_000_000, percent: 34, breakdown: { rawMaxTokens: compactsAt } as Partial<SessionContextBreakdown> as SessionContextBreakdown },
+      rateLimits: [{ kind: 'seven_day', percentUsed: 10, resetsAt: '2026-12-01T00:00:00Z' }],
+    },
+  }))
+}
+
+test('the band draws both meters in one box, their percents padded to line up', async ($, on) => {
+  engine(on, JSON.stringify(PROJECTS))
+  usage(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(BAND)
+  const all = await texts(ui)
+
+  expect(all).toContain('context')
+  expect(all).toContain('▰▰▰▱▱▱▱▱')
+  expect(all).toContain(' 34%')
+  expect(all).toContain('7d')
+  expect(all).toContain('▰▱▱▱▱▱▱▱')
+  expect(all).toContain(' 10%')
+  expect((await ui.findAll({ type: 'Box' })).some(box => box.props.borderStyle === 'round')).toBe(true)
+  await ui.unmount()
+})
+
+test('the context meter counts against the auto-compact point, as /context does', async ($, on) => {
+  engine(on, JSON.stringify(PROJECTS))
+  usage(on, 400_000)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  expect(await texts(await $.ui.mount(BAND))).toContain(' 85%')
+})
+
+test('Compact runs /compact, and hides while a turn runs', async ($, on) => {
+  const clock = engine(on, JSON.stringify(PROJECTS))
+  usage(on)
+  const ran: string[] = []
+  on('command.run', (_, e) => {
+    ran.push(e.command)
+    return { text: '' }
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const idle = await $.ui.mount(BAND)
+  await idle.press({ key: 'compact' })
+  await clock.advance(1)
+  expect(ran).toEqual(['compact'])
+  await idle.unmount()
+
+  const working = await $.ui.mount({ ...BAND, props: { ...BAND.props, isWorking: true } })
+  expect(await working.find({ type: 'Button', key: 'compact' })).toBeUndefined()
+  await working.unmount()
+})
+
+test('with no usage yet the band draws nothing of its own', async ($, on) => {
+  engine(on, JSON.stringify(PROJECTS))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1_000_000 }, rateLimits: [] } }))
+  on('ui.render', { component: 'AbovePrompt', plugin: '*' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>ENGINE</Text>
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const all = await texts(await $.ui.mount(BAND))
+  expect(all.length > 0 && all.every(t => t === 'ENGINE')).toBe(true)
 })

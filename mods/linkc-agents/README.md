@@ -12,6 +12,17 @@ A session is in the repo when it runs in the repo's folder, a folder below it, o
 it (`.worktrees/…`). The repo is the one the Claude Code session's folder belongs to, found with
 `git rev-parse --git-common-dir`; a folder outside git counts as its own repo.
 
+## The usage band
+
+Above the prompt, one box holds a meter for the context and one for each plan limit (`5h`, `7d`):
+the label, an 8-cell bar and the percent, padded so the columns stay put as the numbers change.
+A bar turns orange from 70% and red from 90%. The context counts against the point where the
+session auto-compacts, as `/context` does. Beside the box, **Compact** (or `0` typed into an empty
+prompt) runs `/compact`; it hides while a turn runs. The meters refresh when the session starts,
+when the engine measures usage, and at the end of each turn.
+
+The skins mod draws its own usage band; turn it off with `/skin band off` so only one shows.
+
 ## How it works
 
 linkC writes its live sessions to `~/Library/Application Support/linkC/projects.json`. The mod reads
