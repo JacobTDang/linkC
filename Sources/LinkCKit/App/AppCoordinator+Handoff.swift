@@ -118,7 +118,6 @@ extension AppCoordinator {
             promptText = "Please read .linkc/HANDOFF.md and continue."
         }
         openingPrompts[newSession.id] = OpeningPrompt(text: promptText, since: now())
-        onCommandSessionOpened?(newSession.id)
 
         return newSession
     }

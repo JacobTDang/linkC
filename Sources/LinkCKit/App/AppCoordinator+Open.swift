@@ -76,6 +76,9 @@ extension AppCoordinator {
                     goal: request.goal,
                     select: false
                 )
+                // An agent's handoff gets a window of its own, as a session the `linkc` command opens does;
+                // one from the sidebar opens in the panel.
+                onCommandSessionOpened?(session.id)
                 let name = URL(fileURLWithPath: session.cwd).lastPathComponent
                 return .opened(sessionId: session.id, message: "Handed off to \(request.agent.displayName) in a linkC window (\(name)).")
             } catch {

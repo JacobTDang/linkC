@@ -199,6 +199,36 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         XCTAssertNotNil(coordinator.openingPrompts[s2.id])
     }
 
+    /// A handoff from the sidebar opens in the panel like any session started there; only a handoff
+    /// an agent asked for gets a window of its own.
+    func testASidebarHandoffStaysInThePanel() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+        var tornOff: [String] = []
+        coordinator.onCommandSessionOpened = { tornOff.append($0) }
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        _ = try coordinator.handoff(from: s1.id, to: .codex)
+
+        XCTAssertEqual(tornOff, [])
+    }
+
+    func testARequestedHandoffGetsAWindowOfItsOwn() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+        var tornOff: [String] = []
+        coordinator.onCommandSessionOpened = { tornOff.append($0) }
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        let req = OpenRequest(agent: .codex, folder: folder, prompt: nil, tier: nil, task: nil, handoffFrom: s1.id)
+        try requests.submit(req)
+        coordinator.handleOpenRequests()
+
+        let answer = try XCTUnwrap(requests.result(for: req.id))
+        XCTAssertTrue(answer.ok, answer.message)
+        XCTAssertEqual(tornOff, [try XCTUnwrap(answer.sessionId)])
+    }
+
     func testOpenRequestWithInvalidHandoffFromReturnsRefused() throws {
         let coordinator = makeCoordinator()
         defer { stopAll(coordinator) }
