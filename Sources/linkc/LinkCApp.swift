@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Menu-bar utility: no Dock icon, no main window.
         NSApp.setActivationPolicy(.accessory)
         panelController = StatusPanelController(model: model)
+        model.onShowPanel = { [weak self] in self?.panelController?.present(activating: true) }
         hotKey = GlobalHotKey { [weak self] in self?.panelController?.togglePanel() }
         applyHotKeyPreference()
         observeHotKeyPreference()
@@ -753,6 +754,8 @@ final class AppModel {
 
     /// Brings a torn-off window forward. Set by the window controller.
     @ObservationIgnored var onRaiseWindow: ((TornOffItem) -> Void)?
+    /// Shows the menu-bar panel and gives it the keyboard. Set by the app delegate.
+    @ObservationIgnored var onShowPanel: (() -> Void)?
     /// The menu-bar panel's frame in screen points, where a window opens beside it. Set by the panel's
     /// controller; nil when there is no panel to be beside.
     @ObservationIgnored var panelFrame: () -> CGRect? = { nil }

@@ -329,3 +329,23 @@ public enum AgentsColumnLayout {
         return isOn ? .beside : .hidden
     }
 }
+
+/// What a click on a card does, by where the cards are and where the card's terminal lives.
+public enum AgentCardClick: Equatable, Sendable {
+    /// Opens the session as a click in its terminal does, and leaves the panel's selection alone.
+    case acknowledge
+    /// Selects the session as its tab would; one that lives in a window brings that window forward.
+    case focus
+    /// Selects the session, then shows the panel that holds its terminal.
+    case focusShowingPanel
+
+    /// `card` is the clicked card's session and `besideSession` the session the cards are beside;
+    /// `inWindow` says the cards are in a torn-off window, `cardInWindow` that the card's terminal is.
+    public static func of(card: String, besideSession: String, inWindow: Bool, cardInWindow: Bool) -> AgentCardClick {
+        guard inWindow else { return .focus }
+        // The window's own session is on screen already: selecting it would move the hidden panel.
+        if card == besideSession { return .acknowledge }
+        // Selecting a session in the panel shows nothing while the panel is hidden.
+        return cardInWindow ? .focus : .focusShowingPanel
+    }
+}

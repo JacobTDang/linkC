@@ -416,4 +416,18 @@ final class AgentsColumnTests: XCTestCase {
         XCTAssertEqual(place(476, true), .popover)
         XCTAssertEqual(place(696, true), .popover)
     }
+
+    // MARK: - Opening a card
+
+    /// In the panel a card selects its session. In a torn-off window, the window's own card leaves the
+    /// panel's selection alone, and a card whose terminal is in the panel also brings the panel up:
+    /// selecting it there alone shows nothing while the panel is hidden.
+    func testOpeningACardSelectsItsSessionAndShowsWhereItsTerminalIs() {
+        XCTAssertEqual(AgentCardClick.of(card: "A", besideSession: "A", inWindow: false, cardInWindow: false), .focus)
+        XCTAssertEqual(AgentCardClick.of(card: "B", besideSession: "A", inWindow: false, cardInWindow: false), .focus)
+        XCTAssertEqual(AgentCardClick.of(card: "B", besideSession: "A", inWindow: false, cardInWindow: true), .focus)
+        XCTAssertEqual(AgentCardClick.of(card: "A", besideSession: "A", inWindow: true, cardInWindow: true), .acknowledge)
+        XCTAssertEqual(AgentCardClick.of(card: "B", besideSession: "A", inWindow: true, cardInWindow: false), .focusShowingPanel)
+        XCTAssertEqual(AgentCardClick.of(card: "B", besideSession: "A", inWindow: true, cardInWindow: true), .focus)
+    }
 }

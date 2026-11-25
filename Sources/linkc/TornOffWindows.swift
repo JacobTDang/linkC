@@ -55,7 +55,8 @@ private struct TornOffTerminal: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             AgentsColumnHost(model: model, sessionId: shownHere,
-                             placement: model.agentsColumnPlacement(for: shownHere, paneWidth: pane.width, backingScale: displayScale))
+                             placement: model.agentsColumnPlacement(for: shownHere, paneWidth: pane.width, backingScale: displayScale),
+                             inWindow: true)
         }
         .onGeometryChange(for: CGFloat.self, of: \.size.width) { pane.width = $0 }
         .padding(.horizontal, 12)
@@ -89,7 +90,7 @@ private struct TornOffAgentsToggle: View {
         Group {
             if model.host(of: id) == item, let session = model.sessions.first(where: { $0.id == id }),
                let placement = model.agentsColumnPlacement(for: id, paneWidth: pane.width, backingScale: displayScale) {
-                AgentsColumnToggle(model: model, sessionId: id, agent: session.agentKind, placement: placement)
+                AgentsColumnToggle(model: model, sessionId: id, agent: session.agentKind, placement: placement, inWindow: true)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

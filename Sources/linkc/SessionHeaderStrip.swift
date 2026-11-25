@@ -67,7 +67,8 @@ struct SessionHeaderStrip: View {
                         .lineLimit(1)
                 }
                 if let columnPlacement {
-                    AgentsColumnToggle(model: model, sessionId: session.id, agent: session.agentKind, placement: columnPlacement)
+                    AgentsColumnToggle(model: model, sessionId: session.id, agent: session.agentKind,
+                                       placement: columnPlacement, inWindow: false)
                 }
             }
             // A screen-scraped agent's line comes from its terminal buffer, which nothing

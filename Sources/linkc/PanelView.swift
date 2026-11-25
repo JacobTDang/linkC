@@ -170,7 +170,7 @@ private struct TerminalPane: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .animation(Theme.viewSwap, value: readerAgent?.id)
-                AgentsColumnHost(model: model, sessionId: shownHere, placement: placement)
+                AgentsColumnHost(model: model, sessionId: shownHere, placement: placement, inWindow: false)
             }
         }
         .onGeometryChange(for: CGFloat.self, of: \.size.width) { paneWidth = $0 }
