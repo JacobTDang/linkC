@@ -81,7 +81,9 @@ public struct PromptBarLaunch: Equatable, Sendable {
 
 /// The prompt bar: the user types a task once; linkC shows which agent, model and effort the router
 /// picks for it, and Enter opens that session in the project on screen with the task as its opening
-/// prompt. Tab moves the pick to the next agent that could take the task; Esc clears.
+/// prompt. Tab moves the pick to the next agent that could take the task and Shift-Tab to the previous
+/// one; Esc clears. Enter opens only the pick the line showed: one it finds changed waits for a second
+/// Enter.
 ///
 /// The preview waits for the typing to pause, reads the routing facts off the main thread, and never
 /// runs an agent's CLI. Only Enter asks the picked agent's own CLI about its model, as the MCP tool's
