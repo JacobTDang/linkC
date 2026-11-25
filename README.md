@@ -129,17 +129,21 @@ linkC delivers tasks and messages by typing them into the receiving agent's term
 message queued for one agent goes in as a single paste. A task can carry a model tier (light,
 standard or deep), configured per agent in **Settings > Models**, or a single model from that
 agent's list. Each tier also has a reasoning effort (defaults: light → low, standard → medium,
-deep → high). Claude and Antigravity get `--effort`; Codex gets `-c model_reasoning_effort=…`;
-Crush gets a `reasoning_effort` key in its per-session config. Cursor Agent / Grok bake effort into
-model ids and cannot be pinned by linkC; OpenCode and Kilo's TUIs have no effort flag — Settings
-says so beside those agents. When `linkc_delegate_task` omits `to` (or passes `auto`), a pure
-router picks the agent, tier and effort from the prompt's whole words and phrases (a short trivial
-edit → light; web research or browsing → a browse-capable agent, preferring agy, light when the
-prompt is short; ordinary work → standard; architecture, hard debugging, a security review, a
-database migration → deep), skips limited agents and pools, prefers usage headroom, and ties to the
-agent already active in the folder. A verified task also carries a test
-command: linkC runs it itself, and the work only counts as done if the tests fail before it and
-pass after.
+deep → high). Claude gets `--effort`; Codex gets `-c model_reasoning_effort=…`; Crush gets
+`reasoning_effort` on the pinned models in its per-session config. Antigravity keeps effort in its
+model ids (`gemini-3.8-flash-low`, `-medium`, `-high`), so it gets `--effort` only for a level
+`agy models` lists for the tier's model; any other model, such as its Claude ones, runs as
+configured, and Settings offers only the levels the model lists. Cursor Agent / Grok bake effort
+into model ids and cannot be pinned by linkC; OpenCode and Kilo's TUIs have no effort flag —
+Settings says so beside those agents. A task may name an effort too; one the agent or model cannot
+take is refused when the task is delegated. When `linkc_delegate_task` omits `to` (or passes
+`auto`), a pure router picks the agent, tier and effort from the prompt's whole words and phrases
+(a short trivial edit → light; web research or browsing → a browse-capable agent, preferring agy,
+light when the prompt is short; ordinary work → standard; architecture, hard debugging, a security
+review, a database migration → deep), never picks Cursor (it takes no tier), skips limited agents
+and pools, prefers usage headroom, ties to an agent already open in the folder, and says why it
+passed over the others. A verified task also carries a test command: linkC runs it itself, and the
+work only counts as done if the tests fail before it and pass after.
 
 linkC reads each agent's models from its own CLI (`agy models`, `cursor-agent models`,
 `opencode models`, `kilo models`, `crush models`) at launch, every 6 hours, when Settings opens and
