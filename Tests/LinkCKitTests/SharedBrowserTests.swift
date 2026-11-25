@@ -101,6 +101,25 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertTrue(again.sessionName.hasPrefix("linkc-S1-"), again.sessionName)
     }
 
+    /// Two sessions that ask at once, while Chrome is still starting, share the one it starts.
+    func testTwoLeasesAtOnceStartOneChrome() async throws {
+        launcher.publishesPort = nil
+        var sleeps = 0
+        clock.onSleep = { [launcher] in
+            sleeps += 1
+            if sleeps == 5 { launcher!.publish(port: 43117) }
+        }
+        let browser = makeBrowser()
+
+        async let first = browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+        async let second = browser.lease(sessionId: "S2", agent: .codex, cwd: "/tmp/project")
+        let leases = await [first, second]
+
+        XCTAssertEqual(launcher.launches.count, 1)
+        XCTAssertEqual(leases.map { $0?.port }, [43117, 43117])
+        XCTAssertEqual(Set(leases.compactMap { $0?.sessionName }).count, 2)
+    }
+
     /// Worktrees and subfolders of one repository share its browser; the answer is asked once per folder.
     func testFoldersOfOneRepositoryShareOneChrome() async throws {
         repositories = ["/repo/.worktrees/a": "/repo", "/repo/sub": "/repo"]
@@ -231,16 +250,15 @@ final class SharedBrowserTests: XCTestCase {
                                                    withDestinationPath: "MyMac-777")
         try Data("5555\n/devtools/browser/old\n".utf8).write(to: profile.appendingPathComponent("DevToolsActivePort"))
         processes.add(pid: 777, arguments: ["/Applications/Google Chrome", "--user-data-dir=\(profile.path)"], parent: 1)
-        var events: [String] = []
-        processes.events = { _ in }
-        launcher.events = { events.append($0) }
+        let events = LockedBox<[String]>([])
+        processes.events = { events.value.append($0) }
+        launcher.events = { events.value.append($0) }
         let browser = makeBrowser()
 
         let lease = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
 
-        XCTAssertEqual(processes.signals.first?.pid, 777)
-        XCTAssertEqual(processes.signals.first?.signal, SIGTERM)
-        XCTAssertEqual(events, ["launch"])
+        XCTAssertEqual(processes.signals.map(\.pid), [777])
+        XCTAssertEqual(events.value, ["signal \(SIGTERM)", "launch"], "the leftover is stopped before the launch")
         XCTAssertEqual(lease?.port, 43117, "the leftover's port file is not the new Chrome's")
     }
 
@@ -260,19 +278,26 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertTrue(notices.first?.contains("777") == true, notices.first ?? "no notice")
     }
 
-    /// A lock naming a pid that now belongs to another program is not acted on.
-    func testALockWhosePidIsNoLongerChromeKillsNothing() async throws {
-        let profile = SharedBrowser.profileDirectory(for: "/tmp/project", in: support)
-        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
-        try FileManager.default.createSymbolicLink(atPath: profile.appendingPathComponent("SingletonLock").path,
-                                                   withDestinationPath: "MyMac-777")
+    /// A lock naming a pid that is no longer this profile's Chrome is not acted on: another program
+    /// that took the pid, or a Chrome on another profile, even one launchd adopted.
+    func testALockWhosePidIsNoLongerThisProfilesChromeKillsNothing() async throws {
+        let other = SharedBrowser.profileDirectory(for: "/tmp/other", in: support)
         processes.add(pid: 777, arguments: ["/usr/bin/vim"], parent: 1)
+        processes.add(pid: 888, arguments: ["/Applications/Google Chrome", "--user-data-dir=\(other.path)"], parent: 1)
         let browser = makeBrowser()
 
-        let lease = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+        for (project, pid) in [("/tmp/project", 777), ("/tmp/project2", 888)] {
+            let profile = SharedBrowser.profileDirectory(for: project, in: support)
+            try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(atPath: profile.appendingPathComponent("SingletonLock").path,
+                                                       withDestinationPath: "MyMac-\(pid)")
+            let lease = await browser.lease(sessionId: "S-\(pid)", agent: .claude, cwd: project)
+            XCTAssertNotNil(lease, project)
+        }
 
-        XCTAssertNotNil(lease)
-        XCTAssertTrue(processes.signals.isEmpty)
+        XCTAssertTrue(processes.signals.isEmpty, "\(processes.signals)")
+        XCTAssertEqual(launcher.launches.count, 2)
+        XCTAssertTrue(notices.isEmpty, notices.joined(separator: "\n"))
     }
 
     // MARK: - A Chrome still stopping
