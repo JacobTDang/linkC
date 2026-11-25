@@ -335,6 +335,8 @@ final class PromptBarTests: XCTestCase {
 
     /// A coordinator whose agents are stand-ins that wait like an idle agent.
     private func makeCoordinator(
+        settings: AgentModelSettings = .seeded,
+        modelLists: @escaping @MainActor @Sendable () throws -> [AgentKind: AgentModelList] = { [:] },
         usageReaders: [AgentKind: MCPServer.UsageReader] = [:]
     ) -> AppCoordinator {
         for kind in AgentKind.allCases {
@@ -355,8 +357,8 @@ final class PromptBarTests: XCTestCase {
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
             manifestDir: tempDir.appendingPathComponent("manifest"),
             agentPathResolver: { [tempDir] kind in tempDir!.appendingPathComponent("agents/\(kind.rawValue)").path },
-            modelSettings: { .seeded },
-            modelLists: { [:] },
+            modelSettings: { settings },
+            modelLists: modelLists,
             usageReaders: usageReaders,
             deliverySettle: 0,
             injectionGap: 0,
@@ -395,6 +397,39 @@ final class PromptBarTests: XCTestCase {
         XCTAssertFalse(session.isWorker, "the user's own session, not a worker")
         XCTAssertEqual(coordinator.openingPrompts[id]?.text, Self.implement)
         XCTAssertEqual(coordinator.terminals.selectedId, id)
+    }
+
+    /// OpenCode launches the Go copy of its tier model when OpenCode lists one: the preview names that
+    /// model, the one the session runs.
+    func testThePreviewNamesTheOpenCodeGoModelTheSessionLaunchesWith() async throws {
+        let configured = try XCTUnwrap(AgentModelSettings.seeded.model(for: .opencode, tier: .light))
+        let go = "opencode-go/" + configured.dropFirst("opencode/".count)
+        let listed: [AgentKind: AgentModelList] = [.opencode: AgentModelList(
+            models: [ListedModel(id: configured, name: configured), ListedModel(id: go, name: go)],
+            fetchedAt: Date(timeIntervalSince1970: 1_800_000_000))]
+        // Only OpenCode has models, so the task goes to it.
+        var settings = AgentModelSettings.seeded
+        for agent in AgentKind.allCases where agent != .opencode {
+            for tier in ModelTier.allCases { settings.setModel("", for: agent, tier: tier) }
+        }
+        let coordinator = makeCoordinator(settings: settings, modelLists: { listed })
+        defer { coordinator.shutdown() }
+        let clock = ManualClock()
+        let folder = self.folder
+        let bar = PromptBar(
+            services: coordinator.promptBarServices(
+                folder: { folder }, readLists: { listed }, listFolder: { _, _ in [configured] }),
+            clock: clock, debounce: .milliseconds(250))
+        var opened: [String] = []
+        bar.onOpened = { opened.append($0) }
+
+        bar.text = "Browse the docs for this API"
+        await settle(bar, clock)
+        XCTAssertEqual(pick(bar)?.model, go)
+        await bar.submit()?.value
+
+        let id = try XCTUnwrap(opened.first)
+        XCTAssertEqual(coordinator.store.session(id: id)?.model, go)
     }
 
     /// The tie-break toward an agent already open in the folder compares canonical paths on both

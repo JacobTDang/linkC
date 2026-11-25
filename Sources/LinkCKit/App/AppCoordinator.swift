@@ -1121,8 +1121,6 @@ public final class AppCoordinator {
     /// A tier set to an `opencode-go/*` model is used as is.
     func resolveOpenCodeGoModel(_ model: String, logSubstitution: Bool = false) -> String {
         guard model.hasPrefix("opencode/") else { return model }
-        let name = String(model.dropFirst("opencode/".count))
-        let candidate = "opencode-go/\(name)"
 
         let openCodeList: [ListedModel]
         do {
@@ -1134,8 +1132,8 @@ public final class AppCoordinator {
             return model
         }
 
-        // OpenCode lists `opencode-go/*` models only while Go is connected.
-        guard openCodeList.contains(where: { $0.id == candidate }), OpenCodeFreeModels.isFree(candidate) else { return model }
+        let candidate = OpenCodeGo.model(for: model, listed: openCodeList)
+        guard candidate != model else { return model }
 
         if logSubstitution {
             NSLog("[linkC] preferring OpenCode Go free model: substituted %@ with %@", model, candidate)

@@ -303,10 +303,14 @@ public final class PromptBar {
         let decision = try TaskRouting.pick(
             prompt: request.prompt, context: context, settings: request.settings, sources: sources,
             only: only, consultingFolderListing: consultingFolderListing).decision
-        guard let id = request.settings.model(for: decision.agent, tier: decision.tier) else {
+        guard let configured = request.settings.model(for: decision.agent, tier: decision.tier) else {
             throw LinkCError.process(
                 "no model configured for \(decision.agent.rawValue) tier \(decision.tier.rawValue) — set it in linkC's Settings > Models")
         }
+        // The model the session launches with, as `AppCoordinator.resolvedModel` resolves it.
+        let id = decision.agent == .opencode
+            ? OpenCodeGo.model(for: configured, listed: try sources.modelLists()[.opencode]?.models ?? [])
+            : configured
         let reason = ([decision.summary] + decision.notes + (only == nil ? [] : ["your pick"])).joined(separator: "; ")
         return PromptBarPick(
             agent: decision.agent, tier: decision.tier, model: try modelName(id, agent: decision.agent, sources: sources),
