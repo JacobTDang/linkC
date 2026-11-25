@@ -503,6 +503,63 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertEqual(devTools.closed.sorted(), ["P1", "T1"])
     }
 
+    /// A tab a session was pinned to and left between two looks is never seen pinned. It may be any
+    /// of that browser's sessions', so it closes once the last of them ends, not when Chrome stops.
+    func testATabPinnedAndLeftBetweenTwoLooksClosesWhenTheSessionsThatMayOwnItEnd() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["boot"]
+        let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        let s2 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project"))
+        devTools.pages += ["T1", "U1"]
+        try pin(s1, to: "T1")
+        try pin(s2, to: "U1")
+        await browser.trackTabs()
+        devTools.pages += ["T2", "T3"]
+        try pin(s1, to: "T3")
+        await browser.trackTabs()
+        _ = await browser.lease(sessionId: "S3", agent: .claude, cwd: "/tmp/project")
+
+        browser.release(sessionId: "S1")
+        await browser.settle()
+        XCTAssertEqual(devTools.closed.sorted(), ["T1", "T3"], "T2 may still be S2's")
+
+        browser.release(sessionId: "S2")
+        await browser.settle()
+        XCTAssertEqual(devTools.closed.sorted(), ["T1", "T2", "T3", "U1"])
+        XCTAssertEqual(launcher.processes[0].isRunning, true, "S3 still uses it")
+    }
+
+    /// A popup belongs to the session whose tab opened it, however many share the browser, and so
+    /// does a popup of that popup.
+    func testAPopupClosesWithTheSessionWhoseTabOpenedIt() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["boot"]
+        let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        let s2 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project"))
+        devTools.pages += ["T1", "U1"]
+        try pin(s1, to: "T1")
+        try pin(s2, to: "U1")
+        await browser.trackTabs()
+        devTools.pages += ["P2", "P1", "Q1"]
+        devTools.openers = ["P1": "T1", "P2": "P1", "Q1": "U1"]
+        await browser.trackTabs()
+
+        browser.release(sessionId: "S1")
+        await browser.settle()
+
+        XCTAssertEqual(devTools.closed.sorted(), ["P1", "P2", "T1"])
+    }
+
+    /// A pinned session's first attach adopts a tab when Chrome has one it tracks, and Chrome's own
+    /// new-tab page is not one: Chrome opens on a blank page, or each first attach adds a stray one.
+    func testChromeOpensOnABlankPageForTheFirstAttachToAdopt() async throws {
+        let browser = makeBrowser()
+
+        _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+
+        XCTAssertEqual(launcher.launches.first?.last, "about:blank")
+    }
+
     func testTheDaemonIsStoppedThroughTheServersOwnCommandFoundOnThePath() async throws {
         let bin = root.appendingPathComponent("bin")
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
@@ -600,15 +657,29 @@ func XCTUnwrapAsync<T>(_ value: T?, file: StaticString = #filePath, line: UInt =
 
 /// The live seams' own parsing.
 final class SharedBrowserLiveTests: XCTestCase {
-    func testOnlyPageTargetsAreTabs() throws {
-        let list = #"""
-        [{"id":"A","type":"page","url":"about:blank"},
-         {"id":"B","type":"service_worker","url":"chrome-extension://x/sw.js"},
-         {"id":"C","type":"page","url":"data:text/html,x"},
-         {"id":"D","type":"iframe","url":"chrome-untrusted://new-tab-page/x"}]
+    /// `Target.getTargets` as Chrome 158 answers it: only pages are tabs, and a popup names its opener.
+    func testOnlyPageTargetsAreTabsEachWithItsOpener() throws {
+        let reply = #"""
+        {"id":1,"result":{"targetInfos":[
+         {"targetId":"A","type":"page","url":"about:blank","openerId":"","attached":true},
+         {"targetId":"B","type":"service_worker","url":"chrome-extension://x/sw.js","attached":false},
+         {"targetId":"C","type":"page","url":"","openerId":"A","canAccessOpener":false,"attached":true},
+         {"targetId":"D","type":"iframe","url":"chrome-untrusted://new-tab-page/x","attached":false},
+         {"targetId":"E","type":"page","url":"data:text/html,x","attached":true}]}}
         """#
-        XCTAssertEqual(try LiveSharedBrowserDevTools.pageIds(in: Data(list.utf8)), ["A", "C"])
-        XCTAssertThrowsError(try LiveSharedBrowserDevTools.pageIds(in: Data(#"{"id":"A"}"#.utf8)))
+        XCTAssertEqual(try LiveSharedBrowserDevTools.pages(inTargets: Data(reply.utf8)),
+                       [PageTarget(id: "A"), PageTarget(id: "C", opener: "A"), PageTarget(id: "E")])
+        XCTAssertThrowsError(try LiveSharedBrowserDevTools.pages(inTargets: Data(#"{"id":1,"error":{"code":-32601,"message":"no such method"}}"#.utf8))) {
+            XCTAssertTrue(String(describing: $0).contains("no such method"), String(describing: $0))
+        }
+        XCTAssertThrowsError(try LiveSharedBrowserDevTools.pages(inTargets: Data(#"[{"id":"A"}]"#.utf8)))
+    }
+
+    func testTheBrowsersSocketIsReadFromItsVersion() throws {
+        let version = #"{"Browser":"Chrome/158.0.8127.37","webSocketDebuggerUrl":"ws://127.0.0.1:51367/devtools/browser/aa46"}"#
+        XCTAssertEqual(try LiveSharedBrowserDevTools.browserSocket(in: Data(version.utf8)),
+                       URL(string: "ws://127.0.0.1:51367/devtools/browser/aa46"))
+        XCTAssertThrowsError(try LiveSharedBrowserDevTools.browserSocket(in: Data(#"{"Browser":"x"}"#.utf8)))
     }
 
     func testTheArgumentsOfAProcessAreItsArgv() throws {

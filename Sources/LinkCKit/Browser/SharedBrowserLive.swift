@@ -127,10 +127,13 @@ public struct LiveSharedBrowserDevTools: SharedBrowserDevTools {
         session = URLSession(configuration: configuration)
     }
 
+    /// Through `Target.getTargets` on the browser's socket: `/json/list` does not say which tab
+    /// opened a popup.
     public func pageTargets(port: Int) async throws -> [PageTarget] {
-        let (data, status) = try await get("/json/list", port: port)
-        guard status == 200 else { throw LinkCError.process("Chrome answered /json/list with HTTP \(status)") }
-        return try Self.pageIds(in: data).map { PageTarget(id: $0) }
+        let (data, status) = try await get("/json/version", port: port)
+        guard status == 200 else { throw LinkCError.process("Chrome answered /json/version with HTTP \(status)") }
+        let reply = try await call("Target.getTargets", on: try Self.browserSocket(in: data))
+        return try Self.pages(inTargets: reply)
     }
 
     public func closeTarget(_ id: String, port: Int) async throws {
@@ -140,12 +143,66 @@ public struct LiveSharedBrowserDevTools: SharedBrowserDevTools {
         }
     }
 
-    /// The ids of the `page` targets in a `/json/list` answer.
-    static func pageIds(in data: Data) throws -> [String] {
-        guard let targets = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            throw LinkCError.process("Chrome's /json/list is not a list of targets")
+    /// The browser's DevTools socket, from a `/json/version` answer.
+    static func browserSocket(in data: Data) throws -> URL {
+        guard let version = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = version["webSocketDebuggerUrl"] as? String, let url = URL(string: text) else {
+            throw LinkCError.process("Chrome's /json/version names no DevTools socket: \(String(decoding: data.prefix(300), as: UTF8.self))")
         }
-        return targets.filter { $0["type"] as? String == "page" }.compactMap { $0["id"] as? String }
+        return url
+    }
+
+    /// The `page` targets in a `Target.getTargets` reply, each with the tab that opened it.
+    static func pages(inTargets data: Data) throws -> [PageTarget] {
+        guard let reply = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw LinkCError.process("Chrome's Target.getTargets reply is not an object")
+        }
+        if let error = reply["error"] as? [String: Any] {
+            throw LinkCError.process("Chrome refused Target.getTargets: \(error["message"] as? String ?? String(describing: error))")
+        }
+        guard let infos = (reply["result"] as? [String: Any])?["targetInfos"] as? [[String: Any]] else {
+            throw LinkCError.process("Chrome's Target.getTargets reply has no targetInfos")
+        }
+        return infos.filter { $0["type"] as? String == "page" }.compactMap { info in
+            guard let id = info["targetId"] as? String else { return nil }
+            let opener = (info["openerId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return PageTarget(id: id, opener: opener)
+        }
+    }
+
+    /// Sends `method` on a new connection to `socket` and returns Chrome's reply, within the
+    /// session's request timeout.
+    private func call(_ method: String, on socket: URL) async throws -> Data {
+        let task = session.webSocketTask(with: socket)
+        task.resume()
+        defer { task.cancel(with: .normalClosure, reason: nil) }
+        let seconds = session.configuration.timeoutIntervalForRequest
+        return try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask {
+                try await task.send(.string(#"{"id":1,"method":"\#(method)"}"#))
+                while true {
+                    let data: Data
+                    switch try await task.receive() {
+                    case .string(let text): data = Data(text.utf8)
+                    case .data(let bytes): data = bytes
+                    @unknown default: continue
+                    }
+                    let reply = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                    if reply?["id"] as? Int == 1 { return data }
+                }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                // A receive does not end on cancellation; closing the socket ends it.
+                task.cancel(with: .goingAway, reason: nil)
+                throw LinkCError.process("Chrome did not answer \(method) within \(Int(seconds)) seconds")
+            }
+            defer { group.cancelAll() }
+            guard let reply = try await group.next() else {
+                throw LinkCError.process("Chrome's \(method) call ended without a reply")
+            }
+            return reply
+        }
     }
 
     private func get(_ path: String, port: Int) async throws -> (Data, Int) {

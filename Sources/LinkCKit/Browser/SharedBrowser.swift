@@ -35,8 +35,51 @@ public final class SharedBrowser {
         let id: UUID
         let process: any SharedBrowserProcess
         let port: Int
-        /// The page targets seen at the last look, so a new one can be told from an old one.
+        /// Every page target seen so far, so a new one can be told from an old one.
         var known: Set<String>
+        /// The sessions each tab may belong to; it is closed when the last of them ends. Chrome's
+        /// own first tab has none.
+        var owners: [String: Set<String>] = [:]
+
+        /// Updates `owners` from one look at the browser. A tab a session is pinned to is that
+        /// session's alone. A new tab belongs to the owners of the tab that opened it, and
+        /// otherwise to every session attached now, as any of them may have opened it: one
+        /// pinned and left between two looks is never seen pinned, and agent-browser's
+        /// `Target.createTarget` leaves no opener.
+        mutating func track(_ pages: [PageTarget], pins: [String: String], sessions: Set<String>) {
+            let open = Set(pages.map(\.id))
+            owners = owners.filter { open.contains($0.key) }
+            for (session, target) in pins where open.contains(target) { owners[target] = [session] }
+            var fresh = pages.filter { !known.contains($0.id) && owners[$0.id] == nil }
+            var found = true
+            while found {
+                found = false
+                for page in fresh {
+                    guard let opener = page.opener, let by = owners[opener] else { continue }
+                    owners[page.id] = by
+                    found = true
+                }
+                fresh.removeAll { owners[$0.id] != nil }
+            }
+            for page in fresh { owners[page.id] = sessions }
+            known = open
+        }
+
+        /// Gives up `session`'s claims on the tabs, given the sessions still attached, and returns
+        /// the tabs nobody else may own.
+        mutating func release(_ session: String, remaining: Set<String>) -> [String] {
+            var orphaned: [String] = []
+            for (tab, claims) in owners where claims.contains(session) {
+                let rest = claims.intersection(remaining)
+                if rest.isEmpty {
+                    orphaned.append(tab)
+                    owners.removeValue(forKey: tab)
+                } else {
+                    owners[tab] = rest
+                }
+            }
+            return orphaned.sorted()
+        }
     }
 
     private enum Instance {
@@ -51,7 +94,6 @@ public final class SharedBrowser {
         var project: String?
         var instance: UUID?
         var cli: [String] = []
-        var owned: Set<String> = []
     }
 
     private let applicationSupport: URL
@@ -170,18 +212,20 @@ public final class SharedBrowser {
             stopIfUnused(project)
             return
         }
-        var port: Int?
-        if case .running(let running)? = instances[project], running.id == instanceID {
+        var tabs: (port: Int, ids: [String])?
+        if case .running(var running)? = instances[project], running.id == instanceID {
             if holders(of: project, instance: instanceID).isEmpty {
                 instances.removeValue(forKey: project)
                 stop(running, project: project)
             } else {
-                port = running.port
+                let orphaned = running.release(sessionId, remaining: Set(attached(to: instanceID)))
+                instances[project] = .running(running)
+                tabs = (running.port, orphaned)
             }
         }
         let id = UUID()
         cleanups[id] = Task { [weak self] in
-            await self?.cleanUp(member, project: project, instanceID: instanceID, port: port)
+            await self?.cleanUp(member, project: project, instanceID: instanceID, tabs: tabs)
             self?.cleanups.removeValue(forKey: id)
         }
     }
@@ -214,37 +258,37 @@ public final class SharedBrowser {
         members.removeAll()
     }
 
-    /// Notes which page targets each session opened: the one agent-browser has it pinned to now
-    /// (`tab_new` moves the pin), and any new one nobody is pinned to when it is the only session in
-    /// that browser. Called on the coordinator's sweep; a call while one runs returns at once.
+    /// Notes which sessions each tab may belong to (`Running.track`): the tab agent-browser has a
+    /// session pinned to now (`tab_new` moves the pin), a popup by the tab that opened it. Called on
+    /// the coordinator's sweep; a call while one runs returns at once.
     public func trackTabs() async {
         guard !tracking else { return }
         tracking = true
         defer { tracking = false }
         for (project, instance) in instances {
-            guard case .running(let running) = instance, !holders(of: project, instance: running.id).isEmpty else { continue }
-            let pages: [String]
+            guard case .running(let running) = instance, !attached(to: running.id).isEmpty else { continue }
+            let pages: [PageTarget]
             do {
-                pages = try await devTools.pageTargets(port: running.port).map(\.id)
+                pages = try await devTools.pageTargets(port: running.port)
             } catch {
                 reportOnce("tabs", "linkC could not list the shared browser's tabs for \(project) — \(error.localizedDescription)")
                 continue
             }
             guard case .running(var current)? = instances[project], current.id == running.id else { continue }
-            let open = Set(pages)
-            let holding = holders(of: project, instance: running.id)
-            var pinned: Set<String> = []
-            for sessionId in holding {
-                guard let name = members[sessionId]?.sessionName, let target = pinnedTarget(of: name), open.contains(target) else { continue }
-                members[sessionId]?.owned.insert(target)
-                pinned.insert(target)
-            }
-            if holding.count == 1, let only = holding.first {
-                members[only]?.owned.formUnion(open.subtracting(current.known).subtracting(pinned))
-            }
-            current.known = open
+            let sessions = attached(to: current.id)
+            current.track(pages, pins: pins(of: sessions), sessions: Set(sessions))
             instances[project] = .running(current)
         }
+    }
+
+    /// The tab agent-browser has each of `sessions` pinned to, where it has one.
+    private func pins(of sessions: [String]) -> [String: String] {
+        var pins: [String: String] = [:]
+        for sessionId in sessions {
+            guard let name = members[sessionId]?.sessionName, let target = pinnedTarget(of: name) else { continue }
+            pins[sessionId] = target
+        }
+        return pins
     }
 
     /// Test seam: waits for every release's cleanup to finish.
@@ -297,14 +341,22 @@ public final class SharedBrowser {
             .map(\.key).sorted()
     }
 
-    private func cleanUp(_ member: Member, project: String, instanceID: UUID, port: Int?) async {
-        if let port {
-            var tabs = member.owned
-            if let pinned = pinnedTarget(of: member.sessionName) { tabs.insert(pinned) }
-            for tab in tabs.sorted() {
+    /// The sessions that have the port of Chrome `instance`.
+    private func attached(to instance: UUID) -> [String] {
+        members.filter { $0.value.instance == instance }.map(\.key).sorted()
+    }
+
+    /// Closes `tabs`, and the tab `member` is pinned to now, but never one another session is pinned
+    /// to now; then stops its daemon and forgets its tab.
+    private func cleanUp(_ member: Member, project: String, instanceID: UUID, tabs: (port: Int, ids: [String])?) async {
+        if let tabs {
+            var closing = Set(tabs.ids)
+            if let pinned = pinnedTarget(of: member.sessionName) { closing.insert(pinned) }
+            closing.subtract(pins(of: attached(to: instanceID)).values)
+            for tab in closing.sorted() {
                 guard case .running(let running)? = instances[project], running.id == instanceID else { break }
                 do {
-                    try await devTools.closeTarget(tab, port: port)
+                    try await devTools.closeTarget(tab, port: tabs.port)
                 } catch {
                     reportOnce("tab-close", "linkC could not close a tab of the shared browser for \(project) — \(error.localizedDescription)")
                 }
@@ -492,8 +544,10 @@ public final class SharedBrowser {
         do {
             process = try launcher.launch(
                 executable: chromePath,
+                // A blank first page, not Chrome's new-tab page, which agent-browser does not track: a
+                // pinned session's first attach then adopts it instead of opening a stray blank tab.
                 arguments: ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=\(profile.path)",
-                            "--no-first-run", "--no-default-browser-check"],
+                            "--no-first-run", "--no-default-browser-check", "about:blank"],
                 log: log,
                 onExit: { [weak self] status in self?.chromeExited(project: project, id: id, status: status) })
         } catch {
