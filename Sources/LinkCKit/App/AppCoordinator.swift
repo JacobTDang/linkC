@@ -129,7 +129,7 @@ public final class AppCoordinator {
     /// How long the app waits for `opencode models` / `kilo models`: less than the 20 s `linkc` waits
     /// for its open request, so the command hears "could not check" rather than nothing. Public: it is
     /// read by the public initializer's default listers.
-    public static let openCodeModelListingTimeout: TimeInterval = 10
+    nonisolated public static let openCodeModelListingTimeout: TimeInterval = 10
     var openCodeModelCheckCount = 0
     var kiloModelCheckCount = 0
     /// OpenCode refusals the user has been told of, one per queued task or message, so a pass that meets the
