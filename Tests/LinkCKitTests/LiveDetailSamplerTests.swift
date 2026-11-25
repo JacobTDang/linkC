@@ -128,7 +128,8 @@ final class LiveDetailSamplerTests: XCTestCase {
         private let lock = NSLock()
         private var stored = Date(timeIntervalSinceReferenceDate: 800_000_000)
         var now: Date { lock.lock(); defer { lock.unlock() }; return stored }
-        func advance(minutes: Double) { lock.lock(); stored += minutes * 60; lock.unlock() }
+        func advance(minutes: Double) { advance(seconds: minutes * 60) }
+        func advance(seconds: Double) { lock.lock(); stored += seconds; lock.unlock() }
     }
 
     /// Fails with the reason it is given, or reads when it has none.
@@ -197,6 +198,28 @@ final class LiveDetailSamplerTests: XCTestCase {
         await sampler.refresh([session("S1", .codex, pid: 41)])?.value
 
         XCTAssertEqual(recording.targets.map(\.openFiles), [["/made/up/open-41"]])
+    }
+
+    /// Listing a process tree's open files asks the kernel about every file of every process in it:
+    /// it is done at most every ten seconds for a session, and at once for a new process.
+    func testASessionsProcessTreeIsLookedIntoAtMostEveryTenSeconds() async {
+        let trees = Trees()
+        let clock = Clock()
+        let recording = Recording()
+        let sampler = LiveDetailSampler(readers: [.codex: recording], now: { clock.now }, openFiles: { trees.openFiles($0) })
+
+        await sampler.refresh([session("S1", .codex, pid: 41)])?.value
+        clock.advance(seconds: 9)
+        await sampler.refresh([session("S1", .codex, pid: 41)])?.value
+        XCTAssertEqual(trees.looked, [41])
+        XCTAssertEqual(recording.targets.map(\.openFiles), [["/made/up/open-41"], ["/made/up/open-41"]])
+
+        clock.advance(seconds: 1)
+        await sampler.refresh([session("S1", .codex, pid: 41)])?.value
+        XCTAssertEqual(trees.looked, [41, 41])
+
+        await sampler.refresh([session("S1", .codex, pid: 42)])?.value
+        XCTAssertEqual(trees.looked, [41, 41, 42])
     }
 
     /// OpenCode is found by the conversation id linkC passes it, never by an open file: its

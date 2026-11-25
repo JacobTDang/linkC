@@ -54,7 +54,12 @@ public final class LiveDetailSampler: @unchecked Sendable {
     }
 
     private let now: @Sendable () -> Date
-    private let openFiles: @Sendable (pid_t) -> [String]
+    private let listOpenFiles: @Sendable (pid_t) -> [String]
+    /// Each session's process tree's open files, and when they were listed. Used on the queue alone.
+    private var openFilesSeen: [String: (pid: pid_t, at: Date, files: [String])] = [:]
+    /// How long a listing of a process tree's open files stands: a record a session's process opens
+    /// later, a new chat or rollout, is found within this.
+    static let openFilesAge: TimeInterval = 10
 
     /// `openFiles` lists the files a process tree holds open; `now` is the clock.
     public init(readers: [AgentKind: any SessionLiveReader],
@@ -63,7 +68,7 @@ public final class LiveDetailSampler: @unchecked Sendable {
                 openFiles: @escaping @Sendable (pid_t) -> [String] = { ProcessSnooper.openFilePaths(inProcessTreeOf: $0) }) {
         self.readers = readers
         self.now = now
-        self.openFiles = openFiles
+        self.listOpenFiles = openFiles
         self.queue = DispatchQueue(label: "linkc.live-detail", qos: .utility)
         self.queue.setSpecific(key: Self.readQueueKey, value: ())
         self.log = log
@@ -105,12 +110,27 @@ public final class LiveDetailSampler: @unchecked Sendable {
             guard let reader = readers[session.agent] else { continue }
             let target = LiveSessionTarget(
                 sessionId: session.id, agent: session.agent, cwd: session.cwd, agentSessionId: session.agentSessionId,
-                openFiles: reader.readsOpenFiles ? session.pid.map(openFiles) ?? [] : [])
+                openFiles: reader.readsOpenFiles ? openFiles(of: session) : [])
             read[session.id] = Result { try detail(of: target, by: reader) }
         }
         let live = Set(sessions.map(\.id))
         lastRead = lastRead.filter { live.contains($0.key) }
+        openFilesSeen = openFilesSeen.filter { live.contains($0.key) }
         land(read, live: live)
+    }
+
+    /// The files the session's process tree holds open, as last listed while that listing is younger
+    /// than `openFilesAge` and of the same process.
+    private func openFiles(of session: Session) -> [String] {
+        guard let pid = session.pid else { return [] }
+        let now = now()
+        if let seen = openFilesSeen[session.id], seen.pid == pid {
+            let age = now.timeIntervalSince(seen.at)
+            if age >= 0, age < Self.openFilesAge { return seen.files }
+        }
+        let files = listOpenFiles(pid)
+        openFilesSeen[session.id] = (pid, now, files)
+        return files
     }
 
     /// The last read's detail while nothing it read has changed, else a new read's.
