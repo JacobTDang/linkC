@@ -70,6 +70,29 @@ final class BundledModsTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: typesFile, encoding: .utf8), "generated")
     }
 
+    func testBundledTypesFolderIsNotInstalled() throws {
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: [
+                "README.md": "shipped",
+                ".claude-plugin/types/from-bundle.d.ts": "must-not-copy",
+            ]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let installed = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        XCTAssertEqual(
+            try String(contentsOf: installed.appendingPathComponent("README.md"), encoding: .utf8),
+            "shipped"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: installed.appendingPathComponent(".claude-plugin/types/from-bundle.d.ts").path
+            ),
+            "the types-prefix skip must leave bundle types uninstalled"
+        )
+    }
+
     func testUnwritableTargetIsReported() throws {
         try XCTSkipIf(getuid() == 0, "root ignores POSIX write permissions, so this cannot be exercised as root")
         try writeBundleMod(
