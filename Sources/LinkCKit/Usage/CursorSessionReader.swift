@@ -7,11 +7,44 @@ import Foundation
 /// open, which ties the session to its chat exactly: a session whose process tree holds none open
 /// reads as nothing.
 public struct CursorSessionReader: SessionLiveReader {
-    public init() {}
+    private let transcriptRoots: [URL]
+    private let tailBytes: Int
+
+    /// `transcriptRoots` are the `projects` folders that hold chats' transcripts. Grok keeps its
+    /// transcripts in Cursor's, so both are searched. `tailBytes` is how much of a transcript's end
+    /// is read for the step.
+    public init(transcriptRoots: [URL] = CursorSessionReader.defaultTranscriptRoots, tailBytes: Int = 1 << 20) {
+        self.transcriptRoots = transcriptRoots
+        self.tailBytes = tailBytes
+    }
+
+    public static var defaultTranscriptRoots: [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [".cursor", ".cursor-grok"].map { home.appendingPathComponent("\($0)/projects") }
+    }
 
     public func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
         guard let store = Self.chatStore(among: target) else { return SessionLiveDetail() }
-        return SessionLiveDetail(contextPercent: try Self.contextPercent(inStoreAt: store))
+        let chatId = URL(fileURLWithPath: store).deletingLastPathComponent().lastPathComponent
+        var step: String?
+        if let transcript = try transcript(ofChat: chatId) {
+            step = try CursorTranscriptStep.label(inTranscriptAt: transcript, tailBytes: tailBytes)
+        }
+        return SessionLiveDetail(contextPercent: try Self.contextPercent(inStoreAt: store), step: step)
+    }
+
+    /// `<root>/<a folder>/agent-transcripts/<chat id>/<chat id>.jsonl`. The folder is named for the
+    /// session's folder in a way that shortens long names with a hash, so the chat id finds it
+    /// instead. Nil while the agent has not written one.
+    private func transcript(ofChat chatId: String) throws -> URL? {
+        let files = FileManager.default
+        for root in transcriptRoots where files.fileExists(atPath: root.path) {
+            for folder in try files.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).sorted(by: { $0.path < $1.path }) {
+                let candidate = folder.appendingPathComponent("agent-transcripts/\(chatId)/\(chatId).jsonl")
+                if files.fileExists(atPath: candidate.path) { return candidate }
+            }
+        }
+        return nil
     }
 
     // MARK: - Finding the chat

@@ -44,6 +44,7 @@ final class CursorSessionReaderTests: XCTestCase {
         let chatDir = dir.appendingPathComponent("\(root)/chats/\(folder ?? md5(cwd))/\(chatId)")
         try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
         let path = chatDir.appendingPathComponent("store.db").path
+        try? FileManager.default.removeItem(atPath: path)
         let json = "{\"agentId\":\"\(chatId)\",\"latestRootBlobId\":\"\(rootId)\",\"mode\":\"default\"}"
         let value = metaValue ?? P.hex(Array(json.utf8))
         var sql = "create table blobs (id text primary key, data blob); create table meta (key text primary key, value text);"
@@ -60,7 +61,7 @@ final class CursorSessionReaderTests: XCTestCase {
     }
 
     private func reader() -> CursorSessionReader {
-        CursorSessionReader()
+        CursorSessionReader(transcriptRoots: [])
     }
 
     // MARK: - Context
@@ -173,5 +174,126 @@ final class CursorSessionReaderTests: XCTestCase {
     func testARootBlobThatIsNotProtobufThrows() throws {
         // A varint tag claiming field 1 holds 200 bytes, with 1 behind it.
         assertReadThrows(try chatStore(blob: [0x0a, 0xc8, 0x01, 0x00]), containing: "protobuf")
+    }
+
+    // MARK: - Step
+
+    private let turnEnded = #"{"type":"turn_ended","status":"success"}"#
+
+    private func userLine() -> String {
+        #"{"role":"user","message":{"content":[{"type":"text","text":"made up request"}]}}"#
+    }
+
+    private func assistantLine(_ parts: String...) -> String {
+        #"{"role":"assistant","message":{"content":["# + parts.joined(separator: ",") + "]}}"
+    }
+
+    private func text() -> String { #"{"type":"text","text":"made up reply"}"# }
+
+    private func toolUse(_ name: String, _ input: String = "{}") -> String {
+        #"{"type":"tool_use","name":"\#(name)","input":\#(input)}"#
+    }
+
+    /// A made-up transcript where Cursor keeps one: `<root>/projects/<project>/agent-transcripts/<chat id>/<chat id>.jsonl`.
+    private func transcript(_ lines: [String], root: String = ".cursor", chatId: String = "chat-one",
+                            endingWith ending: String = "\n") throws {
+        let folder = dir.appendingPathComponent("\(root)/projects/a-folder/agent-transcripts/\(chatId)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try (lines.joined(separator: "\n") + ending).write(to: folder.appendingPathComponent("\(chatId).jsonl"), atomically: true, encoding: .utf8)
+    }
+
+    private func stepReader(tailBytes: Int = 1 << 20) -> CursorSessionReader {
+        CursorSessionReader(
+            transcriptRoots: [dir.appendingPathComponent(".cursor/projects"), dir.appendingPathComponent(".cursor-grok/projects")],
+            tailBytes: tailBytes)
+    }
+
+    private func step(of lines: [String], endingWith ending: String = "\n", tailBytes: Int = 1 << 20) throws -> String? {
+        let store = try chatStore()
+        try transcript(lines, endingWith: ending)
+        return try stepReader(tailBytes: tailBytes).read(target([store])).step
+    }
+
+    func testAShellCommandIsTheStepAsItsFirstLine() throws {
+        let call = toolUse("Shell", #"{"command":"swift test --filter Made\nsecond line"}"#)
+        XCTAssertEqual(try step(of: [userLine(), assistantLine(text(), call)]), "$ swift test --filter Made")
+    }
+
+    func testAFileToolIsTheStepByItsFileName() throws {
+        let read = toolUse("Read", #"{"path":"/made/up/dir/Thing.swift"}"#)
+        XCTAssertEqual(try step(of: [userLine(), assistantLine(read)]), "Read Thing.swift")
+        let edit = toolUse("StrReplace", #"{"path":"/made/up/dir/Other.swift","old_string":"a","new_string":"b"}"#)
+        XCTAssertEqual(try step(of: [userLine(), assistantLine(edit)]), "StrReplace Other.swift")
+    }
+
+    func testAnyOtherToolIsTheStepByItsName() throws {
+        XCTAssertEqual(try step(of: [userLine(), assistantLine(toolUse("Grep", #"{"pattern":"made up"}"#))]), "Grep")
+        XCTAssertEqual(try step(of: [userLine(), assistantLine(toolUse("Shell", "{}"))]), "Shell")
+        XCTAssertEqual(try step(of: [userLine(), assistantLine(toolUse("Read", "{}"))]), "Read")
+    }
+
+    func testTheLastToolOfTheLastLineIsTheStep() throws {
+        let first = toolUse("Read", #"{"path":"/made/up/One.swift"}"#)
+        let second = toolUse("Read", #"{"path":"/made/up/Two.swift"}"#)
+        let third = toolUse("Read", #"{"path":"/made/up/Three.swift"}"#)
+        let lines = [userLine(), assistantLine(first), assistantLine(text()), assistantLine(text(), second, third, text())]
+        XCTAssertEqual(try step(of: lines), "Read Three.swift")
+    }
+
+    func testAToolFromBeforeTheLastUserLineIsNotTheStep() throws {
+        let old = toolUse("Shell", #"{"command":"old"}"#)
+        XCTAssertNil(try step(of: [userLine(), assistantLine(old), turnEnded, userLine(), assistantLine(text())]))
+        XCTAssertNil(try step(of: [userLine(), assistantLine(old), userLine()]))
+    }
+
+    func testAFinishedTurnHasNoStep() throws {
+        let call = toolUse("Shell", #"{"command":"swift build"}"#)
+        XCTAssertNil(try step(of: [userLine(), assistantLine(call), assistantLine(text()), turnEnded]))
+    }
+
+    func testALineBeingWrittenIsSkippedForTheLastCompleteOne() throws {
+        let call = toolUse("Shell", #"{"command":"swift build"}"#)
+        let unfinished = String(assistantLine(toolUse("Read", #"{"path":"/made/up/Half.swift"}"#)).dropLast(9))
+        XCTAssertEqual(try step(of: [userLine(), assistantLine(call), unfinished], endingWith: ""), "$ swift build")
+    }
+
+    func testACompleteLastLineWithoutANewlineCounts() throws {
+        let call = toolUse("Shell", #"{"command":"swift build"}"#)
+        XCTAssertEqual(try step(of: [userLine(), assistantLine(call)], endingWith: ""), "$ swift build")
+    }
+
+    func testALongCommandIsCutShort() throws {
+        let long = String(repeating: "x", count: 100)
+        let label = try XCTUnwrap(step(of: [userLine(), assistantLine(toolUse("Shell", #"{"command":"\#(long)"}"#))]))
+        XCTAssertEqual(label, "$ " + String(repeating: "x", count: 57) + "…")
+    }
+
+    func testOnlyTheEndOfALongTranscriptIsRead() throws {
+        let filler = (0..<40).map { _ in assistantLine(toolUse("Grep", #"{"pattern":"made up filler"}"#)) }
+        let call = toolUse("Shell", #"{"command":"swift build"}"#)
+        let lines = [userLine()] + filler + [assistantLine(call)]
+        // The window starts inside a filler line, which must not be parsed.
+        XCTAssertEqual(try step(of: lines, tailBytes: 400), "$ swift build")
+    }
+
+    func testAChatWithNoTranscriptYetHasContextButNoStep() throws {
+        let store = try chatStore(blob: rootBlob(used: 50, window: 100))
+        let detail = try stepReader().read(target([store]))
+        XCTAssertEqual(detail, SessionLiveDetail(contextPercent: 50))
+    }
+
+    func testGrokTranscriptsAreFoundWhereverTheyAreKept() throws {
+        let store = try chatStore(root: ".cursor-grok", blob: rootBlob(used: 50, window: 100))
+        try transcript([userLine(), assistantLine(toolUse("Shell", #"{"command":"swift build"}"#))], root: ".cursor")
+        let detail = try stepReader().read(target([store], agent: .grok))
+        XCTAssertEqual(detail, SessionLiveDetail(contextPercent: 50, step: "$ swift build"))
+    }
+
+    func testATranscriptLineThatIsNotJSONThrows() throws {
+        let store = try chatStore()
+        try transcript([userLine(), "not json", assistantLine(text())])
+        XCTAssertThrowsError(try stepReader().read(target([store]))) { error in
+            XCTAssertTrue(error.localizedDescription.contains("not JSON"), error.localizedDescription)
+        }
     }
 }
