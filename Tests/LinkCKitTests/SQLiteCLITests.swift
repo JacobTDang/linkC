@@ -38,6 +38,37 @@ final class SQLiteCLITests: XCTestCase {
         XCTAssertEqual(try SQLiteCLI.rows(Row.self, in: path, query: "select n, label, hex(b) as blob from t"), [])
     }
 
+    /// sqlite3 runs the user's startup file before the query. One that prints, or changes the output
+    /// mode, would break the rows' JSON, so none is run. (sqlite3 looks for it under
+    /// `XDG_CONFIG_HOME` before `~/.sqliterc`, which lets a made-up one stand in.)
+    func testTheUsersSQLiteStartupFileIsNotRun() throws {
+        let config = dir.appendingPathComponent("config")
+        try FileManager.default.createDirectory(at: config.appendingPathComponent("sqlite3"), withIntermediateDirectories: true)
+        try ".print made up startup output\n.mode list\n".write(to: config.appendingPathComponent("sqlite3/sqliterc"), atomically: true, encoding: .utf8)
+        let path = try database("create table t(n int, label text, b blob); insert into t values (7, 'seven', x'0a0b');")
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+
+        for open in [SQLiteCLI.Open.readOnly, .clone(in: scratch)] {
+            let rows = try SQLiteCLI.rows(Row.self, in: path, query: "select n, label, hex(b) as blob from t", open: open,
+                                          environment: ["XDG_CONFIG_HOME": config.path])
+            XCTAssertEqual(rows, [Row(n: 7, label: "seven", blob: "0A0B")], "\(open)")
+        }
+    }
+
+    /// A writer's lock is waited on for a moment before the read gives up, rather than not at all.
+    func testAReadWaitsBrieflyForAWritersLock() throws {
+        let path = try database("create table t(n int, label text, b blob);")
+        let writer = try LiveSQLiteWriter(path: path)
+        defer { writer.close() }
+        try writer.run("begin exclusive; insert into t values (1, 'one', x'01');")
+
+        let started = Date()
+        XCTAssertThrowsError(try SQLiteCLI.rows(Row.self, in: path, query: "select n, label, hex(b) as blob from t")) { error in
+            XCTAssertTrue(error.localizedDescription.contains("locked"), error.localizedDescription)
+        }
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.2)
+    }
+
     // MARK: - Reading a clone
 
     private var scratch: URL { dir.appendingPathComponent("scratch") }

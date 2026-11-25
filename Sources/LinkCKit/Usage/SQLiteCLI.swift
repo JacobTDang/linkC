@@ -43,20 +43,32 @@ public enum SQLiteCLI {
     /// sqlite3's own reason when the file cannot be opened or the query fails.
     public static func rows<Row: Decodable>(_ type: Row.Type, in path: String, query: String,
                                            open: Open = .readOnly, timeout: TimeInterval = 3) throws -> [Row] {
+        try rows(type, in: path, query: query, open: open, timeout: timeout, environment: [:])
+    }
+
+    /// `environment` is added to sqlite3's own, for a test to stand in for the user's settings.
+    static func rows<Row: Decodable>(_ type: Row.Type, in path: String, query: String, open: Open = .readOnly,
+                                    timeout: TimeInterval = 3, environment: [String: String]) throws -> [Row] {
         switch open {
         case .readOnly:
-            return try run(Row.self, args: ["-readonly", "-json", path, query], reading: path, timeout: timeout)
+            return try run(Row.self, args: ["-readonly", "-json", path, query], reading: path, timeout: timeout, environment: environment)
         case .clone(let scratch):
             return try withClone(of: path, in: scratch) { clone in
-                try run(Row.self, args: ["-json", clone, query], reading: path, timeout: timeout)
+                try run(Row.self, args: ["-json", clone, query], reading: path, timeout: timeout, environment: environment)
             }
         }
     }
 
-    private static func run<Row: Decodable>(_ type: Row.Type, args: [String], reading path: String, timeout: TimeInterval) throws -> [Row] {
+    /// Ahead of every read's own arguments: the user's startup file is not run, since one that prints
+    /// or changes the output mode would break the JSON, and a writer's lock is waited on for 250 ms.
+    private static let options = ["-init", "/dev/null", "-cmd", ".timeout 250"]
+
+    private static func run<Row: Decodable>(_ type: Row.Type, args: [String], reading path: String, timeout: TimeInterval,
+                                            environment: [String: String]) throws -> [Row] {
         let result: ProcessResult
         do {
-            result = try LiveProcessRunner.runCapturingSync(executable: executable, args: args, cwd: nil, timeout: timeout)
+            result = try LiveProcessRunner.runCapturingSync(executable: executable, args: options + args, cwd: nil,
+                                                            env: environment, timeout: timeout)
         } catch ProcessRunnerError.timedOut(let seconds) {
             throw LinkCError.process("sqlite3 timed out after \(seconds)s reading \(path)")
         }
