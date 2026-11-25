@@ -76,8 +76,9 @@ public struct BundledMods: Sendable {
         let shipped = try relativeFiles(under: source)
         let previous = try validatedManifest(loadManifest(at: dest), modRoot: dest)
         let previousSet = Set(previous)
-        // Stage every replacement beside its destination first; only swap after all copies
-        // succeed so a midway failure never leaves a mixed installed tree.
+        try sweepLeftoverStageTemps(in: dest)
+        // Each file is swapped in whole (stage then replace/move). The set is not a
+        // transaction — a later successful run heals a partial set.
         var staged: [(temp: URL, final: URL)] = []
         defer {
             for pair in staged {
@@ -87,23 +88,26 @@ public struct BundledMods: Sendable {
         for relative in shipped {
             let fromURL = source.appendingPathComponent(relative)
             let to = dest.appendingPathComponent(relative)
-            try removeShippedFileBlockingDirectory(
-                for: to, modRoot: dest, previousShipped: previousSet, modName: name
-            )
-            try fm.createDirectory(at: to.deletingLastPathComponent(), withIntermediateDirectories: true)
             if fm.fileExists(atPath: to.path),
                let existing = try? Data(contentsOf: to),
                let incoming = try? Data(contentsOf: fromURL),
                existing == incoming {
                 continue
             }
-            let temp = URL(fileURLWithPath: to.path + ".linkc-new-\(UUID().uuidString)")
+            // Stage under the mod root so a file→folder flip does not need the parent yet.
+            let temp = dest.appendingPathComponent(".linkc-new-\(UUID().uuidString)")
+            staged.append((temp, to)) // track before copy so a failed copy is still cleaned up
             try fm.copyItem(at: fromURL, to: temp)
-            staged.append((temp, to))
         }
         while !staged.isEmpty {
             let pair = staged.removeFirst()
             do {
+                try removeShippedFileBlockingDirectory(
+                    for: pair.final, modRoot: dest, previousShipped: previousSet, modName: name
+                )
+                try fm.createDirectory(
+                    at: pair.final.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
                 if fm.fileExists(atPath: pair.final.path) {
                     _ = try fm.replaceItemAt(pair.final, withItemAt: pair.temp)
                 } else {
@@ -133,6 +137,27 @@ public struct BundledMods: Sendable {
             )
         }
         try saveManifest(shipped, at: dest)
+    }
+
+    /// Drop crash leftovers from a prior run: `.linkc-new-*` under the mod root and
+    /// `*.linkc-new-*` beside any nested path (legacy staging location).
+    private func sweepLeftoverStageTemps(in dest: URL) throws {
+        let fm = FileManager.default
+        let rootPath = dest.standardizedFileURL.path
+        guard let enumerator = fm.enumerator(
+            at: dest,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsPackageDescendants]
+        ) else { return }
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            let isRootTemp = name.hasPrefix(".linkc-new-")
+            let isBesideTemp = name.contains(".linkc-new-")
+            guard isRootTemp || isBesideTemp else { continue }
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(rootPath + "/") else { continue }
+            try? fm.removeItem(at: url)
+        }
     }
 
     /// When a shipped path becomes a folder (`foo` → `foo/bar.txt`), remove the old shipped

@@ -301,7 +301,119 @@ final class BundledModsTests: XCTestCase {
         )
     }
 
-    func testMidwayInstallFailureLeavesOldVersionIntact() throws {
+    func testLeftoverStageTempsAreSweptAtStart() throws {
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "same"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let modRoot = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let rootTemp = modRoot.appendingPathComponent(".linkc-new-\(UUID().uuidString)")
+        try Data("orphan".utf8).write(to: rootTemp)
+        let besideTemp = URL(
+            fileURLWithPath: modRoot.appendingPathComponent("README.md").path
+                + ".linkc-new-\(UUID().uuidString)"
+        )
+        try Data("orphan-beside".utf8).write(to: besideTemp)
+
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: rootTemp.path),
+            "crash leftovers named .linkc-new-* under the mod root must be swept"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: besideTemp.path),
+            "crash leftovers named *.linkc-new-* beside a shipped file must be swept"
+        )
+    }
+
+    func testFailedUpdateDoesNotClearBlockingFileDuringStaging() throws {
+        try XCTSkipIf(getuid() == 0, "root ignores POSIX write permissions, so this cannot be exercised as root")
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: [
+                "foo": "was-a-file",
+                "skills/keep.md": "old-skills",
+            ]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let installed = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+
+        try FileManager.default.removeItem(at: bundleMods.appendingPathComponent("linkc-agents"))
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: [
+                "foo/bar.txt": "now-nested",
+                "skills/keep.md": "new-skills",
+            ]
+        )
+        // Staging sorts paths: foo/bar.txt copies first, then skills/keep.md. Make the later
+        // source unreadable so staging fails before commit clears the blocking file.
+        let sourceSkills = bundleMods.appendingPathComponent("linkc-agents/skills/keep.md")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: sourceSkills.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: sourceSkills.path)
+        }
+
+        XCTAssertThrowsError(
+            try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+        )
+
+        let foo = installed.appendingPathComponent("foo")
+        var isDir: ObjCBool = false
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: foo.path, isDirectory: &isDir) && !isDir.boolValue,
+            "a failed staging pass must not clear a shipped file that blocks a new folder"
+        )
+        XCTAssertEqual(try String(contentsOf: foo, encoding: .utf8), "was-a-file")
+        XCTAssertEqual(
+            try String(contentsOf: installed.appendingPathComponent("skills/keep.md"), encoding: .utf8),
+            "old-skills"
+        )
+    }
+
+    func testMidwayStagingFailureLeavesOldVersionIntact() throws {
+        try XCTSkipIf(getuid() == 0, "root ignores POSIX write permissions, so this cannot be exercised as root")
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: [
+                "hooks/keep.tsx": "old-hooks",
+                "skills/keep.md": "old-skills",
+            ]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let installed = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: [
+                "hooks/keep.tsx": "new-hooks",
+                "skills/keep.md": "new-skills",
+            ]
+        )
+        // Fail while staging the later sorted path so commit never runs.
+        let sourceSkills = bundleMods.appendingPathComponent("linkc-agents/skills/keep.md")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: sourceSkills.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: sourceSkills.path)
+        }
+        XCTAssertThrowsError(
+            try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+        )
+
+        XCTAssertEqual(
+            try String(contentsOf: installed.appendingPathComponent("hooks/keep.tsx"), encoding: .utf8),
+            "old-hooks",
+            "a failed staging pass must not swap any installed file"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: installed.appendingPathComponent("skills/keep.md"), encoding: .utf8),
+            "old-skills"
+        )
+    }
+
+    func testCommitPhaseFailureLeavesAlreadySwappedFileWhole() throws {
         try XCTSkipIf(getuid() == 0, "root ignores POSIX write permissions, so this cannot be exercised as root")
         try writeBundleMod(
             name: "linkc-agents",
@@ -330,10 +442,10 @@ final class BundledModsTests: XCTestCase {
             try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
         )
 
+        // The set is not a transaction: hooks may already be the new whole file.
         XCTAssertEqual(
             try String(contentsOf: installed.appendingPathComponent("hooks/keep.tsx"), encoding: .utf8),
-            "old-hooks",
-            "a failed update must not leave a mixed version"
+            "new-hooks"
         )
         XCTAssertEqual(
             try String(contentsOf: installed.appendingPathComponent("skills/keep.md"), encoding: .utf8),
