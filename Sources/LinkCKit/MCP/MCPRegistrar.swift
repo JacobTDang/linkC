@@ -123,7 +123,7 @@ public struct MCPRegistrar: Sendable {
     /// The text of the UTF-8 file at `configFile`; empty when there is no such file. A file that
     /// cannot be read, or is not UTF-8, throws naming it, so no caller replaces a file it could
     /// not read.
-    private static func readText(at configFile: URL) throws -> String {
+    static func readText(at configFile: URL) throws -> String {
         guard FileManager.default.fileExists(atPath: configFile.path) else { return "" }
         let data: Data
         do {
