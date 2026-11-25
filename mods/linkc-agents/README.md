@@ -34,13 +34,14 @@ The mod draws nothing of its own until filetree's pane is open: open it with `/f
 
 ## Install
 
-Load the folder for every session through `env` in `~/.claude/settings.json`. Separate several
+linkC installs this mod to `~/Library/Application Support/linkC/mods/linkc-agents` on launch.
+Load that folder for every session through `env` in `~/.claude/settings.json`. Separate several
 folders with `:`.
 
 ```json
 {
   "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "/path/to/linkC/mods/linkc-agents"
+    "CLAUDE_CODE_PLUGIN_DIRS": "~/Library/Application Support/linkC/mods/linkc-agents"
   }
 }
 ```
