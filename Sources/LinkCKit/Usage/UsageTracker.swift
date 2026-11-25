@@ -29,6 +29,14 @@ public final class UsageTracker {
     private var agentAssemblers: [String: AgentAssembler] = [:]
     private var activities: [String: CurrentActivity] = [:]
     private var titles: [String: String] = [:]
+    /// Each session's running subagents' own transcripts, by the spawning tool_use id.
+    private var subagentFiles: [String: [String: String]] = [:]
+    /// The step each running subagent's own transcript is on, by the spawning tool_use id.
+    private var subagentActivities: [String: [String: CurrentActivity]] = [:]
+    /// One reader per session, so unbinding a session drops its subagents' offsets too.
+    private var subagentReaders: [String: TranscriptTailReader] = [:]
+    /// Meta files already said to be unreadable, so each is said once.
+    private var unreadableMeta: Set<String> = []
     private var scanRecords: [MessageUsage] = []
 
     /// First-scan cost bound: only the trailing 4MB of a historical transcript is read, and
@@ -73,8 +81,68 @@ public final class UsageTracker {
         }
         if accumulators[sessionId] != acc { accumulators[sessionId] = acc }
         if agentAssemblers[sessionId] != agents { agentAssemblers[sessionId] = agents }
+        refreshSubagents(sessionId, transcriptPath: path, running: agents.runs.filter(\.isRunning).map(\.id))
         if activities[sessionId] != activity { activities[sessionId] = activity }
         if titles[sessionId] != title { titles[sessionId] = title }
+    }
+
+    /// Follows each running subagent's own transcript, `<session>/subagents/agent-<id>.jsonl`, found
+    /// by the `agent-<id>.meta.json` beside it that names the spawning tool_use.
+    private func refreshSubagents(_ sessionId: String, transcriptPath: String, running: [String]) {
+        var files = (subagentFiles[sessionId] ?? [:]).filter { running.contains($0.key) }
+        var steps = (subagentActivities[sessionId] ?? [:]).filter { running.contains($0.key) }
+        let folder = ((transcriptPath as NSString).deletingPathExtension as NSString).appendingPathComponent("subagents")
+        if running.contains(where: { files[$0] == nil }) {
+            for (toolUseId, file) in subagentTranscripts(in: folder) where running.contains(toolUseId) {
+                files[toolUseId] = file
+            }
+        }
+        let reader = subagentReaders[sessionId] ?? TranscriptTailReader()
+        subagentReaders[sessionId] = reader
+        for (toolUseId, file) in files {
+            var step = steps[toolUseId]
+            for line in reader.readNewLines(at: file) {
+                if let decoded = TranscriptLine.decode(line) {
+                    step = ActivityEvents.apply(decoded, to: step, includingSidechain: true)
+                }
+            }
+            steps[toolUseId] = step
+        }
+        if subagentFiles[sessionId] != files { subagentFiles[sessionId] = files }
+        if subagentActivities[sessionId] != steps { subagentActivities[sessionId] = steps }
+    }
+
+    private struct SubagentMeta: Decodable {
+        let toolUseId: String?
+    }
+
+    /// Each subagent transcript in `folder`, by the tool_use that spawned it. A meta file that cannot
+    /// be read is said once and left out.
+    private func subagentTranscripts(in folder: String) -> [String: String] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder) else { return [:] }
+        var found: [String: String] = [:]
+        for name in names where name.hasSuffix(".meta.json") {
+            let meta = (folder as NSString).appendingPathComponent(name)
+            do {
+                guard let toolUseId = try JSONDecoder().decode(SubagentMeta.self, from: Data(contentsOf: URL(fileURLWithPath: meta))).toolUseId
+                else { continue }
+                found[toolUseId] = (folder as NSString).appendingPathComponent(String(name.dropLast(".meta.json".count)) + ".jsonl")
+            } catch {
+                if unreadableMeta.insert(meta).inserted {
+                    NSLog("[linkC] a subagent's meta file %@ could not be read — %@", meta, String(describing: error))
+                }
+            }
+        }
+        return found
+    }
+
+    /// The session's running subagents, oldest first, each by the name it was spawned with and the
+    /// step its own transcript is on (nil before it has taken one).
+    public func sessionSubagentSteps(_ sessionId: String) -> [KnownProject.OpenSession.Subagent] {
+        let steps = subagentActivities[sessionId] ?? [:]
+        return sessionAgents(sessionId).filter(\.isRunning).map { run in
+            KnownProject.OpenSession.Subagent(name: run.description, step: steps[run.id]?.label)
+        }
     }
 
     /// The session's subagent runs, oldest first — spawns and completions from the same
@@ -114,6 +182,9 @@ public final class UsageTracker {
         agentAssemblers[sessionId] = nil
         activities[sessionId] = nil
         titles[sessionId] = nil
+        subagentFiles[sessionId] = nil
+        subagentActivities[sessionId] = nil
+        subagentReaders[sessionId] = nil
     }
 
     public func sessionUsage(_ sessionId: String) -> SessionUsage? {

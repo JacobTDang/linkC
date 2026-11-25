@@ -11,7 +11,10 @@ extension AppCoordinator {
     func liveDetail(for session: Session) -> SessionLiveDetail {
         switch session.agentKind {
         case .claude:
-            return SessionLiveDetail(contextPercent: sessionStatuses.status(for: session.id)?.contextPercent)
+            // The step and subagents from its transcript, as the hooks keep it read.
+            return SessionLiveDetail(contextPercent: sessionStatuses.status(for: session.id)?.contextPercent,
+                                     step: usageTracker?.sessionActivity(session.id),
+                                     subagents: usageTracker?.sessionSubagentSteps(session.id) ?? [])
         default:
             return liveDetails.detail(for: session.id) ?? SessionLiveDetail()
         }

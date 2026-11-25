@@ -4906,6 +4906,38 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(try file.readLimits()["codex"]?.first?.percent, 51)
     }
 
+    /// A Claude session's transcript names its step and its running subagents' steps; the sweep
+    /// publishes them.
+    @MainActor
+    func testSweepPublishesTheStepsAClaudeTranscriptRecords() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "busy", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .working)
+        let transcript = tempDir.appendingPathComponent("made-up.jsonl")
+        let lines = """
+        {"type":"assistant","isSidechain":false,"timestamp":"2026-08-18T04:00:00Z","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"description":"Survey","subagent_type":"Explore"}}]}}
+        {"type":"assistant","isSidechain":false,"timestamp":"2026-08-18T04:00:01Z","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"swift test"}}]}}
+        """
+        try (lines + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+        let subagents = tempDir.appendingPathComponent("made-up/subagents")
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        try #"{"toolUseId":"toolu_A"}"#.write(to: subagents.appendingPathComponent("agent-a.meta.json"), atomically: true, encoding: .utf8)
+        try (#"{"type":"assistant","isSidechain":true,"timestamp":"2026-08-18T04:00:02Z","message":{"content":[{"type":"tool_use","id":"s1","name":"Read","input":{"file_path":"/p/Card.swift"}}]}}"# + "\n")
+            .write(to: subagents.appendingPathComponent("agent-a.jsonl"), atomically: true, encoding: .utf8)
+        let tracker = UsageTracker(projectsDir: tempDir)
+        tracker.bind(sessionId: "L1", transcriptPath: transcript.path)
+        tracker.refreshSession("L1")
+        coordinator.usageTracker = tracker
+
+        await coordinator.runSweepTickForTests()
+
+        let open = try XCTUnwrap(try file.read().first?.sessions.first)
+        XCTAssertEqual(open.step, "$ swift test")
+        XCTAssertEqual(open.subagentSteps, [.init(name: "Survey", step: "⊙ Card.swift")])
+    }
+
     /// What an agent's own files say about its session, read off the main actor, reaches its row.
     @MainActor
     func testSweepPublishesWhatTheAgentsReaderReads() async throws {
