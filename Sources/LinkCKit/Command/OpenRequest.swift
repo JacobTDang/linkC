@@ -23,16 +23,25 @@ public struct OpenRequest: Codable, Equatable, Sendable {
     public let tier: ModelTier?
     /// Set by `--task`: the session carries `prompt` as a task pinned to it.
     public let task: TaskOrigin?
+    public let model: String?
+    /// The session id being handed off from, if this request is a handoff.
+    public let handoffFrom: String?
+    /// Explicit goal to continue toward, if specified.
+    public let goal: String?
     public let createdAt: Date
 
     public init(id: String = UUID().uuidString, agent: AgentKind, folder: String, prompt: String?, tier: ModelTier?,
-                task: TaskOrigin?, createdAt: Date = Date()) {
+                task: TaskOrigin?, model: String? = nil, handoffFrom: String? = nil, goal: String? = nil,
+                createdAt: Date = Date()) {
         self.id = id
         self.agent = agent
         self.folder = folder
         self.prompt = prompt
         self.tier = tier
         self.task = task
+        self.model = model
+        self.handoffFrom = handoffFrom
+        self.goal = goal
         self.createdAt = createdAt
     }
 }
@@ -74,6 +83,14 @@ public struct OpenRequestStore: Sendable {
             .appendingPathComponent("linkC", isDirectory: true)
             .appendingPathComponent("open-requests", isDirectory: true)
         return OpenRequestStore(directory: dir)
+    }
+
+    /// The folder `linkc_handoff` leaves its requests in, beside the `linkc` command's. A linkC that
+    /// predates handoffs never reads it, so it can't answer a handoff by opening a plain session: the
+    /// request goes unanswered and the agent is told linkC may need updating.
+    public static var handoffApplicationSupport: OpenRequestStore {
+        OpenRequestStore(directory: applicationSupport.directory.deletingLastPathComponent()
+            .appendingPathComponent("handoff-requests", isDirectory: true))
     }
 
     private static let resultSuffix = ".result.json"
@@ -190,6 +207,65 @@ public struct OpenRequestStore: Sendable {
             try FileManager.default.removeItem(at: resultURL(id))
         } catch CocoaError.fileNoSuchFile {
             return
+        }
+    }
+
+    /// What became of a request its caller waited on.
+    public enum Wait {
+        /// linkC answered. `leftover` is why its answer file could not then be removed.
+        case answered(OpenResult, leftover: Error?)
+        /// An answer was there but could not be read. `withdrawal` is why the request could not be
+        /// withdrawn, when the wait had ended and tried to.
+        case unreadable(Error, withdrawal: Error?)
+        /// No answer in time. The request was withdrawn, unless `withdrawal` says why not.
+        case unanswered(withdrawal: Error?)
+    }
+
+    /// Waits up to `timeout` for linkC's answer to `id`, looking every `pollInterval`. Giving up, it
+    /// withdraws the request and looks once more: linkC withdraws a request before acting on it, so its
+    /// answer can land as the wait ends. A collected answer's file is removed.
+    public func awaitAnswer(to id: String, timeout: TimeInterval, pollInterval: TimeInterval,
+                            now: () -> Date, sleep: (TimeInterval) -> Void) -> Wait {
+        func collect(_ answer: OpenResult) -> Wait {
+            do {
+                try removeResult(for: id)
+            } catch {
+                return .answered(answer, leftover: error)
+            }
+            return .answered(answer, leftover: nil)
+        }
+        let deadline = now().addingTimeInterval(timeout)
+        // No interval leaves no time to wait: one look, then give up.
+        let pollLimit = pollInterval > 0 ? Int(timeout / pollInterval) + 1 : 0
+        var polls = 0
+        while true {
+            let answer: OpenResult?
+            do {
+                answer = try result(for: id)
+            } catch {
+                return .unreadable(error, withdrawal: nil)
+            }
+            if let answer {
+                return collect(answer)
+            }
+            if now() >= deadline || polls >= pollLimit {
+                var withdrawal: Error?
+                do {
+                    try withdraw(id)
+                } catch {
+                    withdrawal = error
+                }
+                do {
+                    if let answer = try result(for: id) {
+                        return collect(answer)
+                    }
+                } catch {
+                    return .unreadable(error, withdrawal: withdrawal)
+                }
+                return .unanswered(withdrawal: withdrawal)
+            }
+            sleep(pollInterval)
+            polls += 1
         }
     }
 

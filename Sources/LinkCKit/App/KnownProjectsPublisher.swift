@@ -15,7 +15,7 @@ public enum KnownProjectsPublisher {
     public static func projects(
         sidebar: [String], mcpFolders: Set<String>, sessions: [Session], action: (Session) -> String? = { _ in nil },
         subagents: (Session) -> Int = { _ in 0 }, liveModel: (Session) -> String? = { _ in nil },
-        title: (Session) -> String? = { _ in nil }
+        title: (Session) -> String? = { _ in nil }, cache: (Session) -> CacheExpiry? = { _ in nil }
     ) -> [KnownProject] {
         let (paths, liveByPath) = resolve(sidebar: sidebar, mcpFolders: mcpFolders, sessions: sessions)
         return paths.sorted().map { path in
@@ -25,6 +25,7 @@ public enum KnownProjectsPublisher {
                     let shown = ShownActivity.applies(to: session.state)
                         ? ShownActivity(activity: action(session), state: session.state) : nil
                     let running = subagents(session)
+                    let cold = cache(session)
                     return KnownProject.OpenSession(
                         id: session.id,
                         agent: session.agentKind.rawValue,
@@ -35,7 +36,9 @@ public enum KnownProjectsPublisher {
                         model: liveModel(session) ?? session.model,
                         worker: session.isWorker,
                         action: shown?.text,
-                        subagents: running > 0 ? running : nil
+                        subagents: running > 0 ? running : nil,
+                        cacheExpiresAt: cold?.at.formatted(.iso8601),
+                        cacheEstimate: cold?.isEstimate == true ? true : nil
                     )
                 }
             return KnownProject(path: path, sessions: open)

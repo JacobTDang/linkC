@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage } from 'claude-code'
 
-import type { AgentRow, Agents, Meter } from '../types'
+import type { AgentRow, Agents, Meter, SelfActivity } from '../types'
 import type { ShimmerProps } from './shimmer'
 
 const FILETREE = 'filetree'
@@ -16,25 +16,39 @@ const GREEN = '#7fd88f'
 const ORANGE = '#f5a742'
 const RED = '#fd7e87'
 
-const AGENT_COLOR: Record<string, string> = {
-  claude: PEACH,
-  codex: '#5c9cf5',
-  agy: '#68d0dd',
-  cursor: '#9d83d4',
-  grok: TEXT,
-  opencode: GREEN,
-  kilo: '#e5c07b',
-  crush: RED,
-  freebuff: MUTED,
+/**
+ * filetree's activity tones: `bright` runs from the tone to near white (the shimmer band), `dim` is
+ * the tone at rest.
+ */
+type Tone = { bright: string[]; dim: string[]; solid: string }
+const TONES = {
+  orange: { bright: ['#f97316', '#fb923c', '#fdba74', '#ffedd5'], dim: ['#8e491d', '#a3562a', '#bd7444', '#d29267'], solid: '#f97316' },
+  green: { bright: ['#22c55e', '#4ade80', '#86efac', '#dcfce7'], dim: ['#2e6644', '#1b6838', '#2f7a47', '#4f9a66'], solid: '#4ade80' },
+  teal: { bright: ['#14b8a6', '#2dd4bf', '#5eead4', '#ccfbf1'], dim: ['#1b665f', '#16786f', '#2a9488', '#4fb3a8'], solid: '#2dd4bf' },
+  blue: { bright: ['#3b82f6', '#60a5fa', '#93c5fd', '#dbeafe'], dim: ['#40589c', '#1d4ed8', '#3b6fd1', '#6b93dc'], solid: '#60a5fa' },
+  purple: { bright: ['#a855f7', '#c084fc', '#d8b4fe', '#f3e8ff'], dim: ['#76459d', '#7d3cb2', '#8b47c4', '#a874d6'], solid: '#c084fc' },
+  cyan: { bright: ['#06b6d4', '#22d3ee', '#67e8f9', '#cffafe'], dim: ['#1c6379', '#0e7490', '#2b8ea3', '#5aa9b8'], solid: '#22d3ee' },
+  red: { bright: ['#ef4444', '#f87171', '#fca5a5', '#fee2e2'], dim: ['#954343', '#a43434', '#b54040', '#c96a6a'], solid: '#f87171' },
+} satisfies Record<string, Tone>
+const GREY: Tone = { bright: [MUTED, '#a6a6a6', '#cccccc', '#f2f2f2'], dim: [MUTED, MUTED, MUTED, '#9a9a9a'], solid: '#a6a6a6' }
+
+/** Each agent's tone: its bar, its title, and its working line's shimmer. */
+const AGENT_TONE: Record<string, Tone> = {
+  claude: TONES.orange,
+  codex: TONES.blue,
+  agy: TONES.cyan,
+  cursor: TONES.purple,
+  grok: GREY,
+  opencode: TONES.green,
+  kilo: TONES.teal,
+  crush: TONES.red,
+  freebuff: GREY,
 }
 
 type StateLook = { glyph: string; label: string; color: string; rank: number; needsYou?: true }
 
 /** The rank of every state at work: working, busy, or running subagents. Its line shimmers. */
 const WORKING_RANK = 3
-
-/** The working line's own grey up to the shimmer band's brightest. */
-const SHIMMER = [MUTED, '#a6a6a6', '#cccccc', '#f2f2f2']
 
 const IDLE: StateLook = { glyph: '○', label: 'idle', color: MUTED, rank: 6 }
 
@@ -52,11 +66,43 @@ const STATES: Record<string, StateLook> = {
   idle: IDLE,
 }
 
-const agents = atom({ plugin: 'linkc-agents', key: 'agents' } as const, { rows: [], error: null, me: null, minute: 0 }, {
-  shape: 'agents-2',
+const agents = atom({ plugin: 'linkc-agents', key: 'agents' } as const, { rows: [], error: null, me: null, minute: 0, coldCaches: 0 }, {
+  shape: 'agents-3',
 })
 
 const meters = atom({ plugin: 'linkc-agents', key: 'meters' } as const, [], { shape: 'meters-1' })
+const self = atom({ plugin: 'linkc-agents', key: 'self' } as const, { isTurning: false, main: null, subagents: [] } as SelfActivity, {
+  shape: 'self-2',
+})
+
+const basename = (path: unknown) => (typeof path === 'string' ? path.split('/').pop() || path : '')
+
+/** A tool call as a short phrase, the way a footer reads a step: what it does, not its arguments. */
+function toolLabel(e: { tool: string } & Record<string, unknown>): string {
+  // One line: a card's line has room for one, and a script's first line names it.
+  const text = (key: string) => (typeof e[key] === 'string' ? (e[key] as string).split('\n')[0]!.trim() : '')
+  switch (e.tool) {
+    case 'Bash': return text('description') || `$ ${text('command')}`
+    case 'Read': return `Reading ${basename(e.file_path)}`
+    case 'Edit': case 'MultiEdit': return `Editing ${basename(e.file_path)}`
+    case 'Write': return `Writing ${basename(e.file_path)}`
+    case 'Grep': return `Searching ${text('pattern')}`
+    case 'Glob': return `Finding ${text('pattern')}`
+    case 'WebSearch': return `Searching the web for ${text('query')}`
+    case 'WebFetch': return 'Reading a web page'
+    default: return e.tool.startsWith('mcp__') ? `Using ${e.tool.split('__').pop()}` : e.tool
+  }
+}
+
+/** Your own card's line: this session's last step, then the first running subagent and its step. */
+function selfDetail(s: SelfActivity): string {
+  const [first, ...rest] = s.subagents
+  const sub = first ? `${first.name}${first.activity ? `: ${first.activity}` : ''}${rest.length ? ` +${rest.length}` : ''}` : ''
+  return [s.main, sub].filter(Boolean).join(' · ')
+}
+/** The statuses of an agent whose loop still runs or will. */
+const LIVE: ReadonlySet<string> = new Set(['pending', 'running', 'waiting'])
+
 const isCompacting = atom({ plugin: 'linkc-agents', key: 'isCompacting' } as const, false)
 
 const BAR_CELLS = 8
@@ -163,6 +209,46 @@ function subagentWords(count: number): string {
   return `${count} subagent${count === 1 ? '' : 's'}`
 }
 
+/** A turn running now, as linkC's state or, from an older linkC, its coarse activity says. */
+function isAtWork(row: AgentRow): boolean {
+  const known = row.state !== undefined && row.state in STATES
+  return row.state === 'working' || (!known && row.activity === 'busy')
+}
+
+/**
+ * A card's second line. A session at work shows what it does — its action, or its running
+ * subagents — never the word for its state: the dot and the shimmer already say it works.
+ */
+function detailOf(row: AgentRow, state: StateLook): string {
+  const subagents = row.subagents ? subagentWords(row.subagents) : ''
+  const words = row.action
+    ? [row.action, subagents].filter(Boolean).join(' · ')
+    : isAtWork(row) ? (subagents ? `running ${subagents}` : '') : state.label
+  const where = placeOf(row.where)
+  // A session at work that linkC has said nothing about yet still shimmers on something.
+  return [words, where].filter(Boolean).join(' ') || (isAtWork(row) ? '…' : '')
+}
+
+/**
+ * When the card's prompt cache goes cold: `~` marks a guess, orange the last five minutes. Whole
+ * minutes left, rounded down, so a cache never reads warm after it went cold.
+ */
+function cacheLabel(row: AgentRow, now: number): { text: string; color: string } | null {
+  if (!row.cacheExpiresAt) return null
+  const left = Date.parse(row.cacheExpiresAt) - now
+  // A time that does not parse is said above the cards (`load`); its card shows no clock.
+  if (Number.isNaN(left)) return null
+  if (left <= 0) return { text: ' ◷ cold', color: RED }
+  const minutes = Math.floor(left / 60_000)
+  const span = minutes >= 60 ? `${Math.floor(minutes / 60)}h` : minutes >= 1 ? `${minutes}m` : '<1m'
+  return { text: ` ◷ ${row.cacheEstimate ? '~' : ''}${span}`, color: left <= 5 * 60_000 ? ORANGE : MUTED }
+}
+
+/** How many of the rows' caches have gone cold by `now`. */
+function coldCount(rows: AgentRow[], now: number): number {
+  return rows.filter(row => row.cacheExpiresAt !== undefined && Date.parse(row.cacheExpiresAt) <= now).length
+}
+
 /**
  * How a card's state reads. A session whose own turn ended while its subagents still run is at
  * work, not idle or waiting; a permission wait or an error still comes first.
@@ -172,23 +258,25 @@ function stateOf(row: AgentRow): StateLook {
   const known = row.state !== undefined && row.state in STATES
   const look = (known ? STATES[row.state!] : STATES[row.activity]) ?? IDLE
   const running = row.subagents ?? 0
-  const isWorking = row.state === 'working' || (!known && row.activity === 'busy')
-  if (running === 0 || isWorking || row.state === 'waitingPermission' || row.state === 'error') return look
+  if (running === 0 || isAtWork(row) || row.state === 'waitingPermission' || row.state === 'error') return look
   return { glyph: '●', label: `running ${subagentWords(running)}`, color: GREEN, rank: 3 }
 }
 
 async function load($: EngineInterface, file: string, root: string): Promise<Pick<Agents, 'rows' | 'error'>> {
+  let stored: Stored
   try {
-    const stored = JSON.parse(await $.fs.read(file)) as Stored
-    const rows: AgentRow[] = stored.projects.flatMap(p => {
-      const where = within(root, p.path)
-      return where === null ? [] : p.sessions.map(s => ({ ...s, where }))
-    })
-    rows.sort((a, b) => stateOf(a).rank - stateOf(b).rank || (a.title ?? a.agent).localeCompare(b.title ?? b.agent))
-    return { rows, error: null }
+    stored = JSON.parse(await $.fs.read(file)) as Stored
   } catch (err) {
     return { rows: [], error: `cannot read ${file}: ${String(err)}` }
   }
+  const rows: AgentRow[] = stored.projects.flatMap(p => {
+    const where = within(root, p.path)
+    return where === null ? [] : p.sessions.map(s => ({ ...s, where }))
+  })
+  // Said above the cards, which still show.
+  const unreadable = rows.find(row => row.cacheExpiresAt !== undefined && Number.isNaN(Date.parse(row.cacheExpiresAt)))
+  const error = unreadable ? `session ${unreadable.id}'s cacheExpiresAt "${unreadable.cacheExpiresAt}" in ${file} is not a time` : null
+  return { rows, error }
 }
 
 function age(since: string | undefined, now: number): string {
@@ -218,17 +306,21 @@ export const register: Register = on => {
     const refresh = async () => {
       if (isRefreshing) return
       isRefreshing = true
-      // The minute is in the value so the ages redraw once a minute even when nothing else changed.
-      const minute = Math.floor(Date.now() / 60_000)
+      // The minute and the count of cold caches are in the value, so the ages redraw once a minute
+      // and a cache that goes cold redraws at once, even when nothing else changed.
+      let minute = 0
       try {
+        const now = await $.clock.now()
+        minute = Math.floor(now / 60_000)
         const here = await $.session.cwd()
         if (here !== cwd) {
           root = await repoRoot($, here)
           cwd = here
         }
-        await show({ ...(await load($, file, root)), me, minute })
+        const found = await load($, file, root)
+        await show({ ...found, me, minute, coldCaches: coldCount(found.rows, now) })
       } catch (error) {
-        await show({ rows: [], error: error instanceof Error ? error.message : String(error), me, minute })
+        await show({ rows: [], error: error instanceof Error ? error.message : String(error), me, minute, coldCaches: 0 })
       } finally {
         isRefreshing = false
       }
@@ -250,9 +342,51 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) await refreshMeters($)
+  // This session's own steps count while one of its turns runs; a plugin's tool call between turns is not one.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) await update($, self, s => ({ ...s, isTurning: true, main: null }))
     return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      // Cleared first: the turn is over whether or not its usage can be read.
+      await update($, self, s => ({ ...s, isTurning: false, main: null }))
+      // A subagent no longer live, such as a workflow's remote agent, which no event ends here and
+      // no list names, stops counting once the turn that spawned it is over.
+      const live = new Set((await $.agent.list()).filter(a => LIVE.has(a.status)).map(a => a.id))
+      await update($, self, s => ({ ...s, subagents: s.subagents.filter(a => live.has(a.id)) }))
+      await refreshMeters($)
+    } else {
+      const done = e.agentId
+      await update($, self, s => ({ ...s, subagents: s.subagents.filter(a => a.id !== done) }))
+    }
+    return next(e)
+  })
+
+  // What this session and its subagents do, for your own card: each tool call is its maker's step.
+  on('tool.call', async ($, e, next) => {
+    if (e.tool !== 'Agent') {
+      const label = toolLabel(e as { tool: string } & Record<string, unknown>)
+      const maker = e.agentId
+      await update($, self, s =>
+        maker === undefined
+          ? s.isTurning ? { ...s, main: label } : s
+          : { ...s, subagents: s.subagents.map(a => (a.id === maker ? { ...a, activity: label } : a)) },
+      )
+    }
+    return next(e)
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    // A spawn answered without an id started nothing: another hook took the call.
+    const id = started.deny === undefined ? started.agentId : undefined
+    if (id !== undefined) {
+      const name = e.description || e.subagentType
+      await update($, self, s => ({ ...s, subagents: [...s.subagents.filter(a => a.id !== id), { id, name, activity: null }] }))
+    }
+    return started
   })
 
   // The band above the prompt: every meter in one box, label, bar and padded percent, so the
@@ -302,11 +436,27 @@ export const register: Register = on => {
     const top = Math.max(5, Math.floor(body / 2))
     const tree = await next({ ...e, props: { ...e.props, scroll: e.props.scroll && { ...e.props.scroll, bodyRows: top } } })
     const { rows, error, me } = await read($, agents)
-    const now = Date.now()
+    // This session knows its own steps first-hand, ahead of what linkC publishes about it.
+    const mine = selfDetail(await read($, self))
+    const now = await $.clock.now()
+    // Each card as it shows, sorted by the state it shows: what needs you first.
+    const cards = rows
+      .map(row => {
+        const isMe = row.id === me
+        const published = stateOf(row)
+        const ownWork = isMe && mine !== '' && !published.needsYou
+        const state = ownWork ? (STATES.working ?? published) : published
+        const detail = ownWork ? [mine, placeOf(row.where)].filter(Boolean).join(' ') : detailOf(row, state)
+        return { row, isMe, state, detail }
+      })
+      .sort((a, b) =>
+        a.state.rank - b.state.rank
+        || (a.row.title ?? a.row.agent).localeCompare(b.row.title ?? b.row.agent)
+        || a.row.id.localeCompare(b.row.id))
     // A rule, the header and a blank line, then three rows a card: its two lines and a gap.
     const fits = Math.max(1, Math.floor((body - top - 3 + 1) / 3))
-    const shown = rows.length > fits ? rows.slice(0, fits - 1) : rows
-    const needsYou = rows.filter(row => stateOf(row).needsYou).length
+    const shown = cards.length > fits ? cards.slice(0, fits - 1) : cards
+    const needsYou = cards.filter(card => card.state.needsYou).length
 
     return (
       <Box flexDirection="column">
@@ -324,23 +474,23 @@ export const register: Register = on => {
         <Text> </Text>
         {error && <Text color={RED} wrap="truncate-end">{` ${error}`}</Text>}
         {!error && rows.length === 0 && <Text color={MUTED}>{' No sessions in this repo.'}</Text>}
-        {shown.map(row => {
-          const bar = AGENT_COLOR[row.agent] ?? MUTED
-          const state = stateOf(row)
-          const isMe = row.id === me
-          const place = placeOf(row.where)
-          const where = place ? ` ${place}` : ''
-          const detail = `${row.action ?? state.label}${row.action && row.subagents ? ` · ${subagentWords(row.subagents)}` : ''}${where}`
+        {shown.map(({ row, isMe, state, detail }) => {
+          const tone = AGENT_TONE[row.agent] ?? GREY
+          const bar = tone.solid
+          // A card at work or waiting on you is in its full tone; one at rest is dimmed.
+          const titleColor = state.rank <= WORKING_RANK ? tone.solid : (tone.dim[3] ?? MUTED)
+          const cache = cacheLabel(row, now)
           return (
             <Box flexDirection="column">
               <Box flexDirection="row">
                 <Box flexGrow={1} flexShrink={1}>
                   <Button key={`open-${row.id}`} plain onPress={() => openSession($, row.id)}>
                     <Text color={bar}>{'┃ '}</Text>
-                    <Text bold color={TEXT} wrap="truncate-end">{row.title ?? row.agent}</Text>
+                    <Text bold color={titleColor} wrap="truncate-end">{row.title ?? row.agent}</Text>
                   </Button>
                 </Box>
                 <Text color={MUTED}>{`${row.model ? ` ${modelLabel(row.model)}` : row.title ? ` ${row.agent}` : ''}${row.worker ? ' · worker' : ''}`}</Text>
+                {cache && <Text color={cache.color}>{cache.text}</Text>}
                 {isMe && <Text bold color={PEACH}>{' · you'}</Text>}
                 <Text> </Text>
               </Box>
@@ -354,7 +504,7 @@ export const register: Register = on => {
                 </Box>
                 <Box flexGrow={1} flexShrink={1}>
                   {state.rank === WORKING_RANK && Client ? (
-                    <Client key={`shimmer-${row.id}`} module="./shimmer.tsx" props={{ text: detail, palette: SHIMMER } satisfies ShimmerProps} />
+                    <Client key={`shimmer-${row.id}`} module="./shimmer.tsx" props={{ text: detail, palette: tone.bright } satisfies ShimmerProps} />
                   ) : (
                     <Text color={state.needsYou ? state.color : MUTED} wrap="truncate-end">{detail}</Text>
                   )}
