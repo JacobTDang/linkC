@@ -201,6 +201,62 @@ final class BundledModsTests: XCTestCase {
         )
     }
 
+    func testShippedFileInTheWayOfAFolderIsRemoved() throws {
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: ["foo": "was-a-file"]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let installed = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: installed.appendingPathComponent("foo").path)
+        )
+
+        try FileManager.default.removeItem(at: bundleMods.appendingPathComponent("linkc-agents"))
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: ["foo/bar.txt": "now-nested"]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        XCTAssertEqual(
+            try String(contentsOf: installed.appendingPathComponent("foo/bar.txt"), encoding: .utf8),
+            "now-nested"
+        )
+        var isDir: ObjCBool = false
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: installed.appendingPathComponent("foo").path,
+                isDirectory: &isDir
+            ) && isDir.boolValue
+        )
+    }
+
+    func testUnshippedFileInTheWayOfAFolderIsLeftAlone() throws {
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: ["README.md": "ok"]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let installed = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let blocker = installed.appendingPathComponent("foo")
+        try Data("user-owned".utf8).write(to: blocker)
+
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: [
+                "README.md": "ok",
+                "foo/bar.txt": "nested",
+            ]
+        )
+        XCTAssertThrowsError(
+            try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+        )
+        XCTAssertEqual(try String(contentsOf: blocker, encoding: .utf8), "user-owned")
+    }
+
     func testChangedFileIsReplaced() throws {
         try writeBundleMod(
             name: "linkc-agents",

@@ -76,6 +76,8 @@ public struct BundledMods: Sendable {
         try fm.createDirectory(at: dest, withIntermediateDirectories: true)
 
         let shipped = try relativeFiles(under: source)
+        let previous = try validatedManifest(loadManifest(at: dest), modRoot: dest)
+        let previousSet = Set(previous)
         // Stage every replacement beside its destination first; only swap after all copies
         // succeed so a midway failure never leaves a mixed installed tree.
         var staged: [(temp: URL, final: URL)] = []
@@ -87,6 +89,9 @@ public struct BundledMods: Sendable {
         for relative in shipped {
             let fromURL = source.appendingPathComponent(relative)
             let to = dest.appendingPathComponent(relative)
+            try removeShippedFileBlockingDirectory(
+                for: to, modRoot: dest, previousShipped: previousSet, modName: name
+            )
             try fm.createDirectory(at: to.deletingLastPathComponent(), withIntermediateDirectories: true)
             if fm.fileExists(atPath: to.path),
                let existing = try? Data(contentsOf: to),
@@ -112,10 +117,13 @@ public struct BundledMods: Sendable {
             }
         }
 
-        let previous = try validatedManifest(loadManifest(at: dest), modRoot: dest)
         let shippedSet = Set(shipped)
         for relative in previous where !shippedSet.contains(relative) {
             guard !relative.hasPrefix(Self.engineTypesPrefix), relative != Self.manifestName else {
+                continue
+            }
+            // A former file may now be a directory prefix of a shipped path — leave it.
+            if shipped.contains(where: { $0.hasPrefix(relative + "/") }) {
                 continue
             }
             let url = dest.appendingPathComponent(relative)
@@ -124,6 +132,41 @@ public struct BundledMods: Sendable {
             }
         }
         try saveManifest(shipped, at: dest)
+    }
+
+    /// When a shipped path becomes a folder (`foo` → `foo/bar.txt`), remove the old shipped
+    /// file so `createDirectory` can proceed. Never delete an unshipped file in the way.
+    private func removeShippedFileBlockingDirectory(
+        for fileURL: URL,
+        modRoot: URL,
+        previousShipped: Set<String>,
+        modName: String
+    ) throws {
+        let fm = FileManager.default
+        let rootPath = modRoot.standardizedFileURL.path
+        let parentPath = fileURL.deletingLastPathComponent().standardizedFileURL.path
+        guard parentPath.hasPrefix(rootPath + "/") || parentPath == rootPath else { return }
+        let relativeParent = parentPath == rootPath
+            ? ""
+            : String(parentPath.dropFirst(rootPath.count + 1))
+        guard !relativeParent.isEmpty else { return }
+
+        var built = ""
+        for component in relativeParent.split(separator: "/") {
+            built = built.isEmpty ? String(component) : built + "/" + component
+            let url = modRoot.appendingPathComponent(built)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else {
+                continue
+            }
+            guard previousShipped.contains(built) else {
+                throw Failure(
+                    modName: modName,
+                    detail: "an unshipped file is in the way at \(built)"
+                )
+            }
+            try fm.removeItem(at: url)
+        }
     }
 
     /// Reject empty, absolute, and `..` entries, and require each resolved path stay under `modRoot`.
