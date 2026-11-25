@@ -37,6 +37,9 @@ public final class SharedBrowser {
         let port: Int
         /// Every page target seen so far, so a new one can be told from an old one.
         var known: Set<String>
+        /// Chrome's only page target at launch, until it is closed or the close is attempted.
+        var initialBlank: String?
+        var initialBlankClosed = false
         /// The sessions each tab may belong to; it is closed when the last of them ends. Chrome's
         /// own first tab has none.
         var owners: [String: Set<String>] = [:]
@@ -280,7 +283,18 @@ public final class SharedBrowser {
             }
             guard case .running(var current)? = instances[project], current.id == running.id else { continue }
             let sessions = attached(to: current.id)
-            current.track(pages, pins: pins(of: sessions), sessions: Set(sessions))
+            let sessionPins = pins(of: sessions)
+            current.track(pages, pins: sessionPins, sessions: Set(sessions))
+            if let blank = current.initialBlank, !current.initialBlankClosed,
+               !sessionPins.values.contains(blank),
+               sessionPins.values.contains(where: { $0 != blank }) {
+                current.initialBlankClosed = true
+                do {
+                    try await devTools.closeTarget(blank, port: current.port)
+                } catch {
+                    reportOnce("tab-close", "linkC could not close a tab of the shared browser for \(project) — \(error.localizedDescription)")
+                }
+            }
             instances[project] = .running(current)
         }
     }
@@ -484,7 +498,9 @@ public final class SharedBrowser {
                 return nil
             }
             do {
-                running.known = Set(try await devTools.pageTargets(port: running.port).map(\.id))
+                let pages = try await devTools.pageTargets(port: running.port)
+                running.known = Set(pages.map(\.id))
+                if pages.count == 1 { running.initialBlank = pages[0].id }
             } catch {
                 reportOnce("tabs", "linkC could not list the shared browser's tabs for \(project) — \(error.localizedDescription)")
             }

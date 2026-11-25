@@ -535,7 +535,7 @@ final class SharedBrowserTests: XCTestCase {
         browser.release(sessionId: "S1")
         await browser.settle()
 
-        XCTAssertEqual(devTools.closed.sorted(), ["T1", "T2"])
+        XCTAssertEqual(devTools.closed.sorted(), ["T1", "T2", "boot"])
         XCTAssertEqual(runner.calls, [["/bin/agent-browser", "--session", s1.sessionName, "close", "--json"]])
         XCTAssertFalse(targetFileExists(s1))
         XCTAssertTrue(targetFileExists(s2))
@@ -557,7 +557,7 @@ final class SharedBrowserTests: XCTestCase {
         browser.release(sessionId: "S1")
         await browser.settle()
 
-        XCTAssertEqual(devTools.closed.sorted(), ["P1", "T1"])
+        XCTAssertEqual(devTools.closed.sorted(), ["P1", "T1", "boot"])
     }
 
     /// A tab a session was pinned to and left between two looks is never seen pinned. It may be any
@@ -578,11 +578,11 @@ final class SharedBrowserTests: XCTestCase {
 
         browser.release(sessionId: "S1")
         await browser.settle()
-        XCTAssertEqual(devTools.closed.sorted(), ["T1", "T3"], "T2 may still be S2's")
+        XCTAssertEqual(devTools.closed.sorted(), ["T1", "T3", "boot"], "T2 may still be S2's")
 
         browser.release(sessionId: "S2")
         await browser.settle()
-        XCTAssertEqual(devTools.closed.sorted(), ["T1", "T2", "T3", "U1"])
+        XCTAssertEqual(devTools.closed.sorted(), ["T1", "T2", "T3", "U1", "boot"])
         XCTAssertEqual(launcher.processes[0].isRunning, true, "S3 still uses it")
     }
 
@@ -605,6 +605,40 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertFalse(devTools.closed.contains("T1"), "S2 is pinned to it now: \(devTools.closed)")
     }
 
+    func testAInitialBlankPageClosesOnceASessionHasItsOwnTab() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["boot"]
+        let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        devTools.pages += ["T1"]
+        try pin(s1, to: "T1")
+
+        await browser.trackTabs()
+        await browser.trackTabs()
+
+        XCTAssertEqual(devTools.closed, ["boot"])
+    }
+
+    func testAnInitialBlankPageStaysOpenUntilASessionHasItsOwnTab() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["boot"]
+        _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+
+        await browser.trackTabs()
+
+        XCTAssertTrue(devTools.closed.isEmpty)
+    }
+
+    func testAnInitialBlankPagePinnedByASessionStaysOpen() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["boot"]
+        let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        try pin(s1, to: "boot")
+
+        await browser.trackTabs()
+
+        XCTAssertTrue(devTools.closed.isEmpty)
+    }
+
     /// A popup belongs to the session whose tab opened it, however many share the browser, and so
     /// does a popup of that popup.
     func testAPopupClosesWithTheSessionWhoseTabOpenedIt() async throws {
@@ -623,7 +657,7 @@ final class SharedBrowserTests: XCTestCase {
         browser.release(sessionId: "S1")
         await browser.settle()
 
-        XCTAssertEqual(devTools.closed.sorted(), ["P1", "P2", "T1"])
+        XCTAssertEqual(devTools.closed.sorted(), ["P1", "P2", "T1", "boot"])
     }
 
     /// Chrome opens on a blank page, not its own new-tab page: with the new-tab page, the first pinned
