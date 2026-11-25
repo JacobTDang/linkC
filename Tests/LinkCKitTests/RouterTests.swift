@@ -138,6 +138,7 @@ final class RouterTests: XCTestCase {
             ("browser extension crash", .ordinary),
             ("Fix the typo in the migration guide", .trivialEdit),
             ("Rename the variable in Security.swift", .trivialEdit),
+            ("Fix the typo in ARCHITECTURE.md", .trivialEdit),
             ("parser for the new config format", .ordinary),
         ]
         for (prompt, kind) in cases {

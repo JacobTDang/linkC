@@ -150,7 +150,7 @@ Settings says so beside those agents. A task may name an effort too; one the age
 take is refused when the task is delegated. When `linkc_delegate_task` omits `to` (or passes
 `auto`), a pure router picks the agent, tier and effort from the prompt's whole words and phrases
 (a short trivial edit → light; web research or browsing → a browse-capable agent, preferring agy,
-light when the prompt is short; ordinary work → standard; architecture, hard debugging, a security
+light when the prompt is short; ordinary work → standard; an architecture change, hard debugging, a security
 review, a database migration → deep), never picks Cursor (it takes no tier), skips limited agents
 and pools, prefers usage headroom, ties to an agent already open in the folder, and says why it
 passed over the others. A verified task also carries a test command: linkC runs it itself, and the

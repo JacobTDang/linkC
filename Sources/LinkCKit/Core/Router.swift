@@ -40,7 +40,7 @@ public enum Router {
     /// |---|---|---|
     /// | Trivial edit (short prompts only) | rename, typo, bump, reformat, format the file/code, fix the formatting | light |
     /// | Web research | web research, search the web, browse, browsing, scrape, scraping, docs lookup, look up the docs | light when short, else standard (browse-capable agent) |
-    /// | Hard work | architecture, hard debugging, security review/audit/vulnerability, database/schema/data migration(s) | deep |
+    /// | Hard work | architecture change/redesign the architecture, hard debugging, security review/audit/vulnerability, database/schema/data migration(s) | deep |
     /// | Everything else | (default) | standard |
     public enum TaskKind: String, Sendable, Equatable {
         case trivialEdit
@@ -62,7 +62,8 @@ public enum Router {
         "scrape", "scraping", "docs lookup", "look up the docs"
     ])
     private static let hardKeywords = phrases([
-        "architecture", "hard debugging",
+        "architecture change", "architecture changes", "design the architecture", "redesign the architecture",
+        "hard debugging",
         "security review", "security audit", "security vulnerability", "security hole",
         "database migration", "database migrations", "schema migration", "schema migrations",
         "data migration", "data migrations"
