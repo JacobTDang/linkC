@@ -46,6 +46,13 @@ final class CodexRolloutReaderTests: XCTestCase {
         XCTAssertEqual(try read(["/dev/null", path]).contextPercent, 25)
     }
 
+    /// The newest token count wins even when the tail holds no turn boundary to stop at, as in a
+    /// long turn that has outgrown it.
+    func testTheNewestTokenCountWinsWithNoTurnBoundaryInTheTail() throws {
+        let path = try rollout([tokens(20_000), tokens(50_000)])
+        XCTAssertEqual(try read([path]).contextPercent, 25)
+    }
+
     /// While a turn runs, its last tool call is the step: a command by its first line.
     func testTheStepIsTheRunningTurnsLastToolCall() throws {
         let path = try rollout([
