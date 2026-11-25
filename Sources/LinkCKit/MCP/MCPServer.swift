@@ -1904,6 +1904,37 @@ public final class MCPServer: Sendable {
         }
     }
 
+    /// Why OpenCode or Kilo would not run the model a handoff to it picks, or nil when its CLI lists
+    /// that model in this folder now: their free models come and go, so the CLI is asked each time, as
+    /// `linkc_delegate_task` asks it. With no model or tier, the agent runs its default tier's model.
+    private func cliListRefusal(for agent: AgentKind, model: String?, tier: ModelTier?) -> String? {
+        let checked: String
+        let named: String
+        if let model {
+            checked = model
+            named = model
+        } else {
+            let settings = modelSettings()
+            let launchTier = tier ?? settings.defaultTier(for: agent)
+            guard let tierModel = settings.model(for: agent, tier: launchTier) else {
+                return "no model configured for \(agent.rawValue) tier \(launchTier.rawValue) — set it in linkC settings."
+            }
+            checked = tierModel
+            named = "\(tierModel) (\(agent.rawValue) tier \(launchTier.rawValue))"
+        }
+        let offered: [String]
+        do {
+            offered = try (agent == .kilo ? kiloModels : openCodeModels)(workspaceRoot)
+        } catch {
+            let reason = agent == .kilo ? KiloLogin.reporting(String(describing: error)) : String(describing: error)
+            return "could not check \(named) against the models \(agent.displayName) lists — \(reason)"
+        }
+        guard offered.contains(where: { $0.caseInsensitiveCompare(checked) == .orderedSame }) else {
+            return "\(named) is not among the models \(agent.displayName) lists — free models come and go; pick another."
+        }
+        return nil
+    }
+
     private func handleHandoff(id: Any?, args: [String: Any]) throws -> Data? {
         guard let sourceSessionId = callerSessionId(), !sourceSessionId.isEmpty else {
             return toolResultResponse(id: id, text: "Error: No active calling session found (LINKC_SESSION is not set).", isError: true)
@@ -1965,6 +1996,11 @@ public final class MCPServer: Sendable {
             goalArg = nil
         }
 
+        if toAgent == .opencode || toAgent == .kilo,
+           let refusal = cliListRefusal(for: toAgent, model: modelArg, tier: tier) {
+            return toolResultResponse(id: id, text: "Error: \(refusal)", isError: true)
+        }
+
         let request = OpenRequest(
             agent: toAgent,
             folder: ProjectPath.canonical(workspaceRoot),
@@ -1991,7 +2027,8 @@ public final class MCPServer: Sendable {
             guard answer.ok else {
                 return toolResultResponse(id: id, text: answer.message + note, isError: true)
             }
-            return toolResultResponse(id: id, text: (answer.sessionId ?? answer.message) + note)
+            let session = answer.sessionId.map { " New session: \($0)." } ?? ""
+            return toolResultResponse(id: id, text: answer.message + session + note)
         case .unreadable(let error, let withdrawal):
             let note = withdrawal.map { " (and the request could not be withdrawn, so linkC may still act on it — \($0))" } ?? ""
             return toolResultResponse(id: id, text: "Error: linkC's answer to the handoff could not be read — \(error)\(note)", isError: true)
