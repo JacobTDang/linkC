@@ -14,4 +14,20 @@ public enum AgentModelCatalog: Sendable {
     public static func launchArguments(model: String, for agent: AgentKind) -> [String] {
         agent == .opencode || agent == .kilo || agent == .crush ? [] : ["--model", model]
     }
+
+    /// CLI flags that set reasoning effort at launch. Claude and agy take `--effort <level>` (agy only
+    /// for a model it lists that level for: `AgyEffort`); Codex takes `-c model_reasoning_effort="<level>"`.
+    /// Crush's effort goes on the pinned models of its per-session config (`CrushSessionConfig`) instead.
+    /// Cursor/Grok bake effort into model ids and cannot be pinned by linkC; OpenCode and Kilo's TUIs
+    /// have no effort flag.
+    public static func effortLaunchArguments(effort: ReasoningEffort, for agent: AgentKind) -> [String] {
+        switch agent {
+        case .claude, .agy:
+            return ["--effort", effort.rawValue]
+        case .codex:
+            return ["-c", "model_reasoning_effort=\"\(effort.rawValue)\""]
+        case .crush, .opencode, .kilo, .cursor, .grok, .freebuff, .shell:
+            return []
+        }
+    }
 }

@@ -3092,6 +3092,51 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(copy.tier, .light, "A rerouted task keeps its tier and resolves it through the new agent's mapping")
     }
 
+    /// A reroute copy keeps the task's effort along with its tier.
+    @MainActor
+    func testARerouteKeepsTheTaskEffort() async throws {
+        let copy = try await rerouteCopy(ofLightTaskAt: .xhigh, models: .seeded)
+        XCTAssertNotEqual(copy.toAgent, .claude)
+        XCTAssertEqual(copy.effort, .xhigh)
+    }
+
+    /// Grok takes no effort from linkC (its effort is in its model ids), so a copy for it carries none
+    /// rather than one it cannot run at.
+    @MainActor
+    func testARerouteToAnAgentThatCannotTakeTheEffortCarriesNone() async throws {
+        let models = AgentModelSettings(
+            models: [AgentKind.claude.rawValue: ["light": "haiku"],
+                     AgentKind.grok.rawValue: ["light": "grok-4.7-low"]],
+            defaultTiers: [:])
+        let copy = try await rerouteCopy(ofLightTaskAt: .xhigh, models: models)
+        XCTAssertEqual(copy.toAgent, .grok)
+        XCTAssertNil(copy.effort)
+    }
+
+    /// A Claude worker holding a light task at `effort` hits its limit; the copy the reroute made.
+    @MainActor
+    private func rerouteCopy(ofLightTaskAt effort: ReasoningEffort, models: AgentModelSettings) async throws -> TaskRecord {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(models: models)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light, effort: effort)
+        coordinator.store.updateState(id: session.id, to: Self.turnOver)
+        let task = try inbox.createTask(from: .cursor, to: .claude, tier: .light, effort: effort,
+                                        prompt: "Build a streaming proxy", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+        try inbox.markTaskStarted(taskId: task.id)
+
+        coordinator.terminals.sendInput(sessionId: session.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id))
+        return try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+    }
+
     /// No peer can serve the task's tier (cursor never can, and every other agent has no
     /// model configured for it): the reroute must not cancel the original task, must not create
     /// an undeliverable hop copy, and must not announce a reroute — none of that actually

@@ -94,13 +94,18 @@ struct SettingsScreen: View {
                         VStack(alignment: .leading, spacing: 4) {
                             SettingRow(
                                 title: agent.displayName,
-                                detail: "Which model each tier launches. Pick one, or Other… to type an id."
+                                detail: "Which model and effort each tier launches. Pick a model, or Other… to type an id."
                             ) {
                                 HStack(spacing: 6) {
                                     ForEach(ModelTier.resolutionOrder, id: \.self) { tier in
-                                        TierModelField(
-                                            preferences: model.preferences, agent: agent, tier: tier,
-                                            lists: lists)
+                                        HStack(spacing: 4) {
+                                            TierModelField(
+                                                preferences: model.preferences, agent: agent, tier: tier,
+                                                lists: lists)
+                                            TierEffortField(
+                                                preferences: model.preferences, agent: agent, tier: tier,
+                                                lists: lists)
+                                        }
                                     }
                                     Picker("", selection: Binding(
                                         get: { model.preferences.agentModels.defaultTier(for: agent) },
@@ -452,6 +457,56 @@ private struct SettingRow<Control: View>: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+}
+
+/// Effort picker beside a tier's model, offering only the levels that model takes, or a short note
+/// when there are none: the agent's CLI has no effort knob linkC can set (Cursor/Grok bake it into
+/// model ids; OpenCode/Kilo's TUI has no flag), or, for agy, the model lists no level.
+private struct TierEffortField: View {
+    let preferences: AppPreferences
+    let agent: AgentKind
+    let tier: ModelTier
+    let lists: [AgentKind: AgentModelList]
+
+    private var tierModel: String? { preferences.agentModels.model(for: agent, tier: tier) }
+    private var listed: [ListedModel]? { ModelListCache.liveModels(for: agent, lists: lists) }
+
+    /// The level the tier runs at: its effort, or for agy the level its model id names when agy does
+    /// not list that effort for it.
+    private var shownLevel: ReasoningEffort {
+        let effort = preferences.agentModels.effort(for: agent, tier: tier) ?? ReasoningEffort.default(for: tier)
+        guard agent == .agy, let tierModel else { return effort }
+        return AgyEffort.runningLevel(id: tierModel, effort: effort, listed: listed) ?? effort
+    }
+
+    var body: some View {
+        switch AgentEffortSupport.forModel(tierModel, agent: agent, listed: listed) {
+        case .unsupported(let reason):
+            Text(AgentEffortSupport.forAgent(agent).isSupported ? "none for this model" : "not supported by \(agent.displayName)")
+                .font(.system(size: 9))
+                .foregroundStyle(Theme.textTertiary)
+                .frame(width: 100, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(reason)
+        case .levels(let levels):
+            Picker(tier.label + " effort", selection: Binding(
+                get: { shownLevel },
+                set: { newValue in
+                    var edited = preferences.agentModels
+                    edited.setEffort(newValue, for: agent, tier: tier)
+                    preferences.agentModels = edited
+                }
+            )) {
+                ForEach(levels, id: \.self) { level in
+                    Text(level.label).tag(level)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.mini)
+            .frame(width: 72, alignment: .leading)
+        }
     }
 }
 
