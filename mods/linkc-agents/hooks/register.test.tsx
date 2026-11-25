@@ -1,5 +1,6 @@
 import type { On, SessionContextBreakdown } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 import { modelLabel } from './register'
 import { shimmerColor } from './shimmer'
@@ -51,8 +52,8 @@ const ran =(exitCode: number, stdout: string, stderr = '') =>
 type Runner = (argv: readonly string[]) => ReturnType<typeof ran> | { deny: string }
 
 /** The engine around the mod: home, this session's id, its folder in /repo, and linkC's file. */
-function engine(on: On, file: string | Error, seen: { bodyRows?: number; runs?: string[][] } = {}, run?: Runner) {
-  const clock = mock.clock(on)
+function engine(on: On, file: string | Error, seen: { bodyRows?: number; runs?: string[][] } = {}, run?: Runner, now = Date.now()) {
+  const clock = mock.clock(on, { now })
   on('env.get', (_, e) => ({ value: { HOME, LINKC_SESSION: 'ME' }[e.name] }))
   on('session.cwd', () => ({ value: '/repo/Sources' }))
   on('process.run', (_, e) => {
@@ -205,7 +206,8 @@ test('a session in a worktree shows the worktree’s name', async ($, on) => {
 })
 
 test('a card says when its prompt cache goes cold, marking a guess and a cold one', async ($, on) => {
-  const inMinutes = (m: number) => new Date(Date.now() + m * 60_000).toISOString()
+  const start = Date.now()
+  const inMinutes = (m: number) => new Date(start + m * 60_000).toISOString()
   const projects = {
     projects: [{
       path: '/repo',
@@ -217,7 +219,7 @@ test('a card says when its prompt cache goes cold, marking a guess and a cold on
       ],
     }],
   }
-  engine(on, JSON.stringify(projects))
+  engine(on, JSON.stringify(projects), {}, undefined, start)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   const all = await texts(await $.ui.mount(PANE))
@@ -278,6 +280,7 @@ test('your own card shows this session’s last step and what each subagent is d
   engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'ME', agent: 'claude', activity: 'busy' }] }] }))
   on('tool.call', () => ({ result: {} }))
   on('agent.spawn', () => ({ agentId: 'a1', model: 'claude-sonnet-5-5' }))
+  on('turn.start', () => ({ turnId: 'm1' }))
   on('turn.complete', () => ({ text: '', reason: 'answer' }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   const line = async () => {
@@ -287,6 +290,7 @@ test('your own card shows this session’s last step and what each subagent is d
     return text
   }
 
+  await $.turn.start({ text: 'go', turnId: 'm1' })
   await $.tool.call({ tool: 'Bash', command: 'swift test', description: 'Run the test suite' })
   expect(await line()).toEqual(['Run the test suite'])
 
@@ -299,6 +303,122 @@ test('your own card shows this session’s last step and what each subagent is d
 
   await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 'u1' })
   expect(await line()).toEqual(['Run the test suite'])
+})
+
+/** What your own card's working line shimmers, mounted fresh. */
+async function ownLine($: Engine): Promise<(string | undefined)[]> {
+  const ui = await $.ui.mount(PANE)
+  const text = (await ui.findAll({ type: 'Client' })).map(c => (c.props.props as { text?: string }).text)
+  await ui.unmount()
+  return text
+}
+
+const MAIN_TURN_END = { reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 'm1' } as const
+
+test('a step counts only while this session’s turn runs, the turn’s end clears it, and a script reads by its first line', async ($, on) => {
+  engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'ME', agent: 'claude', activity: 'idle', title: 'Me', state: 'ready' }] }] }))
+  on('tool.call', () => ({ result: {} }))
+  on('turn.start', () => ({ turnId: 'm1' }))
+  on('turn.complete', () => ({ text: '', reason: 'answer' }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  // Another plugin's tool call between turns is not this session at work.
+  await $.tool.call({ tool: 'Read', file_path: '/repo/notes.md' })
+  expect(await ownLine($)).toEqual([])
+
+  await $.turn.start({ text: 'go', turnId: 'm1' })
+  await $.tool.call({ tool: 'Bash', command: 'cd Sources &&\n  swift test' })
+  expect(await ownLine($)).toEqual(['$ cd Sources &&'])
+
+  await $.turn.complete(MAIN_TURN_END)
+  expect(await ownLine($)).toEqual([])
+})
+
+test('a subagent whose events carry no id never holds your card at work', async ($, on) => {
+  engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'ME', agent: 'claude', activity: 'idle', title: 'Me', state: 'ready' }] }] }))
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5' }))
+  on('turn.start', () => ({ turnId: 'm1' }))
+  on('turn.complete', () => ({ text: '', reason: 'answer' }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.turn.start({ text: 'go', turnId: 'm1' })
+  await $.agent.spawn({
+    tool_use_id: 't1', prompt: 'run the workflow', description: 'remote-review', subagentType: 'general-purpose',
+    provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-opus-5-5', background: true,
+  } as unknown as Parameters<typeof $.agent.spawn>[0])
+  await $.turn.complete(MAIN_TURN_END)
+
+  expect(await ownLine($)).toEqual([])
+})
+
+test('your own card at work sorts and shimmers as working, and keeps its worktree’s name', async ($, on) => {
+  const projects = {
+    projects: [
+      { path: '/repo', sessions: [{ id: 'B', agent: 'codex', activity: 'starting', title: 'Booting', state: 'starting' }] },
+      { path: '/repo/.worktrees/glyphs', sessions: [{ id: 'ME', agent: 'claude', activity: 'idle', title: 'Mine', state: 'finished' }] },
+    ],
+  }
+  engine(on, JSON.stringify(projects))
+  on('tool.call', () => ({ result: {} }))
+  on('turn.start', () => ({ turnId: 'm1' }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'go', turnId: 'm1' })
+  await $.tool.call({ tool: 'Bash', command: 'swift test', description: 'Run the test suite' })
+
+  const ui = await $.ui.mount(PANE)
+  const shimmering = (await ui.findAll({ type: 'Client' })).map(c => (c.props.props as { text?: string }).text)
+  const titles = (await texts(ui)).filter(t => t === 'Mine' || t === 'Booting')
+  await ui.unmount()
+
+  expect(shimmering).toEqual(['Run the test suite glyphs'])
+  expect(titles).toEqual(['Mine', 'Booting'])
+})
+
+test('a permission wait on your own card still shows ahead of its steps', async ($, on) => {
+  engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'ME', agent: 'claude', activity: 'busy', title: 'Me', state: 'waitingPermission' }] }] }))
+  on('tool.call', () => ({ result: {} }))
+  on('turn.start', () => ({ turnId: 'm1' }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'go', turnId: 'm1' })
+  await $.tool.call({ tool: 'Bash', command: 'swift test', description: 'Run the test suite' })
+
+  const ui = await $.ui.mount(PANE)
+  const all = await texts(ui)
+  const shimmering = await ui.findAll({ type: 'Client' })
+  await ui.unmount()
+
+  expect(all).toContain('needs permission')
+  expect(shimmering.length).toBe(0)
+})
+
+test('a cache that goes cold redraws its card at once, not at the next minute', async ($, on) => {
+  // A second into a minute, so the minute does not turn while the test runs.
+  const start = Math.floor(Date.now() / 60_000) * 60_000 + 1_000
+  const projects = {
+    projects: [{
+      path: '/repo',
+      sessions: [{ id: 'A', agent: 'claude', activity: 'idle', title: 'Soon', state: 'finished', cacheExpiresAt: new Date(start + 20_000).toISOString() }],
+    }],
+  }
+  const clock = engine(on, JSON.stringify(projects), {}, undefined, start)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(PANE)
+  expect(await texts(ui)).toContain(' ◷ <1m')
+  await clock.advance(22_000)
+  expect(await texts(ui)).toContain(' ◷ cold')
+  await ui.unmount()
+})
+
+test('a cache time that is not a time says so instead of hiding the clock', async ($, on) => {
+  engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'A', agent: 'claude', activity: 'idle', state: 'finished', cacheExpiresAt: 'soon' }] }] }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(PANE)
+  const all = await texts(ui)
+  await ui.unmount()
+
+  expect(all.some(t => t.includes(`session A's cacheExpiresAt "soon" is not a time`))).toBe(true)
 })
 
 test('a model id reads as a person names it', () => {
