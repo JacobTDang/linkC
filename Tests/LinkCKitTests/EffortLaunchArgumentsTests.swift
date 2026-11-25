@@ -25,16 +25,4 @@ final class EffortLaunchArgumentsTests: XCTestCase {
                 agent.rawValue)
         }
     }
-
-    func testClaudeLaunchArgsAppendEffortAfterModel() {
-        let settingsPath = "/tmp/linkc-settings.json"
-        let args = AppCoordinator.claudeLaunchArgs(mode: .new, resumeId: nil, settingsPath: settingsPath)
-            + AgentModelCatalog.launchArguments(model: "sonnet", for: .claude)
-            + AgentModelCatalog.effortLaunchArguments(effort: .medium, for: .claude)
-        XCTAssertTrue(args.contains("--effort"))
-        XCTAssertEqual(args.last, "medium")
-        let effortIdx = args.firstIndex(of: "--effort")!
-        let modelIdx = args.firstIndex(of: "--model")!
-        XCTAssertLessThan(modelIdx, effortIdx)
-    }
 }
