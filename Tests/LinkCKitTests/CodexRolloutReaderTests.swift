@@ -76,6 +76,12 @@ final class CodexRolloutReaderTests: XCTestCase {
         XCTAssertEqual(try context(5_000, window: 12_000), 100)
     }
 
+    /// A count no rollout should hold (Int.min) is an empty context, not a trap on the subtraction.
+    func testATokenCountTooSmallToSubtractIsAnEmptyContext() {
+        XCTAssertEqual(CodexRolloutReader.footerPercent(used: Int.min, window: 200_000), 0)
+        XCTAssertEqual(CodexRolloutReader.footerPercent(used: Int.max, window: 200_000), 100)
+    }
+
     func testAContextOverTheWindowIsFull() throws {
         XCTAssertEqual(try context(300_000, window: 200_000), 100)
     }

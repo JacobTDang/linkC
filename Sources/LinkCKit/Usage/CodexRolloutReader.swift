@@ -104,7 +104,8 @@ public struct CodexRolloutReader: SessionLiveReader {
     static func footerPercent(used: Int, window: Int) -> Int {
         guard window > baselineTokens else { return 100 }
         let effective = Double(window - baselineTokens)
-        let inUse = Double(max(0, used - baselineTokens))
+        // Not `used - baselineTokens`: a count near Int.min would overflow it.
+        let inUse = used > baselineTokens ? Double(used - baselineTokens) : 0
         // `rounded()` rounds a half away from zero, as Rust's `f64::round` does.
         let left = (max(0, effective - inUse) / effective * 100).rounded()
         return 100 - Int(min(100, max(0, left)))

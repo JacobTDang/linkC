@@ -37,8 +37,9 @@ public final class UsageTracker {
     private var subagentReaders: [String: TranscriptTailReader] = [:]
     /// What each session's `subagents` folder was last found to hold.
     private var subagentFolders: [String: SubagentFolder] = [:]
-    /// Meta files and folders already said to be unreadable, so each is said once.
-    private var unreadableMeta: Set<String> = []
+    /// Each session's meta files and subagents folder already said to be unreadable, so each is said
+    /// once. A folder's go when it does, and a session's with the session.
+    private var unreadableMeta: [String: Set<String>] = [:]
     private var scanRecords: [MessageUsage] = []
 
     /// First-scan cost bound: only the trailing 4MB of a historical transcript is read, and
@@ -47,11 +48,15 @@ public final class UsageTracker {
     private static let firstScanTailCap = 4 * 1024 * 1024
     private static let scanWindow: TimeInterval = 7 * 24 * 3600
 
+    private let log: (String) -> Void
+
     public init(
         projectsDir: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects")
+            .appendingPathComponent(".claude/projects"),
+        log: @escaping (String) -> Void = { NSLog("[linkC] %@", $0) }
     ) {
         self.projectsDir = projectsDir
+        self.log = log
     }
 
     // MARK: - Per session
@@ -96,7 +101,7 @@ public final class UsageTracker {
         let folder = ((transcriptPath as NSString).deletingPathExtension as NSString).appendingPathComponent("subagents")
         if running.contains(where: { files[$0] == nil }) {
             var known = subagentFolders[sessionId] ?? SubagentFolder()
-            scanSubagentFolder(folder, into: &known)
+            scanSubagentFolder(folder, of: sessionId, into: &known)
             subagentFolders[sessionId] = known
             for (name, toolUseId) in known.toolUseIds {
                 guard let toolUseId, running.contains(toolUseId) else { continue }
@@ -135,8 +140,9 @@ public final class UsageTracker {
     }
 
     /// Lists the folder when its modification time has moved since the last listing, then decodes the
-    /// meta files not decoded yet. A meta file that cannot be read is said once.
-    private func scanSubagentFolder(_ folder: String, into known: inout SubagentFolder) {
+    /// meta files not decoded yet. A meta file that cannot be read is said once, until its folder
+    /// goes: what is known of a folder that is gone, and what was said of it, goes with it.
+    private func scanSubagentFolder(_ folder: String, of sessionId: String, into known: inout SubagentFolder) {
         do {
             // Before the listing: a file added after it moves the time again.
             let modified = try FileManager.default.attributesOfItem(atPath: folder)[.modificationDate] as? Date
@@ -146,10 +152,12 @@ public final class UsageTracker {
                 known.unreadable.formUnion(names.filter { $0.hasSuffix(".meta.json") && known.toolUseIds[$0] == nil })
             }
         } catch CocoaError.fileReadNoSuchFile {
-            // No subagent has written its files yet.
+            // No subagent has written its files yet, or the folder is gone with its files.
+            known = SubagentFolder()
+            unreadableMeta[sessionId] = nil
         } catch {
-            if unreadableMeta.insert(folder).inserted {
-                NSLog("[linkC] a session's subagents folder %@ could not be read — %@", folder, String(describing: error))
+            if unreadableMeta[sessionId, default: []].insert(folder).inserted {
+                log("a session's subagents folder \(folder) could not be read — \(error)")
             }
         }
         for name in known.unreadable {
@@ -159,8 +167,8 @@ public final class UsageTracker {
                 known.toolUseIds[name] = .some(decoded.toolUseId)
                 known.unreadable.remove(name)
             } catch {
-                if unreadableMeta.insert(meta).inserted {
-                    NSLog("[linkC] a subagent's meta file %@ could not be read — %@", meta, String(describing: error))
+                if unreadableMeta[sessionId, default: []].insert(meta).inserted {
+                    log("a subagent's meta file \(meta) could not be read — \(error)")
                 }
             }
         }
@@ -216,6 +224,7 @@ public final class UsageTracker {
         subagentActivities[sessionId] = nil
         subagentReaders[sessionId] = nil
         subagentFolders[sessionId] = nil
+        unreadableMeta[sessionId] = nil
     }
 
     public func sessionUsage(_ sessionId: String) -> SessionUsage? {

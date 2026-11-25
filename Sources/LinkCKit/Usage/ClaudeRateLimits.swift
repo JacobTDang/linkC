@@ -10,13 +10,14 @@ public enum ClaudeRateLimits {
     public static let ownStatusLineReason = "your own status line is configured — linkC can't read Claude's usage"
 
     /// The windows in a status-line body, as a reading taken at `receivedAt`. nil when the body
-    /// names neither window. Throws when the body is not the JSON Claude Code sends.
+    /// names neither window. Throws when the body is not the JSON Claude Code sends, or a window's
+    /// percent is not from 0 to 100.
     public static func decode(_ body: Data, receivedAt: Date) throws -> AgentUsage? {
         let payload = try JSONDecoder().decode(Payload.self, from: body)
         guard let limits = payload.rateLimits else { return nil }
         var windows: [UsageWindow] = []
-        if let window = limits.fiveHour { windows.append(window.usageWindow(label: "5h")) }
-        if let window = limits.sevenDay { windows.append(window.usageWindow(label: "7d")) }
+        if let window = limits.fiveHour { windows.append(try window.usageWindow(label: "5h")) }
+        if let window = limits.sevenDay { windows.append(try window.usageWindow(label: "7d")) }
         guard !windows.isEmpty else { return nil }
         return AgentUsage(agent: .claude, windows: windows, planType: nil, observedAt: receivedAt, unavailableReason: nil)
     }
@@ -110,9 +111,14 @@ public enum ClaudeRateLimits {
             case resetsAt = "resets_at"
         }
 
-        func usageWindow(label: String) -> UsageWindow {
-            UsageWindow(label: label, usedPercent: usedPercentage, tokens: nil,
-                        resetsAt: resetsAt.map { Date(timeIntervalSince1970: $0) })
+        func usageWindow(label: String) throws -> UsageWindow {
+            if let usedPercentage {
+                do { _ = try ReportedPercent.whole(usedPercentage) } catch {
+                    throw LinkCError.parse("the \(label) window's used_percentage: \(error)")
+                }
+            }
+            return UsageWindow(label: label, usedPercent: usedPercentage, tokens: nil,
+                               resetsAt: resetsAt.map { Date(timeIntervalSince1970: $0) })
         }
     }
 }

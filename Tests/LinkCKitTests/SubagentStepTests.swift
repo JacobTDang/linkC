@@ -149,6 +149,69 @@ final class SubagentStepTests: XCTestCase {
         XCTAssertEqual(tracker.sessionSubagentSteps("S1").map(\.step), ["⊙ One.swift"])
     }
 
+    // MARK: - What has been said of an unreadable meta file
+
+    private final class Said: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [String] = []
+        func append(_ line: String) { lock.lock(); stored.append(line); lock.unlock() }
+        var all: [String] { lock.lock(); defer { lock.unlock() }; return stored }
+        var metaFiles: Int { all.filter { $0.contains("meta file") }.count }
+    }
+
+    /// A running subagent whose meta file is caught half written, and never finished.
+    private func trackerWithATornMetaFile(said: Said) throws -> UsageTracker {
+        try write([spawn("toolu_A", "Survey")], to: transcript)
+        try write([#"{"agentType":"Explo"#], to: subagents.appendingPathComponent("agent-aaa.meta.json"))
+        let tracker = UsageTracker(projectsDir: dir, log: { said.append($0) })
+        tracker.bind(sessionId: "S1", transcriptPath: transcript.path)
+        return tracker
+    }
+
+    func testAMetaFileThatCannotBeReadIsSaidOnce() throws {
+        let said = Said()
+        let tracker = try trackerWithATornMetaFile(said: said)
+
+        tracker.refreshSession("S1")
+        tracker.refreshSession("S1")
+
+        XCTAssertEqual(said.metaFiles, 1, said.all.joined(separator: "\n"))
+        XCTAssertTrue(said.all.first?.contains("agent-aaa.meta.json") == true)
+    }
+
+    /// What is said of a folder is forgotten when the folder goes, so the same failure, when it
+    /// comes back there, is news again; the folder going is not itself a failure.
+    func testAFolderThatWentIsForgottenAndItsFailureIsNewWhenItComesBack() throws {
+        let said = Said()
+        let tracker = try trackerWithATornMetaFile(said: said)
+        tracker.refreshSession("S1")
+        XCTAssertEqual(said.metaFiles, 1)
+
+        try FileManager.default.removeItem(at: subagents)
+        tracker.refreshSession("S1")
+        XCTAssertEqual(said.all.count, 1, "a folder that went is not said: \(said.all)")
+
+        try write([#"{"agentType":"Explo"#], to: subagents.appendingPathComponent("agent-aaa.meta.json"))
+        tracker.refreshSession("S1")
+        XCTAssertEqual(said.metaFiles, 2)
+    }
+
+    /// What is said of a session goes with the session.
+    func testWhatWasSaidOfASessionIsForgottenWhenItEnds() throws {
+        let said = Said()
+        let tracker = try trackerWithATornMetaFile(said: said)
+        tracker.refreshSession("S1")
+        XCTAssertEqual(said.metaFiles, 1)
+
+        tracker.unbind(sessionId: "S1")
+        // The same session again on the same files; the transcript is shorter, so it is read from the start.
+        try write([spawn("toolu_A", "S")], to: transcript)
+        tracker.bind(sessionId: "S1", transcriptPath: transcript.path)
+        tracker.refreshSession("S1")
+
+        XCTAssertEqual(said.metaFiles, 2)
+    }
+
     func testUnbindDropsTheSubagentSteps() throws {
         try write([spawn("toolu_A", "Survey")], to: transcript)
         try subagent("aaa", spawnedBy: "toolu_A", lines: [sidechainRead("One.swift")])

@@ -37,6 +37,9 @@ public final class LiveDetailSampler: @unchecked Sendable {
     /// The same failure is said again only once this has passed, even when reads work in between:
     /// one that comes and goes would otherwise be said on every return.
     static let repeatAfter: TimeInterval = 10 * 60
+    /// A read that failed, or read only part, stands against the same files for this long. Its
+    /// database clone and sqlite3 cost as much as a good read, and the sweep asks every second.
+    static let retryAfter: TimeInterval = 60
 
     private let readers: [AgentKind: any SessionLiveReader]
     private let queue: DispatchQueue
@@ -52,8 +55,8 @@ public final class LiveDetailSampler: @unchecked Sendable {
     private var inFlight: Task<Void, Never>?
 
     // On the queue alone.
-    /// Each session's last good read, with what it read: while its target is the same and the
-    /// stamps of its reader's files have not moved, it stands.
+    /// Each session's last read, good or not, with what it read: while its target is the same and the
+    /// stamps of its reader's files have not moved, it stands (a failed one for `retryAfter`).
     private var lastRead: [String: LastRead] = [:]
     /// Each session's process tree's open files, and when they were listed.
     private var openFilesSeen: [String: (pid: pid_t, at: Date, files: [String])] = [:]
@@ -62,7 +65,16 @@ public final class LiveDetailSampler: @unchecked Sendable {
         let target: LiveSessionTarget
         let sources: [String]
         let stamps: [FileStamp?]
-        let detail: SessionLiveDetail
+        /// What the read gave: its detail, or the error it threw (a part read throws `PartialLiveRead`).
+        let outcome: Result<SessionLiveDetail, Error>
+        let at: Date
+
+        func stands(for target: LiveSessionTarget, sources: [String], stamps: [FileStamp?], at now: Date) -> Bool {
+            guard self.target == target, self.sources == sources, self.stamps == stamps else { return false }
+            guard case .failure = outcome else { return true }
+            let age = now.timeIntervalSince(at)
+            return age >= 0 && age < LiveDetailSampler.retryAfter
+        }
     }
 
     /// `openFiles` lists the files a process tree holds open; `now` is the clock.
@@ -137,23 +149,28 @@ public final class LiveDetailSampler: @unchecked Sendable {
         return files
     }
 
-    /// The last read's detail while nothing it read has changed, else a new read's.
+    /// The last read's outcome while nothing it read has changed, else a new read's.
     private func detail(of target: LiveSessionTarget, by reader: any SessionLiveReader) throws -> SessionLiveDetail {
+        let sources: [String]
+        let stamps: [FileStamp?]
         do {
-            let sources = try reader.sources(of: target)
+            sources = try reader.sources(of: target)
             // Stamped before the read: a write that lands after it moves a stamp for the next pass.
-            let stamps = try sources.map(FileStamp.of)
-            if !sources.isEmpty, let last = lastRead[target.sessionId],
-               last.target == target, last.sources == sources, last.stamps == stamps {
-                return last.detail
-            }
-            let detail = try reader.read(target)
-            lastRead[target.sessionId] = sources.isEmpty ? nil : LastRead(target: target, sources: sources, stamps: stamps, detail: detail)
-            return detail
+            stamps = try sources.map(FileStamp.of)
         } catch {
+            // The files could not be looked at: nothing is known of them, so nothing is held.
             lastRead[target.sessionId] = nil
             throw error
         }
+        let now = now()
+        if !sources.isEmpty, let last = lastRead[target.sessionId],
+           last.stands(for: target, sources: sources, stamps: stamps, at: now) {
+            return try last.outcome.get()
+        }
+        let outcome = Result { try reader.read(target) }
+        lastRead[target.sessionId] = sources.isEmpty
+            ? nil : LastRead(target: target, sources: sources, stamps: stamps, outcome: outcome, at: now)
+        return try outcome.get()
     }
 
     private func land(_ read: [String: Result<SessionLiveDetail, Error>], live: Set<String>) {

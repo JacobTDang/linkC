@@ -50,6 +50,17 @@ final class ClaudeRateLimitsTests: XCTestCase {
         }
     }
 
+    /// A percent no window can have is a read failure at the door: it never becomes a reading that
+    /// a row or `projects.json` would have to round.
+    func testAWindowWithAPercentOutsideZeroToOneHundredIsRefused() {
+        for percent in ["1e30", "-5", "250"] {
+            for window in ["five_hour", "seven_day"] {
+                let body = Data(#"{"rate_limits": {"\#(window)": {"used_percentage": \#(percent), "resets_at": 1790017200}}}"#.utf8)
+                XCTAssertThrowsError(try ClaudeRateLimits.decode(body, receivedAt: arrived), "\(window) \(percent)")
+            }
+        }
+    }
+
     func testABodyThatIsNotJSONThrows() {
         XCTAssertThrowsError(try ClaudeRateLimits.decode(Data("not json".utf8), receivedAt: arrived))
     }
