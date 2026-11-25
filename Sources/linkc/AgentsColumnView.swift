@@ -20,6 +20,7 @@ struct AgentsColumnView: View {
                         .padding(.horizontal, 8)
                         .padding(.bottom, 6)
                 }
+                // The selected session is always a card once the column is known: there is no empty repo.
                 if !column.cards.isEmpty {
                     ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(alignment: .leading, spacing: 2) {
@@ -28,11 +29,6 @@ struct AgentsColumnView: View {
                             }
                         }
                     }
-                } else if !column.isPending, column.problem == nil {
-                    Text("No sessions in this repo.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.textTertiary)
-                        .padding(.horizontal, 8)
                 }
             }
         }
