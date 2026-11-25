@@ -361,6 +361,34 @@ final class CursorSessionReaderTests: XCTestCase {
         assertPartial(store, keeps: SessionLiveDetail(step: "$ swift build"), sayingAll: ["sqlite3 could not read"])
     }
 
+    /// A transcripts folder that cannot be listed costs the session its step, not its context: what a
+    /// read reads is still the chat store and its log, so the sampler reads it, and the part read
+    /// says what could not be listed.
+    func testATranscriptsFolderThatCannotBeListedLeavesTheContextStanding() async throws {
+        let store = try chatStore(blob: rootBlob(used: 50, window: 100))
+        try transcript([userLine()])
+        let projects = dir.appendingPathComponent(".cursor/projects").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o100], ofItemAtPath: projects)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: projects) }
+
+        XCTAssertEqual(try stepReader().sources(of: target([store])), [store, store + "-wal"])
+        assertPartial(store, keeps: SessionLiveDetail(contextPercent: 50), sayingAll: ["projects"])
+
+        let logged = LoggedLines()
+        let sampler = LiveDetailSampler(readers: [.cursor: stepReader()], log: { logged.append($0) }, openFiles: { _ in [store] })
+        await sampler.refresh([LiveDetailSampler.Session(id: "S1", agent: .cursor, cwd: cwd, agentSessionId: nil, pid: 1)])?.value
+        XCTAssertEqual(sampler.detail(for: "S1"), SessionLiveDetail(contextPercent: 50))
+        XCTAssertEqual(logged.all.count, 1)
+        XCTAssertEqual(logged.all.first?.contains("projects"), true, logged.all.first ?? "")
+    }
+
+    private final class LoggedLines: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [String] = []
+        func append(_ line: String) { lock.lock(); stored.append(line); lock.unlock() }
+        var all: [String] { lock.lock(); defer { lock.unlock() }; return stored }
+    }
+
     func testBothFailingSayBoth() throws {
         let store = try chatStore()
         try Data("not a database".utf8).write(to: URL(fileURLWithPath: store))

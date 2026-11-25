@@ -26,7 +26,14 @@ public struct CursorSessionReader: SessionLiveReader {
 
     public func sources(of target: LiveSessionTarget) throws -> [String] {
         guard let store = Self.chatStore(among: target) else { return [] }
-        return [store, store + "-wal"] + (try transcript(ofChat: Self.chatId(ofStore: store)).map { [$0.path] } ?? [])
+        let chat = [store, store + "-wal"]
+        do {
+            return chat + (try transcript(ofChat: Self.chatId(ofStore: store)).map { [$0.path] } ?? [])
+        } catch {
+            // The transcripts cannot be listed, so there is no transcript to stamp; the chat store
+            // is still read. `read` lists them again and says why it cannot, keeping the context.
+            return chat
+        }
     }
 
     /// The context from the chat store and the step from the transcript, each read on its own: when
