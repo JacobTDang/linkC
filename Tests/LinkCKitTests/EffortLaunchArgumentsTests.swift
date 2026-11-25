@@ -26,24 +26,6 @@ final class EffortLaunchArgumentsTests: XCTestCase {
         }
     }
 
-    /// agy's Gemini ids bake the level in (`…-low` / `…-medium` / `…-high`). Passing both a
-    /// leveled id and a conflicting `--effort` makes agy refuse; a matching level is accepted
-    /// but the effort flag alone is the source of truth, so launch strips the suffix.
-    func testAgyLaunchModelStripsEffortSuffixWhenEffortIsSet() {
-        XCTAssertEqual(
-            AgentModelCatalog.agyModelIdForLaunch(model: "gemini-3.8-flash-low", effort: .low),
-            "gemini-3.8-flash")
-        XCTAssertEqual(
-            AgentModelCatalog.agyModelIdForLaunch(model: "gemini-3.8-flash-medium", effort: .high),
-            "gemini-3.8-flash")
-        XCTAssertEqual(
-            AgentModelCatalog.agyModelIdForLaunch(model: "gemini-3.1-pro-high", effort: .max),
-            "gemini-3.1-pro")
-        XCTAssertEqual(
-            AgentModelCatalog.agyModelIdForLaunch(model: "gemini-3.8-flash", effort: .low),
-            "gemini-3.8-flash")
-    }
-
     func testClaudeLaunchArgsAppendEffortAfterModel() {
         let settingsPath = "/tmp/linkc-settings.json"
         let args = AppCoordinator.claudeLaunchArgs(mode: .new, resumeId: nil, settingsPath: settingsPath)

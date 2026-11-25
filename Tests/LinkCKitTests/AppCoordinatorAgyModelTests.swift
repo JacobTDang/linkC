@@ -20,7 +20,10 @@ final class AppCoordinatorAgyModelTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func makeCoordinator(models: AgentModelSettings = .seeded) throws -> AppCoordinator {
+    private func makeCoordinator(
+        models: AgentModelSettings = .seeded,
+        lists: @escaping @MainActor @Sendable () throws -> [AgentKind: AgentModelList] = TestModelLists.none
+    ) throws -> AppCoordinator {
         let stub = tempDir.appendingPathComponent("stub-agy.sh")
         let script = "#!/bin/sh\n"
             + "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv-$LINKC_SESSION\"\n"
@@ -39,7 +42,7 @@ final class AppCoordinatorAgyModelTests: XCTestCase {
             manifestDir: settingsDir,
             agentPathResolver: { _ in agent },
             modelSettings: { models },
-            modelLists: TestModelLists.none,
+            modelLists: lists,
             deliverySettle: 0,
             turnEndQuietPeriod: 0,
             isWatching: { _ in false }
@@ -89,12 +92,74 @@ final class AppCoordinatorAgyModelTests: XCTestCase {
 
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .agy, mode: .new, tier: .light)
 
-        // Light's configured id is gemini-3.8-flash-low; launch strips the effort suffix and
-        // passes --effort low so agy cannot see a conflicting leveled id + effort flag.
-        XCTAssertEqual(launchedArguments(of: session, count: yolo.count + 4),
-                       yolo + ["--model", "gemini-3.8-flash", "--effort", "low"])
-        XCTAssertEqual(session.model, "gemini-3.8-flash")
+        // No agy list has been read, so which levels Flash takes is unknown: the configured id runs
+        // as it is, at the level it names, with no --effort.
+        XCTAssertEqual(launchedArguments(of: session, count: yolo.count + 2),
+                       yolo + ["--model", "gemini-3.8-flash-low"])
         XCTAssertEqual(session.modelTier, .light)
+    }
+
+    // MARK: - Effort
+
+    /// agy lists Flash at low, medium and high, so the tier's effort (here not the light default)
+    /// goes in `--effort` on Flash's base id, which agy resolves to that level.
+    func testAnAgyTierWhoseModelListsTheLevelLaunchesTheBaseIdAtTheTiersEffort() throws {
+        var models = AgentModelSettings.seeded
+        models.setEffort(.high, for: .agy, tier: .light)
+        let coordinator = try makeCoordinator(models: models, lists: TestModelLists.agy)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .agy, mode: .new, tier: .light)
+
+        XCTAssertEqual(launchedArguments(of: session, count: yolo.count + 4),
+                       yolo + ["--model", "gemini-3.8-flash", "--effort", "high"])
+    }
+
+    /// agy refuses `--effort` for its Claude models, which list no level: the worker would die at
+    /// launch. The id runs as configured, with no flag.
+    func testAnAgyClaudeModelLaunchesAsConfiguredWithNoEffort() throws {
+        var models = AgentModelSettings.seeded
+        models.setModel("claude-opus-4-6-thinking", for: .agy, tier: .deep)
+        let coordinator = try makeCoordinator(models: models, lists: TestModelLists.agy)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .agy, mode: .new, tier: .deep)
+
+        XCTAssertEqual(launchedArguments(of: session, count: yolo.count + 2),
+                       yolo + ["--model", "claude-opus-4-6-thinking"])
+    }
+
+    /// agy lists GPT-OSS at medium only: high would be refused, so the id runs as configured; medium
+    /// is a level agy lists, so it goes in `--effort`.
+    func testAnAgyGptOssModelTakesOnlyTheLevelAgyListsForIt() throws {
+        for (effort, expected) in [
+            (ReasoningEffort.high, ["--model", "gpt-oss-120b-medium"]),
+            (.medium, ["--model", "gpt-oss-120b", "--effort", "medium"]),
+        ] {
+            var models = AgentModelSettings.seeded
+            models.setModel("gpt-oss-120b-medium", for: .agy, tier: .deep)
+            models.setEffort(effort, for: .agy, tier: .deep)
+            let coordinator = try makeCoordinator(models: models, lists: TestModelLists.agy)
+            defer { coordinator.shutdown() }
+
+            let session = try coordinator.newSession(cwd: tempDir.path, agent: .agy, mode: .new, tier: .deep)
+
+            XCTAssertEqual(launchedArguments(of: session, count: yolo.count + expected.count), yolo + expected,
+                           effort.rawValue)
+        }
+    }
+
+    /// Flash has no xhigh: agy would refuse it, so the configured id runs at the level it names.
+    func testAnAgyLevelTheModelLacksLaunchesTheIdAsConfigured() throws {
+        var models = AgentModelSettings.seeded
+        models.setEffort(.xhigh, for: .agy, tier: .light)
+        let coordinator = try makeCoordinator(models: models, lists: TestModelLists.agy)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .agy, mode: .new, tier: .light)
+
+        XCTAssertEqual(launchedArguments(of: session, count: yolo.count + 2),
+                       yolo + ["--model", "gemini-3.8-flash-low"])
     }
 
     func testARestoredAgySessionOpensOnTheDefaultTiersModel() throws {

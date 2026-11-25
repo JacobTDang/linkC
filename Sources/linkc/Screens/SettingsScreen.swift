@@ -103,7 +103,8 @@ struct SettingsScreen: View {
                                                 preferences: model.preferences, agent: agent, tier: tier,
                                                 lists: lists)
                                             TierEffortField(
-                                                preferences: model.preferences, agent: agent, tier: tier)
+                                                preferences: model.preferences, agent: agent, tier: tier,
+                                                lists: lists)
                                         }
                                     }
                                     Picker("", selection: Binding(
@@ -459,18 +460,30 @@ private struct SettingRow<Control: View>: View {
     }
 }
 
-/// Effort picker beside a tier's model, or a short "not supported by …" note when the agent's
-/// CLI has no effort knob linkC can set (Cursor/Grok bake it into model ids; OpenCode/Kilo's
-/// TUI has no flag).
+/// Effort picker beside a tier's model, offering only the levels that model takes, or a short note
+/// when there are none: the agent's CLI has no effort knob linkC can set (Cursor/Grok bake it into
+/// model ids; OpenCode/Kilo's TUI has no flag), or, for agy, the model lists no level.
 private struct TierEffortField: View {
     let preferences: AppPreferences
     let agent: AgentKind
     let tier: ModelTier
+    let lists: [AgentKind: AgentModelList]
+
+    private var tierModel: String? { preferences.agentModels.model(for: agent, tier: tier) }
+    private var listed: [ListedModel]? { ModelListCache.liveModels(for: agent, lists: lists) }
+
+    /// The level the tier runs at: its effort, or for agy the level its model id names when agy does
+    /// not list that effort for it.
+    private var shownLevel: ReasoningEffort {
+        let effort = preferences.agentModels.effort(for: agent, tier: tier) ?? ReasoningEffort.default(for: tier)
+        guard agent == .agy, let tierModel else { return effort }
+        return AgyEffort.runningLevel(id: tierModel, effort: effort, listed: listed) ?? effort
+    }
 
     var body: some View {
-        switch AgentEffortSupport.forAgent(agent) {
+        switch AgentEffortSupport.forModel(tierModel, agent: agent, listed: listed) {
         case .unsupported(let reason):
-            Text("not supported by \(agent.displayName)")
+            Text(AgentEffortSupport.forAgent(agent).isSupported ? "none for this model" : "not supported by \(agent.displayName)")
                 .font(.system(size: 9))
                 .foregroundStyle(Theme.textTertiary)
                 .frame(width: 100, alignment: .leading)
@@ -478,10 +491,7 @@ private struct TierEffortField: View {
                 .help(reason)
         case .levels(let levels):
             Picker(tier.label + " effort", selection: Binding(
-                get: {
-                    preferences.agentModels.effort(for: agent, tier: tier)
-                        ?? ReasoningEffort.default(for: tier)
-                },
+                get: { shownLevel },
                 set: { newValue in
                     var edited = preferences.agentModels
                     edited.setEffort(newValue, for: agent, tier: tier)

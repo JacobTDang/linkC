@@ -1054,6 +1054,17 @@ public final class AppCoordinator {
                           effort: effort, asWorker: asWorker, select: select)
     }
 
+    /// agy's models as its last good refresh listed them, or nil when they are not known. Settings >
+    /// Models shows why the lists cannot be read; launch then runs the configured id as it is.
+    func agyListedModels() -> [ListedModel]? {
+        do {
+            return ModelListCache.liveModels(for: .agy, lists: try modelLists())
+        } catch {
+            NSLog("[linkC] could not read the model lists to see which efforts agy lists — %@", String(describing: error))
+            return nil
+        }
+    }
+
     /// Resolves an OpenCode model id to prefer Go's free pool if Go is connected:
     /// an `opencode/<name>` model resolves to `opencode-go/<name>` if that exact id is listed and free.
     /// A tier set to an `opencode-go/*` model is used as is.
@@ -1206,9 +1217,21 @@ public final class AppCoordinator {
             throw LinkCError.process(
                 "\(agent.rawValue) does not accept effort \(launchEffort.rawValue) — supported: \(levels.map(\.rawValue).joined(separator: ", "))")
         }
-        // agy: strip a baked-in effort suffix so `--effort` cannot conflict with the model id.
-        if agent == .agy, let launchEffort, let currentModel = model {
-            model = AgentModelCatalog.agyModelIdForLaunch(model: currentModel, effort: launchEffort)
+        // What goes in argv. agy refuses `--effort` for a level it does not list for the model, and a
+        // refused flag kills the worker at launch: the flag goes only where agy lists the level.
+        var argvEffort = launchEffort
+        if agent == .agy {
+            if let currentModel = model {
+                let launch = AgyEffort.launch(id: currentModel, effort: launchEffort, listed: agyListedModels())
+                if let launchEffort, launch.effort == nil {
+                    NSLog("[linkC] agy lists no %@ effort for %@, so it launches as configured",
+                          launchEffort.rawValue, currentModel)
+                }
+                model = launch.model
+                argvEffort = launch.effort
+            } else {
+                argvEffort = nil
+            }
         }
         // OpenCode and Kilo run free models only, whichever way the model was chosen: the New menu,
         // a teammate, a worker, or a tier that was set to a paid model.
@@ -1275,7 +1298,7 @@ public final class AppCoordinator {
                 let settingsPath = try writeSettings(for: session)
                 args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
-                    + (launchEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
+                    + (argvEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
             } else {
                 // Codex and agy open a folder they have not seen on a trust dialog; trust it first, as
                 // `preApproveTrust` does for Claude. Detecting that dialog stays the fallback, so a
@@ -1316,7 +1339,7 @@ public final class AppCoordinator {
                 executable = resolved
                 args = AgentDescriptor.arguments(for: agent, mode: mode, sessionId: session.id)
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
-                    + (launchEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
+                    + (argvEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
                     + (openCode.map { OpenCodeConversations.launchArguments(conversationId: $0.id) } ?? [])
             }
 

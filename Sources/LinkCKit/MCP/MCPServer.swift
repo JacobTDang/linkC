@@ -2001,14 +2001,11 @@ public final class MCPServer: Sendable {
                 let decision = route.decision
                 toAgent = decision.agent
                 routeReason = route.reason
-                // Stash the router's tier/effort into args so the shared resolution below sees them
-                // the same way an explicit caller would.
+                // The router's tier goes into args, so the shared resolution below checks it as it
+                // would a caller's. Its effort is the tier's configured one, which that resolution
+                // gives a task with no effort, so it is not passed as if the caller had asked for it.
                 var routed = args
                 routed["tier"] = decision.tier.rawValue
-                if let effort = decision.effort {
-                    routed["effort"] = effort.rawValue
-                }
-                // Fall through using a local copy — see tierArg / effortArg resolution below.
                 return try createDelegatedTaskResolved(
                     id: id, caller: caller, args: routed, destStore: destStore, destRoot: destRoot,
                     crossProject: crossProject, isQuestion: isQuestion,
@@ -2345,6 +2342,29 @@ public final class MCPServer: Sendable {
                         id: id,
                         text: "Error: \(toAgent.rawValue) does not accept effort \(parsed.rawValue) — supported: \(levels.map(\.rawValue).joined(separator: ", ")).",
                         isError: true)
+                }
+                // agy refuses at launch a level it does not list for the model, which kills the
+                // worker: an explicit effort must be one agy lists for the model the task runs on.
+                if toAgent == .agy, let agyModel = model ?? tier.flatMap({ settings.model(for: .agy, tier: $0) }) {
+                    let listed: [ListedModel]?
+                    do {
+                        listed = ModelListCache.liveModels(for: .agy, lists: try lists())
+                    } catch {
+                        return toolResultResponse(id: id, text: listsUnreadable(error), isError: true)
+                    }
+                    switch AgentEffortSupport.forModel(agyModel, agent: .agy, listed: listed) {
+                    case .unsupported(let reason):
+                        return toolResultResponse(
+                            id: id, text: "Error: effort \(parsed.rawValue) is refused for agy's \(agyModel): \(reason).",
+                            isError: true)
+                    case .levels(let offered) where !offered.contains(parsed):
+                        return toolResultResponse(
+                            id: id,
+                            text: "Error: effort \(parsed.rawValue) is refused for agy's \(agyModel): agy lists \(offered.map(\.rawValue).joined(separator: ", ")) for it.",
+                            isError: true)
+                    case .levels:
+                        break
+                    }
                 }
                 effort = parsed
             }

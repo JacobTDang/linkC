@@ -25,7 +25,8 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
     private func server(
         settings: AgentModelSettings = .seeded,
         installed: Set<AgentKind> = [.claude, .codex, .cursor, .agy, .grok, .opencode, .kilo, .crush],
-        callerSession: String? = nil
+        callerSession: String? = nil,
+        lists: @escaping @Sendable () throws -> [AgentKind: AgentModelList] = TestModelLists.none
     ) -> MCPServer {
         MCPServer(
             workspaceRoot: tempDir.path,
@@ -40,7 +41,7 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
                 "opencode/deepseek-v4.1-flash-free", "opencode/big-pickle", "opencode/nemotron-3.5-super-vl-free"
             ] },
             kiloModels: { _ in [] },
-            modelLists: { [:] },
+            modelLists: lists,
             knownProjects: knownProjects)
     }
 
@@ -73,6 +74,26 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
         XCTAssertFalse(result.isError, result.text)
         let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
         XCTAssertEqual(task.effort, .low)
+    }
+
+    /// agy refuses at launch an effort it does not list for the model, which kills the worker, so an
+    /// explicit one is refused when the task is delegated. A level agy lists is kept.
+    func testAnAgyEffortTheModelDoesNotListIsRefused() throws {
+        var settings = AgentModelSettings.seeded
+        settings.setModel("claude-opus-4-6-thinking", for: .agy, tier: .deep)
+        let server = server(settings: settings, lists: TestModelLists.agy)
+
+        let opus = try call(server, "linkc_delegate_task", ["to": "agy", "prompt": "x", "tier": "deep", "effort": "high"])
+        XCTAssertTrue(opus.isError)
+        XCTAssertEqual(opus.text, "Error: effort high is refused for agy's claude-opus-4-6-thinking: agy lists no effort levels for claude-opus-4-6-thinking, so it runs as configured.")
+
+        let flash = try call(server, "linkc_delegate_task", ["to": "agy", "prompt": "x", "tier": "light", "effort": "xhigh"])
+        XCTAssertTrue(flash.isError)
+        XCTAssertEqual(flash.text, "Error: effort xhigh is refused for agy's gemini-3.8-flash-low: agy lists low, medium, high for it.")
+
+        let listed = try call(server, "linkc_delegate_task", ["to": "agy", "prompt": "x", "tier": "light", "effort": "high"])
+        XCTAssertFalse(listed.isError, listed.text)
+        XCTAssertEqual(try InboxStore(workspaceRoot: tempDir.path).openTasks().map(\.effort), [.high])
     }
 
     func testEffortOnUnsupportedAgentIsRefused() throws {
