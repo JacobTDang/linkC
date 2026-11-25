@@ -12,6 +12,17 @@ final class ClaudeSessionStatusTests: XCTestCase {
         XCTAssertEqual(try ClaudeSessionStatus.cacheExpiry(in: Data(body.utf8)), Date(timeIntervalSince1970: 1_795_560_237))
     }
 
+    /// Claude reports how much of the context window the conversation fills, as a percent.
+    func testTheContextUseIsThePercentOfTheWindowTheReportGives() throws {
+        let body = #"{"context_window":{"context_window_size":200000,"used_percentage":41,"remaining_percentage":59}}"#
+        XCTAssertEqual(try ClaudeSessionStatus.contextPercent(in: Data(body.utf8)), 41)
+    }
+
+    func testAReportWithoutAContextWindowHasNoContextUse() throws {
+        XCTAssertNil(try ClaudeSessionStatus.contextPercent(in: Data(#"{"session_id":"c1"}"#.utf8)))
+        XCTAssertNil(try ClaudeSessionStatus.contextPercent(in: Data(#"{"context_window":{"context_window_size":200000}}"#.utf8)))
+    }
+
     func testAReportWithoutAModelHasNone() throws {
         XCTAssertNil(try ClaudeSessionStatus.modelId(in: Data(#"{"session_id":"c1"}"#.utf8)))
         XCTAssertNil(try ClaudeSessionStatus.cacheExpiry(in: Data(#"{"session_id":"c1"}"#.utf8)))
@@ -43,6 +54,26 @@ final class ClaudeSessionStatusTests: XCTestCase {
 
         store.forget(sessionId: "A")
         XCTAssertNil(store.status(for: "A"))
+    }
+
+    func testTheStoreKeepsTheContextUseOfTheLatestReport() {
+        let store = ClaudeSessionStatuses(log: { _ in })
+        store.accept(sessionId: "A", body: Data(#"{"model":{"id":"claude-opus-5-5"},"context_window":{"used_percentage":12}}"#.utf8))
+        store.accept(sessionId: "A", body: Data(#"{"model":{"id":"claude-opus-5-5"},"context_window":{"used_percentage":64}}"#.utf8))
+
+        XCTAssertEqual(store.status(for: "A")?.contextPercent, 64)
+    }
+
+    /// A context field that changes shape costs the session its context use, not its model, and is said.
+    func testAMalformedContextUseKeepsTheModelAndIsLogged() {
+        let logged = Lines()
+        let store = ClaudeSessionStatuses(log: { logged.append($0) })
+        store.accept(sessionId: "A", body: Data(#"{"model":{"id":"claude-opus-5-5"},"context_window":{"used_percentage":"lots"}}"#.utf8))
+
+        XCTAssertEqual(store.status(for: "A")?.modelId, "claude-opus-5-5")
+        XCTAssertNil(store.status(for: "A")?.contextPercent)
+        XCTAssertEqual(logged.count, 1)
+        XCTAssertEqual(logged.first?.contains("its context use"), true)
     }
 
     /// A cache field that changes shape costs the session its cache clock, not its model, and is said.

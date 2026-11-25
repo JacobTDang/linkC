@@ -25,9 +25,10 @@ public enum ActivityEvents {
     }
 
     /// The pre-decoded path — `UsageTracker` decodes each line once and feeds every
-    /// consumer the same `TranscriptLine`.
-    static func apply(_ decoded: TranscriptLine, to current: CurrentActivity?) -> CurrentActivity? {
-        guard !decoded.isSidechain, case .blocks(let blocks) = decoded.content else { return current }
+    /// consumer the same `TranscriptLine`. `includingSidechain` is for a subagent's own
+    /// transcript, every line of which is its sidechain.
+    static func apply(_ decoded: TranscriptLine, to current: CurrentActivity?, includingSidechain: Bool = false) -> CurrentActivity? {
+        guard includingSidechain || !decoded.isSidechain, case .blocks(let blocks) = decoded.content else { return current }
 
         var activity = current
         for block in blocks {

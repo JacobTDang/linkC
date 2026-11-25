@@ -8,6 +8,12 @@ left edge is the agent's color. Sessions that need you (a permission, a question
 first and show in orange, and the header counts them. Your own session is marked `you`; a session
 linkC started for a delegated task is marked `worker`.
 
+Beside the model, a card shows how full the session's context is, in orange from 80%, and its
+agent's tightest plan limit once that reaches 70% (orange, red from 90%). The second line shows
+the step the agent itself records for the running turn, ahead of what linkC reads off its screen,
+then its first running subagent by name and step, with the rest counted. Each figure shows only
+where linkC can read it for that agent; a card from an older linkC shows none of them.
+
 A session is in the repo when it runs in the repo's folder, a folder below it, or a worktree inside
 it (`.worktrees/…`). The repo is the one the Claude Code session's folder belongs to, found with
 `git rev-parse --git-common-dir`; a folder outside git counts as its own repo.
@@ -37,13 +43,14 @@ The mod draws nothing of its own until filetree's pane is open: open it with `/f
 
 ## Install
 
-Load the folder for every session through `env` in `~/.claude/settings.json`. Separate several
+linkC installs this mod to `~/Library/Application Support/linkC/mods/linkc-agents` on launch.
+Load that folder for every session through `env` in `~/.claude/settings.json`. Separate several
 folders with `:`.
 
 ```json
 {
   "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "/path/to/linkC/mods/linkc-agents"
+    "CLAUDE_CODE_PLUGIN_DIRS": "~/Library/Application Support/linkC/mods/linkc-agents"
   }
 }
 ```
