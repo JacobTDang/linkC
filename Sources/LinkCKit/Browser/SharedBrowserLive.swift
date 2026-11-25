@@ -4,9 +4,11 @@ import Foundation
 /// A Chrome `SharedBrowser` started.
 @MainActor
 public protocol SharedBrowserProcess: AnyObject, Sendable {
-    var pid: Int32 { get }
     var isRunning: Bool { get }
+    /// Asks it to quit (SIGTERM).
     func stop()
+    /// Ends it at once (SIGKILL), for one that did not quit when asked.
+    func kill()
 }
 
 /// Starts Chrome, and agent-browser where nothing may wait for it.
@@ -17,14 +19,27 @@ public protocol SharedBrowserLaunching: AnyObject {
     func launch(
         executable: String, arguments: [String], log: URL, onExit: @escaping @MainActor @Sendable (Int32) -> Void
     ) throws -> any SharedBrowserProcess
-    /// Starts `executable` and leaves it running unwatched, for work at quit.
-    func runDetached(executable: String, arguments: [String]) throws
+    /// Starts `executable` with `environment` merged into linkC's own and leaves it running
+    /// unwatched, for work at quit.
+    func runDetached(executable: String, arguments: [String], environment: [String: String]) throws
 }
 
-/// Chrome's DevTools HTTP endpoints.
+/// A tab of Chrome's.
+public struct PageTarget: Equatable, Sendable {
+    public let id: String
+    /// The tab that opened it, for a popup.
+    public let opener: String?
+
+    public init(id: String, opener: String? = nil) {
+        self.id = id
+        self.opener = opener
+    }
+}
+
+/// Chrome's DevTools endpoints.
 public protocol SharedBrowserDevTools: Sendable {
-    /// The ids of every page target.
-    func pageTargets(port: Int) async throws -> [String]
+    /// Every page target.
+    func pageTargets(port: Int) async throws -> [PageTarget]
     /// Closes a target; one that is already gone is not an error.
     func closeTarget(_ id: String, port: Int) async throws
 }
@@ -43,11 +58,17 @@ public final class LiveSharedBrowserProcess: SharedBrowserProcess {
 
     init(_ process: Process) { self.process = process }
 
-    public var pid: Int32 { process.processIdentifier }
     public var isRunning: Bool { process.isRunning }
 
     public func stop() {
         if process.isRunning { process.terminate() }
+    }
+
+    public func kill() {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        guard Darwin.kill(pid, SIGKILL) != 0, errno != ESRCH else { return }
+        NSLog("[linkC browser] SIGKILL to Chrome pid %d failed — %s", pid, strerror(errno))
     }
 }
 
@@ -85,10 +106,11 @@ public final class LiveSharedBrowserLauncher: SharedBrowserLaunching {
         return LiveSharedBrowserProcess(process)
     }
 
-    public func runDetached(executable: String, arguments: [String]) throws {
+    public func runDetached(executable: String, arguments: [String], environment: [String: String]) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, given in given }
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -105,10 +127,10 @@ public struct LiveSharedBrowserDevTools: SharedBrowserDevTools {
         session = URLSession(configuration: configuration)
     }
 
-    public func pageTargets(port: Int) async throws -> [String] {
+    public func pageTargets(port: Int) async throws -> [PageTarget] {
         let (data, status) = try await get("/json/list", port: port)
         guard status == 200 else { throw LinkCError.process("Chrome answered /json/list with HTTP \(status)") }
-        return try Self.pageIds(in: data)
+        return try Self.pageIds(in: data).map { PageTarget(id: $0) }
     }
 
     public func closeTarget(_ id: String, port: Int) async throws {

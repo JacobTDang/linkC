@@ -9,21 +9,36 @@ final class FakeBrowserProcess: SharedBrowserProcess {
     let pid: Int32
     var isRunning = true
     var stopCount = 0
+    var killCount = 0
+    /// A Chrome that takes its time over SIGTERM: `stop()` leaves it running.
+    var ignoresStop = false
     var onExit: (@MainActor (Int32) -> Void)?
+    var events: (String) -> Void = { _ in }
+    /// Runs when it exits, after `onExit`.
+    var onExited: () -> Void = {}
 
     init(pid: Int32) { self.pid = pid }
 
     /// Like Chrome under `terminate()`: it stops, and its exit is reported.
     func stop() {
         stopCount += 1
-        guard isRunning else { return }
+        events("stop \(pid)")
+        guard isRunning, !ignoresStop else { return }
         exit(status: 15)
+    }
+
+    func kill() {
+        killCount += 1
+        events("kill \(pid)")
+        guard isRunning else { return }
+        exit(status: 9)
     }
 
     /// Chrome exiting by itself.
     func exit(status: Int32 = 1) {
         isRunning = false
         onExit?(status)
+        onExited()
     }
 }
 
@@ -33,10 +48,17 @@ final class FakeBrowserLauncher: SharedBrowserLaunching {
     var executableChecks = 0
     var launches: [[String]] = []
     var processes: [FakeBrowserProcess] = []
-    /// The port each launch writes to `DevToolsActivePort` at once; nil writes none.
+    /// The port each launch writes to `DevToolsActivePort` at once, unless it asks for one of its
+    /// own; nil writes none.
     var publishesPort: Int? = 43117
     var detached: [[String]] = []
+    var detachedEnvironments: [[String: String]] = []
     var events: (String) -> Void = { _ in }
+    /// Each new Chrome takes its time over SIGTERM.
+    var ignoresStop = false
+    /// When set, each Chrome holds its profile's `SingletonLock` as Chrome does, with linkC as its
+    /// parent, and is listed here until it exits.
+    var holdsLock: FakeProcesses?
 
     func isExecutable(_ path: String) -> Bool {
         executableChecks += 1
@@ -50,13 +72,29 @@ final class FakeBrowserLauncher: SharedBrowserLaunching {
         events("launch")
         let process = FakeBrowserProcess(pid: Int32(1000 + launches.count))
         process.onExit = onExit
+        process.events = { [weak self] in self?.events($0) }
+        process.ignoresStop = ignoresStop
         processes.append(process)
-        if let publishesPort { publish(port: publishesPort) }
+        if let holdsLock, let profile {
+            let lock = profile.appendingPathComponent("SingletonLock")
+            try? FileManager.default.removeItem(at: lock)
+            try FileManager.default.createSymbolicLink(atPath: lock.path, withDestinationPath: "MyMac-\(process.pid)")
+            holdsLock.add(pid: process.pid, arguments: [executable] + arguments, parent: getpid())
+            process.onExited = { [pid = process.pid] in holdsLock.remove(pid: pid) }
+        }
+        let asked = arguments.first { $0.hasPrefix("--remote-debugging-port=") }
+            .flatMap { Int($0.dropFirst("--remote-debugging-port=".count)) }
+        if let asked, asked != 0 {
+            publish(port: asked)
+        } else if let publishesPort {
+            publish(port: publishesPort)
+        }
         return process
     }
 
-    func runDetached(executable: String, arguments: [String]) throws {
+    func runDetached(executable: String, arguments: [String], environment: [String: String]) throws {
         detached.append([executable] + arguments)
+        detachedEnvironments.append(environment)
     }
 
     /// The profile folder of the last launch.
@@ -74,6 +112,7 @@ final class FakeBrowserLauncher: SharedBrowserLaunching {
 final class FakeDevTools: SharedBrowserDevTools, @unchecked Sendable {
     private let lock = NSLock()
     private var _pages: [String] = []
+    private var _openers: [String: String] = [:]
     private var _closed: [String] = []
     private var _lists = 0
     var closeError: Error?
@@ -82,11 +121,19 @@ final class FakeDevTools: SharedBrowserDevTools, @unchecked Sendable {
         get { lock.withLock { _pages } }
         set { lock.withLock { _pages = newValue } }
     }
+    /// The tab that opened each popup.
+    var openers: [String: String] {
+        get { lock.withLock { _openers } }
+        set { lock.withLock { _openers = newValue } }
+    }
     var closed: [String] { lock.withLock { _closed } }
     var lists: Int { lock.withLock { _lists } }
 
-    func pageTargets(port: Int) async throws -> [String] {
-        lock.withLock { _lists += 1; return _pages }
+    func pageTargets(port: Int) async throws -> [PageTarget] {
+        lock.withLock {
+            _lists += 1
+            return _pages.map { PageTarget(id: $0, opener: _openers[$0]) }
+        }
     }
 
     func closeTarget(_ id: String, port: Int) async throws {
@@ -112,6 +159,13 @@ final class FakeProcesses: SharedBrowserProcessInspecting, @unchecked Sendable {
         }
     }
 
+    func remove(pid: Int32) {
+        lock.withLock {
+            _arguments[pid] = nil
+            _parents[pid] = nil
+        }
+    }
+
     var signals: [(pid: Int32, signal: Int32)] { lock.withLock { _signals } }
 
     func arguments(of pid: Int32) -> [String]? { lock.withLock { _arguments[pid] } }
@@ -130,12 +184,22 @@ final class FakeProcesses: SharedBrowserProcessInspecting, @unchecked Sendable {
 final class RecordingRunner: ProcessRunner, @unchecked Sendable {
     private let lock = NSLock()
     private var _calls: [[String]] = []
+    private var _environments: [[String: String]] = []
     var result = ProcessResult(status: 0, stdout: #"{"success":true}"#, stderr: "")
 
     var calls: [[String]] { lock.withLock { _calls } }
+    /// The environment each call was given to merge.
+    var environments: [[String: String]] { lock.withLock { _environments } }
 
     func runCapturing(_ executable: String, args: [String], cwd: URL?, timeout: TimeInterval) async throws -> ProcessResult {
-        lock.withLock { _calls.append([executable] + args) }
+        try await runCapturing(executable, args: args, cwd: cwd, env: [:], timeout: timeout)
+    }
+
+    func runCapturing(_ executable: String, args: [String], cwd: URL?, env: [String: String], timeout: TimeInterval) async throws -> ProcessResult {
+        lock.withLock {
+            _calls.append([executable] + args)
+            _environments.append(env)
+        }
         return result
     }
 }

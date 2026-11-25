@@ -191,7 +191,7 @@ public final class SharedBrowser {
         for member in members.values where member.instance != nil {
             if let command = daemonCloseCommand(for: member) {
                 do {
-                    try launcher.runDetached(executable: command[0], arguments: Array(command.dropFirst()))
+                    try launcher.runDetached(executable: command[0], arguments: Array(command.dropFirst()), environment: [:])
                 } catch {
                     NSLog("[linkC browser] could not stop agent-browser session %@ — %@", member.sessionName, String(describing: error))
                 }
@@ -212,7 +212,7 @@ public final class SharedBrowser {
             guard case .running(let running) = instance, !holders(of: project, instance: running.id).isEmpty else { continue }
             let pages: [String]
             do {
-                pages = try await devTools.pageTargets(port: running.port)
+                pages = try await devTools.pageTargets(port: running.port).map(\.id)
             } catch {
                 reportOnce("tabs", "linkC could not list the shared browser's tabs for \(project) — \(error.localizedDescription)")
                 continue
@@ -362,7 +362,7 @@ public final class SharedBrowser {
                 return nil
             }
             do {
-                running.known = Set(try await devTools.pageTargets(port: running.port))
+                running.known = Set(try await devTools.pageTargets(port: running.port).map(\.id))
             } catch {
                 reportOnce("tabs", "linkC could not list the shared browser's tabs for \(project) — \(error.localizedDescription)")
             }
