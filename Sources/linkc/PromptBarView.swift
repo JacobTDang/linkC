@@ -33,6 +33,8 @@ struct PromptBarField: View {
 
     @FocusState private var focused: Bool
     @State private var hovering = false
+    /// Whether the field had the keyboard when Enter started opening a pick.
+    @State private var hadFocusWhenOpening = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -46,6 +48,11 @@ struct PromptBarField: View {
                     .foregroundStyle(Theme.textPrimary)
                     .focused($focused)
                     .disabled(isOpening)
+                    // Disabling a focused field ends its editing on macOS. Give the focus back once
+                    // the pick is open or waits to be confirmed, so the second Enter lands in the field.
+                    .onChange(of: isOpening) { wasOpening, opening in
+                        if opening { hadFocusWhenOpening = focused } else if wasOpening, hadFocusWhenOpening { focused = true }
+                    }
                     .onSubmit(onSubmit)
                     // Both reach the field before its editor moves focus. Shift-Tab arrives as backtab
                     // (U+0019), which `.tab` does not match.

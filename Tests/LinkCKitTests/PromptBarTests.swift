@@ -532,6 +532,21 @@ final class PromptBarTests: XCTestCase {
         XCTAssertEqual(bar.line, .opened("Opened Codex — implementation"))
     }
 
+    /// What the last Enter opened was about the project left behind: switching projects clears it.
+    func testSwitchingProjectsClearsWhatTheLastEnterOpened() async {
+        let clock = ManualClock()
+        let launches = Launches()
+        let bar = makeBar(installed: [.codex], clock: clock, launches: launches)
+        bar.text = Self.implement
+        await bar.submit()?.value
+        await bar.submit()?.value
+        XCTAssertEqual(bar.line, .opened("Opened Codex — implementation"))
+
+        await bar.projectChanged()?.value
+
+        XCTAssertEqual(bar.line, .idle)
+    }
+
     func testWithNoProjectOnScreenEnterSaysSo() async {
         let services = PromptBar.Services(
             folder: { nil }, settings: { .seeded },

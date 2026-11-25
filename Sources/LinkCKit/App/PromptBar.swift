@@ -160,7 +160,12 @@ public final class PromptBar {
     /// The project on screen changed: the pick is read again there, at once.
     @discardableResult
     public func projectChanged() -> Task<Void, Never>? {
-        guard !isOpening, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard !isOpening else { return nil }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            // What the last Enter opened or said was about the project left behind.
+            reset()
+            return nil
+        }
         return startPreview(after: nil)
     }
 
