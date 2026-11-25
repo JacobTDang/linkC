@@ -54,6 +54,17 @@ final class KnownProjectsFeedTests: XCTestCase {
         return changed
     }
 
+    private func watchLimits(_ feed: KnownProjectsFeed) -> Flag {
+        let changed = Flag()
+        withObservationTracking { _ = feed.limits } onChange: { changed.set() }
+        return changed
+    }
+
+    private func codexUsage(_ percent: Double) -> AgentUsage {
+        AgentUsage(agent: .codex, windows: [UsageWindow(label: "5h", usedPercent: percent, tokens: nil, resetsAt: nil)],
+                   planType: nil, observedAt: Date(), unavailableReason: nil)
+    }
+
     /// No `projects.json` here at all: the in-process list does not depend on the file.
     func testTheSweepPublishesTheListInProcessWithoutAFile() async {
         let coordinator = makeCoordinator()
@@ -84,6 +95,26 @@ final class KnownProjectsFeedTests: XCTestCase {
         await coordinator.runSweepTickForTests()
         XCTAssertTrue(quiet.isSet)
         XCTAssertEqual(coordinator.knownProjects.projects.flatMap(\.sessions).map(\.state), ["working"])
+    }
+
+    /// The plan limits `projects.json` lists go in-process too, for the cards' first line; observers
+    /// hear of changed limits and not of unchanged ones.
+    func testTheSweepPublishesThePlanLimitsInProcess() async {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        var usage = codexUsage(72)
+        coordinator.agentUsage = { [usage] }
+        await coordinator.runSweepTickForTests()
+        XCTAssertEqual(coordinator.knownProjects.limits, ["codex": [KnownLimit(label: "5h", percent: 72, resets: nil)]])
+
+        let quiet = watchLimits(coordinator.knownProjects)
+        await coordinator.runSweepTickForTests()
+        XCTAssertFalse(quiet.isSet, "equal limits must not redraw the cards")
+
+        usage = codexUsage(91)
+        await coordinator.runSweepTickForTests()
+        XCTAssertTrue(quiet.isSet)
+        XCTAssertEqual(coordinator.knownProjects.limits, ["codex": [KnownLimit(label: "5h", percent: 91, resets: nil)]])
     }
 
     /// The cards beside a terminal are built from the published list, so a new list is new cards.

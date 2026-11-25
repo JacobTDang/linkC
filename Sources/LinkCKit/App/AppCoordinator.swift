@@ -804,7 +804,7 @@ public final class AppCoordinator {
                                                        },
                                                        live: { self.liveDetail(for: $0) })
         let limits = KnownProjectsPublisher.limits(from: [claudeUsage].compactMap { $0 } + (agentUsage?() ?? []), now: now())
-        knownProjects.publish(projects)
+        knownProjects.publish(projects, limits: limits)
         guard let knownProjectsFile else { return }
         // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
         // contents next changed, and every MCP server would report linkC as not running.
