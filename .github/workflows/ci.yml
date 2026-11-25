@@ -114,6 +114,9 @@ jobs:
       - name: Test the TSan wrapper
         run: ./scripts/test-tsan.sh
 
+      - name: Test the mod bundling
+        run: ./scripts/test-bundle-mods.sh
+
       - name: Check the commits in this change
         run: |
           # A branch's first push has no "before" commit; check just the pushed head.
