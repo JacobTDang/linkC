@@ -44,7 +44,14 @@ public struct OpenCodeLiveReader: SessionLiveReader {
         guard counts.allSatisfy({ $0 != nil }) else {
             throw LinkCError.process("OpenCode's newest request for \(conversationId) has tokens that are not all whole-number counts")
         }
-        let used = counts.reduce(0) { $0 + ($1 ?? 0) }
+        var used = 0
+        for count in counts {
+            let (sum, overflowed) = used.addingReportingOverflow(count ?? 0)
+            guard !overflowed else {
+                throw LinkCError.process("OpenCode's newest request for \(conversationId) has tokens too many to add")
+            }
+            used = sum
+        }
         guard used > 0, let provider = row.providerID, let model = row.modelID,
               let window = try windows.contextWindow(provider: provider, model: model) else { return SessionLiveDetail() }
         let percent = (Double(used) / Double(window) * 100).rounded()

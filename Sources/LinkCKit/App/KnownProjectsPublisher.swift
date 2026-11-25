@@ -71,16 +71,24 @@ public enum KnownProjectsPublisher {
     /// Each agent's plan limits for `projects.json`, keyed by `AgentKind.rawValue`: the windows of a
     /// fresh reading that give a percent and have not reset by `now`. A reading older than
     /// `AgentUsage.staleAfter`, or one with no such window, gives none: a figure that may no longer
-    /// be true is not published as current.
-    public static func limits(from usages: [AgentUsage], now: Date) -> [String: [KnownLimit]] {
+    /// be true is not published as current. A window whose percent is not from 0 to 100 is left out
+    /// and said through `report`, once for each time it is met.
+    public static func limits(
+        from usages: [AgentUsage], now: Date, report: (String) -> Void = { NSLog("[linkC] %@", $0) }
+    ) -> [String: [KnownLimit]] {
         var limits: [String: [KnownLimit]] = [:]
         for usage in usages {
             guard let observedAt = usage.observedAt, now.timeIntervalSince(observedAt) <= AgentUsage.staleAfter else { continue }
             let windows = usage.windows.compactMap { window -> KnownLimit? in
                 guard let percent = window.usedPercent else { return nil }
                 if let resetsAt = window.resetsAt, resetsAt <= now { return nil }
-                return KnownLimit(label: window.label, percent: Int(percent.rounded()),
-                                  resets: window.resetsAt?.formatted(.iso8601))
+                do {
+                    return KnownLimit(label: window.label, percent: try ReportedPercent.whole(percent),
+                                      resets: window.resetsAt?.formatted(.iso8601))
+                } catch {
+                    report("\(usage.agent.rawValue)'s \"\(window.label)\" limit is left out of projects.json — \(error)")
+                    return nil
+                }
             }
             if !windows.isEmpty { limits[usage.agent.rawValue] = windows }
         }

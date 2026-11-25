@@ -274,6 +274,19 @@ final class OpenCodeLiveReaderTests: XCTestCase {
         }
     }
 
+    /// Counts too big to add are a read failure, not a trap on the sum.
+    func testTokensTooBigToAddThrow() throws {
+        try makeDatabase()
+        try addSession("ses_a")
+        try addMessage("ses_a", seq: 1, type: "assistant",
+                       data: assistant(input: Int.max, output: Int.max, reasoning: 1, read: 1, write: 1))
+        try writeModels(context: 100_000)
+
+        XCTAssertThrowsError(try reader().read(target("ses_a"))) { error in
+            XCTAssertTrue(error.localizedDescription.contains("tokens"), error.localizedDescription)
+        }
+    }
+
     func testTokensMissingAFieldThrow() throws {
         try makeDatabase()
         try addSession("ses_a")

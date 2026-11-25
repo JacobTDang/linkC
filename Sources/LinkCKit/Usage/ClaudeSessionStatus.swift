@@ -47,10 +47,10 @@ public struct ClaudeSessionStatus: Equatable, Sendable {
 
     /// How much of the context window the report says the conversation fills
     /// (`context_window.used_percentage`); nil when it says nothing. Throws when the report is not
-    /// JSON or its `context_window` is not the shape Claude sends.
+    /// JSON, its `context_window` is not the shape Claude sends, or its percent is not from 0 to 100.
     public static func contextPercent(in body: Data) throws -> Int? {
         try JSONDecoder().decode(ContextPart.self, from: body).context_window?.used_percentage
-            .map { Int($0.rounded()) }
+            .map(ReportedPercent.whole)
     }
 
     /// When the report says the prompt cache goes cold; nil when it says nothing. Throws when the

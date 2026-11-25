@@ -18,6 +18,23 @@ final class ClaudeSessionStatusTests: XCTestCase {
         XCTAssertEqual(try ClaudeSessionStatus.contextPercent(in: Data(body.utf8)), 41)
     }
 
+    /// A percent no window can have is refused as a read failure; `Int(1e30)` is a trap, not a number.
+    func testAContextUseOutsideZeroToOneHundredIsRefused() {
+        for percent in ["1e30", "-5", "250", "100.5"] {
+            let body = Data(#"{"context_window":{"used_percentage":\#(percent)}}"#.utf8)
+            XCTAssertThrowsError(try ClaudeSessionStatus.contextPercent(in: body), "used_percentage \(percent)") { error in
+                XCTAssertTrue(String(describing: error).contains("is not a percentage from 0 to 100"), "\(error)")
+            }
+        }
+    }
+
+    func testTheEdgesOfTheContextRangeAreKept() throws {
+        for (percent, whole) in [("0", 0), ("41.6", 42), ("100", 100)] {
+            let body = Data(#"{"context_window":{"used_percentage":\#(percent)}}"#.utf8)
+            XCTAssertEqual(try ClaudeSessionStatus.contextPercent(in: body), whole, "used_percentage \(percent)")
+        }
+    }
+
     func testAReportWithoutAContextWindowHasNoContextUse() throws {
         XCTAssertNil(try ClaudeSessionStatus.contextPercent(in: Data(#"{"session_id":"c1"}"#.utf8)))
         XCTAssertNil(try ClaudeSessionStatus.contextPercent(in: Data(#"{"context_window":{"context_window_size":200000}}"#.utf8)))
@@ -69,6 +86,21 @@ final class ClaudeSessionStatusTests: XCTestCase {
         let logged = Lines()
         let store = ClaudeSessionStatuses(log: { logged.append($0) })
         store.accept(sessionId: "A", body: Data(#"{"model":{"id":"claude-opus-5-5"},"context_window":{"used_percentage":"lots"}}"#.utf8))
+
+        XCTAssertEqual(store.status(for: "A")?.modelId, "claude-opus-5-5")
+        XCTAssertNil(store.status(for: "A")?.contextPercent)
+        XCTAssertEqual(logged.count, 1)
+        XCTAssertEqual(logged.first?.contains("its context use"), true)
+    }
+
+    /// A context use no window can have costs the session its context use, not its model or the
+    /// app, and is said once.
+    func testAnImpossibleContextUseKeepsTheModelAndIsLogged() {
+        let logged = Lines()
+        let store = ClaudeSessionStatuses(log: { logged.append($0) })
+        let body = Data(#"{"model":{"id":"claude-opus-5-5"},"context_window":{"used_percentage":1e30}}"#.utf8)
+        store.accept(sessionId: "A", body: body)
+        store.accept(sessionId: "A", body: body)
 
         XCTAssertEqual(store.status(for: "A")?.modelId, "claude-opus-5-5")
         XCTAssertNil(store.status(for: "A")?.contextPercent)

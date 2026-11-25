@@ -214,6 +214,28 @@ final class KnownProjectsPublisherTests: XCTestCase {
         ]])
     }
 
+    /// A percent no window can have is left out and said, never rounded: `Int(1e30)` and `Int(.nan)`
+    /// are traps. The windows that are fine are still published.
+    func testALimitWithAnImpossiblePercentIsLeftOutAndSaid() {
+        let usage = AgentUsage(agent: .codex, windows: [
+            UsageWindow(label: "huge", usedPercent: 1e30, tokens: nil, resetsAt: nil),
+            UsageWindow(label: "nan", usedPercent: .nan, tokens: nil, resetsAt: nil),
+            UsageWindow(label: "negative", usedPercent: -5, tokens: nil, resetsAt: nil),
+            UsageWindow(label: "over", usedPercent: 250, tokens: nil, resetsAt: nil),
+            UsageWindow(label: "7d", usedPercent: 12, tokens: nil, resetsAt: nil),
+        ], planType: nil, observedAt: now.addingTimeInterval(-60), unavailableReason: nil)
+        var said: [String] = []
+
+        let limits = KnownProjectsPublisher.limits(from: [usage], now: now, report: { said.append($0) })
+
+        XCTAssertEqual(limits, ["codex": [KnownLimit(label: "7d", percent: 12, resets: nil)]])
+        XCTAssertEqual(said.count, 4)
+        for label in ["huge", "nan", "negative", "over"] {
+            XCTAssertEqual(said.filter { $0.contains("\"\(label)\"") }.count, 1, "\(label) is said once: \(said)")
+        }
+        XCTAssertTrue(said.allSatisfy { $0.contains("codex") }, "each says whose reading it was: \(said)")
+    }
+
     func testEndedSessionIsLeftOut() {
         let path = "/tmp/linkc-pub-ended-\(UUID().uuidString)"
         let sessions = [
