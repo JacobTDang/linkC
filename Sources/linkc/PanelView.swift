@@ -140,30 +140,40 @@ private struct TerminalPane: View {
     let onBack: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.displayScale) private var displayScale
     /// An agent opened for reading — replaces the terminal until dismissed.
     @State private var readerAgent: AgentRun?
+    /// The pane's width, which the terminal and the agents column share; nil until laid out.
+    @State private var paneWidth: CGFloat?
 
     var body: some View {
+        // The agent cards go with the terminal only while it shows here, not while a window holds it.
+        let shownHere = model.selectedId.flatMap { model.host(of: $0) == nil ? $0 : nil }
+        let placement = model.agentsColumnPlacement(for: shownHere, paneWidth: paneWidth, backingScale: displayScale)
         VStack(alignment: .leading, spacing: 8) {
             if let id = model.selectedId, let session = model.sessions.first(where: { $0.id == id }) {
-                SessionHeaderStrip(model: model, session: session, onBack: onBack) { readerAgent = $0 }
+                SessionHeaderStrip(model: model, session: session, columnPlacement: placement, onBack: onBack) { readerAgent = $0 }
             } else if let id = model.selectedId, let shell = model.shellRows.first(where: { $0.id == id }) {
                 ShellHeaderStrip(row: shell, onBack: onBack)
             }
-            ZStack {
-                if let readerAgent {
-                    AgentReaderView(agent: currentAgent(readerAgent)) { self.readerAgent = nil }
-                        .transition(reduceMotion
-                            ? .opacity
-                            : .move(edge: .trailing).combined(with: .opacity))
-                } else {
-                    terminal
-                        .transition(.opacity)
+            HStack(spacing: 0) {
+                ZStack {
+                    if let readerAgent {
+                        AgentReaderView(agent: currentAgent(readerAgent)) { self.readerAgent = nil }
+                            .transition(reduceMotion
+                                ? .opacity
+                                : .move(edge: .trailing).combined(with: .opacity))
+                    } else {
+                        terminal
+                            .transition(.opacity)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .animation(Theme.viewSwap, value: readerAgent?.id)
+                AgentsColumnHost(model: model, sessionId: shownHere, placement: placement, inWindow: false)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .animation(Theme.viewSwap, value: readerAgent?.id)
         }
+        .onGeometryChange(for: CGFloat.self, of: \.size.width) { paneWidth = $0 }
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 12)

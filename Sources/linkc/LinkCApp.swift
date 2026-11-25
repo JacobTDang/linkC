@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Menu-bar utility: no Dock icon, no main window.
         NSApp.setActivationPolicy(.accessory)
         panelController = StatusPanelController(model: model)
+        model.onShowPanel = { [weak self] in self?.panelController?.present(activating: true) }
         hotKey = GlobalHotKey { [weak self] in self?.panelController?.togglePanel() }
         applyHotKeyPreference()
         observeHotKeyPreference()
@@ -204,6 +205,9 @@ final class AppModel {
     private(set) var codexUsage: AgentUsage?
     /// The sidebar's non-observable inputs, published by `sampleSidebar()` only when they change.
     let sidebarSignal = SidebarSignalFeed()
+    /// The repo of each known project folder, for the agents column beside a terminal. Filled by the
+    /// panel's sweep (`resolveRepoRoots`).
+    let repoRoots = RepoRoots()
 
     /// Surface a one-off failure in the panel's error bar (fail loud, stay standing).
     func surface(error message: String) { lastError = message }
@@ -334,6 +338,7 @@ final class AppModel {
             coordinator.panelSweep = { [weak self] in
                 await self?.sampleShells()
                 self?.sampleSidebar()
+                self?.resolveRepoRoots()
             }
             self.coordinator = coordinator
             self.mcpServers = MCPServerService(claudePath: preflight.claudePath)
@@ -793,6 +798,8 @@ final class AppModel {
 
     /// Brings a torn-off window forward. Set by the window controller.
     @ObservationIgnored var onRaiseWindow: ((TornOffItem) -> Void)?
+    /// Shows the menu-bar panel and gives it the keyboard. Set by the app delegate.
+    @ObservationIgnored var onShowPanel: (() -> Void)?
     /// The menu-bar panel's frame in screen points, where a window opens beside it. Set by the panel's
     /// controller; nil when there is no panel to be beside.
     @ObservationIgnored var panelFrame: () -> CGRect? = { nil }

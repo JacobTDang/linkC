@@ -324,6 +324,9 @@ public final class AppCoordinator {
     /// Last contents written to `knownProjectsFile`, so a rewrite only happens when they change.
     private var lastPublishedProjects: [KnownProject]?
     private var lastPublishedLimits: [String: [KnownLimit]]?
+    /// The known-projects list in-process, for the app's agent cards. Published on every sweep, with
+    /// or without `knownProjectsFile`.
+    public let knownProjects = KnownProjectsFeed()
     /// How many times `projects.json` was written this run — test seam for rewrite-on-change.
     private(set) var knownProjectsWriteCount = 0
     /// Where the `linkc` command leaves its requests; nil turns the command off.
@@ -785,7 +788,6 @@ public final class AppCoordinator {
     }
 
     private func publishKnownProjects(sidebar: [String], mcpFolders: Set<String>) {
-        guard let knownProjectsFile else { return }
         // Resolved once for the whole publish: a title can depend on the other sessions (numbering).
         let titles = sessionTitles?() ?? [:]
         let projects = KnownProjectsPublisher.projects(sidebar: sidebar, mcpFolders: mcpFolders, sessions: store.sessions,
@@ -802,6 +804,8 @@ public final class AppCoordinator {
                                                        },
                                                        live: { self.liveDetail(for: $0) })
         let limits = KnownProjectsPublisher.limits(from: [claudeUsage].compactMap { $0 } + (agentUsage?() ?? []), now: now())
+        knownProjects.publish(projects, limits: limits)
+        guard let knownProjectsFile else { return }
         // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
         // contents next changed, and every MCP server would report linkC as not running.
         if lastPublishedProjects == projects, lastPublishedLimits == limits,

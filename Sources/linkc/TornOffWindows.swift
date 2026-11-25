@@ -8,6 +8,7 @@ import SwiftUI
 struct TornOffView: View {
     let model: AppModel
     let item: TornOffItem
+    let pane: TornOffPane
 
     var body: some View {
         content
@@ -20,7 +21,7 @@ struct TornOffView: View {
     /// in the panel and move the panel's selection.
     @ViewBuilder private var content: some View {
         switch item {
-        case .terminal(let id): TornOffTerminal(model: model, item: item, id: id)
+        case .terminal(let id): TornOffTerminal(model: model, item: item, id: id, pane: pane)
         case .split(let project): SplitPane(model: model, project: project, host: item)
         }
     }
@@ -33,26 +34,68 @@ private struct TornOffTerminal: View {
     let model: AppModel
     let item: TornOffItem
     let id: String
+    let pane: TornOffPane
+
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         let host = model.host(of: id)
         let session = host == item ? model.terminalSession(id) : nil
-        ZStack {
-            // Reported from AppKit's mouse handling: hand it to the main actor. The weak model breaks the
-            // cycle model -> terminals -> session -> view -> this closure.
-            TerminalContainer(session: session, takesFocus: true,
-                              onClick: { [weak model] in Task { @MainActor in model?.acknowledge(id) } })
-                .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
-            if host != item, let host {
-                WindowedNote(model: model, item: host)
+        let shownHere = session == nil ? nil : id
+        HStack(spacing: 0) {
+            ZStack {
+                // Reported from AppKit's mouse handling: hand it to the main actor. The weak model breaks the
+                // cycle model -> terminals -> session -> view -> this closure.
+                TerminalContainer(session: session, takesFocus: true,
+                                  onClick: { [weak model] in Task { @MainActor in model?.acknowledge(id) } })
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
+                if host != item, let host {
+                    WindowedNote(model: model, item: host)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            AgentsColumnHost(model: model, sessionId: shownHere,
+                             placement: model.agentsColumnPlacement(for: shownHere, paneWidth: pane.width, backingScale: displayScale),
+                             inWindow: true)
         }
+        .onGeometryChange(for: CGFloat.self, of: \.size.width) { pane.width = $0 }
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 12)
         .onChange(of: session.map(ObjectIdentifier.init), initial: true) { _, _ in
             TerminalStyle.apply(to: session)
         }
+    }
+}
+
+/// A torn-off terminal's pane width, measured by the window's content, for the agents toggle in the
+/// window's title bar, which lies outside that content. nil until laid out.
+@MainActor
+@Observable
+final class TornOffPane {
+    var width: CGFloat?
+}
+
+/// The agents toggle at the end of a torn-off terminal's title bar, as the panel has it in the header
+/// strip the window does not have. Shown while the window holds the terminal of a session.
+private struct TornOffAgentsToggle: View {
+    let model: AppModel
+    let item: TornOffItem
+    let id: String
+    let pane: TornOffPane
+
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        Group {
+            if model.host(of: id) == item, let session = model.sessions.first(where: { $0.id == id }),
+               let placement = model.agentsColumnPlacement(for: id, paneWidth: pane.width, backingScale: displayScale) {
+                AgentsColumnToggle(model: model, sessionId: id, agent: session.agentKind, placement: placement, inWindow: true)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.colorScheme, .dark)
+        .tint(Theme.accent)
     }
 }
 
@@ -196,7 +239,8 @@ final class TornOffWindows: NSObject, NSWindowDelegate {
         window.setFrame(entry.frame.clamped(within: screens).rect, display: false)
 
         let glass = NSVisualEffectView.linkCGlass()
-        let hosting = NSHostingView(rootView: TornOffView(model: model, item: entry.item))
+        let pane = TornOffPane()
+        let hosting = NSHostingView(rootView: TornOffView(model: model, item: entry.item, pane: pane))
         // The window decides its size; the content only fills it.
         hosting.sizingOptions = []
         hosting.translatesAutoresizingMaskIntoConstraints = false
@@ -217,9 +261,25 @@ final class TornOffWindows: NSObject, NSWindowDelegate {
             hosting.bottomAnchor.constraint(equalTo: glass.bottomAnchor),
         ])
 
+        if case .terminal(let id) = entry.item {
+            window.addTitlebarAccessoryViewController(agentsToggle(id: id, item: entry.item, pane: pane))
+        }
+
         window.delegate = self
         windows[entry.item] = window
         return window
+    }
+
+    /// The agents toggle for the trailing end of a terminal window's title bar.
+    private func agentsToggle(id: String, item: TornOffItem, pane: TornOffPane) -> NSTitlebarAccessoryViewController {
+        let hosting = NSHostingView(rootView: TornOffAgentsToggle(model: model, item: item, id: id, pane: pane))
+        // The title bar sets the height; the width holds the button and its margin.
+        hosting.sizingOptions = []
+        hosting.frame = NSRect(x: 0, y: 0, width: 34, height: 28)
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = hosting
+        accessory.layoutAttribute = .trailing
+        return accessory
     }
 
     /// Closes the window of an entry that is gone. Its delegate goes first: `windowWillClose` is for the
