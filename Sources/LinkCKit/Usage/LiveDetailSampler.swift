@@ -162,9 +162,11 @@ public final class LiveDetailSampler: @unchecked Sendable {
             case .success(let detail):
                 details[id] = detail
             case .failure(let error):
-                // An old figure would misstate the session now: it goes.
-                details[id] = nil
-                let failure = "session \(id)'s own records could not be read — \(error)"
+                // An old figure would misstate the session now: only what this read found stands.
+                let partial = error as? PartialLiveRead
+                details[id] = partial?.detail
+                let failure = partial.map { "session \(id)'s own records could not all be read — \($0)" }
+                    ?? "session \(id)'s own records could not be read — \(error)"
                 let now = now()
                 if let last = lastFailure[id], last.said == failure, now.timeIntervalSince(last.at) < Self.repeatAfter { continue }
                 said.append(failure)

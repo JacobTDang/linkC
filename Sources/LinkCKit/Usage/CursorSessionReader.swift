@@ -29,14 +29,26 @@ public struct CursorSessionReader: SessionLiveReader {
         return [store, store + "-wal"] + (try transcript(ofChat: Self.chatId(ofStore: store)).map { [$0.path] } ?? [])
     }
 
+    /// The context from the chat store and the step from the transcript, each read on its own: when
+    /// one cannot be read, the other still stands, and a `PartialLiveRead` says what failed.
     public func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
         guard let store = Self.chatStore(among: target) else { return SessionLiveDetail() }
-        let chatId = Self.chatId(ofStore: store)
-        var step: String?
-        if let transcript = try transcript(ofChat: chatId) {
-            step = try CursorTranscriptStep.label(inTranscriptAt: transcript, tailBytes: tailBytes)
+        var detail = SessionLiveDetail()
+        var failures: [any Error] = []
+        do {
+            detail.contextPercent = try Self.contextPercent(inStoreAt: store)
+        } catch {
+            failures.append(error)
         }
-        return SessionLiveDetail(contextPercent: try Self.contextPercent(inStoreAt: store), step: step)
+        do {
+            if let transcript = try transcript(ofChat: Self.chatId(ofStore: store)) {
+                detail.step = try CursorTranscriptStep.label(inTranscriptAt: transcript, tailBytes: tailBytes)
+            }
+        } catch {
+            failures.append(error)
+        }
+        guard failures.isEmpty else { throw PartialLiveRead(detail: detail, failures: failures) }
+        return detail
     }
 
     private static func chatId(ofStore store: String) -> String {

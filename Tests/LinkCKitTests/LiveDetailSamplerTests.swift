@@ -78,6 +78,26 @@ final class LiveDetailSamplerTests: XCTestCase {
         XCTAssertEqual(logged.all.first?.contains("the record is torn"), true)
     }
 
+    /// Reads one part of its record and not the other.
+    private struct HalfRead: SessionLiveReader {
+        func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
+            throw PartialLiveRead(detail: SessionLiveDetail(contextPercent: 50), failures: [Failing.Broken()])
+        }
+    }
+
+    /// What a read did find stands, and what it could not read is said, once.
+    func testAPartReadStandsAndTheRestIsSaidOnce() async {
+        let logged = Lines()
+        let sampler = LiveDetailSampler(readers: [.cursor: HalfRead()], log: { logged.append($0) })
+
+        await sampler.refresh([session("S1", .cursor)])?.value
+        await sampler.refresh([session("S1", .cursor)])?.value
+
+        XCTAssertEqual(sampler.detail(for: "S1"), SessionLiveDetail(contextPercent: 50))
+        XCTAssertEqual(logged.all.count, 1)
+        XCTAssertEqual(logged.all.first?.contains("the record is torn"), true, logged.all.first ?? "")
+    }
+
     /// Reads, then fails: a figure from before the failure is not kept as if it were current.
     private final class ThenFailing: SessionLiveReader, @unchecked Sendable {
         private let lock = NSLock()

@@ -49,3 +49,18 @@ extension SessionLiveDetail {
         return Int(min(100, (Double(used) / Double(window) * 100).rounded()))
     }
 }
+
+/// A read that found part of what it looked for: `detail` holds what it read, `failures` say why
+/// the rest could not be read. The sampler keeps the detail and says the failures.
+public struct PartialLiveRead: LocalizedError, CustomStringConvertible {
+    public let detail: SessionLiveDetail
+    public let failures: [any Error]
+
+    public init(detail: SessionLiveDetail, failures: [any Error]) {
+        self.detail = detail
+        self.failures = failures
+    }
+
+    public var description: String { failures.map { String(describing: $0) }.joined(separator: "; ") }
+    public var errorDescription: String? { description }
+}

@@ -330,11 +330,41 @@ final class CursorSessionReaderTests: XCTestCase {
         XCTAssertEqual(try reader.read(target([store])).step, "$ swift build")
     }
 
-    func testATranscriptLineThatIsNotJSONThrows() throws {
-        let store = try chatStore()
-        try transcript([userLine(), "not json", assistantLine(text())])
-        XCTAssertThrowsError(try stepReader().read(target([store]))) { error in
-            XCTAssertTrue(error.localizedDescription.contains("not JSON"), error.localizedDescription)
+    // MARK: - One part read, the other not
+
+    private func assertPartial(_ store: String, keeps detail: SessionLiveDetail, sayingAll reasons: [String],
+                               file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertThrowsError(try stepReader().read(target([store])), file: file, line: line) { error in
+            guard let partial = error as? PartialLiveRead else {
+                return XCTFail("not a partial read: \(error)", file: file, line: line)
+            }
+            XCTAssertEqual(partial.detail, detail, file: file, line: line)
+            for reason in reasons {
+                XCTAssertTrue(error.localizedDescription.contains(reason), error.localizedDescription, file: file, line: line)
+            }
         }
+    }
+
+    /// A transcript line that is not JSON leaves the step unread, and says so; the context, read
+    /// from the chat store, still stands.
+    func testATranscriptLineThatIsNotJSONLeavesTheContextStanding() throws {
+        let store = try chatStore(blob: rootBlob(used: 50, window: 100))
+        try transcript([userLine(), "not json", assistantLine(text())])
+        assertPartial(store, keeps: SessionLiveDetail(contextPercent: 50), sayingAll: ["not JSON"])
+    }
+
+    /// A chat store that cannot be read leaves the step, read from the transcript, standing.
+    func testAStoreThatCannotBeReadLeavesTheStepStanding() throws {
+        let store = try chatStore()
+        try Data("not a database".utf8).write(to: URL(fileURLWithPath: store))
+        try transcript([userLine(), assistantLine(toolUse("Shell", #"{"command":"swift build"}"#))])
+        assertPartial(store, keeps: SessionLiveDetail(step: "$ swift build"), sayingAll: ["sqlite3 could not read"])
+    }
+
+    func testBothFailingSayBoth() throws {
+        let store = try chatStore()
+        try Data("not a database".utf8).write(to: URL(fileURLWithPath: store))
+        try transcript([userLine(), "not json", assistantLine(text())])
+        assertPartial(store, keeps: SessionLiveDetail(), sayingAll: ["sqlite3 could not read", "not JSON"])
     }
 }
