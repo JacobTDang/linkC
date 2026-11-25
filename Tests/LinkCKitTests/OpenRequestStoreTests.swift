@@ -203,4 +203,12 @@ final class OpenRequestStoreTests: XCTestCase {
         XCTAssertEqual(loaded.handoffFrom, "source-sess-123")
         XCTAssertEqual(loaded.goal, "finish feature")
     }
+
+    /// Handoffs travel through a folder of their own, which a linkC that predates them never reads: it
+    /// can't answer a handoff it does not understand by opening a plain session.
+    func testHandoffsHaveAFolderOfTheirOwn() {
+        XCTAssertNotEqual(OpenRequestStore.handoffApplicationSupport.directory, OpenRequestStore.applicationSupport.directory)
+        XCTAssertEqual(OpenRequestStore.handoffApplicationSupport.directory.deletingLastPathComponent(),
+                       OpenRequestStore.applicationSupport.directory.deletingLastPathComponent())
+    }
 }

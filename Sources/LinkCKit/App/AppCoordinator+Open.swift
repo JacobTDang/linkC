@@ -13,11 +13,15 @@ extension AppCoordinator {
     /// How long an answer waits for its command before linkC removes it: the command was killed, or gave up.
     static let openAnswerMaxAge: TimeInterval = 300
 
-    /// Answers every request the `linkc` command left: withdraws it before acting on it, opens its
-    /// session or says why not, then clears old answers.
+    /// Answers every request the `linkc` command and `linkc_handoff` left: withdraws each before acting
+    /// on it, opens its session or says why not, then clears old answers.
     func handleOpenRequests() {
-        guard let openRequests else { return }
-        let pending = openRequests.pending()
+        if let openRequests { answer(openRequests, with: open) }
+        if let handoffRequests { answer(handoffRequests, with: handOff) }
+    }
+
+    private func answer(_ requests: OpenRequestStore, with act: (OpenRequest) -> OpenResult) {
+        let pending = requests.pending()
         guard !pending.isEmpty else { return }
         for request in pending {
             if (request.agent == .opencode || request.agent == .kilo), request.task != nil {
@@ -32,8 +36,8 @@ extension AppCoordinator {
                     break
                 case .refused(let reason), .uncheckable(let reason):
                     do {
-                        try openRequests.withdraw(request.id)
-                        try openRequests.answer(request.id, with: .refused(reason))
+                        try requests.withdraw(request.id)
+                        try requests.answer(request.id, with: .refused(reason))
                     } catch {
                         NSLog("[linkC] %@ request %@ could not be refused — %@",
                               request.agent.rawValue, request.id, String(describing: error))
@@ -43,47 +47,54 @@ extension AppCoordinator {
             }
             // Withdrawn before it is acted on, so a request whose answer can't be written is never opened twice.
             do {
-                try openRequests.withdraw(request.id)
+                try requests.withdraw(request.id)
             } catch {
                 NSLog("[linkC] open request %@ could not be withdrawn, so it is not opened — %@", request.id, String(describing: error))
                 continue
             }
-            let result = open(request)
+            let result = act(request)
             do {
-                try openRequests.answer(request.id, with: result)
+                try requests.answer(request.id, with: result)
             } catch {
                 NSLog("[linkC] open request %@: the answer could not be written — %@", request.id, String(describing: error))
             }
         }
-        openRequests.removeStaleResults(olderThan: Self.openAnswerMaxAge, now: now())
+        requests.removeStaleResults(olderThan: Self.openAnswerMaxAge, now: now())
+    }
+
+    /// Why `request` is too old to act on, or nil while it is fresh.
+    private func staleRefusal(_ request: OpenRequest) -> OpenResult? {
+        let age = now().timeIntervalSince(request.createdAt)
+        guard age > Self.openRequestMaxAge else { return nil }
+        return .refused("the request is \(Int(age)) seconds old (linkC was not running to see it in time); run the command again")
+    }
+
+    /// Opens the handoff `request` asks for: a session of its agent that continues its source session's
+    /// work. It gets a window of its own, as a session the `linkc` command opens does.
+    func handOff(_ request: OpenRequest) -> OpenResult {
+        if let stale = staleRefusal(request) { return stale }
+        guard let source = request.handoffFrom else { return .refused("a handoff request names no session to hand off") }
+        let session: Session
+        do {
+            session = try handoff(from: source, to: request.agent, tier: request.tier, model: request.model,
+                                  goal: request.goal, select: false)
+        } catch {
+            NSLog("[linkC] handoff request %@ from %@ refused — %@", request.id, source, error.localizedDescription)
+            return .refused(error.localizedDescription)
+        }
+        onCommandSessionOpened?(session.id)
+        let name = URL(fileURLWithPath: session.cwd).lastPathComponent
+        return .opened(sessionId: session.id, message: "Handed off to \(request.agent.displayName) in a linkC window (\(name)).")
     }
 
     /// Opens `request`'s agent in its folder: a worker carrying a task pinned to it when the request
     /// carries one, else the user's own session with its prompt waiting to be typed.
     func open(_ request: OpenRequest) -> OpenResult {
-        let age = now().timeIntervalSince(request.createdAt)
-        guard age <= Self.openRequestMaxAge else {
-            return .refused("the request is \(Int(age)) seconds old (linkC was not running to see it in time); run the command again")
-        }
+        if let stale = staleRefusal(request) { return stale }
         guard request.agent != .shell else { return .refused("a shell is not an agent") }
-        if let handoffFrom = request.handoffFrom {
-            do {
-                let session = try handoff(
-                    from: handoffFrom,
-                    to: request.agent,
-                    tier: request.tier,
-                    model: request.model,
-                    goal: request.goal,
-                    select: false
-                )
-                // An agent's handoff gets a window of its own, as a session the `linkc` command opens does;
-                // one from the sidebar opens in the panel.
-                onCommandSessionOpened?(session.id)
-                let name = URL(fileURLWithPath: session.cwd).lastPathComponent
-                return .opened(sessionId: session.id, message: "Handed off to \(request.agent.displayName) in a linkC window (\(name)).")
-            } catch {
-                return .refused(error.localizedDescription)
-            }
+        // Opened here, a handoff would be a plain session with no memo: it belongs in the handoff folder.
+        guard request.handoffFrom == nil else {
+            return .refused("a handoff goes through linkC's handoff folder; this one only opens sessions")
         }
         let folder = ProjectPath.canonical(request.folder)
         var isDirectory: ObjCBool = false

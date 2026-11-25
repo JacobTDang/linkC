@@ -33,7 +33,7 @@ final class MCPServerHandoffTests: XCTestCase {
             closeAnswerWait: wait,
             kiloModels: { _ in [] },
             modelLists: TestModelLists.none,
-            openRequestStore: store ?? requestStore
+            handoffRequests: store ?? requestStore
         )
     }
 
@@ -55,6 +55,23 @@ final class MCPServerHandoffTests: XCTestCase {
         XCTAssertNotNil(props["goal"])
         let required = try XCTUnwrap(schema["required"] as? [String])
         XCTAssertEqual(required, ["to"])
+    }
+
+    /// The tool writes where only a linkC that knows handoffs reads.
+    func testTheToolWritesToTheHandoffFolder() {
+        let srv = MCPServer(workspaceRoot: tempDir.path, environment: ["LINKC_AGENT": "claude"])
+        XCTAssertEqual(srv.handoffRequests.directory, OpenRequestStore.handoffApplicationSupport.directory)
+    }
+
+    /// A linkC that predates handoffs never answers one; the agent hears that it may need updating.
+    func testAnUnansweredHandoffSaysLinkCMayNeedUpdating() throws {
+        let srv = makeServer()
+        let res = try mcpCall(srv, "linkc_handoff", ["to": "codex"])
+
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("linkC did not answer"), res.text)
+        XCTAssertTrue(res.text.contains("update"), res.text)
+        XCTAssertTrue(requestStore.pending().isEmpty, "the request is withdrawn")
     }
 
     func testHandoffWithoutCallingSessionFails() throws {

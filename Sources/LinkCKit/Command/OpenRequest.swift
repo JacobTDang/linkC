@@ -85,6 +85,14 @@ public struct OpenRequestStore: Sendable {
         return OpenRequestStore(directory: dir)
     }
 
+    /// The folder `linkc_handoff` leaves its requests in, beside the `linkc` command's. A linkC that
+    /// predates handoffs never reads it, so it can't answer a handoff by opening a plain session: the
+    /// request goes unanswered and the agent is told linkC may need updating.
+    public static var handoffApplicationSupport: OpenRequestStore {
+        OpenRequestStore(directory: applicationSupport.directory.deletingLastPathComponent()
+            .appendingPathComponent("handoff-requests", isDirectory: true))
+    }
+
     private static let resultSuffix = ".result.json"
 
     private func requestURL(_ id: String) -> URL { directory.appendingPathComponent("\(id).json", isDirectory: false) }

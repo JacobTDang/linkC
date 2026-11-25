@@ -16,6 +16,7 @@ final class AppCoordinatorHandoffTests: XCTestCase {
     }
 
     private var requests: OpenRequestStore { OpenRequestStore(directory: tempDir.appendingPathComponent("open-requests")) }
+    private var handoffRequests: OpenRequestStore { OpenRequestStore(directory: tempDir.appendingPathComponent("handoff-requests")) }
     private var folder: String { ProjectPath.canonical(tempDir.path) }
 
     private func makeCoordinator(models: AgentModelSettings = .seeded,
@@ -56,6 +57,7 @@ final class AppCoordinatorHandoffTests: XCTestCase {
             injectionGap: 0,
             now: now,
             openRequests: requests,
+            handoffRequests: handoffRequests,
             openCodeModels: { _ in ["opencode/free-model"] },
             kiloModels: { _ in ["kilo/free-model"] },
             isWatching: { _ in false }
@@ -319,31 +321,68 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         }
     }
 
-    func testOpenRequestWithHandoffFromExecutesHandoff() throws {
+    func testAHandoffRequestOpensTheHandoff() throws {
         let coordinator = makeCoordinator()
         defer { stopAll(coordinator) }
 
         let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        let req = OpenRequest(agent: .codex, folder: folder, prompt: nil, tier: .standard, task: nil,
+                              handoffFrom: s1.id, goal: "Continue from handoff")
+        try handoffRequests.submit(req)
+        coordinator.handleOpenRequests()
 
-        let req = OpenRequest(
-            agent: .codex,
-            folder: folder,
-            prompt: nil,
-            tier: .standard,
-            task: nil,
-            handoffFrom: s1.id,
-            goal: "Continue from handoff"
-        )
+        let answer = try XCTUnwrap(handoffRequests.result(for: req.id))
+        XCTAssertTrue(answer.ok, answer.message)
+        let s2 = try XCTUnwrap(coordinator.store.session(id: try XCTUnwrap(answer.sessionId)))
+        XCTAssertEqual(s2.agentKind, .codex)
+        XCTAssertFalse(s2.isWorker)
+        XCTAssertEqual(coordinator.openingPrompts[s2.id]?.text,
+                       "Please read .linkc/handoffs/\(s2.id).md and continue working on: Continue from handoff")
+    }
+
+    /// A handoff from a session linkC does not have is refused, and nothing opens.
+    func testAHandoffFromAnUnknownSessionIsRefused() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+
+        let req = OpenRequest(agent: .codex, folder: folder, prompt: nil, tier: .standard, task: nil, handoffFrom: "invalid-id")
+        try handoffRequests.submit(req)
+        coordinator.handleOpenRequests()
+
+        let answer = try XCTUnwrap(handoffRequests.result(for: req.id))
+        XCTAssertFalse(answer.ok)
+        XCTAssertEqual(answer.message, "no linkC session invalid-id to hand off")
+        XCTAssertEqual(coordinator.store.sessions, [])
+    }
+
+    /// A handoff request names the session it hands off.
+    func testAHandoffRequestNamingNoSessionIsRefused() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+
+        let req = OpenRequest(agent: .codex, folder: folder, prompt: nil, tier: nil, task: nil)
+        try handoffRequests.submit(req)
+        coordinator.handleOpenRequests()
+
+        let answer = try XCTUnwrap(handoffRequests.result(for: req.id))
+        XCTAssertFalse(answer.ok)
+        XCTAssertEqual(coordinator.store.sessions, [])
+    }
+
+    /// The `linkc` command's folder only opens sessions. A handoff left there is refused rather than
+    /// opened as a plain session with no memo, which is what a linkC that predates handoffs did with it.
+    func testAHandoffInTheLinkcCommandsFolderIsRefused() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        let req = OpenRequest(agent: .codex, folder: folder, prompt: nil, tier: nil, task: nil, handoffFrom: s1.id)
         try requests.submit(req)
         coordinator.handleOpenRequests()
 
         let answer = try XCTUnwrap(requests.result(for: req.id))
-        XCTAssertTrue(answer.ok, answer.message)
-        let s2Id = try XCTUnwrap(answer.sessionId)
-        let s2 = try XCTUnwrap(coordinator.store.session(id: s2Id))
-        XCTAssertEqual(s2.agentKind, .codex)
-        XCTAssertFalse(s2.isWorker)
-        XCTAssertNotNil(coordinator.openingPrompts[s2.id])
+        XCTAssertFalse(answer.ok, answer.message)
+        XCTAssertEqual(coordinator.store.sessions.map(\.id), [s1.id], "no session was opened")
     }
 
     /// A handoff from the sidebar opens in the panel like any session started there; only a handoff
@@ -368,31 +407,11 @@ final class AppCoordinatorHandoffTests: XCTestCase {
 
         let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
         let req = OpenRequest(agent: .codex, folder: folder, prompt: nil, tier: nil, task: nil, handoffFrom: s1.id)
-        try requests.submit(req)
+        try handoffRequests.submit(req)
         coordinator.handleOpenRequests()
 
-        let answer = try XCTUnwrap(requests.result(for: req.id))
+        let answer = try XCTUnwrap(handoffRequests.result(for: req.id))
         XCTAssertTrue(answer.ok, answer.message)
         XCTAssertEqual(tornOff, [try XCTUnwrap(answer.sessionId)])
-    }
-
-    func testOpenRequestWithInvalidHandoffFromReturnsRefused() throws {
-        let coordinator = makeCoordinator()
-        defer { stopAll(coordinator) }
-
-        let req = OpenRequest(
-            agent: .codex,
-            folder: folder,
-            prompt: nil,
-            tier: .standard,
-            task: nil,
-            handoffFrom: "invalid-id"
-        )
-        try requests.submit(req)
-        coordinator.handleOpenRequests()
-
-        let answer = try XCTUnwrap(requests.result(for: req.id))
-        XCTAssertFalse(answer.ok)
-        XCTAssertTrue(answer.message.contains("invalid-id") || answer.message.contains("not found"))
     }
 }

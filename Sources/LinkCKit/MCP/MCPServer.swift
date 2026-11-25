@@ -210,8 +210,8 @@ public final class MCPServer: Sendable {
     /// The app's list of known projects, which a `project` argument names one of (spec 2026-11-11
     /// cross-project §4).
     public let knownProjects: KnownProjectsFile
-    /// The store used to submit open and handoff requests to linkC.
-    public let openRequestStore: OpenRequestStore
+    /// Where `linkc_handoff` leaves its requests for linkC.
+    public let handoffRequests: OpenRequestStore
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -270,7 +270,7 @@ public final class MCPServer: Sendable {
             try ModelListCache.applicationSupport.read()
         },
         knownProjects: KnownProjectsFile = .applicationSupport,
-        openRequestStore: OpenRequestStore = .applicationSupport
+        handoffRequests: OpenRequestStore = .handoffApplicationSupport
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -288,7 +288,7 @@ public final class MCPServer: Sendable {
         self.kiloModels = kiloModels
         self.modelLists = modelLists
         self.knownProjects = knownProjects
-        self.openRequestStore = openRequestStore
+        self.handoffRequests = handoffRequests
     }
 
     /// The project a tool's `project` argument names, or nil when the call has none and so acts on
@@ -1955,15 +1955,18 @@ public final class MCPServer: Sendable {
         )
 
         do {
-            try openRequestStore.submit(request)
+            try handoffRequests.submit(request)
         } catch {
             return toolResultResponse(id: id, text: "Error: the handoff request could not be written — \(error)", isError: true)
         }
 
         guard let answer = try awaitOpenResult(for: request.id) else {
-            return toolResultResponse(id: id, text: "Error: linkC did not answer handoff request within \(Int(closeAnswerWait.timeout))s", isError: true)
+            return toolResultResponse(
+                id: id,
+                text: "Error: linkC did not answer the handoff within \(Int(closeAnswerWait.timeout)) seconds. A linkC older than this tool never reads handoff requests; update linkC and try again.",
+                isError: true)
         }
-        try? openRequestStore.removeResult(for: request.id)
+        try? handoffRequests.removeResult(for: request.id)
         if answer.ok {
             return toolResultResponse(id: id, text: answer.sessionId ?? answer.message)
         } else {
@@ -1974,11 +1977,11 @@ public final class MCPServer: Sendable {
     private func awaitOpenResult(for requestId: String) throws -> OpenResult? {
         var waited: TimeInterval = 0
         while true {
-            if let answer = try openRequestStore.result(for: requestId) {
+            if let answer = try handoffRequests.result(for: requestId) {
                 return answer
             }
             guard waited < closeAnswerWait.timeout else {
-                try? openRequestStore.withdraw(requestId)
+                try? handoffRequests.withdraw(requestId)
                 return nil
             }
             closeAnswerWait.sleep(closeAnswerWait.interval)
