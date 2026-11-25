@@ -206,6 +206,12 @@ final class AppModel {
 
     /// Surface a one-off failure in the panel's error bar (fail loud, stay standing).
     func surface(error message: String) { lastError = message }
+    /// The field under a project's tab strip that routes a typed task to an agent. Nil until start-up
+    /// has a coordinator.
+    private(set) var promptBar: PromptBar?
+    /// Bumped by ⌘K; the prompt bar takes the cursor on each change.
+    private(set) var promptBarFocusRequests = 0
+    func focusPromptBar() { promptBarFocusRequests += 1 }
     /// Refreshes usage while the panel is visible; hook events cover the rest of the time.
     @ObservationIgnored private var usageTimer: Timer?
     @ObservationIgnored private var refreshSchedule = RefreshSchedule.panel
@@ -295,6 +301,14 @@ final class AppModel {
                 self?.sampleSidebar()
             }
             self.coordinator = coordinator
+            let promptBar = PromptBar(services: coordinator.promptBarServices(folder: { [weak self] in self?.currentProject }))
+            // The bar's session is selected as it opens: show it, as the New menu's does.
+            promptBar.onOpened = { [weak self] id in
+                guard let self else { return }
+                self.showSelection()
+                if let cwd = self.sessions.first(where: { $0.id == id })?.cwd { self.recents?.record(cwd) }
+            }
+            self.promptBar = promptBar
             self.mcpServers = MCPServerService(claudePath: preflight.claudePath)
             self.skills = SkillsService(claudePath: preflight.claudePath)
             let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

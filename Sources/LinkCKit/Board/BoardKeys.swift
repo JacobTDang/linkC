@@ -34,15 +34,18 @@ public enum TabCommand: Equatable, Sendable {
     case select(digit: Int)
     case next
     case previous
+    /// ⌘K: the cursor goes to the prompt bar.
+    case focusPromptBar
 }
 
 public enum TabKeyMap {
-    /// ⌘1–⌘9 pick a tab; ⌃Tab and ⌃⇧Tab cycle.
+    /// ⌘1–⌘9 pick a tab; ⌃Tab and ⌃⇧Tab cycle; ⌘K goes to the prompt bar.
     public static func command(for press: KeyPress) -> TabCommand? {
         switch press.key {
         case .character(let character):
-            guard press.command, !press.control, !press.option, !press.shift,
-                  let digit = Int(character), (1...9).contains(digit) else { return nil }
+            guard press.command, !press.control, !press.option, !press.shift else { return nil }
+            if character == "k" { return .focusPromptBar }
+            guard let digit = Int(character), (1...9).contains(digit) else { return nil }
             return .select(digit: digit)
         case .tab:
             guard press.control, !press.command, !press.option else { return nil }

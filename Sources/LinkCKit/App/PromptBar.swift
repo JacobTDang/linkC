@@ -11,6 +11,14 @@ public struct PromptBarPick: Equatable, Sendable {
     /// What the task is and why other agents were passed over, without the agent, model and effort.
     public let reason: String
 
+    public init(agent: AgentKind, tier: ModelTier, model: String, effort: ReasoningEffort?, reason: String) {
+        self.agent = agent
+        self.tier = tier
+        self.model = model
+        self.effort = effort
+        self.reason = reason
+    }
+
     /// The preview line: "→ Codex · gpt-5.6-sol · medium — implementation".
     public var text: String {
         "→ \(agent.shortName) · \(model)" + (effort.map { " · \($0.rawValue)" } ?? "") + " — \(reason)"
@@ -107,6 +115,13 @@ public final class PromptBar {
         let current = override ?? routerChoice
         let next = eligible[((current.flatMap(eligible.firstIndex(of:)) ?? -1) + 1) % eligible.count]
         override = next == routerChoice ? nil : next
+        return startPreview(after: nil)
+    }
+
+    /// The project on screen changed: the pick is read again there, at once.
+    @discardableResult
+    public func projectChanged() -> Task<Void, Never>? {
+        guard !isOpening, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return startPreview(after: nil)
     }
 

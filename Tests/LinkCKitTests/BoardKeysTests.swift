@@ -13,6 +13,14 @@ final class BoardKeysTests: XCTestCase {
         XCTAssertNil(TabKeyMap.command(for: KeyPress(.tab)))
     }
 
+    /// ⌘K puts the cursor in the prompt bar; K alone is typing, and ⇧⌘K is not it.
+    func testCommandKFocusesThePromptBar() {
+        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.character("k"), command: true)), .focusPromptBar)
+        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("k"))))
+        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("k"), command: true, shift: true)))
+        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("k"), command: true, option: true)))
+    }
+
     func testBoardTools() {
         let expected: [(String, BoardCommand)] = [("v", .selectTool), ("c", .componentTool), ("a", .arrowTool),
                                                    ("f", .frameTool), ("n", .noteTool), ("t", .textTool)]

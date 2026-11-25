@@ -34,6 +34,11 @@ final class PromptBarTests: XCTestCase {
         var all: [PromptBarLaunch] = []
     }
 
+    /// The project a fake app has on screen.
+    private final class OnScreen {
+        var folder: String?
+    }
+
     private struct Crashed: Error, CustomStringConvertible {
         let description = "the CLI crashed"
     }
@@ -181,6 +186,34 @@ final class PromptBarTests: XCTestCase {
 
         XCTAssertEqual(gatherings.value, 1)
         XCTAssertEqual(pick(bar)?.text, "→ Codex · gpt-5.6-sol · medium — implementation")
+    }
+
+    /// The pick is read for the project on screen: moving to another project reads it again there, at once.
+    func testAProjectChangeReadsThePickAgainForTheNewProject() async throws {
+        let other = tempDir.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try inbox.recordLimit(agent: .claude, reason: "usage cap", cooldown: 3600)
+        let current = OnScreen()
+        current.folder = folder
+        let services = PromptBar.Services(
+            folder: { current.folder }, settings: { .seeded },
+            inputs: { folder in
+                RouteInputs(
+                    isInstalled: { [.claude, .codex].contains($0) },
+                    liveLimits: { try InboxStore(workspaceRoot: folder).liveLimits(agent: $0) },
+                    usageReaders: [:], agentsOpen: { ([], nil) })
+            },
+            readLists: TestModelLists.none, listFolder: { _, _ in [] }, open: { _ in "S-1" })
+        let clock = ManualClock()
+        let bar = PromptBar(services: services, clock: clock, debounce: .milliseconds(250))
+        bar.text = Self.implement
+        await settle(bar, clock)
+        XCTAssertEqual(pick(bar)?.agent, .codex)
+
+        current.folder = ProjectPath.canonical(other.path)
+        await bar.projectChanged()?.value
+
+        XCTAssertEqual(pick(bar)?.agent, .claude)
     }
 
     // MARK: - Override
