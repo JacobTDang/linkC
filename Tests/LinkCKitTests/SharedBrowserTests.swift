@@ -23,12 +23,18 @@ final class SharedBrowserTests: XCTestCase {
         }
     }
 
+    private final class TabCloser: SharedBrowserTabClosing {
+        var closed: [(Int, String)] = []
+        func closePinnedTab(port: Int, sessionName: String) throws { closed.append((port, sessionName)) }
+    }
+
     func testStartsOnFirstSessionReadsChromePortAndStopsOnLast() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let launcher = Launcher()
+        let closer = TabCloser()
         let browser = SharedBrowser(
             applicationSupport: root, chromePath: "/Applications/Google Chrome", launcher: launcher,
-            now: { Date(timeIntervalSince1970: 0) }, sleep: { _ in })
+            tabCloser: closer, now: { Date(timeIntervalSince1970: 0) }, sleep: { _ in })
 
         let first = browser.environment(projectPath: "/tmp/project/../project", sessionId: "S1")
         let second = browser.environment(projectPath: "/tmp/project", sessionId: "S2")
@@ -41,8 +47,10 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertTrue(launcher.launches[0].1.contains { $0.hasPrefix("--user-data-dir=") })
 
         browser.release(sessionId: "S1")
+        XCTAssertEqual(closer.closed.map(\.1), ["linkc-S1"])
         XCTAssertFalse(launcher.process.stopped)
         browser.release(sessionId: "S2")
+        XCTAssertEqual(closer.closed.map(\.1), ["linkc-S1", "linkc-S2"])
         XCTAssertTrue(launcher.process.stopped)
     }
 

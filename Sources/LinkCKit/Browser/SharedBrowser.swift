@@ -13,6 +13,44 @@ public protocol SharedBrowserLaunching: AnyObject {
 }
 
 @MainActor
+public protocol SharedBrowserTabClosing: AnyObject {
+    func closePinnedTab(port: Int, sessionName: String) throws
+}
+
+@MainActor
+public final class LiveSharedBrowserTabCloser: SharedBrowserTabClosing {
+    private let executable: String
+
+    public init(
+        executable: String = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/bin/agent-browser").path
+    ) {
+        self.executable = executable
+    }
+
+    public func closePinnedTab(port: Int, sessionName: String) throws {
+        guard FileManager.default.isExecutableFile(atPath: executable) else {
+            throw LinkCError.process("agent-browser is not installed at \(executable)")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = [
+            "--cdp", String(port), "--session", sessionName, "--pin-tab", "tab", "close", "--json"
+        ]
+        process.standardOutput = FileHandle.nullDevice
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let detail = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw LinkCError.process(detail.isEmpty ? "agent-browser could not close the pinned tab" : detail)
+        }
+    }
+}
+
+@MainActor
 public final class LiveSharedBrowserProcess: SharedBrowserProcess {
     private let process: Process
 
@@ -58,6 +96,7 @@ public final class SharedBrowser {
     private let applicationSupport: URL
     private let chromePath: String
     private let launcher: any SharedBrowserLaunching
+    private let tabCloser: any SharedBrowserTabClosing
     private let now: () -> Date
     private let sleep: (TimeInterval) -> Void
     private let report: (String) -> Void
@@ -69,6 +108,7 @@ public final class SharedBrowser {
         applicationSupport: URL,
         chromePath: String = SharedBrowser.chromePath,
         launcher: any SharedBrowserLaunching = LiveSharedBrowserLauncher(),
+        tabCloser: any SharedBrowserTabClosing = LiveSharedBrowserTabCloser(),
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (TimeInterval) -> Void = Thread.sleep(forTimeInterval:),
         report: @escaping (String) -> Void = { _ in }
@@ -76,6 +116,7 @@ public final class SharedBrowser {
         self.applicationSupport = applicationSupport
         self.chromePath = chromePath
         self.launcher = launcher
+        self.tabCloser = tabCloser
         self.now = now
         self.sleep = sleep
         self.report = report
@@ -112,6 +153,13 @@ public final class SharedBrowser {
 
     public func release(sessionId: String) {
         guard let project = sessionProjects.removeValue(forKey: sessionId), var instance = instances[project] else { return }
+        do {
+            try tabCloser.closePinnedTab(port: instance.port, sessionName: "linkc-\(sessionId)")
+        } catch {
+            if reportedFailures.insert("tab:\(project)").inserted {
+                report("Shared browser tab cleanup failed: \(error.localizedDescription)")
+            }
+        }
         instance.sessions.remove(sessionId)
         if instance.sessions.isEmpty {
             instance.process.stop()
