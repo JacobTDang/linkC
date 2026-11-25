@@ -154,7 +154,8 @@ final class AppModel {
         get { errorFlash.text }
         set { errorFlash.show(newValue) }
     }
-    /// An update notice waiting for the panel to open (see `start()`).
+    /// Start-up notices waiting for the panel to open (see `start()`). More than one can queue
+    /// (bundled-mod failure and an update-swap notice) so neither is overwritten.
     private var pendingUpdateNotice: String?
     /// Whether the menu-bar panel itself is currently on screen — not a torn-off window. Feeds
     /// `onScreenSessionId` and the coordinator's watch probe, and gates the usage-refresh timer — no
@@ -220,7 +221,23 @@ final class AppModel {
             let message = error.localizedDescription
             NSLog("[linkC] %@", message)
             coordinator.postLocalNotification(title: "linkC", body: message)
-            if panelVisible { lastError = message } else { pendingUpdateNotice = message }
+            enqueueStartNotice(message)
+        }
+    }
+
+    /// Show a start-up notice in the error bar, or queue it until the panel opens. Appends when
+    /// another notice is already pending so a mod failure and an update-swap notice both surface.
+    private func enqueueStartNotice(_ message: String) {
+        if panelVisible {
+            if let existing = lastError, !existing.isEmpty {
+                lastError = existing + "\n" + message
+            } else {
+                lastError = message
+            }
+        } else if let existing = pendingUpdateNotice, !existing.isEmpty {
+            pendingUpdateNotice = existing + "\n" + message
+        } else {
+            pendingUpdateNotice = message
         }
     }
     /// Refreshes usage while the panel is visible; hook events cover the rest of the time.
@@ -354,15 +371,15 @@ final class AppModel {
             self.watchedEndpointsStore = WatchedEndpointsStore(directory: linkCSupport)
             reloadConfiguredEndpoints()
             startHealthTimer()
-            // Ship each bundled mod into Application Support; a failure is loud (log + notice +
-            // error bar) the same way an update-swap notice is, without blocking the rest of start.
+            // Ship each bundled mod into Application Support before the rest of start continues;
+            // a failure is loud (log + notice + error bar) the same way an update-swap notice is.
             installBundledMods(coordinator: coordinator)
             // The swap that installed this build ran with no app to tell: what it left for the
             // user (a failed install, or grants about to be lost) is posted now, and shown again
             // in the error bar the next time the panel opens — the panel is hidden at launch.
             if let notice = UpdateSwap.takeNotice() {
                 coordinator.postLocalNotification(title: "linkC update", body: notice)
-                if panelVisible { lastError = notice } else { pendingUpdateNotice = notice }
+                enqueueStartNotice(notice)
             }
         } catch {
             setupError = error.localizedDescription
