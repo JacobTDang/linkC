@@ -126,7 +126,7 @@ final class KnownProjectsFeedTests: XCTestCase {
         coordinator.store.create(cwd: tempDir.path, title: "mine", id: "L1", agentKind: .agy)
         coordinator.store.updateState(id: "L1", to: .ready)
         await coordinator.runSweepTickForTests()
-        let before = AgentsColumn.build(projects: coordinator.knownProjects.projects, roots: roots, selectedId: "L1")
+        let before = AgentsColumn.build(projects: coordinator.knownProjects.projects, limits: [:], roots: roots, selectedId: "L1")
         XCTAssertEqual(before.cards.map(\.id), ["L1"])
         XCTAssertNil(before.needsYouLabel)
 
@@ -134,7 +134,7 @@ final class KnownProjectsFeedTests: XCTestCase {
         coordinator.store.updateState(id: "L2", to: .waitingPermission)
         await coordinator.runSweepTickForTests()
 
-        let after = AgentsColumn.build(projects: coordinator.knownProjects.projects, roots: roots, selectedId: "L1")
+        let after = AgentsColumn.build(projects: coordinator.knownProjects.projects, limits: [:], roots: roots, selectedId: "L1")
         XCTAssertEqual(after.cards.map(\.id), ["L2", "L1"])
         XCTAssertEqual(after.needsYouLabel, "1 need you")
     }

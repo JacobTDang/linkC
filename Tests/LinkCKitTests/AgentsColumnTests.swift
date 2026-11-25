@@ -12,11 +12,13 @@ final class AgentsColumnTests: XCTestCase {
         _ id: String, agent: String = "codex", activity: KnownProject.OpenSession.Activity = .idle,
         title: String? = nil, state: String? = "ready", since: Date? = nil, model: String? = nil,
         worker: Bool? = nil, action: String? = nil, subagents: Int? = nil,
-        cacheExpiresAt: String? = nil, cacheEstimate: Bool? = nil
+        cacheExpiresAt: String? = nil, cacheEstimate: Bool? = nil, contextPercent: Int? = nil,
+        step: String? = nil, subagentSteps: [KnownProject.OpenSession.Subagent]? = nil
     ) -> KnownProject.OpenSession {
         KnownProject.OpenSession(id: id, agent: agent, activity: activity, title: title ?? id, state: state,
                                  since: since.map(iso), model: model, worker: worker, action: action,
-                                 subagents: subagents, cacheExpiresAt: cacheExpiresAt, cacheEstimate: cacheEstimate)
+                                 subagents: subagents, cacheExpiresAt: cacheExpiresAt, cacheEstimate: cacheEstimate,
+                                 contextPercent: contextPercent, step: step, subagentSteps: subagentSteps)
     }
 
     /// A session the app published without a title.
@@ -24,8 +26,9 @@ final class AgentsColumnTests: XCTestCase {
         KnownProject.OpenSession(id: id, agent: agent, activity: .idle, title: nil, state: state)
     }
 
-    private func column(_ sessions: [KnownProject.OpenSession], selected: String? = nil, in path: String = "/repo") -> AgentsColumn {
-        AgentsColumn.build(projects: [KnownProject(path: path, sessions: sessions)],
+    private func column(_ sessions: [KnownProject.OpenSession], selected: String? = nil, in path: String = "/repo",
+                        limits: [String: [KnownLimit]] = [:]) -> AgentsColumn {
+        AgentsColumn.build(projects: [KnownProject(path: path, sessions: sessions)], limits: limits,
                            roots: [path: .repo(path)], selectedId: selected ?? sessions[0].id)
     }
 
@@ -55,7 +58,7 @@ final class AgentsColumnTests: XCTestCase {
             "/repo-two": .repo("/repo-two"),
         ]
 
-        let column = AgentsColumn.build(projects: projects, roots: roots, selectedId: "B")
+        let column = AgentsColumn.build(projects: projects, limits: [:], roots: roots, selectedId: "B")
 
         let shown = Dictionary(uniqueKeysWithValues: column.cards.map { ($0.id, $0.worktree) })
         XCTAssertEqual(shown, ["A": "", "B": "fix", "C": "feat", "D": "far-away"])
@@ -73,7 +76,7 @@ final class AgentsColumnTests: XCTestCase {
             KnownProject(path: "/repo-two", sessions: [session("D")]),
         ]
 
-        let column = AgentsColumn.build(projects: projects, roots: ["/repo": .repo("/repo")], selectedId: "A")
+        let column = AgentsColumn.build(projects: projects, limits: [:], roots: ["/repo": .repo("/repo")], selectedId: "A")
 
         XCTAssertEqual(column.cards.map(\.id).sorted(), ["A", "B"])
         XCTAssertEqual(column.cards.first { $0.id == "B" }?.worktree, "Sources")
@@ -87,7 +90,7 @@ final class AgentsColumnTests: XCTestCase {
         ]
         let roots: [String: RepoRoots.Root] = ["/plain": .repo("/plain"), "/plain-too": .repo("/plain-too")]
 
-        let column = AgentsColumn.build(projects: projects, roots: roots, selectedId: "A")
+        let column = AgentsColumn.build(projects: projects, limits: [:], roots: roots, selectedId: "A")
 
         XCTAssertEqual(column.cards.map(\.id).sorted(), ["A", "B"])
         XCTAssertEqual(column.cards.map(\.worktree), ["", ""])
@@ -96,7 +99,7 @@ final class AgentsColumnTests: XCTestCase {
     func testAGitFailureSaysWhyInPlaceOfTheCards() {
         let projects = [KnownProject(path: "/repo", sessions: [session("A")])]
 
-        let column = AgentsColumn.build(projects: projects, roots: ["/repo": .failed("git cannot read the repo of /repo: dubious ownership")],
+        let column = AgentsColumn.build(projects: projects, limits: [:], roots: ["/repo": .failed("git cannot read the repo of /repo: dubious ownership")],
                                         selectedId: "A")
 
         XCTAssertEqual(column.problem, "git cannot read the repo of /repo: dubious ownership")
@@ -106,7 +109,7 @@ final class AgentsColumnTests: XCTestCase {
     func testUntilGitAnswersTheColumnWaitsRatherThanSayingTheRepoIsEmpty() {
         let projects = [KnownProject(path: "/repo", sessions: [session("A")])]
 
-        let column = AgentsColumn.build(projects: projects, roots: [:], selectedId: "A")
+        let column = AgentsColumn.build(projects: projects, limits: [:], roots: [:], selectedId: "A")
 
         XCTAssertTrue(column.isPending)
         XCTAssertEqual(column.cards, [])
@@ -116,7 +119,7 @@ final class AgentsColumnTests: XCTestCase {
     func testASessionNotPublishedYetWaitsToo() {
         let projects = [KnownProject(path: "/repo", sessions: [session("A")])]
 
-        let column = AgentsColumn.build(projects: projects, roots: ["/repo": .repo("/repo")], selectedId: "NEW")
+        let column = AgentsColumn.build(projects: projects, limits: [:], roots: ["/repo": .repo("/repo")], selectedId: "NEW")
 
         XCTAssertTrue(column.isPending)
         XCTAssertEqual(column.cards, [])
@@ -255,7 +258,7 @@ final class AgentsColumnTests: XCTestCase {
             : [KnownProject(path: "/repo", sessions: [anchor]), KnownProject(path: path, sessions: [session])]
         var roots: [String: RepoRoots.Root] = ["/repo": .repo("/repo")]
         roots[path] = .repo("/repo")
-        let card = try XCTUnwrap(AgentsColumn.build(projects: projects, roots: roots, selectedId: "ANCHOR")
+        let card = try XCTUnwrap(AgentsColumn.build(projects: projects, limits: [:], roots: roots, selectedId: "ANCHOR")
             .cards.first { $0.id == session.id })
         return Line(card.look.glyph, card.detail, working: card.isWorking)
     }
@@ -304,7 +307,7 @@ final class AgentsColumnTests: XCTestCase {
                 session("C", state: "waitingPermission"),
             ]),
         ]
-        let cards = AgentsColumn.build(projects: projects, roots: ["/repo": .repo("/repo"), "/repo/.worktrees/fix": .repo("/repo")],
+        let cards = AgentsColumn.build(projects: projects, limits: [:], roots: ["/repo": .repo("/repo"), "/repo/.worktrees/fix": .repo("/repo")],
                                        selectedId: "ANCHOR").cards
         let summary = { (id: String) in cards.first { $0.id == id }.map { "\($0.summary) | \($0.worktree)" } }
 
@@ -313,6 +316,33 @@ final class AgentsColumnTests: XCTestCase {
         XCTAssertEqual(summary("B"), " | fix")
         XCTAssertEqual(summary("C"), "needs permission | fix")
         XCTAssertEqual(summary("ANCHOR"), "ready | ")
+    }
+
+    /// What a card's agent records first-hand (its step) outranks what its screen shows (its action);
+    /// what needs you still reads its screen.
+    func testTheSecondLineReadsTheStepItsAgentRecordsAheadOfItsScreen() throws {
+        XCTAssertEqual(try line(session("A", state: "working", action: "Working", step: "$ swift test")),
+                       Line("●", "$ swift test", working: true))
+        XCTAssertEqual(try line(session("A", state: "working", step: "$ swift test")), Line("●", "$ swift test", working: true))
+        XCTAssertEqual(try line(session("A", state: "waitingPermission", action: "Edit Foo.swift", step: "$ swift test")),
+                       Line("!", "Edit Foo.swift", working: false))
+        XCTAssertEqual(try line(session("A", state: "waitingPermission", step: "$ swift test")), Line("!", "needs permission", working: false))
+    }
+
+    /// The first running subagent by name and step and the rest counted, at work or with the turn
+    /// over; never over what needs you.
+    func testACardNamesItsFirstRunningSubagentAndCountsTheRest() throws {
+        let steps = [KnownProject.OpenSession.Subagent(name: "Survey", step: "⊙ Card.swift"), .init(name: "Plan", step: nil)]
+
+        XCTAssertEqual(try line(session("A", state: "working", subagents: 2, step: "$ make", subagentSteps: steps)),
+                       Line("●", "$ make · Survey: ⊙ Card.swift +1", working: true))
+        XCTAssertEqual(try line(session("A", state: "finished", subagents: 2, subagentSteps: steps)),
+                       Line("●", "Survey: ⊙ Card.swift +1", working: true))
+        // The count can run ahead of the names the agent's files record.
+        XCTAssertEqual(try line(session("A", state: "working", subagents: 3, subagentSteps: [.init(name: "Plan", step: nil)])),
+                       Line("●", "Plan +2", working: true))
+        XCTAssertEqual(try line(session("A", state: "waitingPermission", subagents: 2, subagentSteps: steps)),
+                       Line("!", "needs permission", working: false))
     }
 
     /// A state this build does not know reads by the coarse activity.
@@ -331,6 +361,39 @@ final class AgentsColumnTests: XCTestCase {
         XCTAssertEqual(try tint("finished"), .done)
         XCTAssertEqual(try tint("ready"), .muted)
         XCTAssertEqual(try tint("starting"), .attention)
+    }
+
+    // MARK: - Context and plan limits
+
+    /// How full the context is, beside the model: orange from 80%.
+    func testACardShowsHowFullItsContextIsInOrangeFromEightyPercent() throws {
+        XCTAssertEqual(try card(session("A", contextPercent: 41)).context, AgentMeterLabel(text: "41%", tint: .muted))
+        XCTAssertEqual(try card(session("A", contextPercent: 79)).context, AgentMeterLabel(text: "79%", tint: .muted))
+        XCTAssertEqual(try card(session("A", contextPercent: 80)).context, AgentMeterLabel(text: "80%", tint: .warn))
+        XCTAssertEqual(try card(session("A", contextPercent: 100)).context, AgentMeterLabel(text: "100%", tint: .warn))
+        XCTAssertNil(try card(session("A")).context)
+    }
+
+    /// The card's agent's tightest plan limit, once it reaches 70%: orange, red from 90%. A tie keeps
+    /// the first the agent lists.
+    func testACardShowsItsAgentsTightestPlanLimitOnceItReachesSeventyPercent() {
+        let limits: [String: [KnownLimit]] = [
+            "codex": [KnownLimit(label: "5h", percent: 72, resets: nil), KnownLimit(label: "7d", percent: 91, resets: "2030-01-01T00:00:00Z")],
+            "claude": [KnownLimit(label: "5h", percent: 40, resets: nil)],
+            "agy": [KnownLimit(label: "5h", percent: 70, resets: nil), KnownLimit(label: "7d", percent: 69, resets: nil)],
+            "opencode": [KnownLimit(label: "5h", percent: 89, resets: nil), KnownLimit(label: "7d", percent: 89, resets: nil)],
+            "kilo": [KnownLimit(label: "7d", percent: 90, resets: nil)],
+        ]
+        let sessions = ["codex", "claude", "agy", "opencode", "kilo", "cursor"].map { session($0, agent: $0) }
+        let cards = column(sessions, limits: limits).cards
+        let limit = { (id: String) in cards.first { $0.id == id }?.limit }
+
+        XCTAssertEqual(limit("codex"), AgentMeterLabel(text: "7d 91%", tint: .critical))
+        XCTAssertNil(limit("claude"))
+        XCTAssertEqual(limit("agy"), AgentMeterLabel(text: "5h 70%", tint: .warn))
+        XCTAssertEqual(limit("opencode"), AgentMeterLabel(text: "5h 89%", tint: .warn))
+        XCTAssertEqual(limit("kilo"), AgentMeterLabel(text: "7d 90%", tint: .critical))
+        XCTAssertNil(limit("cursor"), "an agent that reports no limits shows none")
     }
 
     // MARK: - Redraws

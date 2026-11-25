@@ -6,7 +6,8 @@ extension AppModel {
     /// the list the coordinator publishes and the repos git already named: it reads, never asks.
     func agentsColumn(for id: String) -> AgentsColumn? {
         guard let coordinator, sessions.contains(where: { $0.id == id }) else { return nil }
-        return AgentsColumn.build(projects: coordinator.knownProjects.projects, roots: repoRoots.roots, selectedId: id)
+        return AgentsColumn.build(projects: coordinator.knownProjects.projects, limits: coordinator.knownProjects.limits,
+                                  roots: repoRoots.roots, selectedId: id)
     }
 
     /// Where the cards show for session `id`'s terminal in a pane `paneWidth` points wide; nil for no

@@ -68,8 +68,8 @@ struct AgentsColumnView: View {
     }
 }
 
-/// One card: a bar in the agent's tone, then two lines. The title, the model and the cache clock; the
-/// state's glyph, what the session does or its state's words with its worktree, and its age. The
+/// One card: a bar in the agent's tone, then two lines. The title, the model, how full the context is,
+/// the agent's tightest plan limit and the cache clock; the state's glyph, what the session does or its state's words with its worktree, and its age. The
 /// selected session's card holds the light a selected sidebar row does.
 private struct AgentCardRow: View {
     let card: AgentCard
@@ -126,6 +126,8 @@ private struct AgentCardRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
+            if let context = card.context { meterText(context) }
+            if let limit = card.limit { meterText(limit) }
             if let cache = card.cache(at: now) {
                 Text(cache.text)
                     .font(.system(size: 10.5))
@@ -134,6 +136,14 @@ private struct AgentCardRow: View {
                     .fixedSize()
             }
         }
+    }
+
+    private func meterText(_ meter: AgentMeterLabel) -> some View {
+        Text(meter.text)
+            .font(.system(size: 10.5))
+            .monospacedDigit()
+            .foregroundStyle(meter.tint.color)
+            .fixedSize()
     }
 
     private var secondLine: some View {
@@ -178,6 +188,16 @@ private extension AgentCardLook.Tint {
         case .working: return Theme.statusWorking
         case .done: return Theme.statusRunning
         case .muted: return Theme.textTertiary
+        }
+    }
+}
+
+private extension AgentMeterLabel.Tint {
+    var color: Color {
+        switch self {
+        case .muted: return Theme.textTertiary
+        case .warn: return Theme.contextWarn
+        case .critical: return Theme.statusError
         }
     }
 }

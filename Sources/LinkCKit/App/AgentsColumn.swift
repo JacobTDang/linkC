@@ -61,6 +61,20 @@ public struct AgentCacheLabel: Equatable, Sendable {
     }
 }
 
+/// A figure on a card's first line: how full its context is, or its agent's tightest plan limit.
+public struct AgentMeterLabel: Equatable, Sendable {
+    /// `warn` is the mod's orange, `critical` its red.
+    public enum Tint: Equatable, Sendable { case muted, warn, critical }
+
+    public let text: String
+    public let tint: Tint
+
+    public init(text: String, tint: Tint) {
+        self.text = text
+        self.tint = tint
+    }
+}
+
 /// One session's card beside a terminal, as the linkc-agents mod draws it inside the agent CLI
 /// (mods/linkc-agents/hooks/register.tsx).
 public struct AgentCard: Equatable, Sendable, Identifiable {
@@ -78,16 +92,23 @@ public struct AgentCard: Equatable, Sendable, Identifiable {
     private let atWork: Bool
     private let cacheExpiry: Date?
     private let started: Date?
+    /// How full the context is, beside the model: orange from 80%.
+    public let context: AgentMeterLabel?
+    /// The agent's tightest plan limit, once it reaches 70%: orange, red from 90%.
+    public let limit: AgentMeterLabel?
 
     /// A redraw lands this long after a label's change, so the label drawn is the new one.
     private static let pastTheChange: TimeInterval = 0.001
 
-    init(session: KnownProject.OpenSession, worktree: String, isSelected: Bool) {
+    /// `limits` are the plan limits of the session's agent.
+    init(session: KnownProject.OpenSession, worktree: String, isSelected: Bool, limits: [KnownLimit]) {
         self.session = session
         self.worktree = worktree
         self.isSelected = isSelected
         cacheExpiry = session.cacheExpiresAt.flatMap(Self.date)
         started = session.since.flatMap(Self.date)
+        context = session.contextPercent.map { AgentMeterLabel(text: "\($0)%", tint: $0 >= 80 ? .warn : .muted) }
+        limit = Self.tightest(limits)
 
         let state = session.state.flatMap(SessionState.init(rawValue:))
         let atWork = state.map { $0 == .working } ?? (session.activity == .busy)
@@ -100,12 +121,17 @@ public struct AgentCard: Equatable, Sendable, Identifiable {
         self.look = look
 
         // A session at work shows what it does, never the word for its state: the dot and the
-        // shimmer already say it works.
-        let subagents = running > 0 ? Self.subagentWords(running) : ""
-        if let action = session.action, !action.isEmpty {
-            words = [action, subagents].filter { !$0.isEmpty }.joined(separator: " · ")
+        // shimmer already say it works. What its agent records first-hand (its step, its subagents by
+        // name) outranks what its screen shows; what needs you reads its screen and comes first.
+        let counted = running > 0 ? Self.subagentWords(running) : ""
+        let named = look.needsYou ? "" : Self.namedSubagents(session)
+        let doing = look.needsYou ? session.action : (session.step ?? session.action)
+        if let doing, !doing.isEmpty {
+            words = [doing, named.isEmpty ? counted : named].filter { !$0.isEmpty }.joined(separator: " · ")
+        } else if !named.isEmpty {
+            words = named
         } else if atWork {
-            words = subagents.isEmpty ? "" : "running \(subagents)"
+            words = counted.isEmpty ? "" : "running \(counted)"
         } else {
             words = look.label
         }
@@ -193,6 +219,23 @@ public struct AgentCard: Equatable, Sendable, Identifiable {
         return ([parts[...version].joined(separator: "-")] + parts[(version + 1)...].map(String.init)).joined(separator: " ")
     }
 
+    /// The tightest limit once it reaches 70%; of two as tight, the first listed.
+    static func tightest(_ limits: [KnownLimit]) -> AgentMeterLabel? {
+        guard let tightest = limits.reduce(nil, { (most: KnownLimit?, limit) in
+            most.map { $0.percent >= limit.percent ? $0 : limit } ?? limit
+        }), tightest.percent >= 70 else { return nil }
+        return AgentMeterLabel(text: "\(tightest.label) \(tightest.percent)%", tint: tightest.percent >= 90 ? .critical : .warn)
+    }
+
+    /// The running subagents as the mod names them: the first by name and step, the rest counted, by
+    /// the count when it runs ahead of the names.
+    static func namedSubagents(_ session: KnownProject.OpenSession) -> String {
+        guard let steps = session.subagentSteps, let first = steps.first else { return "" }
+        let more = max(steps.count - 1, (session.subagents ?? 0) - 1)
+        let step = first.step.flatMap { $0.isEmpty ? nil : ": \($0)" } ?? ""
+        return "\(first.name)\(step)\(more > 0 ? " +\(more)" : "")"
+    }
+
     static func subagentWords(_ count: Int) -> String {
         "\(count) subagent\(count == 1 ? "" : "s")"
     }
@@ -220,9 +263,11 @@ public struct AgentsColumn: Equatable, Sendable {
     public var needsYouLabel: String? { needsYou > 0 ? "\(needsYou) need you" : nil }
     public var countLabel: String { "\(cards.count)" }
 
-    /// The column beside session `selectedId`. `roots` holds each project folder's repo as `RepoRoots`
-    /// resolved it; a folder git has not answered for yet joins by lying inside the repo's folder.
-    public static func build(projects: [KnownProject], roots: [String: RepoRoots.Root], selectedId: String) -> AgentsColumn {
+    /// The column beside session `selectedId`. `limits` are each agent's plan limits, by agent. `roots`
+    /// holds each project folder's repo as `RepoRoots` resolved it; a folder git has not answered for
+    /// yet joins by lying inside the repo's folder.
+    public static func build(projects: [KnownProject], limits: [String: [KnownLimit]], roots: [String: RepoRoots.Root],
+                             selectedId: String) -> AgentsColumn {
         guard let home = projects.first(where: { $0.sessions.contains { $0.id == selectedId } }) else { return .pending }
         let root: String
         switch roots[home.path] {
@@ -232,7 +277,9 @@ public struct AgentsColumn: Equatable, Sendable {
         }
         let cards = projects.flatMap { project -> [AgentCard] in
             guard let worktree = place(of: project.path, inRepo: root, resolved: roots[project.path]) else { return [] }
-            return project.sessions.map { AgentCard(session: $0, worktree: worktree, isSelected: $0.id == selectedId) }
+            return project.sessions.map {
+                AgentCard(session: $0, worktree: worktree, isSelected: $0.id == selectedId, limits: limits[$0.agent] ?? [])
+            }
         }
         let unreadable = cards.first { card in card.session.cacheExpiresAt.map { AgentCard.date($0) == nil } ?? false }
         let problem = unreadable.map { "session \($0.id)'s cache time \"\($0.session.cacheExpiresAt ?? "")\" is not a time" }
