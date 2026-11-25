@@ -385,6 +385,9 @@ public enum AgentCardClick: Equatable, Sendable {
     case focus
     /// Selects the session, then shows the panel that holds its terminal.
     case focusShowingPanel
+    /// Brings forward the other window that holds the session's terminal, and leaves the panel's
+    /// selection alone: selecting it there would close whatever screen the hidden panel had open.
+    case raiseWindow
 
     /// `card` is the clicked card's session and `besideSession` the session the cards are beside;
     /// `inWindow` says the cards are in a torn-off window, `cardInWindow` that the card's terminal is.
@@ -393,6 +396,6 @@ public enum AgentCardClick: Equatable, Sendable {
         // The window's own session is on screen already: selecting it would move the hidden panel.
         if card == besideSession { return .acknowledge }
         // Selecting a session in the panel shows nothing while the panel is hidden.
-        return cardInWindow ? .focus : .focusShowingPanel
+        return cardInWindow ? .raiseWindow : .focusShowingPanel
     }
 }

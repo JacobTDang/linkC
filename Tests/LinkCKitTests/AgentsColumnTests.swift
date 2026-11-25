@@ -491,6 +491,13 @@ final class AgentsColumnTests: XCTestCase {
         XCTAssertEqual(AgentCardClick.of(card: "B", besideSession: "A", inWindow: false, cardInWindow: true), .focus)
         XCTAssertEqual(AgentCardClick.of(card: "A", besideSession: "A", inWindow: true, cardInWindow: true), .acknowledge)
         XCTAssertEqual(AgentCardClick.of(card: "B", besideSession: "A", inWindow: true, cardInWindow: false), .focusShowingPanel)
-        XCTAssertEqual(AgentCardClick.of(card: "B", besideSession: "A", inWindow: true, cardInWindow: true), .focus)
+        XCTAssertEqual(AgentCardClick.of(card: "B", besideSession: "A", inWindow: true, cardInWindow: true), .raiseWindow)
+    }
+
+    /// From one window, a card whose terminal is in another window only brings that window forward:
+    /// selecting it in the hidden panel would close whatever screen the panel had open.
+    func testACardInAnotherWindowRaisesThatWindowWithoutMovingThePanel() {
+        XCTAssertEqual(AgentCardClick.of(card: "B", besideSession: "A", inWindow: false, cardInWindow: true), .focus,
+                       "from the panel, selecting is what shows it")
     }
 }
