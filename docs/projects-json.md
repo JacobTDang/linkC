@@ -72,7 +72,7 @@ have not reset.
 | Agent | `contextPercent` | `step` | `subagentSteps` | `limits` |
 |---|---|---|---|---|
 | Claude Code | Its status line's `context_window.used_percentage` | Its transcript's newest tool call | Each subagent's own transcript in `<session>/subagents/` | Its status line's `rate_limits` |
-| Codex | Its rollout's newest `token_count`: the last request's tokens against `model_context_window` | Its rollout's last tool call in the running turn | none recorded | Its rollouts' `rate_limits` |
+| Codex | Its rollout's newest `token_count`: the last request's tokens against `model_context_window`, each less the 12,000 tokens Codex counts as always there, as its own footer shows it | Its rollout's last tool call in the running turn | none recorded | Its rollouts' `rate_limits` |
 | Cursor, Grok | Its chat store (`chats/<md5 of folder>/<chat>/store.db`): the root blob's used tokens against its window | Its transcript's last tool call after the last user line, until `turn_ended` | none: its transcripts record no tool results, so a subagent's end can't be told | none exposed |
 | agy | Its conversation database's newest `gen_metadata` row: tokens used against the window | none exposed | none exposed | not polled: `agy -p "/usage"` reports them, but each run writes agy's history and starts its MCP servers |
 | OpenCode | Its database's newest request in the conversation linkC opened: input, output, reasoning and both cache counts, against the model's `limit.context` in its `models.json` | none: an in-flight tool's state is not confirmed | none | none exposed |

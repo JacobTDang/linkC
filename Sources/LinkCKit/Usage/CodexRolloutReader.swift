@@ -65,7 +65,7 @@ public struct CodexRolloutReader: SessionLiveReader {
             case ("event_msg", "token_count"):
                 if contextPercent == nil, let used = payload.info?.last_token_usage?.total_tokens,
                    let window = payload.info?.model_context_window, window > 0 {
-                    contextPercent = min(100, Int((Double(used) / Double(window) * 100).rounded()))
+                    contextPercent = footerPercent(used: used, window: window)
                 }
             case ("event_msg", "task_complete"), ("event_msg", "turn_aborted"):
                 // The newest turn is over: no tool call before this is a running step.
@@ -83,6 +83,22 @@ public struct CodexRolloutReader: SessionLiveReader {
             if contextPercent != nil, stepSeen { break }
         }
         return SessionLiveDetail(contextPercent: contextPercent, step: step)
+    }
+
+    /// The tokens Codex counts as always in the context: prompts, tools, and room to compact.
+    static let baselineTokens = 12_000
+
+    /// How full the context is, as Codex's own footer shows it (codex-rs 0.163.0,
+    /// `TokenUsage::percent_of_context_window_remaining`): the baseline comes off both the tokens
+    /// used and the window, what is left is rounded, and the figure is 100 less that. A window no
+    /// bigger than the baseline leaves nothing.
+    static func footerPercent(used: Int, window: Int) -> Int {
+        guard window > baselineTokens else { return 100 }
+        let effective = Double(window - baselineTokens)
+        let inUse = Double(max(0, used - baselineTokens))
+        // `rounded()` rounds a half away from zero, as Rust's `f64::round` does.
+        let left = (max(0, effective - inUse) / effective * 100).rounded()
+        return 100 - Int(min(100, max(0, left)))
     }
 
     /// One line for a tool call, in the style of a Claude session's: a command by its first line, an

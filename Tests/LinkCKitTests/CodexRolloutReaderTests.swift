@@ -40,17 +40,44 @@ final class CodexRolloutReaderTests: XCTestCase {
         try CodexRolloutReader().read(LiveSessionTarget(sessionId: "S1", agent: .codex, cwd: "/p", openFiles: openFiles))
     }
 
-    /// The context is the last request's tokens against the model's window, as Codex counts them.
+    /// The context is the last request's tokens against the model's window, as Codex's footer counts
+    /// them: 50,000 of 200,000 is 20% once the 12,000 tokens always there come off both.
     func testTheContextIsTheLastRequestAgainstTheWindow() throws {
         let path = try rollout([started(), tokens(20_000), tokens(50_000), completed()])
-        XCTAssertEqual(try read(["/dev/null", path]).contextPercent, 25)
+        XCTAssertEqual(try read(["/dev/null", path]).contextPercent, 20)
     }
 
     /// The newest token count wins even when the tail holds no turn boundary to stop at, as in a
     /// long turn that has outgrown it.
     func testTheNewestTokenCountWinsWithNoTurnBoundaryInTheTail() throws {
         let path = try rollout([tokens(20_000), tokens(50_000)])
-        XCTAssertEqual(try read([path]).contextPercent, 25)
+        XCTAssertEqual(try read([path]).contextPercent, 20)
+    }
+
+    private func context(_ total: Int, window: Int) throws -> Int? {
+        try read([try rollout([started(), tokens(total, window: window)])]).contextPercent
+    }
+
+    /// Codex's footer (codex-rs `TokenUsage::percent_of_context_window_remaining`, 0.163.0) takes
+    /// 12,000 tokens of prompts and tools off both the tokens used and the window, rounds what is
+    /// left, and shows 100 less that: 150,000 of 258,400 is 56%, not the 58% a plain ratio gives.
+    func testTheContextIsWhatCodexsFooterShows() throws {
+        XCTAssertEqual(try context(150_000, window: 258_400), 56)
+        // 41.5% used is 58.5% left, which rounds to 59: the footer shows 41, not 42.
+        XCTAssertEqual(try context(95_000, window: 212_000), 41)
+    }
+
+    func testTokensUnderTheBaselineAreAnEmptyContext() throws {
+        XCTAssertEqual(try context(8_000, window: 200_000), 0)
+    }
+
+    /// A window no bigger than the baseline leaves the footer nothing: it shows the context full.
+    func testAWindowNoBiggerThanTheBaselineIsFull() throws {
+        XCTAssertEqual(try context(5_000, window: 12_000), 100)
+    }
+
+    func testAContextOverTheWindowIsFull() throws {
+        XCTAssertEqual(try context(300_000, window: 200_000), 100)
     }
 
     /// While a turn runs, its last tool call is the step: a command by its first line.
