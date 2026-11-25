@@ -84,6 +84,71 @@ final class SubagentStepTests: XCTestCase {
         XCTAssertEqual(tracker.sessionSubagentSteps("S1"), [.init(name: "Plan the change", step: nil)])
     }
 
+    // MARK: - Reading the folder only when it changes
+
+    private func setFolderModified(_ date: Date) throws {
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: subagents.path)
+    }
+
+    private let aMinuteAgo = Date(timeIntervalSinceReferenceDate: (Date().timeIntervalSinceReferenceDate - 60).rounded(.down))
+
+    /// While a running subagent has no meta file yet, every hook event looks for one. The folder is
+    /// listed again only once its modification time moves, as it does when a file is added.
+    func testTheFolderIsReadAgainOnlyWhenItChanges() throws {
+        try write([spawn("toolu_A", "Survey")], to: transcript)
+        try subagent("zzz", spawnedBy: "toolu_Z", lines: [sidechainRead("Other.swift")])
+        try setFolderModified(aMinuteAgo)
+        let tracker = tracker()
+        tracker.refreshSession("S1")
+        XCTAssertEqual(tracker.sessionSubagentSteps("S1").map(\.step), [nil])
+
+        try subagent("aaa", spawnedBy: "toolu_A", lines: [sidechainRead("One.swift")])
+        try setFolderModified(aMinuteAgo)
+        tracker.refreshSession("S1")
+        XCTAssertEqual(tracker.sessionSubagentSteps("S1").map(\.step), [nil], "an unchanged folder is not listed again")
+
+        try setFolderModified(aMinuteAgo.addingTimeInterval(30))
+        tracker.refreshSession("S1")
+        XCTAssertEqual(tracker.sessionSubagentSteps("S1").map(\.step), ["⊙ One.swift"])
+    }
+
+    /// A meta file names the tool_use that spawned it when it is made, and that never changes: each
+    /// one is decoded once, however many times the folder is listed.
+    func testEachMetaFileIsDecodedOnce() throws {
+        try write([spawn("toolu_A", "Survey")], to: transcript)
+        try subagent("aaa", spawnedBy: "toolu_Z", lines: [sidechainRead("One.swift")])
+        try setFolderModified(aMinuteAgo)
+        let tracker = tracker()
+        tracker.refreshSession("S1")
+
+        // Rewritten in place to name a running spawn, then the folder changes for another file.
+        try write([#"{"agentType":"Explore","description":"ignored","toolUseId":"toolu_A"}"#],
+                  to: subagents.appendingPathComponent("agent-aaa.meta.json"))
+        try subagent("bbb", spawnedBy: "toolu_B", lines: [sidechainRead("Two.swift")])
+        try setFolderModified(aMinuteAgo.addingTimeInterval(30))
+        tracker.refreshSession("S1")
+
+        XCTAssertEqual(tracker.sessionSubagentSteps("S1").map(\.step), [nil])
+    }
+
+    /// A meta file caught half written is read again, rather than left out for good.
+    func testAMetaFileThatCouldNotBeReadIsReadAgain() throws {
+        try write([spawn("toolu_A", "Survey")], to: transcript)
+        try write([#"{"agentType":"Explo"#], to: subagents.appendingPathComponent("agent-aaa.meta.json"))
+        try write([sidechainRead("One.swift")], to: subagents.appendingPathComponent("agent-aaa.jsonl"))
+        try setFolderModified(aMinuteAgo)
+        let tracker = tracker()
+        tracker.refreshSession("S1")
+        XCTAssertEqual(tracker.sessionSubagentSteps("S1").map(\.step), [nil])
+
+        try write([#"{"agentType":"Explore","description":"ignored","toolUseId":"toolu_A"}"#],
+                  to: subagents.appendingPathComponent("agent-aaa.meta.json"))
+        try setFolderModified(aMinuteAgo)
+        tracker.refreshSession("S1")
+
+        XCTAssertEqual(tracker.sessionSubagentSteps("S1").map(\.step), ["⊙ One.swift"])
+    }
+
     func testUnbindDropsTheSubagentSteps() throws {
         try write([spawn("toolu_A", "Survey")], to: transcript)
         try subagent("aaa", spawnedBy: "toolu_A", lines: [sidechainRead("One.swift")])
