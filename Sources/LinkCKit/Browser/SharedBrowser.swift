@@ -39,7 +39,6 @@ public final class SharedBrowser {
         var known: Set<String>
         /// Chrome's only page target at launch, until it is closed or the close is attempted.
         var initialBlank: String?
-        var initialBlankClosed = false
         /// The sessions each tab may belong to; it is closed when the last of them ends. Chrome's
         /// own first tab has none.
         var owners: [String: Set<String>] = [:]
@@ -285,17 +284,24 @@ public final class SharedBrowser {
             let sessions = attached(to: current.id)
             let sessionPins = pins(of: sessions)
             current.track(pages, pins: sessionPins, sessions: Set(sessions))
-            if let blank = current.initialBlank, !current.initialBlankClosed,
-               !sessionPins.values.contains(blank),
-               sessionPins.values.contains(where: { $0 != blank }) {
-                current.initialBlankClosed = true
+            let open = Set(pages.map(\.id))
+            let livePins = sessionPins.filter { open.contains($0.value) }
+            var blankToClose: String?
+            if let blank = current.initialBlank,
+               current.owners[blank] == nil,
+               !livePins.values.contains(blank),
+               livePins.values.contains(where: { $0 != blank }) {
+                current.initialBlank = nil
+                blankToClose = blank
+            }
+            instances[project] = .running(current)
+            if let blank = blankToClose {
                 do {
                     try await devTools.closeTarget(blank, port: current.port)
                 } catch {
-                    reportOnce("tab-close", "linkC could not close a tab of the shared browser for \(project) — \(error.localizedDescription)")
+                    reportOnce("blank-close", "linkC could not close the shared browser's initial blank page for \(project) — \(error.localizedDescription)")
                 }
             }
-            instances[project] = .running(current)
         }
     }
 
@@ -605,8 +611,8 @@ public final class SharedBrowser {
             process = try launcher.launch(
                 executable: chromePath,
                 // A blank first page, not Chrome's new-tab page: with that, the first pinned attach adds
-                // one more blank tab. The first attach still opens its own tab, so this page stays open
-                // and idle for Chrome's life.
+                // one more blank tab. Once an attached session has another live page, linkC closes this
+                // initial one unless a session has used it.
                 arguments: ["--headless=new", "--remote-debugging-port=\(asked)", "--user-data-dir=\(profile.path)",
                             "--no-first-run", "--no-default-browser-check", "about:blank"],
                 log: log,

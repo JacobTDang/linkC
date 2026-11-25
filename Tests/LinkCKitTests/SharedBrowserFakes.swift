@@ -120,8 +120,10 @@ final class FakeDevTools: SharedBrowserDevTools, @unchecked Sendable {
     private var _pages: [String] = []
     private var _openers: [String: String] = [:]
     private var _closed: [String] = []
+    private var _closeAttempts: [String] = []
     private var _lists = 0
     var closeError: Error?
+    var onClose: (@Sendable () async -> Void)?
 
     var pages: [String] {
         get { lock.withLock { _pages } }
@@ -133,6 +135,7 @@ final class FakeDevTools: SharedBrowserDevTools, @unchecked Sendable {
         set { lock.withLock { _openers = newValue } }
     }
     var closed: [String] { lock.withLock { _closed } }
+    var closeAttempts: [String] { lock.withLock { _closeAttempts } }
     var lists: Int { lock.withLock { _lists } }
 
     func pageTargets(port: Int) async throws -> [PageTarget] {
@@ -143,6 +146,8 @@ final class FakeDevTools: SharedBrowserDevTools, @unchecked Sendable {
     }
 
     func closeTarget(_ id: String, port: Int) async throws {
+        lock.withLock { _closeAttempts.append(id) }
+        if let onClose { await onClose() }
         if let closeError { throw closeError }
         lock.withLock {
             _closed.append(id)

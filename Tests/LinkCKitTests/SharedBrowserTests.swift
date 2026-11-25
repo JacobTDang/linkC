@@ -605,7 +605,8 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertFalse(devTools.closed.contains("T1"), "S2 is pinned to it now: \(devTools.closed)")
     }
 
-    func testAInitialBlankPageClosesOnceASessionHasItsOwnTab() async throws {
+    /// The initial blank closes once a session has another live page to use.
+    func testTheInitialBlankPageClosesOnceASessionHasItsOwnTab() async throws {
         let browser = makeBrowser()
         devTools.pages = ["boot"]
         let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
@@ -618,7 +619,8 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertEqual(devTools.closed, ["boot"])
     }
 
-    func testAnInitialBlankPageStaysOpenUntilASessionHasItsOwnTab() async throws {
+    /// The initial blank stays open until an attached session has another live page.
+    func testTheInitialBlankPageStaysOpenUntilASessionHasItsOwnTab() async throws {
         let browser = makeBrowser()
         devTools.pages = ["boot"]
         _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
@@ -628,15 +630,106 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertTrue(devTools.closed.isEmpty)
     }
 
-    func testAnInitialBlankPagePinnedByASessionStaysOpen() async throws {
+    /// The initial blank stays open while one session is pinned there and another has its own page.
+    func testTheInitialBlankPagePinnedByASessionStaysOpen() async throws {
         let browser = makeBrowser()
         devTools.pages = ["boot"]
         let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        let s2 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project"))
+        devTools.pages += ["T1"]
         try pin(s1, to: "boot")
+        try pin(s2, to: "T1")
 
         await browser.trackTabs()
 
         XCTAssertTrue(devTools.closed.isEmpty)
+    }
+
+    /// A blank page a session used remains for release to close after that session moves away.
+    func testTheInitialBlankPageEverPinnedByASessionStaysOpen() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["boot"]
+        let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        let s2 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project"))
+        try pin(s1, to: "boot")
+        await browser.trackTabs()
+        devTools.pages += ["T1", "T2"]
+        try pin(s1, to: "T1")
+        try pin(s2, to: "T2")
+
+        await browser.trackTabs()
+
+        XCTAssertTrue(devTools.closed.isEmpty)
+    }
+
+    /// Releasing the last session during the close await cannot resurrect its stopped Chrome.
+    func testTheInitialBlankCloseDoesNotRestoreAnInstanceReleasedWhileItWaits() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["boot"]
+        let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        devTools.pages += ["T1"]
+        try pin(s1, to: "T1")
+        devTools.onClose = { @MainActor in browser.release(sessionId: "S1") }
+
+        await browser.trackTabs()
+        await browser.settle()
+        browser.stopAll()
+
+        XCTAssertEqual(launcher.processes[0].stopCount, 1, "the released instance was not written back")
+    }
+
+    /// Stale target files from a dead Chrome cannot close the replacement Chrome's only page.
+    func testTheInitialBlankPageSurvivesStalePinsAfterAChromeRestart() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["old-boot"]
+        let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        try pin(s1, to: "dead-tab")
+        devTools.pages = ["new-boot"]
+
+        launcher.processes[0].exit(status: 9)
+        await browser.settle()
+        await browser.trackTabs()
+
+        XCTAssertTrue(devTools.closed.isEmpty)
+    }
+
+    /// A failed blank close is reported once, is not retried, and does not consume tab-close's notice.
+    func testTheInitialBlankCloseFailureIsReportedOnceAndNotRetried() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["boot"]
+        let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        let s2 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project"))
+        devTools.pages += ["T1", "T2"]
+        try pin(s1, to: "T1")
+        try pin(s2, to: "T2")
+        devTools.closeError = CocoaError(.fileWriteUnknown)
+
+        await browser.trackTabs()
+        await browser.trackTabs()
+        browser.release(sessionId: "S1")
+        await browser.settle()
+
+        XCTAssertEqual(devTools.closeAttempts.filter { $0 == "boot" }.count, 1)
+        XCTAssertEqual(notices.count, 2, notices.joined(separator: "\n"))
+    }
+
+    /// Each relaunched Chrome records and closes its own initial blank target.
+    func testTheInitialBlankPageIsRenewedForRelaunchedChrome() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["old-boot"]
+        let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        devTools.pages += ["old-tab"]
+        try pin(s1, to: "old-tab")
+        await browser.trackTabs()
+        devTools.pages = ["new-boot"]
+
+        launcher.processes[0].exit(status: 9)
+        await browser.settle()
+        devTools.pages += ["new-tab"]
+        try pin(s1, to: "new-tab")
+        await browser.trackTabs()
+
+        XCTAssertEqual(devTools.closed, ["old-boot", "new-boot"])
     }
 
     /// A popup belongs to the session whose tab opened it, however many share the browser, and so
@@ -661,8 +754,8 @@ final class SharedBrowserTests: XCTestCase {
     }
 
     /// Chrome opens on a blank page, not its own new-tab page: with the new-tab page, the first pinned
-    /// attach added one more blank tab. The first attach still opens a tab of its own, so the blank
-    /// page stays open, idle, for Chrome's life: one stray tab, not two.
+    /// attach added one more blank tab. The first attach still opens a tab of its own, after which
+    /// linkC closes Chrome's initial blank page.
     func testChromeOpensOnABlankPageNotItsNewTabPage() async throws {
         let browser = makeBrowser()
 
