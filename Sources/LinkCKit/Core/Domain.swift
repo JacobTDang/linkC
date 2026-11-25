@@ -111,6 +111,9 @@ public struct Session: Sendable, Identifiable, Equatable {
     /// When the current turn began: the last move into `.working` from any state other than
     /// `.waitingPermission`.
     public var turnStartedAt: Date
+    /// When the session last left `.working`: its last request to the model went out about then,
+    /// so a provider's prompt-cache lifetime counts from here. Nil until a turn has run.
+    public var turnEndedAt: Date?
     public var agentKind: AgentKind
     /// The model this session was launched with, and the tier it was launched for. Set once at
     /// launch: a pinned session is never switched out from under the person using it, so the
@@ -134,6 +137,7 @@ public struct Session: Sendable, Identifiable, Equatable {
         claudeSessionId: String? = nil,
         stateChangedAt: Date = Date(),
         turnStartedAt: Date? = nil,
+        turnEndedAt: Date? = nil,
         agentKind: AgentKind = .claude,
         model: String? = nil,
         modelTier: ModelTier? = nil,
@@ -147,6 +151,7 @@ public struct Session: Sendable, Identifiable, Equatable {
         self.claudeSessionId = claudeSessionId
         self.stateChangedAt = stateChangedAt
         self.turnStartedAt = turnStartedAt ?? stateChangedAt
+        self.turnEndedAt = turnEndedAt
         self.agentKind = agentKind
         self.model = model
         self.modelTier = modelTier

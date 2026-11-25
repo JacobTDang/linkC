@@ -9,17 +9,36 @@ public enum KnownProjectsPublisher {
 
     /// Sidebar projects ∪ MCP folders ∪ live sessions' folders, canonical, sorted by path. Each project's
     /// live sessions (state != .ended), sorted by id: .starting → .starting; ready/finished/waitingIdle → .idle;
-    /// anything else → .busy.
-    public static func projects(sidebar: [String], mcpFolders: Set<String>, sessions: [Session]) -> [KnownProject] {
+    /// anything else → .busy. Each session also carries what its row shows; `action` reads the action
+    /// line of a session working or waiting on a permission, and is never asked of another.
+    /// `liveModel` is the model a session runs now where its agent reports one, else its launch model.
+    public static func projects(
+        sidebar: [String], mcpFolders: Set<String>, sessions: [Session], action: (Session) -> String? = { _ in nil },
+        subagents: (Session) -> Int = { _ in 0 }, liveModel: (Session) -> String? = { _ in nil },
+        title: (Session) -> String? = { _ in nil }, cache: (Session) -> CacheExpiry? = { _ in nil }
+    ) -> [KnownProject] {
         let (paths, liveByPath) = resolve(sidebar: sidebar, mcpFolders: mcpFolders, sessions: sessions)
         return paths.sorted().map { path in
             let open = (liveByPath[path] ?? [])
                 .sorted { $0.id < $1.id }
                 .map { session in
-                    KnownProject.OpenSession(
+                    let shown = ShownActivity.applies(to: session.state)
+                        ? ShownActivity(activity: action(session), state: session.state) : nil
+                    let running = subagents(session)
+                    let cold = cache(session)
+                    return KnownProject.OpenSession(
                         id: session.id,
                         agent: session.agentKind.rawValue,
-                        activity: activity(for: session.state)
+                        activity: activity(for: session.state),
+                        title: title(session) ?? session.title,
+                        state: session.state.rawValue,
+                        since: session.stateChangedAt.formatted(.iso8601),
+                        model: liveModel(session) ?? session.model,
+                        worker: session.isWorker,
+                        action: shown?.text,
+                        subagents: running > 0 ? running : nil,
+                        cacheExpiresAt: cold?.at.formatted(.iso8601),
+                        cacheEstimate: cold?.isEstimate == true ? true : nil
                     )
                 }
             return KnownProject(path: path, sessions: open)

@@ -8,6 +8,7 @@ import Foundation
 /// Everything below runs on one serial queue, including `deliver` and `log`: keep them quick.
 public final class StatusLineFeed: @unchecked Sendable {
     public typealias Deliver = @Sendable (_ body: Data, _ reading: AgentUsage) -> Void
+    public typealias Report = @Sendable (_ sessionId: String, _ body: Data) -> Void
 
     /// One session's watched file. Touched only on `queue`.
     private final class Watch: @unchecked Sendable {
@@ -34,6 +35,7 @@ public final class StatusLineFeed: @unchecked Sendable {
 
     private let directory: URL
     private let deliver: Deliver
+    private let report: Report
     private let now: @Sendable () -> Date
     private let log: @Sendable (String) -> Void
     private let read: @Sendable (URL, Date) -> StatusLineFile.Outcome
@@ -53,6 +55,7 @@ public final class StatusLineFeed: @unchecked Sendable {
     public init(
         directory: URL,
         deliver: @escaping Deliver,
+        report: @escaping Report = { _, _ in },
         now: @escaping @Sendable () -> Date = Date.init,
         log: @escaping @Sendable (String) -> Void = { NSLog("[linkC] %@", $0) },
         read: @escaping @Sendable (URL, Date) -> StatusLineFile.Outcome = StatusLineFile.read(at:receivedAt:),
@@ -61,6 +64,7 @@ public final class StatusLineFeed: @unchecked Sendable {
     ) {
         self.directory = directory
         self.deliver = deliver
+        self.report = report
         self.now = now
         self.log = log
         self.read = read
@@ -242,10 +246,10 @@ public final class StatusLineFeed: @unchecked Sendable {
             watch.lastFailure = nil
             // One write can raise two events, and each finds the whole file: a report the same as
             // the last delivered is that write read again.
-            if let reading, body != watch.lastDelivered {
-                watch.lastDelivered = body
-                deliver(body, reading)
-            }
+            guard body != watch.lastDelivered else { return }
+            watch.lastDelivered = body
+            report(sessionId, body)
+            if let reading { deliver(body, reading) }
         case .empty:
             guard !mayBeEmpty else { return }
             readAgainOrFail(sessionId, watch, "the status line file \(watch.url.path) was emptied and nothing was written into it")

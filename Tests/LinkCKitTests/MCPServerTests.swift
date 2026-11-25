@@ -47,7 +47,7 @@ final class MCPServerTests: XCTestCase {
         let resJson = try JSONSerialization.jsonObject(with: resData) as? [String: Any]
         let result = resJson?["result"] as? [String: Any]
         let tools = result?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 20)
+        XCTAssertEqual(tools?.count, 21)
 
         let toolNames = Set(tools?.compactMap { $0["name"] as? String } ?? [])
         XCTAssertTrue(toolNames.contains("linkc_broadcast_intent"))
@@ -59,6 +59,7 @@ final class MCPServerTests: XCTestCase {
         XCTAssertTrue(toolNames.contains("linkc_ask"))
         XCTAssertTrue(toolNames.contains("linkc_send_message"))
         XCTAssertTrue(toolNames.contains("linkc_get_inbox"))
+        XCTAssertTrue(toolNames.contains("linkc_handoff"))
         for name in [
             "linkc_start_task", "linkc_complete_task", "linkc_cancel_task", "linkc_close_worker", "linkc_get_task", "linkc_my_tasks",
             "linkc_switch_model", "linkc_get_models", "linkc_get_usage_status", "linkc_get_board", "linkc_edit_board"

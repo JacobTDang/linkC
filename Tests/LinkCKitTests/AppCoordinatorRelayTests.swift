@@ -4805,6 +4805,97 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(projects[0].sessions.first?.activity, .idle)
     }
 
+    /// The action line comes from the session's terminal, which the app reads: the sweep publishes
+    /// what the app's reader returns.
+    @MainActor
+    func testSweepPublishesTheActionTheAppReads() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "busy", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .working)
+        coordinator.sessionAction = { $0.id == "L1" ? "Running the full test suite" : nil }
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.read().first?.sessions.first?.action, "Running the full test suite")
+    }
+
+    /// The subagents a session's transcript shows running are counted in its row.
+    @MainActor
+    func testSweepPublishesTheSessionsRunningSubagents() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "fan-out", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .finished)
+        let transcript = tempDir.appendingPathComponent("t.jsonl")
+        let spawn = """
+        {"type":"assistant","timestamp":"2026-07-23T04:00:00Z","message":{"content":[\
+        {"type":"tool_use","id":"toolu_A","name":"Agent",\
+        "input":{"description":"Survey","subagent_type":"Explore","prompt":"..."}}]}}
+        """
+        try (spawn + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+        let tracker = UsageTracker(projectsDir: tempDir)
+        tracker.bind(sessionId: "L1", transcriptPath: transcript.path)
+        tracker.refreshSession("L1")
+        coordinator.usageTracker = tracker
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.read().first?.sessions.first?.subagents, 1)
+    }
+
+    /// The sweep publishes the title the app's sidebar row reads, not the session's folder name.
+    @MainActor
+    func testSweepPublishesTheTitleTheAppResolves() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "folder", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        coordinator.sessionTitles = { ["L1": "Fix the glyphs"] }
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.read().first?.sessions.first?.title, "Fix the glyphs")
+    }
+
+    /// A Claude session's status line names the model it runs now; the sweep publishes that one.
+    @MainActor
+    func testSweepPublishesTheModelTheStatusLineNames() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "switched", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        coordinator.sessionStatuses.accept(
+            sessionId: "L1", body: Data(#"{"model":{"id":"claude-opus-5-5","display_name":"Opus 5.5"}}"#.utf8))
+
+        await coordinator.runSweepTickForTests()
+
+        // The id, as the launch model is published: one format for every reader of the file.
+        XCTAssertEqual(try file.read().first?.sessions.first?.model, "claude-opus-5-5")
+    }
+
+    /// A Claude session's status line says when its prompt cache goes cold; the sweep publishes it.
+    @MainActor
+    func testSweepPublishesWhenTheStatusLineSaysTheCacheGoesCold() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "warm", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .finished)
+        coordinator.sessionStatuses.accept(
+            sessionId: "L1", body: Data(#"{"prompt_cache":{"warm":true,"expires_at":1790003600}}"#.utf8))
+
+        await coordinator.runSweepTickForTests()
+
+        let open = try XCTUnwrap(try file.read().first?.sessions.first)
+        XCTAssertEqual(open.cacheExpiresAt, "2026-09-21T15:13:20Z")
+        XCTAssertNil(open.cacheEstimate)
+    }
+
     @MainActor
     func testProjectsFileIsRewrittenOnlyWhenContentsChange() async throws {
         let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))

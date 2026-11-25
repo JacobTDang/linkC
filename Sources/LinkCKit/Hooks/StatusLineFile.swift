@@ -45,7 +45,7 @@ public enum StatusLineFile {
     /// with its userInfo — an underlying error's address, a dictionary in no fixed order — so one
     /// unchanged bad file would read as a new failure on every refresh, and the feed, which logs a
     /// failure once by comparing messages, would log it every time.
-    private static func describe(_ error: Error) -> String {
+    static func describe(_ error: Error) -> String {
         if case DecodingError.dataCorrupted(let context) = error,
            let underlying = context.underlyingError as NSError? {
             let detail = underlying.userInfo[NSDebugDescriptionErrorKey] as? String ?? underlying.localizedDescription
