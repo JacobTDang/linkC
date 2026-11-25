@@ -150,19 +150,27 @@ private struct TerminalPane: View {
             } else if let id = model.selectedId, let shell = model.shellRows.first(where: { $0.id == id }) {
                 ShellHeaderStrip(row: shell, onBack: onBack)
             }
-            ZStack {
-                if let readerAgent {
-                    AgentReaderView(agent: currentAgent(readerAgent)) { self.readerAgent = nil }
-                        .transition(reduceMotion
-                            ? .opacity
-                            : .move(edge: .trailing).combined(with: .opacity))
-                } else {
-                    terminal
-                        .transition(.opacity)
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    ZStack {
+                        if let readerAgent {
+                            AgentReaderView(agent: currentAgent(readerAgent)) { self.readerAgent = nil }
+                                .transition(reduceMotion
+                                    ? .opacity
+                                    : .move(edge: .trailing).combined(with: .opacity))
+                        } else {
+                            terminal
+                                .transition(.opacity)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .animation(Theme.viewSwap, value: readerAgent?.id)
+                    // Beside the terminal only while it shows here, not while a window holds it.
+                    AgentsColumnHost(model: model,
+                                     sessionId: model.selectedId.flatMap { model.host(of: $0) == nil ? $0 : nil },
+                                     paneWidth: geo.size.width)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .animation(Theme.viewSwap, value: readerAgent?.id)
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)

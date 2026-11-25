@@ -203,6 +203,9 @@ final class AppModel {
     private(set) var codexUsage: AgentUsage?
     /// The sidebar's non-observable inputs, published by `sampleSidebar()` only when they change.
     let sidebarSignal = SidebarSignalFeed()
+    /// The repo of each known project folder, for the agents column beside a terminal. Filled by the
+    /// panel's sweep (`resolveRepoRoots`).
+    let repoRoots = RepoRoots()
 
     /// Surface a one-off failure in the panel's error bar (fail loud, stay standing).
     func surface(error message: String) { lastError = message }
@@ -293,6 +296,7 @@ final class AppModel {
             coordinator.panelSweep = { [weak self] in
                 await self?.sampleShells()
                 self?.sampleSidebar()
+                self?.resolveRepoRoots()
             }
             self.coordinator = coordinator
             self.mcpServers = MCPServerService(claudePath: preflight.claudePath)

@@ -13,6 +13,9 @@ enum TerminalStyle {
         view.layer?.backgroundColor = NSColor.clear.cgColor
     }
 
+    /// One terminal cell's width in `font`, measured as SwiftTerm measures it: the advance of "W".
+    @MainActor static let cellWidth: CGFloat = font.advancement(forGlyph: font.glyph(withName: "W")).width
+
     /// SF Mono falling back to the installed Nerd Font, worked out once per launch: a Nerd Font
     /// installed later is picked up at the next launch.
     @MainActor private static let font: NSFont = {

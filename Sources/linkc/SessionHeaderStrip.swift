@@ -2,8 +2,8 @@ import SwiftUI
 import LinkCKit
 
 /// The one line above an open terminal: agent mark, title, "<Agent> · <project>", a subagents
-/// chip (a popover of the runs; picking one opens the reader), the session's spend, a 2pt
-/// context bar, and the project's collision warning.
+/// chip (a popover of the runs; picking one opens the reader), the session's spend, the agents
+/// column's toggle, a 2pt context bar, and the project's collision warning.
 struct SessionHeaderStrip: View {
     let model: AppModel
     let session: Session
@@ -64,6 +64,9 @@ struct SessionHeaderStrip: View {
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
                 }
+                AgentsColumnToggle(isOn: model.preferences.showsAgentsColumn(for: session.agentKind)) {
+                    model.preferences.toggleAgentsColumn(for: session.agentKind)
+                }
             }
             // A screen-scraped agent's line comes from its terminal buffer, which nothing
             // publishes, so this row re-reads it once a second while working, backing off to hourly when idle.
@@ -92,6 +95,30 @@ struct SessionHeaderStrip: View {
                 CollisionBanner(collisions: collisions)
             }
         }
+    }
+}
+
+/// Shows or hides the linkC agents column beside every terminal of this agent. Lit while the column is
+/// on; it still gives way when the terminal would be too narrow.
+private struct AgentsColumnToggle: View {
+    let isOn: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "sidebar.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(hovering || isOn ? Theme.textPrimary : Theme.textTertiary)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(hovering ? Theme.hover : Color.clear))
+                .contentShape(Circle())
+                .animation(Theme.hoverEase, value: hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(isOn ? "Hide linkC agents" : "Show linkC agents")
     }
 }
 

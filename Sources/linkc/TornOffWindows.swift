@@ -37,14 +37,20 @@ private struct TornOffTerminal: View {
     var body: some View {
         let host = model.host(of: id)
         let session = host == item ? model.terminalSession(id) : nil
-        ZStack {
-            // Reported from AppKit's mouse handling: hand it to the main actor. The weak model breaks the
-            // cycle model -> terminals -> session -> view -> this closure.
-            TerminalContainer(session: session, takesFocus: true,
-                              onClick: { [weak model] in Task { @MainActor in model?.acknowledge(id) } })
-                .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
-            if host != item, let host {
-                WindowedNote(model: model, item: host)
+        GeometryReader { geo in
+            HStack(spacing: 0) {
+                ZStack {
+                    // Reported from AppKit's mouse handling: hand it to the main actor. The weak model breaks the
+                    // cycle model -> terminals -> session -> view -> this closure.
+                    TerminalContainer(session: session, takesFocus: true,
+                                      onClick: { [weak model] in Task { @MainActor in model?.acknowledge(id) } })
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.terminalRadius, style: .continuous))
+                    if host != item, let host {
+                        WindowedNote(model: model, item: host)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                AgentsColumnHost(model: model, sessionId: session == nil ? nil : id, paneWidth: geo.size.width)
             }
         }
         .padding(.horizontal, 12)
