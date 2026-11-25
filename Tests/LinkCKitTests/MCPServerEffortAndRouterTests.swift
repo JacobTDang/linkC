@@ -16,9 +16,16 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    /// The app's list of open sessions, which a test writes when it needs one. Absent, it reads as
+    /// linkC not running: no session is open anywhere.
+    private var knownProjects: KnownProjectsFile {
+        KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+    }
+
     private func server(
         settings: AgentModelSettings = .seeded,
-        installed: Set<AgentKind> = [.claude, .codex, .cursor, .agy, .grok, .opencode, .kilo, .crush]
+        installed: Set<AgentKind> = [.claude, .codex, .cursor, .agy, .grok, .opencode, .kilo, .crush],
+        callerSession: String? = nil
     ) -> MCPServer {
         MCPServer(
             workspaceRoot: tempDir.path,
@@ -26,14 +33,15 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
             environment: ["LINKC_AGENT": "claude"],
             ancestorResolver: { _ in nil },
             modelSettings: { settings },
-            sessionResolver: { nil },
+            sessionResolver: { callerSession },
             usageReaders: [:],
             isAgentInstalled: { installed.contains($0) },
             openCodeModels: { _ in [
                 "opencode/deepseek-v4.1-flash-free", "opencode/big-pickle", "opencode/nemotron-3.5-super-vl-free"
             ] },
             kiloModels: { _ in [] },
-            modelLists: { [:] })
+            modelLists: { [:] },
+            knownProjects: knownProjects)
     }
 
     private func call(_ server: MCPServer, _ name: String, _ arguments: [String: Any] = [:]) throws -> (text: String, isError: Bool) {
@@ -84,6 +92,26 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
         let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
         XCTAssertEqual(task.tier, .light)
         XCTAssertEqual(task.effort, .low)
+    }
+
+    /// The tie-break reads the folder's open sessions from the app's list. The caller's own session
+    /// is mid-turn and cannot take the task, so its agent does not count as active.
+    func testAutoRouteTiesToAnotherAgentOpenInTheFolderNotTheCallersOwn() throws {
+        try knownProjects.write([
+            KnownProject(path: ProjectPath.canonical(tempDir.path), sessions: [
+                .init(id: "S-caller", agent: "codex", activity: .busy),
+                .init(id: "S-other", agent: "opencode", activity: .idle),
+            ])
+        ])
+        let result = try call(server(callerSession: "S-caller"), "linkc_delegate_task", [
+            "prompt": "Implement the login form and add unit tests",
+        ])
+        XCTAssertFalse(result.isError, result.text)
+        let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
+        XCTAssertEqual(task.toAgent, .opencode)
+        XCTAssertTrue(
+            result.text.contains("Routed: implementation → opencode standard; tie → already active in folder."),
+            result.text)
     }
 
     func testAutoRouteWithNoInstalledAgentsReportsError() throws {

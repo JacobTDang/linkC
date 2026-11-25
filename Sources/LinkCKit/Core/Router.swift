@@ -108,15 +108,16 @@ public enum Router {
         }
     }
 
-    /// Picks an agent, tier and effort. Throws when no installed agent can take the work
-    /// (every candidate limited, or none installed).
+    /// Picks an agent, tier and effort. `activeInFolder` holds the agents with a session already
+    /// open in the folder (the caller's own excluded): a tie goes to one of them. Throws, naming
+    /// why each agent was skipped, when no installed agent can take the work.
     public static func route(
         prompt: String,
         installed: [AgentKind],
         settings: AgentModelSettings,
         limits: [RouterLimit],
         usageTight: Set<AgentKind>,
-        activeInFolder: AgentKind?
+        activeInFolder: Set<AgentKind>
     ) throws -> RouterDecision {
         let kind = classify(prompt)
         let tier = tier(for: kind, prompt: prompt)
@@ -143,37 +144,41 @@ public enum Router {
                 "no installed agent is free to take this task at \(tier.rawValue) — \(why). Name an agent with `to`.")
         }
 
-        let chosen: AgentKind
+        // Web research goes to a browse-capable agent when one is free; any other task, or research
+        // with none free, picks among every candidate.
+        let browse = kind == .webResearch ? browseAgents.filter(candidates.contains) : []
+        let pool = browse.isEmpty ? candidates : browse
+        // Usage headroom first; when every agent in the pool is tight, they all stay in.
+        let withHeadroom = pool.filter { !usageTight.contains($0) }
+        let picks = withHeadroom.isEmpty ? pool : withHeadroom
+        // A tie goes to an agent already open in the folder, else to the first in `installed` order.
+        let active = picks.first(where: activeInFolder.contains)
+        let chosen = active ?? picks[0]
+
         var reasonParts: [String] = []
         switch kind {
+        case .webResearch where browse.isEmpty:
+            reasonParts.append("web research → \(chosen.rawValue) \(tier.rawValue) (no browse-capable agent free)")
         case .webResearch:
-            let browse = browseAgents.filter { candidates.contains($0) }
-            guard let pick = browse.first else {
-                // No browse-capable agent free: fall through to the ordinary picker among whoever is left.
-                chosen = pickAmong(candidates, usageTight: usageTight, activeInFolder: activeInFolder)
-                reasonParts.append("web research → \(tier.rawValue); no browse-capable agent free, picked \(chosen.rawValue)")
-                break
-            }
-            chosen = pick
             reasonParts.append("web research → \(chosen.rawValue) \(tier.rawValue) (browse-capable)")
         case .trivialEdit:
-            chosen = pickAmong(candidates, usageTight: usageTight, activeInFolder: activeInFolder)
             reasonParts.append("trivial edit → \(chosen.rawValue) \(tier.rawValue)")
         case .hard:
-            chosen = pickAmong(candidates, usageTight: usageTight, activeInFolder: activeInFolder)
             reasonParts.append("hard work → \(chosen.rawValue) \(tier.rawValue)")
         case .ordinary:
-            chosen = pickAmong(candidates, usageTight: usageTight, activeInFolder: activeInFolder)
             reasonParts.append("implementation → \(chosen.rawValue) \(tier.rawValue)")
         }
-
-        if usageTight.contains(chosen) == false,
-           candidates.contains(where: { usageTight.contains($0) }) {
-            // Already preferred headroom in pickAmong; mention it when the active agent was tight.
-            if let activeInFolder, usageTight.contains(activeInFolder), chosen != activeInFolder {
-                reasonParts.append("avoided tight usage on \(activeInFolder.rawValue)")
+        // Why each agent that would have come first was passed over. Cursor is never routed to, so
+        // it is not named here.
+        let order = browse.isEmpty ? installed : browseAgents.filter(installed.contains)
+        for agent in order.prefix(while: { $0 != chosen }) where agent != .cursor {
+            if let skip = skipped.first(where: { $0.agent == agent }) {
+                reasonParts.append("\(agent.rawValue) skipped (\(skip.why))")
+            } else if !withHeadroom.isEmpty, usageTight.contains(agent), pool.contains(agent) {
+                reasonParts.append("\(agent.rawValue) skipped (usage tight)")
             }
-        } else if let activeInFolder, chosen == activeInFolder {
+        }
+        if active != nil, chosen != picks[0] {
             reasonParts.append("tie → already active in folder")
         }
 
@@ -190,21 +195,6 @@ public enum Router {
         return RouterDecision(
             agent: chosen, tier: tier, effort: effort,
             reason: reasonParts.joined(separator: "; "))
-    }
-
-    /// Prefer agents with usage headroom; ties go to the agent already active in the folder;
-    /// remaining ties keep `installed` / candidate order.
-    private static func pickAmong(
-        _ candidates: [AgentKind],
-        usageTight: Set<AgentKind>,
-        activeInFolder: AgentKind?
-    ) -> AgentKind {
-        let withHeadroom = candidates.filter { !usageTight.contains($0) }
-        let pool = withHeadroom.isEmpty ? candidates : withHeadroom
-        if let activeInFolder, pool.contains(activeInFolder) {
-            return activeInFolder
-        }
-        return pool[0]
     }
 
     private static func isLimited(

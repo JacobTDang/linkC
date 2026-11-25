@@ -10,7 +10,7 @@ final class RouterTests: XCTestCase {
         installed: [AgentKind]? = nil,
         limited: [RouterLimit] = [],
         usage: [AgentKind: Double] = [:],
-        active: AgentKind? = nil,
+        active: Set<AgentKind> = [],
         settings: AgentModelSettings? = nil
     ) throws -> RouterDecision {
         try Router.route(
@@ -34,9 +34,8 @@ final class RouterTests: XCTestCase {
     func testWebResearchPicksLightOnABrowseCapableAgent() throws {
         let d = try route("Do some web research on Swift concurrency and scrape the docs")
         XCTAssertEqual(d.tier, .light)
-        XCTAssertTrue([AgentKind.agy, .opencode].contains(d.agent), "got \(d.agent)")
-        XCTAssertTrue(d.reason.lowercased().contains("browse") || d.reason.lowercased().contains("research"),
-                      d.reason)
+        XCTAssertEqual(d.agent, .agy)
+        XCTAssertEqual(d.reason, "web research → agy light (browse-capable); effort low")
     }
 
     func testWebResearchPrefersAgyWhenBothAreFree() throws {
@@ -78,8 +77,9 @@ final class RouterTests: XCTestCase {
             "Implement a feature",
             installed: [.claude, .codex],
             limited: [RouterLimit(agent: .claude, pool: nil)],
-            active: .claude)
+            active: [.claude])
         XCTAssertEqual(d.agent, .codex)
+        XCTAssertEqual(d.reason, "implementation → codex standard; claude skipped (limited); effort medium")
     }
 
     func testNeverPicksALimitedPool() throws {
@@ -96,17 +96,26 @@ final class RouterTests: XCTestCase {
             "Implement a feature",
             installed: [.claude, .codex],
             usage: [.claude: 90, .codex: 10],
-            active: .claude)
+            active: [.claude])
         XCTAssertEqual(d.agent, .codex, "claude is tight (>=80%); prefer headroom")
+        XCTAssertEqual(d.reason, "implementation → codex standard; claude skipped (usage tight); effort medium")
     }
 
     func testTiesGoToTheAgentAlreadyActiveInTheFolder() throws {
         let d = try route(
             "Implement a feature",
             installed: [.claude, .codex],
-            active: .codex)
+            active: [.codex])
         XCTAssertEqual(d.agent, .codex)
-        XCTAssertTrue(d.reason.lowercased().contains("active") || d.reason.contains("codex"), d.reason)
+        XCTAssertEqual(d.reason, "implementation → codex standard; tie → already active in folder; effort medium")
+    }
+
+    /// With no agent active in the folder, the first free candidate takes the work and the reason
+    /// claims no tie.
+    func testWithNothingActiveTheFirstCandidateIsPicked() throws {
+        let d = try route("Implement a feature", installed: [.claude, .codex])
+        XCTAssertEqual(d.agent, .claude)
+        XCTAssertEqual(d.reason, "implementation → claude standard; effort medium")
     }
 
     func testRefusesWhenEveryAgentIsLimited() {
@@ -115,9 +124,9 @@ final class RouterTests: XCTestCase {
             installed: [.claude],
             limited: [RouterLimit(agent: .claude, pool: nil)]
         )) { error in
-            XCTAssertTrue(String(describing: error).lowercased().contains("limit")
-                          || String(describing: error).lowercased().contains("no agent"),
-                          String(describing: error))
+            XCTAssertEqual(
+                error.localizedDescription,
+                "no installed agent is free to take this task at standard — claude skipped (limited). Name an agent with `to`.")
         }
     }
 

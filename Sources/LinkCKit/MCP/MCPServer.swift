@@ -1997,9 +1997,10 @@ public final class MCPServer: Sendable {
                     isError: true)
             }
             do {
-                let decision = try routeTask(prompt: prompt, settings: settings, destStore: destStore)
+                let route = try routeTask(prompt: prompt, settings: settings, destStore: destStore, destRoot: destRoot)
+                let decision = route.decision
                 toAgent = decision.agent
-                routeReason = decision.reason
+                routeReason = route.reason
                 // Stash the router's tier/effort into args so the shared resolution below sees them
                 // the same way an explicit caller would.
                 var routed = args
@@ -2039,10 +2040,11 @@ public final class MCPServer: Sendable {
             verification: verification, settings: settings, routeReason: nil)
     }
 
-    /// Gathers live limits and usage, then asks the pure `Router` for an agent/tier/effort.
+    /// Gathers live limits, usage and the agents open in the folder, then asks the pure `Router` for
+    /// an agent/tier/effort. The reason says so when the folder's open sessions could not be read.
     private func routeTask(
-        prompt: String, settings: AgentModelSettings, destStore: InboxStore
-    ) throws -> RouterDecision {
+        prompt: String, settings: AgentModelSettings, destStore: InboxStore, destRoot: String
+    ) throws -> (decision: RouterDecision, reason: String) {
         let installed = AgentKind.peers.filter { isAgentInstalled($0) }
         guard !installed.isEmpty else {
             throw LinkCError.process("no agent CLI is installed to route to")
@@ -2059,9 +2061,31 @@ public final class MCPServer: Sendable {
                 tight.insert(agent)
             }
         }
-        return try Router.route(
+        let open = agentsOpen(in: destRoot)
+        let decision = try Router.route(
             prompt: prompt, installed: installed, settings: settings,
-            limits: limits, usageTight: tight, activeInFolder: nil)
+            limits: limits, usageTight: tight, activeInFolder: open.agents)
+        let reason = open.problem.map { "\(decision.reason); no tie-break, the open sessions could not be read: \($0)" }
+            ?? decision.reason
+        return (decision, reason)
+    }
+
+    /// The agents with a session open in `folder`, from the app's project list, leaving out the
+    /// caller's own session: it is mid-turn and cannot take the task. No list means linkC is not
+    /// running, so nothing is open; a list that cannot be read is returned as the problem.
+    private func agentsOpen(in folder: String) -> (agents: Set<AgentKind>, problem: String?) {
+        let projects: [KnownProject]
+        do {
+            projects = try knownProjects.read()
+        } catch KnownProjectsError.linkCNotRunning {
+            return ([], nil)
+        } catch {
+            return ([], error.localizedDescription)
+        }
+        let norm = ProjectPath.canonical(folder)
+        let own = callerSessionId()
+        let sessions = projects.first { $0.path == norm }?.sessions ?? []
+        return (Set(sessions.filter { $0.id != own }.compactMap(\.agentKind)), nil)
     }
 
     /// Shared body after `to` (and optional auto-route) has been resolved.
