@@ -64,6 +64,8 @@ final class AgentsColumnTests: XCTestCase {
             KnownProject(path: "/repo", sessions: [session("A")]),
             KnownProject(path: "/repo/Sources", sessions: [session("B")]),
             KnownProject(path: "/elsewhere", sessions: [session("C")]),
+            // Shares the repo's folder name as a prefix, but not its folder.
+            KnownProject(path: "/repo-two", sessions: [session("D")]),
         ]
 
         let column = AgentsColumn.build(projects: projects, roots: ["/repo": .repo("/repo")], selectedId: "A")
