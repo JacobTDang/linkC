@@ -67,13 +67,56 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
         XCTAssertEqual(task.tier, .deep)
     }
 
+    /// With no effort given, the task takes its tier's effort from Settings, here not light's default.
     func testDelegateTaskDefaultsEffortFromTierSettings() throws {
-        let result = try call(server(), "linkc_delegate_task", [
+        var settings = AgentModelSettings.seeded
+        settings.setEffort(.high, for: .claude, tier: .light)
+        let result = try call(server(settings: settings), "linkc_delegate_task", [
             "to": "claude", "prompt": "Ordinary work.", "tier": "light",
         ])
         XCTAssertFalse(result.isError, result.text)
         let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
+        XCTAssertEqual(task.effort, .high)
+    }
+
+    func testAnEffortThatIsNotALevelIsRefused() throws {
+        for effort in ["hgih", "extreme"] as [Any] + [3] {
+            let result = try call(server(), "linkc_delegate_task", [
+                "to": "claude", "prompt": "x", "tier": "deep", "effort": effort,
+            ])
+            XCTAssertTrue(result.isError, "\(effort)")
+            XCTAssertEqual(result.text, "Error: effort must be low, medium, high, xhigh or max.", "\(effort)")
+        }
+        XCTAssertTrue(try InboxStore(workspaceRoot: tempDir.path).openTasks().isEmpty)
+    }
+
+    /// `to: "auto"` routes like an omitted `to`: the task is queued for the router's pick, at its tier
+    /// and effort, and the result says why.
+    func testAutoRouteWithToAutoQueuesTheRoutersPick() throws {
+        let result = try call(server(installed: [.claude, .codex]), "linkc_delegate_task", [
+            "to": "auto", "prompt": "Fix the typo in the migration guide",
+        ])
+        XCTAssertFalse(result.isError, result.text)
+        let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
+        XCTAssertEqual(task.toAgent, .claude)
+        XCTAssertEqual(task.tier, .light)
         XCTAssertEqual(task.effort, .low)
+        XCTAssertTrue(result.text.contains("Routed: trivial edit → claude light; effort low."), result.text)
+    }
+
+    /// The schema offers effort's levels as an enum and says an effort the agent cannot take is refused.
+    func testTheDelegateSchemaListsTheEffortLevels() throws {
+        let request: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/list"]
+        let data = try XCTUnwrap(server().handleMessage(try JSONSerialization.data(withJSONObject: request)))
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let tools = try XCTUnwrap((json["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        let delegate = try XCTUnwrap(tools.first { $0["name"] as? String == "linkc_delegate_task" })
+        let properties = try XCTUnwrap((delegate["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])
+        let effort = try XCTUnwrap(properties["effort"] as? [String: Any])
+        XCTAssertEqual(effort["enum"] as? [String], ["low", "medium", "high", "xhigh", "max"])
+        let description = try XCTUnwrap(effort["description"] as? String)
+        XCTAssertTrue(description.contains("Refused"), description)
+        XCTAssertFalse(description.contains("Ignored"), description)
     }
 
     /// agy refuses at launch an effort it does not list for the model, which kills the worker, so an
@@ -109,8 +152,9 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
             "prompt": "Rename a typo in the header",
         ])
         XCTAssertFalse(result.isError, result.text)
-        XCTAssertTrue(result.text.contains("Routed:"), result.text)
+        XCTAssertTrue(result.text.contains("Routed: trivial edit → claude light; effort low."), result.text)
         let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
+        XCTAssertEqual(task.toAgent, .claude)
         XCTAssertEqual(task.tier, .light)
         XCTAssertEqual(task.effort, .low)
     }

@@ -632,7 +632,7 @@ public final class MCPServer: Sendable {
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList)), or \"auto\" / omitted to let linkC route"],
+                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList)), or \"auto\" to let linkC route; omitting it routes too. An empty to is an error."],
                         "prompt": ["type": "string", "description": "Task instructions and context to inject into recipient's terminal"],
                         "files": ["type": "array", "items": ["type": "string"], "description": "Optional list of files the delegated task will touch"],
                         "from": ["type": "string", "description": "Sender agent kind (optional, defaults to claude)"],
@@ -640,7 +640,11 @@ public final class MCPServer: Sendable {
                         "force": ["type": "boolean", "description": "Override an existing lease held by another assignee"],
                         "tier": ["type": "string", "description": "Model tier for this task: light, standard or deep. Defaults to the agent's configured default tier. Pass tier or model, not both."],
                         "model": ["type": "string", "description": "A specific model of the target agent, as an alternative to tier. Must be one the agent lists. Pass tier or model, not both."],
-                        "effort": ["type": "string", "description": "Reasoning effort for the worker launch: low, medium, high, xhigh or max. Defaults to the agent's configured effort for the tier. Ignored for agents that cannot take an effort from linkC."],
+                        "effort": [
+                            "type": "string",
+                            "enum": ReasoningEffort.allCases.map(\.rawValue),
+                            "description": "Reasoning effort for the worker launch. Defaults to the agent's configured effort for the tier. Refused for an agent that cannot take an effort from linkC, a level the agent does not take, and for agy a level it does not list for the model."
+                        ],
                         "project": ["type": "string", "description": "Optional. Another project's folder name or path; the task is created there."],
                         "verify": [
                             "type": "object",
@@ -1972,13 +1976,20 @@ public final class MCPServer: Sendable {
         // `to` omitted or "auto" → pure Router picks agent, tier and effort. An explicit `to`
         // keeps today's behaviour. When routing, tier/model/effort from the caller are refused
         // so the tool result's reason is the whole story.
+        // Only an omitted `to` or "auto" routes: an empty one is a caller's mistake, not a request.
         let toRaw: String?
         if let raw = args["to"] {
             guard let text = raw as? String else {
                 return toolResultResponse(id: id, text: "Error: to must be a string.", isError: true)
             }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            toRaw = trimmed.isEmpty ? nil : trimmed
+            guard !trimmed.isEmpty else {
+                return toolResultResponse(
+                    id: id,
+                    text: "Error: to is empty. Name an agent (\(AgentKind.peerList)), or omit to (or pass \"auto\") to let linkC route.",
+                    isError: true)
+            }
+            toRaw = trimmed
         } else {
             toRaw = nil
         }
@@ -2014,11 +2025,10 @@ public final class MCPServer: Sendable {
             } catch {
                 return toolResultResponse(id: id, text: "Error: \(error.localizedDescription)", isError: true)
             }
-        } else {
-            guard let parsed = AgentKind(rawValue: toRaw!.lowercased()) else {
-                return toolResultResponse(id: id, text: "Error: Unknown agent '\(toRaw!)'. Supported agents: \(AgentKind.peerList).", isError: true)
-            }
+        } else if let toRaw, let parsed = AgentKind(rawValue: toRaw.lowercased()) {
             toAgent = parsed
+        } else {
+            return toolResultResponse(id: id, text: "Error: Unknown agent '\(toRaw ?? "")'. Supported agents: \(AgentKind.peerList).", isError: true)
         }
         guard toAgent != .shell else {
             return toolResultResponse(id: id, text: "Error: Cannot delegate tasks to interactive terminal shell. Target an AI CLI agent (\(AgentKind.peerList)).", isError: true)
