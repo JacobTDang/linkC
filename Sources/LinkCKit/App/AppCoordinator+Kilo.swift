@@ -9,8 +9,9 @@ extension AppCoordinator {
     /// pick its TUI persisted and the top-level `model`, and its own small model is not free. Both are
     /// checked free here, so no Kilo session is ever started on anything else. The server entry
     /// carries no session id: Kilo hands its own environment, `LINKC_SESSION` included, to the
-    /// servers it starts. A value already in linkC's environment is merged into, not replaced.
-    func kiloEnvironment(model: String?) throws -> [String: String] {
+    /// servers it starts. A value already in linkC's environment is merged into, not replaced. `browser`
+    /// gives the user's own agent-browser server the session's shared-browser variables.
+    func kiloEnvironment(model: String?, browser: SharedBrowserLease? = nil) throws -> [String: String] {
         guard let model else {
             throw LinkCError.process("a Kilo session needs a model, and none was given")
         }
@@ -25,7 +26,8 @@ extension AppCoordinator {
             inherited: ProcessInfo.processInfo.environment[AgentDescriptor.kiloConfigContentKey],
             binaryPath: MCPRegistrar.defaultBinaryPath(),
             model: model,
-            smallModel: smallModel)
+            smallModel: smallModel,
+            browser: browser)
         return env
     }
 

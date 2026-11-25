@@ -79,6 +79,47 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(AgentDescriptor.arguments(for: .agy, mode: .new, sessionId: "S-1"), ["--dangerously-skip-permissions"])
     }
 
+    private let browserLease = SharedBrowserLease(
+        port: 43117, sessionName: "linkc-S-1-ab12",
+        server: AgentBrowserServer(name: "browser-tools", commandLine: ["agent-browser", "mcp"]))
+
+    /// Codex hands its MCP servers only their entry's own `env`, so each variable is a config
+    /// override on the user's server, in a fixed order and before `resume` like every other flag.
+    func testCodexPassesTheBrowserToTheUsersServerBeforeResume() {
+        let linkC = ["-c", #"mcp_servers.linkc-multiplier.env.LINKC_SESSION="S-1""#]
+        let browser = ["-c", #"mcp_servers.browser-tools.env.AGENT_BROWSER_CDP="43117""#,
+                       "-c", #"mcp_servers.browser-tools.env.AGENT_BROWSER_PIN_TAB="1""#,
+                       "-c", #"mcp_servers.browser-tools.env.AGENT_BROWSER_SESSION="linkc-S-1-ab12""#]
+
+        XCTAssertEqual(AgentDescriptor.arguments(for: .codex, mode: .new, sessionId: "S-1", browser: browserLease),
+                       codexFlags + linkC + browser)
+        XCTAssertEqual(AgentDescriptor.arguments(for: .codex, mode: .continueLast, sessionId: "S-1", browser: browserLease),
+                       codexFlags + linkC + browser + ["resume", "--last"])
+        XCTAssertEqual(AgentDescriptor.arguments(for: .codex, mode: .resume, sessionId: "S-1", browser: browserLease),
+                       codexFlags + linkC + browser + ["resume"])
+    }
+
+    /// No other agent takes the browser in its arguments.
+    func testOnlyCodexTakesTheBrowserInItsArguments() {
+        for kind in AgentKind.allCases where kind != .codex {
+            XCTAssertEqual(AgentDescriptor.arguments(for: kind, mode: .new, sessionId: "S-1", browser: browserLease),
+                           AgentDescriptor.arguments(for: kind, mode: .new, sessionId: "S-1"), "\(kind)")
+        }
+    }
+
+    /// How each agent's agent-browser server gets the variables. Cursor and Grok (cursor-agent) and
+    /// Freebuff start their MCP servers with only HOME, LOGNAME, PATH, SHELL, TERM, USER (and TMPDIR),
+    /// so a browser started for them would never reach their server: they get none.
+    func testWhichAgentsGetTheBrowserAndHow() {
+        let expected: [AgentKind: AgentDescriptor.BrowserDelivery] = [
+            .claude: .terminalEnvironment, .agy: .terminalEnvironment, .crush: .terminalEnvironment,
+            .codex: .codexOverrides, .opencode: .inlineConfig, .kilo: .inlineConfig,
+        ]
+        for kind in AgentKind.allCases {
+            XCTAssertEqual(AgentDescriptor.browserDelivery(for: kind), expected[kind], "\(kind)")
+        }
+    }
+
     /// Codex opens on an "update available" prompt when a newer release is out. linkC types a
     /// worker's task into the terminal once it is ready, and the Enter that ends it chose "Update
     /// now": Codex updated itself and exited before the task began (0.163.0, 2026-10-19). Every

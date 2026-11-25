@@ -16,16 +16,19 @@ final class AppPreferencesTests: XCTestCase {
         let prefs = AppPreferences(defaults: defaults)
         XCTAssertEqual(prefs.hotKeyPreset, .none)
         XCTAssertTrue(prefs.showsUsageFooter)
+        XCTAssertTrue(prefs.sharedBrowserEnabled)
     }
 
     func testRoundTripPersistence() {
         let prefs = AppPreferences(defaults: defaults)
         prefs.hotKeyPreset = .optionSpace
         prefs.showsUsageFooter = false
+        prefs.sharedBrowserEnabled = false
 
         let reloaded = AppPreferences(defaults: defaults)
         XCTAssertEqual(reloaded.hotKeyPreset, .optionSpace)
         XCTAssertFalse(reloaded.showsUsageFooter)
+        XCTAssertFalse(reloaded.sharedBrowserEnabled)
     }
 
     func testEveryPresetHasALabelAndConsistentKeycodes() {

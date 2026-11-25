@@ -37,6 +37,19 @@ struct SettingsScreen: View {
                         .disabled(loginItemBusy)
                     }
 
+                    SettingRow(
+                        title: "Shared browser",
+                        detail: "Share one headless Chrome between the agent sessions of each repository."
+                    ) {
+                        Toggle("", isOn: Binding(
+                            get: { model.preferences.sharedBrowserEnabled },
+                            set: { model.preferences.sharedBrowserEnabled = $0 }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .labelsHidden()
+                    }
+
                     SectionHeader(title: "SHORTCUT").padding(.top, 6)
                     SettingRow(
                         title: "Toggle panel",

@@ -63,6 +63,12 @@ public final class AppCoordinator {
     /// home — the test suite used to add each of its temp folders to the developer's own config, over
     /// ten thousand entries, and rewrite every agent's MCP config on each run.
     private let userHome: URL?
+    private let sharedBrowser: SharedBrowser?
+    private let sharedBrowserEnabled: @MainActor @Sendable () -> Bool
+    /// Sessions waiting for their shared browser before their terminal starts.
+    private var browserStarts: [String: Task<Void, Never>] = [:]
+    /// What runs once each of those starts has ended: given nil when it started, else why not.
+    private var startWaiters: [String: [(String?) -> Void]] = [:]
     /// Where Crush's per-session config folders are made, and the user's own to copy from. Nil when linkC
     /// has no home folder for Crush's config: a Crush launch then fails loud, never runs unpinned.
     let crushSessions: CrushSessionConfig?
@@ -367,6 +373,8 @@ public final class AppCoordinator {
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         claudeJsonURL: URL? = nil,
         userHome: URL? = nil,
+        sharedBrowser: SharedBrowser? = nil,
+        sharedBrowserEnabled: @escaping @MainActor @Sendable () -> Bool = { false },
         crushDirectories: CrushDirectories? = nil,
         defaults: UserDefaults? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
@@ -410,6 +418,8 @@ public final class AppCoordinator {
         self.agentPathResolver = agentPathResolver
         self.claudeJsonURL = claudeJsonURL
         self.userHome = userHome
+        self.sharedBrowser = sharedBrowser
+        self.sharedBrowserEnabled = sharedBrowserEnabled
         if let directories = crushDirectories ?? userHome.map({ CrushDirectories.standard(home: $0, environment: ProcessInfo.processInfo.environment) }) {
             self.crushSessions = CrushSessionConfig(user: directories, root: settingsDir.appendingPathComponent("crush-sessions", isDirectory: true))
         } else {
@@ -551,20 +561,38 @@ public final class AppCoordinator {
         claudePath: String,
         terminals: TerminalSessionManager,
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
+        sharedBrowserEnabled: @escaping @MainActor @Sendable () -> Bool = { true },
+        reportSharedBrowserFailure: @escaping @MainActor (String) -> Void = { _ in },
         sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let linkCDir = support.appendingPathComponent("linkC", isDirectory: true)
+        let notifications = NotificationManager()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let environment = ProcessInfo.processInfo.environment
+        let git = GitClient.resolveGit()
+        let browser = SharedBrowser(
+            applicationSupport: linkCDir,
+            agentBrowserHome: home.appendingPathComponent(".agent-browser", isDirectory: true),
+            executableSearchPath: TerminalSession.pathEnsuringHomebrew(environment["PATH"]).split(separator: ":").map(String.init),
+            discover: { agent, cwd in try MCPRegistrar.agentBrowserServer(for: agent, cwd: cwd, home: home, environment: environment) },
+            resolveRepository: { cwd in try await SharedBrowser.repositoryRoot(of: cwd, runner: LiveProcessRunner(), git: git) },
+            report: { message in
+                notifications.postLocal(title: "linkC: shared browser", body: message)
+                reportSharedBrowserFailure(message)
+            })
         self.init(
             terminals: terminals,
             hookServer: HookServer(port: 0, statusLineCacheURL: HookServer.defaultStatusLineCacheURL()),
-            notifications: NotificationManager(),
+            notifications: notifications,
             claudePath: claudePath,
             settingsDir: linkCDir,
             userSettingsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/settings.json"),
             manifestDir: linkCDir,
             userHome: FileManager.default.homeDirectoryForCurrentUser,
+            sharedBrowser: browser,
+            sharedBrowserEnabled: sharedBrowserEnabled,
             defaults: .standard,
             modelSettings: modelSettings,
             modelListRefresher: ModelListRefresher(authRunner: ModelListRefresher.liveAuthRunner),
@@ -779,6 +807,7 @@ public final class AppCoordinator {
         }
         handleOpenRequests()
         typeOpeningPrompts()
+        if let sharedBrowser { Task { await sharedBrowser.trackTabs() } }
         if panelVisible { await panelSweep?() }
     }
 
@@ -861,6 +890,12 @@ public final class AppCoordinator {
         modelListRefresher?.stop()
         hookServer.stop()
         statusLines.sweep()
+        for (sessionId, start) in browserStarts {
+            start.cancel()
+            finishStart(sessionId, failure: "linkC quit before it started")
+        }
+        browserStarts.removeAll()
+        sharedBrowser?.stopAll()
         if let knownProjectsFile {
             do {
                 try knownProjectsFile.remove()
@@ -990,6 +1025,9 @@ public final class AppCoordinator {
     func cleanup(sessionId: String, end: SessionEnd) {
         let ending = store.session(id: sessionId)
         let wasWorker = ending?.isWorker ?? false
+        browserStarts.removeValue(forKey: sessionId)?.cancel()
+        finishStart(sessionId, failure: "it ended before it started")
+        sharedBrowser?.release(sessionId: sessionId)
         // A model-task worker (model set, no tier) whose process ends by itself while still
         // `.starting` fails those tasks at once: waiting the queue out would only respawn the same
         // rejected model every pass. A session the user closed, or a launch that threw, rejected
@@ -1110,6 +1148,18 @@ public final class AppCoordinator {
                               effort: effort, select: false, asWorker: asWorker)
     }
 
+    /// Runs `then` once `sessionId`'s start has ended, at once when it is not waiting for its shared
+    /// browser: with nil when it started, else why it did not. A start that fails after that wait
+    /// cannot reach `newSession`'s caller, which has its session by then.
+    func whenStarted(_ sessionId: String, _ then: @escaping (String?) -> Void) {
+        guard browserStarts[sessionId] != nil else { return then(nil) }
+        startWaiters[sessionId, default: []].append(then)
+    }
+
+    private func finishStart(_ sessionId: String, failure: String?) {
+        for waiter in startWaiters.removeValue(forKey: sessionId) ?? [] { waiter(failure) }
+    }
+
     @discardableResult
     public func newSession(
         cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil,
@@ -1222,9 +1272,10 @@ public final class AppCoordinator {
 
     /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it when
     /// `select` is true, and record it (live, no `endedAt`) in the manifest. The single launch path
-    /// for both new sessions and restores. Selection waits for a successful start, so a failed
-    /// launch never moves what is on screen. Fails loud: a launch error prunes any partial state
-    /// and rethrows.
+    /// for both new sessions and restores. A session that starts at once is selected once it has, so
+    /// a failed launch never moves what is on screen; one that waits for its shared browser is
+    /// selected at once, and its terminal starts when the browser is ready (`whenStarted`). Fails
+    /// loud: a launch error prunes any partial state and rethrows.
     @discardableResult
     private func launch(
         cwd: String,
@@ -1331,11 +1382,11 @@ public final class AppCoordinator {
             }
 
             let executable: String
-            let args: [String]
             var env: [String: String] = ["LINKC_SESSION": session.id]
             if agent == .grok {
                 env.merge(try grokEnvironment()) { _, grok in grok }
             }
+            // Built here without the browser too, so a config linkC cannot read fails the launch at once.
             if agent == .opencode {
                 env.merge(try openCodeEnvironment(model: model)) { _, openCode in openCode }
             }
@@ -1346,6 +1397,7 @@ public final class AppCoordinator {
                 env.merge(try crushEnvironment(sessionId: session.id, cwd: cwd, model: model, effort: launchEffort)) { _, crush in crush }
             }
 
+            let arguments: (SharedBrowserLease?) -> [String]
             if agent == .claude {
                 // An explicit trust file wins; otherwise the user's home. With neither, nothing is written.
                 if let trustFile = claudeJsonURL ?? userHome?.appendingPathComponent(".claude.json") {
@@ -1357,9 +1409,10 @@ public final class AppCoordinator {
                 }
                 executable = claudePath
                 let settingsPath = try writeSettings(for: session)
-                args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
+                let args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
                     + (argvModel.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
                     + (argvEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
+                arguments = { _ in args }
             } else {
                 // Codex and agy open a folder they have not seen on a trust dialog; trust it first, as
                 // `preApproveTrust` does for Claude. Detecting that dialog stays the fallback, so a
@@ -1398,39 +1451,89 @@ public final class AppCoordinator {
                     throw LinkCError.process("Executable for \(agent.pillText) not found")
                 }
                 executable = resolved
-                args = AgentDescriptor.arguments(for: agent, mode: mode, sessionId: session.id)
-                    + (argvModel.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                let extra = (argvModel.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
                     + (argvEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
                     + (openCode.map { OpenCodeConversations.launchArguments(conversationId: $0.id) } ?? [])
+                let sessionId = session.id
+                arguments = { browser in
+                    AgentDescriptor.arguments(for: agent, mode: mode, sessionId: sessionId, browser: browser) + extra
+                }
             }
 
-            try terminal.start(
-                executable: executable,
-                args: args,
-                env: env
-            )
+            // Record the session as live so it survives a quit/crash and can be restored.
+            func recordLive() {
+                manifest.upsert(RestorableSession(
+                    linkcId: session.id,
+                    claudeSessionId: conversationId,
+                    cwd: cwd,
+                    title: title,
+                    agentKind: agent,
+                    wasActiveOnQuit: true,
+                    endedAt: nil,
+                    isWorker: asWorker
+                ))
+                syncRestorables()
+            }
+            let baseEnvironment = env
+            // The rest of the launch, once the session's browser is known; nil runs it without one.
+            func start(browser: SharedBrowserLease?, select: Bool) throws {
+                var env = baseEnvironment
+                if let browser {
+                    switch AgentDescriptor.browserDelivery(for: agent) {
+                    case .terminalEnvironment?:
+                        env.merge(browser.environment) { _, browser in browser }
+                    case .inlineConfig?:
+                        let config = agent == .kilo
+                            ? try kiloEnvironment(model: model, browser: browser)
+                            : try openCodeEnvironment(model: model, browser: browser)
+                        env.merge(config) { _, config in config }
+                    case .codexOverrides?, nil:
+                        break
+                    }
+                }
+                try terminal.start(executable: executable, args: arguments(browser), env: env)
+                if select { terminals.select(session.id) }
+                if let notice = openCode?.notice {
+                    tellOpenCodeStartedFresh(title: title, folder: cwd, reason: notice)
+                }
+                if opensFresh {
+                    if agent == .kilo { tellKiloStartedFresh(title: title, folder: cwd) }
+                    if agent == .crush { tellCrushStartedFresh(title: title, folder: cwd) }
+                }
+                recordLive()
+                // A starting session is sampled every second: don't let it wait out a slow sleep.
+                sweepTicker?.wake()
+            }
+
+            // A session that can use the shared browser starts once its Chrome's port is known. The
+            // wait is an `await`: the session is listed meanwhile, and nothing blocks the main thread.
+            guard AgentDescriptor.browserDelivery(for: agent) != nil, sharedBrowserEnabled(), let sharedBrowser else {
+                try start(browser: nil, select: select)
+                return session
+            }
+            recordLive()
+            // On screen at once, though its terminal starts only with the browser; not selected again
+            // then, as the user may have moved on.
             if select { terminals.select(session.id) }
-            if let notice = openCode?.notice {
-                tellOpenCodeStartedFresh(title: title, folder: cwd, reason: notice)
+            browserStarts[session.id] = Task { [weak self] in
+                let browser = await sharedBrowser.lease(sessionId: session.id, agent: agent, cwd: cwd)
+                guard let self, !Task.isCancelled, self.terminals.session(id: session.id) === terminal else {
+                    // The session ended while it waited; its end released it, and the id may be a
+                    // relaunched session's by now, so only this share is given back.
+                    if let browser { sharedBrowser.release(sessionId: session.id, sessionName: browser.sessionName) }
+                    return
+                }
+                self.browserStarts.removeValue(forKey: session.id)
+                do {
+                    try start(browser: browser, select: false)
+                    self.finishStart(session.id, failure: nil)
+                } catch {
+                    NSLog("[linkC] launch: %@ could not start — %@", title, String(describing: error))
+                    self.notifications.postLocal(title: "linkC: \(title) could not start", body: error.localizedDescription)
+                    self.finishStart(session.id, failure: error.localizedDescription)
+                    self.cleanup(sessionId: session.id, end: .launchFailed)
+                }
             }
-            if opensFresh {
-                if agent == .kilo { tellKiloStartedFresh(title: title, folder: cwd) }
-                if agent == .crush { tellCrushStartedFresh(title: title, folder: cwd) }
-            }
-            // Record the now-live session so it survives a quit/crash and can be restored.
-            manifest.upsert(RestorableSession(
-                linkcId: session.id,
-                claudeSessionId: conversationId,
-                cwd: cwd,
-                title: title,
-                agentKind: agent,
-                wasActiveOnQuit: true,
-                endedAt: nil,
-                isWorker: asWorker
-            ))
-            syncRestorables()
-            // A starting session is sampled every second: don't let it wait out a slow sleep.
-            sweepTicker?.wake()
             return session
         } catch {
             cleanup(sessionId: session.id, end: .launchFailed) // fail loud: no ghost session or orphaned settings file

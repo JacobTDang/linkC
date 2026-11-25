@@ -740,6 +740,54 @@ final class MCPRegistrarTests: XCTestCase {
         XCTAssertNotNil(try inlineEntries(content)["linkc-multiplier"])
     }
 
+    // MARK: - The browser's variables in the inline config
+
+    /// The user's own entry, as discovery read it from their config file.
+    private func browserLease(entry: String) -> SharedBrowserLease {
+        SharedBrowserLease(port: 43117, sessionName: "linkc-S1-ab12",
+                           server: AgentBrowserServer(name: "browser-tools", commandLine: ["/custom/agent-browser", "mcp"],
+                                                      entryJSON: entry))
+    }
+
+    /// OpenCode replaces a server's whole entry with the inline one, so an entry carrying only the
+    /// variables would lose the user's command. The inline entry is the user's own, from their file,
+    /// with the variables added to what it already sets.
+    func testTheInlineConfigGivesTheUsersWholeBrowserEntryTheVariables() throws {
+        let lease = browserLease(entry: #"{"type":"local","command":["/custom/agent-browser","mcp"],"timeout":9000,"environment":{"KEEP":"1"}}"#)
+
+        let content = try MCPRegistrar.openCodeConfigContent(inherited: nil, binaryPath: "/bin/linkc-mcp", model: nil, browser: lease)
+
+        let entry = try XCTUnwrap(try inlineEntries(content)["browser-tools"] as? [String: Any])
+        XCTAssertEqual(entry["command"] as? [String], ["/custom/agent-browser", "mcp"])
+        XCTAssertEqual(entry["timeout"] as? Int, 9000)
+        XCTAssertEqual(entry["environment"] as? [String: String], lease.environment.merging(["KEEP": "1"]) { new, _ in new })
+        XCTAssertNotNil(try inlineEntries(content)["linkc-multiplier"])
+    }
+
+    /// An entry already in linkC's own inline config wins over the file's, and keeps its settings.
+    func testAnInheritedBrowserEntryIsTheOneGivenTheVariables() throws {
+        let inherited = #"{"mcp":{"browser-tools":{"type":"local","command":["/inline/agent-browser","mcp"],"enabled":true}}}"#
+        let lease = browserLease(entry: #"{"type":"local","command":["/custom/agent-browser","mcp"]}"#)
+
+        let content = try MCPRegistrar.openCodeConfigContent(inherited: inherited, binaryPath: "/bin/linkc-mcp", model: nil, browser: lease)
+
+        let entry = try XCTUnwrap(try inlineEntries(content)["browser-tools"] as? [String: Any])
+        XCTAssertEqual(entry["command"] as? [String], ["/inline/agent-browser", "mcp"])
+        XCTAssertEqual(entry["enabled"] as? Bool, true)
+        XCTAssertEqual(entry["environment"] as? [String: String], lease.environment)
+    }
+
+    func testKiloInlineConfigGivesTheUsersWholeBrowserEntryTheVariables() throws {
+        let lease = browserLease(entry: #"{"type":"local","command":["/custom/agent-browser","mcp"]}"#)
+
+        let content = try MCPRegistrar.kiloConfigContent(
+            inherited: nil, binaryPath: "/bin/linkc-mcp", model: kiloModel, smallModel: kiloSmallModel, browser: lease)
+
+        let entry = try XCTUnwrap(try inlineEntries(content)["browser-tools"] as? [String: Any])
+        XCTAssertEqual(entry["command"] as? [String], ["/custom/agent-browser", "mcp"])
+        XCTAssertEqual(entry["environment"] as? [String: String], lease.environment)
+    }
+
     func testABlankInheritedConfigIsNone() throws {
         let content = try MCPRegistrar.openCodeConfigContent(inherited: "  ", binaryPath: "/bin/linkc-mcp", model: nil)
         XCTAssertNotNil(try inlineEntries(content)["linkc-multiplier"])

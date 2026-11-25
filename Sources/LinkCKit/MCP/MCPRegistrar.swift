@@ -74,7 +74,7 @@ public struct MCPRegistrar: Sendable {
     /// The text of the UTF-8 file at `configFile`; empty when there is no such file. A file that
     /// cannot be read, or is not UTF-8, throws naming it, so no caller replaces a file it could
     /// not read.
-    private static func readText(at configFile: URL) throws -> String {
+    static func readText(at configFile: URL) throws -> String {
         guard FileManager.default.fileExists(atPath: configFile.path) else { return "" }
         let data: Data
         do {
@@ -231,13 +231,16 @@ public struct MCPRegistrar: Sendable {
     /// given, `model` as the session's model, on top level and on every agent that runs on it (a
     /// user-global `agent.build.model` would otherwise beat the top-level one). One line.
     /// Throws when `inherited` is not a JSON object.
-    public static func openCodeConfigContent(inherited: String?, binaryPath: String, model: String?) throws -> String {
+    public static func openCodeConfigContent(
+        inherited: String?, binaryPath: String, model: String?, browser: SharedBrowserLease? = nil
+    ) throws -> String {
         try inlineOpenCodeStyleConfigContent(
             inherited: inherited,
             source: "\(AgentDescriptor.openCodeConfigContentKey) in linkC's environment",
             entry: openCodeEntry(binaryPath: binaryPath),
             model: model,
-            agents: AgentDescriptor.openCodeAgents)
+            agents: AgentDescriptor.openCodeAgents,
+            browser: browser)
     }
 
     /// `KILO_CONFIG_CONTENT` for a terminal linkC starts Kilo in — same shape as OpenCode's inline
@@ -245,14 +248,41 @@ public struct MCPRegistrar: Sendable {
     /// Kilo takes an agent's own `model` ahead of the pick it persisted and the top-level `model`, so
     /// `model` is on every agent as well as on top level, and `smallModel` replaces Kilo's own small
     /// model, which is not free. Both must be free ids: the caller checks.
-    public static func kiloConfigContent(inherited: String?, binaryPath: String, model: String, smallModel: String) throws -> String {
+    public static func kiloConfigContent(
+        inherited: String?, binaryPath: String, model: String, smallModel: String,
+        browser: SharedBrowserLease? = nil
+    ) throws -> String {
         try inlineOpenCodeStyleConfigContent(
             inherited: inherited,
             source: "\(AgentDescriptor.kiloConfigContentKey) in linkC's environment",
             entry: kiloEntry(binaryPath: binaryPath),
             model: model,
             smallModel: smallModel,
-            agents: AgentDescriptor.kiloAgents)
+            agents: AgentDescriptor.kiloAgents,
+            browser: browser)
+    }
+
+    /// The user's agent-browser entry with the session's browser variables added to its
+    /// `environment`: the one already in the inline config, else the one from their config file.
+    /// The whole entry, because the inline config replaces the file's entry rather than merging it.
+    private static func browserEntry(_ browser: SharedBrowserLease, inherited: Any?, source: String) throws -> [String: Any] {
+        var entry: [String: Any]
+        switch inherited {
+        case let table as [String: Any]:
+            entry = table
+        case nil:
+            guard let json = browser.server.entryJSON,
+                  let parsed = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+                throw LinkCError.process("linkC has no entry for the \(browser.server.name) server to give the shared browser to")
+            }
+            entry = parsed
+        default:
+            throw LinkCError.process("\(source) has an \"\(browser.server.name)\" server that is not a table, so linkC cannot give it the shared browser")
+        }
+        var environment = entry["environment"] as? [String: String] ?? [:]
+        environment.merge(browser.environment) { _, session in session }
+        entry["environment"] = environment
+        return entry
     }
 
     /// Shared JSON builder for OpenCode-style inline config: `mcp`, and the model pinned when given — on
@@ -263,7 +293,8 @@ public struct MCPRegistrar: Sendable {
         entry: [String: Any],
         model: String?,
         smallModel: String? = nil,
-        agents: [String]
+        agents: [String],
+        browser: SharedBrowserLease? = nil
     ) throws -> String {
         var root: [String: Any] = [:]
         if let inherited, !inherited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -280,6 +311,9 @@ public struct MCPRegistrar: Sendable {
         }
         var mcp = try mcpTable(in: root, of: source)
         mcp[serverName] = entry
+        if let browser {
+            mcp[browser.server.name] = try browserEntry(browser, inherited: mcp[browser.server.name], source: source)
+        }
         root["mcp"] = mcp
         if let model {
             root["model"] = model

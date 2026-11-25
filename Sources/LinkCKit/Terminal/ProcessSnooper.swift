@@ -249,6 +249,23 @@ public struct ProcessSnooper: Sendable {
         return Array(buffer.prefix(size))
     }
 
+    /// `pid`'s argv from its `KERN_PROCARGS2` buffer (see `parseProcArgs2` for the layout). Nil when
+    /// there is no such process or the kernel refuses.
+    public static func arguments(of pid: pid_t) -> [String]? {
+        guard let buffer = procArgs2Buffer(for: pid), buffer.count >= 4 else { return nil }
+        let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
+        var offset = 4
+        (_, offset) = cString(in: buffer, startingAt: offset)
+        while offset < buffer.count, buffer[offset] == 0 { offset += 1 }
+        var argv: [String] = []
+        while argv.count < Int(argc), offset < buffer.count {
+            let (value, next) = cString(in: buffer, startingAt: offset)
+            argv.append(value)
+            offset = next
+        }
+        return argv
+    }
+
     /// Reads a single NUL-terminated C string starting at `offset`, returning it and the offset
     /// just past its terminator (or the buffer's end, if the string runs off the end unterminated).
     static func cString(in buffer: [UInt8], startingAt offset: Int) -> (value: String, next: Int) {
