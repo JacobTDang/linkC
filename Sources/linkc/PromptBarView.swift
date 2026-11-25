@@ -74,64 +74,16 @@ struct PromptBarField: View {
             .onHover { hovering = $0 }
             .onTapGesture { focused = true }
             .animation(Theme.hoverEase, value: focused || hovering)
-            PreviewLine(line: line)
+            PromptBarPreviewLine(line: line, palette: .theme)
                 .padding(.leading, 10)
         }
         .onChange(of: focusRequest) { _, _ in focused = true }
     }
 }
 
-/// One line under the field: the pick, why it cannot open, or that it is opening. Nothing while idle.
-private struct PreviewLine: View {
-    let line: PromptBarLine
-
-    var body: some View {
-        switch line {
-        case .idle:
-            EmptyView()
-        case .pick(let pick):
-            let arrow = Text(verbatim: "→ ").foregroundStyle(Theme.textTertiary)
-            let agent = Text(verbatim: pick.agent.shortName)
-                .foregroundStyle(Theme.agentColor(pick.agent))
-                .fontWeight(.semibold)
-            let model = Text(verbatim: " · \(pick.model)" + (pick.effort.map { " · \($0.rawValue)" } ?? ""))
-                .foregroundStyle(Theme.textSecondary)
-            let reason = Text(verbatim: " — \(pick.reason)").foregroundStyle(Theme.textTertiary)
-            Text("\(arrow)\(agent)\(model)\(reason)")
-                .modifier(LineStyle(help: pick.text))
-        case .error(let message):
-            // A refusal names each agent and why: it wraps rather than lose the specifics.
-            Text(message)
-                .foregroundStyle(Theme.statusError)
-                .modifier(LineStyle(help: message, lines: 3))
-        case .confirm(let pick):
-            let prompt = Text(verbatim: "Enter again to open ").foregroundStyle(Theme.accent)
-            let agent = Text(verbatim: pick.agent.shortName)
-                .foregroundStyle(Theme.agentColor(pick.agent))
-                .fontWeight(.semibold)
-            let model = Text(verbatim: " · \(pick.model)" + (pick.effort.map { " · \($0.rawValue)" } ?? ""))
-                .foregroundStyle(Theme.textSecondary)
-            let reason = Text(verbatim: " — \(pick.reason)").foregroundStyle(Theme.textTertiary)
-            Text("\(prompt)\(agent)\(model)\(reason)")
-                .modifier(LineStyle(help: line.text))
-        case .opening(let message), .opened(let message):
-            Text(message)
-                .foregroundStyle(Theme.textSecondary)
-                .modifier(LineStyle(help: message))
-        }
-    }
-}
-
-private struct LineStyle: ViewModifier {
-    let help: String
-    var lines = 1
-
-    func body(content: Content) -> some View {
-        content
-            .font(.system(size: 11))
-            .lineLimit(lines)
-            .truncationMode(.tail)
-            .fixedSize(horizontal: false, vertical: true)
-            .help(help)
-    }
+extension PromptBarPreviewLine.Palette {
+    /// The line in linkC's own colours.
+    static let theme = PromptBarPreviewLine.Palette(
+        quiet: Theme.textTertiary, secondary: Theme.textSecondary, error: Theme.statusError, accent: Theme.accent,
+        agent: { Theme.agentColor($0) })
 }
