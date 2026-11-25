@@ -41,6 +41,23 @@ final class BundledModsTests: XCTestCase {
         )
     }
 
+    func testChangedFileIsReplaced() throws {
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: ["README.md": "old"]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: ["README.md": "new"]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let installed = installRoot.appendingPathComponent("linkc-agents/README.md")
+        XCTAssertEqual(try String(contentsOf: installed, encoding: .utf8), "new")
+    }
+
     func testUnchangedCopyLeavesModificationTimeAlone() throws {
         try writeBundleMod(
             name: "linkc-agents",
