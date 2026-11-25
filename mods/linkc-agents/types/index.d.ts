@@ -12,16 +12,21 @@ export type AgentRow = {
   worker?: boolean
   action?: string
   subagents?: number
+  cacheExpiresAt?: string
+  cacheEstimate?: boolean
 }
 
 /** What the bottom half shows: the repo's sessions, or why they could not be read. */
-export type Agents = { rows: AgentRow[]; error: string | null; me: string | null; minute: number }
+export type Agents = { rows: AgentRow[]; error: string | null; me: string | null; minute: number; coldCaches: number }
 
 /** One meter in the band above the prompt: `context`, or a plan limit such as `7d`. */
 export type Meter = { label: string; percent: number }
 
+/** What this session itself is doing right now: whether its turn runs, its last step, and each running subagent's. */
+export type SelfActivity = { isTurning: boolean; main: string | null; subagents: { id: string; name: string; activity: string | null }[] }
+
 declare module 'claude-code' {
   interface PluginState {
-    'linkc-agents': { agents: Shaped<Agents>; meters: Shaped<Meter[]>; isCompacting: boolean }
+    'linkc-agents': { agents: Shaped<Agents>; meters: Shaped<Meter[]>; isCompacting: boolean; self: Shaped<SelfActivity> }
   }
 }
