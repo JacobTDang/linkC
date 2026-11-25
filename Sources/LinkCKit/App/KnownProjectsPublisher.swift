@@ -1,12 +1,19 @@
 import Foundation
 
 /// What linkC reads first-hand about a live session from its agent's own reports and files, for its
-/// row in `projects.json`. Each field is nil where the agent reports nothing.
+/// row in `projects.json`. Each field is nil, or empty, where the agent reports nothing.
 public struct SessionLiveDetail: Equatable, Sendable {
+    /// How full the context is, 0–100.
     public var contextPercent: Int?
+    /// The step the session's turn is on.
+    public var step: String?
+    /// The subagents running now, with their names and steps.
+    public var subagents: [KnownProject.OpenSession.Subagent]
 
-    public init(contextPercent: Int? = nil) {
+    public init(contextPercent: Int? = nil, step: String? = nil, subagents: [KnownProject.OpenSession.Subagent] = []) {
         self.contextPercent = contextPercent
+        self.step = step
+        self.subagents = subagents
     }
 }
 
@@ -34,8 +41,8 @@ public enum KnownProjectsPublisher {
             let open = (liveByPath[path] ?? [])
                 .sorted { $0.id < $1.id }
                 .map { session in
-                    let shown = ShownActivity.applies(to: session.state)
-                        ? ShownActivity(activity: action(session), state: session.state) : nil
+                    let atWork = ShownActivity.applies(to: session.state)
+                    let shown = atWork ? ShownActivity(activity: action(session), state: session.state) : nil
                     let running = subagents(session)
                     let cold = cache(session)
                     let detail = live(session)
@@ -52,7 +59,9 @@ public enum KnownProjectsPublisher {
                         subagents: running > 0 ? running : nil,
                         cacheExpiresAt: cold?.at.formatted(.iso8601),
                         cacheEstimate: cold?.isEstimate == true ? true : nil,
-                        contextPercent: detail.contextPercent
+                        contextPercent: detail.contextPercent,
+                        step: atWork ? detail.step : nil,
+                        subagentSteps: detail.subagents.isEmpty ? nil : detail.subagents
                     )
                 }
             return KnownProject(path: path, sessions: open)

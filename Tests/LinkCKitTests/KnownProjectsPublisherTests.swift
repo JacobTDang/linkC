@@ -154,6 +154,30 @@ final class KnownProjectsPublisherTests: XCTestCase {
         XCTAssertEqual(open.map(\.contextPercent), [83, nil])
     }
 
+    /// A session at work carries the step its agent reports; one at rest does not, as its action line
+    /// does not. Running subagents' names and steps show either way: a session whose own turn ended
+    /// can still be running them.
+    func testOnlyASessionAtWorkCarriesItsStepButSubagentsShowAtRestToo() throws {
+        let path = "/tmp/linkc-pub-step-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "S1", cwd: path, title: "busy", state: .working, agentKind: .codex),
+            Session(id: "S2", cwd: path, title: "done", state: .finished, agentKind: .codex),
+        ]
+        let detail = SessionLiveDetail(
+            contextPercent: 30, step: "$ swift test",
+            subagents: [KnownProject.OpenSession.Subagent(name: "Survey the readers", step: "Reading Foo.swift")])
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [], mcpFolders: [], sessions: sessions, live: { _ in detail })
+
+        let open = try XCTUnwrap(projects.first).sessions
+        XCTAssertEqual(open.map(\.subagentSteps?.count), [1, 1])
+        XCTAssertEqual(open[0].step, "$ swift test")
+        XCTAssertEqual(open[0].subagentSteps, [KnownProject.OpenSession.Subagent(name: "Survey the readers", step: "Reading Foo.swift")])
+        XCTAssertNil(open[1].step)
+        XCTAssertEqual(open[1].subagentSteps, [KnownProject.OpenSession.Subagent(name: "Survey the readers", step: "Reading Foo.swift")])
+        XCTAssertEqual(open[1].contextPercent, 30, "context use is shown at rest too")
+    }
+
     // MARK: - Plan limits
 
     private let now = Date(timeIntervalSince1970: 1_800_000_000)

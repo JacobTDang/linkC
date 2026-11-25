@@ -10,6 +10,19 @@ public struct KnownProject: Codable, Equatable, Sendable {
             case idle, busy, starting
         }
 
+        /// A subagent the session runs, as its agent's own files record it.
+        public struct Subagent: Codable, Equatable, Sendable {
+            /// What the session called it when it started it.
+            public let name: String
+            /// The step it is on, when its files say; absent when they don't.
+            public let step: String?
+
+            public init(name: String, step: String?) {
+                self.name = name
+                self.step = step
+            }
+        }
+
         public let id: String
         /// `AgentKind.rawValue`. A string, so a file written by a newer app that knows another agent
         /// still reads in an older server.
@@ -38,11 +51,19 @@ public struct KnownProject: Codable, Equatable, Sendable {
         /// for every agent that reports one today. Absent when the agent reports nothing, and in a
         /// file an older app wrote.
         public let contextPercent: Int?
+        /// The step a turn is on, as the agent's own hooks or files record it, which `action` may only
+        /// read off the screen. Only while the session works or waits on a permission, as `action`;
+        /// absent where the agent records none.
+        public let step: String?
+        /// The subagents running now, with their names and steps, where the agent's own files record
+        /// them; absent when none runs. Shown at rest too, as `subagents` is: a session whose own turn
+        /// ended can still be running them.
+        public let subagentSteps: [Subagent]?
 
         public init(id: String, agent: String, activity: Activity, title: String? = nil, state: String? = nil,
                     since: String? = nil, model: String? = nil, worker: Bool? = nil, action: String? = nil,
                     subagents: Int? = nil, cacheExpiresAt: String? = nil, cacheEstimate: Bool? = nil,
-                    contextPercent: Int? = nil) {
+                    contextPercent: Int? = nil, step: String? = nil, subagentSteps: [Subagent]? = nil) {
             self.id = id
             self.agent = agent
             self.activity = activity
@@ -56,6 +77,8 @@ public struct KnownProject: Codable, Equatable, Sendable {
             self.cacheExpiresAt = cacheExpiresAt
             self.cacheEstimate = cacheEstimate
             self.contextPercent = contextPercent
+            self.step = step
+            self.subagentSteps = subagentSteps
         }
 
         public var agentKind: AgentKind? { AgentKind(rawValue: agent) }

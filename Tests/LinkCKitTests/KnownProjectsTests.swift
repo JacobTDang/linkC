@@ -37,6 +37,14 @@ final class KnownProjectsTests: XCTestCase {
         XCTAssertEqual(try file.read().first?.sessions, [open])
     }
 
+    func testTheFirstHandDetailsRoundTrip() throws {
+        let file = KnownProjectsFile(url: dir.appendingPathComponent("projects.json"))
+        let open = KnownProject.OpenSession(id: "S1", agent: "codex", activity: .busy, contextPercent: 41, step: "$ make",
+                                            subagentSteps: [.init(name: "Review", step: nil)])
+        try file.write([project("/p/a", [open])])
+        XCTAssertEqual(try file.read().first?.sessions, [open])
+    }
+
     /// An older app, or a server reading a file such an app wrote, has no row details.
     func testAFileWithoutRowDetailsStillReads() throws {
         let url = dir.appendingPathComponent("projects.json")
