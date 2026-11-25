@@ -41,6 +41,59 @@ final class BundledModsTests: XCTestCase {
         )
     }
 
+    func testEngineTypesDirectoryIsKept() throws {
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: ["README.md": "v1"]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let modRoot = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let typesFile = modRoot.appendingPathComponent(".claude-plugin/types/generated.d.ts")
+        try FileManager.default.createDirectory(
+            at: typesFile.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("generated".utf8).write(to: typesFile)
+        // Even a stale manifest that names the engine file must not cause a delete.
+        let manifest = try JSONEncoder().encode([
+            "README.md",
+            ".claude-plugin/types/generated.d.ts",
+        ])
+        try manifest.write(to: modRoot.appendingPathComponent(".linkc-shipped.json"))
+
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: ["README.md": "v2"]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        XCTAssertEqual(try String(contentsOf: typesFile, encoding: .utf8), "generated")
+    }
+
+    func testFileDroppedFromBundleIsRemoved() throws {
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: [
+                "hooks/keep.tsx": "keep",
+                "hooks/drop.tsx": "drop",
+            ]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        try FileManager.default.removeItem(
+            at: bundleMods.appendingPathComponent("linkc-agents/hooks/drop.tsx")
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let installed = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: installed.appendingPathComponent("hooks/keep.tsx").path)
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: installed.appendingPathComponent("hooks/drop.tsx").path)
+        )
+    }
+
     func testChangedFileIsReplaced() throws {
         try writeBundleMod(
             name: "linkc-agents",
