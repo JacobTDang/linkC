@@ -41,6 +41,27 @@ final class BundledModsTests: XCTestCase {
         )
     }
 
+    func testUnchangedCopyLeavesModificationTimeAlone() throws {
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: ["README.md": "same"]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let installedFile = installRoot
+            .appendingPathComponent("linkc-agents/README.md")
+        // Stamp a distinctive mtime: a rewrite from the bundle would replace it.
+        let stamped = Date(timeIntervalSince1970: 1_000_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: stamped], ofItemAtPath: installedFile.path
+        )
+
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let after = try FileManager.default.attributesOfItem(atPath: installedFile.path)[.modificationDate] as! Date
+        XCTAssertEqual(after, stamped)
+    }
+
     // MARK: - Helpers
 
     private func writeBundleMod(name: String, files: [String: String]) throws {

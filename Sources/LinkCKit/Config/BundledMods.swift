@@ -39,6 +39,12 @@ public struct BundledMods: Sendable {
             let from = source.appendingPathComponent(relative)
             let to = dest.appendingPathComponent(relative)
             try fm.createDirectory(at: to.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if fm.fileExists(atPath: to.path),
+               let existing = try? Data(contentsOf: to),
+               let incoming = try? Data(contentsOf: from),
+               existing == incoming {
+                continue
+            }
             if fm.fileExists(atPath: to.path) {
                 try fm.removeItem(at: to)
             }
