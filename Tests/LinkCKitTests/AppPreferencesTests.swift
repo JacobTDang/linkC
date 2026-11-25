@@ -106,4 +106,40 @@ final class AppPreferencesTests: XCTestCase {
         prefs.linkCApps = [notes]
         XCTAssertEqual(AppPreferences(defaults: defaults).linkCApps, [notes])
     }
+
+    /// Claude Code's terminal already shows the cards through the linkc-agents mod; every other agent's
+    /// gets them from linkC.
+    func testTheAgentsColumnIsOnForEveryAgentButClaudeCode() {
+        let prefs = AppPreferences(defaults: defaults)
+
+        XCTAssertFalse(prefs.showsAgentsColumn(for: .claude))
+        for agent in AgentKind.allCases where agent != .claude {
+            XCTAssertTrue(prefs.showsAgentsColumn(for: agent), agent.rawValue)
+        }
+    }
+
+    func testFlippingTheAgentsColumnIsRememberedForThatAgentAlone() {
+        let prefs = AppPreferences(defaults: defaults)
+
+        prefs.toggleAgentsColumn(for: .codex)
+        prefs.toggleAgentsColumn(for: .claude)
+
+        let reloaded = AppPreferences(defaults: defaults)
+        XCTAssertFalse(reloaded.showsAgentsColumn(for: .codex))
+        XCTAssertTrue(reloaded.showsAgentsColumn(for: .claude))
+        XCTAssertTrue(reloaded.showsAgentsColumn(for: .agy), "another agent keeps its default")
+
+        reloaded.toggleAgentsColumn(for: .codex)
+        XCTAssertTrue(AppPreferences(defaults: defaults).showsAgentsColumn(for: .codex))
+    }
+
+    func testAnUnreadableAgentsColumnChoiceIsKeptAsideAndTheDefaultsApply() {
+        defaults.set("garbage", forKey: "agentsColumn")
+
+        let prefs = AppPreferences(defaults: defaults)
+
+        XCTAssertTrue(prefs.showsAgentsColumn(for: .codex))
+        XCTAssertFalse(prefs.showsAgentsColumn(for: .claude))
+        XCTAssertEqual(defaults.object(forKey: "agentsColumn.unreadable") as? String, "garbage")
+    }
 }

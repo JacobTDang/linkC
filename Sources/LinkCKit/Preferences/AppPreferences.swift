@@ -58,6 +58,8 @@ public final class AppPreferences {
         static let linkCAppsUnreadable = "linkCApps.unreadable"
         static let discordProjects = "discordWebhookProjects"
         static let discordProjectsUnreadable = "discordWebhookProjects.unreadable"
+        static let agentsColumn = "agentsColumn"
+        static let agentsColumnUnreadable = "agentsColumn.unreadable"
     }
 
     public var hotKeyPreset: HotKeyPreset {
@@ -103,6 +105,22 @@ public final class AppPreferences {
         didSet { defaults.set(discordProjects, forKey: Keys.discordProjects) }
     }
 
+    /// The agents whose column of agent cards the user flipped from its default, by `AgentKind.rawValue`.
+    public private(set) var agentsColumnChoices: [String: Bool] {
+        didSet { defaults.set(agentsColumnChoices, forKey: Keys.agentsColumn) }
+    }
+
+    /// Whether the linkC agents column shows beside this agent's terminal. On by default for every
+    /// agent but Claude Code, whose terminal shows the same cards through the linkc-agents mod.
+    public func showsAgentsColumn(for agent: AgentKind) -> Bool {
+        agentsColumnChoices[agent.rawValue] ?? (agent != .claude)
+    }
+
+    /// Flips the column for every session of this agent, and remembers it.
+    public func toggleAgentsColumn(for agent: AgentKind) {
+        agentsColumnChoices[agent.rawValue] = !showsAgentsColumn(for: agent)
+    }
+
     private let defaults: UserDefaults
     private let modelStore: AgentModelStore
 
@@ -133,6 +151,13 @@ public final class AppPreferences {
             NSLog("[linkC] the Discord project list is unreadable, starting with none")
         }
         self.discordProjects = storedProjects as? [String] ?? []
+        let storedColumn = defaults.object(forKey: Keys.agentsColumn)
+        if let storedColumn, !(storedColumn is [String: Bool]) {
+            // Kept aside under its own key; every agent reads its default until the column is flipped again.
+            defaults.set(storedColumn, forKey: Keys.agentsColumnUnreadable)
+            NSLog("[linkC] the agents column choices are unreadable, starting from the defaults")
+        }
+        self.agentsColumnChoices = storedColumn as? [String: Bool] ?? [:]
         self.linkCApps = apps
     }
 }
