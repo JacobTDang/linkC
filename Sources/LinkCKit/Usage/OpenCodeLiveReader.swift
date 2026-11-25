@@ -45,7 +45,8 @@ public struct OpenCodeLiveReader: SessionLiveReader {
     }
 
     /// The newest assistant message of the conversation that has token counts and follows its last
-    /// finished compaction, with its counts and its model. Both `session_message` reads go through
+    /// finished compaction, with its counts and its model. A request still running, or aborted, has
+    /// every count at 0 and is passed over; one missing a count is not, so the reader can say so. Both `session_message` reads go through
     /// `session_message_session_type_seq_idx`: the database holds every conversation OpenCode has
     /// had, about a gigabyte, so nothing here may scan it.
     static func lastRequestQuery(sessionId: String) -> String {
@@ -61,6 +62,9 @@ public struct OpenCodeLiveReader: SessionLiveReader {
         from session_message
         where session_id = \(id) and type = 'assistant'
           and coalesce(json_type(data, '$.tokens'), 'null') <> 'null'
+          and (json_extract(data, '$.tokens.input') + json_extract(data, '$.tokens.output')
+               + json_extract(data, '$.tokens.reasoning') + json_extract(data, '$.tokens.cache.read')
+               + json_extract(data, '$.tokens.cache.write')) is not 0
           and seq > coalesce((select max(seq) from session_message
                               where session_id = \(id) and type = 'compaction'
                                 and json_extract(data, '$.status') = 'completed'), -1)

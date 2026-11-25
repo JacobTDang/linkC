@@ -110,6 +110,19 @@ final class OpenCodeLiveReaderTests: XCTestCase {
         XCTAssertEqual(try reader().read(target("ses_a")).contextPercent, 40)
     }
 
+    /// While a request runs, and after one is aborted, OpenCode records it with every count at 0:
+    /// the figure stays the last request that counted anything, rather than going blank each time.
+    func testANewestRequestThatCountsNothingYetIsSkipped() throws {
+        try makeDatabase()
+        try addSession("ses_a")
+        try addMessage("ses_a", seq: 1, type: "assistant", data: assistant(input: 30000, output: 1000, reasoning: 0, read: 0, write: 0))
+        try addMessage("ses_a", seq: 2, type: "user", data: "{}")
+        try addMessage("ses_a", seq: 3, type: "assistant", data: assistant(input: 0, output: 0, reasoning: 0, read: 0, write: 0))
+        try writeModels(context: 100_000)
+
+        XCTAssertEqual(try reader().read(target("ses_a")).contextPercent, 31)
+    }
+
     /// The model that answered the request owns the window, not the session's current model.
     func testTheWindowIsTheModelThatAnsweredTheRequest() throws {
         try makeDatabase()
