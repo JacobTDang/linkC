@@ -3,11 +3,12 @@
 test_sync_agent_skills.py
 
 Unit tests for sync-agent-skills.py.
-Tests that new target directories (opencode, crush, kilo) and the repo skills/
-source are properly supported, symlinks are created, and real directories
-are never overwritten.
+
+Run with:
+    python3 -m unittest discover -s scripts
 """
 
+import io
 import os
 import shutil
 import tempfile
@@ -30,86 +31,186 @@ class TestSyncAgentSkills(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.fake_home = Path(self.temp_dir.name) / "home"
         self.fake_home.mkdir(parents=True)
+        self.mock_repo = Path(self.temp_dir.name) / "repo"
+        self.mock_repo_skills = self.mock_repo / "skills"
+        self.mock_repo_skills.mkdir(parents=True)
+
+        self.mock_targets = {
+            "claude": self.fake_home / ".claude" / "skills",
+            "agy": self.fake_home / ".gemini" / "config" / "skills",
+            "cursor": self.fake_home / ".cursor" / "skills",
+            "codex": self.fake_home / ".codex" / "skills",
+        }
+        for d in self.mock_targets.values():
+            d.mkdir(parents=True)
+
         self.mod = load_sync_module()
 
+        self.patcher_home = patch.object(self.mod, "HOME", self.fake_home)
+        self.patcher_targets = patch.object(self.mod, "TARGET_DIRS", self.mock_targets)
+        self.patcher_repo_skills = patch.object(self.mod, "REPO_SKILLS_DIR", self.mock_repo_skills)
+        self.patcher_repo_root = patch.object(self.mod, "REPO_ROOT", self.mock_repo)
+
+        self.patcher_home.start()
+        self.patcher_targets.start()
+        self.patcher_repo_skills.start()
+        self.patcher_repo_root.start()
+
     def tearDown(self):
+        self.patcher_repo_root.stop()
+        self.patcher_repo_skills.stop()
+        self.patcher_targets.stop()
+        self.patcher_home.stop()
         self.temp_dir.cleanup()
 
-    def test_target_dirs_include_new_agents(self):
-        """TARGET_DIRS must include opencode, crush, and kilo with correct paths."""
-        self.assertIn("opencode", self.mod.TARGET_DIRS)
-        self.assertIn("crush", self.mod.TARGET_DIRS)
-        self.assertIn("kilo", self.mod.TARGET_DIRS)
-
-        # Check expected paths relative to HOME
-        self.assertEqual(
-            self.mod.TARGET_DIRS["opencode"].relative_to(self.mod.HOME),
-            Path(".config/opencode/skills")
-        )
-        self.assertEqual(
-            self.mod.TARGET_DIRS["crush"].relative_to(self.mod.HOME),
-            Path(".config/crush/skills")
-        )
-        self.assertEqual(
-            self.mod.TARGET_DIRS["kilo"].relative_to(self.mod.HOME),
-            Path(".config/kilo/skills")
-        )
+    def test_target_dirs_do_not_include_opencode_crush_kilo(self):
+        """OpenCode, Crush, and Kilo must not be in TARGET_DIRS (they read ~/.claude/skills and ~/.agents/skills)."""
+        # Inspect raw module definition by reloading without mock
+        raw_mod = load_sync_module()
+        self.assertNotIn("opencode", raw_mod.TARGET_DIRS)
+        self.assertNotIn("crush", raw_mod.TARGET_DIRS)
+        self.assertNotIn("kilo", raw_mod.TARGET_DIRS)
+        self.assertIn("claude", raw_mod.TARGET_DIRS)
+        self.assertIn("agy", raw_mod.TARGET_DIRS)
+        self.assertIn("cursor", raw_mod.TARGET_DIRS)
+        self.assertIn("codex", raw_mod.TARGET_DIRS)
 
     def test_repo_skills_included_in_canonical_skills(self):
-        """Repo skills/ folder must be included as a canonical skill source."""
-        with tempfile.TemporaryDirectory() as repo_temp:
-            fake_repo = Path(repo_temp)
-            skills_dir = fake_repo / "skills" / "browse-efficiently"
-            skills_dir.mkdir(parents=True)
-            skill_md = skills_dir / "SKILL.md"
-            skill_md.write_text("---\nname: browse-efficiently\n---\n# Browse")
+        """Repo skills/ folder must be included as a canonical skill source in hermetic environment."""
+        skills_dir = self.mock_repo_skills / "browse-efficiently"
+        skills_dir.mkdir(parents=True)
+        skill_md = skills_dir / "SKILL.md"
+        skill_md.write_text("---\nname: browse-efficiently\n---\n# Browse")
 
-            with patch.object(self.mod, "REPO_SKILLS_DIR", fake_repo / "skills"):
-                canonical = self.mod.get_canonical_skills()
-                self.assertIn("browse-efficiently", canonical)
-                self.assertEqual(canonical["browse-efficiently"], skills_dir.resolve())
+        canonical = self.mod.get_canonical_skills()
+        self.assertIn("browse-efficiently", canonical)
+        self.assertEqual(canonical["browse-efficiently"], skills_dir.resolve())
 
     def test_sync_creates_symlinks_and_preserves_real_dirs(self):
-        """Sync must create symlinks in target dirs and never clobber real dirs."""
-        fake_home = self.fake_home
-        # Create a mock source skill in repo skills dir
-        repo_skills = fake_home / "repo_skills"
-        browse_skill = repo_skills / "browse-efficiently"
+        """Sync must create symlinks in target dirs and preserve real directories."""
+        browse_skill = self.mock_repo_skills / "browse-efficiently"
         browse_skill.mkdir(parents=True)
         (browse_skill / "SKILL.md").write_text("---\nname: browse-efficiently\n---\n# Content")
 
-        # Mock targets under fake_home
-        mock_targets = {
-            "claude": fake_home / ".claude" / "skills",
-            "opencode": fake_home / ".config" / "opencode" / "skills",
-            "crush": fake_home / ".config" / "crush" / "skills",
-            "kilo": fake_home / ".config" / "kilo" / "skills",
-        }
+        # Put a REAL directory in cursor target for browse-efficiently
+        cursor_real = self.mock_targets["cursor"] / "browse-efficiently"
+        cursor_real.mkdir(parents=True)
+        (cursor_real / "SKILL.md").write_text("---\nname: real-cursor\n---\n# Real")
 
-        # Put a REAL directory in crush target for browse-efficiently to test protection
-        crush_real = mock_targets["crush"] / "browse-efficiently"
-        crush_real.mkdir(parents=True)
-        (crush_real / "SKILL.md").write_text("---\nname: real-crush\n---\n# Real")
+        self.mod.sync()
 
-        with patch.object(self.mod, "HOME", fake_home), \
-             patch.object(self.mod, "TARGET_DIRS", mock_targets), \
-             patch.object(self.mod, "REPO_SKILLS_DIR", repo_skills):
+        # claude should have a symlink
+        claude_dest = self.mock_targets["claude"] / "browse-efficiently"
+        self.assertTrue(claude_dest.is_symlink())
+        self.assertEqual(claude_dest.resolve(), browse_skill.resolve())
 
-            self.mod.sync()
+        # cursor should still be a real directory, NOT a symlink
+        self.assertFalse(cursor_real.is_symlink())
+        self.assertTrue(cursor_real.is_dir())
+        self.assertEqual((cursor_real / "SKILL.md").read_text(), "---\nname: real-cursor\n---\n# Real")
 
-            # opencode and kilo should have symlinks
-            opencode_dest = mock_targets["opencode"] / "browse-efficiently"
-            self.assertTrue(opencode_dest.is_symlink())
-            self.assertEqual(opencode_dest.resolve(), browse_skill.resolve())
+    def test_stale_symlink_repointed(self):
+        """A symlink pointing to an old path in a known source must be repointed to canonical path."""
+        # Canonical skill in repo
+        canonical_dir = self.mock_repo_skills / "test-skill"
+        canonical_dir.mkdir(parents=True)
+        (canonical_dir / "SKILL.md").write_text("# Test Skill Canonical")
 
-            kilo_dest = mock_targets["kilo"] / "browse-efficiently"
-            self.assertTrue(kilo_dest.is_symlink())
-            self.assertEqual(kilo_dest.resolve(), browse_skill.resolve())
+        # Old path in known source (e.g. inside mock_repo)
+        old_source = self.mock_repo / "old_worktree" / "skills" / "test-skill"
+        old_source.mkdir(parents=True)
+        (old_source / "SKILL.md").write_text("# Test Skill Old")
 
-            # crush should still be a real directory, NOT a symlink
-            self.assertFalse(crush_real.is_symlink())
-            self.assertTrue(crush_real.is_dir())
-            self.assertEqual((crush_real / "SKILL.md").read_text(), "---\nname: real-crush\n---\n# Real")
+        # claude has a symlink pointing to the old known source
+        dest = self.mock_targets["claude"] / "test-skill"
+        dest.symlink_to(old_source)
+        self.assertEqual(dest.resolve(), old_source.resolve())
+
+        self.mod.sync()
+
+        # Must be repointed to canonical_dir
+        self.assertTrue(dest.is_symlink())
+        self.assertEqual(dest.resolve(), canonical_dir.resolve())
+
+    def test_broken_symlink_cleanup(self):
+        """A broken symlink in a target directory must be cleaned up and relinked to canonical path."""
+        canonical_dir = self.mock_repo_skills / "broken-target-skill"
+        canonical_dir.mkdir(parents=True)
+        (canonical_dir / "SKILL.md").write_text("# Canonical")
+
+        # Create broken symlink in agy target
+        dest = self.mock_targets["agy"] / "broken-target-skill"
+        dest.symlink_to(self.fake_home / "nonexistent_path_xyz")
+        self.assertTrue(dest.is_symlink())
+        self.assertFalse(dest.exists())
+
+        self.mod.sync()
+
+        # Must now exist and point to canonical_dir
+        self.assertTrue(dest.is_symlink())
+        self.assertTrue(dest.exists())
+        self.assertEqual(dest.resolve(), canonical_dir.resolve())
+
+    def test_link_error_exits_nonzero(self):
+        """A failure during symlink creation must print errors and exit with non-zero status."""
+        canonical_dir = self.mock_repo_skills / "err-skill"
+        canonical_dir.mkdir(parents=True)
+        (canonical_dir / "SKILL.md").write_text("# Canonical")
+
+        # Mock symlink_to to raise an error
+        orig_symlink_to = Path.symlink_to
+
+        def mock_symlink_fail(path_self, target, target_is_directory=False):
+            if path_self.name == "err-skill":
+                raise PermissionError("Permission denied simulating link failure")
+            return orig_symlink_to(path_self, target, target_is_directory)
+
+        with patch.object(Path, "symlink_to", side_effect=mock_symlink_fail), \
+             patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            with self.assertRaises(SystemExit) as cm:
+                self.mod.sync()
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Failed to link err-skill", mock_stderr.getvalue())
+
+    def test_no_repointing_of_user_valid_link(self):
+        """A valid user symlink pointing outside known sources must NOT be repointed to canonical."""
+        # Canonical skill in repo
+        canonical_dir = self.mock_repo_skills / "user-custom-skill"
+        canonical_dir.mkdir(parents=True)
+        (canonical_dir / "SKILL.md").write_text("# Canonical in repo")
+
+        # User's own valid directory outside known sources
+        user_own_dir = self.fake_home / "my_custom_projects" / "user-custom-skill"
+        user_own_dir.mkdir(parents=True)
+        (user_own_dir / "SKILL.md").write_text("# User's own copy")
+
+        # User's symlink in claude
+        dest = self.mock_targets["claude"] / "user-custom-skill"
+        dest.symlink_to(user_own_dir)
+
+        self.mod.sync()
+
+        # Link must remain pointing to user's own copy, NOT repointed to repo
+        self.assertTrue(dest.is_symlink())
+        self.assertEqual(dest.resolve(), user_own_dir.resolve())
+
+    def test_duplicate_name_warning(self):
+        """Finding the same skill name in more than one source with different paths must warn to stderr."""
+        # Skill in repo
+        repo_skill = self.mock_repo_skills / "dup-skill"
+        repo_skill.mkdir(parents=True)
+        (repo_skill / "SKILL.md").write_text("# Repo")
+
+        # Another skill with same name in claude target
+        claude_skill = self.mock_targets["claude"] / "dup-skill"
+        claude_skill.mkdir(parents=True)
+        (claude_skill / "SKILL.md").write_text("# Claude personal")
+
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            skills = self.mod.get_canonical_skills()
+            stderr_val = mock_stderr.getvalue()
+            self.assertIn("Warning: conflicting source for skill 'dup-skill'", stderr_val)
+            self.assertIn("dup-skill", skills)
 
 if __name__ == "__main__":
     unittest.main()
