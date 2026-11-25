@@ -6,7 +6,12 @@ import SwiftUI
 /// the moment their text changes.
 struct AgentsColumnView: View {
     let column: AgentsColumn
+    /// Beside a terminal the column runs its full height; in a popover it is as tall as its cards, up
+    /// to `popoverHeight`.
+    let fillsHeight: Bool
     let onOpen: (String) -> Void
+
+    private static let popoverHeight: CGFloat = 440
 
     var body: some View {
         TimelineView(AgentsColumnSchedule(column: column)) { context in
@@ -29,11 +34,12 @@ struct AgentsColumnView: View {
                             }
                         }
                     }
+                    .frame(maxHeight: fillsHeight ? .infinity : Self.popoverHeight)
                 }
             }
         }
         .frame(width: AgentsColumnLayout.width)
-        .frame(maxHeight: .infinity, alignment: .top)
+        .frame(maxHeight: fillsHeight ? .infinity : nil, alignment: .top)
     }
 
     private var header: some View {

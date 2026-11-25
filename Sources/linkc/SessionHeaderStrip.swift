@@ -7,6 +7,8 @@ import LinkCKit
 struct SessionHeaderStrip: View {
     let model: AppModel
     let session: Session
+    /// Where the agent cards show for this terminal; nil hides their toggle.
+    let columnPlacement: AgentsColumnPlacement?
     let onBack: (() -> Void)?
     let onOpenAgent: (AgentRun) -> Void
 
@@ -64,8 +66,8 @@ struct SessionHeaderStrip: View {
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
                 }
-                AgentsColumnToggle(isOn: model.preferences.showsAgentsColumn(for: session.agentKind)) {
-                    model.preferences.toggleAgentsColumn(for: session.agentKind)
+                if let columnPlacement {
+                    AgentsColumnToggle(model: model, sessionId: session.id, agent: session.agentKind, placement: columnPlacement)
                 }
             }
             // A screen-scraped agent's line comes from its terminal buffer, which nothing
@@ -95,30 +97,6 @@ struct SessionHeaderStrip: View {
                 CollisionBanner(collisions: collisions)
             }
         }
-    }
-}
-
-/// Shows or hides the linkC agents column beside every terminal of this agent. Lit while the column is
-/// on; it still gives way when the terminal would be too narrow.
-private struct AgentsColumnToggle: View {
-    let isOn: Bool
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "sidebar.right")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(hovering || isOn ? Theme.textPrimary : Theme.textTertiary)
-                .frame(width: 22, height: 22)
-                .background(Circle().fill(hovering ? Theme.hover : Color.clear))
-                .contentShape(Circle())
-                .animation(Theme.hoverEase, value: hovering)
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help(isOn ? "Hide linkC agents" : "Show linkC agents")
     }
 }
 

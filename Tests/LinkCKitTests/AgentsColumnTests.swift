@@ -367,14 +367,53 @@ final class AgentsColumnTests: XCTestCase {
 
     // MARK: - Width
 
+    /// SF Mono 12.5's "W" as SwiftTerm measures it, on a Retina screen, beside the 17pt scroller
+    /// SwiftTerm keeps.
+    private let sfMono = TerminalGrid(fontCellWidth: 7.72705078125, backingScale: 2, scrollerWidth: 17)
+
+    /// SwiftTerm 1.15.0 rounds a cell's width up to the pixel grid and keeps the scroller's width
+    /// out of the grid (AppleTerminalView.computeFontDimensions, MacTerminalView.getEffectiveWidth).
+    func testTheTerminalHasAsManyColumnsAsSwiftTermLaysOut() {
+        XCTAssertEqual(sfMono.cellWidth, 8)
+        XCTAssertEqual(sfMono.columns(inViewWidth: 17 + 80 * 8), 80)
+        XCTAssertEqual(sfMono.columns(inViewWidth: 17 + 80 * 8 - 0.5), 79)
+        // The width 80 cells of the font's own advance take: SwiftTerm fits 75 in it.
+        XCTAssertEqual(sfMono.columns(inViewWidth: 80 * 7.72705078125), 75)
+        XCTAssertEqual(sfMono.columns(inViewWidth: 10), 0)
+        // The pixel grid depends on the screen: 7.3pt is 7.5pt on a Retina screen and 8pt on any other.
+        XCTAssertEqual(TerminalGrid(fontCellWidth: 7.3, backingScale: 2, scrollerWidth: 17).cellWidth, 7.5)
+        XCTAssertEqual(TerminalGrid(fontCellWidth: 7.3, backingScale: 1, scrollerWidth: 17).cellWidth, 8)
+    }
+
     /// The column gives way when it would leave the terminal under 80 columns.
     func testTheColumnHidesWhenItWouldLeaveTheTerminalUnderEightyColumns() {
-        let cell: CGFloat = 7.5
-        let room = 80 * cell + AgentsColumnLayout.width + AgentsColumnLayout.gap
+        let room = AgentsColumnLayout.width + AgentsColumnLayout.gap + 17 + 80 * 8
 
-        XCTAssertTrue(AgentsColumnLayout.fits(paneWidth: room, cellWidth: cell))
-        XCTAssertFalse(AgentsColumnLayout.fits(paneWidth: room - 1, cellWidth: cell))
-        XCTAssertFalse(AgentsColumnLayout.fits(paneWidth: 0, cellWidth: cell))
-        XCTAssertFalse(AgentsColumnLayout.fits(paneWidth: 2_000, cellWidth: 0), "no cell width yet: no room to judge")
+        XCTAssertEqual(room, 901)
+        XCTAssertTrue(AgentsColumnLayout.fits(paneWidth: room, grid: sfMono))
+        XCTAssertFalse(AgentsColumnLayout.fits(paneWidth: room - 0.5, grid: sfMono))
+        // Where 80 cells of the font's own advance would have let the column in, it leaves 75 columns.
+        XCTAssertFalse(AgentsColumnLayout.fits(paneWidth: 80 * 7.72705078125 + AgentsColumnLayout.width + AgentsColumnLayout.gap,
+                                               grid: sfMono))
+        XCTAssertFalse(AgentsColumnLayout.fits(paneWidth: 0, grid: sfMono))
+        XCTAssertFalse(AgentsColumnLayout.fits(paneWidth: 2_000, grid: TerminalGrid(fontCellWidth: 0, backingScale: 2, scrollerWidth: 17)),
+                       "no cell width yet: no room to judge")
+        XCTAssertFalse(AgentsColumnLayout.fits(paneWidth: 2_000, grid: TerminalGrid(fontCellWidth: 7.7, backingScale: 0, scrollerWidth: 17)),
+                       "no screen yet: no pixel grid to judge by")
+    }
+
+    /// Where the column fits it shows beside the terminal, or not, as its toggle says. Where it does
+    /// not, the toggle opens the same cards in a popover, whichever way the column is set.
+    func testWhereTheColumnDoesNotFitItsToggleOpensAPopover() {
+        let place = { (width: CGFloat, isOn: Bool) in AgentsColumnLayout.placement(paneWidth: width, grid: self.sfMono, isOn: isOn) }
+
+        XCTAssertEqual(place(901, true), .beside)
+        XCTAssertEqual(place(901, false), .hidden)
+        XCTAssertEqual(place(900, true), .popover)
+        XCTAssertEqual(place(900, false), .popover)
+        // The panel opens 760pt wide, leaving its terminal pane about 476pt; a torn-off terminal opens
+        // 720pt wide, its pane 696pt.
+        XCTAssertEqual(place(476, true), .popover)
+        XCTAssertEqual(place(696, true), .popover)
     }
 }

@@ -270,18 +270,62 @@ public struct AgentsColumn: Equatable, Sendable {
     }
 }
 
+/// A terminal's grid as SwiftTerm 1.15.0 lays it out: the font's cell rounded up to the screen's pixel
+/// grid (`AppleTerminalView.computeFontDimensions`), across the view less the scroller, which SwiftTerm
+/// keeps out of the grid unless the scroller is hidden (`MacTerminalView.getEffectiveWidth`).
+public struct TerminalGrid: Equatable, Sendable {
+    /// The advance of the font's "W", which SwiftTerm measures a cell by.
+    public let fontCellWidth: CGFloat
+    /// The screen's pixels per point.
+    public let backingScale: CGFloat
+    public let scrollerWidth: CGFloat
+
+    public init(fontCellWidth: CGFloat, backingScale: CGFloat, scrollerWidth: CGFloat) {
+        self.fontCellWidth = fontCellWidth
+        self.backingScale = backingScale
+        self.scrollerWidth = scrollerWidth
+    }
+
+    /// A cell's width on screen; 0 while there is no font or screen to measure it by.
+    public var cellWidth: CGFloat {
+        guard fontCellWidth > 0, backingScale > 0 else { return 0 }
+        return (fontCellWidth * backingScale).rounded(.up) / backingScale
+    }
+
+    /// The columns of a terminal view `width` points wide.
+    public func columns(inViewWidth width: CGFloat) -> Int {
+        guard cellWidth > 0 else { return 0 }
+        return Int((max(0, width - scrollerWidth) / cellWidth).rounded(.down))
+    }
+}
+
+/// Where the agents column shows beside a terminal, and what its toggle does there.
+public enum AgentsColumnPlacement: Equatable, Sendable {
+    /// Beside the terminal; the toggle hides it.
+    case beside
+    /// Off, with room for it; the toggle shows it.
+    case hidden
+    /// No room beside the terminal: the toggle opens the same cards in a popover.
+    case popover
+}
+
 /// How wide the column is, and when it gives way to the terminal.
 public enum AgentsColumnLayout {
     public static let width: CGFloat = 236
     /// Between the terminal and the column.
     public static let gap: CGFloat = 8
     /// The narrowest terminal the column may leave.
-    public static let minimumColumns: CGFloat = 80
+    public static let minimumColumns = 80
 
     /// Whether the column fits beside the terminal in `paneWidth` points and leaves it at least
-    /// `minimumColumns` cells of `cellWidth`.
-    public static func fits(paneWidth: CGFloat, cellWidth: CGFloat) -> Bool {
-        guard cellWidth > 0 else { return false }
-        return ((paneWidth - width - gap) / cellWidth).rounded(.down) >= minimumColumns
+    /// `minimumColumns` columns of `grid`.
+    public static func fits(paneWidth: CGFloat, grid: TerminalGrid) -> Bool {
+        grid.columns(inViewWidth: paneWidth - width - gap) >= minimumColumns
+    }
+
+    /// Beside the terminal where the column fits and is on; the popover wherever it does not fit.
+    public static func placement(paneWidth: CGFloat, grid: TerminalGrid, isOn: Bool) -> AgentsColumnPlacement {
+        guard fits(paneWidth: paneWidth, grid: grid) else { return .popover }
+        return isOn ? .beside : .hidden
     }
 }
