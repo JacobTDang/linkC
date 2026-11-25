@@ -12,6 +12,9 @@ A session is in the repo when it runs in the repo's folder, a folder below it, o
 it (`.worktrees/…`). The repo is the one the Claude Code session's folder belongs to, found with
 `git rev-parse --git-common-dir`; a folder outside git counts as its own repo.
 
+Agents that cannot run this mod (Codex, Antigravity, Cursor, OpenCode and the rest) get the same
+cards from linkC itself, in a column beside their terminal.
+
 ## The usage band
 
 Above the prompt, one box holds a meter for the context and one for each plan limit (`5h`, `7d`):

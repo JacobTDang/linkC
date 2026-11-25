@@ -36,6 +36,14 @@ to start it again. Quitting linkC asks first if anything is still running, and q
 
 ![A Claude Code session in its terminal, next to the project sidebar](docs/images/session.png)
 
+Beside a session's terminal, the **linkC agents** column lists every session in that session's
+repo, its worktrees included, as cards: the agent's colour, the title and model, when the prompt
+cache goes cold, what the session is doing, and for how long. What needs you sorts first; click a
+card to go to that session. The column is on for every agent except Claude Code, which shows the
+same cards through the [linkc-agents mod](mods/linkc-agents). The button at the right of the
+session's header line turns it on or off for that agent, and it steps aside when it would leave
+the terminal narrower than 80 columns.
+
 ### Projects and terminals
 
 Each project has a tab strip: the Board first, then a tab per session and terminal (⌘1 for the
