@@ -172,7 +172,10 @@ public enum Router {
         case .ordinary:
             reasonParts.append("implementation → \(chosen.rawValue) \(tier.rawValue)")
         }
-        if kind == .webResearch, browse.isEmpty {
+        // With no browse agent free, research names every skipped browse agent up front, so the
+        // passed-over list below leaves them out.
+        let namedBrowseSkips = kind == .webResearch && browse.isEmpty
+        if namedBrowseSkips {
             for skip in skipped where browseAgents.contains(skip.agent) {
                 reasonParts.append("\(skip.agent.rawValue) skipped (\(skip.why))")
             }
@@ -182,7 +185,7 @@ public enum Router {
         let order = browse.isEmpty ? installed : browseAgents.filter(installed.contains)
         for agent in order.prefix(while: { $0 != chosen }) where agent != .cursor {
             if let skip = skipped.first(where: { $0.agent == agent }) {
-                if kind != .webResearch || !browseAgents.contains(agent) {
+                if !namedBrowseSkips || !browseAgents.contains(agent) {
                     reasonParts.append("\(agent.rawValue) skipped (\(skip.why))")
                 }
             } else if !withHeadroom.isEmpty, usageTight.contains(agent), pool.contains(agent) {

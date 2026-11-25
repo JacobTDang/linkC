@@ -11,7 +11,8 @@ final class RouterTests: XCTestCase {
         limited: [RouterLimit] = [],
         usage: [AgentKind: Double] = [:],
         active: Set<AgentKind> = [],
-        settings: AgentModelSettings? = nil
+        settings: AgentModelSettings? = nil,
+        refusals: [AgentKind: String] = [:]
     ) throws -> RouterDecision {
         try Router.route(
             prompt: prompt,
@@ -19,7 +20,8 @@ final class RouterTests: XCTestCase {
             settings: settings ?? self.settings,
             limits: limited,
             usageTight: Set(usage.filter { $0.value >= 80 }.map(\.key)),
-            activeInFolder: active
+            activeInFolder: active,
+            refusals: refusals
         )
     }
 
@@ -51,6 +53,30 @@ final class RouterTests: XCTestCase {
             limited: [RouterLimit(agent: .agy, pool: nil)])
         XCTAssertEqual(d.agent, .opencode)
         XCTAssertEqual(d.tier, .light)
+    }
+
+    /// A browse agent passed over for web research is named in the reason whether or not another
+    /// browse agent takes the work: agy refused and OpenCode chosen says why agy is not first.
+    func testWebResearchNamesARefusedBrowseAgentWhenAnotherBrowseAgentTakesIt() throws {
+        let why = "light tier is set to gemini-3.8-flash-low, which agy no longer offers"
+        let d = try route(
+            "Browse the docs for this API",
+            installed: [.agy, .opencode, .claude],
+            refusals: [.agy: why])
+        XCTAssertEqual(d.agent, .opencode)
+        XCTAssertEqual(d.reason, "web research → opencode light (browse-capable); agy skipped (\(why))")
+    }
+
+    /// With no browse agent free, each skipped browse agent is named once, not again in the passed-over list.
+    func testWebResearchNamesEachSkippedBrowseAgentOnceWhenNoneIsFree() throws {
+        let d = try route(
+            "Browse the docs for this API",
+            installed: [.agy, .opencode, .claude],
+            refusals: [.agy: "agy refused", .opencode: "opencode refused"])
+        XCTAssertEqual(d.agent, .claude)
+        XCTAssertEqual(
+            d.reason,
+            "web research → claude light (no browse-capable agent free); agy skipped (agy refused); opencode skipped (opencode refused); effort low")
     }
 
     func testOrdinaryImplementationIsStandard() throws {
