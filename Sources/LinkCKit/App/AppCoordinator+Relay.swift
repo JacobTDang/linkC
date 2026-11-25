@@ -1686,13 +1686,25 @@ extension AppCoordinator {
     @inline(never)
     fileprivate func createRerouteCopy(of task: TaskRecord, to target: AgentKind, hop: Int,
                                        in inboxStore: InboxStore) throws -> String {
-        try inboxStore.createTask(
+        let effort = Self.rerouteEffort(task.effort, to: target)
+        if let asked = task.effort, effort == nil {
+            NSLog("[linkC relay] reroute: %@ takes no %@ effort, so task %@'s copy runs at its tier's effort",
+                  target.displayName, asked.rawValue, task.shortId)
+        }
+        return try inboxStore.createTask(
             from: task.fromAgent, to: target, fromSessionId: task.fromSessionId,
-            tier: task.tier, prompt: task.prompt,
+            tier: task.tier, effort: effort, prompt: task.prompt,
             files: task.files, hop: hop, force: true,
             verification: task.verification, gate: task.gate,
             fromProject: task.fromProject, isQuestion: task.isQuestion
         ).id
+    }
+
+    /// The effort a reroute copy keeps: the task's, when `target` takes that level. One it cannot take
+    /// would be refused at launch, so the copy carries none and runs at its tier's configured effort.
+    nonisolated static func rerouteEffort(_ effort: ReasoningEffort?, to target: AgentKind) -> ReasoningEffort? {
+        guard let effort, AgentEffortSupport.forAgent(target).levels?.contains(effort) == true else { return nil }
+        return effort
     }
 
     /// Points the sending project's record of `task` at its reroute copy, `copyId`. A failure leaves the
