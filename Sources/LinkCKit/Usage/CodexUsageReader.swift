@@ -196,6 +196,15 @@ public struct CodexUsageReader: Sendable {
     // MARK: - Mapping
 
     private func usage(from rateLimits: RateLimits, observedAt: Date) -> AgentUsage {
+        // A figure outside 0–100 is no reading: said, never shown (rounding 1e30 to a whole percent traps).
+        for window in [rateLimits.primary, rateLimits.secondary].compactMap({ $0 }) {
+            do {
+                _ = try ReportedPercent.whole(window.usedPercent)
+            } catch {
+                return AgentUsage(agent: .codex, windows: [], planType: rateLimits.planType, observedAt: observedAt,
+                                  unavailableReason: "the newest rate-limit record cannot be read — \(error.localizedDescription)")
+            }
+        }
         var windows: [UsageWindow] = []
         if let primary = rateLimits.primary {
             windows.append(UsageWindow(

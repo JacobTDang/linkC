@@ -42,6 +42,19 @@ final class CodexUsageReaderTests: XCTestCase {
         XCTAssertEqual(CodexUsageReader(sessionsDirectory: dir).read().windows[0].usedPercent, 44.0)
     }
 
+    /// A used percent outside 0–100, or no number at all, is no limit reading: it is said, never
+    /// shown, and never handed to the rows, where rounding 1e30 to a whole percent traps.
+    func testAUsedPercentOutsideZeroToAHundredIsSaidNotShown() throws {
+        let huge = record.replacingOccurrences(of: "\"used_percent\":23.0", with: "\"used_percent\":1e30")
+        try write("rollout-a.jsonl", [huge], modified: Date())
+
+        let usage = CodexUsageReader(sessionsDirectory: dir).read()
+
+        XCTAssertTrue(usage.windows.isEmpty)
+        XCTAssertEqual(usage.unavailableReason.map { $0.contains("1e+30 is not a percentage from 0 to 100") }, true,
+                       usage.unavailableReason ?? "no reason")
+    }
+
     func testEachFailureModeNamesItself() throws {
         let missing = CodexUsageReader(sessionsDirectory: dir.appendingPathComponent("nope")).read()
         XCTAssertNotNil(missing.unavailableReason)
