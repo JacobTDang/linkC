@@ -145,16 +145,33 @@ public struct AgentModelStore: Sendable {
         } else {
             defaultTiers = [:]
         }
-        let efforts: [String: [String: String]]
+        let efforts: [String: [String: ReasoningEffort]]
         if let value = top.removeValue(forKey: Self.effortsKey) {
             guard let decoded = value.stringTableOfTables else {
                 throw AgentModelStoreRefusal.unreadable("\"efforts\" is not an object of string tables")
             }
-            efforts = decoded
+            efforts = try Self.typedEfforts(decoded)
         } else {
             efforts = [:]
         }
         return (AgentModelSettings(models: models, defaultTiers: defaultTiers, efforts: efforts), top)
+    }
+
+    /// Each stored effort as a `ReasoningEffort`. One this build does not know, a typo or the wrong
+    /// case, refuses the whole file like a malformed `models` entry: read as the tier's default, it
+    /// would quietly run every task on that tier at an effort nobody chose.
+    private static func typedEfforts(_ table: [String: [String: String]]) throws -> [String: [String: ReasoningEffort]] {
+        var result: [String: [String: ReasoningEffort]] = [:]
+        for agent in table.keys.sorted() {
+            for (tier, raw) in table[agent, default: [:]].sorted(by: { $0.key < $1.key }) {
+                guard let effort = ReasoningEffort(rawValue: raw) else {
+                    let known = ReasoningEffort.allCases.map(\.rawValue).joined(separator: ", ")
+                    throw AgentModelStoreRefusal.unreadable("efforts.\(agent).\(tier) is \"\(raw)\", not one of \(known)")
+                }
+                result[agent, default: [:]][tier] = effort
+            }
+        }
+        return result
     }
 
     /// Re-assembles `settings` and `extras` into the same top-level shape `parseLenient` reads,
@@ -166,7 +183,7 @@ public struct AgentModelStore: Sendable {
         })
         top[Self.defaultTiersKey] = .object(settings.defaultTiers.mapValues(JSONValue.string))
         top[Self.effortsKey] = .object(settings.efforts.mapValues { tiers in
-            JSONValue.object(tiers.mapValues(JSONValue.string))
+            JSONValue.object(tiers.mapValues { JSONValue.string($0.rawValue) })
         })
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

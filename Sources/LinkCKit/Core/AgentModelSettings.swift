@@ -20,18 +20,18 @@ public enum ModelTier: String, Codable, Sendable, CaseIterable, Equatable {
 
 /// The tier → model id mapping, keyed by `AgentKind.rawValue` so the JSON on disk reads plainly
 /// and an unknown agent in an edited file is ignored rather than fatal. `efforts` is the same
-/// shape for reasoning effort per tier; agents whose CLI has no effort knob are absent.
+/// shape for reasoning effort per tier; agents whose CLI has no effort knob are absent. An effort
+/// is typed, so a value this build does not know can never be held: `AgentModelStore` refuses it.
 public struct AgentModelSettings: Codable, Sendable, Equatable {
     public private(set) var models: [String: [String: String]]
     public private(set) var defaultTiers: [String: String]
-    /// Tier → effort id (`low`/`medium`/`high`/`xhigh`/`max`), per agent. Absent for agents
-    /// that cannot take an effort from linkC.
-    public private(set) var efforts: [String: [String: String]]
+    /// Tier → effort, per agent. Absent for agents that cannot take an effort from linkC.
+    public private(set) var efforts: [String: [String: ReasoningEffort]]
 
     public init(
         models: [String: [String: String]],
         defaultTiers: [String: String],
-        efforts: [String: [String: String]] = [:]
+        efforts: [String: [String: ReasoningEffort]] = [:]
     ) {
         self.models = models
         self.defaultTiers = defaultTiers
@@ -85,10 +85,10 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
             AgentKind.crush.rawValue: ModelTier.standard.rawValue
         ],
         efforts: {
-            let defaults: [String: String] = [
-                ModelTier.light.rawValue: ReasoningEffort.low.rawValue,
-                ModelTier.standard.rawValue: ReasoningEffort.medium.rawValue,
-                ModelTier.deep.rawValue: ReasoningEffort.high.rawValue
+            let defaults: [String: ReasoningEffort] = [
+                ModelTier.light.rawValue: .low,
+                ModelTier.standard.rawValue: .medium,
+                ModelTier.deep.rawValue: .high
             ]
             return [
                 AgentKind.claude.rawValue: defaults,
@@ -111,12 +111,9 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
         defaultTiers[agent.rawValue].flatMap(ModelTier.init(rawValue:)) ?? .standard
     }
 
-    /// The reasoning effort for `agent` at `tier`, or nil when that agent has no effort mapping
-    /// (unsupported CLI) or the stored value is empty / unknown.
+    /// The reasoning effort set for `agent` at `tier`, or nil when none is set there.
     public func effort(for agent: AgentKind, tier: ModelTier) -> ReasoningEffort? {
-        guard let raw = efforts[agent.rawValue]?[tier.rawValue] else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return ReasoningEffort(rawValue: trimmed)
+        efforts[agent.rawValue]?[tier.rawValue]
     }
 
     /// Which tier a running model belongs to, for a session whose model was switched by hand.
@@ -169,6 +166,6 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
     }
 
     public mutating func setEffort(_ effort: ReasoningEffort, for agent: AgentKind, tier: ModelTier) {
-        efforts[agent.rawValue, default: [:]][tier.rawValue] = effort.rawValue
+        efforts[agent.rawValue, default: [:]][tier.rawValue] = effort
     }
 }

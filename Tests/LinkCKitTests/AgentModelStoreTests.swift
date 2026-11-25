@@ -97,6 +97,28 @@ final class AgentModelStoreTests: XCTestCase {
         XCTAssertEqual(AgentModelStore(directory: dir).load().effort(for: .claude, tier: .deep), .max)
     }
 
+    /// An effort this build does not know, a typo or the wrong case, is refused the way a malformed
+    /// `models` entry is: load keeps the seeded mapping rather than read the rest of the file and run
+    /// the tier on a default effort, and save will not overwrite the file.
+    func testAnUnknownStoredEffortIsRefusedLikeAMalformedModelsEntry() throws {
+        for bad in ["hgih", "High"] {
+            let store = AgentModelStore(directory: dir)
+            let text = #"{"models":{"claude":{"deep":"sonnet"}},"efforts":{"claude":{"deep":"\#(bad)"}}}"#
+            try text.write(toFile: store.path, atomically: true, encoding: .utf8)
+
+            XCTAssertEqual(store.load().model(for: .claude, tier: .deep), "opus",
+                           "\(bad): the file is not read, so its sonnet does not replace the seeded opus")
+            guard case .failure(let refusal) = store.save(AgentModelSettings.seeded) else {
+                XCTFail("\(bad): expected the save to be refused")
+                continue
+            }
+            XCTAssertEqual(
+                refusal.description,
+                "models.json can't be read: efforts.claude.deep is \"\(bad)\", not one of low, medium, high, xhigh, max. Fix or move the file.")
+            XCTAssertEqual(try String(contentsOfFile: store.path, encoding: .utf8), text, "\(bad): the file is kept")
+        }
+    }
+
     func testAnUnreadableFileRefusesTheSaveWithTheExactMessage() throws {
         let store = AgentModelStore(directory: dir)
         try "{ not json".write(toFile: store.path, atomically: true, encoding: .utf8)
