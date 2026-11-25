@@ -1,6 +1,7 @@
 import Foundation
 
-/// Composes and atomically writes cross-agent handoff memos to `.linkc/HANDOFF.md`.
+/// Composes and atomically writes cross-agent handoff memos: a teammate's or a limit reroute's to
+/// `.linkc/HANDOFF.md`, a session handoff's to its own file in `.linkc/handoffs/`.
 public struct HandoffComposer: Sendable {
     private static let placeholder = "(None recorded)"
 

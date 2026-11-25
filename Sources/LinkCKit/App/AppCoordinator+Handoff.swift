@@ -79,7 +79,6 @@ extension AppCoordinator {
             resolvedModelId = nil
         }
 
-        // Terminal output tail 50 lines
         let recentOutput: String?
         if let terminal = terminals.session(id: sourceSession.id) {
             let out = terminal.recentOutput(lines: 50)
@@ -88,7 +87,6 @@ extension AppCoordinator {
             recentOutput = nil
         }
 
-        // Git summary
         let gitSummary = gitStatusSummary(in: folder)
 
         let resolvedGoal = try handoffGoal(of: sourceSession, in: folder, explicit: goal)
