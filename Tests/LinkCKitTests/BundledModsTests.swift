@@ -70,6 +70,33 @@ final class BundledModsTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: typesFile, encoding: .utf8), "generated")
     }
 
+    func testUnwritableTargetIsReported() throws {
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: ["README.md": "hello"]
+        )
+        // Parent exists but is not writable — install must fail loud.
+        try FileManager.default.createDirectory(at: installRoot, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555], ofItemAtPath: installRoot.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: installRoot.path
+            )
+        }
+
+        XCTAssertThrowsError(
+            try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+        ) { error in
+            let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            XCTAssertTrue(
+                message.contains("Couldn't install the linkc-agents mod"),
+                "expected a clear install failure, got: \(message)"
+            )
+        }
+    }
+
     func testFileDroppedFromBundleIsRemoved() throws {
         try writeBundleMod(
             name: "linkc-agents",
