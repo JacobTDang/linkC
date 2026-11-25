@@ -97,14 +97,17 @@ final class MCPServerHandoffTests: XCTestCase {
         XCTAssertEqual(srv.handoffRequests.directory, OpenRequestStore.handoffApplicationSupport.directory)
     }
 
-    /// A linkC that predates handoffs never answers one; the agent hears that it may need updating.
-    func testAnUnansweredHandoffSaysLinkCMayNeedUpdating() throws {
+    /// A linkC that predates handoffs never answers one, and neither does one that isn't running or
+    /// is busy. The request is withdrawn, so nothing opens from it and trying again is safe. The
+    /// agent hears that, and that an old linkC needs updating.
+    func testAnUnansweredHandoffIsWithdrawnAndSaysTryingAgainIsSafe() throws {
         let srv = makeServer()
         let res = try mcpCall(srv, "linkc_handoff", ["to": "codex"])
 
         XCTAssertTrue(res.isError)
-        XCTAssertTrue(res.text.contains("linkC did not answer"), res.text)
-        XCTAssertTrue(res.text.contains("update"), res.text)
+        XCTAssertTrue(res.text.contains("withdrawn, so no session opened from it and trying again is safe"), res.text)
+        XCTAssertTrue(res.text.contains("not running, busy, or older than this tool"), res.text)
+        XCTAssertTrue(res.text.contains("update it"), res.text)
         XCTAssertTrue(requestStore.pending().isEmpty, "the request is withdrawn")
     }
 

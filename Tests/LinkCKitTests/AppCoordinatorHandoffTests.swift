@@ -222,6 +222,38 @@ final class AppCoordinatorHandoffTests: XCTestCase {
                        "Please read .linkc/handoffs/\(s3.id).md and continue working on: second")
     }
 
+    /// A memo is the new session's to read. Once that session ends nothing needs it, so it goes,
+    /// and another session's memo stays.
+    func testAHandoffsMemoGoesWhenItsSessionEnds() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        let s2 = try coordinator.handoff(from: s1.id, to: .codex, goal: "first")
+        let s3 = try coordinator.handoff(from: s1.id, to: .codex, goal: "second")
+        coordinator.stopSession(s2.id)
+
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: handoffsFolder.path), ["\(s3.id).md"])
+    }
+
+    /// A memo that cannot be written closes the new session it was for. That session never reached
+    /// the user, so it leaves no card under Earlier.
+    func testAMemoThatCannotBeWrittenLeavesNoEarlierCard() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+        // A file where the memos' folder goes, so the memo cannot be written.
+        try FileManager.default.createDirectory(at: handoffsFolder.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "not a folder".write(to: handoffsFolder, atomically: true, encoding: .utf8)
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        XCTAssertThrowsError(try coordinator.handoff(from: s1.id, to: .codex, goal: "anything")) { error in
+            XCTAssertTrue(error.localizedDescription.contains("could not be written"), error.localizedDescription)
+        }
+
+        XCTAssertEqual(coordinator.store.sessions.map(\.id), [s1.id])
+        XCTAssertEqual(coordinator.restorables.map(\.linkcId), [])
+    }
+
     /// A launch that fails leaves no memo behind, and says which agent could not start.
     func testAFailedLaunchWritesNoMemo() throws {
         let coordinator = makeCoordinator(missingAgents: [.codex])

@@ -110,9 +110,10 @@ extension AppCoordinator {
         // leaves nothing behind.
         let memoPath = HandoffComposer.sessionMemoPath(for: newSession.id)
         do {
-            try HandoffComposer.writeHandoff(workspacePath: folder, content: memo, at: memoPath)
+            handoffMemos[newSession.id] = try HandoffComposer.writeHandoff(workspacePath: folder, content: memo, at: memoPath)
         } catch {
-            stopSession(newSession.id)
+            terminals.terminate(newSession.id)
+            cleanup(sessionId: newSession.id, end: .abandoned)
             throw LinkCError.process("the handoff memo \(memoPath) could not be written, so the new session was closed — \(error)")
         }
 
@@ -142,5 +143,20 @@ extension AppCoordinator {
             throw LinkCError.process("could not read the tasks \(session.agentKind.displayName) carries — \(error)")
         }
         return carried.last?.prompt
+    }
+
+    /// Deletes the memo a handoff wrote for `sessionId`, now that the session it was for has ended:
+    /// it holds a stretch of terminal output the project has no use for after that. A memo already
+    /// gone is fine; one that cannot be deleted is said.
+    func removeHandoffMemo(of sessionId: String) {
+        guard let memo = handoffMemos.removeValue(forKey: sessionId) else { return }
+        do {
+            try FileManager.default.removeItem(at: memo)
+        } catch CocoaError.fileNoSuchFile {
+            return
+        } catch {
+            NSLog("[linkC] could not delete the handoff memo %@ — %@", memo.path, String(describing: error))
+            notifications.postLocal(title: "linkC: could not delete a handoff memo", body: "\(memo.path) — \(error)")
+        }
     }
 }

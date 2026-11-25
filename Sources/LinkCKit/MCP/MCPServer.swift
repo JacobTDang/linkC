@@ -2040,7 +2040,7 @@ public final class MCPServer: Sendable {
         case .unanswered(nil):
             return toolResultResponse(
                 id: id,
-                text: "Error: linkC did not answer the handoff within \(Int(wait.timeout)) seconds. A linkC older than this tool never reads handoff requests; update linkC and try again.",
+                text: "Error: linkC did not pick up the handoff within \(Int(wait.timeout)) seconds, so the request was withdrawn, so no session opened from it and trying again is safe. linkC may be not running, busy, or older than this tool (an older linkC never reads handoff requests; update it if this keeps happening).",
                 isError: true)
         }
     }
