@@ -26,7 +26,8 @@ extension AppCoordinator {
     }
 
     /// Where the prompt bar's routing reads in `folder`. The open sessions are read now, on the main actor;
-    /// the rest when routing asks, off it.
+    /// the rest when routing asks, off it. A session's `cwd` is canonical from `Session.init`, so it
+    /// compares with the canonical folder as it is.
     func promptBarRouteInputs(folder: String) -> RouteInputs {
         let norm = ProjectPath.canonical(folder)
         let open = Set(store.sessions.filter { $0.cwd == norm && $0.state != .ended }.map(\.agentKind))

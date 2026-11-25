@@ -397,6 +397,38 @@ final class PromptBarTests: XCTestCase {
         XCTAssertEqual(coordinator.terminals.selectedId, id)
     }
 
+    /// The tie-break toward an agent already open in the folder compares canonical paths on both
+    /// sides, as the MCP tool does: a session opened under another spelling of the folder still counts.
+    func testTheTieBreakSeesASessionOpenedUnderAnotherSpellingOfTheFolder() async throws {
+        XCTAssertNotEqual(tempDir.path, folder, "the fixture needs a folder spelled two ways")
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        try coordinator.newSession(cwd: tempDir.path, agent: .opencode, select: false)
+        let clock = ManualClock()
+        let folder = self.folder
+        let bar = PromptBar(
+            services: coordinator.promptBarServices(
+                folder: { folder }, readLists: TestModelLists.none, listFolder: { _, _ in [] }),
+            clock: clock, debounce: .milliseconds(250))
+
+        bar.text = Self.implement
+        await settle(bar, clock)
+
+        XCTAssertEqual(pick(bar)?.agent, .opencode)
+        XCTAssertEqual(pick(bar)?.reason, "implementation; tie → already active in folder")
+    }
+
+    /// The session opens in the folder's canonical path, whatever spelling the launch was given.
+    func testOpenRoutedOpensInTheCanonicalFolder() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.openRouted(PromptBarLaunch(
+            folder: tempDir.path, agent: .codex, tier: .standard, effort: nil, prompt: Self.implement))
+
+        XCTAssertEqual(session.cwd, folder)
+    }
+
     /// The MCP tool's auto-route and the bar read the same facts the same way: a usage window near its
     /// limit, a recorded limit and an agent already open in the folder all shape both picks alike.
     func testTheToolAndTheBarRouteAPromptAlike() async throws {
