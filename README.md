@@ -133,10 +133,11 @@ deep → high). Claude and Antigravity get `--effort`; Codex gets `-c model_reas
 Crush gets a `reasoning_effort` key in its per-session config. Cursor Agent / Grok bake effort into
 model ids and cannot be pinned by linkC; OpenCode and Kilo's TUIs have no effort flag — Settings
 says so beside those agents. When `linkc_delegate_task` omits `to` (or passes `auto`), a pure
-router picks the agent, tier and effort from the prompt (trivial edits → light; web research /
-browsing → light on a browse-capable agent, preferring agy; ordinary work → standard; architecture,
-hard debugging, security, migrations → deep), skips limited agents and pools, prefers usage
-headroom, and ties to the agent already active in the folder. A verified task also carries a test
+router picks the agent, tier and effort from the prompt's whole words and phrases (a short trivial
+edit → light; web research or browsing → a browse-capable agent, preferring agy, light when the
+prompt is short; ordinary work → standard; architecture, hard debugging, a security review, a
+database migration → deep), skips limited agents and pools, prefers usage headroom, and ties to the
+agent already active in the folder. A verified task also carries a test
 command: linkC runs it itself, and the work only counts as done if the tests fail before it and
 pass after.
 

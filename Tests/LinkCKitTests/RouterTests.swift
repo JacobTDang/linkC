@@ -121,6 +121,35 @@ final class RouterTests: XCTestCase {
         }
     }
 
+    /// Keywords match whole words and phrases, never a piece of another word: "information" is not
+    /// "format", "browser" is not "browse", and a file or guide named after a hard topic is not that topic.
+    func testTheClassifierMatchesWholeWordsAndPhrases() {
+        let cases: [(prompt: String, kind: Router.TaskKind)] = [
+            ("show the model information", .ordinary),
+            ("browser extension crash", .ordinary),
+            ("Fix the typo in the migration guide", .trivialEdit),
+            ("Rename the variable in Security.swift", .trivialEdit),
+            ("parser for the new config format", .ordinary),
+        ]
+        for (prompt, kind) in cases {
+            XCTAssertEqual(Router.classify(prompt), kind, prompt)
+        }
+    }
+
+    /// Light is for short prompts: a long brief that mentions a rename is ordinary work, and long
+    /// web research still goes to a browse-capable agent, on its standard tier.
+    func testOnlyAShortPromptIsSentToLight() throws {
+        let brief = "Rename the session store's helpers, then thread the new effort field through every path that creates, copies or looks up a task, and add tests for each of them"
+        XCTAssertEqual(Router.classify(brief), .ordinary)
+        XCTAssertEqual(try route(brief).tier, .standard)
+
+        let research = "Do some web research on how each agent CLI sets reasoning effort, compare their flags and config keys, note which models refuse it, and summarise what you find"
+        XCTAssertEqual(Router.classify(research), .webResearch)
+        let d = try route(research)
+        XCTAssertEqual(d.agent, .agy)
+        XCTAssertEqual(d.tier, .standard)
+    }
+
     /// Cursor takes no tier and every routed task carries one, so a task routed to Cursor would be
     /// refused when it is delegated. Cursor is never a candidate, even as the only agent free.
     func testCursorIsNeverRoutedToEvenWhenItIsTheOnlyFreeAgent() {

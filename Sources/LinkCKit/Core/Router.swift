@@ -30,14 +30,17 @@ public struct RouterDecision: Sendable, Equatable {
 /// Pure task router: picks an agent, tier and effort from the prompt and live constraints.
 /// No I/O — callers gather installed agents, limits and usage, then call `route`.
 public enum Router {
-    /// Task kinds inferred from an explicit keyword table (case-insensitive substring match).
-    /// Documented here so Settings and the MCP tool result stay aligned with the code.
+    /// Task kinds inferred from an explicit keyword table. A keyword is a whole word or a phrase of
+    /// whole words, matched case-insensitively: "information" never matches "format", nor
+    /// "browser" "browse". Words that also name ordinary things (format, security, research,
+    /// migration) only count inside a phrase. Documented here so the README and the MCP tool
+    /// result stay aligned with the code.
     ///
     /// | Kind | Keywords | Tier |
     /// |---|---|---|
-    /// | Trivial edit | rename, typo, format, bump | light |
-    /// | Web research | research, browsing, browse, scraping, scrape, docs lookup, look up the docs | light (browse-capable agent) |
-    /// | Hard work | architecture, hard debugging, security, migration, migrations | deep |
+    /// | Trivial edit (short prompts only) | rename, typo, bump, reformat, format the file/code, fix the formatting | light |
+    /// | Web research | web research, search the web, browse, browsing, scrape, scraping, docs lookup, look up the docs | light when short, else standard (browse-capable agent) |
+    /// | Hard work | architecture, hard debugging, security review/audit/vulnerability, database/schema/data migration(s) | deep |
     /// | Everything else | (default) | standard |
     public enum TaskKind: String, Sendable, Equatable {
         case trivialEdit
@@ -46,29 +49,62 @@ public enum Router {
         case ordinary
     }
 
-    private static let trivialKeywords = ["rename", "typo", "format", "bump"]
-    private static let webKeywords = [
-        "research", "browsing", "browse", "scraping", "scrape", "docs lookup", "look up the docs"
-    ]
-    private static let hardKeywords = [
-        "architecture", "hard debugging", "security", "migrations", "migration"
-    ]
+    /// A prompt of at most this many words is short enough for the light tier. Delegation briefs
+    /// run far longer; a long one that happens to mention a rename is ordinary work.
+    public static let shortPromptWordLimit = 25
+
+    private static let trivialKeywords = phrases([
+        "rename", "renaming", "typo", "typos", "bump", "reformat",
+        "format the file", "format the code", "fix the formatting", "fix formatting"
+    ])
+    private static let webKeywords = phrases([
+        "web research", "research the web", "search the web", "browse", "browsing",
+        "scrape", "scraping", "docs lookup", "look up the docs"
+    ])
+    private static let hardKeywords = phrases([
+        "architecture", "hard debugging",
+        "security review", "security audit", "security vulnerability", "security hole",
+        "database migration", "database migrations", "schema migration", "schema migrations",
+        "data migration", "data migrations"
+    ])
     /// Agents that can browse / research the web; cheapest preferred first (agy light, then a free OpenCode model).
     private static let browseAgents: [AgentKind] = [.agy, .opencode]
 
     public static func classify(_ prompt: String) -> TaskKind {
-        let lower = prompt.lowercased()
-        if hardKeywords.contains(where: { lower.contains($0) }) { return .hard }
-        if webKeywords.contains(where: { lower.contains($0) }) { return .webResearch }
-        if trivialKeywords.contains(where: { lower.contains($0) }) { return .trivialEdit }
+        let words = words(of: prompt)
+        if matches(words, any: hardKeywords) { return .hard }
+        if matches(words, any: webKeywords) { return .webResearch }
+        if words.count <= shortPromptWordLimit, matches(words, any: trivialKeywords) { return .trivialEdit }
         return .ordinary
     }
 
-    public static func tier(for kind: TaskKind) -> ModelTier {
+    /// The tier a task of `kind` runs on. Light only for a short prompt: a trivial edit is short by
+    /// definition, and long web research runs on standard.
+    public static func tier(for kind: TaskKind, prompt: String) -> ModelTier {
         switch kind {
-        case .trivialEdit, .webResearch: return .light
+        case .trivialEdit: return .light
+        case .webResearch: return words(of: prompt).count <= shortPromptWordLimit ? .light : .standard
         case .ordinary: return .standard
         case .hard: return .deep
+        }
+    }
+
+    /// The prompt's words, lowercased; anything but a letter or digit separates them.
+    private static func words(of text: String) -> [String] {
+        text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+    }
+
+    private static func phrases(_ keywords: [String]) -> [[String]] {
+        keywords.map(words(of:))
+    }
+
+    /// Whether `words` holds any of `phrases` as consecutive whole words.
+    private static func matches(_ words: [String], any phrases: [[String]]) -> Bool {
+        phrases.contains { phrase in
+            guard !phrase.isEmpty, phrase.count <= words.count else { return false }
+            return (0...(words.count - phrase.count)).contains { start in
+                Array(words[start..<(start + phrase.count)]) == phrase
+            }
         }
     }
 
@@ -83,7 +119,7 @@ public enum Router {
         activeInFolder: AgentKind?
     ) throws -> RouterDecision {
         let kind = classify(prompt)
-        let tier = tier(for: kind)
+        let tier = tier(for: kind, prompt: prompt)
         // Every routed task carries a tier. Cursor takes none, so a task routed to it would be
         // refused at delegation: it is never a candidate. Shell and Freebuff are not routed to.
         var candidates: [AgentKind] = []
