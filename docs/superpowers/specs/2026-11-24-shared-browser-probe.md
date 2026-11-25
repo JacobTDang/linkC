@@ -87,7 +87,7 @@ exit code: 0
 
 ## 2. MCP Mode Probe (`agent-browser mcp`)
 
-We evaluated driving `agent-browser mcp` via JSON-RPC stdio against the same Chrome instance running on port `9444`. *(Note: An earlier version of this document mixed up ports 9555 and 9444).*
+We evaluated driving `agent-browser mcp` via JSON-RPC stdio against the same Chrome instance running on port `9444`. Note that Chrome was relaunched between section 1 and Test 2A, since the target ids differ.
 
 ### Test 2A: Environment Configuration (`AGENT_BROWSER_CDP=9444` & `AGENT_BROWSER_PIN_TAB=1`)
 We started `agent-browser mcp` with:
@@ -147,11 +147,12 @@ We sent JSON-RPC messages via stdin with a 15-second per-read timeout on each re
    id: FCECF31D17D6A615081EC8A76E0441AF type: browser_ui title: Omnibox Popup url: chrome://omnibox-popup.top-chrome/
    ...
    ```
-   **Attachment Status:** Plainly stated, `agent-browser mcp` **did attach** to the shared Chrome instance running on port 9444. The new page target (`targetId: E4B014ED84C77D83B43CD993E9CA6756`, `url: https://example.com/`) was created and hosted directly inside the shared Chrome process.
+   **Attachment Status:** Plainly stated, `agent-browser mcp` **did attach** to the shared Chrome instance running on port 9444. The new page target (`targetId: E4B014ED84C77D83B43CD993E9CA6756`, `url: https://example.com/`) was created and hosted directly inside the shared Chrome process. The target-id match in `/json/list` is the proof.
 
-   **Understanding `"browserLaunched": true` and `cdp: applied: false`:**
-   - `"browserLaunched": true` and `"launched": true` represent `agent-browser`'s session daemon connecting to the browser session for the first time rather than reusing an existing daemon session connection.
-   - `settings.changes: [{"applied": false, "effect": "relaunch", "option": "cdp", "requested": "9444", "running": null}]` signifies that because no browser was previously active on this session daemon (`running: null`), applying the CDP port setting did not require relaunching an existing browser.
+   **Understanding `"browserLaunched": true` and `cdp: applied: false` (Inferred):**
+   The reading of `browserLaunched: true` and `applied: false, running: null` is inferred (the target-id match in `/json/list` is the proof):
+   - `"browserLaunched": true` and `"launched": true` are inferred to represent `agent-browser`'s session daemon connecting to the browser session for the first time rather than reusing an existing daemon session connection.
+   - `settings.changes: [{"applied": false, "effect": "relaunch", "option": "cdp", "requested": "9444", "running": null}]` is inferred to signify that because no browser was previously active on this session daemon (`running: null`), applying the CDP port setting did not require relaunching an existing browser.
    - Setting `AGENT_BROWSER_CDP="9444"` in the process environment before starting `agent-browser mcp` is what causes it to attach to the shared instance.
 
 ### Test 2B: Passing `extraArgs: ["--cdp", "9444"]` Per Tool Call
@@ -198,7 +199,7 @@ Each agent supported by linkC receives environment variables and MCP configurati
    - *Unprobed:* Whether Claude Code, Cursor, and `agy` pass their full environment to MCP servers under all operating modes in production.
 
 2. **Codex:**
-   - **Mechanism:** Process isolation. Codex's background daemon strips inherited environment variables.
+   - **Mechanism:** Process isolation. The claim that Codex's daemon strips the environment is inferred from `AgentKind.swift`'s comment, not probed.
    - **Delivery:** LinkC already injects session variables into Codex via CLI config flags (see `Sources/LinkCKit/Core/AgentKind.swift` line 259):
      ```swift
      args += ["-c", "mcp_servers.\(MCPRegistrar.serverName).env.LINKC_SESSION=\"\(sessionId)\""]

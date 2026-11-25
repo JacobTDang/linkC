@@ -216,24 +216,79 @@ class TestSyncAgentSkills(unittest.TestCase):
             self.assertIn("dup-skill", skills)
 
     def test_resolve_repo_root_in_worktree(self):
-        """resolve_repo_root must return the main checkout root when executed from a worktree."""
+        """resolve_repo_root must return the main checkout root when executed from a worktree.
+
+        Note: Needs git 2.31 or newer for --path-format.
+        """
+        git_env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"}
+        git_cmd = [
+            "git",
+            "-c", "commit.gpgsign=false",
+            "-c", "user.name=Test User",
+            "-c", "user.email=test@example.com",
+        ]
         with tempfile.TemporaryDirectory() as td:
             main_repo = Path(td) / "main_repo"
             main_repo.mkdir()
-            subprocess.run(["git", "init", "-b", "main"], cwd=main_repo, check=True, capture_output=True)
-            subprocess.run(["git", "config", "user.name", "Test"], cwd=main_repo, check=True)
-            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=main_repo, check=True)
+            subprocess.run([*git_cmd, "init", "-b", "main"], cwd=main_repo, check=True, capture_output=True, env=git_env)
             (main_repo / "README.md").write_text("# Main")
-            subprocess.run(["git", "add", "."], cwd=main_repo, check=True)
-            subprocess.run(["git", "commit", "-m", "init"], cwd=main_repo, check=True, capture_output=True)
+            subprocess.run([*git_cmd, "add", "."], cwd=main_repo, check=True, env=git_env)
+            subprocess.run([*git_cmd, "commit", "-m", "init"], cwd=main_repo, check=True, capture_output=True, env=git_env)
 
             wt = Path(td) / "wt"
-            subprocess.run(["git", "worktree", "add", "-b", "feat", str(wt)], cwd=main_repo, check=True, capture_output=True)
+            subprocess.run([*git_cmd, "worktree", "add", "-b", "feat", str(wt)], cwd=main_repo, check=True, capture_output=True, env=git_env)
             wt_scripts = wt / "scripts"
             wt_scripts.mkdir(parents=True)
 
             resolved = self.mod.resolve_repo_root(from_dir=wt_scripts)
             self.assertEqual(resolved, main_repo.resolve())
+
+    def test_resolve_repo_root_from_scripts_different_cwd(self):
+        """resolve_repo_root(from_dir=main_repo/'scripts') must return main checkout root from a different cwd.
+
+        Without --path-format=absolute, git returns '../.git' which resolves relative to the caller's cwd.
+        Note: Needs git 2.31 or newer for --path-format.
+        """
+        git_env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"}
+        git_cmd = [
+            "git",
+            "-c", "commit.gpgsign=false",
+            "-c", "user.name=Test User",
+            "-c", "user.email=test@example.com",
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            main_repo = Path(td) / "main_repo"
+            main_repo.mkdir()
+            subprocess.run([*git_cmd, "init", "-b", "main"], cwd=main_repo, check=True, capture_output=True, env=git_env)
+            (main_repo / "README.md").write_text("# Main")
+            subprocess.run([*git_cmd, "add", "."], cwd=main_repo, check=True, env=git_env)
+            subprocess.run([*git_cmd, "commit", "-m", "init"], cwd=main_repo, check=True, capture_output=True, env=git_env)
+
+            scripts = main_repo / "scripts"
+            scripts.mkdir(parents=True)
+
+            other_dir = Path(td) / "other_cwd"
+            other_dir.mkdir()
+            orig_cwd = os.getcwd()
+            try:
+                os.chdir(other_dir)
+                resolved = self.mod.resolve_repo_root(from_dir=scripts)
+                self.assertEqual(resolved, main_repo.resolve())
+            finally:
+                os.chdir(orig_cwd)
+
+    def test_resolve_repo_root_failure_includes_stderr(self):
+        """resolve_repo_root error message must include git stderr when rev-parse fails."""
+        with tempfile.TemporaryDirectory() as td:
+            non_git_dir = Path(td) / "not_a_git_repo"
+            non_git_dir.mkdir()
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+                with self.assertRaises(SystemExit) as cm:
+                    self.mod.resolve_repo_root(from_dir=non_git_dir)
+                self.assertEqual(cm.exception.code, 1)
+                stderr_val = mock_stderr.getvalue()
+                self.assertIn("failed to resolve main git checkout root", stderr_val)
+                self.assertIn("not a git repository", stderr_val)
 
     def test_import_hermetic_without_git(self):
         """Importing sync-agent-skills must be hermetic and succeed even when git rev-parse fails."""

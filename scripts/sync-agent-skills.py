@@ -36,6 +36,11 @@ def resolve_repo_root(from_dir: Path | None = None) -> Path:
         ).strip()
         common_dir = Path(out)
         return common_dir.parent.resolve()
+    except subprocess.CalledProcessError as e:
+        stderr_text = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        stderr_msg = f": {stderr_text.strip()}" if stderr_text.strip() else ""
+        print(f"Error: failed to resolve main git checkout root: {e}{stderr_msg}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
         print(f"Error: failed to resolve main git checkout root: {e}", file=sys.stderr)
         sys.exit(1)
