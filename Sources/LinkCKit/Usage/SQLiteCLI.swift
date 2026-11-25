@@ -13,6 +13,27 @@ public enum SQLiteCLI {
         case immutable
     }
 
+    /// The bytes a `hex(blob)` column spells, or nil when it is not whole hex digit pairs.
+    public static func bytes(fromHex hex: String) -> Data? {
+        let digits = Array(hex.utf8)
+        guard digits.count.isMultiple(of: 2) else { return nil }
+        var bytes = Data(capacity: digits.count / 2)
+        for index in stride(from: 0, to: digits.count, by: 2) {
+            guard let high = nibble(digits[index]), let low = nibble(digits[index + 1]) else { return nil }
+            bytes.append(high << 4 | low)
+        }
+        return bytes
+    }
+
+    private static func nibble(_ digit: UInt8) -> UInt8? {
+        switch digit {
+        case UInt8(ascii: "0")...UInt8(ascii: "9"): return digit - UInt8(ascii: "0")
+        case UInt8(ascii: "a")...UInt8(ascii: "f"): return digit - UInt8(ascii: "a") + 10
+        case UInt8(ascii: "A")...UInt8(ascii: "F"): return digit - UInt8(ascii: "A") + 10
+        default: return nil
+        }
+    }
+
     /// The rows `query` returns, decoded by column name. A blob column must be selected as
     /// `hex(...)`: the CLI's JSON would print its raw bytes. Throws `LinkCError.process` with
     /// sqlite3's own reason when the file cannot be opened or the query fails.

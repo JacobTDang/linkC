@@ -45,6 +45,17 @@ final class SQLiteCLITests: XCTestCase {
         XCTAssertEqual(rows.map(\.n), [1])
     }
 
+    func testHexFromABlobColumnDecodesToItsBytes() {
+        XCTAssertEqual(SQLiteCLI.bytes(fromHex: "0A0b00ff"), Data([0x0a, 0x0b, 0x00, 0xff]))
+        XCTAssertEqual(SQLiteCLI.bytes(fromHex: ""), Data())
+    }
+
+    func testHexThatIsOddOrNotHexIsNil() {
+        XCTAssertNil(SQLiteCLI.bytes(fromHex: "abc"))
+        XCTAssertNil(SQLiteCLI.bytes(fromHex: "zz"))
+        XCTAssertNil(SQLiteCLI.bytes(fromHex: "0a 0b"))
+    }
+
     func testAFileThatIsNotThereIsAnErrorWithSQLitesReason() {
         let path = dir.appendingPathComponent("missing.db").path
         XCTAssertThrowsError(try SQLiteCLI.rows(Row.self, in: path, query: "select 1 as n")) { error in
