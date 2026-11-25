@@ -92,7 +92,7 @@ public struct BundledMods: Sendable {
             try fm.copyItem(at: fromURL, to: to)
         }
 
-        let previous = loadManifest(at: dest)
+        let previous = try validatedManifest(loadManifest(at: dest), modRoot: dest)
         let shippedSet = Set(shipped)
         for relative in previous where !shippedSet.contains(relative) {
             guard !relative.hasPrefix(Self.engineTypesPrefix), relative != Self.manifestName else {
@@ -104,6 +104,28 @@ public struct BundledMods: Sendable {
             }
         }
         try saveManifest(shipped, at: dest)
+    }
+
+    /// Reject empty, absolute, and `..` entries, and require each resolved path stay under `modRoot`.
+    /// A bad manifest must not authorize any delete.
+    private func validatedManifest(_ entries: [String], modRoot: URL) throws -> [String] {
+        let rootPath = modRoot.standardizedFileURL.path
+        for entry in entries {
+            if entry.isEmpty || entry.hasPrefix("/") || entry.contains("..") {
+                throw Failure(
+                    modName: modRoot.lastPathComponent,
+                    detail: "shipped-file manifest has an unsafe path \(entry.debugDescription)"
+                )
+            }
+            let resolved = modRoot.appendingPathComponent(entry).standardizedFileURL.path
+            guard resolved == rootPath || resolved.hasPrefix(rootPath + "/") else {
+                throw Failure(
+                    modName: modRoot.lastPathComponent,
+                    detail: "shipped-file manifest path escapes the mod folder: \(entry.debugDescription)"
+                )
+            }
+        }
+        return entries
     }
 
     private func relativeFiles(under root: URL) throws -> [String] {

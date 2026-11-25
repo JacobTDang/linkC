@@ -71,6 +71,7 @@ final class BundledModsTests: XCTestCase {
     }
 
     func testUnwritableTargetIsReported() throws {
+        try XCTSkipIf(getuid() == 0, "root ignores POSIX write permissions, so this cannot be exercised as root")
         try writeBundleMod(
             name: "linkc-agents",
             files: ["README.md": "hello"]
@@ -93,6 +94,45 @@ final class BundledModsTests: XCTestCase {
             XCTAssertTrue(
                 message.contains("Couldn't install the linkc-agents mod"),
                 "expected a clear install failure, got: \(message)"
+            )
+        }
+    }
+
+    func testHostileManifestEntriesAreRejectedAndDeleteNothing() throws {
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "safe"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let modRoot = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let typesFile = modRoot.appendingPathComponent(".claude-plugin/types/generated.d.ts")
+        try FileManager.default.createDirectory(
+            at: typesFile.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("generated".utf8).write(to: typesFile)
+
+        let victim = root.appendingPathComponent("victim.txt")
+        try Data("alive".utf8).write(to: victim)
+
+        for hostile in ["../victim.txt", "/tmp/abs-victim", ""] {
+            let poisoned = try JSONEncoder().encode(["README.md", hostile])
+            try poisoned.write(to: modRoot.appendingPathComponent(".linkc-shipped.json"))
+
+            XCTAssertThrowsError(
+                try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install(),
+                "hostile entry \(hostile.debugDescription) must fail loud"
+            ) { error in
+                let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                XCTAssertTrue(
+                    message.contains("Couldn't install the linkc-agents mod"),
+                    "expected a clear install failure for \(hostile.debugDescription), got: \(message)"
+                )
+            }
+
+            XCTAssertEqual(try String(contentsOf: victim, encoding: .utf8), "alive")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: modRoot.path), "mod folder must remain")
+            XCTAssertEqual(try String(contentsOf: typesFile, encoding: .utf8), "generated")
+            XCTAssertEqual(
+                try String(contentsOf: modRoot.appendingPathComponent("README.md"), encoding: .utf8),
+                "safe"
             )
         }
     }
