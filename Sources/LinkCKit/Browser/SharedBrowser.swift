@@ -37,6 +37,8 @@ public final class SharedBrowser {
         let port: Int
         /// Every page target seen so far, so a new one can be told from an old one.
         var known: Set<String>
+        /// Chrome's only page target at launch, until it is closed or the close is attempted.
+        var initialBlank: String?
         /// The sessions each tab may belong to; it is closed when the last of them ends. Chrome's
         /// own first tab has none.
         var owners: [String: Set<String>] = [:]
@@ -263,7 +265,8 @@ public final class SharedBrowser {
     }
 
     /// Notes which sessions each tab may belong to (`Running.track`): the tab agent-browser has a
-    /// session pinned to now (`tab_new` moves the pin), a popup by the tab that opened it. Called on
+    /// session pinned to now (`tab_new` moves the pin), a popup by the tab that opened it. Once a
+    /// session has a page of its own, closes the blank page Chrome opened at launch, once. Called on
     /// the coordinator's sweep; a call while one runs returns at once.
     public func trackTabs() async {
         guard !tracking else { return }
@@ -280,8 +283,27 @@ public final class SharedBrowser {
             }
             guard case .running(var current)? = instances[project], current.id == running.id else { continue }
             let sessions = attached(to: current.id)
-            current.track(pages, pins: pins(of: sessions), sessions: Set(sessions))
+            let sessionPins = pins(of: sessions)
+            current.track(pages, pins: sessionPins, sessions: Set(sessions))
+            let open = Set(pages.map(\.id))
+            let livePins = sessionPins.filter { open.contains($0.value) }
+            var blankToClose: String?
+            // A blank page a session is pinned to now, or ever was, has an owner: `track` records
+            // every live pin as ownership, so that check covers both.
+            if let blank = current.initialBlank,
+               current.owners[blank] == nil,
+               livePins.values.contains(where: { $0 != blank }) {
+                current.initialBlank = nil
+                blankToClose = blank
+            }
             instances[project] = .running(current)
+            if let blank = blankToClose {
+                do {
+                    try await devTools.closeTarget(blank, port: current.port)
+                } catch {
+                    reportOnce("blank-close", "linkC could not close the shared browser's initial blank page for \(project) — \(error.localizedDescription)")
+                }
+            }
         }
     }
 
@@ -484,7 +506,9 @@ public final class SharedBrowser {
                 return nil
             }
             do {
-                running.known = Set(try await devTools.pageTargets(port: running.port).map(\.id))
+                let pages = try await devTools.pageTargets(port: running.port)
+                running.known = Set(pages.map(\.id))
+                if pages.count == 1 { running.initialBlank = pages[0].id }
             } catch {
                 reportOnce("tabs", "linkC could not list the shared browser's tabs for \(project) — \(error.localizedDescription)")
             }
@@ -589,8 +613,8 @@ public final class SharedBrowser {
             process = try launcher.launch(
                 executable: chromePath,
                 // A blank first page, not Chrome's new-tab page: with that, the first pinned attach adds
-                // one more blank tab. The first attach still opens its own tab, so this page stays open
-                // and idle for Chrome's life.
+                // one more blank tab. Once an attached session has another live page, linkC closes this
+                // initial one unless a session has used it.
                 arguments: ["--headless=new", "--remote-debugging-port=\(asked)", "--user-data-dir=\(profile.path)",
                             "--no-first-run", "--no-default-browser-check", "about:blank"],
                 log: log,
