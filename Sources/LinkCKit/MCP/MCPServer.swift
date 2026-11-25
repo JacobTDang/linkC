@@ -2261,9 +2261,9 @@ public final class MCPServer: Sendable {
         let tier = Router.tier(for: Router.classify(prompt), prompt: prompt)
         var refusals: [AgentKind: String] = [:]
         for agent in installed {
-            if let refusal = routingRefusal(
-                agent: agent, tier: tier, settings: settings, destRoot: destRoot) {
-                refusals[agent] = refusal
+            if let refusal = tierModelRefusal(
+                agent: agent, tier: tier, settings: settings, destRoot: destRoot, lists: modelLists) {
+                refusals[agent] = refusal.message
             }
         }
         let open = agentsOpen(in: destRoot)
@@ -2273,56 +2273,6 @@ public final class MCPServer: Sendable {
         let reason = open.problem.map { "\(decision.reason); no tie-break, the open sessions could not be read: \($0)" }
             ?? decision.reason
         return (decision, reason)
-    }
-
-    /// Why delegation would refuse this agent's configured tier model. Routing checks this before
-    /// choosing so a stale or paid model does not prevent a later candidate from taking the task.
-    private func routingRefusal(
-        agent: AgentKind, tier: ModelTier, settings: AgentModelSettings, destRoot: String
-    ) -> String? {
-        guard let model = settings.model(for: agent, tier: tier) else { return nil }
-        if agent == .opencode, !OpenCodeFreeModels.isFree(model) {
-            return "\(model) (\(tier.rawValue) tier) is not free — OpenCode runs free models only"
-        }
-        if agent == .kilo, !KiloFreeModels.isFree(model) {
-            return "\(model) (\(tier.rawValue) tier) is not free — Kilo runs free models only"
-        }
-        if agent == .crush, !CrushFreeModels.isFree(model) {
-            return "\(model) (\(tier.rawValue) tier) is not free — Crush runs free models only"
-        }
-        if ModelListParser.listedAgents.contains(agent) {
-            do {
-                if let offered = ModelListCache.liveModels(for: agent, lists: try modelLists()),
-                   !offered.contains(where: { $0.id.caseInsensitiveCompare(model) == .orderedSame }) {
-                    return "\(tier.rawValue) tier is set to \(model), which \(agent.rawValue) no longer offers"
-                }
-            } catch {
-                return "could not read the live model lists — \(error)"
-            }
-        }
-        if agent == .opencode {
-            do {
-                guard try openCodeModels(destRoot).contains(where: {
-                    $0.caseInsensitiveCompare(model) == .orderedSame
-                }) else {
-                    return "\(tier.rawValue) tier model \(model) is not among the models OpenCode lists — free models come and go"
-                }
-            } catch {
-                return "could not check \(tier.rawValue) tier model \(model) against the models OpenCode lists — \(error)"
-            }
-        }
-        if agent == .kilo {
-            do {
-                guard try kiloModels(destRoot).contains(where: {
-                    $0.caseInsensitiveCompare(model) == .orderedSame
-                }) else {
-                    return "\(tier.rawValue) tier model \(model) is not among the models Kilo lists — free models come and go"
-                }
-            } catch {
-                return "could not check \(tier.rawValue) tier model \(model) against the models Kilo lists — \(KiloLogin.reporting(String(describing: error)))"
-            }
-        }
-        return nil
     }
 
     /// The agents with a session open in `folder`, from the app's project list, leaving out the
@@ -2509,79 +2459,11 @@ public final class MCPServer: Sendable {
                     isError: true)
             }
         }
-        if toAgent == .opencode, let tier, let tierModel = settings.model(for: .opencode, tier: tier) {
-            guard OpenCodeFreeModels.isFree(tierModel) else {
-                return toolResultResponse(
-                    id: id,
-                    text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not free — OpenCode runs free models only; set the tier in linkC settings.",
-                    isError: true)
-            }
-        }
-        if toAgent == .kilo, let tier, let tierModel = settings.model(for: .kilo, tier: tier) {
-            guard KiloFreeModels.isFree(tierModel) else {
-                return toolResultResponse(
-                    id: id,
-                    text: "Error: \(tierModel) (kilo tier \(tier.rawValue)) is not free — Kilo runs free models only; set the tier in linkC settings.",
-                    isError: true)
-            }
-        }
-        if toAgent == .crush, let tier, let tierModel = settings.model(for: .crush, tier: tier) {
-            guard CrushFreeModels.isFree(tierModel) else {
-                return toolResultResponse(
-                    id: id,
-                    text: "Error: \(tierModel) (crush tier \(tier.rawValue)) is not free — Crush runs free models only; set the tier in linkC settings.",
-                    isError: true)
-            }
-        }
-        // A tier whose model the agent's own list no longer has would start a worker the CLI
+        // A tier whose model the agent would refuse or no longer lists would start a worker the CLI
         // rejects. Refused now; an agent never listed (or whose last listing failed) is not blocked.
-        if let tier, let tierModel = settings.model(for: toAgent, tier: tier),
-           ModelListParser.listedAgents.contains(toAgent) {
-            do {
-                if let offered = ModelListCache.liveModels(for: toAgent, lists: try lists()),
-                   !offered.contains(where: { $0.id.caseInsensitiveCompare(tierModel) == .orderedSame }) {
-                    return toolResultResponse(
-                        id: id,
-                        text: "Error: \(toAgent.rawValue)'s \(tier.rawValue) tier is set to \(tierModel), which \(toAgent.rawValue) no longer offers. Pick another in Settings > Models. Offered: \(offered.map(\.id).joined(separator: ", ")).",
-                        isError: true)
-                }
-            } catch {
-                return toolResultResponse(id: id, text: listsUnreadable(error), isError: true)
-            }
-        }
-        if toAgent == .opencode, let tier, let tierModel = settings.model(for: .opencode, tier: tier) {
-            let offered: [String]
-            do {
-                offered = try openCodeModels(destRoot)
-            } catch {
-                return toolResultResponse(
-                    id: id,
-                    text: "Error: could not check opencode tier \(tier.rawValue)'s model \(tierModel) against the models OpenCode lists — \(error)",
-                    isError: true)
-            }
-            guard offered.contains(tierModel) else {
-                return toolResultResponse(
-                    id: id,
-                    text: "Error: \(tierModel) (opencode tier \(tier.rawValue)) is not among the models OpenCode lists — free models come and go; set the tier in linkC settings.",
-                    isError: true)
-            }
-        }
-        if toAgent == .kilo, let tier, let tierModel = settings.model(for: .kilo, tier: tier) {
-            let offered: [String]
-            do {
-                offered = try kiloModels(destRoot)
-            } catch {
-                return toolResultResponse(
-                    id: id,
-                    text: "Error: could not check kilo tier \(tier.rawValue)'s model \(tierModel) against the models Kilo lists — \(KiloLogin.reporting(String(describing: error)))",
-                    isError: true)
-            }
-            guard offered.contains(tierModel) else {
-                return toolResultResponse(
-                    id: id,
-                    text: "Error: \(tierModel) (kilo tier \(tier.rawValue)) is not among the models Kilo lists — free models come and go; set the tier in linkC settings.",
-                    isError: true)
-            }
+        if let tier, let refusal = tierModelRefusal(
+            agent: toAgent, tier: tier, settings: settings, destRoot: destRoot, lists: lists) {
+            return toolResultResponse(id: id, text: refusal.delegationError, isError: true)
         }
 
         // Effort: explicit arg, else the agent's configured effort for the tier (when it supports one).

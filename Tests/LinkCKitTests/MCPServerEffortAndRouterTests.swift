@@ -206,7 +206,7 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
         XCTAssertFalse(result.isError, result.text)
         let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
         XCTAssertEqual(task.toAgent, .codex)
-        XCTAssertTrue(result.text.contains("agy skipped (deep tier is set to gemini-3.1-pro-high, which agy no longer offers)"), result.text)
+        XCTAssertTrue(result.text.contains("agy skipped (agy's deep tier is set to gemini-3.1-pro-high, which agy no longer offers)"), result.text)
     }
 
     func testAutoRouteSkipsOpenCodeWhenItsFreeModelDisappeared() throws {
@@ -217,8 +217,9 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
         XCTAssertFalse(result.isError, result.text)
         let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
         XCTAssertEqual(task.toAgent, .codex)
-        XCTAssertTrue(result.text.contains("opencode skipped (light tier model"), result.text)
-        XCTAssertTrue(result.text.contains("is not among the models OpenCode lists"), result.text)
+        XCTAssertTrue(
+            result.text.contains("opencode skipped (opencode/deepseek-v4.1-flash-free (opencode tier light) is not among the models OpenCode lists"),
+            result.text)
     }
 
     func testAutoRouteReportsEveryModelRefusalWhenNoCandidateRemains() throws {
@@ -231,7 +232,7 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
             lists: TestModelLists.agy
         ), "linkc_delegate_task", ["prompt": "Redesign the architecture for task delivery"])
         XCTAssertTrue(result.isError)
-        XCTAssertTrue(result.text.contains("agy skipped (deep tier is set to gemini-3.1-pro-high, which agy no longer offers)"), result.text)
-        XCTAssertTrue(result.text.contains("kilo skipped (kilo/paid (deep tier) is not free"), result.text)
+        XCTAssertTrue(result.text.contains("agy skipped (agy's deep tier is set to gemini-3.1-pro-high, which agy no longer offers)"), result.text)
+        XCTAssertTrue(result.text.contains("kilo skipped (kilo/paid (kilo tier deep) is not free"), result.text)
     }
 }
