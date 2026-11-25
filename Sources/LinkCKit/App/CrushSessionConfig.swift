@@ -94,8 +94,9 @@ public struct CrushSessionConfig: Sendable {
 
     /// Writes the session's folders and returns the environment that points Crush at them. Throws, and
     /// leaves nothing behind, when the model is not free, a file cannot be read, a project config would
-    /// override the pin, or a folder cannot be written. `effort` becomes Crush's top-level
-    /// `reasoning_effort` key (low|medium|high); Crush has no CLI flag for it.
+    /// override the pin, or a folder cannot be written. `effort` goes on both pinned models as
+    /// `reasoning_effort` (low|medium|high): Crush has no CLI flag for it, `crush schema` puts it on a
+    /// selected model, and its top-level config takes no key the schema does not list.
     func prepare(sessionId: String, cwd: String, model: String, effort: ReasoningEffort? = nil) throws -> [String: String] {
         guard !sessionId.isEmpty, !sessionId.contains("/"), sessionId != ".", sessionId != ".." else {
             throw LinkCError.process("\"\(sessionId)\" is not a session id Crush's folders can be named for")
@@ -112,15 +113,11 @@ public struct CrushSessionConfig: Sendable {
 
         var config = try readObject(user.config.appendingPathComponent(Self.configFileName))
         var models = config["models"] as? [String: Any] ?? [:]
-        let entry = ["provider": pin.provider, "model": pin.model]
+        var entry = ["provider": pin.provider, "model": pin.model]
+        if let effort { entry["reasoning_effort"] = effort.rawValue }
         models["large"] = entry
         models["small"] = entry
         config["models"] = models
-        if let effort {
-            config["reasoning_effort"] = effort.rawValue
-        } else {
-            config.removeValue(forKey: "reasoning_effort")
-        }
         let dataFiles = try readUserData()
         guard hasOpenRouterKey(config: config, dataFiles: dataFiles, projectConfigs: projectConfigs) else {
             throw LinkCError.process("Crush has no OpenRouter key, so it cannot run a free model — add an OpenRouter key to Crush (open crush and enter it, or set providers.openrouter.api_key in \(user.config.appendingPathComponent(Self.configFileName).path)), then try again")
