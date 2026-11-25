@@ -95,6 +95,54 @@ public struct ProcessSnooper: Sendable {
         return nil
     }
 
+    /// The files the processes at and under `pid` hold open, as the kernel names them (symlinks
+    /// resolved, e.g. `/private/var/…`), sorted. An agent CLI behind a wrapper holds its session
+    /// file in a grandchild of the terminal's process, so the whole tree is read, to `maxDepth`
+    /// levels. Empty for a process that is gone; a process or file the kernel will not describe
+    /// (another user's, one that exits mid-read) is skipped.
+    public static func openFilePaths(inProcessTreeOf pid: pid_t, maxDepth: Int = 8) -> [String] {
+        guard pid > 0 else { return [] }
+        var paths = Set<String>()
+        var pending: [(pid: pid_t, depth: Int)] = [(pid, 0)]
+        while let (current, depth) = pending.popLast() {
+            paths.formUnion(openFilePaths(ofProcess: current))
+            guard depth < maxDepth else { continue }
+            pending.append(contentsOf: childPids(of: current).map { ($0, depth + 1) })
+        }
+        return paths.sorted()
+    }
+
+    /// The files one process holds open: `proc_pidinfo(PROC_PIDLISTFDS)`, then each vnode's path by
+    /// `proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)`.
+    static func openFilePaths(ofProcess pid: pid_t) -> [String] {
+        let needed = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard needed > 0 else { return [] }
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        // Room for a few opened between the two calls.
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(needed) / stride + 16)
+        let got = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, Int32(fds.count * stride))
+        guard got > 0 else { return [] }
+        var paths: [String] = []
+        for fd in fds.prefix(Int(got) / stride) where fd.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) {
+            var info = vnode_fdinfowithpath()
+            let size = Int32(MemoryLayout<vnode_fdinfowithpath>.size)
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &info, size) == size else { continue }
+            let path = withUnsafeBytes(of: info.pvip.vip_path) { raw in
+                String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+            }
+            if !path.isEmpty { paths.append(path) }
+        }
+        return paths
+    }
+
+    /// The pids whose parent is `ppid`.
+    static func childPids(of ppid: pid_t) -> [pid_t] {
+        var pids = [pid_t](repeating: 0, count: 256)
+        let bytes = proc_listpids(UInt32(PROC_PPID_ONLY), UInt32(ppid), &pids, Int32(MemoryLayout<pid_t>.stride * pids.count))
+        guard bytes > 0 else { return [] }
+        return pids.prefix(Int(bytes) / MemoryLayout<pid_t>.stride).filter { $0 > 0 }
+    }
+
     /// Checks if `ppid` has any active running child processes (e.g. running a shell command, tool, compiler, or script).
     public static func hasChildProcesses(of ppid: pid_t) -> Bool {
         guard ppid > 0 else { return false }
