@@ -100,6 +100,9 @@ function selfDetail(s: SelfActivity): string {
   const sub = first ? `${first.name}${first.activity ? `: ${first.activity}` : ''}${rest.length ? ` +${rest.length}` : ''}` : ''
   return [s.main, sub].filter(Boolean).join(' · ')
 }
+/** The statuses of an agent whose loop still runs or will. */
+const LIVE: ReadonlySet<string> = new Set(['pending', 'running', 'waiting'])
+
 const isCompacting = atom({ plugin: 'linkc-agents', key: 'isCompacting' } as const, false)
 
 const BAR_CELLS = 8
@@ -228,12 +231,13 @@ function detailOf(row: AgentRow, state: StateLook): string {
 
 /**
  * When the card's prompt cache goes cold: `~` marks a guess, orange the last five minutes. Whole
- * minutes left, rounded down, so a cache never reads warm after it went cold (`load` has checked
- * every time parses).
+ * minutes left, rounded down, so a cache never reads warm after it went cold.
  */
 function cacheLabel(row: AgentRow, now: number): { text: string; color: string } | null {
   if (!row.cacheExpiresAt) return null
   const left = Date.parse(row.cacheExpiresAt) - now
+  // A time that does not parse is said above the cards (`load`); its card shows no clock.
+  if (Number.isNaN(left)) return null
   if (left <= 0) return { text: ' ◷ cold', color: RED }
   const minutes = Math.floor(left / 60_000)
   const span = minutes >= 60 ? `${Math.floor(minutes / 60)}h` : minutes >= 1 ? `${minutes}m` : '<1m'
@@ -259,18 +263,20 @@ function stateOf(row: AgentRow): StateLook {
 }
 
 async function load($: EngineInterface, file: string, root: string): Promise<Pick<Agents, 'rows' | 'error'>> {
+  let stored: Stored
   try {
-    const stored = JSON.parse(await $.fs.read(file)) as Stored
-    const rows: AgentRow[] = stored.projects.flatMap(p => {
-      const where = within(root, p.path)
-      return where === null ? [] : p.sessions.map(s => ({ ...s, where }))
-    })
-    const unreadable = rows.find(row => row.cacheExpiresAt !== undefined && Number.isNaN(Date.parse(row.cacheExpiresAt)))
-    if (unreadable) throw new Error(`session ${unreadable.id}'s cacheExpiresAt "${unreadable.cacheExpiresAt}" is not a time`)
-    return { rows, error: null }
+    stored = JSON.parse(await $.fs.read(file)) as Stored
   } catch (err) {
     return { rows: [], error: `cannot read ${file}: ${String(err)}` }
   }
+  const rows: AgentRow[] = stored.projects.flatMap(p => {
+    const where = within(root, p.path)
+    return where === null ? [] : p.sessions.map(s => ({ ...s, where }))
+  })
+  // Said above the cards, which still show.
+  const unreadable = rows.find(row => row.cacheExpiresAt !== undefined && Number.isNaN(Date.parse(row.cacheExpiresAt)))
+  const error = unreadable ? `session ${unreadable.id}'s cacheExpiresAt "${unreadable.cacheExpiresAt}" in ${file} is not a time` : null
+  return { rows, error }
 }
 
 function age(since: string | undefined, now: number): string {
@@ -302,9 +308,10 @@ export const register: Register = on => {
       isRefreshing = true
       // The minute and the count of cold caches are in the value, so the ages redraw once a minute
       // and a cache that goes cold redraws at once, even when nothing else changed.
-      const now = await $.clock.now()
-      const minute = Math.floor(now / 60_000)
+      let minute = 0
       try {
+        const now = await $.clock.now()
+        minute = Math.floor(now / 60_000)
         const here = await $.session.cwd()
         if (here !== cwd) {
           root = await repoRoot($, here)
@@ -345,6 +352,10 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       // Cleared first: the turn is over whether or not its usage can be read.
       await update($, self, s => ({ ...s, isTurning: false, main: null }))
+      // A subagent no longer live, such as a workflow's remote agent, which no event ends here and
+      // no list names, stops counting once the turn that spawned it is over.
+      const live = new Set((await $.agent.list()).filter(a => LIVE.has(a.status)).map(a => a.id))
+      await update($, self, s => ({ ...s, subagents: s.subagents.filter(a => live.has(a.id)) }))
       await refreshMeters($)
     } else {
       const done = e.agentId
@@ -369,8 +380,7 @@ export const register: Register = on => {
 
   on('agent.spawn', async ($, e, next) => {
     const started = await next(e)
-    // Only a loop whose events carry its id: one without (a workflow's remote agent) never
-    // completes here, and would hold your card at work for the rest of the session.
+    // A spawn answered without an id started nothing: another hook took the call.
     const id = started.deny === undefined ? started.agentId : undefined
     if (id !== undefined) {
       const name = e.description || e.subagentType
@@ -439,7 +449,10 @@ export const register: Register = on => {
         const detail = ownWork ? [mine, placeOf(row.where)].filter(Boolean).join(' ') : detailOf(row, state)
         return { row, isMe, state, detail }
       })
-      .sort((a, b) => a.state.rank - b.state.rank || (a.row.title ?? a.row.agent).localeCompare(b.row.title ?? b.row.agent))
+      .sort((a, b) =>
+        a.state.rank - b.state.rank
+        || (a.row.title ?? a.row.agent).localeCompare(b.row.title ?? b.row.agent)
+        || a.row.id.localeCompare(b.row.id))
     // A rule, the header and a blank line, then three rows a card: its two lines and a gap.
     const fits = Math.max(1, Math.floor((body - top - 3 + 1) / 3))
     const shown = cards.length > fits ? cards.slice(0, fits - 1) : cards

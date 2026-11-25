@@ -58,8 +58,9 @@ public final class ClaudeSessionStatuses: @unchecked Sendable {
         self.log = log
     }
 
-    /// Keeps the report's status for the session. A part of it that cannot be read keeps its last
-    /// value and is logged; the other part is still taken.
+    /// Keeps the report's status for the session. A part of it that cannot be read is logged, and
+    /// the other part is still taken: a model that cannot be read keeps the last one; a cache time
+    /// that cannot be read is dropped, since a time kept past its moment would read as cold.
     public func accept(sessionId: String, body: Data) {
         let model = Result { try ClaudeSessionStatus.modelId(in: body) }
         let cache = Result { try ClaudeSessionStatus.cacheExpiry(in: body) }
@@ -74,7 +75,7 @@ public final class ClaudeSessionStatuses: @unchecked Sendable {
             let last = statuses[sessionId]
             statuses[sessionId] = ClaudeSessionStatus(
                 modelId: model.value ?? last?.modelId,
-                cacheExpiresAt: cache.value ?? last?.cacheExpiresAt)
+                cacheExpiresAt: cache.value ?? nil)
         }
         let isNew = failure != nil && lastFailure[sessionId] != failure
         lastFailure[sessionId] = failure

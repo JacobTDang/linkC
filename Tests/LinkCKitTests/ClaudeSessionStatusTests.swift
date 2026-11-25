@@ -45,7 +45,7 @@ final class ClaudeSessionStatusTests: XCTestCase {
         XCTAssertNil(store.status(for: "A"))
     }
 
-    /// A cache field Claude reshapes costs the session its cache clock, not its model, and is said.
+    /// A cache field that changes shape costs the session its cache clock, not its model, and is said.
     func testAMalformedPromptCacheKeepsTheModelAndIsLogged() {
         let logged = Lines()
         let store = ClaudeSessionStatuses(log: { logged.append($0) })
@@ -53,8 +53,8 @@ final class ClaudeSessionStatusTests: XCTestCase {
         store.accept(sessionId: "A", body: Data(#"{"model":{"id":"claude-opus-5-5"},"prompt_cache":"warm"}"#.utf8))
 
         XCTAssertEqual(store.status(for: "A")?.modelId, "claude-opus-5-5")
-        XCTAssertEqual(store.status(for: "A")?.cacheExpiresAt, Date(timeIntervalSince1970: 1_795_560_237),
-                       "the part that could not be read keeps its last value")
+        XCTAssertNil(store.status(for: "A")?.cacheExpiresAt,
+                     "a cache time that cannot be read is dropped: kept past its moment it would read as cold")
         XCTAssertEqual(logged.count, 1)
         XCTAssertEqual(logged.first?.contains("its prompt cache"), true)
         XCTAssertEqual(logged.first?.contains("its model"), false)

@@ -1,4 +1,4 @@
-import type { On, SessionContextBreakdown } from 'claude-code'
+import type { AgentInfo, On, SessionContextBreakdown } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
@@ -320,6 +320,7 @@ test('a step counts only while this session’s turn runs, the turn’s end clea
   on('tool.call', () => ({ result: {} }))
   on('turn.start', () => ({ turnId: 'm1' }))
   on('turn.complete', () => ({ text: '', reason: 'answer' }))
+  on('agent.list', () => ({ value: [] }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   // Another plugin's tool call between turns is not this session at work.
@@ -334,19 +335,43 @@ test('a step counts only while this session’s turn runs, the turn’s end clea
   expect(await ownLine($)).toEqual([])
 })
 
-test('a subagent whose events carry no id never holds your card at work', async ($, on) => {
+const spawn = (description: string) => ({
+  tool_use_id: `t-${description}`, prompt: 'go', description, subagentType: 'general-purpose',
+  provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-opus-5-5', background: true,
+} as const)
+
+test('a subagent no longer live stops counting when the turn ends; one still running keeps its line', async ($, on) => {
   engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'ME', agent: 'claude', activity: 'idle', title: 'Me', state: 'ready' }] }] }))
-  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5' }))
+  const ids: Record<string, string> = { 'remote-review': 'r1', 'code-review': 'a2', 'lint': 'a3' }
+  on('agent.spawn', (_, e) => ({ agentId: ids[e.description], model: 'claude-sonnet-5-5' }))
+  // A workflow's remote agent is never listed; a background subagent is, while it runs, and after.
+  on('agent.list', () => ({
+    value: [
+      { id: 'a2', description: 'code-review', type: 'general-purpose', status: 'running' },
+      { id: 'a3', description: 'lint', type: 'general-purpose', status: 'completed' },
+    ] as unknown as AgentInfo[],
+  }))
   on('turn.start', () => ({ turnId: 'm1' }))
   on('turn.complete', () => ({ text: '', reason: 'answer' }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   await $.turn.start({ text: 'go', turnId: 'm1' })
-  await $.agent.spawn({
-    tool_use_id: 't1', prompt: 'run the workflow', description: 'remote-review', subagentType: 'general-purpose',
-    provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-opus-5-5', background: true,
-  } as unknown as Parameters<typeof $.agent.spawn>[0])
+  await $.agent.spawn(spawn('remote-review') as unknown as Parameters<typeof $.agent.spawn>[0])
+  await $.agent.spawn(spawn('code-review') as unknown as Parameters<typeof $.agent.spawn>[0])
+  await $.agent.spawn(spawn('lint') as unknown as Parameters<typeof $.agent.spawn>[0])
   await $.turn.complete(MAIN_TURN_END)
+
+  expect(await ownLine($)).toEqual(['code-review'])
+})
+
+test('a spawn another hook answered without an id started nothing, and is not counted', async ($, on) => {
+  engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'ME', agent: 'claude', activity: 'idle', title: 'Me', state: 'ready' }] }] }))
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5' }))
+  on('turn.start', () => ({ turnId: 'm1' }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  await $.turn.start({ text: 'go', turnId: 'm1' })
+  await $.agent.spawn(spawn('code-review') as unknown as Parameters<typeof $.agent.spawn>[0])
 
   expect(await ownLine($)).toEqual([])
 })
@@ -410,15 +435,17 @@ test('a cache that goes cold redraws its card at once, not at the next minute', 
   await ui.unmount()
 })
 
-test('a cache time that is not a time says so instead of hiding the clock', async ($, on) => {
-  engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'A', agent: 'claude', activity: 'idle', state: 'finished', cacheExpiresAt: 'soon' }] }] }))
+test('a cache time that is not a time says so above the cards, which still show', async ($, on) => {
+  engine(on, JSON.stringify({ projects: [{ path: '/repo', sessions: [{ id: 'A', agent: 'claude', activity: 'idle', title: 'Odd clock', state: 'finished', cacheExpiresAt: 'soon' }] }] }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount(PANE)
   const all = await texts(ui)
   await ui.unmount()
 
-  expect(all.some(t => t.includes(`session A's cacheExpiresAt "soon" is not a time`))).toBe(true)
+  expect(all.some(t => t.includes(`session A's cacheExpiresAt "soon" in ${FILE} is not a time`))).toBe(true)
+  expect(all).toContain('Odd clock')
+  expect(all.some(t => t.includes('◷'))).toBe(false)
 })
 
 test('a model id reads as a person names it', () => {
