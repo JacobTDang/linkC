@@ -56,6 +56,8 @@ final class FakeBrowserLauncher: SharedBrowserLaunching {
     var events: (String) -> Void = { _ in }
     /// Each new Chrome takes its time over SIGTERM.
     var ignoresStop = false
+    /// Ports another program holds: a Chrome asked for one writes no port file, as Chrome does.
+    var takenPorts: Set<Int> = []
     /// When set, each Chrome holds its profile's `SingletonLock` as Chrome does, with linkC as its
     /// parent, and is listed here until it exits.
     var holdsLock: FakeProcesses?
@@ -85,7 +87,7 @@ final class FakeBrowserLauncher: SharedBrowserLaunching {
         let asked = arguments.first { $0.hasPrefix("--remote-debugging-port=") }
             .flatMap { Int($0.dropFirst("--remote-debugging-port=".count)) }
         if let asked, asked != 0 {
-            publish(port: asked)
+            if !takenPorts.contains(asked) { publish(port: asked) }
         } else if let publishesPort {
             publish(port: publishesPort)
         }

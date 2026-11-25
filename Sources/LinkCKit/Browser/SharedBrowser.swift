@@ -120,6 +120,8 @@ public final class SharedBrowser {
     private var members: [String: Member] = [:]
     private var repositories: [String: String] = [:]
     private var failedStarts: [String: Date] = [:]
+    /// When each project's Chrome was last started again after it died.
+    private var restarts: [String: Date] = [:]
     private var reportedKinds: Set<String> = []
     private var cleanups: [UUID: Task<Void, Never>] = [:]
     private var tracking = false
@@ -234,13 +236,15 @@ public final class SharedBrowser {
     /// after linkC quits, so a Chrome still starting is stopped here too, and one that was told to
     /// stop and has not exited is killed.
     public func stopAll() {
-        for instance in instances.values {
+        // Forgotten first, so an exit reported at once is not taken for a crash and restarted.
+        let all = instances
+        instances.removeAll()
+        for instance in all.values {
             switch instance {
             case .running(let running): running.process.stop()
             case .starting(let task): task.cancel()
             }
         }
-        instances.removeAll()
         for process in launching.values { process.stop() }
         launching.removeAll()
         for process in stopping.values.flatMap(\.values) where process.isRunning { process.kill() }
@@ -291,10 +295,16 @@ public final class SharedBrowser {
         return pins
     }
 
-    /// Test seam: waits for every release's cleanup to finish.
+    /// Test seam: waits for every release's cleanup and every start to finish.
     func settle() async {
-        while let next = cleanups.values.first {
-            await next.value
+        while true {
+            if let next = cleanups.values.first {
+                await next.value
+            } else if let start = instances.values.lazy.compactMap({ if case .starting(let task) = $0 { task } else { nil } }).first {
+                _ = await start.value
+            } else {
+                return
+            }
         }
     }
 
@@ -450,10 +460,18 @@ public final class SharedBrowser {
         return await task.value
     }
 
-    private func start(project: String) async -> Running? {
+    /// A Chrome that died while sessions used it, started again on the port they have.
+    private struct Restart {
+        let replacing: UUID
+        let port: Int
+        /// How it died, for the notice.
+        let how: String
+    }
+
+    private func start(project: String, restart: Restart? = nil) async -> Running? {
         defer { launching.removeValue(forKey: project) }
         do {
-            var running = try await launchChrome(for: project)
+            var running = try await launchChrome(for: project, port: restart?.port ?? 0)
             guard case .starting? = instances[project] else {
                 stop(running, project: project)
                 return nil
@@ -465,15 +483,29 @@ public final class SharedBrowser {
             }
             failedStarts.removeValue(forKey: project)
             instances[project] = .running(running)
+            if let restart {
+                for (sessionId, member) in members where member.instance == restart.replacing {
+                    members[sessionId]?.instance = running.id
+                }
+                reportOnce("chrome-restarted", "The shared browser for \(project) stopped\(restart.how), and linkC started it again on the same port. Sessions there keep the browser; each one's open tab is gone, and agent-browser's next call there says to open a new one.")
+                // Every session may have ended while it started.
+                stopIfUnused(project)
+                guard case .running(let current)? = instances[project], current.id == running.id else { return nil }
+            }
             return running
         } catch is CancellationError {
             instances.removeValue(forKey: project)
             return nil
         } catch {
             instances.removeValue(forKey: project)
-            failedStarts[project] = now()
             let failure = error as? StartFailure ?? .other(error.localizedDescription)
-            reportOnce("start:\(failure.kind)", "\(failure.message(project: project)) Sessions there start without the shared browser for now.")
+            if let restart {
+                // A next session may still start one on a new port, so the project is not held back.
+                reportOnce("chrome-restart-failed", "The shared browser for \(project) stopped\(restart.how) and could not start again on its port \(restart.port): \(failure.message(project: project)) Sessions already open there lose the browser; the next session starts a new one.")
+            } else {
+                failedStarts[project] = now()
+                reportOnce("start:\(failure.kind)", "\(failure.message(project: project)) Sessions there start without the shared browser for now.")
+            }
             return nil
         }
     }
@@ -519,7 +551,8 @@ public final class SharedBrowser {
         }
     }
 
-    private func launchChrome(for project: String) async throws -> Running {
+    /// Starts Chrome for `project` on `port`, or on a port Chrome picks when it is 0.
+    private func launchChrome(for project: String, port asked: Int) async throws -> Running {
         guard launcher.isExecutable(chromePath) else { throw StartFailure.chromeMissing(chromePath) }
         let profile = Self.profileDirectory(for: project, in: applicationSupport)
         let portFile = profile.appendingPathComponent("DevToolsActivePort")
@@ -546,7 +579,7 @@ public final class SharedBrowser {
                 executable: chromePath,
                 // A blank first page, not Chrome's new-tab page, which agent-browser does not track: a
                 // pinned session's first attach then adopts it instead of opening a stray blank tab.
-                arguments: ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=\(profile.path)",
+                arguments: ["--headless=new", "--remote-debugging-port=\(asked)", "--user-data-dir=\(profile.path)",
                             "--no-first-run", "--no-default-browser-check", "about:blank"],
                 log: log,
                 onExit: { [weak self] status in self?.chromeExited(project: project, id: id, status: status) })
@@ -556,6 +589,7 @@ public final class SharedBrowser {
         launching[project] = process
         do {
             let port = try await waitForPort(in: portFile, of: process, log: log)
+            guard asked == 0 || port == asked else { throw StartFailure.other("it listens on port \(port), not \(asked)") }
             return Running(id: id, process: process, port: port, known: [])
         } catch {
             stop(process, id: id, project: project)
@@ -611,7 +645,20 @@ public final class SharedBrowser {
         guard case .running(let running)? = instances[project], running.id == id else { return }
         instances.removeValue(forKey: project)
         let how = status.map { " (exit status \($0))" } ?? ""
-        reportOnce("chrome-stopped", "The shared browser for \(project) stopped\(how). Sessions already open there lose the browser; the next session starts a new one.")
+        guard !attached(to: id).isEmpty else {
+            reportOnce("chrome-stopped", "The shared browser for \(project) stopped\(how). The next session there starts a new one.")
+            return
+        }
+        // Started again at once on the same port, so the sessions' agent-browser reconnects on its
+        // next call; nothing is typed into the agents. Not again within a minute: one that keeps
+        // dying is left down.
+        if let last = restarts[project], now().timeIntervalSince(last) < Self.retryDelay {
+            reportOnce("chrome-stopped-again", "The shared browser for \(project) stopped again\(how) within a minute of linkC starting it again, so it was left down. Sessions already open there lose the browser; the next session starts a new one.")
+            return
+        }
+        restarts[project] = now()
+        let restart = Restart(replacing: id, port: running.port, how: how)
+        instances[project] = .starting(Task { await self.start(project: project, restart: restart) })
     }
 
     private func reportOnce(_ kind: String, _ message: String) {

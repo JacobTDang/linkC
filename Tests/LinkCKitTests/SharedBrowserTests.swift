@@ -66,6 +66,11 @@ final class SharedBrowserTests: XCTestCase {
             .write(to: agentBrowserHome.appendingPathComponent("\(lease.sessionName).target"))
     }
 
+    /// The `index`th Chrome launched, if there was one.
+    private func chrome(_ index: Int) -> FakeBrowserProcess? {
+        launcher.processes.indices.contains(index) ? launcher.processes[index] : nil
+    }
+
     private func targetFileExists(_ lease: SharedBrowserLease) -> Bool {
         FileManager.default.fileExists(atPath: agentBrowserHome.appendingPathComponent("\(lease.sessionName).target").path)
     }
@@ -353,18 +358,65 @@ final class SharedBrowserTests: XCTestCase {
 
     // MARK: - Chrome dying
 
-    func testAChromeThatExitsIsDroppedAndTheNextSessionStartsANewOne() async throws {
+    /// A Chrome that dies while sessions use it starts again at once on the same port, so their
+    /// agents' next call reaches it; nothing is typed into them.
+    func testAChromeThatDiesWhileSessionsUseItStartsAgainOnItsPort() async throws {
         let browser = makeBrowser()
         _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+        launcher.publishesPort = 50001
 
         launcher.processes[0].exit(status: 9)
-        XCTAssertEqual(notices.count, 1)
-        XCTAssertTrue(notices[0].contains("stopped"), notices[0])
+        await browser.settle()
 
-        launcher.publishesPort = 50001
-        let next = await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project")
         XCTAssertEqual(launcher.launches.count, 2)
+        XCTAssertTrue(launcher.launches.dropFirst().first?.contains("--remote-debugging-port=43117") == true, "\(launcher.launches)")
+        XCTAssertEqual(notices.count, 1)
+        XCTAssertTrue(notices[0].contains("started it again on the same port"), notices[0])
+        let next = await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project")
+        XCTAssertEqual(next?.port, 43117)
+        XCTAssertEqual(launcher.launches.count, 2)
+
+        browser.release(sessionId: "S2")
+        XCTAssertEqual(chrome(1)?.stopCount, 0, "S1 holds the new Chrome")
+        browser.release(sessionId: "S1")
+        XCTAssertEqual(chrome(1)?.stopCount, 1)
+    }
+
+    /// When the port is taken, Chrome writes no port file; the sessions lose the browser and are
+    /// told so, and the next session starts a Chrome on a new port at once.
+    func testARestartThatCannotHaveItsPortSaysTheSessionsLoseTheBrowser() async throws {
+        let browser = makeBrowser()
+        _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+        launcher.takenPorts = [43117]
+        launcher.publishesPort = 50001
+
+        launcher.processes[0].exit(status: 9)
+        await browser.settle()
+
+        XCTAssertEqual(chrome(1)?.isRunning, false)
+        XCTAssertEqual(notices.count, 1)
+        XCTAssertTrue(notices[0].contains("could not start again on its port 43117"), notices[0])
+        XCTAssertTrue(notices[0].contains("lose the browser"), notices[0])
+        let next = await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project")
         XCTAssertEqual(next?.port, 50001)
+        XCTAssertEqual(launcher.launches.count, 3)
+    }
+
+    /// A Chrome that dies again within a minute of its restart is not restarted again.
+    func testAChromeThatDiesAgainSoonAfterItsRestartIsLeftDown() async throws {
+        let browser = makeBrowser()
+        _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+        launcher.processes[0].exit(status: 9)
+        await browser.settle()
+
+        chrome(1)?.exit(status: 9)
+        await browser.settle()
+
+        XCTAssertEqual(launcher.launches.count, 2)
+        XCTAssertEqual(notices.count, 2)
+        let last = notices.last ?? ""
+        XCTAssertTrue(last.contains("stopped again"), last)
+        XCTAssertTrue(last.contains("lose the browser"), last)
     }
 
     /// Even when the exit was not reported yet, a Chrome that is not running is not handed out.
@@ -372,11 +424,13 @@ final class SharedBrowserTests: XCTestCase {
         let browser = makeBrowser()
         _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
         launcher.processes[0].isRunning = false
-
         launcher.publishesPort = 50001
+
         let next = await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project")
 
-        XCTAssertEqual(next?.port, 50001)
+        XCTAssertEqual(launcher.launches.count, 2)
+        XCTAssertEqual(next?.port, 43117, "started again on the port S1 has")
+        XCTAssertEqual(chrome(1)?.isRunning, true)
     }
 
     // MARK: - Which sessions get one
