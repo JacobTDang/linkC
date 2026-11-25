@@ -1,0 +1,6 @@
+{
+  "name": "inline-images",
+  "version": "0.1.0",
+  "description": "Shows pictures inline in the chat: an image Claude reads or sends to you is drawn under its row. /images on|off switches it.",
+  "types": "./types/index.d.ts"
+}
