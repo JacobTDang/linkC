@@ -111,7 +111,9 @@ public final class AppPreferences {
     }
 
     /// Whether the linkC agents column shows beside this agent's terminal. On by default for every
-    /// agent but Claude Code, whose terminal shows the same cards through the linkc-agents mod.
+    /// agent but Claude Code, whose terminal shows the same cards through the linkc-agents mod: linkC
+    /// ships the mod to ~/Library/Application Support/linkC/mods/linkc-agents (#98), and Claude Code
+    /// loads it from there through the user's CLAUDE_CODE_PLUGIN_DIRS.
     public func showsAgentsColumn(for agent: AgentKind) -> Bool {
         agentsColumnChoices[agent.rawValue] ?? (agent != .claude)
     }
