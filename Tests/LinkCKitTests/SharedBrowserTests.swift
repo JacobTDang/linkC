@@ -382,20 +382,23 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertEqual(chrome(1)?.stopCount, 1)
     }
 
-    /// When the port is taken, Chrome writes no port file; the sessions lose the browser and are
-    /// told so, and the next session starts a Chrome on a new port at once.
+    /// When another program holds the port, Chrome says so at once; the sessions lose the browser
+    /// and are told why, and the next session starts a Chrome on a new port at once.
     func testARestartThatCannotHaveItsPortSaysTheSessionsLoseTheBrowser() async throws {
         let browser = makeBrowser()
         _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
         launcher.takenPorts = [43117]
         launcher.publishesPort = 50001
+        let diedAt = clock.time
 
         launcher.processes[0].exit(status: 9)
         await browser.settle()
 
         XCTAssertEqual(chrome(1)?.isRunning, false)
+        XCTAssertLessThan(clock.time.timeIntervalSince(diedAt), 1, "not left to time out")
         XCTAssertEqual(notices.count, 1)
         XCTAssertTrue(notices[0].contains("could not start again on its port 43117"), notices[0])
+        XCTAssertTrue(notices[0].contains("Another program holds port 43117"), notices[0])
         XCTAssertTrue(notices[0].contains("lose the browser"), notices[0])
         let next = await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project")
         XCTAssertEqual(next?.port, 50001)

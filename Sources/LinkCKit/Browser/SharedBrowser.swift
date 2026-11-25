@@ -522,6 +522,7 @@ public final class SharedBrowser {
         case inUse(pid: Int32)
         case leftoverWouldNotStop(pid: Int32)
         case ownWouldNotStop
+        case portTaken(Int)
         case exited(log: String)
         case noPort
         case other(String)
@@ -532,6 +533,7 @@ public final class SharedBrowser {
             case .inUse: return "in-use"
             case .leftoverWouldNotStop: return "leftover"
             case .ownWouldNotStop: return "own-stuck"
+            case .portTaken: return "port-taken"
             case .exited: return "exited"
             case .noPort: return "no-port"
             case .other: return "other"
@@ -548,6 +550,8 @@ public final class SharedBrowser {
                 return "A Chrome a previous linkC left running for \(project) (pid \(pid)) did not stop."
             case .ownWouldNotStop:
                 return "The shared browser linkC stopped for \(project) did not exit, even when killed."
+            case .portTaken(let port):
+                return "Another program holds port \(port)."
             case .exited(let log):
                 return "Google Chrome exited before it published its DevTools port for \(project)\(log.isEmpty ? "." : ": \(log)")"
             case .noPort:
@@ -595,8 +599,7 @@ public final class SharedBrowser {
         }
         launching[project] = process
         do {
-            let port = try await waitForPort(in: portFile, of: process, log: log)
-            guard asked == 0 || port == asked else { throw StartFailure.other("it listens on port \(port), not \(asked)") }
+            let port = try await waitForPort(asked, in: portFile, of: process, log: log)
             return Running(id: id, process: process, port: port, known: [])
         } catch {
             stop(process, id: id, project: project)
@@ -604,13 +607,22 @@ public final class SharedBrowser {
         }
     }
 
-    private func waitForPort(in file: URL, of process: any SharedBrowserProcess, log: URL) async throws -> Int {
+    /// The port Chrome listens on. For a port it picks (`asked` 0) Chrome writes it to
+    /// `DevToolsActivePort`. For a port it was given it writes no file, only `DevTools listening on
+    /// ws://127.0.0.1:<port>/…` on stderr, the line Puppeteer reads too; when another program holds
+    /// that port on 127.0.0.1 it logs the failed bind and listens on ::1 instead.
+    private func waitForPort(_ asked: Int, in file: URL, of process: any SharedBrowserProcess, log: URL) async throws -> Int {
         let deadline = now().addingTimeInterval(Self.portTimeout)
         while true {
-            if let text = try? String(contentsOf: file, encoding: .utf8),
-               let first = text.split(whereSeparator: \.isNewline).first,
-               let port = Int(first), (1...65_535).contains(port) {
-                return port
+            if asked == 0 {
+                if let text = try? String(contentsOf: file, encoding: .utf8),
+                   let first = text.split(whereSeparator: \.isNewline).first,
+                   let port = Int(first), (1...65_535).contains(port) {
+                    return port
+                }
+            } else if let said = try? String(contentsOf: log, encoding: .utf8) {
+                if said.contains("DevTools listening on ws://127.0.0.1:\(asked)/") { return asked }
+                if said.contains("Address already in use") { throw StartFailure.portTaken(asked) }
             }
             guard process.isRunning else { throw StartFailure.exited(log: Self.lastLine(of: log)) }
             guard now() < deadline else { throw StartFailure.noPort }

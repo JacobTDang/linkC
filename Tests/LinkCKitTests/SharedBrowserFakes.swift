@@ -48,15 +48,14 @@ final class FakeBrowserLauncher: SharedBrowserLaunching {
     var executableChecks = 0
     var launches: [[String]] = []
     var processes: [FakeBrowserProcess] = []
-    /// The port each launch writes to `DevToolsActivePort` at once, unless it asks for one of its
-    /// own; nil writes none.
+    /// The port each launch on port 0 writes to `DevToolsActivePort` at once; nil writes none.
     var publishesPort: Int? = 43117
     var detached: [[String]] = []
     var detachedEnvironments: [[String: String]] = []
     var events: (String) -> Void = { _ in }
     /// Each new Chrome takes its time over SIGTERM.
     var ignoresStop = false
-    /// Ports another program holds: a Chrome asked for one writes no port file, as Chrome does.
+    /// Ports another program holds on 127.0.0.1.
     var takenPorts: Set<Int> = []
     /// When set, each Chrome holds its profile's `SingletonLock` as Chrome does, with linkC as its
     /// parent, and is listed here until it exits.
@@ -87,7 +86,12 @@ final class FakeBrowserLauncher: SharedBrowserLaunching {
         let asked = arguments.first { $0.hasPrefix("--remote-debugging-port=") }
             .flatMap { Int($0.dropFirst("--remote-debugging-port=".count)) }
         if let asked, asked != 0 {
-            if !takenPorts.contains(asked) { publish(port: asked) }
+            // As Chrome 158 does: a port it was given gets no DevToolsActivePort, only a line on
+            // stderr; one held on 127.0.0.1 fails to bind there, and Chrome listens on ::1 instead.
+            let said = takenPorts.contains(asked)
+                ? "bind() failed: Address already in use (48)\n\nDevTools listening on ws://[::1]:\(asked)/devtools/browser/x\n"
+                : "\nDevTools listening on ws://127.0.0.1:\(asked)/devtools/browser/x\n"
+            try Data(said.utf8).write(to: log)
         } else if let publishesPort {
             publish(port: publishesPort)
         }
