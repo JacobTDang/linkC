@@ -21,7 +21,8 @@ extension AppModel {
     /// A click on session `id`'s card, among the cards beside session `beside`; `inWindow` says they are
     /// in a torn-off window. A card whose terminal is in the panel brings the panel up.
     func openAgentCard(_ id: String, beside: String, inWindow: Bool) {
-        switch AgentCardClick.of(card: id, besideSession: beside, inWindow: inWindow, cardInWindow: host(of: id) != nil) {
+        let window = host(of: id)
+        switch AgentCardClick.of(card: id, besideSession: beside, inWindow: inWindow, cardInWindow: window != nil) {
         case .acknowledge:
             acknowledge(id)
         case .focus:
@@ -29,6 +30,9 @@ extension AppModel {
         case .focusShowingPanel:
             focus(id)
             onShowPanel?()
+        case .raiseWindow:
+            if let window { raise(window, focusing: id) }
+            acknowledge(id)
         }
     }
 
