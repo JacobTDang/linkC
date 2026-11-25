@@ -28,3 +28,12 @@ public struct LiveSessionTarget: Equatable, Sendable {
 public protocol SessionLiveReader: Sendable {
     func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail
 }
+
+extension SessionLiveDetail {
+    /// How full a context window is, 0–100, from the tokens used and the window the agent records.
+    /// Nil when either is not recorded or the window is empty.
+    static func contextPercent(used: UInt64?, window: UInt64?) -> Int? {
+        guard let used, let window, window > 0 else { return nil }
+        return Int(min(100, (Double(used) / Double(window) * 100).rounded()))
+    }
+}

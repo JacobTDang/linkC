@@ -98,9 +98,7 @@ public struct CursorSessionReader: SessionLiveReader {
         guard let blob = blobRows.first, let bytes = SQLiteCLI.bytes(fromHex: blob.data) else {
             throw LinkCError.parse("root blob \(rootId) is not in \(path)")
         }
-        guard let usage = try ProtobufWire.fields(at: [5], in: bytes),
-              let used = usage.varint(1), let window = usage.varint(2), window > 0
-        else { return nil }
-        return Int(min(100, (Double(used) / Double(window) * 100).rounded()))
+        let usage = try ProtobufWire.fields(at: [5], in: bytes)
+        return SessionLiveDetail.contextPercent(used: usage?.varint(1), window: usage?.varint(2))
     }
 }
