@@ -121,6 +121,20 @@ final class RouterTests: XCTestCase {
         }
     }
 
+    /// Cursor takes no tier and every routed task carries one, so a task routed to Cursor would be
+    /// refused when it is delegated. Cursor is never a candidate, even as the only agent free.
+    func testCursorIsNeverRoutedToEvenWhenItIsTheOnlyFreeAgent() {
+        XCTAssertThrowsError(try route(
+            "Implement a feature",
+            installed: [.claude, .cursor],
+            limited: [RouterLimit(agent: .claude, pool: nil)]
+        )) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "no installed agent is free to take this task at standard — claude skipped (limited); cursor skipped (never routed: it takes no tier). Name an agent with `to`.")
+        }
+    }
+
     func testUnsupportedEffortAgentGetsNilEffort() throws {
         // Force a route onto opencode via web research with only opencode installed.
         let d = try route(

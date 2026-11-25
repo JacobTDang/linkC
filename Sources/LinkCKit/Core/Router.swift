@@ -84,13 +84,27 @@ public enum Router {
     ) throws -> RouterDecision {
         let kind = classify(prompt)
         let tier = tier(for: kind)
-        let candidates = installed.filter { agent in
-            guard agent != .shell, agent != .freebuff else { return false }
-            guard settings.model(for: agent, tier: tier) != nil || agent == .cursor else { return false }
-            return !isLimited(agent: agent, tier: tier, settings: settings, limits: limits)
+        // Every routed task carries a tier. Cursor takes none, so a task routed to it would be
+        // refused at delegation: it is never a candidate. Shell and Freebuff are not routed to.
+        var candidates: [AgentKind] = []
+        var skipped: [(agent: AgentKind, why: String)] = []
+        for agent in installed where agent != .shell && agent != .freebuff {
+            if agent == .cursor {
+                skipped.append((agent, "never routed: it takes no tier"))
+            } else if settings.model(for: agent, tier: tier) == nil {
+                skipped.append((agent, "no \(tier.rawValue) model"))
+            } else if isLimited(agent: agent, tier: tier, settings: settings, limits: limits) {
+                skipped.append((agent, "limited"))
+            } else {
+                candidates.append(agent)
+            }
         }
         guard !candidates.isEmpty else {
-            throw LinkCError.process("no installed agent is free to take this task at \(tier.rawValue) — every candidate is limited or has no model for that tier")
+            let why = skipped.isEmpty
+                ? "none of the installed agents can be routed to"
+                : skipped.map { "\($0.agent.rawValue) skipped (\($0.why))" }.joined(separator: "; ")
+            throw LinkCError.process(
+                "no installed agent is free to take this task at \(tier.rawValue) — \(why). Name an agent with `to`.")
         }
 
         let chosen: AgentKind
