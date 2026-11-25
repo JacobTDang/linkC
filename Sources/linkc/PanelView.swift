@@ -105,6 +105,11 @@ private struct RightPane: View {
             } else if model.currentProject != nil {
                 VStack(spacing: 0) {
                     ProjectTabStrip(model: model, onBack: showsBack ? { model.goBack() } : nil)
+                    if let bar = model.promptBar {
+                        PromptBarView(bar: bar, project: model.currentProject, focusRequest: model.promptBarFocusRequests)
+                            .padding(.horizontal, 12)
+                            .padding(.top, 8)
+                    }
                     if let split = model.splitProject {
                         if model.tornOff.contains(.split(split)) {
                             WindowedNote(model: model, item: .split(split))

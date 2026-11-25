@@ -2241,55 +2241,20 @@ public final class MCPServer: Sendable {
             verification: verification, settings: settings, sources: sources, routeReason: nil)
     }
 
-    /// Gathers live limits, usage and the agents open in the folder, then asks the pure `Router` for
-    /// an agent/tier/effort. The reason says so when the folder's open sessions could not be read.
+    /// Routes `prompt` from the live limits, usage and agents open in `destRoot`, through the routing
+    /// the prompt bar shares, asking the picked agent's own CLI about its model.
     private func routeTask(
         prompt: String, settings: AgentModelSettings, sources: TierModelSources,
         destStore: InboxStore, destRoot: String
-    ) throws -> (decision: RouterDecision, reason: String) {
-        let installed = AgentKind.peers.filter { isAgentInstalled($0) }
-        guard !installed.isEmpty else {
-            throw LinkCError.process("no agent CLI is installed to route to")
-        }
-        var limits: [RouterLimit] = []
-        for agent in installed {
-            for limit in try destStore.liveLimits(agent: agent) {
-                limits.append(RouterLimit(agent: limit.agent, pool: limit.pool))
-            }
-        }
-        var tight = Set<AgentKind>()
-        for agent in installed {
-            if usageReaders[agent]?().windowNeedingWarning != nil {
-                tight.insert(agent)
-            }
-        }
-        let tier = Router.tier(for: Router.classify(prompt), prompt: prompt)
-        // Every agent is checked against the free-model rules and the cached lists, which cost
-        // nothing. An agent's own CLI is asked only about the agent the router picks: when it
-        // refuses, that agent is skipped and the router picks again.
-        var refusals: [AgentKind: String] = [:]
-        for agent in installed {
-            if let refusal = tierModelRefusal(
-                agent: agent, tier: tier, settings: settings, sources: sources, consultingFolderListing: false) {
-                refusals[agent] = refusal.message
-            }
-        }
-        let open = agentsOpen(in: destRoot)
-        func pick() throws -> RouterDecision {
-            try Router.route(
-                prompt: prompt, installed: installed, settings: settings,
-                limits: limits, usageTight: tight, activeInFolder: open.agents, refusals: refusals)
-        }
-        var decision = try pick()
-        while let refusal = tierModelRefusal(
-            agent: decision.agent, tier: decision.tier, settings: settings, sources: sources,
-            consultingFolderListing: true) {
-            refusals[decision.agent] = refusal.message
-            decision = try pick()
-        }
-        let reason = open.problem.map { "\(decision.reason); no tie-break, the open sessions could not be read: \($0)" }
-            ?? decision.reason
-        return (decision, reason)
+    ) throws -> RoutedTask {
+        let inputs = RouteInputs(
+            isInstalled: isAgentInstalled,
+            liveLimits: { try destStore.liveLimits(agent: $0) },
+            usageReaders: usageReaders,
+            agentsOpen: { self.agentsOpen(in: destRoot) })
+        let context = try TaskRouting.gather(prompt: prompt, settings: settings, sources: sources, inputs: inputs)
+        return try TaskRouting.pick(
+            prompt: prompt, context: context, settings: settings, sources: sources, consultingFolderListing: true)
     }
 
     /// The agents with a session open in `folder`, from the app's project list, leaving out the
@@ -2473,7 +2438,7 @@ public final class MCPServer: Sendable {
         }
         // A tier whose model the agent would refuse or no longer lists would start a worker the CLI
         // rejects. Refused now; an agent never listed (or whose last listing failed) is not blocked.
-        if let tier, let refusal = tierModelRefusal(
+        if let tier, let refusal = TierModelRefusal.check(
             agent: toAgent, tier: tier, settings: settings, sources: sources, consultingFolderListing: true) {
             return toolResultResponse(id: id, text: refusal.delegationError, isError: true)
         }

@@ -4,8 +4,8 @@ import UniformTypeIdentifiers
 import LinkCKit
 
 /// The Chrome-style strip above the right pane: the project's Board, pinned, then its Split when it
-/// has one showing, then a tab per session, then ＋. ⌘1–⌘9 pick a tab and ⌃Tab cycles, through a
-/// local key monitor that exists only while the strip does.
+/// has one showing, then a tab per session, then ＋. ⌘1–⌘9 pick a tab, ⌃Tab cycles and ⌘K goes to the
+/// prompt bar below, through a local key monitor that exists only while the strip does.
 struct ProjectTabStrip: View {
     let model: AppModel
     let onBack: (() -> Void)?
@@ -146,6 +146,8 @@ struct ProjectTabStrip: View {
             if let tab = ProjectTabs.cycle(from: model.selectedTabID, in: tabs, backwards: command == .previous) {
                 model.select(tab)
             }
+        case .focusPromptBar:
+            model.focusPromptBar()
         }
     }
 }
@@ -306,7 +308,8 @@ private struct TabChip: View {
     }
 }
 
-/// ⌘1–⌘9 and ⌃Tab, through a local key monitor installed only while the strip is showing.
+/// ⌘1–⌘9, ⌃Tab and ⌘K, through a local key monitor installed only while the strip is showing. A
+/// text field keeps them all, and a web page in an app tab keeps ⌘K.
 @MainActor
 final class TabKeys {
     var onCommand: (TabCommand) -> Void = { _ in }
@@ -318,9 +321,9 @@ final class TabKeys {
     func start() {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window, !BoardInput.isEditingText,
+            guard let self, let window = self.window, event.window === window,
                   let press = BoardInput.press(from: event),
-                  let command = TabKeyMap.command(for: press) else { return event }
+                  let command = TabKeyMap.command(for: press, focus: KeyFocus.of(window.firstResponder)) else { return event }
             self.onCommand(command)
             return nil
         }

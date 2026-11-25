@@ -148,6 +148,18 @@ public enum OpenCodeFreeModels {
     }
 }
 
+/// OpenCode Go's free pool: OpenCode lists `opencode-go/*` models only while Go is connected.
+public enum OpenCodeGo {
+    /// The model an OpenCode session runs for `model`: `opencode-go/<name>` for an `opencode/<name>`
+    /// model when `listed`, OpenCode's cached list, has that exact id and it is free; else `model`.
+    public static func model(for model: String, listed: [ListedModel]) -> String {
+        guard model.hasPrefix("opencode/") else { return model }
+        let candidate = "opencode-go/" + model.dropFirst("opencode/".count)
+        guard listed.contains(where: { $0.id == candidate }), OpenCodeFreeModels.isFree(candidate) else { return model }
+        return candidate
+    }
+}
+
 /// Kilo's free-only rule (spec §4.3): starts with `kilo/` and either ends in `:free`, ends in
 /// `-free`, or the last path component is `free`.
 public enum KiloFreeModels {

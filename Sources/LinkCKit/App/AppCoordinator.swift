@@ -129,7 +129,7 @@ public final class AppCoordinator {
     /// How long the app waits for `opencode models` / `kilo models`: less than the 20 s `linkc` waits
     /// for its open request, so the command hears "could not check" rather than nothing. Public: it is
     /// read by the public initializer's default listers.
-    public static let openCodeModelListingTimeout: TimeInterval = 10
+    nonisolated public static let openCodeModelListingTimeout: TimeInterval = 10
     var openCodeModelCheckCount = 0
     var kiloModelCheckCount = 0
     /// OpenCode refusals the user has been told of, one per queued task or message, so a pass that meets the
@@ -1138,8 +1138,6 @@ public final class AppCoordinator {
     /// A tier set to an `opencode-go/*` model is used as is.
     func resolveOpenCodeGoModel(_ model: String, logSubstitution: Bool = false) -> String {
         guard model.hasPrefix("opencode/") else { return model }
-        let name = String(model.dropFirst("opencode/".count))
-        let candidate = "opencode-go/\(name)"
 
         let openCodeList: [ListedModel]
         do {
@@ -1151,8 +1149,8 @@ public final class AppCoordinator {
             return model
         }
 
-        // OpenCode lists `opencode-go/*` models only while Go is connected.
-        guard openCodeList.contains(where: { $0.id == candidate }), OpenCodeFreeModels.isFree(candidate) else { return model }
+        let candidate = OpenCodeGo.model(for: model, listed: openCodeList)
+        guard candidate != model else { return model }
 
         if logSubstitution {
             NSLog("[linkC] preferring OpenCode Go free model: substituted %@ with %@", model, candidate)

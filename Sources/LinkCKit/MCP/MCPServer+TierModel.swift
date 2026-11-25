@@ -55,14 +55,16 @@ extension MCPServer {
             try (agent == .kilo ? self.kiloModels : self.openCodeModels)(destRoot)
         }
     }
+}
 
+extension TierModelRefusal {
     /// Whether `agent`'s model for `tier` is one a task can run on: free where the agent runs free
     /// models only, still offered by the agent's cached list, and, when `consultingFolderListing`,
     /// still among what its own CLI lists. That last check runs the CLI, so a caller still choosing
     /// among agents leaves it off and asks it only of the agent it chose. Routing and delegation both
     /// ask this, so a model is judged the same way, case included, whichever path asks. Nil when it
     /// is usable or the tier has no model.
-    func tierModelRefusal(
+    static func check(
         agent: AgentKind,
         tier: ModelTier,
         settings: AgentModelSettings,

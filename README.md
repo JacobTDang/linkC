@@ -51,6 +51,14 @@ columns, the same button opens the cards in a popover instead.
 Each project has a tab strip: the Board first, then a tab per session and terminal (⌘1 for the
 Board, ⌘2–⌘9 for the rest). Open a plain terminal with **New terminal** in the **+** menu.
 
+Under the tab strip, the prompt bar (⌘K) takes a task typed once. As you type, it shows the agent,
+model and effort the router picks for it, and why: the same router as `linkc_delegate_task` with no
+`to`. Tab moves the pick to the next agent that could take the task (Shift-Tab to the previous one),
+Enter opens your own session of it in the project with the task as its opening prompt, and Esc
+clears. If Enter finds the pick changed, as when OpenCode's or Kilo's own CLI turns its model down
+and another agent is free, nothing opens yet: the bar shows the new pick and why, and a second Enter
+opens it. In an app tab's web page, ⌘K stays with the page.
+
 A terminal takes its name from its current folder — `~` at home, `Sources` after `cd Sources` —
 unless it's running a command like `docker logs`, in which case it keeps that name. An unfiled
 terminal follows your `cd`s: it shows under whatever project owns its current folder (a

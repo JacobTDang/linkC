@@ -18,13 +18,33 @@ public struct RouterDecision: Sendable, Equatable {
     public let tier: ModelTier
     public let effort: ReasoningEffort?
     public let reason: String
+    /// What the task is, as `reason` opens with it but without the agent and tier: "implementation",
+    /// "web research (browse-capable)".
+    public let summary: String
+    /// Why each agent that would have come first was passed over, and the tie-break when one decided:
+    /// the parts of `reason` between its headline and its effort.
+    public let notes: [String]
 
-    public init(agent: AgentKind, tier: ModelTier, effort: ReasoningEffort?, reason: String) {
+    public init(
+        agent: AgentKind, tier: ModelTier, effort: ReasoningEffort?, reason: String,
+        summary: String, notes: [String]
+    ) {
         self.agent = agent
         self.tier = tier
         self.effort = effort
         self.reason = reason
+        self.summary = summary
+        self.notes = notes
     }
+}
+
+/// No installed agent can take a task: the tier, and why each agent was skipped. `message` is the
+/// refusal itself; the error's description adds the MCP tool's remedy, naming an agent with `to`.
+public struct RouterRefusal: LocalizedError, Sendable, Equatable {
+    public let tier: ModelTier
+    public let message: String
+
+    public var errorDescription: String? { "\(message). Name an agent with `to`." }
 }
 
 /// Pure task router: picks an agent, tier and effort from the prompt and live constraints.
@@ -123,8 +143,105 @@ public enum Router {
     ) throws -> RouterDecision {
         let kind = classify(prompt)
         let tier = tier(for: kind, prompt: prompt)
-        // Every routed task carries a tier. Cursor takes none, so a task routed to it would be
-        // refused at delegation: it is never a candidate. Shell and Freebuff are not routed to.
+        let (candidates, skipped) = screen(
+            tier: tier, installed: installed, settings: settings, limits: limits, refusals: refusals)
+        guard !candidates.isEmpty else {
+            let why = skipped.isEmpty
+                ? "none of the installed agents can be routed to"
+                : skipped.map { "\($0.agent.rawValue) skipped (\($0.why))" }.joined(separator: "; ")
+            throw RouterRefusal(
+                tier: tier, message: "no installed agent is free to take this task at \(tier.rawValue) — \(why)")
+        }
+
+        // Web research goes to a browse-capable agent when one is free; any other task, or research
+        // with none free, picks among every candidate.
+        let browse = kind == .webResearch ? browseAgents.filter(candidates.contains) : []
+        let pool = browse.isEmpty ? candidates : browse
+        // Usage headroom first; when every agent in the pool is tight, they all stay in.
+        let withHeadroom = pool.filter { !usageTight.contains($0) }
+        let picks = withHeadroom.isEmpty ? pool : withHeadroom
+        // A tie goes to an agent already open in the folder, else to the first in `installed` order.
+        let active = picks.first(where: activeInFolder.contains)
+        let chosen = active ?? picks[0]
+
+        let label: String, qualifier: String?
+        switch kind {
+        case .webResearch where browse.isEmpty: (label, qualifier) = ("web research", "no browse-capable agent free")
+        case .webResearch: (label, qualifier) = ("web research", "browse-capable")
+        case .trivialEdit: (label, qualifier) = ("trivial edit", nil)
+        case .hard: (label, qualifier) = ("hard work", nil)
+        case .ordinary: (label, qualifier) = ("implementation", nil)
+        }
+        let headline = "\(label) → \(chosen.rawValue) \(tier.rawValue)" + (qualifier.map { " (\($0))" } ?? "")
+        let summary = label + (qualifier.map { " (\($0))" } ?? "")
+        var notes: [String] = []
+        // With no browse agent free, research names every skipped browse agent up front, so the
+        // passed-over list below leaves them out.
+        let namedBrowseSkips = kind == .webResearch && browse.isEmpty
+        if namedBrowseSkips {
+            for skip in skipped where browseAgents.contains(skip.agent) {
+                notes.append("\(skip.agent.rawValue) skipped (\(skip.why))")
+            }
+        }
+        // Why each agent that would have come first was passed over. Cursor is never routed to, so
+        // it is not named here.
+        let order = browse.isEmpty ? installed : browseAgents.filter(installed.contains)
+        for agent in order.prefix(while: { $0 != chosen }) where agent != .cursor {
+            if let skip = skipped.first(where: { $0.agent == agent }) {
+                if !namedBrowseSkips || !browseAgents.contains(agent) {
+                    notes.append("\(agent.rawValue) skipped (\(skip.why))")
+                }
+            } else if !withHeadroom.isEmpty, usageTight.contains(agent), pool.contains(agent) {
+                notes.append("\(agent.rawValue) skipped (usage tight)")
+            }
+        }
+        if active != nil, chosen != picks[0] {
+            notes.append("tie → already active in folder")
+        }
+
+        let effort = settings.tierEffort(for: chosen, tier: tier)
+        let reasonParts = [headline] + notes + (effort.map { ["effort \($0.rawValue)"] } ?? [])
+        return RouterDecision(
+            agent: chosen, tier: tier, effort: effort,
+            reason: reasonParts.joined(separator: "; "), summary: summary, notes: notes)
+    }
+
+    /// The agents a task at `tier` could go to, in `installed` order: every installed agent the router
+    /// routes to that has a model for the tier, is not limited and was not refused.
+    public static func eligible(
+        tier: ModelTier,
+        installed: [AgentKind],
+        settings: AgentModelSettings,
+        limits: [RouterLimit],
+        refusals: [AgentKind: String] = [:]
+    ) -> [AgentKind] {
+        screen(tier: tier, installed: installed, settings: settings, limits: limits, refusals: refusals).candidates
+    }
+
+    /// Why `agent` cannot take a task at `tier`, as `route` would say it skipped the agent, or nil when
+    /// it can.
+    public static func skipReason(
+        for agent: AgentKind,
+        tier: ModelTier,
+        settings: AgentModelSettings,
+        limits: [RouterLimit],
+        refusals: [AgentKind: String] = [:]
+    ) -> String? {
+        let screened = screen(tier: tier, installed: [agent], settings: settings, limits: limits, refusals: refusals)
+        guard !screened.candidates.contains(agent) else { return nil }
+        return screened.skipped.first?.why ?? "never routed to"
+    }
+
+    /// Splits the installed agents into those that can take a task at `tier` and those skipped, with
+    /// why. Every routed task carries a tier. Cursor takes none, so a task routed to it would be
+    /// refused at delegation: it is never a candidate. Shell and Freebuff are not routed to.
+    private static func screen(
+        tier: ModelTier,
+        installed: [AgentKind],
+        settings: AgentModelSettings,
+        limits: [RouterLimit],
+        refusals: [AgentKind: String]
+    ) -> (candidates: [AgentKind], skipped: [(agent: AgentKind, why: String)]) {
         var candidates: [AgentKind] = []
         var skipped: [(agent: AgentKind, why: String)] = []
         for agent in installed where agent != .shell && agent != .freebuff {
@@ -140,70 +257,7 @@ public enum Router {
                 candidates.append(agent)
             }
         }
-        guard !candidates.isEmpty else {
-            let why = skipped.isEmpty
-                ? "none of the installed agents can be routed to"
-                : skipped.map { "\($0.agent.rawValue) skipped (\($0.why))" }.joined(separator: "; ")
-            throw LinkCError.process(
-                "no installed agent is free to take this task at \(tier.rawValue) — \(why). Name an agent with `to`.")
-        }
-
-        // Web research goes to a browse-capable agent when one is free; any other task, or research
-        // with none free, picks among every candidate.
-        let browse = kind == .webResearch ? browseAgents.filter(candidates.contains) : []
-        let pool = browse.isEmpty ? candidates : browse
-        // Usage headroom first; when every agent in the pool is tight, they all stay in.
-        let withHeadroom = pool.filter { !usageTight.contains($0) }
-        let picks = withHeadroom.isEmpty ? pool : withHeadroom
-        // A tie goes to an agent already open in the folder, else to the first in `installed` order.
-        let active = picks.first(where: activeInFolder.contains)
-        let chosen = active ?? picks[0]
-
-        var reasonParts: [String] = []
-        switch kind {
-        case .webResearch where browse.isEmpty:
-            reasonParts.append("web research → \(chosen.rawValue) \(tier.rawValue) (no browse-capable agent free)")
-        case .webResearch:
-            reasonParts.append("web research → \(chosen.rawValue) \(tier.rawValue) (browse-capable)")
-        case .trivialEdit:
-            reasonParts.append("trivial edit → \(chosen.rawValue) \(tier.rawValue)")
-        case .hard:
-            reasonParts.append("hard work → \(chosen.rawValue) \(tier.rawValue)")
-        case .ordinary:
-            reasonParts.append("implementation → \(chosen.rawValue) \(tier.rawValue)")
-        }
-        // With no browse agent free, research names every skipped browse agent up front, so the
-        // passed-over list below leaves them out.
-        let namedBrowseSkips = kind == .webResearch && browse.isEmpty
-        if namedBrowseSkips {
-            for skip in skipped where browseAgents.contains(skip.agent) {
-                reasonParts.append("\(skip.agent.rawValue) skipped (\(skip.why))")
-            }
-        }
-        // Why each agent that would have come first was passed over. Cursor is never routed to, so
-        // it is not named here.
-        let order = browse.isEmpty ? installed : browseAgents.filter(installed.contains)
-        for agent in order.prefix(while: { $0 != chosen }) where agent != .cursor {
-            if let skip = skipped.first(where: { $0.agent == agent }) {
-                if !namedBrowseSkips || !browseAgents.contains(agent) {
-                    reasonParts.append("\(agent.rawValue) skipped (\(skip.why))")
-                }
-            } else if !withHeadroom.isEmpty, usageTight.contains(agent), pool.contains(agent) {
-                reasonParts.append("\(agent.rawValue) skipped (usage tight)")
-            }
-        }
-        if active != nil, chosen != picks[0] {
-            reasonParts.append("tie → already active in folder")
-        }
-
-        let effort = settings.tierEffort(for: chosen, tier: tier)
-        if let effort {
-            reasonParts.append("effort \(effort.rawValue)")
-        }
-
-        return RouterDecision(
-            agent: chosen, tier: tier, effort: effort,
-            reason: reasonParts.joined(separator: "; "))
+        return (candidates, skipped)
     }
 
     private static func isLimited(
