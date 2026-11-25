@@ -217,8 +217,11 @@ public struct OpenRequestStore: Sendable {
         /// An answer was there but could not be read. `withdrawal` is why the request could not be
         /// withdrawn, when the wait had ended and tried to.
         case unreadable(Error, withdrawal: Error?)
-        /// No answer in time. The request was withdrawn, unless `withdrawal` says why not.
+        /// No answer in time. The request was withdrawn, unless `withdrawal` says why not, so linkC
+        /// never acts on it.
         case unanswered(withdrawal: Error?)
+        /// No answer in time, and linkC had already taken the request, so what it asked for may still happen.
+        case takenUnanswered
     }
 
     /// Waits up to `timeout` for linkC's answer to `id`, looking every `pollInterval`. Giving up, it
@@ -250,8 +253,9 @@ public struct OpenRequestStore: Sendable {
             }
             if now() >= deadline || polls >= pollLimit {
                 var withdrawal: Error?
+                var tookIt = false
                 do {
-                    try withdraw(id)
+                    tookIt = try withdraw(id)
                 } catch {
                     withdrawal = error
                 }
@@ -262,6 +266,8 @@ public struct OpenRequestStore: Sendable {
                 } catch {
                     return .unreadable(error, withdrawal: withdrawal)
                 }
+                // Gone before this withdraw, with no answer: linkC took it and has not answered yet.
+                if withdrawal == nil, !tookIt { return .takenUnanswered }
                 return .unanswered(withdrawal: withdrawal)
             }
             sleep(pollInterval)
@@ -270,11 +276,16 @@ public struct OpenRequestStore: Sendable {
     }
 
     /// Removes the request `id`, answered or given up on. Nothing to remove is fine.
-    public func withdraw(_ id: String) throws {
+    /// - Returns: whether this call took the request away. Removing a file is atomic, so when linkC
+    ///   and the requester withdraw the same request at once, exactly one of them gets true: linkC
+    ///   acts on a request only if it took it, and a requester that did not take it knows linkC did.
+    @discardableResult
+    public func withdraw(_ id: String) throws -> Bool {
         do {
             try FileManager.default.removeItem(at: requestURL(id))
+            return true
         } catch CocoaError.fileNoSuchFile {
-            return
+            return false
         }
     }
 

@@ -315,13 +315,19 @@ public final class AppCoordinator {
     /// A session's action line, read from its terminal by the app, for `projects.json`. Asked only
     /// of a session working or waiting on a permission.
     public var sessionAction: ((Session) -> String?)?
+    /// The readings the app keeps of other agents' plans (Codex's, read off the main actor), published
+    /// beside Claude's own in `projects.json`.
+    public var agentUsage: (() -> [AgentUsage])?
     /// Every live session's row title as the app's sidebar resolves it (conversation title, held task,
     /// or the agent's numbered name), keyed by session id, for `projects.json`.
     public var sessionTitles: (() -> [String: String])?
     /// Sidebar project paths (`SidebarState.projectOrder`), folded into the known-projects list.
     private let sidebarProjects: @MainActor @Sendable () -> [String]
+    /// Each live session's first-hand detail, read off the main actor by its agent's reader.
+    let liveDetails: LiveDetailSampler
     /// Last contents written to `knownProjectsFile`, so a rewrite only happens when they change.
     private var lastPublishedProjects: [KnownProject]?
+    private var lastPublishedLimits: [String: [KnownLimit]]?
     /// How many times `projects.json` was written this run — test seam for rewrite-on-change.
     private(set) var knownProjectsWriteCount = 0
     /// Where the `linkc` command leaves its requests; nil turns the command off.
@@ -380,6 +386,7 @@ public final class AppCoordinator {
         sweepClock: any Clock<Duration> = ContinuousClock(),
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
         knownProjectsFile: KnownProjectsFile? = nil,
+        liveReaders: [AgentKind: any SessionLiveReader] = [:],
         sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] },
         openRequests: OpenRequestStore? = nil,
         handoffRequests: OpenRequestStore? = nil,
@@ -426,6 +433,7 @@ public final class AppCoordinator {
         self.sweepClock = sweepClock
         self.mcpWorkspaces = mcpWorkspaces
         self.knownProjectsFile = knownProjectsFile
+        self.liveDetails = LiveDetailSampler(readers: liveReaders)
         self.sidebarProjects = sidebarProjects
         self.openRequests = openRequests
         self.handoffRequests = handoffRequests
@@ -586,6 +594,7 @@ public final class AppCoordinator {
             usageReaders: MCPServer.defaultUsageReaders(),
             mcpWorkspaces: { MCPWorkspaceRegistry.applicationSupport.liveWorkspaces() },
             knownProjectsFile: .applicationSupport,
+            liveReaders: AppCoordinator.liveReaders(),
             sidebarProjects: sidebarProjects,
             openRequests: .applicationSupport,
             handoffRequests: .handoffApplicationSupport,
@@ -766,6 +775,7 @@ public final class AppCoordinator {
         taskEvents.retain(only: watched)
         inboxWatcher?.watch(workspaces: watched)
         sampleAgentStates()
+        refreshLiveDetails(liveSessions)
         // After the sampling, so the file holds the states it just settled.
         publishKnownProjects(sidebar: sidebar, mcpFolders: mcpFolders)
         for folder in serverOnlyFolders.sorted() {
@@ -816,14 +826,17 @@ public final class AppCoordinator {
                                                            CacheClock.expiry(
                                                                for: session,
                                                                reported: sessionStatuses.status(for: session.id)?.cacheExpiresAt)
-                                                       })
+                                                       },
+                                                       live: { self.liveDetail(for: $0) })
+        let limits = KnownProjectsPublisher.limits(from: [claudeUsage].compactMap { $0 } + (agentUsage?() ?? []), now: now())
         // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
         // contents next changed, and every MCP server would report linkC as not running.
-        if lastPublishedProjects == projects,
+        if lastPublishedProjects == projects, lastPublishedLimits == limits,
            FileManager.default.fileExists(atPath: knownProjectsFile.url.path) { return }
         do {
-            try knownProjectsFile.write(projects)
+            try knownProjectsFile.write(projects, limits: limits)
             lastPublishedProjects = projects
+            lastPublishedLimits = limits
             knownProjectsWriteCount += 1
         } catch {
             NSLog("[linkC] projects.json — %@", String(describing: error))
@@ -992,6 +1005,9 @@ public final class AppCoordinator {
         case launchFailed
         /// A hook event reported it ended.
         case reportedEnded
+        /// linkC closed it before it reached the user, such as a handoff whose memo could not be
+        /// written: it leaves no card under Earlier.
+        case abandoned
     }
 
     /// Remove a session everywhere it leaves state behind: the store, its terminal (dropped,
@@ -1028,9 +1044,11 @@ public final class AppCoordinator {
         limitScans.removeValue(forKey: sessionId)
         limitHolds.removeValue(forKey: sessionId)
         limitHeldModelTasks.removeValue(forKey: sessionId)
-        if wasWorker {
-            // A worker was linkC's, not the user's: its report is in the task record, so it
-            // leaves nothing under Earlier.
+        if let ending { removeHandoffMemo(of: ending) }
+        if wasWorker || end == .abandoned {
+            // A worker was linkC's, not the user's: its report is in the task record. A session
+            // abandoned before it reached the user was never theirs either. Neither leaves
+            // anything under Earlier.
             manifest.remove(linkcId: sessionId)
         } else {
             // The session ended or was stopped — keep its manifest entry but stamp it, so it
@@ -1083,6 +1101,7 @@ public final class AppCoordinator {
     public func spawnTeammate(
         in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil, tier: ModelTier? = nil,
         model: String? = nil,
+        effort: ReasoningEffort? = nil,
         asWorker: Bool = false
     ) throws -> Session {
         let norm = ProjectPath.canonical(workspacePath)
@@ -1116,18 +1135,30 @@ public final class AppCoordinator {
         // A teammate starts in the background — the relay spawns these while the user is
         // working elsewhere, and selecting one raises the panel over whatever they were doing.
         return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier, model: model,
-                              select: false, asWorker: asWorker)
+                              effort: effort, select: false, asWorker: asWorker)
     }
 
     @discardableResult
     public func newSession(
         cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil,
         model: String? = nil,
+        effort: ReasoningEffort? = nil,
         select: Bool = true, asWorker: Bool = false
     ) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
         return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier, model: model,
-                          asWorker: asWorker, select: select)
+                          effort: effort, asWorker: asWorker, select: select)
+    }
+
+    /// agy's models as its last good refresh listed them, or nil when they are not known. Settings >
+    /// Models shows why the lists cannot be read; launch then runs the configured id as it is.
+    func agyListedModels() -> [ListedModel]? {
+        do {
+            return ModelListCache.liveModels(for: .agy, lists: try modelLists())
+        } catch {
+            NSLog("[linkC] could not read the model lists to see which efforts agy lists — %@", String(describing: error))
+            return nil
+        }
     }
 
     /// Resolves an OpenCode model id to prefer Go's free pool if Go is connected:
@@ -1234,6 +1265,7 @@ public final class AppCoordinator {
         id: String? = nil,
         tier: ModelTier? = nil,
         model: String? = nil,
+        effort: ReasoningEffort? = nil,
         asWorker: Bool = false,
         select: Bool
     ) throws -> Session {
@@ -1265,6 +1297,33 @@ public final class AppCoordinator {
         let conversationId = openCode?.id ?? resumeId
         let model = resolved.model
         let modelTier = resolved.tier
+        // Effort comes from the caller (a task), else from Settings for the tier being launched.
+        // Agents whose CLI has no effort knob stay unset — Settings says so.
+        let launchEffort = effort ?? modelTier.flatMap { modelSettings().tierEffort(for: agent, tier: $0) }
+        if let launchEffort, let levels = AgentEffortSupport.forAgent(agent).levels,
+           !levels.contains(launchEffort) {
+            throw LinkCError.process(
+                "\(agent.rawValue) does not accept effort \(launchEffort.rawValue) — supported: \(levels.map(\.rawValue).joined(separator: ", "))")
+        }
+        // What goes in argv. agy refuses `--effort` for a level it does not list for the model, and a
+        // refused flag kills the worker at launch: the flag goes only where agy lists the level, on
+        // the base id. The session keeps the configured id, which is what a task names and the relay
+        // matches a worker on (`Session.canCarry`).
+        var argvModel = model
+        var argvEffort = launchEffort
+        if agent == .agy {
+            if let model {
+                let launch = AgyEffort.launch(id: model, effort: launchEffort, listed: agyListedModels())
+                if let launchEffort, launch.effort == nil {
+                    NSLog("[linkC] agy lists no %@ effort for %@, so it launches as configured",
+                          launchEffort.rawValue, model)
+                }
+                argvModel = launch.model
+                argvEffort = launch.effort
+            } else {
+                argvEffort = nil
+            }
+        }
         // OpenCode and Kilo run free models only, whichever way the model was chosen: the New menu,
         // a teammate, a worker, or a tier that was set to a paid model.
         if agent == .opencode, let model, !OpenCodeFreeModels.isFree(model) {
@@ -1277,7 +1336,7 @@ public final class AppCoordinator {
             throw LinkCError.process("\(model) is not a free Crush model")
         }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
-                                   model: model, modelTier: modelTier,
+                                   model: model, modelTier: modelTier, effort: launchEffort,
                                    claudeSessionId: conversationId, isWorker: asWorker)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent, select: false)
@@ -1314,7 +1373,7 @@ public final class AppCoordinator {
                 env.merge(try kiloEnvironment(model: model)) { _, kilo in kilo }
             }
             if agent == .crush {
-                env.merge(try crushEnvironment(sessionId: session.id, cwd: cwd, model: model)) { _, crush in crush }
+                env.merge(try crushEnvironment(sessionId: session.id, cwd: cwd, model: model, effort: launchEffort)) { _, crush in crush }
             }
 
             let arguments: (SharedBrowserLease?) -> [String]
@@ -1330,7 +1389,8 @@ public final class AppCoordinator {
                 executable = claudePath
                 let settingsPath = try writeSettings(for: session)
                 let args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
-                    + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (argvModel.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (argvEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
                 arguments = { _ in args }
             } else {
                 // Codex and agy open a folder they have not seen on a trust dialog; trust it first, as
@@ -1370,7 +1430,8 @@ public final class AppCoordinator {
                     throw LinkCError.process("Executable for \(agent.pillText) not found")
                 }
                 executable = resolved
-                let extra = (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                let extra = (argvModel.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (argvEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
                     + (openCode.map { OpenCodeConversations.launchArguments(conversationId: $0.id) } ?? [])
                 let sessionId = session.id
                 arguments = { browser in

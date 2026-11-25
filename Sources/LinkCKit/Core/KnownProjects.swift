@@ -10,6 +10,19 @@ public struct KnownProject: Codable, Equatable, Sendable {
             case idle, busy, starting
         }
 
+        /// A subagent the session runs, as its agent's own files record it.
+        public struct Subagent: Codable, Equatable, Sendable {
+            /// What the session called it when it started it.
+            public let name: String
+            /// The step it is on, when its files say; absent when they don't.
+            public let step: String?
+
+            public init(name: String, step: String?) {
+                self.name = name
+                self.step = step
+            }
+        }
+
         public let id: String
         /// `AgentKind.rawValue`. A string, so a file written by a newer app that knows another agent
         /// still reads in an older server.
@@ -34,10 +47,23 @@ public struct KnownProject: Codable, Equatable, Sendable {
         /// True when `cacheExpiresAt` is worked out from the provider's cache lifetime rather than
         /// reported by the agent; absent when reported.
         public let cacheEstimate: Bool?
+        /// How full the session's context is, 0–100, as its agent reports it: of the context window,
+        /// for every agent that reports one today. Absent when the agent reports nothing, and in a
+        /// file an older app wrote.
+        public let contextPercent: Int?
+        /// The step a turn is on, as the agent's own hooks or files record it, which `action` may only
+        /// read off the screen. Only while the session works or waits on a permission, as `action`;
+        /// absent where the agent records none.
+        public let step: String?
+        /// The subagents running now, with their names and steps, where the agent's own files record
+        /// them; absent when none runs. Shown at rest too, as `subagents` is: a session whose own turn
+        /// ended can still be running them.
+        public let subagentSteps: [Subagent]?
 
         public init(id: String, agent: String, activity: Activity, title: String? = nil, state: String? = nil,
                     since: String? = nil, model: String? = nil, worker: Bool? = nil, action: String? = nil,
-                    subagents: Int? = nil, cacheExpiresAt: String? = nil, cacheEstimate: Bool? = nil) {
+                    subagents: Int? = nil, cacheExpiresAt: String? = nil, cacheEstimate: Bool? = nil,
+                    contextPercent: Int? = nil, step: String? = nil, subagentSteps: [Subagent]? = nil) {
             self.id = id
             self.agent = agent
             self.activity = activity
@@ -50,6 +76,9 @@ public struct KnownProject: Codable, Equatable, Sendable {
             self.subagents = subagents
             self.cacheExpiresAt = cacheExpiresAt
             self.cacheEstimate = cacheEstimate
+            self.contextPercent = contextPercent
+            self.step = step
+            self.subagentSteps = subagentSteps
         }
 
         public var agentKind: AgentKind? { AgentKind(rawValue: agent) }
@@ -66,6 +95,22 @@ public struct KnownProject: Codable, Equatable, Sendable {
 
     /// The folder's name, which is what a `project` argument usually gives.
     public var name: String { URL(fileURLWithPath: path).lastPathComponent }
+}
+
+/// One plan limit an agent reports, as `projects.json` lists it under `limits`, keyed by agent.
+public struct KnownLimit: Codable, Equatable, Sendable {
+    /// The window, as the agent's usage reader names it: `5h`, `7d`.
+    public let label: String
+    /// How much of it is used, 0–100.
+    public let percent: Int
+    /// When it resets, ISO 8601; absent when the agent does not say.
+    public let resets: String?
+
+    public init(label: String, percent: Int, resets: String?) {
+        self.label = label
+        self.percent = percent
+        self.resets = resets
+    }
 }
 
 public enum KnownProjectsError: Error, Equatable, LocalizedError {
@@ -100,9 +145,16 @@ public struct KnownProjectsFile: Sendable {
 
     private struct Stored: Codable {
         let projects: [KnownProject]
+        /// Each agent's plan limits, keyed by `AgentKind.rawValue`; absent when none is known, and in
+        /// a file an older app wrote.
+        let limits: [String: [KnownLimit]]?
     }
 
     public func read() throws -> [KnownProject] {
+        try stored().projects
+    }
+
+    private func stored() throws -> Stored {
         let data: Data
         do {
             data = try Data(contentsOf: url)
@@ -112,18 +164,18 @@ public struct KnownProjectsFile: Sendable {
             throw KnownProjectsError.unreadable(path: url.path, reason: error.localizedDescription)
         }
         do {
-            return try JSONDecoder().decode(Stored.self, from: data).projects
+            return try JSONDecoder().decode(Stored.self, from: data)
         } catch {
             throw KnownProjectsError.unreadable(path: url.path, reason: String(describing: error))
         }
     }
 
     /// Replaces the file in one step, so a reader never sees half of it.
-    public func write(_ projects: [KnownProject]) throws {
+    public func write(_ projects: [KnownProject], limits: [String: [KnownLimit]] = [:]) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(Stored(projects: projects)).write(to: url, options: .atomic)
+        try encoder.encode(Stored(projects: projects, limits: limits.isEmpty ? nil : limits)).write(to: url, options: .atomic)
     }
 
     /// Removes the file; a file already gone is fine.

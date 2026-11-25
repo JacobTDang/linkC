@@ -37,6 +37,14 @@ final class KnownProjectsTests: XCTestCase {
         XCTAssertEqual(try file.read().first?.sessions, [open])
     }
 
+    func testTheFirstHandDetailsRoundTrip() throws {
+        let file = KnownProjectsFile(url: dir.appendingPathComponent("projects.json"))
+        let open = KnownProject.OpenSession(id: "S1", agent: "codex", activity: .busy, contextPercent: 41, step: "$ make",
+                                            subagentSteps: [.init(name: "Review", step: nil)])
+        try file.write([project("/p/a", [open])])
+        XCTAssertEqual(try file.read().first?.sessions, [open])
+    }
+
     /// An older app, or a server reading a file such an app wrote, has no row details.
     func testAFileWithoutRowDetailsStillReads() throws {
         let url = dir.appendingPathComponent("projects.json")
@@ -47,6 +55,24 @@ final class KnownProjectsTests: XCTestCase {
         XCTAssertEqual(open, KnownProject.OpenSession(id: "S1", agent: "codex", activity: .idle))
         XCTAssertNil(open.title)
         XCTAssertNil(open.since)
+    }
+
+    /// Each agent's plan limits are written beside the projects, keyed by agent, and the projects
+    /// still read.
+    func testTheLimitsAreWrittenBesideTheProjects() throws {
+        let file = KnownProjectsFile(url: dir.appendingPathComponent("projects.json"))
+        let limits = ["codex": [KnownLimit(label: "5h", percent: 74, resets: "2026-09-21T15:13:20Z")]]
+        try file.write([project("/p/a")], limits: limits)
+        XCTAssertEqual(try file.writtenLimits(), limits)
+        XCTAssertEqual(try file.read(), [project("/p/a")])
+    }
+
+    /// With no limits known, the file has no `limits` key, as a file an older app wrote has none.
+    func testWithNoLimitsKnownTheFileHasNoLimitsKey() throws {
+        let file = KnownProjectsFile(url: dir.appendingPathComponent("projects.json"))
+        try file.write([project("/p/a")])
+        XCTAssertEqual(try file.writtenLimits(), [:])
+        XCTAssertFalse(try String(contentsOf: file.url, encoding: .utf8).contains("limits"), "no limits, no key")
     }
 
     func testAMissingFileMeansLinkCIsNotRunning() {

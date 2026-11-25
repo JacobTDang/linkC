@@ -72,6 +72,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         sweepClock: any Clock<Duration> = ContinuousClock(),
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
         knownProjectsFile: KnownProjectsFile? = nil,
+        liveReaders: [AgentKind: any SessionLiveReader] = [:],
         sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] }
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
@@ -116,6 +117,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             sweepClock: sweepClock,
             mcpWorkspaces: mcpWorkspaces,
             knownProjectsFile: knownProjectsFile,
+            liveReaders: liveReaders,
             sidebarProjects: sidebarProjects,
             openCodeModels: openCodeModels,
             isWatching: { _ in false }
@@ -3092,6 +3094,51 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(copy.tier, .light, "A rerouted task keeps its tier and resolves it through the new agent's mapping")
     }
 
+    /// A reroute copy keeps the task's effort along with its tier.
+    @MainActor
+    func testARerouteKeepsTheTaskEffort() async throws {
+        let copy = try await rerouteCopy(ofLightTaskAt: .xhigh, models: .seeded)
+        XCTAssertNotEqual(copy.toAgent, .claude)
+        XCTAssertEqual(copy.effort, .xhigh)
+    }
+
+    /// Grok takes no effort from linkC (its effort is in its model ids), so a copy for it carries none
+    /// rather than one it cannot run at.
+    @MainActor
+    func testARerouteToAnAgentThatCannotTakeTheEffortCarriesNone() async throws {
+        let models = AgentModelSettings(
+            models: [AgentKind.claude.rawValue: ["light": "haiku"],
+                     AgentKind.grok.rawValue: ["light": "grok-4.7-low"]],
+            defaultTiers: [:])
+        let copy = try await rerouteCopy(ofLightTaskAt: .xhigh, models: models)
+        XCTAssertEqual(copy.toAgent, .grok)
+        XCTAssertNil(copy.effort)
+    }
+
+    /// A Claude worker holding a light task at `effort` hits its limit; the copy the reroute made.
+    @MainActor
+    private func rerouteCopy(ofLightTaskAt effort: ReasoningEffort, models: AgentModelSettings) async throws -> TaskRecord {
+        let ws = tempDir.path
+        let inbox = InboxStore(workspaceRoot: ws)
+        let coordinator = makeCoordinator(models: models)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: ws, agent: .claude, mode: .new, tier: .light, effort: effort)
+        coordinator.store.updateState(id: session.id, to: Self.turnOver)
+        let task = try inbox.createTask(from: .cursor, to: .claude, tier: .light, effort: effort,
+                                        prompt: "Build a streaming proxy", files: [])
+        try inbox.markTaskDelivered(taskId: task.id, sessionId: session.id)
+        try inbox.markTaskStarted(taskId: task.id)
+
+        coordinator.terminals.sendInput(sessionId: session.id, text: "Rate limit reached. Please try again later.\n")
+        let outputReady = try await waitUntil {
+            coordinator.terminals.session(id: session.id)?.recentOutput(lines: 10).contains("Rate limit reached") ?? false
+        }
+        XCTAssertTrue(outputReady)
+        XCTAssertTrue(coordinator.checkLimitsAndReroute(for: session.id))
+        return try XCTUnwrap(inbox.openTasks().first { $0.hop == 1 })
+    }
+
     /// No peer can serve the task's tier (cursor never can, and every other agent has no
     /// model configured for it): the reroute must not cancel the original task, must not create
     /// an undeliverable hop copy, and must not announce a reroute — none of that actually
@@ -4849,6 +4896,147 @@ final class AppCoordinatorRelayTests: XCTestCase {
         let open = try XCTUnwrap(try file.read().first?.sessions.first)
         XCTAssertEqual(open.cacheExpiresAt, "2026-09-21T15:13:20Z")
         XCTAssertNil(open.cacheEstimate)
+    }
+
+    /// A Claude session's status line says how full its context window is; the sweep publishes it.
+    @MainActor
+    func testSweepPublishesTheContextUseTheStatusLineReports() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "long", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        coordinator.sessionStatuses.accept(
+            sessionId: "L1", body: Data(#"{"context_window":{"context_window_size":200000,"used_percentage":72}}"#.utf8))
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.read().first?.sessions.first?.contextPercent, 72)
+    }
+
+    /// The app's readings of other agents' plans (Codex's) go beside the projects.
+    @MainActor
+    func testSweepPublishesThePlanLimitsTheAppReads() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let resets = Date().addingTimeInterval(3600)
+        coordinator.agentUsage = {
+            [AgentUsage(agent: .codex, windows: [UsageWindow(label: "5h", usedPercent: 81, tokens: nil, resetsAt: resets)],
+                        planType: nil, observedAt: Date(), unavailableReason: nil)]
+        }
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.writtenLimits(), ["codex": [KnownLimit(label: "5h", percent: 81, resets: resets.formatted(.iso8601))]])
+    }
+
+    /// A limit that moves rewrites the file, though no session changed.
+    @MainActor
+    func testAMovedLimitRewritesTheProjectsFile() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        var percent = 50.0
+        coordinator.agentUsage = {
+            [AgentUsage(agent: .codex, windows: [UsageWindow(label: "7d", usedPercent: percent, tokens: nil, resetsAt: nil)],
+                        planType: nil, observedAt: Date(), unavailableReason: nil)]
+        }
+
+        await coordinator.runSweepTickForTests()
+        percent = 51
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(coordinator.knownProjectsWriteCount, 2)
+        XCTAssertEqual(try file.writtenLimits()["codex"]?.first?.percent, 51)
+    }
+
+    /// A Claude session's transcript names its step and its running subagents' steps; the sweep
+    /// publishes them.
+    @MainActor
+    func testSweepPublishesTheStepsAClaudeTranscriptRecords() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "busy", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .working)
+        let transcript = tempDir.appendingPathComponent("made-up.jsonl")
+        let lines = """
+        {"type":"assistant","isSidechain":false,"timestamp":"2026-08-18T04:00:00Z","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"description":"Survey","subagent_type":"Explore"}}]}}
+        {"type":"assistant","isSidechain":false,"timestamp":"2026-08-18T04:00:01Z","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"swift test"}}]}}
+        """
+        try (lines + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+        let subagents = tempDir.appendingPathComponent("made-up/subagents")
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        try #"{"toolUseId":"toolu_A"}"#.write(to: subagents.appendingPathComponent("agent-a.meta.json"), atomically: true, encoding: .utf8)
+        try (#"{"type":"assistant","isSidechain":true,"timestamp":"2026-08-18T04:00:02Z","message":{"content":[{"type":"tool_use","id":"s1","name":"Read","input":{"file_path":"/p/Card.swift"}}]}}"# + "\n")
+            .write(to: subagents.appendingPathComponent("agent-a.jsonl"), atomically: true, encoding: .utf8)
+        let tracker = UsageTracker(projectsDir: tempDir)
+        tracker.bind(sessionId: "L1", transcriptPath: transcript.path)
+        tracker.refreshSession("L1")
+        coordinator.usageTracker = tracker
+
+        await coordinator.runSweepTickForTests()
+
+        let open = try XCTUnwrap(try file.read().first?.sessions.first)
+        XCTAssertEqual(open.step, "$ swift test")
+        XCTAssertEqual(open.subagentSteps, [.init(name: "Survey", step: "⊙ Card.swift")])
+    }
+
+    /// What an agent's own files say about its session, read off the main actor, reaches its row.
+    @MainActor
+    func testSweepPublishesWhatTheAgentsReaderReads() async throws {
+        struct Fixed: SessionLiveReader {
+            func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
+                SessionLiveDetail(contextPercent: 37, step: "$ make")
+            }
+        }
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file, liveReaders: [.codex: Fixed()])
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "busy", id: "L1", agentKind: .codex)
+        coordinator.store.updateState(id: session.id, to: .working)
+
+        await coordinator.runSweepTickForTests()
+        await coordinator.settleLiveDetailsForTests()
+        await coordinator.runSweepTickForTests()
+
+        let open = try XCTUnwrap(try file.read().first?.sessions.first)
+        XCTAssertEqual(open.contextPercent, 37)
+        XCTAssertEqual(open.step, "$ make")
+    }
+
+    /// Every agent whose own records linkC can read has its reader; the rest have none, and publish
+    /// nothing first-hand.
+    @MainActor
+    func testTheAppReadsTheRecordsOfEveryAgentThatKeepsThem() {
+        let readers = AppCoordinator.liveReaders(home: tempDir)
+        XCTAssertEqual(Set(readers.keys), [.codex, .opencode, .cursor, .grok, .agy])
+    }
+
+    /// The agent's own conversation id linkC passed it (OpenCode's) reaches its reader.
+    @MainActor
+    func testTheReaderIsHandedTheConversationIdLinkCPassedTheAgent() async throws {
+        final class Recording: SessionLiveReader, @unchecked Sendable {
+            private let lock = NSLock()
+            private var ids: [String?] = []
+            var seen: [String?] { lock.withLock { ids } }
+            func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
+                lock.withLock { ids.append(target.agentSessionId) }
+                return SessionLiveDetail()
+            }
+        }
+        let recording = Recording()
+        let coordinator = makeCoordinator(liveReaders: [.opencode: recording])
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "oc", id: "L1", agentKind: .opencode,
+                                               claudeSessionId: "ses_made_up")
+        coordinator.store.updateState(id: session.id, to: .working)
+
+        await coordinator.runSweepTickForTests()
+        await coordinator.settleLiveDetailsForTests()
+
+        XCTAssertEqual(recording.seen, ["ses_made_up"])
     }
 
     @MainActor

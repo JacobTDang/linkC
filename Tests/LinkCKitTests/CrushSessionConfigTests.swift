@@ -98,6 +98,37 @@ final class CrushSessionConfigTests: XCTestCase {
         XCTAssertEqual((config["options"] as? [String: Bool]), ["disable_metrics": true])
     }
 
+    /// Crush has no effort flag. `crush schema` puts `reasoning_effort` (low|medium|high) on a selected
+    /// model, and its top-level config takes no key it does not list, so the effort goes on both pinned
+    /// entries and nowhere else.
+    func testTheSessionConfigPutsReasoningEffortOnBothPinnedModels() throws {
+        try write(userConfigText, to: userConfig.appendingPathComponent("crush.json"))
+
+        let env = try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free, effort: .high)
+
+        let configDir = try XCTUnwrap(env["CRUSH_GLOBAL_CONFIG"])
+        let config = try json(URL(fileURLWithPath: configDir).appendingPathComponent("crush.json"))
+        let models = try XCTUnwrap(config["models"] as? [String: Any])
+        let pinned = ["provider": "openrouter", "model": String(free.dropFirst("openrouter/".count)), "reasoning_effort": "high"]
+        XCTAssertEqual(models["large"] as? [String: String], pinned)
+        XCTAssertEqual(models["small"] as? [String: String], pinned)
+        XCTAssertNil(config["reasoning_effort"], "the top-level config has no reasoning_effort key")
+    }
+
+    func testTheSessionConfigOmitsReasoningEffortWhenUnset() throws {
+        try write(userConfigText, to: userConfig.appendingPathComponent("crush.json"))
+
+        let env = try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free)
+
+        let configDir = try XCTUnwrap(env["CRUSH_GLOBAL_CONFIG"])
+        let config = try json(URL(fileURLWithPath: configDir).appendingPathComponent("crush.json"))
+        let models = try XCTUnwrap(config["models"] as? [String: Any])
+        let pinned = ["provider": "openrouter", "model": String(free.dropFirst("openrouter/".count))]
+        XCTAssertEqual(models["large"] as? [String: String], pinned)
+        XCTAssertEqual(models["small"] as? [String: String], pinned)
+        XCTAssertNil(config["reasoning_effort"])
+    }
+
     func testAKeyOnlyUserConfigGivesAConfigWithTheKeyAndThePin() throws {
         let env = try makeConfig().prepare(sessionId: "S1", cwd: project.path, model: free)
 

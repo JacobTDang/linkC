@@ -91,9 +91,11 @@ final class AppCoordinatorCrushTests: XCTestCase {
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
     }
 
-    private func assertPinned(_ config: [String: Any], to model: String, file: StaticString = #filePath, line: UInt = #line) throws {
+    private func assertPinned(_ config: [String: Any], to model: String, effort: ReasoningEffort? = nil,
+                              file: StaticString = #filePath, line: UInt = #line) throws {
         let slash = try XCTUnwrap(model.firstIndex(of: "/"))
-        let pin = ["provider": String(model[..<slash]), "model": String(model[model.index(after: slash)...])]
+        var pin = ["provider": String(model[..<slash]), "model": String(model[model.index(after: slash)...])]
+        if let effort { pin["reasoning_effort"] = effort.rawValue }
         let models = try XCTUnwrap(config["models"] as? [String: Any], file: file, line: line)
         XCTAssertEqual(models["large"] as? [String: String], pin, file: file, line: line)
         XCTAssertEqual(models["small"] as? [String: String], pin, file: file, line: line)
@@ -123,15 +125,21 @@ final class AppCoordinatorCrushTests: XCTestCase {
         try assertUsersFilesUntouched()
     }
 
-    func testACrushSessionOnATierRunsPinnedToThatTiersModel() throws {
-        let coordinator = try makeCoordinator()
+    /// A tier also pins its effort, as set in Settings > Models (here not the deep default), on both
+    /// pinned models of the session's config.
+    func testACrushSessionOnATierRunsPinnedToThatTiersModelAndEffort() throws {
+        var models = AgentModelSettings.seeded
+        models.setEffort(.medium, for: .crush, tier: .deep)
+        let coordinator = try makeCoordinator(models: models)
         defer { coordinator.shutdown() }
 
         let session = try coordinator.newSession(cwd: tempDir.path, agent: .crush, mode: .new, tier: .deep)
 
         XCTAssertEqual(session.model, "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free")
         XCTAssertEqual(session.modelTier, .deep)
-        try assertPinned(try pinnedConfig(of: session), to: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free")
+        let config = try pinnedConfig(of: session)
+        try assertPinned(config, to: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", effort: .medium)
+        XCTAssertNil(config["reasoning_effort"], "the top-level config has no reasoning_effort key")
     }
 
     func testTheTerminalPointsCrushAtTheSessionsOwnConfigAndDataFolders() throws {

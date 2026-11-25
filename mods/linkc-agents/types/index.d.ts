@@ -14,10 +14,27 @@ export type AgentRow = {
   subagents?: number
   cacheExpiresAt?: string
   cacheEstimate?: boolean
+  /** How full its context is, 0–100, as its agent reports it. */
+  contextPercent?: number
+  /** The step its turn is on, as its agent's own hooks or files record it. */
+  step?: string
+  /** Its running subagents, each by name and the step its files record. */
+  subagentSteps?: { name: string; step?: string }[]
 }
 
+/** One plan limit of an agent, as linkC publishes it beside the projects. */
+export type Limit = { label: string; percent: number; resets?: string }
+
 /** What the bottom half shows: the repo's sessions, or why they could not be read. */
-export type Agents = { rows: AgentRow[]; error: string | null; me: string | null; minute: number; coldCaches: number }
+export type Agents = {
+  rows: AgentRow[]
+  /** Each agent's plan limits, by agent. */
+  limits: Record<string, Limit[]>
+  error: string | null
+  me: string | null
+  minute: number
+  coldCaches: number
+}
 
 /** One meter in the band above the prompt: `context`, or a plan limit such as `7d`. */
 export type Meter = { label: string; percent: number }
