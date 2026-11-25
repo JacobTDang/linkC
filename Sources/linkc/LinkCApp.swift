@@ -213,10 +213,20 @@ final class AppModel {
     private func installBundledMods(coordinator: AppCoordinator) {
         guard let bundleMods = BundledMods.bundleModsDirectory() else { return }
         do {
-            try BundledMods(
+            let notices = try BundledMods(
                 bundleModsDirectory: bundleMods,
                 installDirectory: BundledMods.defaultInstallDirectory
             ).install()
+            // A notice that is still true is logged each launch but shown once; it is shown again
+            // if it goes and comes back.
+            let key = "LinkCBundledModNoticesSaid"
+            let fresh = BundledMods.unsaid(notices, saidBefore: UserDefaults.standard.stringArray(forKey: key) ?? [])
+            UserDefaults.standard.set(notices, forKey: key)
+            notices.forEach { NSLog("[linkC] %@", $0) }
+            for message in fresh {
+                coordinator.postLocalNotification(title: "linkC", body: message)
+                enqueueStartNotice(message)
+            }
         } catch {
             let message = error.localizedDescription
             NSLog("[linkC] %@", message)

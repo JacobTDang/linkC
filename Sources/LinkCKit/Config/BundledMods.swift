@@ -33,6 +33,12 @@ public struct BundledMods: Sendable {
         self.copyFile = copyFile
     }
 
+    /// The notices not said before: one that is still true is not said again on every launch, and
+    /// one that went and came back is said again.
+    public static func unsaid(_ notices: [String], saidBefore: [String]) -> [String] {
+        notices.filter { !saidBefore.contains($0) }
+    }
+
     /// Default install root: `~/Library/Application Support/linkC/mods`.
     public static var defaultInstallDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -50,26 +56,30 @@ public struct BundledMods: Sendable {
         return mods
     }
 
-    /// Install or refresh every mod folder under `bundleModsDirectory`.
-    public func install() throws {
+    /// Install or refresh every mod folder under `bundleModsDirectory`. Returns what the user should
+    /// be told that is not a failure: a shipped file left as it is because the user's own link sits there.
+    @discardableResult
+    public func install() throws -> [String] {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: bundleModsDirectory.path) else { return }
+        guard fm.fileExists(atPath: bundleModsDirectory.path) else { return [] }
         let names = try fm.contentsOfDirectory(atPath: bundleModsDirectory.path)
             .filter { !$0.hasPrefix(".") }
             .sorted()
+        var notices: [String] = []
         for name in names {
             let source = bundleModsDirectory.appendingPathComponent(name, isDirectory: true)
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: source.path, isDirectory: &isDir), isDir.boolValue else {
                 continue
             }
-            try installMod(named: name, from: source)
+            notices += try installMod(named: name, from: source)
         }
+        return notices
     }
 
-    private func installMod(named name: String, from source: URL) throws {
+    private func installMod(named name: String, from source: URL) throws -> [String] {
         do {
-            try installModBody(named: name, from: source)
+            return try installModBody(named: name, from: source)
         } catch let failure as Failure {
             throw failure
         } catch {
@@ -77,7 +87,7 @@ public struct BundledMods: Sendable {
         }
     }
 
-    private func installModBody(named name: String, from source: URL) throws {
+    private func installModBody(named name: String, from source: URL) throws -> [String] {
         let fm = FileManager.default
         let dest = installDirectory.appendingPathComponent(name, isDirectory: true)
         try fm.createDirectory(at: dest, withIntermediateDirectories: true)
@@ -85,7 +95,22 @@ public struct BundledMods: Sendable {
         let shipped = try relativeFiles(under: source)
         let previous = try validatedManifest(loadManifest(at: dest), modRoot: dest)
         let previousSet = Set(previous)
-        try sweepLeftoverStageTemps(in: dest)
+        try sweepLeftoverStageTemps(in: dest, modName: name)
+        // Everything the user has in the way is found before anything is changed.
+        var notices: [String] = []
+        var users: Set<String> = []
+        for relative in shipped {
+            switch try placeFor(relative, under: dest, previousShipped: previousSet, modName: name) {
+            case .free:
+                break
+            case .usersLink:
+                users.insert(relative)
+                notices.append(
+                    "\(name)/\(relative) is a link of yours, so linkC left it as it is and did not update it. "
+                        + "Remove the link to let linkC install its own copy."
+                )
+            }
+        }
         // Each file is swapped in whole (stage then replace/move). The set is not a
         // transaction — a later successful run heals a partial set.
         var staged: [(temp: URL, final: URL)] = []
@@ -94,7 +119,7 @@ public struct BundledMods: Sendable {
                 try? fm.removeItem(at: pair.temp)
             }
         }
-        for relative in shipped {
+        for relative in shipped where !users.contains(relative) {
             let fromURL = source.appendingPathComponent(relative)
             let to = dest.appendingPathComponent(relative)
             if fm.fileExists(atPath: to.path),
@@ -104,7 +129,7 @@ public struct BundledMods: Sendable {
                 continue
             }
             // Stage under the mod root so a file→folder flip does not need the parent yet.
-            let temp = dest.appendingPathComponent(".linkc-new-\(UUID().uuidString)")
+            let temp = dest.appendingPathComponent(Self.stageTempName())
             staged.append((temp, to)) // track before copy so a failed copy is still cleaned up
             try copyFile(fromURL, temp)
         }
@@ -139,34 +164,107 @@ public struct BundledMods: Sendable {
             }
             let url = dest.appendingPathComponent(relative)
             try assertNoSymlinkInPath(relative, under: dest, modName: name)
+            // The user's own link where a file was is theirs, not a file linkC made: not deleted.
             guard isRegularFileLstat(at: url) else { continue }
             try fm.removeItem(at: url)
             try removeEmptyParentsCreatedByManifest(
                 of: url, modRoot: dest, previousShipped: previousSet
             )
         }
-        try saveManifest(shipped, at: dest)
+        try saveManifest(shipped.filter { !users.contains($0) }, at: dest)
+        return notices
     }
 
-    /// Drop crash leftovers from a prior run: `.linkc-new-*` under the mod root and
-    /// `*.linkc-new-*` beside any nested path (legacy staging location).
-    private func sweepLeftoverStageTemps(in dest: URL) throws {
+    private static let stageTempPrefix = ".linkc-new-"
+
+    /// The name a file is staged under in the mod root before it is swapped in.
+    static func stageTempName(_ id: UUID = UUID()) -> String { stageTempPrefix + id.uuidString }
+
+    /// Whether `name` is exactly what `stageTempName` makes: the prefix and a UUID as `UUID` prints it.
+    static func isStageTempName(_ name: String) -> Bool {
+        guard name.hasPrefix(stageTempPrefix) else { return false }
+        let id = String(name.dropFirst(stageTempPrefix.count))
+        return UUID(uuidString: id)?.uuidString == id
+    }
+
+    /// Drops what a crash left from a prior run: the regular files in the mod root named as a
+    /// staging temp is, which is where staging puts them. Nothing else is touched, whatever its name
+    /// has in it, and nothing below the root, where the engine's generated types folder is. A temp
+    /// that cannot be removed fails the install, naming it.
+    private func sweepLeftoverStageTemps(in dest: URL, modName: String) throws {
         let fm = FileManager.default
-        let rootPath = dest.standardizedFileURL.path
-        guard let enumerator = fm.enumerator(
-            at: dest,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsPackageDescendants]
-        ) else { return }
-        for case let url as URL in enumerator {
-            let name = url.lastPathComponent
-            let isRootTemp = name.hasPrefix(".linkc-new-")
-            let isBesideTemp = name.contains(".linkc-new-")
-            guard isRootTemp || isBesideTemp else { continue }
-            let path = url.standardizedFileURL.path
-            guard path.hasPrefix(rootPath + "/") else { continue }
-            try? fm.removeItem(at: url)
+        for name in try fm.contentsOfDirectory(atPath: dest.path) where Self.isStageTempName(name) {
+            let url = dest.appendingPathComponent(name)
+            guard isRegularFileLstat(at: url) else { continue }
+            do {
+                try fm.removeItem(at: url)
+            } catch {
+                throw Failure(
+                    modName: modName,
+                    detail: "the leftover staging file \(name) could not be removed: \(error.localizedDescription)"
+                )
+            }
         }
+    }
+
+    private enum Place {
+        /// Nothing of the user's is in the way.
+        case free
+        /// The user's own link is at the shipped path itself.
+        case usersLink
+    }
+
+    /// What is at a shipped path and on the way to it. Throws, changing nothing, where installing
+    /// would write outside the mod folder (a link on the way) or delete something of the user's (a
+    /// folder with their files at the path of a shipped file).
+    private func placeFor(
+        _ relative: String, under modRoot: URL, previousShipped: Set<String>, modName: String
+    ) throws -> Place {
+        let components = relative.split(separator: "/").map(String.init)
+        var built = ""
+        for component in components.dropLast() {
+            built = built.isEmpty ? component : built + "/" + component
+            if isSymlinkLstat(at: modRoot.appendingPathComponent(built)) {
+                throw Failure(
+                    modName: modName,
+                    detail: "\(built) is a link, so \(relative) would be written outside the mod folder through it. "
+                        + "Remove the link to let linkC install it."
+                )
+            }
+        }
+        let url = modRoot.appendingPathComponent(relative)
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { return .free }
+        switch info.st_mode & S_IFMT {
+        case S_IFLNK:
+            return .usersLink
+        case S_IFDIR:
+            guard try holdsOnlyShippedFiles(url, relative: relative, previousShipped: previousShipped) else {
+                throw Failure(
+                    modName: modName,
+                    detail: "\(relative) is a folder with files of yours in it, where linkC ships a file. "
+                        + "Move or remove the folder to let linkC install it."
+                )
+            }
+            return .free
+        default:
+            return .free
+        }
+    }
+
+    /// Whether a folder holds nothing but files a previous install shipped (and folders): replacing
+    /// it loses nothing of the user's.
+    private func holdsOnlyShippedFiles(_ folder: URL, relative: String, previousShipped: Set<String>) throws -> Bool {
+        for sub in try FileManager.default.subpathsOfDirectory(atPath: folder.path) {
+            var info = stat()
+            guard lstat(folder.appendingPathComponent(sub).path, &info) == 0 else { return false }
+            switch info.st_mode & S_IFMT {
+            case S_IFDIR: continue
+            case S_IFREG: if !previousShipped.contains(relative + "/" + sub) { return false }
+            default: return false
+            }
+        }
+        return true
     }
 
     /// When a shipped path becomes a folder (`foo` → `foo/bar.txt`), remove the old shipped
@@ -224,14 +322,17 @@ public struct BundledMods: Sendable {
                     detail: "shipped-file manifest has an unsafe path \(entry.debugDescription)"
                 )
             }
+            // A link on the way would lead outside the mod folder. One at the path itself is the
+            // user's own, left alone where it is met.
             var built = ""
-            for component in components {
+            for component in components.dropLast() {
                 built = built.isEmpty ? component : built + "/" + component
                 let step = modRoot.appendingPathComponent(built)
                 if isSymlinkLstat(at: step) {
                     throw Failure(
                         modName: modName,
-                        detail: "shipped-file manifest path passes through a symlink: \(entry.debugDescription)"
+                        detail: "shipped-file manifest path passes through the link \(built): \(entry.debugDescription). "
+                            + "Remove the link."
                     )
                 }
             }
@@ -266,14 +367,16 @@ public struct BundledMods: Sendable {
         return (st.st_mode & S_IFMT) == S_IFREG
     }
 
+    /// Throws when a folder on the way to `relative` is a link; the path itself may be one.
     private func assertNoSymlinkInPath(_ relative: String, under modRoot: URL, modName: String) throws {
         var built = ""
-        for component in relative.split(separator: "/", omittingEmptySubsequences: true).map(String.init) {
+        for component in relative.split(separator: "/", omittingEmptySubsequences: true).map(String.init).dropLast() {
             built = built.isEmpty ? component : built + "/" + component
             if isSymlinkLstat(at: modRoot.appendingPathComponent(built)) {
                 throw Failure(
                     modName: modName,
-                    detail: "shipped-file manifest path passes through a symlink: \(relative.debugDescription)"
+                    detail: "shipped-file manifest path passes through the link \(built): \(relative.debugDescription). "
+                        + "Remove the link."
                 )
             }
         }
