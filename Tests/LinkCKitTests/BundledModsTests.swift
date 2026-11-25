@@ -242,6 +242,50 @@ final class BundledModsTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: keep, encoding: .utf8), "user")
     }
 
+    /// "userdata" without a trailing slash passes the path check, so it reaches the prune. Only
+    /// regular files are pruned: the folder and what is inside it stay.
+    func testADirectoryEntryWithoutATrailingSlashIsNotPruned() throws {
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "safe"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let modRoot = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let userdata = modRoot.appendingPathComponent("userdata", isDirectory: true)
+        try FileManager.default.createDirectory(at: userdata, withIntermediateDirectories: true)
+        let keep = userdata.appendingPathComponent("keep.txt")
+        try Data("user".utf8).write(to: keep)
+        try JSONEncoder().encode(["README.md", "userdata"])
+            .write(to: modRoot.appendingPathComponent(".linkc-shipped.json"))
+
+        XCTAssertNoThrow(try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install())
+
+        XCTAssertEqual(try String(contentsOf: keep, encoding: .utf8), "user")
+    }
+
+    /// A copy that fails after writing part of its temp leaves no temp behind: each temp is
+    /// tracked before its copy starts. (A real copy of an unreadable source fails before it
+    /// creates anything, so the partial temp comes from the copy seam.)
+    func testACopyThatFailsPartwayLeavesNoTemp() throws {
+        try writeBundleMod(name: "linkc-agents", files: ["a.txt": "old-a", "b.txt": "old-b"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+        try writeBundleMod(name: "linkc-agents", files: ["a.txt": "new-a", "b.txt": "new-b"])
+        let failing = BundledMods(
+            bundleModsDirectory: bundleMods, installDirectory: installRoot,
+            copyFile: { from, to in
+                guard from.lastPathComponent == "b.txt" else {
+                    return try FileManager.default.copyItem(at: from, to: to)
+                }
+                try Data("partial".utf8).write(to: to)
+                throw CocoaError(.fileWriteOutOfSpace)
+            })
+
+        XCTAssertThrowsError(try failing.install())
+
+        let modRoot = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let temps = try FileManager.default.contentsOfDirectory(atPath: modRoot.path).filter { $0.hasPrefix(".linkc-new-") }
+        XCTAssertEqual(temps, [], "a failed copy's partial temp is removed")
+        XCTAssertEqual(try String(contentsOf: modRoot.appendingPathComponent("a.txt"), encoding: .utf8), "old-a")
+    }
+
     func testManifestPathThroughSymlinkIsRejected() throws {
         try writeBundleMod(name: "linkc-agents", files: ["README.md": "safe"])
         try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()

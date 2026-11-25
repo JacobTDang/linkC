@@ -18,10 +18,19 @@ public struct BundledMods: Sendable {
 
     public let bundleModsDirectory: URL
     public let installDirectory: URL
+    /// Copies one shipped file to its staging temp. A seam so a test can fail a copy after it
+    /// wrote part of the temp, which a real copy of an unreadable source never does.
+    let copyFile: @Sendable (_ from: URL, _ to: URL) throws -> Void
 
     public init(bundleModsDirectory: URL, installDirectory: URL) {
+        self.init(bundleModsDirectory: bundleModsDirectory, installDirectory: installDirectory,
+                  copyFile: { try FileManager.default.copyItem(at: $0, to: $1) })
+    }
+
+    init(bundleModsDirectory: URL, installDirectory: URL, copyFile: @escaping @Sendable (URL, URL) throws -> Void) {
         self.bundleModsDirectory = bundleModsDirectory
         self.installDirectory = installDirectory
+        self.copyFile = copyFile
     }
 
     /// Default install root: `~/Library/Application Support/linkC/mods`.
@@ -97,7 +106,7 @@ public struct BundledMods: Sendable {
             // Stage under the mod root so a file→folder flip does not need the parent yet.
             let temp = dest.appendingPathComponent(".linkc-new-\(UUID().uuidString)")
             staged.append((temp, to)) // track before copy so a failed copy is still cleaned up
-            try fm.copyItem(at: fromURL, to: temp)
+            try copyFile(fromURL, temp)
         }
         while !staged.isEmpty {
             let pair = staged.removeFirst()
