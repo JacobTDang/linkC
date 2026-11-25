@@ -319,6 +319,8 @@ public final class AppCoordinator {
     public var sessionTitles: (() -> [String: String])?
     /// Sidebar project paths (`SidebarState.projectOrder`), folded into the known-projects list.
     private let sidebarProjects: @MainActor @Sendable () -> [String]
+    /// Each live session's first-hand detail, read off the main actor by its agent's reader.
+    let liveDetails: LiveDetailSampler
     /// Last contents written to `knownProjectsFile`, so a rewrite only happens when they change.
     private var lastPublishedProjects: [KnownProject]?
     private var lastPublishedLimits: [String: [KnownLimit]]?
@@ -374,6 +376,7 @@ public final class AppCoordinator {
         sweepClock: any Clock<Duration> = ContinuousClock(),
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
         knownProjectsFile: KnownProjectsFile? = nil,
+        liveReaders: [AgentKind: any SessionLiveReader] = [:],
         sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] },
         openRequests: OpenRequestStore? = nil,
         openCodeModels: @escaping OpenCodeModelLister = { folder in
@@ -417,6 +420,7 @@ public final class AppCoordinator {
         self.sweepClock = sweepClock
         self.mcpWorkspaces = mcpWorkspaces
         self.knownProjectsFile = knownProjectsFile
+        self.liveDetails = LiveDetailSampler(readers: liveReaders)
         self.sidebarProjects = sidebarProjects
         self.openRequests = openRequests
         self.openCodeModels = openCodeModels
@@ -558,6 +562,7 @@ public final class AppCoordinator {
             usageReaders: MCPServer.defaultUsageReaders(),
             mcpWorkspaces: { MCPWorkspaceRegistry.applicationSupport.liveWorkspaces() },
             knownProjectsFile: .applicationSupport,
+            liveReaders: AppCoordinator.liveReaders,
             sidebarProjects: sidebarProjects,
             openRequests: .applicationSupport,
             openCodeConversations: .live(timeout: AppCoordinator.openCodeModelListingTimeout),
@@ -725,6 +730,7 @@ public final class AppCoordinator {
         taskEvents.retain(only: watched)
         inboxWatcher?.watch(workspaces: watched)
         sampleAgentStates()
+        refreshLiveDetails(liveSessions)
         // After the sampling, so the file holds the states it just settled.
         publishKnownProjects(sidebar: sidebar, mcpFolders: mcpFolders)
         for folder in serverOnlyFolders.sorted() {

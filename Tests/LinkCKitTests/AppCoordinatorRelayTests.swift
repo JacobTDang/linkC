@@ -72,6 +72,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         sweepClock: any Clock<Duration> = ContinuousClock(),
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
         knownProjectsFile: KnownProjectsFile? = nil,
+        liveReaders: [AgentKind: any SessionLiveReader] = [:],
         sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] }
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
@@ -116,6 +117,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
             sweepClock: sweepClock,
             mcpWorkspaces: mcpWorkspaces,
             knownProjectsFile: knownProjectsFile,
+            liveReaders: liveReaders,
             sidebarProjects: sidebarProjects,
             openCodeModels: openCodeModels,
             isWatching: { _ in false }
@@ -4902,6 +4904,29 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         XCTAssertEqual(coordinator.knownProjectsWriteCount, 2)
         XCTAssertEqual(try file.readLimits()["codex"]?.first?.percent, 51)
+    }
+
+    /// What an agent's own files say about its session, read off the main actor, reaches its row.
+    @MainActor
+    func testSweepPublishesWhatTheAgentsReaderReads() async throws {
+        struct Fixed: SessionLiveReader {
+            func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
+                SessionLiveDetail(contextPercent: 37, step: "$ make")
+            }
+        }
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file, liveReaders: [.codex: Fixed()])
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "busy", id: "L1", agentKind: .codex)
+        coordinator.store.updateState(id: session.id, to: .working)
+
+        await coordinator.runSweepTickForTests()
+        await coordinator.settleLiveDetailsForTests()
+        await coordinator.runSweepTickForTests()
+
+        let open = try XCTUnwrap(try file.read().first?.sessions.first)
+        XCTAssertEqual(open.contextPercent, 37)
+        XCTAssertEqual(open.step, "$ make")
     }
 
     @MainActor
