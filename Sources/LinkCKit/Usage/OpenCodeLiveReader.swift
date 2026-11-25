@@ -29,6 +29,10 @@ public struct OpenCodeLiveReader: SessionLiveReader {
     /// The conversation is found by the id linkC passes OpenCode, never by an open file.
     public var readsOpenFiles: Bool { false }
 
+    public func sources(of target: LiveSessionTarget) throws -> [String] {
+        target.agentSessionId == nil ? [] : [database.path, database.path + "-wal", windows.file.path]
+    }
+
     /// An empty detail when linkC knows no conversation id, OpenCode has recorded no database yet,
     /// or the conversation has no request to count. Throws when what OpenCode recorded cannot be read.
     public func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
@@ -106,7 +110,7 @@ private final class ModelWindows: @unchecked Sendable {
         let size: Int
     }
 
-    private let file: URL
+    let file: URL
     private let lock = NSLock()
     private var cached: (stamp: Stamp, windows: [String: [String: Int]])?
 

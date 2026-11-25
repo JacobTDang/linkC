@@ -296,6 +296,40 @@ final class CursorSessionReaderTests: XCTestCase {
         XCTAssertEqual(detail, SessionLiveDetail(contextPercent: 50, step: "$ swift build"))
     }
 
+    // MARK: - What a read reads
+
+    private var transcriptPath: String {
+        dir.appendingPathComponent(".cursor/projects/a-folder/agent-transcripts/chat-one/chat-one.jsonl").path
+    }
+
+    /// The chat store, its write-ahead log and the transcript are what a read reads.
+    func testTheStoreItsLogAndTheTranscriptAreWhatAReadReads() throws {
+        let store = try chatStore()
+        XCTAssertEqual(try stepReader().sources(of: target([store])), [store, store + "-wal"])
+
+        try transcript([userLine()])
+        // The roots are listed to find it, which names it as the kernel does (`/private/var/…`).
+        let found = try XCTUnwrap(ProcessSnooper.canonicalPath(transcriptPath))
+        XCTAssertEqual(try stepReader().sources(of: target([store])), [store, store + "-wal", found])
+        XCTAssertEqual(try stepReader().sources(of: target([])), [])
+    }
+
+    /// The transcripts folder holds a folder per project, listed to find a chat's transcript; once
+    /// found, it is not looked for again while it is there.
+    func testAChatsTranscriptIsLookedForOnceFound() throws {
+        let store = try chatStore()
+        try transcript([userLine(), assistantLine(toolUse("Shell", #"{"command":"swift build"}"#))])
+        let reader = stepReader()
+        XCTAssertEqual(try reader.read(target([store])).step, "$ swift build")
+
+        // Listing the folder is refused now; reaching a file through it is not.
+        let projects = dir.appendingPathComponent(".cursor/projects").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o100], ofItemAtPath: projects)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: projects) }
+
+        XCTAssertEqual(try reader.read(target([store])).step, "$ swift build")
+    }
+
     func testATranscriptLineThatIsNotJSONThrows() throws {
         let store = try chatStore()
         try transcript([userLine(), "not json", assistantLine(text())])

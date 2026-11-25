@@ -10,10 +10,19 @@ public struct CodexRolloutReader: SessionLiveReader {
 
     public init() {}
 
+    public func sources(of target: LiveSessionTarget) throws -> [String] {
+        Self.rollout(among: target.openFiles).map { [$0] } ?? []
+    }
+
     public func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
-        // The newest, should a process hold more than one: rollout names begin with their start time.
-        guard let path = target.openFiles.filter(Self.isRollout).max() else { return SessionLiveDetail() }
+        guard let path = Self.rollout(among: target.openFiles) else { return SessionLiveDetail() }
         return Self.detail(fromLines: try Self.tailLines(of: path))
+    }
+
+    /// The newest rollout held open, should a process hold more than one: rollout names begin with
+    /// their start time.
+    static func rollout(among openFiles: [String]) -> String? {
+        openFiles.filter(isRollout).max()
     }
 
     static func isRollout(_ path: String) -> Bool {

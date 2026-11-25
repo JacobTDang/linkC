@@ -42,6 +42,16 @@ public final class LiveDetailSampler: @unchecked Sendable {
     private var lastFailure: [String: (said: String, at: Date)] = [:]
     static let repeatAfter: TimeInterval = 10 * 60
     private var inFlight: Task<Void, Never>?
+    /// Each session's last good read, with what it read: while its target is the same and the
+    /// stamps of its reader's files have not moved, it stands. Used on the queue alone.
+    private var lastRead: [String: LastRead] = [:]
+
+    private struct LastRead {
+        let target: LiveSessionTarget
+        let sources: [String]
+        let stamps: [FileStamp?]
+        let detail: SessionLiveDetail
+    }
 
     private let now: @Sendable () -> Date
     private let openFiles: @Sendable (pid_t) -> [String]
@@ -96,9 +106,30 @@ public final class LiveDetailSampler: @unchecked Sendable {
             let target = LiveSessionTarget(
                 sessionId: session.id, agent: session.agent, cwd: session.cwd, agentSessionId: session.agentSessionId,
                 openFiles: reader.readsOpenFiles ? session.pid.map(openFiles) ?? [] : [])
-            read[session.id] = Result { try reader.read(target) }
+            read[session.id] = Result { try detail(of: target, by: reader) }
         }
-        land(read, live: Set(sessions.map(\.id)))
+        let live = Set(sessions.map(\.id))
+        lastRead = lastRead.filter { live.contains($0.key) }
+        land(read, live: live)
+    }
+
+    /// The last read's detail while nothing it read has changed, else a new read's.
+    private func detail(of target: LiveSessionTarget, by reader: any SessionLiveReader) throws -> SessionLiveDetail {
+        do {
+            let sources = try reader.sources(of: target)
+            // Stamped before the read: a write that lands after it moves a stamp for the next pass.
+            let stamps = try sources.map(FileStamp.of)
+            if !sources.isEmpty, let last = lastRead[target.sessionId],
+               last.target == target, last.sources == sources, last.stamps == stamps {
+                return last.detail
+            }
+            let detail = try reader.read(target)
+            lastRead[target.sessionId] = sources.isEmpty ? nil : LastRead(target: target, sources: sources, stamps: stamps, detail: detail)
+            return detail
+        } catch {
+            lastRead[target.sessionId] = nil
+            throw error
+        }
     }
 
     private func land(_ read: [String: Result<SessionLiveDetail, Error>], live: Set<String>) {

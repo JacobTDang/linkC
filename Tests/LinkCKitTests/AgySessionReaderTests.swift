@@ -166,6 +166,14 @@ final class AgySessionReaderTests: XCTestCase {
         XCTAssertEqual(try AgySessionReader(scratch: root).read(target([lock])).contextPercent, 75)
     }
 
+    /// The database and its write-ahead log are what a read reads: while neither changes, the
+    /// read need not be done again.
+    func testTheDatabaseAndItsLogAreWhatAReadReads() throws {
+        let lock = try makeConversation(rows: [(idx: 1, data: row(used: 1, window: 4))])
+        XCTAssertEqual(try AgySessionReader().sources(of: target([lock])), [database, database + "-wal"])
+        XCTAssertEqual(try AgySessionReader().sources(of: target([])), [])
+    }
+
     func testAFullerThanFullWindowReadsAsFull() throws {
         let lock = try makeConversation(rows: [(idx: 1, data: row(used: 300, window: 200))])
         XCTAssertEqual(try AgySessionReader().read(target([lock])).contextPercent, 100)

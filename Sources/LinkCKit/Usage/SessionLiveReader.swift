@@ -29,11 +29,16 @@ public protocol SessionLiveReader: Sendable {
     /// Whether a read uses `LiveSessionTarget.openFiles`: the session's process tree is looked
     /// into only for a reader that does.
     var readsOpenFiles: Bool { get }
+    /// The files a read of `target` reads, a SQLite database's write-ahead log among them. While the
+    /// target is the same and none of them has changed, the read is not done again. Must be cheap:
+    /// it is asked on every pass. Empty, by default, when the reader cannot say: it is read every pass.
+    func sources(of target: LiveSessionTarget) throws -> [String]
     func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail
 }
 
 extension SessionLiveReader {
     public var readsOpenFiles: Bool { true }
+    public func sources(of target: LiveSessionTarget) throws -> [String] { [] }
 }
 
 extension SessionLiveDetail {

@@ -2,6 +2,17 @@ import XCTest
 @testable import LinkCKit
 
 final class LiveDetailSamplerTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-sampler-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: dir)
+    }
+
     private struct Fixed: SessionLiveReader {
         let detail: SessionLiveDetail
         func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail { detail }
@@ -199,6 +210,92 @@ final class LiveDetailSamplerTests: XCTestCase {
         await sampler.refresh([session("S1", .opencode, pid: 41)])?.value
 
         XCTAssertEqual(trees.looked, [])
+    }
+
+    // MARK: - Reading only what changed
+
+    /// Names one file as what it reads, and counts its reads; the figure is the count.
+    private final class Counting: SessionLiveReader, @unchecked Sendable {
+        struct Broken: Error {}
+        private let file: String
+        private let lock = NSLock()
+        private var count = 0
+        private var failing = false
+        init(file: String) { self.file = file }
+        var reads: Int { lock.lock(); defer { lock.unlock() }; return count }
+        func failNext() { lock.lock(); failing = true; lock.unlock() }
+        func sources(of target: LiveSessionTarget) throws -> [String] { [file] }
+        func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
+            lock.lock(); defer { lock.unlock() }
+            count += 1
+            if failing { failing = false; throw Broken() }
+            return SessionLiveDetail(contextPercent: count)
+        }
+    }
+
+    private func record(_ text: String) throws -> URL {
+        let url = dir.appendingPathComponent("made-up-record")
+        try text.write(to: url, atomically: false, encoding: .utf8)
+        return url
+    }
+
+    /// The sweep asks every second: a record whose size, modification time and inode are as they
+    /// were is not read again, and its last figure stands.
+    func testARecordThatHasNotChangedIsNotReadAgain() async throws {
+        let url = try record("one")
+        let reader = Counting(file: url.path)
+        let sampler = LiveDetailSampler(readers: [.codex: reader], log: { _ in })
+
+        await sampler.refresh([session("S1", .codex)])?.value
+        await sampler.refresh([session("S1", .codex)])?.value
+        XCTAssertEqual(reader.reads, 1)
+        XCTAssertEqual(sampler.detail(for: "S1")?.contextPercent, 1)
+
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(" two".utf8))
+        try handle.close()
+        await sampler.refresh([session("S1", .codex)])?.value
+        XCTAssertEqual(reader.reads, 2)
+        XCTAssertEqual(sampler.detail(for: "S1")?.contextPercent, 2)
+
+        try FileManager.default.removeItem(at: url)
+        await sampler.refresh([session("S1", .codex)])?.value
+        XCTAssertEqual(reader.reads, 3, "a record that went is a change")
+    }
+
+    func testASessionWhoseTargetChangedIsReadAgain() async throws {
+        let reader = Counting(file: try record("one").path)
+        let sampler = LiveDetailSampler(readers: [.opencode: reader])
+
+        await sampler.refresh([session("S1", .opencode, agentSessionId: "ses_one")])?.value
+        await sampler.refresh([session("S1", .opencode, agentSessionId: "ses_two")])?.value
+
+        XCTAssertEqual(reader.reads, 2)
+    }
+
+    /// A read that failed is tried again on the next pass, though its record has not changed.
+    func testAReadThatFailedIsDoneAgain() async throws {
+        let reader = Counting(file: try record("one").path)
+        reader.failNext()
+        let sampler = LiveDetailSampler(readers: [.codex: reader], log: { _ in })
+
+        await sampler.refresh([session("S1", .codex)])?.value
+        await sampler.refresh([session("S1", .codex)])?.value
+
+        XCTAssertEqual(reader.reads, 2)
+        XCTAssertEqual(sampler.detail(for: "S1")?.contextPercent, 2)
+    }
+
+    /// A reader that names no file, as one that found no record does, is read every pass.
+    func testAReaderThatNamesNoFileIsReadEveryPass() async {
+        let recording = Recording()
+        let sampler = LiveDetailSampler(readers: [.codex: recording])
+
+        await sampler.refresh([session("S1", .codex)])?.value
+        await sampler.refresh([session("S1", .codex)])?.value
+
+        XCTAssertEqual(recording.targets.count, 2)
     }
 
     /// An ended session's detail goes with it.

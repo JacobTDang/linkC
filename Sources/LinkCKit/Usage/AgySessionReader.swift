@@ -18,6 +18,10 @@ public struct AgySessionReader: SessionLiveReader {
         self.scratch = scratch
     }
 
+    public func sources(of target: LiveSessionTarget) throws -> [String] {
+        Self.conversationDatabase(among: target.openFiles).map { [$0, $0 + "-wal"] } ?? []
+    }
+
     public func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
         guard let database = Self.conversationDatabase(among: target.openFiles),
               FileManager.default.fileExists(atPath: database)

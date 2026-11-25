@@ -254,6 +254,12 @@ final class OpenCodeLiveReaderTests: XCTestCase {
         XCTAssertEqual(try reader().read(target("ses_a' --")), SessionLiveDetail())
     }
 
+    /// The database, its write-ahead log and the catalog are what a read reads.
+    func testTheDatabaseItsLogAndTheCatalogAreWhatAReadReads() throws {
+        XCTAssertEqual(try reader().sources(of: target("ses_a")), [database.path, database.path + "-wal", modelsFile.path])
+        XCTAssertEqual(try reader().sources(of: target(nil)), [])
+    }
+
     // MARK: - Found but unreadable
 
     func testTokensThatAreNotCountsThrow() throws {

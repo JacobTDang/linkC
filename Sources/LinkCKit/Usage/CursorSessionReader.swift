@@ -9,6 +9,7 @@ import Foundation
 public struct CursorSessionReader: SessionLiveReader {
     private let transcriptRoots: [URL]
     private let tailBytes: Int
+    private let foundTranscripts = FoundTranscripts()
 
     /// `transcriptRoots` are the `projects` folders that hold chats' transcripts. Grok keeps its
     /// transcripts in Cursor's, so both are searched. `tailBytes` is how much of a transcript's end
@@ -23,9 +24,14 @@ public struct CursorSessionReader: SessionLiveReader {
         return [".cursor", ".cursor-grok"].map { home.appendingPathComponent("\($0)/projects") }
     }
 
+    public func sources(of target: LiveSessionTarget) throws -> [String] {
+        guard let store = Self.chatStore(among: target) else { return [] }
+        return [store, store + "-wal"] + (try transcript(ofChat: Self.chatId(ofStore: store)).map { [$0.path] } ?? [])
+    }
+
     public func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
         guard let store = Self.chatStore(among: target) else { return SessionLiveDetail() }
-        let chatId = URL(fileURLWithPath: store).deletingLastPathComponent().lastPathComponent
+        let chatId = Self.chatId(ofStore: store)
         var step: String?
         if let transcript = try transcript(ofChat: chatId) {
             step = try CursorTranscriptStep.label(inTranscriptAt: transcript, tailBytes: tailBytes)
@@ -33,17 +39,27 @@ public struct CursorSessionReader: SessionLiveReader {
         return SessionLiveDetail(contextPercent: try Self.contextPercent(inStoreAt: store), step: step)
     }
 
+    private static func chatId(ofStore store: String) -> String {
+        URL(fileURLWithPath: store).deletingLastPathComponent().lastPathComponent
+    }
+
     /// `<root>/<a folder>/agent-transcripts/<chat id>/<chat id>.jsonl`. The folder is named for the
     /// session's folder in a way that shortens long names with a hash, so the chat id finds it
-    /// instead. Nil while the agent has not written one.
+    /// instead, by listing the roots; once found, it is kept while it is there. Nil while the agent
+    /// has not written one.
     private func transcript(ofChat chatId: String) throws -> URL? {
         let files = FileManager.default
+        if let known = foundTranscripts[chatId], files.fileExists(atPath: known.path) { return known }
         for root in transcriptRoots where files.fileExists(atPath: root.path) {
             for folder in try files.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).sorted(by: { $0.path < $1.path }) {
                 let candidate = folder.appendingPathComponent("agent-transcripts/\(chatId)/\(chatId).jsonl")
-                if files.fileExists(atPath: candidate.path) { return candidate }
+                if files.fileExists(atPath: candidate.path) {
+                    foundTranscripts[chatId] = candidate
+                    return candidate
+                }
             }
         }
+        foundTranscripts[chatId] = nil
         return nil
     }
 
@@ -100,5 +116,16 @@ public struct CursorSessionReader: SessionLiveReader {
         }
         let usage = try ProtobufWire.fields(at: [5], in: bytes)
         return SessionLiveDetail.contextPercent(used: usage?.varint(1), window: usage?.varint(2))
+    }
+}
+
+/// Each chat's transcript once found, by chat id.
+private final class FoundTranscripts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String: URL] = [:]
+
+    subscript(chatId: String) -> URL? {
+        get { lock.withLock { paths[chatId] } }
+        set { lock.withLock { paths[chatId] = newValue } }
     }
 }

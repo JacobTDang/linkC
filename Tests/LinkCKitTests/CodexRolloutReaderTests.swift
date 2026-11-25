@@ -109,6 +109,14 @@ final class CodexRolloutReaderTests: XCTestCase {
         XCTAssertEqual(try read(["/dev/null", dir.appendingPathComponent("other.jsonl").path]), SessionLiveDetail())
     }
 
+    /// The rollout is what a read reads: unchanged, it need not be read again.
+    func testTheRolloutIsWhatAReadReads() throws {
+        let path = try rollout([started(), tokens(50_000)])
+        let target = LiveSessionTarget(sessionId: "S1", agent: .codex, cwd: "/p", openFiles: ["/dev/null", path])
+        XCTAssertEqual(try CodexRolloutReader().sources(of: target), [path])
+        XCTAssertEqual(try CodexRolloutReader().sources(of: LiveSessionTarget(sessionId: "S1", agent: .codex, cwd: "/p")), [])
+    }
+
     /// A rollout it holds that cannot be read is an error, not an empty card.
     func testARolloutThatCannotBeReadIsAnError() throws {
         let path = dir.appendingPathComponent(".codex/sessions/2026/01/02/rollout-gone.jsonl").path
