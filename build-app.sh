@@ -33,6 +33,23 @@ cp "$MCP_BIN" "$APP/Contents/MacOS/linkc-mcp"
 cp "$CLI_BIN" "$APP/Contents/MacOS/linkc-cli"
 cp "$ICNS" "$APP/Contents/Resources/$NAME.icns"
 
+# Claude Code mods live outside the signed bundle at runtime (the engine writes into
+# `.claude-plugin/types/`), so the app copies them from Resources into Application Support
+# on launch. Ship a clean tree: no generated types, no tsconfig, no tests.
+MODS_SRC="$ROOT/mods/linkc-agents"
+MODS_DST="$APP/Contents/Resources/mods/linkc-agents"
+if [[ ! -d "$MODS_SRC" ]]; then
+  echo "ERROR: $MODS_SRC not found — refusing to ship without the linkc-agents mod." >&2
+  exit 1
+fi
+echo "==> Bundling mods/linkc-agents into Resources"
+mkdir -p "$MODS_DST"
+rsync -a \
+  --exclude '.claude-plugin/types/' \
+  --exclude 'tsconfig.json' \
+  --exclude '*.test.tsx' \
+  "$MODS_SRC/" "$MODS_DST/"
+
 mkdir -p "$HOME/.local/bin"
 ln -sf "$APP/Contents/MacOS/linkc-mcp" "$HOME/.local/bin/linkc-mcp"
 ln -sf "$APP/Contents/MacOS/linkc-cli" "$HOME/.local/bin/linkc"
