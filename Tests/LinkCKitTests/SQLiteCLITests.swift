@@ -38,11 +38,77 @@ final class SQLiteCLITests: XCTestCase {
         XCTAssertEqual(try SQLiteCLI.rows(Row.self, in: path, query: "select n, label, hex(b) as blob from t"), [])
     }
 
-    /// An immutable open reads a file another process may hold, without touching it.
-    func testAnImmutableOpenReadsTheFileToo() throws {
-        let path = try database("create table t(n int, label text, b blob); insert into t values (1, 'one', x'00');")
-        let rows = try SQLiteCLI.rows(Row.self, in: path, query: "select n, label, hex(b) as blob from t", open: .immutable)
-        XCTAssertEqual(rows.map(\.n), [1])
+    // MARK: - Reading a clone
+
+    private var scratch: URL { dir.appendingPathComponent("scratch") }
+
+    private func cloneRows(_ path: String) throws -> [Row] {
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        return try SQLiteCLI.rows(Row.self, in: path, query: "select n, label, hex(b) as blob from t order by n", open: .clone(in: scratch))
+    }
+
+    private struct Stamp: Equatable {
+        let size: Int
+        let modified: Date
+    }
+
+    private func stamp(_ path: String) throws -> Stamp {
+        let attributes = try FileManager.default.attributesOfItem(atPath: path)
+        return Stamp(size: try XCTUnwrap(attributes[.size] as? Int), modified: try XCTUnwrap(attributes[.modificationDate] as? Date))
+    }
+
+    /// A writer that holds the database open keeps its newest rows in the write-ahead log until it
+    /// checkpoints: the read sees them, and leaves the writer's files as they were.
+    func testACloneReadSeesRowsThatAreOnlyInTheWriteAheadLog() throws {
+        let path = try database("create table t(n int, label text, b blob); insert into t values (1, 'one', x'01');")
+        let writer = try LiveSQLiteWriter(path: path)
+        defer { writer.close() }
+        try writer.run("pragma journal_mode=wal; pragma wal_autocheckpoint=0; insert into t values (2, 'two', x'02');")
+        let before = try [stamp(path), stamp(path + "-wal")]
+
+        XCTAssertEqual(try cloneRows(path).map(\.n), [1, 2])
+        XCTAssertEqual(try [stamp(path), stamp(path + "-wal")], before, "the writer's own files are not touched")
+    }
+
+    /// A table the writer made since its last checkpoint is in the log alone.
+    func testACloneReadSeesATableThatIsOnlyInTheWriteAheadLog() throws {
+        let path = dir.appendingPathComponent("made up.db").path
+        let writer = try LiveSQLiteWriter(path: path)
+        defer { writer.close() }
+        try writer.run("pragma journal_mode=wal; pragma wal_autocheckpoint=0; create table t(n int, label text, b blob); insert into t values (3, 'three', x'03');")
+
+        XCTAssertEqual(try cloneRows(path).map(\.n), [3])
+    }
+
+    /// The log of a WAL database no process holds open, emptied by the last close. macOS's sqlite3
+    /// keeps the empty `-wal` and its `-shm`; an agent with its own SQLite, as agy is, deletes both.
+    private func closeAsAnAgentDoes(_ path: String) throws {
+        XCTAssertEqual(try stamp(path + "-wal").size, 0, "the last close checkpointed the log")
+        try FileManager.default.removeItem(atPath: path + "-wal")
+        try FileManager.default.removeItem(atPath: path + "-shm")
+    }
+
+    /// With no `-shm` to read the log's index from, a read-only open, which cannot make one, is
+    /// refused: the clone, read with a normal open, is not.
+    func testACloneReadsAWALDatabaseThatNoProcessHasOpen() throws {
+        let path = try database("pragma journal_mode=wal; create table t(n int, label text, b blob); insert into t values (4, 'four', x'04');")
+        try closeAsAnAgentDoes(path)
+        XCTAssertThrowsError(try SQLiteCLI.rows(Row.self, in: path, query: "select n, label, hex(b) as blob from t"))
+
+        XCTAssertEqual(try cloneRows(path).map(\.n), [4])
+    }
+
+    func testTheCloneIsRemovedAfterTheReadWhetherOrNotTheQueryWorks() throws {
+        let path = try database("create table t(n int, label text, b blob); insert into t values (1, 'one', x'01');")
+        _ = try cloneRows(path)
+        XCTAssertThrowsError(try SQLiteCLI.rows(Row.self, in: path, query: "select nope from t", open: .clone(in: scratch)))
+
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: scratch.path), [])
+    }
+
+    func testACloneOfADatabaseThatIsNotThereIsAnError() throws {
+        XCTAssertThrowsError(try cloneRows(dir.appendingPathComponent("missing.db").path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: scratch.path), [])
     }
 
     func testHexFromABlobColumnDecodesToItsBytes() {

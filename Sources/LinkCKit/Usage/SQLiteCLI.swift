@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Reads an agent's SQLite database through macOS's own `/usr/bin/sqlite3`, read-only, so linkC
@@ -6,11 +7,14 @@ public enum SQLiteCLI {
     public static let executable = "/usr/bin/sqlite3"
 
     public enum Open: Sendable {
-        /// Read-only, seeing what a writer has committed, its write-ahead log included.
+        /// Read-only, seeing what a writer has committed, its write-ahead log included. Refused for a
+        /// WAL database with no `-shm` beside it: a read-only open needs that index of the log and
+        /// cannot make one.
         case readOnly
-        /// The file is read as it is, with no lock and no log: for a database another process holds
-        /// in a way a read-only open is refused.
-        case immutable
+        /// A clone of the file and its write-ahead log, made in a new folder under the given one, read
+        /// with a normal open and removed after. Sees the log a writer has not checkpointed, and works
+        /// with no `-shm` there. APFS clones cost next to nothing.
+        case clone(in: URL)
     }
 
     /// The bytes a `hex(blob)` column spells, or nil when it is not whole hex digit pairs.
@@ -39,13 +43,17 @@ public enum SQLiteCLI {
     /// sqlite3's own reason when the file cannot be opened or the query fails.
     public static func rows<Row: Decodable>(_ type: Row.Type, in path: String, query: String,
                                            open: Open = .readOnly, timeout: TimeInterval = 3) throws -> [Row] {
-        let args: [String]
         switch open {
         case .readOnly:
-            args = ["-readonly", "-json", path, query]
-        case .immutable:
-            args = ["-json", URL(fileURLWithPath: path).absoluteString + "?immutable=1", query]
+            return try run(Row.self, args: ["-readonly", "-json", path, query], reading: path, timeout: timeout)
+        case .clone(let scratch):
+            return try withClone(of: path, in: scratch) { clone in
+                try run(Row.self, args: ["-json", clone, query], reading: path, timeout: timeout)
+            }
         }
+    }
+
+    private static func run<Row: Decodable>(_ type: Row.Type, args: [String], reading path: String, timeout: TimeInterval) throws -> [Row] {
         let result: ProcessResult
         do {
             result = try LiveProcessRunner.runCapturingSync(executable: executable, args: args, cwd: nil, timeout: timeout)
@@ -64,5 +72,42 @@ public enum SQLiteCLI {
         } catch {
             throw LinkCError.process("sqlite3's rows from \(path) are not the shape expected: \(error)")
         }
+    }
+
+    // MARK: - Cloning
+
+    /// Runs `body` on a clone of the database at `path` and its write-ahead log, in a new folder under
+    /// `scratch` that is removed after. The log is cloned first: should the writer checkpoint between
+    /// the two clones, the file cloned after it already holds what the log does, and the log replays
+    /// over it to the same pages. The `-shm` is not cloned: it indexes the log as the writer has it
+    /// now, which may be ahead of the clone, and with none the clone's first open rebuilds the index
+    /// from the log it has.
+    static func withClone<T>(of path: String, in scratch: URL, _ body: (String) throws -> T) throws -> T {
+        let folder = scratch.appendingPathComponent("linkc-sqlite-clone-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let clone = folder.appendingPathComponent(URL(fileURLWithPath: path).lastPathComponent).path
+        let outcome = Result { () throws -> T in
+            // A log gone by now was checkpointed into the file as its writer closed.
+            _ = try cloneIfThere(path + "-wal", to: clone + "-wal")
+            guard try cloneIfThere(path, to: clone) else {
+                throw LinkCError.process("sqlite3 could not read \(path): there is no such file")
+            }
+            return try body(clone)
+        }
+        do {
+            try FileManager.default.removeItem(at: folder)
+        } catch {
+            throw LinkCError.process("the clone of \(path) at \(folder.path) could not be removed: \(error.localizedDescription)")
+        }
+        return try outcome.get()
+    }
+
+    /// Clones `source` to `destination` (a copy where the volume cannot clone); false when there is
+    /// no `source`.
+    private static func cloneIfThere(_ source: String, to destination: String) throws -> Bool {
+        guard copyfile(source, destination, nil, copyfile_flags_t(COPYFILE_CLONE)) != 0 else { return true }
+        let code = errno
+        if code == ENOENT { return false }
+        throw LinkCError.process("\(source) could not be cloned: \(String(cString: strerror(code)))")
     }
 }

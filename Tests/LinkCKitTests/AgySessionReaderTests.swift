@@ -116,6 +116,56 @@ final class AgySessionReaderTests: XCTestCase {
         XCTAssertNil(try AgySessionReader().read(target([zeroWindow])).contextPercent)
     }
 
+    // MARK: - A conversation agy has open
+
+    private struct Row: Decodable { let idx: Int }
+
+    private var database: String { root.appendingPathComponent("conversations/\(conversation).db").path }
+
+    private func insert(_ idx: Int, _ data: [UInt8]) -> String {
+        "insert into gen_metadata (idx, data) values (\(idx), x'\(P.hex(data))');"
+    }
+
+    /// agy keeps the database in WAL mode while it works on the conversation: its newest rows are in
+    /// the write-ahead log until it checkpoints, and they are the ones read.
+    func testTheNewestRowIsReadFromTheWriteAheadLogOfAConversationAgyHasOpen() throws {
+        let lock = try makeConversation(rows: [(idx: 1, data: row(used: 4100, window: 10_000))])
+        let agy = try LiveSQLiteWriter(path: database)
+        defer { agy.close() }
+        try agy.run("pragma journal_mode=wal; pragma wal_autocheckpoint=0; " + insert(2, row(used: 4600, window: 10_000)))
+
+        XCTAssertEqual(try AgySessionReader(scratch: root).read(target([lock])).contextPercent, 46)
+    }
+
+    /// A conversation agy started since its last checkpoint has even its table in the log alone.
+    func testAConversationWhoseTableIsOnlyInTheWriteAheadLogIsRead() throws {
+        let lock = try makeConversation(rows: [], makeDatabase: false)
+        let agy = try LiveSQLiteWriter(path: database)
+        defer { agy.close() }
+        try agy.run("pragma journal_mode=wal; pragma wal_autocheckpoint=0; "
+            + "create table gen_metadata (idx integer, data blob, size integer not null default 0, primary key (idx)); "
+            + insert(1, row(used: 1, window: 4)))
+
+        XCTAssertEqual(try AgySessionReader(scratch: root).read(target([lock])).contextPercent, 25)
+    }
+
+    /// Between turns agy closes the database and deletes its emptied `-wal` and its `-shm`, which a
+    /// read-only open needs. (macOS's sqlite3 keeps both, so the made-up one has them taken away.)
+    func testAConversationAgyHasClosedIsRead() throws {
+        let lock = try makeConversation(rows: [(idx: 1, data: row(used: 3, window: 4))])
+        try sqlite(database, "pragma journal_mode=wal;")
+        for leftover in [database + "-wal", database + "-shm"] where FileManager.default.fileExists(atPath: leftover) {
+            if leftover.hasSuffix("-wal") {
+                let wal = try FileManager.default.attributesOfItem(atPath: leftover)
+                XCTAssertEqual(wal[.size] as? Int, 0, "the close checkpointed the log")
+            }
+            try FileManager.default.removeItem(atPath: leftover)
+        }
+        XCTAssertThrowsError(try SQLiteCLI.rows(Row.self, in: database, query: "select idx from gen_metadata"))
+
+        XCTAssertEqual(try AgySessionReader(scratch: root).read(target([lock])).contextPercent, 75)
+    }
+
     func testAFullerThanFullWindowReadsAsFull() throws {
         let lock = try makeConversation(rows: [(idx: 1, data: row(used: 300, window: 200))])
         XCTAssertEqual(try AgySessionReader().read(target([lock])).contextPercent, 100)
