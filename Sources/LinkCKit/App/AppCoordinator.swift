@@ -962,6 +962,9 @@ public final class AppCoordinator {
         case launchFailed
         /// A hook event reported it ended.
         case reportedEnded
+        /// linkC closed it before it reached the user, such as a handoff whose memo could not be
+        /// written: it leaves no card under Earlier.
+        case abandoned
     }
 
     /// Remove a session everywhere it leaves state behind: the store, its terminal (dropped,
@@ -996,9 +999,11 @@ public final class AppCoordinator {
         limitScans.removeValue(forKey: sessionId)
         limitHolds.removeValue(forKey: sessionId)
         limitHeldModelTasks.removeValue(forKey: sessionId)
-        if wasWorker {
-            // A worker was linkC's, not the user's: its report is in the task record, so it
-            // leaves nothing under Earlier.
+        if let ending { removeHandoffMemo(of: ending) }
+        if wasWorker || end == .abandoned {
+            // A worker was linkC's, not the user's: its report is in the task record. A session
+            // abandoned before it reached the user was never theirs either. Neither leaves
+            // anything under Earlier.
             manifest.remove(linkcId: sessionId)
         } else {
             // The session ended or was stopped — keep its manifest entry but stamp it, so it

@@ -179,6 +179,8 @@ public enum LinkCCommand {
             return (1, "linkc: linkC did not answer within \(Int(env.timeout)) seconds, and the request could not be withdrawn — \(withdrawal)")
         case .unanswered(nil):
             return (1, "linkc: linkC did not answer within \(Int(env.timeout)) seconds. Is it running?")
+        case .takenUnanswered:
+            return (1, "linkc: linkC took the request but did not answer within \(Int(env.timeout)) seconds; the session may still open.")
         }
     }
 }

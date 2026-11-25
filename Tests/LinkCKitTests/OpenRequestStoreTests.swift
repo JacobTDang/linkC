@@ -55,11 +55,13 @@ final class OpenRequestStoreTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.directory.path), [])
     }
 
-    func testAWithdrawnRequestIsNoLongerPending() throws {
+    /// Withdrawing says whether this call took the request away. Removing a file is atomic, so when
+    /// linkC and the requester withdraw at once, exactly one of them is told it won.
+    func testAWithdrawnRequestIsNoLongerPendingAndOnlyTheFirstWithdrawTakesIt() throws {
         try store.submit(request("R1"))
-        try store.withdraw("R1")
+        XCTAssertTrue(try store.withdraw("R1"))
         XCTAssertTrue(store.pending().isEmpty)
-        XCTAssertNoThrow(try store.withdraw("R1"), "withdrawing twice is fine")
+        XCTAssertFalse(try store.withdraw("R1"), "withdrawing twice is fine, and the second took nothing")
     }
 
     /// A request file that can't be read can never be answered: it is removed (and logged).

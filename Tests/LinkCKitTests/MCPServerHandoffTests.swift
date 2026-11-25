@@ -97,14 +97,17 @@ final class MCPServerHandoffTests: XCTestCase {
         XCTAssertEqual(srv.handoffRequests.directory, OpenRequestStore.handoffApplicationSupport.directory)
     }
 
-    /// A linkC that predates handoffs never answers one; the agent hears that it may need updating.
-    func testAnUnansweredHandoffSaysLinkCMayNeedUpdating() throws {
+    /// A linkC that predates handoffs never answers one, and neither does one that isn't running or
+    /// is busy. The request is withdrawn, so nothing opens from it and trying again is safe. The
+    /// agent hears that, and that an old linkC needs updating.
+    func testAnUnansweredHandoffIsWithdrawnAndSaysTryingAgainIsSafe() throws {
         let srv = makeServer()
         let res = try mcpCall(srv, "linkc_handoff", ["to": "codex"])
 
         XCTAssertTrue(res.isError)
-        XCTAssertTrue(res.text.contains("linkC did not answer"), res.text)
-        XCTAssertTrue(res.text.contains("update"), res.text)
+        XCTAssertTrue(res.text.contains("withdrawn, so no session opened from it and trying again is safe"), res.text)
+        XCTAssertTrue(res.text.contains("not running, busy, or older than this tool"), res.text)
+        XCTAssertTrue(res.text.contains("update it"), res.text)
         XCTAssertTrue(requestStore.pending().isEmpty, "the request is withdrawn")
     }
 
@@ -137,6 +140,25 @@ final class MCPServerHandoffTests: XCTestCase {
 
         XCTAssertTrue(planted, "the tool never gave up")
         XCTAssertFalse(res.isError, res.text)
+    }
+
+    /// linkC took the request (it withdraws before acting) but had not answered when the wait ended:
+    /// the session may still open, so the tool must not call retrying safe.
+    func testARequestLinkCTookButHasNotAnsweredMayStillOpenASession() throws {
+        let world = World()
+        let store = requestStore!
+        let deadline = world.start.addingTimeInterval(MCPServer.HandoffAnswerWait.standard.timeout)
+        world.onNow = { world in
+            guard world.clock >= deadline, let request = store.pending().first else { return }
+            _ = try? store.withdraw(request.id)
+        }
+        let res = try mcpCall(makeServer(store: store, wait: wait(world, store: store, pollInterval: 10)),
+                              "linkc_handoff", ["to": "codex"])
+
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("linkC took the handoff but did not answer"), res.text)
+        XCTAssertTrue(res.text.contains("may still open"), res.text)
+        XCTAssertFalse(res.text.contains("safe"), res.text)
     }
 
     /// Giving up, a request that could not be withdrawn may still open a session: the tool says so.
