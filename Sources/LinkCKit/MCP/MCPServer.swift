@@ -169,6 +169,26 @@ public final class MCPServer: Sendable {
             timeout: 5, interval: 0.1, sleep: { Thread.sleep(forTimeInterval: $0) })
     }
 
+    /// How long `linkc_handoff` waits for linkC to answer, and how it passes the time: as long as the
+    /// `linkc` command waits, since linkC acts on both the same way.
+    public struct HandoffAnswerWait: Sendable {
+        public var timeout: TimeInterval
+        public var pollInterval: TimeInterval
+        public var now: @Sendable () -> Date
+        public var sleep: @Sendable (TimeInterval) -> Void
+
+        public init(timeout: TimeInterval = LinkCCommand.answerTimeout, pollInterval: TimeInterval = 0.1,
+                    now: @escaping @Sendable () -> Date = { Date() },
+                    sleep: @escaping @Sendable (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }) {
+            self.timeout = timeout
+            self.pollInterval = pollInterval
+            self.now = now
+            self.sleep = sleep
+        }
+
+        public static let standard = HandoffAnswerWait()
+    }
+
     public let workspaceRoot: String
     public let store: BlackboardStore
     public let inboxStore: InboxStore
@@ -212,6 +232,7 @@ public final class MCPServer: Sendable {
     public let knownProjects: KnownProjectsFile
     /// Where `linkc_handoff` leaves its requests for linkC.
     public let handoffRequests: OpenRequestStore
+    public let handoffAnswerWait: HandoffAnswerWait
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -270,7 +291,8 @@ public final class MCPServer: Sendable {
             try ModelListCache.applicationSupport.read()
         },
         knownProjects: KnownProjectsFile = .applicationSupport,
-        handoffRequests: OpenRequestStore = .handoffApplicationSupport
+        handoffRequests: OpenRequestStore = .handoffApplicationSupport,
+        handoffAnswerWait: HandoffAnswerWait = .standard
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -289,6 +311,7 @@ public final class MCPServer: Sendable {
         self.modelLists = modelLists
         self.knownProjects = knownProjects
         self.handoffRequests = handoffRequests
+        self.handoffAnswerWait = handoffAnswerWait
     }
 
     /// The project a tool's `project` argument names, or nil when the call has none and so acts on
@@ -1960,32 +1983,28 @@ public final class MCPServer: Sendable {
             return toolResultResponse(id: id, text: "Error: the handoff request could not be written — \(error)", isError: true)
         }
 
-        guard let answer = try awaitOpenResult(for: request.id) else {
+        let wait = handoffAnswerWait
+        switch handoffRequests.awaitAnswer(to: request.id, timeout: wait.timeout, pollInterval: wait.pollInterval,
+                                           now: wait.now, sleep: wait.sleep) {
+        case .answered(let answer, let leftover):
+            let note = leftover.map { " (its answer file could not be removed — \($0))" } ?? ""
+            guard answer.ok else {
+                return toolResultResponse(id: id, text: answer.message + note, isError: true)
+            }
+            return toolResultResponse(id: id, text: (answer.sessionId ?? answer.message) + note)
+        case .unreadable(let error, let withdrawal):
+            let note = withdrawal.map { " (and the request could not be withdrawn, so linkC may still act on it — \($0))" } ?? ""
+            return toolResultResponse(id: id, text: "Error: linkC's answer to the handoff could not be read — \(error)\(note)", isError: true)
+        case .unanswered(let withdrawal?):
             return toolResultResponse(
                 id: id,
-                text: "Error: linkC did not answer the handoff within \(Int(closeAnswerWait.timeout)) seconds. A linkC older than this tool never reads handoff requests; update linkC and try again.",
+                text: "Error: linkC did not answer the handoff within \(Int(wait.timeout)) seconds, and the request could not be withdrawn, so linkC may still act on it — \(withdrawal)",
                 isError: true)
-        }
-        try? handoffRequests.removeResult(for: request.id)
-        if answer.ok {
-            return toolResultResponse(id: id, text: answer.sessionId ?? answer.message)
-        } else {
-            return toolResultResponse(id: id, text: answer.message, isError: true)
-        }
-    }
-
-    private func awaitOpenResult(for requestId: String) throws -> OpenResult? {
-        var waited: TimeInterval = 0
-        while true {
-            if let answer = try handoffRequests.result(for: requestId) {
-                return answer
-            }
-            guard waited < closeAnswerWait.timeout else {
-                try? handoffRequests.withdraw(requestId)
-                return nil
-            }
-            closeAnswerWait.sleep(closeAnswerWait.interval)
-            waited += closeAnswerWait.interval
+        case .unanswered(nil):
+            return toolResultResponse(
+                id: id,
+                text: "Error: linkC did not answer the handoff within \(Int(wait.timeout)) seconds. A linkC older than this tool never reads handoff requests; update linkC and try again.",
+                isError: true)
         }
     }
 

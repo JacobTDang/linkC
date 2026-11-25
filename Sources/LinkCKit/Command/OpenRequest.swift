@@ -210,6 +210,65 @@ public struct OpenRequestStore: Sendable {
         }
     }
 
+    /// What became of a request its caller waited on.
+    public enum Wait {
+        /// linkC answered. `leftover` is why its answer file could not then be removed.
+        case answered(OpenResult, leftover: Error?)
+        /// An answer was there but could not be read. `withdrawal` is why the request could not be
+        /// withdrawn, when the wait had ended and tried to.
+        case unreadable(Error, withdrawal: Error?)
+        /// No answer in time. The request was withdrawn, unless `withdrawal` says why not.
+        case unanswered(withdrawal: Error?)
+    }
+
+    /// Waits up to `timeout` for linkC's answer to `id`, looking every `pollInterval`. Giving up, it
+    /// withdraws the request and looks once more: linkC withdraws a request before acting on it, so its
+    /// answer can land as the wait ends. A collected answer's file is removed.
+    public func awaitAnswer(to id: String, timeout: TimeInterval, pollInterval: TimeInterval,
+                            now: () -> Date, sleep: (TimeInterval) -> Void) -> Wait {
+        func collect(_ answer: OpenResult) -> Wait {
+            do {
+                try removeResult(for: id)
+            } catch {
+                return .answered(answer, leftover: error)
+            }
+            return .answered(answer, leftover: nil)
+        }
+        let deadline = now().addingTimeInterval(timeout)
+        // No interval leaves no time to wait: one look, then give up.
+        let pollLimit = pollInterval > 0 ? Int(timeout / pollInterval) + 1 : 0
+        var polls = 0
+        while true {
+            let answer: OpenResult?
+            do {
+                answer = try result(for: id)
+            } catch {
+                return .unreadable(error, withdrawal: nil)
+            }
+            if let answer {
+                return collect(answer)
+            }
+            if now() >= deadline || polls >= pollLimit {
+                var withdrawal: Error?
+                do {
+                    try withdraw(id)
+                } catch {
+                    withdrawal = error
+                }
+                do {
+                    if let answer = try result(for: id) {
+                        return collect(answer)
+                    }
+                } catch {
+                    return .unreadable(error, withdrawal: withdrawal)
+                }
+                return .unanswered(withdrawal: withdrawal)
+            }
+            sleep(pollInterval)
+            polls += 1
+        }
+    }
+
     /// Removes the request `id`, answered or given up on. Nothing to remove is fine.
     public func withdraw(_ id: String) throws {
         do {
