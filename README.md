@@ -339,6 +339,11 @@ is active, and that session's tab is selected. Click a notification to jump to i
 
 5. Allow the notification permission when macOS asks for it.
 
+linkC ships its Claude Code mod (`linkc-agents`) inside the app and, on launch, installs it to
+`~/Library/Application Support/linkC/mods/linkc-agents`. To load it in every Claude Code session,
+set `env.CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` to that folder (separate several
+plugin folders with `:`).
+
 ### Updating a running copy
 
 Run `./build-app.sh` without `--install` to build `dist.noindex/linkC.app` only. Once that build
