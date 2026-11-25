@@ -182,12 +182,7 @@ public enum Router {
             reasonParts.append("tie → already active in folder")
         }
 
-        let effort: ReasoningEffort?
-        if case .levels = AgentEffortSupport.forAgent(chosen) {
-            effort = settings.effort(for: chosen, tier: tier) ?? ReasoningEffort.default(for: tier)
-        } else {
-            effort = nil
-        }
+        let effort = settings.tierEffort(for: chosen, tier: tier)
         if let effort {
             reasonParts.append("effort \(effort.rawValue)")
         }

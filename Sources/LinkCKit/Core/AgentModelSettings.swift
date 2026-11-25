@@ -116,6 +116,14 @@ public struct AgentModelSettings: Codable, Sendable, Equatable {
         efforts[agent.rawValue]?[tier.rawValue]
     }
 
+    /// The effort a launch on `tier` runs at when nothing more specific asks: the one set for it,
+    /// else the tier's default. Nil for an agent that cannot take an effort from linkC. The router,
+    /// a delegated task and a launch all read it here, so they agree.
+    public func tierEffort(for agent: AgentKind, tier: ModelTier) -> ReasoningEffort? {
+        guard AgentEffortSupport.forAgent(agent).isSupported else { return nil }
+        return effort(for: agent, tier: tier) ?? ReasoningEffort.default(for: tier)
+    }
+
     /// Which tier a running model belongs to, for a session whose model was switched by hand.
     public func tier(forModel model: String, agent: AgentKind) -> ModelTier? {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)

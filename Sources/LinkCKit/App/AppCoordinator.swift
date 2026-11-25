@@ -1203,15 +1203,7 @@ public final class AppCoordinator {
         let modelTier = resolved.tier
         // Effort comes from the caller (a task), else from Settings for the tier being launched.
         // Agents whose CLI has no effort knob stay unset — Settings says so.
-        let launchEffort: ReasoningEffort?
-        if let effort {
-            launchEffort = effort
-        } else if let modelTier, case .levels = AgentEffortSupport.forAgent(agent) {
-            launchEffort = modelSettings().effort(for: agent, tier: modelTier)
-                ?? ReasoningEffort.default(for: modelTier)
-        } else {
-            launchEffort = nil
-        }
+        let launchEffort = effort ?? modelTier.flatMap { modelSettings().tierEffort(for: agent, tier: $0) }
         if let launchEffort, let levels = AgentEffortSupport.forAgent(agent).levels,
            !levels.contains(launchEffort) {
             throw LinkCError.process(

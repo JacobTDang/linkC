@@ -2378,10 +2378,8 @@ public final class MCPServer: Sendable {
                 }
                 effort = parsed
             }
-        } else if let tier, case .levels = AgentEffortSupport.forAgent(toAgent) {
-            effort = settings.effort(for: toAgent, tier: tier) ?? ReasoningEffort.default(for: tier)
         } else {
-            effort = nil
+            effort = tier.flatMap { settings.tierEffort(for: toAgent, tier: $0) }
         }
 
         // The limit that applies is the one in the project that does the work, for the model it would run.
