@@ -4,23 +4,22 @@ import XCTest
 final class ClaudeSessionStatusTests: XCTestCase {
     func testTheModelIsTheOneTheSessionRunsNow() throws {
         let body = #"{"session_id":"c1","model":{"id":"claude-opus-5-5","display_name":"Opus 5.5"},"rate_limits":{}}"#
-        let status = try ClaudeSessionStatus.decode(Data(body.utf8))
-        XCTAssertEqual(status.modelId, "claude-opus-5-5")
+        XCTAssertEqual(try ClaudeSessionStatus.modelId(in: Data(body.utf8)), "claude-opus-5-5")
     }
 
     func testThePromptCacheExpiryIsWhenTheReportSaysItGoesCold() throws {
         let body = #"{"prompt_cache":{"warm":true,"ttl":"1h","expires_at":1795560237}}"#
-        let status = try ClaudeSessionStatus.decode(Data(body.utf8))
-        XCTAssertEqual(status.cacheExpiresAt, Date(timeIntervalSince1970: 1_795_560_237))
+        XCTAssertEqual(try ClaudeSessionStatus.cacheExpiry(in: Data(body.utf8)), Date(timeIntervalSince1970: 1_795_560_237))
     }
 
     func testAReportWithoutAModelHasNone() throws {
-        let status = try ClaudeSessionStatus.decode(Data(#"{"session_id":"c1"}"#.utf8))
-        XCTAssertNil(status.modelId)
+        XCTAssertNil(try ClaudeSessionStatus.modelId(in: Data(#"{"session_id":"c1"}"#.utf8)))
+        XCTAssertNil(try ClaudeSessionStatus.cacheExpiry(in: Data(#"{"session_id":"c1"}"#.utf8)))
     }
 
     func testAReportThatIsNotJSONIsAnError() {
-        XCTAssertThrowsError(try ClaudeSessionStatus.decode(Data("not json".utf8)))
+        XCTAssertThrowsError(try ClaudeSessionStatus.modelId(in: Data("not json".utf8)))
+        XCTAssertThrowsError(try ClaudeSessionStatus.cacheExpiry(in: Data("not json".utf8)))
     }
 
     private final class Lines: @unchecked Sendable {
@@ -28,6 +27,7 @@ final class ClaudeSessionStatusTests: XCTestCase {
         private var stored: [String] = []
         func append(_ line: String) { lock.lock(); stored.append(line); lock.unlock() }
         var count: Int { lock.lock(); defer { lock.unlock() }; return stored.count }
+        var first: String? { lock.lock(); defer { lock.unlock() }; return stored.first }
     }
 
     func testTheStoreKeepsEachSessionsLatestReportUntilItEnds() {
@@ -43,6 +43,21 @@ final class ClaudeSessionStatusTests: XCTestCase {
 
         store.forget(sessionId: "A")
         XCTAssertNil(store.status(for: "A"))
+    }
+
+    /// A cache field Claude reshapes costs the session its cache clock, not its model, and is said.
+    func testAMalformedPromptCacheKeepsTheModelAndIsLogged() {
+        let logged = Lines()
+        let store = ClaudeSessionStatuses(log: { logged.append($0) })
+        store.accept(sessionId: "A", body: Data(#"{"model":{"id":"claude-sonnet-5-5"},"prompt_cache":{"expires_at":1795560237}}"#.utf8))
+        store.accept(sessionId: "A", body: Data(#"{"model":{"id":"claude-opus-5-5"},"prompt_cache":"warm"}"#.utf8))
+
+        XCTAssertEqual(store.status(for: "A")?.modelId, "claude-opus-5-5")
+        XCTAssertEqual(store.status(for: "A")?.cacheExpiresAt, Date(timeIntervalSince1970: 1_795_560_237),
+                       "the part that could not be read keeps its last value")
+        XCTAssertEqual(logged.count, 1)
+        XCTAssertEqual(logged.first?.contains("its prompt cache"), true)
+        XCTAssertEqual(logged.first?.contains("its model"), false)
     }
 
     /// The status line refreshes several times a turn: the same failure is said once, a new one again.

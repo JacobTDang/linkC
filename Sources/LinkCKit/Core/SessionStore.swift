@@ -27,6 +27,12 @@ public enum SessionReducer {
         new == .working && old != .working && old != .waitingPermission
     }
 
+    /// Whether `old` → `new` leaves a turn's requests behind: any move out of `.working`, a
+    /// permission prompt included, since the request that raised it was the last one so far.
+    public static func endsTurn(from old: SessionState, to new: SessionState) -> Bool {
+        old == .working && new != .working
+    }
+
     /// Apply an event to a session. Returns the updated session and whether it just
     /// *entered* a notifiable state (a transition, not a repeat). Real transitions stamp
     /// `stateChangedAt`; a re-asserted identical state keeps the original clock. One exception:
@@ -48,6 +54,7 @@ public enum SessionReducer {
         if startsTurn(from: old, to: s.state) || (old == .waitingPermission && event.kind == .userPromptSubmit) {
             s.turnStartedAt = now
         }
+        if endsTurn(from: old, to: s.state) { s.turnEndedAt = now }
         if let cid = event.claudeSessionId { s.claudeSessionId = cid }
         let entered = s.state.isNotifiable && s.state != old
         return (s, entered)
@@ -102,6 +109,9 @@ public final class SessionStore {
             sessions[idx].stateChangedAt = now
             if SessionReducer.startsTurn(from: old, to: newState) {
                 sessions[idx].turnStartedAt = now
+            }
+            if SessionReducer.endsTurn(from: old, to: newState) {
+                sessions[idx].turnEndedAt = now
             }
         }
     }

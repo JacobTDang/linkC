@@ -13,24 +13,33 @@ public struct ClaudeSessionStatus: Equatable, Sendable {
         self.cacheExpiresAt = cacheExpiresAt
     }
 
-    private struct Report: Decodable {
+    private struct ModelPart: Decodable {
         struct Model: Decodable {
             let id: String?
         }
+        let model: Model?
+    }
+
+    private struct CachePart: Decodable {
         struct PromptCache: Decodable {
             /// Epoch seconds.
             let expires_at: Double?
         }
-        let model: Model?
         let prompt_cache: PromptCache?
     }
 
-    /// Throws when the report is not JSON; a field it lacks is nil.
-    public static func decode(_ body: Data) throws -> ClaudeSessionStatus {
-        let report = try JSONDecoder().decode(Report.self, from: body)
-        return ClaudeSessionStatus(
-            modelId: report.model?.id,
-            cacheExpiresAt: report.prompt_cache?.expires_at.map(Date.init(timeIntervalSince1970:)))
+    /// The model the report names; nil when it names none. Throws when the report is not JSON or
+    /// its `model` is not the shape Claude sends. Read apart from the cache, so a malformed cache
+    /// field never costs the session its model.
+    public static func modelId(in body: Data) throws -> String? {
+        try JSONDecoder().decode(ModelPart.self, from: body).model?.id
+    }
+
+    /// When the report says the prompt cache goes cold; nil when it says nothing. Throws when the
+    /// report is not JSON or its `prompt_cache` is not the shape Claude sends.
+    public static func cacheExpiry(in body: Data) throws -> Date? {
+        try JSONDecoder().decode(CachePart.self, from: body).prompt_cache?.expires_at
+            .map(Date.init(timeIntervalSince1970:))
     }
 }
 
@@ -49,25 +58,28 @@ public final class ClaudeSessionStatuses: @unchecked Sendable {
         self.log = log
     }
 
-    /// Keeps the report's status for the session. A report that is not JSON keeps the last one and is logged.
+    /// Keeps the report's status for the session. A part of it that cannot be read keeps its last
+    /// value and is logged; the other part is still taken.
     public func accept(sessionId: String, body: Data) {
-        let status: ClaudeSessionStatus
-        do {
-            status = try ClaudeSessionStatus.decode(body)
-        } catch {
-            // Described the same way every time, so the same failure compares equal (`StatusLineFile.describe`).
-            let failure = "session \(sessionId)'s status line could not be read for its model — \(StatusLineFile.describe(error))"
-            lock.lock()
-            let isNew = lastFailure[sessionId] != failure
-            lastFailure[sessionId] = failure
-            lock.unlock()
-            if isNew { log(failure) }
-            return
+        let model = Result { try ClaudeSessionStatus.modelId(in: body) }
+        let cache = Result { try ClaudeSessionStatus.cacheExpiry(in: body) }
+        // Described the same way every time, so the same failure compares equal (`StatusLineFile.describe`).
+        let problems = [("its model", model.failure), ("its prompt cache", cache.failure)].compactMap { part, error in
+            error.map { "\(part) — \(StatusLineFile.describe($0))" }
         }
+        let failure = problems.isEmpty
+            ? nil : "session \(sessionId)'s status line could not be read for " + problems.joined(separator: "; ")
         lock.lock()
-        statuses[sessionId] = status
-        lastFailure[sessionId] = nil
+        if problems.count < 2 {
+            let last = statuses[sessionId]
+            statuses[sessionId] = ClaudeSessionStatus(
+                modelId: model.value ?? last?.modelId,
+                cacheExpiresAt: cache.value ?? last?.cacheExpiresAt)
+        }
+        let isNew = failure != nil && lastFailure[sessionId] != failure
+        lastFailure[sessionId] = failure
         lock.unlock()
+        if isNew, let failure { log(failure) }
     }
 
     public func status(for sessionId: String) -> ClaudeSessionStatus? {
@@ -82,5 +94,18 @@ public final class ClaudeSessionStatuses: @unchecked Sendable {
         statuses[sessionId] = nil
         lastFailure[sessionId] = nil
         lock.unlock()
+    }
+}
+
+private extension Result {
+    /// The success, or nil for a failure.
+    var value: Success? {
+        if case .success(let value) = self { return value }
+        return nil
+    }
+
+    var failure: Failure? {
+        if case .failure(let error) = self { return error }
+        return nil
     }
 }
