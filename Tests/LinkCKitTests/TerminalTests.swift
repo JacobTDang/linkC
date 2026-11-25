@@ -165,6 +165,29 @@ final class TerminalSessionTests: XCTestCase {
         let base = ["HOME": "/Users/x", "CURSOR_CONFIG_DIR": "/Users/x/my-cursor"]
         XCTAssertEqual(TerminalSession.scrubbedEnvironment(base), base)
     }
+
+    func testSessionEnvironmentTellsClaudeCodeThisTerminalDrawsPictures() {
+        // SwiftTerm speaks kitty graphics, but Claude Code only draws pictures in a terminal
+        // that names itself kitty, Ghostty or iTerm2. The flag is set after the scrub, which
+        // drops every inherited CLAUDE_CODE_* variable.
+        let environment = TerminalSession.sessionEnvironment(
+            inherited: ["HOME": "/Users/x", "CLAUDE_CODE_FORCE_TERMINAL_IMAGES": "0"],
+            overlay: [:]
+        )
+        XCTAssertEqual(environment["CLAUDE_CODE_FORCE_TERMINAL_IMAGES"], "1")
+    }
+
+    func testSessionEnvironmentLetsASessionsOwnEnvWin() {
+        let environment = TerminalSession.sessionEnvironment(
+            inherited: ["HOME": "/Users/x", "CLAUDECODE": "1"],
+            overlay: ["CLAUDE_CODE_FORCE_TERMINAL_IMAGES": "0", "LINKC_WORKER": "grok"]
+        )
+        XCTAssertEqual(environment["CLAUDE_CODE_FORCE_TERMINAL_IMAGES"], "0")
+        XCTAssertEqual(environment["LINKC_WORKER"], "grok")
+        XCTAssertNil(environment["CLAUDECODE"])
+        XCTAssertEqual(environment["TERM"], "xterm-256color")
+        XCTAssertEqual(environment["PATH"], "/opt/homebrew/bin:/usr/local/bin")
+    }
 }
 
 /// The preview cleaner turns raw terminal rows into home-card content: chrome rows — box-drawing
