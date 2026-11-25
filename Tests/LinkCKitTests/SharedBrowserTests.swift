@@ -586,6 +586,25 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertEqual(launcher.processes[0].isRunning, true, "S3 still uses it")
     }
 
+    /// A session's end never closes the tab another session is pinned to now, though it was the
+    /// ending session's: the other session moved onto it and is using it.
+    func testASessionsEndLeavesATabAnotherSessionIsPinnedToNow() async throws {
+        let browser = makeBrowser()
+        devTools.pages = ["boot"]
+        let s1 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+        let s2 = try await XCTUnwrapAsync(await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project"))
+        devTools.pages += ["T1", "U1"]
+        try pin(s1, to: "T1")
+        try pin(s2, to: "U1")
+        await browser.trackTabs()
+        try pin(s2, to: "T1")
+
+        browser.release(sessionId: "S1")
+        await browser.settle()
+
+        XCTAssertFalse(devTools.closed.contains("T1"), "S2 is pinned to it now: \(devTools.closed)")
+    }
+
     /// A popup belongs to the session whose tab opened it, however many share the browser, and so
     /// does a popup of that popup.
     func testAPopupClosesWithTheSessionWhoseTabOpenedIt() async throws {
@@ -607,9 +626,10 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertEqual(devTools.closed.sorted(), ["P1", "P2", "T1"])
     }
 
-    /// A pinned session's first attach adopts a tab when Chrome has one it tracks, and Chrome's own
-    /// new-tab page is not one: Chrome opens on a blank page, or each first attach adds a stray one.
-    func testChromeOpensOnABlankPageForTheFirstAttachToAdopt() async throws {
+    /// Chrome opens on a blank page, not its own new-tab page: with the new-tab page, the first pinned
+    /// attach added one more blank tab. The first attach still opens a tab of its own, so the blank
+    /// page stays open, idle, for Chrome's life: one stray tab, not two.
+    func testChromeOpensOnABlankPageNotItsNewTabPage() async throws {
         let browser = makeBrowser()
 
         _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")

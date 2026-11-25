@@ -588,8 +588,9 @@ public final class SharedBrowser {
         do {
             process = try launcher.launch(
                 executable: chromePath,
-                // A blank first page, not Chrome's new-tab page, which agent-browser does not track: a
-                // pinned session's first attach then adopts it instead of opening a stray blank tab.
+                // A blank first page, not Chrome's new-tab page: with that, the first pinned attach adds
+                // one more blank tab. The first attach still opens its own tab, so this page stays open
+                // and idle for Chrome's life.
                 arguments: ["--headless=new", "--remote-debugging-port=\(asked)", "--user-data-dir=\(profile.path)",
                             "--no-first-run", "--no-default-browser-check", "about:blank"],
                 log: log,
