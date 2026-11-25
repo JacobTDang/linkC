@@ -4961,6 +4961,31 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(open.step, "$ make")
     }
 
+    /// The agent's own conversation id linkC passed it (OpenCode's) reaches its reader.
+    @MainActor
+    func testTheReaderIsHandedTheConversationIdLinkCPassedTheAgent() async throws {
+        final class Recording: SessionLiveReader, @unchecked Sendable {
+            private let lock = NSLock()
+            private var ids: [String?] = []
+            var seen: [String?] { lock.withLock { ids } }
+            func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
+                lock.withLock { ids.append(target.agentSessionId) }
+                return SessionLiveDetail()
+            }
+        }
+        let recording = Recording()
+        let coordinator = makeCoordinator(liveReaders: [.opencode: recording])
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "oc", id: "L1", agentKind: .opencode,
+                                               claudeSessionId: "ses_made_up")
+        coordinator.store.updateState(id: session.id, to: .working)
+
+        await coordinator.runSweepTickForTests()
+        await coordinator.settleLiveDetailsForTests()
+
+        XCTAssertEqual(recording.seen, ["ses_made_up"])
+    }
+
     @MainActor
     func testProjectsFileIsRewrittenOnlyWhenContentsChange() async throws {
         let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))

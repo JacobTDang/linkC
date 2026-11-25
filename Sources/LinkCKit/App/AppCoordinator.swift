@@ -562,7 +562,7 @@ public final class AppCoordinator {
             usageReaders: MCPServer.defaultUsageReaders(),
             mcpWorkspaces: { MCPWorkspaceRegistry.applicationSupport.liveWorkspaces() },
             knownProjectsFile: .applicationSupport,
-            liveReaders: AppCoordinator.liveReaders,
+            liveReaders: AppCoordinator.liveReaders(),
             sidebarProjects: sidebarProjects,
             openRequests: .applicationSupport,
             openCodeConversations: .live(timeout: AppCoordinator.openCodeModelListingTimeout),

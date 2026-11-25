@@ -1,10 +1,14 @@
 import Foundation
 
 extension AppCoordinator {
-    /// The reader of each agent whose own files say something about a live session.
-    static let liveReaders: [AgentKind: any SessionLiveReader] = [
-        .codex: CodexRolloutReader(),
-    ]
+    /// The reader of each agent whose own files say something about a live session, over the
+    /// user's own files under `home`.
+    static func liveReaders(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [AgentKind: any SessionLiveReader] {
+        [
+            .codex: CodexRolloutReader(),
+            .opencode: OpenCodeLiveReader(home: home),
+        ]
+    }
 
     /// What `session`'s agent reports first-hand about it, for its row in `projects.json`. Claude's
     /// comes from what linkC already holds for it; every other agent's from the last read of its files.
