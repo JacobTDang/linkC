@@ -161,6 +161,46 @@ final class BundledModsTests: XCTestCase {
         )
     }
 
+    func testMidwayInstallFailureLeavesOldVersionIntact() throws {
+        try XCTSkipIf(getuid() == 0, "root ignores POSIX write permissions, so this cannot be exercised as root")
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: [
+                "hooks/keep.tsx": "old-hooks",
+                "skills/keep.md": "old-skills",
+            ]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let installed = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let skillsDir = installed.appendingPathComponent("skills", isDirectory: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: skillsDir.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: skillsDir.path)
+        }
+
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: [
+                "hooks/keep.tsx": "new-hooks",
+                "skills/keep.md": "new-skills",
+            ]
+        )
+        XCTAssertThrowsError(
+            try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+        )
+
+        XCTAssertEqual(
+            try String(contentsOf: installed.appendingPathComponent("hooks/keep.tsx"), encoding: .utf8),
+            "old-hooks",
+            "a failed update must not leave a mixed version"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: installed.appendingPathComponent("skills/keep.md"), encoding: .utf8),
+            "old-skills"
+        )
+    }
+
     func testChangedFileIsReplaced() throws {
         try writeBundleMod(
             name: "linkc-agents",

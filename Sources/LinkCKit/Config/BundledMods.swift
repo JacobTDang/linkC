@@ -76,6 +76,14 @@ public struct BundledMods: Sendable {
         try fm.createDirectory(at: dest, withIntermediateDirectories: true)
 
         let shipped = try relativeFiles(under: source)
+        // Stage every replacement beside its destination first; only swap after all copies
+        // succeed so a midway failure never leaves a mixed installed tree.
+        var staged: [(temp: URL, final: URL)] = []
+        defer {
+            for pair in staged {
+                try? fm.removeItem(at: pair.temp)
+            }
+        }
         for relative in shipped {
             let fromURL = source.appendingPathComponent(relative)
             let to = dest.appendingPathComponent(relative)
@@ -86,10 +94,22 @@ public struct BundledMods: Sendable {
                existing == incoming {
                 continue
             }
-            if fm.fileExists(atPath: to.path) {
-                try fm.removeItem(at: to)
+            let temp = URL(fileURLWithPath: to.path + ".linkc-new-\(UUID().uuidString)")
+            try fm.copyItem(at: fromURL, to: temp)
+            staged.append((temp, to))
+        }
+        while !staged.isEmpty {
+            let pair = staged.removeFirst()
+            do {
+                if fm.fileExists(atPath: pair.final.path) {
+                    _ = try fm.replaceItemAt(pair.final, withItemAt: pair.temp)
+                } else {
+                    try fm.moveItem(at: pair.temp, to: pair.final)
+                }
+            } catch {
+                staged.insert(pair, at: 0) // still a temp for defer cleanup
+                throw error
             }
-            try fm.copyItem(at: fromURL, to: to)
         }
 
         let previous = try validatedManifest(loadManifest(at: dest), modRoot: dest)
