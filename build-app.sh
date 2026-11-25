@@ -48,6 +48,8 @@ rsync -a \
   --exclude '.claude-plugin/types/' \
   --exclude 'tsconfig.json' \
   --exclude '*.test.tsx' \
+  --exclude '.DS_Store' \
+  --exclude 'node_modules' \
   "$MODS_SRC/" "$MODS_DST/"
 
 mkdir -p "$HOME/.local/bin"
