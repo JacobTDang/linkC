@@ -631,6 +631,46 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertEqual(runner.calls, [[npx.path, "-y", "agent-browser", "--session", lease.sessionName, "close", "--json"]])
     }
 
+    /// A Finder-launched linkC has no node on its PATH. `npx` and node-script servers are run with
+    /// the PATH linkC's agent terminals get, through a real `#!/usr/bin/env` script here.
+    func testTheDaemonIsStoppedWithTheAgentTerminalsPath() async throws {
+        let bin = root.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let marker = root.appendingPathComponent("closed")
+        func script(_ name: String, _ text: String) throws {
+            let file = bin.appendingPathComponent(name)
+            try Data(text.utf8).write(to: file)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+        try script("linkc-test-node", "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(marker.path)'\n")
+        try script("npx", "#!/usr/bin/env linkc-test-node\n")
+        let searchPath = ["/usr/bin", "/bin", bin.path]
+        let browser = SharedBrowser(
+            applicationSupport: support, agentBrowserHome: agentBrowserHome, chromePath: "/Applications/Google Chrome",
+            launcher: launcher, devTools: devTools, processes: processes, runner: LiveProcessRunner(),
+            executableSearchPath: searchPath,
+            discover: { _, _ in AgentBrowserServer(name: "browser", commandLine: ["npx", "-y", "agent-browser", "mcp"]) },
+            resolveRepository: { $0 }, now: { Date() }, sleep: { _ in }, nonce: { "n" },
+            report: { [weak self] in self?.notices.append($0) })
+        let lease = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
+
+        browser.release(sessionId: "S1")
+        await browser.settle()
+
+        XCTAssertTrue(notices.isEmpty, notices.joined(separator: "\n"))
+        let argv = (try? String(contentsOf: marker, encoding: .utf8)) ?? "never ran"
+        XCTAssertTrue(argv.contains("--session\n\(lease.sessionName)\nclose"), argv)
+    }
+
+    func testQuittingStopsTheDaemonsWithTheAgentTerminalsPath() async throws {
+        let browser = makeBrowser(searchPath: ["/opt/homebrew/bin", "/usr/bin"])
+        _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+
+        browser.stopAll()
+
+        XCTAssertEqual(launcher.detachedEnvironments, [["PATH": "/opt/homebrew/bin:/usr/bin"]])
+    }
+
     func testADaemonThatCannotBeStoppedSaysWhatAgentBrowserAnswered() async throws {
         runner.result = ProcessResult(status: 1, stdout: #"{"success":false,"error":"daemon socket refused"}"#, stderr: "")
         let browser = makeBrowser()

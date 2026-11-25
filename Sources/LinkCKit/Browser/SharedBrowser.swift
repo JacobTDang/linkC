@@ -252,7 +252,7 @@ public final class SharedBrowser {
         for member in members.values where member.instance != nil {
             if let command = daemonCloseCommand(for: member) {
                 do {
-                    try launcher.runDetached(executable: command[0], arguments: Array(command.dropFirst()), environment: [:])
+                    try launcher.runDetached(executable: command[0], arguments: Array(command.dropFirst()), environment: agentEnvironment)
                 } catch {
                     NSLog("[linkC browser] could not stop agent-browser session %@ — %@", member.sessionName, String(describing: error))
                 }
@@ -406,6 +406,12 @@ public final class SharedBrowser {
         }
     }
 
+    /// The PATH linkC's agent terminals get, which the agent's own MCP server was found and runs
+    /// on: `npx` and node scripts need node, and a Finder-launched linkC's own PATH has none.
+    private var agentEnvironment: [String: String] {
+        ["PATH": executableSearchPath.joined(separator: ":")]
+    }
+
     /// `agent-browser --session <name> close --json`, run through the server's own command. Nil when
     /// that command is not found; the reason is reported.
     private func daemonCloseCommand(for member: Member) -> [String]? {
@@ -426,7 +432,8 @@ public final class SharedBrowser {
     private func stopDaemon(of member: Member) async {
         guard let command = daemonCloseCommand(for: member) else { return }
         do {
-            let result = try await runner.runCapturing(command[0], args: Array(command.dropFirst()), cwd: nil, timeout: 15)
+            let result = try await runner.runCapturing(
+                command[0], args: Array(command.dropFirst()), cwd: nil, env: agentEnvironment, timeout: 15)
             guard result.status == 0 else {
                 // With --json agent-browser writes its error to stdout.
                 let said = [result.stdout, result.stderr]
