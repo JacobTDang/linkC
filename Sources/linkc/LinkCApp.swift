@@ -206,6 +206,23 @@ final class AppModel {
 
     /// Surface a one-off failure in the panel's error bar (fail loud, stay standing).
     func surface(error message: String) { lastError = message }
+
+    /// Copies `Resources/mods` into Application Support. No-op when this launch has no bundled
+    /// mods folder (a bare `swift run`). Failures are logged and shown like other start-up notices.
+    private func installBundledMods(coordinator: AppCoordinator) {
+        guard let bundleMods = BundledMods.bundleModsDirectory() else { return }
+        do {
+            try BundledMods(
+                bundleModsDirectory: bundleMods,
+                installDirectory: BundledMods.defaultInstallDirectory
+            ).install()
+        } catch {
+            let message = error.localizedDescription
+            NSLog("[linkC] %@", message)
+            coordinator.postLocalNotification(title: "linkC", body: message)
+            if panelVisible { lastError = message } else { pendingUpdateNotice = message }
+        }
+    }
     /// Refreshes usage while the panel is visible; hook events cover the rest of the time.
     @ObservationIgnored private var usageTimer: Timer?
     @ObservationIgnored private var refreshSchedule = RefreshSchedule.panel
@@ -337,6 +354,9 @@ final class AppModel {
             self.watchedEndpointsStore = WatchedEndpointsStore(directory: linkCSupport)
             reloadConfiguredEndpoints()
             startHealthTimer()
+            // Ship each bundled mod into Application Support; a failure is loud (log + notice +
+            // error bar) the same way an update-swap notice is, without blocking the rest of start.
+            installBundledMods(coordinator: coordinator)
             // The swap that installed this build ran with no app to tell: what it left for the
             // user (a failed install, or grants about to be lost) is posted now, and shown again
             // in the error bar the next time the panel opens — the panel is hidden at launch.
