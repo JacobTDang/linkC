@@ -31,6 +31,9 @@ enum CursorTranscriptStep {
             label = "$ " + first.trimmingCharacters(in: .whitespaces)
         } else if fileTools.contains(name), let path = input["path"] as? String, !path.isEmpty {
             label = "\(name) \(URL(fileURLWithPath: path).lastPathComponent)"
+        } else if name == "CallDynamicTool", let called = input["toolName"] as? String, !called.isEmpty {
+            // Cursor's wrapper for an MCP call: the tool it calls is the step.
+            label = called
         } else {
             label = name
         }

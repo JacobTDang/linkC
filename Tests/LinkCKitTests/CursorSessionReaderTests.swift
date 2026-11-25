@@ -232,6 +232,13 @@ final class CursorSessionReaderTests: XCTestCase {
         XCTAssertEqual(try step(of: [userLine(), assistantLine(toolUse("Read", "{}"))]), "Read")
     }
 
+    func testAnMCPCallIsTheStepByTheToolItCalls() throws {
+        let call = toolUse("CallDynamicTool", #"{"namespace":"made-up-server","toolName":"made_up_tool","arguments":{}}"#)
+        XCTAssertEqual(try step(of: [userLine(), assistantLine(call)]), "made_up_tool")
+        let unnamed = toolUse("CallDynamicTool", #"{"namespace":"made-up-server"}"#)
+        XCTAssertEqual(try step(of: [userLine(), assistantLine(unnamed)]), "CallDynamicTool")
+    }
+
     func testTheLastToolOfTheLastLineIsTheStep() throws {
         let first = toolUse("Read", #"{"path":"/made/up/One.swift"}"#)
         let second = toolUse("Read", #"{"path":"/made/up/Two.swift"}"#)
