@@ -29,6 +29,23 @@ final class PromptBarTests: XCTestCase {
         func bump() { count.withLock { $0 += 1 } }
     }
 
+    /// Holds the first routing read until opened: a preview still being read when something newer comes.
+    private final class Gate: Sendable {
+        private let calls = OSAllocatedUnfairLock(initialState: 0)
+        private let released = DispatchSemaphore(value: 0)
+        var isHolding: Bool { calls.withLock { $0 > 0 } }
+
+        func pass() {
+            let first = calls.withLock { count in
+                count += 1
+                return count == 1
+            }
+            if first { released.wait() }
+        }
+
+        func open() { released.signal() }
+    }
+
     /// The sessions a fake opener was asked for.
     private final class Launches {
         var all: [PromptBarLaunch] = []
@@ -47,6 +64,7 @@ final class PromptBarTests: XCTestCase {
     /// bar reads the routing facts; `listings` each time it runs an agent's own CLI to list its models.
     private func makeBar(
         installed: [AgentKind],
+        gate: Gate? = nil,
         settings: AgentModelSettings = .seeded,
         lists: @escaping @Sendable () throws -> [AgentKind: AgentModelList] = TestModelLists.none,
         clock: ManualClock,
@@ -64,7 +82,10 @@ final class PromptBarTests: XCTestCase {
                 gatherings.bump()
                 return RouteInputs(
                     isInstalled: { installed.contains($0) },
-                    liveLimits: { try inbox.liveLimits(agent: $0) },
+                    liveLimits: {
+                        gate?.pass()
+                        return try inbox.liveLimits(agent: $0)
+                    },
                     usageReaders: [:],
                     agentsOpen: { ([], nil) })
             },
@@ -85,6 +106,15 @@ final class PromptBarTests: XCTestCase {
         await waitUntil(file: file, line: line) { !clock.pendingSleeps.isEmpty }
         clock.advance(by: .milliseconds(250))
         await bar.previewWork?.value
+    }
+
+    /// Waits, in real time, for work off the main thread.
+    private func waitFor(file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool) async {
+        for _ in 0..<5_000 {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTFail("the condition never held", file: file, line: line)
     }
 
     private func waitUntil(file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool) async {
@@ -186,6 +216,48 @@ final class PromptBarTests: XCTestCase {
 
         XCTAssertEqual(gatherings.value, 1)
         XCTAssertEqual(pick(bar)?.text, "→ Codex · gpt-5.6-sol · medium — implementation")
+    }
+
+    /// A preview still being read when the text changes is dropped when it lands: the line keeps the
+    /// pick for the text as it is now.
+    func testAPreviewThatLandsAfterTheTextChangedIsDropped() async {
+        let clock = ManualClock()
+        let gate = Gate()
+        let bar = makeBar(installed: [.codex, .opencode], gate: gate, clock: clock)
+        bar.text = Self.implement
+        await waitUntil { !clock.pendingSleeps.isEmpty }
+        clock.advance(by: .milliseconds(250))
+        await waitFor { gate.isHolding }
+        let late = bar.previewWork
+
+        bar.text = "Browse the docs for this API"
+        await settle(bar, clock)
+        XCTAssertEqual(pick(bar)?.agent, .opencode)
+        gate.open()
+        await late?.value
+
+        XCTAssertEqual(pick(bar)?.agent, .opencode, "the pick for the old text never shows")
+    }
+
+    /// A preview still being read when Enter is pressed is dropped when it lands: what Enter said stays.
+    func testAPreviewThatLandsAfterEnterIsDropped() async {
+        let clock = ManualClock()
+        let gate = Gate()
+        let bar = makeBar(installed: [.opencode], gate: gate, clock: clock, listing: ["opencode/other-free"])
+        bar.text = Self.implement
+        await waitUntil { !clock.pendingSleeps.isEmpty }
+        clock.advance(by: .milliseconds(250))
+        await waitFor { gate.isHolding }
+        let late = bar.previewWork
+
+        await bar.submit()?.value
+        let refused = PromptBarLine.error(
+            "no installed agent is free to take this task at standard — opencode skipped (opencode/big-pickle (opencode tier standard) is not among the models OpenCode lists — free models come and go)")
+        XCTAssertEqual(bar.line, refused)
+        gate.open()
+        await late?.value
+
+        XCTAssertEqual(bar.line, refused, "the preview read before Enter never shows")
     }
 
     /// The pick is read for the project on screen: moving to another project reads it again there, at once.
@@ -572,6 +644,35 @@ final class PromptBarTests: XCTestCase {
 
         let id = try XCTUnwrap(opened.first)
         XCTAssertEqual(coordinator.store.session(id: id)?.model, go)
+    }
+
+    /// The folder is gone by the time the session opens: nothing opens, and the error names the folder.
+    func testOpenRoutedRefusesAFolderThatIsNotThere() {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let missing = tempDir.appendingPathComponent("gone").path
+
+        XCTAssertThrowsError(try coordinator.openRouted(PromptBarLaunch(
+            folder: missing, agent: .codex, tier: .standard, effort: nil, prompt: Self.implement))) { error in
+            XCTAssertEqual(error.localizedDescription, "the folder \(missing) does not exist")
+        }
+        XCTAssertEqual(coordinator.store.sessions.count, 0)
+    }
+
+    /// The tier has no model for the agent: nothing opens on some other model, and the error says where to set one.
+    func testOpenRoutedRefusesATierWithNoModel() {
+        var settings = AgentModelSettings.seeded
+        settings.setModel("", for: .codex, tier: .standard)
+        let coordinator = makeCoordinator(settings: settings)
+        defer { coordinator.shutdown() }
+
+        XCTAssertThrowsError(try coordinator.openRouted(PromptBarLaunch(
+            folder: folder, agent: .codex, tier: .standard, effort: nil, prompt: Self.implement))) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "no model configured for codex tier standard — set it in linkC's Settings > Models")
+        }
+        XCTAssertEqual(coordinator.store.sessions.count, 0)
     }
 
     /// The tie-break toward an agent already open in the folder compares canonical paths on both
