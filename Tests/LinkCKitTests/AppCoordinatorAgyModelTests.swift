@@ -115,6 +115,19 @@ final class AppCoordinatorAgyModelTests: XCTestCase {
                        yolo + ["--model", "gemini-3.8-flash", "--effort", "high"])
     }
 
+    /// The session keeps the id it was asked for; only argv carries the base id agy resolves.
+    func testAnAgyModelWithAnEffortKeepsTheConfiguredIdOnTheSession() throws {
+        let coordinator = try makeCoordinator(lists: TestModelLists.agy)
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .agy, mode: .new,
+                                                 model: "gemini-3.8-flash-high", effort: .high)
+
+        XCTAssertEqual(launchedArguments(of: session, count: yolo.count + 4),
+                       yolo + ["--model", "gemini-3.8-flash", "--effort", "high"])
+        XCTAssertEqual(session.model, "gemini-3.8-flash-high")
+    }
+
     /// agy refuses `--effort` for its Claude models, which list no level: the worker would die at
     /// launch. The id runs as configured, with no flag.
     func testAnAgyClaudeModelLaunchesAsConfiguredWithNoEffort() throws {

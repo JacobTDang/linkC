@@ -303,6 +303,28 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         XCTAssertNil(row.pool)
     }
 
+    // MARK: - An agy model task with an effort
+
+    /// A model task to agy with an effort launches Flash's base id with `--effort`, but the worker
+    /// keeps the configured id: matched against the task's model, the worker started for the task
+    /// carries it, rather than a new agy terminal starting for it on every pass.
+    func testTheAgyWorkerStartedForAModelTaskWithAnEffortCarriesThatTask() throws {
+        let coordinator = makeCoordinator(lists: TestModelLists.agy)
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-high", effort: .high,
+                                        prompt: "Use Flash.", files: [])
+
+        for _ in 0..<3 {
+            coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+        }
+
+        XCTAssertEqual(coordinator.store.sessions.count, 1, "the worker started for the task carries it")
+        let worker = try XCTUnwrap(coordinator.store.sessions.first)
+        XCTAssertEqual(worker.model, "gemini-3.8-flash-high")
+        XCTAssertTrue(worker.canCarry(task))
+    }
+
     // MARK: - A held task tells its delegator once
 
     /// A model task whose pool is limited waits, and the delegator hears why the first time it is

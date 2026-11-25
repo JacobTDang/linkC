@@ -1199,7 +1199,7 @@ public final class AppCoordinator {
         }
         // The agent's own conversation id: Claude's to resume, or the OpenCode conversation opened.
         let conversationId = openCode?.id ?? resumeId
-        var model = resolved.model
+        let model = resolved.model
         let modelTier = resolved.tier
         // Effort comes from the caller (a task), else from Settings for the tier being launched.
         // Agents whose CLI has no effort knob stay unset — Settings says so.
@@ -1218,16 +1218,19 @@ public final class AppCoordinator {
                 "\(agent.rawValue) does not accept effort \(launchEffort.rawValue) — supported: \(levels.map(\.rawValue).joined(separator: ", "))")
         }
         // What goes in argv. agy refuses `--effort` for a level it does not list for the model, and a
-        // refused flag kills the worker at launch: the flag goes only where agy lists the level.
+        // refused flag kills the worker at launch: the flag goes only where agy lists the level, on
+        // the base id. The session keeps the configured id, which is what a task names and the relay
+        // matches a worker on (`Session.canCarry`).
+        var argvModel = model
         var argvEffort = launchEffort
         if agent == .agy {
-            if let currentModel = model {
-                let launch = AgyEffort.launch(id: currentModel, effort: launchEffort, listed: agyListedModels())
+            if let model {
+                let launch = AgyEffort.launch(id: model, effort: launchEffort, listed: agyListedModels())
                 if let launchEffort, launch.effort == nil {
                     NSLog("[linkC] agy lists no %@ effort for %@, so it launches as configured",
-                          launchEffort.rawValue, currentModel)
+                          launchEffort.rawValue, model)
                 }
-                model = launch.model
+                argvModel = launch.model
                 argvEffort = launch.effort
             } else {
                 argvEffort = nil
@@ -1297,7 +1300,7 @@ public final class AppCoordinator {
                 executable = claudePath
                 let settingsPath = try writeSettings(for: session)
                 args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
-                    + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (argvModel.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
                     + (argvEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
             } else {
                 // Codex and agy open a folder they have not seen on a trust dialog; trust it first, as
@@ -1338,7 +1341,7 @@ public final class AppCoordinator {
                 }
                 executable = resolved
                 args = AgentDescriptor.arguments(for: agent, mode: mode, sessionId: session.id)
-                    + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (argvModel.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
                     + (argvEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
                     + (openCode.map { OpenCodeConversations.launchArguments(conversationId: $0.id) } ?? [])
             }
