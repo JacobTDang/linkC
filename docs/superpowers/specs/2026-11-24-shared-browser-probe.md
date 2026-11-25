@@ -87,7 +87,7 @@ exit code: 0
 
 ## 2. MCP Mode Probe (`agent-browser mcp`)
 
-We evaluated driving `agent-browser mcp` via JSON-RPC stdio against the same Chrome instance running on port `9444`.
+We evaluated driving `agent-browser mcp` via JSON-RPC stdio against the same Chrome instance running on port `9444`. *(Note: An earlier version of this document mixed up ports 9555 and 9444).*
 
 ### Test 2A: Environment Configuration (`AGENT_BROWSER_CDP=9444` & `AGENT_BROWSER_PIN_TAB=1`)
 We started `agent-browser mcp` with:
@@ -95,7 +95,7 @@ We started `agent-browser mcp` with:
 - `AGENT_BROWSER_PIN_TAB="1"`
 - `AGENT_BROWSER_SESSION="mcp_s1"`
 
-We sent JSON-RPC messages via stdin with a 15-second timeout on each read (omitting any read after notifications):
+We sent JSON-RPC messages via stdin with a 15-second per-read timeout on each read (omitting any read after notifications):
 
 1. **`initialize` request:**
    ```json
@@ -125,7 +125,7 @@ We sent JSON-RPC messages via stdin with a 15-second timeout on each read (omitt
    ```
    **Response:**
    ```json
-   {"id":3,"jsonrpc":"2.0","result":{"content":[{"text":"Example Domain\n\nwarning: Chrome 158.0.8127.37 is behind the current stable release...","type":"text"}],"isError":false,"structuredContent":{"exitCode":0,"response":{"data":{"lifecycle":{"effectiveLaunch":{"browserLaunched":true,"engine":"chrome","launchHash":8187140403112797887},"launched":true,"relaunchedBrowser":false,"restartedBackground":false,"restoreStatus":"not_configured","reused":false,"saveStatus":"not_attempted","settings":{"changes":[{"applied":false,"effect":"relaunch","option":"cdp","requested":"9444","running":null}],"forcedRelaunch":false}},"targetId":"894387CAB30EA1C7BE39E14C2ED0CA18","title":"Example Domain","url":"https://example.com/"},"error":null,"success":true},"stderr":""}}}
+   {"id":3,"jsonrpc":"2.0","result":{"content":[{"text":"Example Domain\n\nwarning: Chrome 158.0.8127.37 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`.","type":"text"}],"isError":false,"structuredContent":{"exitCode":0,"response":{"data":{"lifecycle":{"effectiveLaunch":{"browserLaunched":true,"engine":"chrome","launchHash":8187140403112797887},"launched":true,"relaunchedBrowser":false,"restartedBackground":false,"restoreStatus":"not_configured","reused":false,"saveStatus":"not_attempted","settings":{"changes":[{"applied":false,"effect":"relaunch","option":"cdp","requested":"9444","running":null}],"forcedRelaunch":false}},"targetId":"E4B014ED84C77D83B43CD993E9CA6756","title":"Example Domain","url":"https://example.com/"},"error":null,"success":true,"warning":"Chrome 158.0.8127.37 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`."},"stderr":""}}}
    ```
 
 5. **`tools/call` for `agent_browser_get_url` with `{}`:**
@@ -136,6 +136,23 @@ We sent JSON-RPC messages via stdin with a 15-second timeout on each read (omitt
    ```json
    {"id":4,"jsonrpc":"2.0","result":{"content":[{"text":"https://example.com/","type":"text"}],"isError":false,"structuredContent":{"exitCode":0,"response":{"data":{"lifecycle":{"effectiveLaunch":{"browserLaunched":true,"engine":"chrome","launchHash":8187140403112797887},"launched":false,"relaunchedBrowser":false,"restartedBackground":false,"restoreStatus":"not_configured","reused":true,"saveStatus":"not_attempted"},"url":"https://example.com/"},"error":null,"success":true},"stderr":""}}}
    ```
+
+6. **Target Verification in Shared Chrome:**
+   We immediately queried the shared Chrome instance via `GET http://127.0.0.1:9444/json/list`:
+   ```text
+   id: E4B014ED84C77D83B43CD993E9CA6756 type: page title: Example Domain url: https://example.com/
+   id: A8017FFAD632139ABD918F48D2419D1A type: page title: about:blank url: about:blank
+   id: E4786BB3423CD6264C99302AB58E137A type: page title: New Tab url: chrome://newtab/
+   id: 6FE948B1BC3B2F06164C5B79070BDA0D type: iframe title: chrome-untrusted://new-tab-page/one-google-bar?paramsencoded= url: chrome-untrusted://new-tab-page/one-google-bar?paramsencoded=
+   id: FCECF31D17D6A615081EC8A76E0441AF type: browser_ui title: Omnibox Popup url: chrome://omnibox-popup.top-chrome/
+   ...
+   ```
+   **Attachment Status:** Plainly stated, `agent-browser mcp` **did attach** to the shared Chrome instance running on port 9444. The new page target (`targetId: E4B014ED84C77D83B43CD993E9CA6756`, `url: https://example.com/`) was created and hosted directly inside the shared Chrome process.
+
+   **Understanding `"browserLaunched": true` and `cdp: applied: false`:**
+   - `"browserLaunched": true` and `"launched": true` represent `agent-browser`'s session daemon connecting to the browser session for the first time rather than reusing an existing daemon session connection.
+   - `settings.changes: [{"applied": false, "effect": "relaunch", "option": "cdp", "requested": "9444", "running": null}]` signifies that because no browser was previously active on this session daemon (`running: null`), applying the CDP port setting did not require relaunching an existing browser.
+   - Setting `AGENT_BROWSER_CDP="9444"` in the process environment before starting `agent-browser mcp` is what causes it to attach to the shared instance.
 
 ### Test 2B: Passing `extraArgs: ["--cdp", "9444"]` Per Tool Call
 We tested whether individual tool calls could specify the CDP port on the fly without setting it in the MCP server process environment:

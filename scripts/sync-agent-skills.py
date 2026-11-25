@@ -21,28 +21,34 @@ from pathlib import Path
 
 HOME = Path.home()
 
-def resolve_repo_root() -> Path:
+def resolve_repo_root(from_dir: Path | None = None) -> Path:
     """
     Resolves the repo root as the MAIN checkout via git rev-parse --path-format=absolute --git-common-dir,
     then its parent. Fails loudly if git cannot determine it.
     """
+    cwd = from_dir if from_dir is not None else Path(__file__).resolve().parent
     try:
         out = subprocess.check_output(
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=Path(__file__).resolve().parent,
+            cwd=cwd,
             stderr=subprocess.PIPE,
             text=True,
         ).strip()
         common_dir = Path(out)
-        if not str(common_dir).strip():
-            raise RuntimeError("git rev-parse returned empty output")
         return common_dir.parent.resolve()
     except Exception as e:
         print(f"Error: failed to resolve main git checkout root: {e}", file=sys.stderr)
         sys.exit(1)
 
-REPO_ROOT = resolve_repo_root()
-REPO_SKILLS_DIR = REPO_ROOT / "skills"
+REPO_ROOT = None
+REPO_SKILLS_DIR = None
+
+def init_repo_root(from_dir: Path | None = None):
+    global REPO_ROOT, REPO_SKILLS_DIR
+    if REPO_ROOT is None:
+        REPO_ROOT = resolve_repo_root(from_dir=from_dir)
+    if REPO_SKILLS_DIR is None:
+        REPO_SKILLS_DIR = REPO_ROOT / "skills"
 
 # OpenCode, Crush, and Kilo already read ~/.claude/skills and ~/.agents/skills, so targeting them caused duplicate skills.
 TARGET_DIRS = {
@@ -73,7 +79,9 @@ def is_known_source(path: Path) -> bool:
 
     # Check REPO_SKILLS_DIR and REPO_ROOT
     try:
-        if resolved.is_relative_to(REPO_SKILLS_DIR.resolve()) or resolved.is_relative_to(REPO_ROOT.resolve()):
+        if REPO_SKILLS_DIR and resolved.is_relative_to(REPO_SKILLS_DIR.resolve()):
+            return True
+        if REPO_ROOT and resolved.is_relative_to(REPO_ROOT.resolve()):
             return True
     except (ValueError, Exception):
         pass
@@ -101,16 +109,17 @@ def get_canonical_skills(errors=None):
     Harvests all skills that contain a SKILL.md.
     Returns dict: { skill_name: canonical_Path }
     """
+    init_repo_root()
     skills = {}
 
     def record_skill(name, real_path, source_desc):
         if name not in skills:
             skills[name] = real_path
         elif skills[name] != real_path:
-            print(f"Warning: conflicting source for skill '{name}': {skills[name]} vs {real_path} ({source_desc})", file=sys.stderr)
+            print(f"Warning: conflicting source for skill '{name}': keeping {skills[name]} (won), ignoring {real_path} ({source_desc})", file=sys.stderr)
 
     # 1. Harvest from repo skills/ folder if present
-    if REPO_SKILLS_DIR.exists():
+    if REPO_SKILLS_DIR and REPO_SKILLS_DIR.exists():
         for entry in REPO_SKILLS_DIR.iterdir():
             if entry.name in IGNORED_NAMES or entry.name.startswith("."):
                 continue
@@ -240,11 +249,15 @@ def sync():
                 else:
                     skipped_files += 1
 
-    print(f"\nSync complete. Created/updated {links_created} symlinks. {links_existing} already up to date. {skipped_dirs} real directories and {skipped_files} real files preserved.")
-
     if errors:
         print(f"\nEncountered {len(errors)} error(s) during sync.", file=sys.stderr)
         sys.exit(1)
 
-if __name__ == "__main__":
+    print(f"\nSync complete. Created/updated {links_created} symlinks. {links_existing} already up to date. {skipped_dirs} real directories and {skipped_files} real files preserved.")
+
+def main():
+    init_repo_root()
     sync()
+
+if __name__ == "__main__":
+    main()

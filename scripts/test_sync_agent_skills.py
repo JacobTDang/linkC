@@ -11,6 +11,7 @@ Run with:
 import io
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -165,12 +166,13 @@ class TestSyncAgentSkills(unittest.TestCase):
                 raise PermissionError("Permission denied simulating link failure")
             return orig_symlink_to(path_self, target, target_is_directory)
 
-        with patch.object(Path, "symlink_to", side_effect=mock_symlink_fail), \
+        with patch.object(Path, "symlink_to", autospec=True, side_effect=mock_symlink_fail), \
              patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
             with self.assertRaises(SystemExit) as cm:
                 self.mod.sync()
             self.assertEqual(cm.exception.code, 1)
             self.assertIn("Failed to link err-skill", mock_stderr.getvalue())
+            self.assertIn("Permission denied simulating link failure", mock_stderr.getvalue())
 
     def test_no_repointing_of_user_valid_link(self):
         """A valid user symlink pointing outside known sources must NOT be repointed to canonical."""
@@ -210,7 +212,34 @@ class TestSyncAgentSkills(unittest.TestCase):
             skills = self.mod.get_canonical_skills()
             stderr_val = mock_stderr.getvalue()
             self.assertIn("Warning: conflicting source for skill 'dup-skill'", stderr_val)
+            self.assertIn("won", stderr_val)
             self.assertIn("dup-skill", skills)
+
+    def test_resolve_repo_root_in_worktree(self):
+        """resolve_repo_root must return the main checkout root when executed from a worktree."""
+        with tempfile.TemporaryDirectory() as td:
+            main_repo = Path(td) / "main_repo"
+            main_repo.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=main_repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=main_repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=main_repo, check=True)
+            (main_repo / "README.md").write_text("# Main")
+            subprocess.run(["git", "add", "."], cwd=main_repo, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=main_repo, check=True, capture_output=True)
+
+            wt = Path(td) / "wt"
+            subprocess.run(["git", "worktree", "add", "-b", "feat", str(wt)], cwd=main_repo, check=True, capture_output=True)
+            wt_scripts = wt / "scripts"
+            wt_scripts.mkdir(parents=True)
+
+            resolved = self.mod.resolve_repo_root(from_dir=wt_scripts)
+            self.assertEqual(resolved, main_repo.resolve())
+
+    def test_import_hermetic_without_git(self):
+        """Importing sync-agent-skills must be hermetic and succeed even when git rev-parse fails."""
+        with patch("subprocess.check_output", side_effect=subprocess.CalledProcessError(128, ["git", "rev-parse"])):
+            mod = load_sync_module()
+            self.assertIsNotNone(mod)
 
 if __name__ == "__main__":
     unittest.main()
