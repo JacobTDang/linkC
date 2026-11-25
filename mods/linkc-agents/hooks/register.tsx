@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage } from 'claude-code'
 
-import type { AgentRow, Agents, Meter, SelfActivity } from '../types'
+import type { AgentRow, Agents, Limit, Meter, SelfActivity } from '../types'
 import type { ShimmerProps } from './shimmer'
 
 const FILETREE = 'filetree'
@@ -66,8 +66,8 @@ const STATES: Record<string, StateLook> = {
   idle: IDLE,
 }
 
-const agents = atom({ plugin: 'linkc-agents', key: 'agents' } as const, { rows: [], error: null, me: null, minute: 0, coldCaches: 0 }, {
-  shape: 'agents-3',
+const agents = atom({ plugin: 'linkc-agents', key: 'agents' } as const, { rows: [], limits: {}, error: null, me: null, minute: 0, coldCaches: 0 }, {
+  shape: 'agents-4',
 })
 
 const meters = atom({ plugin: 'linkc-agents', key: 'meters' } as const, [], { shape: 'meters-1' })
@@ -141,7 +141,7 @@ function meterColor(percent: number): string {
   return percent >= 90 ? RED : percent >= 70 ? ORANGE : GREEN
 }
 
-type Stored = { projects: { path: string; sessions: Omit<AgentRow, 'where'>[] }[] }
+type Stored = { projects: { path: string; sessions: Omit<AgentRow, 'where'>[] }[]; limits?: Record<string, Limit[]> }
 
 /**
  * The repo `cwd` is in, through its worktrees to the main checkout, as a real path (linkC publishes
@@ -209,6 +209,27 @@ function subagentWords(count: number): string {
   return `${count} subagent${count === 1 ? '' : 's'}`
 }
 
+/** A card's running subagents as your own card shows them: the first by name and step, the rest counted. */
+function namedSubagents(row: AgentRow): string {
+  const [first, ...rest] = row.subagentSteps ?? []
+  if (!first) return ''
+  const more = Math.max(rest.length, (row.subagents ?? 0) - 1)
+  return `${first.name}${first.step ? `: ${first.step}` : ''}${more > 0 ? ` +${more}` : ''}`
+}
+
+/** How full a card's context is, beside its model: orange from 80%. */
+function contextLabel(row: AgentRow): { text: string; color: string } | null {
+  if (row.contextPercent === undefined) return null
+  return { text: ` ${row.contextPercent}%`, color: row.contextPercent >= 80 ? ORANGE : MUTED }
+}
+
+/** A card's agent's tightest plan limit, once it reaches 70%. */
+function tightestLimit(limits: Limit[] | undefined): { text: string; color: string } | null {
+  const tightest = (limits ?? []).reduce<Limit | null>((most, limit) => (most && most.percent >= limit.percent ? most : limit), null)
+  if (!tightest || tightest.percent < 70) return null
+  return { text: ` ${tightest.label} ${tightest.percent}%`, color: meterColor(tightest.percent) }
+}
+
 /** A turn running now, as linkC's state or, from an older linkC, its coarse activity says. */
 function isAtWork(row: AgentRow): boolean {
   const known = row.state !== undefined && row.state in STATES
@@ -220,10 +241,13 @@ function isAtWork(row: AgentRow): boolean {
  * subagents — never the word for its state: the dot and the shimmer already say it works.
  */
 function detailOf(row: AgentRow, state: StateLook): string {
-  const subagents = row.subagents ? subagentWords(row.subagents) : ''
-  const words = row.action
-    ? [row.action, subagents].filter(Boolean).join(' · ')
-    : isAtWork(row) ? (subagents ? `running ${subagents}` : '') : state.label
+  const counted = row.subagents ? subagentWords(row.subagents) : ''
+  // What a card's agent records first-hand outranks what its screen shows; what needs you comes first.
+  const named = state.needsYou ? '' : namedSubagents(row)
+  const doing = state.needsYou ? row.action : (row.step ?? row.action)
+  const words = doing
+    ? [doing, named || counted].filter(Boolean).join(' · ')
+    : named || (isAtWork(row) ? (counted ? `running ${counted}` : '') : state.label)
   const where = placeOf(row.where)
   // A session at work that linkC has said nothing about yet still shimmers on something.
   return [words, where].filter(Boolean).join(' ') || (isAtWork(row) ? '…' : '')
@@ -262,13 +286,14 @@ function stateOf(row: AgentRow): StateLook {
   return { glyph: '●', label: `running ${subagentWords(running)}`, color: GREEN, rank: 3 }
 }
 
-async function load($: EngineInterface, file: string, root: string): Promise<Pick<Agents, 'rows' | 'error'>> {
+async function load($: EngineInterface, file: string, root: string): Promise<Pick<Agents, 'rows' | 'limits' | 'error'>> {
   let stored: Stored
   try {
     stored = JSON.parse(await $.fs.read(file)) as Stored
   } catch (err) {
-    return { rows: [], error: `cannot read ${file}: ${String(err)}` }
+    return { rows: [], limits: {}, error: `cannot read ${file}: ${String(err)}` }
   }
+  const limits = stored.limits ?? {}
   const rows: AgentRow[] = stored.projects.flatMap(p => {
     const where = within(root, p.path)
     return where === null ? [] : p.sessions.map(s => ({ ...s, where }))
@@ -276,7 +301,7 @@ async function load($: EngineInterface, file: string, root: string): Promise<Pic
   // Said above the cards, which still show.
   const unreadable = rows.find(row => row.cacheExpiresAt !== undefined && Number.isNaN(Date.parse(row.cacheExpiresAt)))
   const error = unreadable ? `session ${unreadable.id}'s cacheExpiresAt "${unreadable.cacheExpiresAt}" in ${file} is not a time` : null
-  return { rows, error }
+  return { rows, limits, error }
 }
 
 function age(since: string | undefined, now: number): string {
@@ -320,7 +345,7 @@ export const register: Register = on => {
         const found = await load($, file, root)
         await show({ ...found, me, minute, coldCaches: coldCount(found.rows, now) })
       } catch (error) {
-        await show({ rows: [], error: error instanceof Error ? error.message : String(error), me, minute, coldCaches: 0 })
+        await show({ rows: [], limits: {}, error: error instanceof Error ? error.message : String(error), me, minute, coldCaches: 0 })
       } finally {
         isRefreshing = false
       }
@@ -435,7 +460,7 @@ export const register: Register = on => {
     const width = e.props.bodyColumns
     const top = Math.max(5, Math.floor(body / 2))
     const tree = await next({ ...e, props: { ...e.props, scroll: e.props.scroll && { ...e.props.scroll, bodyRows: top } } })
-    const { rows, error, me } = await read($, agents)
+    const { rows, limits, error, me } = await read($, agents)
     // This session knows its own steps first-hand, ahead of what linkC publishes about it.
     const mine = selfDetail(await read($, self))
     const now = await $.clock.now()
@@ -480,6 +505,8 @@ export const register: Register = on => {
           // A card at work or waiting on you is in its full tone; one at rest is dimmed.
           const titleColor = state.rank <= WORKING_RANK ? tone.solid : (tone.dim[3] ?? MUTED)
           const cache = cacheLabel(row, now)
+          const context = contextLabel(row)
+          const limit = tightestLimit(limits[row.agent])
           return (
             <Box flexDirection="column">
               <Box flexDirection="row">
@@ -490,6 +517,8 @@ export const register: Register = on => {
                   </Button>
                 </Box>
                 <Text color={MUTED}>{`${row.model ? ` ${modelLabel(row.model)}` : row.title ? ` ${row.agent}` : ''}${row.worker ? ' · worker' : ''}`}</Text>
+                {context && <Text color={context.color}>{context.text}</Text>}
+                {limit && <Text color={limit.color}>{limit.text}</Text>}
                 {cache && <Text color={cache.color}>{cache.text}</Text>}
                 {isMe && <Text bold color={PEACH}>{' · you'}</Text>}
                 <Text> </Text>

@@ -448,6 +448,93 @@ test('a cache time that is not a time says so above the cards, which still show'
   expect(all.some(t => t.includes('◷'))).toBe(false)
 })
 
+test('a card shows how full its context is beside the model, in orange from 80%', async ($, on) => {
+  const projects = {
+    projects: [{
+      path: '/repo',
+      sessions: [
+        { id: 'A', agent: 'claude', activity: 'idle', title: 'Roomy', state: 'ready', model: 'Opus 5.5', contextPercent: 41 },
+        { id: 'B', agent: 'codex', activity: 'idle', title: 'Full', state: 'ready', model: 'gpt-made-up', contextPercent: 83 },
+      ],
+    }],
+  }
+  engine(on, JSON.stringify(projects))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const shown = await (await $.ui.mount(PANE)).findAll({ type: 'Text' })
+
+  expect(shown.find(t => t.text === ' 41%')?.props.color).toBe('#808080')
+  expect(shown.find(t => t.text === ' 83%')?.props.color).toBe('#f5a742')
+})
+
+test('a card shows its agent’s tightest plan limit once it reaches 70%', async ($, on) => {
+  const projects = {
+    projects: [{
+      path: '/repo',
+      sessions: [
+        { id: 'A', agent: 'codex', activity: 'idle', title: 'Tight', state: 'ready' },
+        { id: 'B', agent: 'claude', activity: 'idle', title: 'Loose', state: 'ready' },
+      ],
+    }],
+    limits: {
+      codex: [{ label: '5h', percent: 72 }, { label: '7d', percent: 91, resets: '2030-01-01T00:00:00Z' }],
+      claude: [{ label: '5h', percent: 40 }],
+    },
+  }
+  engine(on, JSON.stringify(projects))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const shown = await (await $.ui.mount(PANE)).findAll({ type: 'Text' })
+
+  expect(shown.find(t => t.text === ' 7d 91%')?.props.color).toBe('#fd7e87')
+  expect(shown.some(t => t.text.includes('5h'))).toBe(false)
+})
+
+test('a card’s second line reads the step its agent records, ahead of what its screen shows', async ($, on) => {
+  const projects = {
+    projects: [{ path: '/repo', sessions: [
+      { id: 'A', agent: 'codex', activity: 'busy', title: 'Busy', state: 'working', action: 'Working', step: '$ swift test' },
+    ] }],
+  }
+  engine(on, JSON.stringify(projects))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(PANE)
+  const shimmering = (await ui.findAll({ type: 'Client' })).map(c => (c.props.props as { text?: string }).text)
+
+  expect(shimmering).toEqual(['$ swift test'])
+  await ui.unmount()
+})
+
+test('a card names its first running subagent and that one’s step, and counts the rest', async ($, on) => {
+  const subagentSteps = [{ name: 'Survey', step: '⊙ Card.swift' }, { name: 'Plan' }]
+  const projects = {
+    projects: [{ path: '/repo', sessions: [
+      { id: 'A', agent: 'claude', activity: 'busy', title: 'At work', state: 'working', step: '$ make', subagents: 2, subagentSteps },
+      { id: 'B', agent: 'claude', activity: 'idle', title: 'Turn over', state: 'finished', subagents: 2, subagentSteps },
+    ] }],
+  }
+  engine(on, JSON.stringify(projects))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(PANE)
+  const shimmering = (await ui.findAll({ type: 'Client' })).map(c => (c.props.props as { text?: string }).text)
+
+  expect(shimmering).toContain('$ make · Survey: ⊙ Card.swift +1')
+  expect(shimmering).toContain('Survey: ⊙ Card.swift +1')
+  await ui.unmount()
+})
+
+test('a file without context, limits or steps draws as before', async ($, on) => {
+  engine(on, JSON.stringify(PROJECTS))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const all = await texts(await $.ui.mount(PANE))
+
+  expect(all.some(t => /%$/.test(t))).toBe(false)
+  expect(all).toContain('needs permission fix')
+})
+
 test('a model id reads as a person names it', () => {
   expect(modelLabel('Opus 5.5')).toBe('Opus 5.5')
   expect(modelLabel('claude-opus-5-5')).toBe('Opus 5.5')

@@ -9,3 +9,5 @@ dist.noindex/
 .linkc/
 .worktrees/
 mods/*/.claude-plugin/types/
+__pycache__/
+*.pyc
