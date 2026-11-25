@@ -1748,7 +1748,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         await coordinator.runSweepTickForTests()
 
         let resetsAt = Date(timeIntervalSince1970: TimeInterval(resets)).formatted(.iso8601)
-        XCTAssertEqual(try file.readLimits(), ["claude": [KnownLimit(label: "5h", percent: 66, resets: resetsAt)]])
+        XCTAssertEqual(try file.writtenLimits(), ["claude": [KnownLimit(label: "5h", percent: 66, resets: resetsAt)]])
     }
 
     /// The headless coordinator keeps its state under the workspace folder it is given, the

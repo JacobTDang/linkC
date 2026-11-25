@@ -4883,7 +4883,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
 
         await coordinator.runSweepTickForTests()
 
-        XCTAssertEqual(try file.readLimits(), ["codex": [KnownLimit(label: "5h", percent: 81, resets: resets.formatted(.iso8601))]])
+        XCTAssertEqual(try file.writtenLimits(), ["codex": [KnownLimit(label: "5h", percent: 81, resets: resets.formatted(.iso8601))]])
     }
 
     /// A limit that moves rewrites the file, though no session changed.
@@ -4903,7 +4903,7 @@ final class AppCoordinatorRelayTests: XCTestCase {
         await coordinator.runSweepTickForTests()
 
         XCTAssertEqual(coordinator.knownProjectsWriteCount, 2)
-        XCTAssertEqual(try file.readLimits()["codex"]?.first?.percent, 51)
+        XCTAssertEqual(try file.writtenLimits()["codex"]?.first?.percent, 51)
     }
 
     /// A Claude session's transcript names its step and its running subagents' steps; the sweep

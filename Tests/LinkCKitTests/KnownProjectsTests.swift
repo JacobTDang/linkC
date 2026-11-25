@@ -57,20 +57,21 @@ final class KnownProjectsTests: XCTestCase {
         XCTAssertNil(open.since)
     }
 
-    /// Each agent's plan limits sit beside the projects, keyed by agent.
-    func testTheLimitsRoundTrip() throws {
+    /// Each agent's plan limits are written beside the projects, keyed by agent, and the projects
+    /// still read.
+    func testTheLimitsAreWrittenBesideTheProjects() throws {
         let file = KnownProjectsFile(url: dir.appendingPathComponent("projects.json"))
         let limits = ["codex": [KnownLimit(label: "5h", percent: 74, resets: "2026-09-21T15:13:20Z")]]
         try file.write([project("/p/a")], limits: limits)
-        XCTAssertEqual(try file.readLimits(), limits)
+        XCTAssertEqual(try file.writtenLimits(), limits)
         XCTAssertEqual(try file.read(), [project("/p/a")])
     }
 
-    /// A file an older app wrote has no limits: none, rather than an error.
-    func testAFileWithoutLimitsHasNone() throws {
+    /// With no limits known, the file has no `limits` key, as a file an older app wrote has none.
+    func testWithNoLimitsKnownTheFileHasNoLimitsKey() throws {
         let file = KnownProjectsFile(url: dir.appendingPathComponent("projects.json"))
         try file.write([project("/p/a")])
-        XCTAssertEqual(try file.readLimits(), [:])
+        XCTAssertEqual(try file.writtenLimits(), [:])
         XCTAssertFalse(try String(contentsOf: file.url, encoding: .utf8).contains("limits"), "no limits, no key")
     }
 

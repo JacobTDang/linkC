@@ -154,11 +154,6 @@ public struct KnownProjectsFile: Sendable {
         try stored().projects
     }
 
-    /// Each agent's plan limits, keyed by `AgentKind.rawValue`; empty when the file lists none.
-    public func readLimits() throws -> [String: [KnownLimit]] {
-        try stored().limits ?? [:]
-    }
-
     private func stored() throws -> Stored {
         let data: Data
         do {
