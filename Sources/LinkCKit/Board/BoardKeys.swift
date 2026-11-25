@@ -38,13 +38,27 @@ public enum TabCommand: Equatable, Sendable {
     case focusPromptBar
 }
 
+/// Where the keyboard is when a key comes in, as the tab strip's keys read it (`KeyFocus.of`).
+public enum KeyFocus: Equatable, Sendable {
+    /// Nothing has the keyboard, or one of linkC's own views does.
+    case chrome
+    /// A session's terminal.
+    case terminal
+    /// A text field or editor.
+    case text
+    /// A view linkC hosts but did not draw, such as a web page in an app tab, which may want the key.
+    case embedded
+}
+
 public enum TabKeyMap {
-    /// ⌘1–⌘9 pick a tab; ⌃Tab and ⌃⇧Tab cycle; ⌘K goes to the prompt bar.
-    public static func command(for press: KeyPress) -> TabCommand? {
+    /// ⌘1–⌘9 pick a tab; ⌃Tab and ⌃⇧Tab cycle; ⌘K goes to the prompt bar. A text field keeps every
+    /// key, and ⌘K is taken only from linkC's own chrome and its terminals: web pages use it too.
+    public static func command(for press: KeyPress, focus: KeyFocus) -> TabCommand? {
+        guard focus != .text else { return nil }
         switch press.key {
         case .character(let character):
             guard press.command, !press.control, !press.option, !press.shift else { return nil }
-            if character == "k" { return .focusPromptBar }
+            if character == "k" { return focus == .chrome || focus == .terminal ? .focusPromptBar : nil }
             guard let digit = Int(character), (1...9).contains(digit) else { return nil }
             return .select(digit: digit)
         case .tab:

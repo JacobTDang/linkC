@@ -3,22 +3,22 @@ import XCTest
 
 final class BoardKeysTests: XCTestCase {
     func testTabKeys() {
-        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.character("1"), command: true)), .select(digit: 1))
-        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.character("9"), command: true)), .select(digit: 9))
-        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("0"), command: true)))
-        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("1"))), "a bare digit is typing, not a tab")
-        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("1"), command: true, shift: true)))
-        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.tab, control: true)), .next)
-        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.tab, control: true, shift: true)), .previous)
-        XCTAssertNil(TabKeyMap.command(for: KeyPress(.tab)))
+        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.character("1"), command: true), focus: .chrome), .select(digit: 1))
+        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.character("9"), command: true), focus: .chrome), .select(digit: 9))
+        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("0"), command: true), focus: .chrome))
+        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("1")), focus: .chrome), "a bare digit is typing, not a tab")
+        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("1"), command: true, shift: true), focus: .chrome))
+        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.tab, control: true), focus: .chrome), .next)
+        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.tab, control: true, shift: true), focus: .chrome), .previous)
+        XCTAssertNil(TabKeyMap.command(for: KeyPress(.tab), focus: .chrome))
     }
 
     /// ⌘K puts the cursor in the prompt bar; K alone is typing, and ⇧⌘K is not it.
     func testCommandKFocusesThePromptBar() {
-        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.character("k"), command: true)), .focusPromptBar)
-        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("k"))))
-        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("k"), command: true, shift: true)))
-        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("k"), command: true, option: true)))
+        XCTAssertEqual(TabKeyMap.command(for: KeyPress(.character("k"), command: true), focus: .chrome), .focusPromptBar)
+        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("k")), focus: .chrome))
+        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("k"), command: true, shift: true), focus: .chrome))
+        XCTAssertNil(TabKeyMap.command(for: KeyPress(.character("k"), command: true, option: true), focus: .chrome))
     }
 
     func testBoardTools() {

@@ -308,7 +308,8 @@ private struct TabChip: View {
     }
 }
 
-/// ⌘1–⌘9, ⌃Tab and ⌘K, through a local key monitor installed only while the strip is showing.
+/// ⌘1–⌘9, ⌃Tab and ⌘K, through a local key monitor installed only while the strip is showing. A
+/// text field keeps them all, and a web page in an app tab keeps ⌘K.
 @MainActor
 final class TabKeys {
     var onCommand: (TabCommand) -> Void = { _ in }
@@ -320,9 +321,9 @@ final class TabKeys {
     func start() {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window, !BoardInput.isEditingText,
+            guard let self, let window = self.window, event.window === window,
                   let press = BoardInput.press(from: event),
-                  let command = TabKeyMap.command(for: press) else { return event }
+                  let command = TabKeyMap.command(for: press, focus: KeyFocus.of(window.firstResponder)) else { return event }
             self.onCommand(command)
             return nil
         }
