@@ -36,6 +36,24 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         script(named: "mock_agent.sh", body: "stty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n")
     }
 
+    /// A stand-in agent like `mockAgent` that first writes its argv to `argv-<LINKC_SESSION>`.
+    private var recordingAgent: String {
+        script(named: "recording_agent.sh", body: "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv-$LINKC_SESSION\"\n"
+            + "stty -echo 2>/dev/null\nprintf '\\033[?2004h'\nexec /bin/cat\n")
+    }
+
+    /// The argv `recordingAgent` wrote for `session`, polled for up to five seconds until it ends in `last`.
+    private func launchedArguments(of session: Session, endingIn last: String) -> [String] {
+        let file = tempDir.appendingPathComponent("argv-\(session.id)")
+        var lines: [String] = []
+        let deadline = Date().addingTimeInterval(5)
+        while lines.last != last, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            lines = ((try? String(contentsOf: file, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        }
+        return lines
+    }
+
     /// A stand-in agent that prints `line` and exits by itself, as a CLI does that rejects its model.
     private func exitingAgent(printing line: String) -> String {
         script(named: "exiting_agent.sh", body: "printf '\(line)\\r\\n'\nsleep 0.3\nexit 1\n")
@@ -301,6 +319,76 @@ final class AppCoordinatorModelTaskTests: XCTestCase {
         let row = try XCTUnwrap(try inbox.load().agentLimits.first)
         XCTAssertEqual(row.agent, .codex)
         XCTAssertNil(row.pool)
+    }
+
+    // MARK: - An agy model task with an effort
+
+    /// A model task to agy with an effort launches Flash's base id with `--effort`, but the worker
+    /// keeps the configured id: matched against the task's model, the worker started for the task
+    /// carries it, rather than a new agy terminal starting for it on every pass.
+    func testTheAgyWorkerStartedForAModelTaskWithAnEffortCarriesThatTask() throws {
+        let coordinator = makeCoordinator(lists: TestModelLists.agy)
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .claude, to: .agy, model: "gemini-3.8-flash-high", effort: .high,
+                                        prompt: "Use Flash.", files: [])
+
+        for _ in 0..<3 {
+            coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+        }
+
+        XCTAssertEqual(coordinator.store.sessions.count, 1, "the worker started for the task carries it")
+        let worker = try XCTUnwrap(coordinator.store.sessions.first)
+        XCTAssertEqual(worker.model, "gemini-3.8-flash-high")
+        XCTAssertTrue(worker.canCarry(task))
+    }
+
+    // MARK: - Effort
+
+    /// The relay starts a task's worker at the task's own effort, not the tier's (deep is high here).
+    func testTheRelayStartsATasksWorkerAtTheTasksEffort() throws {
+        let coordinator = makeCoordinator(agent: recordingAgent)
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let task = try inbox.createTask(from: .codex, to: .claude, tier: .deep, effort: .xhigh,
+                                        prompt: "Think hard.", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+
+        let worker = try XCTUnwrap(coordinator.store.sessions.first)
+        XCTAssertEqual(Array(launchedArguments(of: worker, endingIn: "xhigh").suffix(4)),
+                       ["--model", "opus", "--effort", "xhigh"])
+        XCTAssertEqual(worker.effort, .xhigh)
+        XCTAssertTrue(worker.canCarry(task))
+    }
+
+    /// An idle session on the right tier at another effort does not take the task: it would run it
+    /// at its own effort. A worker starts at the task's.
+    func testAnIdleSessionAtAnotherEffortDoesNotCarryTheTask() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        let idle = try coordinator.newSession(cwd: tempDir.path, agent: .claude, tier: .deep)
+        coordinator.store.updateState(id: idle.id, to: .finished)
+        _ = try inbox.createTask(from: .codex, to: .claude, tier: .deep, effort: .xhigh, prompt: "Think hard.", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+
+        XCTAssertEqual(coordinator.store.sessions.map(\.effort), [.high, .xhigh],
+                       "the idle deep session runs at high; a worker starts at xhigh")
+    }
+
+    /// Two tasks for one agent and tier that differ only in effort need two workers, started in one pass.
+    func testTasksDifferingOnlyInEffortEachStartAWorkerInOnePass() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let inbox = InboxStore(workspaceRoot: tempDir.path)
+        _ = try inbox.createTask(from: .codex, to: .claude, tier: .deep, effort: .high, prompt: "One.", files: [])
+        _ = try inbox.createTask(from: .codex, to: .claude, tier: .deep, effort: .xhigh, prompt: "Two.", files: [])
+
+        coordinator.dispatchTasks(workspacePath: tempDir.path, inboxStore: inbox)
+
+        XCTAssertEqual(Set(coordinator.store.sessions.compactMap(\.effort)), [.high, .xhigh])
     }
 
     // MARK: - A held task tells its delegator once

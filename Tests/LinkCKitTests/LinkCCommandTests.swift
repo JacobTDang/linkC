@@ -163,6 +163,23 @@ final class LinkCCommandTests: XCTestCase {
         XCTAssertTrue(store.pending().isEmpty)
     }
 
+    /// linkC took the request but had not answered when the wait ended: the window may still open.
+    func testARequestLinkCTookButHasNotAnsweredMayStillOpen() throws {
+        let world = World()
+        var env = environment(world)
+        let sleep = env.sleep
+        env.sleep = { [store] seconds in
+            sleep(seconds)
+            // linkC withdraws a request before acting on it, then is slow to answer.
+            if let request = store.pending().first { _ = try? store.withdraw(request.id) }
+        }
+        let outcome = LinkCCommand.run(try open(["codex"]), in: env)
+
+        XCTAssertEqual(outcome.status, 1)
+        XCTAssertTrue(outcome.output.hasPrefix("linkc: linkC took the request but did not answer within 20 seconds"), outcome.output)
+        XCTAssertTrue(outcome.output.contains("may still open"), outcome.output)
+    }
+
     func testLinkCIsStartedOnlyWhenItIsNotRunning() throws {
         let stopped = World()
         stopped.running = false

@@ -36,7 +36,8 @@ extension AppCoordinator {
                     break
                 case .refused(let reason), .uncheckable(let reason):
                     do {
-                        try requests.withdraw(request.id)
+                        // One its sender already gave up on is owed no answer.
+                        guard try requests.withdraw(request.id) else { continue }
                         try requests.answer(request.id, with: .refused(reason))
                     } catch {
                         NSLog("[linkC] %@ request %@ could not be refused — %@",
@@ -46,8 +47,9 @@ extension AppCoordinator {
                 }
             }
             // Withdrawn before it is acted on, so a request whose answer can't be written is never opened twice.
+            // One the requester withdrew first, giving up on it, is not acted on: it was told nothing opened.
             do {
-                try requests.withdraw(request.id)
+                guard try requests.withdraw(request.id) else { continue }
             } catch {
                 NSLog("[linkC] open request %@ could not be withdrawn, so it is not opened — %@", request.id, String(describing: error))
                 continue

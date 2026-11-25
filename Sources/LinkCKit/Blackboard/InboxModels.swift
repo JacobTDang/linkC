@@ -133,6 +133,10 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
     /// A specific model of `toAgent`, as an alternative to `tier`. Optional so rows written
     /// before model-per-task still decode. A task with a model has no `tier`.
     public let model: String?
+    /// Reasoning effort for the worker launch. Optional so rows written before efforts existed
+    /// still decode; `nil` means "use the tier's configured effort at launch" (or none, for an
+    /// agent that cannot take one).
+    public let effort: ReasoningEffort?
     public let toAgent: AgentKind
     public var assigneeSessionId: String?
     public let prompt: String
@@ -186,6 +190,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         fromSessionId: String? = nil,
         tier: ModelTier? = nil,
         model: String? = nil,
+        effort: ReasoningEffort? = nil,
         toAgent: AgentKind,
         assigneeSessionId: String? = nil,
         prompt: String,
@@ -215,6 +220,7 @@ public struct TaskRecord: Codable, Sendable, Identifiable, Equatable {
         self.fromSessionId = fromSessionId
         self.tier = tier
         self.model = model
+        self.effort = effort
         self.toAgent = toAgent
         self.assigneeSessionId = assigneeSessionId
         self.prompt = prompt

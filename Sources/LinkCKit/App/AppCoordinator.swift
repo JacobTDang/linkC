@@ -966,6 +966,9 @@ public final class AppCoordinator {
         case launchFailed
         /// A hook event reported it ended.
         case reportedEnded
+        /// linkC closed it before it reached the user, such as a handoff whose memo could not be
+        /// written: it leaves no card under Earlier.
+        case abandoned
     }
 
     /// Remove a session everywhere it leaves state behind: the store, its terminal (dropped,
@@ -1000,9 +1003,11 @@ public final class AppCoordinator {
         limitScans.removeValue(forKey: sessionId)
         limitHolds.removeValue(forKey: sessionId)
         limitHeldModelTasks.removeValue(forKey: sessionId)
-        if wasWorker {
-            // A worker was linkC's, not the user's: its report is in the task record, so it
-            // leaves nothing under Earlier.
+        if let ending { removeHandoffMemo(of: ending) }
+        if wasWorker || end == .abandoned {
+            // A worker was linkC's, not the user's: its report is in the task record. A session
+            // abandoned before it reached the user was never theirs either. Neither leaves
+            // anything under Earlier.
             manifest.remove(linkcId: sessionId)
         } else {
             // The session ended or was stopped — keep its manifest entry but stamp it, so it
@@ -1055,6 +1060,7 @@ public final class AppCoordinator {
     public func spawnTeammate(
         in workspacePath: String, agent: AgentKind = .claude, goal: String? = nil, tier: ModelTier? = nil,
         model: String? = nil,
+        effort: ReasoningEffort? = nil,
         asWorker: Bool = false
     ) throws -> Session {
         let norm = ProjectPath.canonical(workspacePath)
@@ -1088,18 +1094,30 @@ public final class AppCoordinator {
         // A teammate starts in the background — the relay spawns these while the user is
         // working elsewhere, and selecting one raises the panel over whatever they were doing.
         return try newSession(cwd: workspacePath, agent: agent, mode: .new, tier: tier, model: model,
-                              select: false, asWorker: asWorker)
+                              effort: effort, select: false, asWorker: asWorker)
     }
 
     @discardableResult
     public func newSession(
         cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil,
         model: String? = nil,
+        effort: ReasoningEffort? = nil,
         select: Bool = true, asWorker: Bool = false
     ) throws -> Session {
         let title = URL(fileURLWithPath: cwd).lastPathComponent
         return try launch(cwd: cwd, title: title, agent: agent, mode: mode, tier: tier, model: model,
-                          asWorker: asWorker, select: select)
+                          effort: effort, asWorker: asWorker, select: select)
+    }
+
+    /// agy's models as its last good refresh listed them, or nil when they are not known. Settings >
+    /// Models shows why the lists cannot be read; launch then runs the configured id as it is.
+    func agyListedModels() -> [ListedModel]? {
+        do {
+            return ModelListCache.liveModels(for: .agy, lists: try modelLists())
+        } catch {
+            NSLog("[linkC] could not read the model lists to see which efforts agy lists — %@", String(describing: error))
+            return nil
+        }
     }
 
     /// Resolves an OpenCode model id to prefer Go's free pool if Go is connected:
@@ -1206,6 +1224,7 @@ public final class AppCoordinator {
         id: String? = nil,
         tier: ModelTier? = nil,
         model: String? = nil,
+        effort: ReasoningEffort? = nil,
         asWorker: Bool = false,
         select: Bool
     ) throws -> Session {
@@ -1237,6 +1256,33 @@ public final class AppCoordinator {
         let conversationId = openCode?.id ?? resumeId
         let model = resolved.model
         let modelTier = resolved.tier
+        // Effort comes from the caller (a task), else from Settings for the tier being launched.
+        // Agents whose CLI has no effort knob stay unset — Settings says so.
+        let launchEffort = effort ?? modelTier.flatMap { modelSettings().tierEffort(for: agent, tier: $0) }
+        if let launchEffort, let levels = AgentEffortSupport.forAgent(agent).levels,
+           !levels.contains(launchEffort) {
+            throw LinkCError.process(
+                "\(agent.rawValue) does not accept effort \(launchEffort.rawValue) — supported: \(levels.map(\.rawValue).joined(separator: ", "))")
+        }
+        // What goes in argv. agy refuses `--effort` for a level it does not list for the model, and a
+        // refused flag kills the worker at launch: the flag goes only where agy lists the level, on
+        // the base id. The session keeps the configured id, which is what a task names and the relay
+        // matches a worker on (`Session.canCarry`).
+        var argvModel = model
+        var argvEffort = launchEffort
+        if agent == .agy {
+            if let model {
+                let launch = AgyEffort.launch(id: model, effort: launchEffort, listed: agyListedModels())
+                if let launchEffort, launch.effort == nil {
+                    NSLog("[linkC] agy lists no %@ effort for %@, so it launches as configured",
+                          launchEffort.rawValue, model)
+                }
+                argvModel = launch.model
+                argvEffort = launch.effort
+            } else {
+                argvEffort = nil
+            }
+        }
         // OpenCode and Kilo run free models only, whichever way the model was chosen: the New menu,
         // a teammate, a worker, or a tier that was set to a paid model.
         if agent == .opencode, let model, !OpenCodeFreeModels.isFree(model) {
@@ -1249,7 +1295,7 @@ public final class AppCoordinator {
             throw LinkCError.process("\(model) is not a free Crush model")
         }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
-                                   model: model, modelTier: modelTier,
+                                   model: model, modelTier: modelTier, effort: launchEffort,
                                    claudeSessionId: conversationId, isWorker: asWorker)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent, select: false)
@@ -1286,7 +1332,7 @@ public final class AppCoordinator {
                 env.merge(try kiloEnvironment(model: model)) { _, kilo in kilo }
             }
             if agent == .crush {
-                env.merge(try crushEnvironment(sessionId: session.id, cwd: cwd, model: model)) { _, crush in crush }
+                env.merge(try crushEnvironment(sessionId: session.id, cwd: cwd, model: model, effort: launchEffort)) { _, crush in crush }
             }
 
             if agent == .claude {
@@ -1301,7 +1347,8 @@ public final class AppCoordinator {
                 executable = claudePath
                 let settingsPath = try writeSettings(for: session)
                 args = Self.claudeLaunchArgs(mode: mode, resumeId: resumeId, settingsPath: settingsPath)
-                    + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (argvModel.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (argvEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
             } else {
                 // Codex and agy open a folder they have not seen on a trust dialog; trust it first, as
                 // `preApproveTrust` does for Claude. Detecting that dialog stays the fallback, so a
@@ -1341,7 +1388,8 @@ public final class AppCoordinator {
                 }
                 executable = resolved
                 args = AgentDescriptor.arguments(for: agent, mode: mode, sessionId: session.id)
-                    + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (argvModel.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
+                    + (argvEffort.map { AgentModelCatalog.effortLaunchArguments(effort: $0, for: agent) } ?? [])
                     + (openCode.map { OpenCodeConversations.launchArguments(conversationId: $0.id) } ?? [])
             }
 

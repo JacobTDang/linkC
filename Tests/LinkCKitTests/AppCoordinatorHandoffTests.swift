@@ -22,7 +22,8 @@ final class AppCoordinatorHandoffTests: XCTestCase {
     private func makeCoordinator(models: AgentModelSettings = .seeded,
                                   modelLists: [AgentKind: AgentModelList] = [:],
                                   missingAgents: Set<AgentKind> = [],
-                                  now: @escaping @MainActor @Sendable () -> Date = Date.init) -> AppCoordinator {
+                                  now: @escaping @MainActor @Sendable () -> Date = Date.init,
+                                  sink: any NotificationSink = NullSink()) -> AppCoordinator {
         // Each agent's stand-in records the argv it was started with, then waits like an idle agent.
         let argvDir = tempDir.path
         for kind in AgentKind.allCases {
@@ -43,7 +44,7 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         return AppCoordinator(
             terminals: TerminalSessionManager(),
             hookServer: HookServer.forTesting(),
-            notifications: NotificationManager(sink: NullSink(), now: { Date() }),
+            notifications: NotificationManager(sink: sink, now: { Date() }),
             claudePath: agentScript(.claude).path,
             settingsDir: settingsDir,
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
@@ -89,6 +90,14 @@ final class AppCoordinatorHandoffTests: XCTestCase {
 
     private struct NullSink: NotificationSink {
         func deliver(id: String, title: String, body: String) {}
+    }
+
+    /// The titles of the notifications posted.
+    private final class RecordingSink: NotificationSink, @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [String] = []
+        func deliver(id: String, title: String, body: String) { lock.lock(); stored.append(title); lock.unlock() }
+        var titles: [String] { lock.lock(); defer { lock.unlock() }; return stored }
     }
 
     private func stopAll(_ coordinator: AppCoordinator) {
@@ -220,6 +229,56 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         XCTAssertTrue(try handoffMemo(for: s3).contains("## Goal\nsecond"))
         XCTAssertEqual(coordinator.openingPrompts[s3.id]?.text,
                        "Please read .linkc/handoffs/\(s3.id).md and continue working on: second")
+    }
+
+    /// A memo is the new session's to read. Once that session ends nothing needs it, so it goes,
+    /// and another session's memo stays.
+    func testAHandoffsMemoGoesWhenItsSessionEnds() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        let s2 = try coordinator.handoff(from: s1.id, to: .codex, goal: "first")
+        let s3 = try coordinator.handoff(from: s1.id, to: .codex, goal: "second")
+        coordinator.stopSession(s2.id)
+
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: handoffsFolder.path), ["\(s3.id).md"])
+    }
+
+    /// A memo written before linkC restarted is still the session's: it goes when that session ends,
+    /// though this run of linkC never wrote it.
+    func testAMemoFromBeforeARestartGoesWhenItsSessionEnds() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+
+        let session = try coordinator.newSession(cwd: folder, agent: .codex, mode: .new)
+        try FileManager.default.createDirectory(at: handoffsFolder, withIntermediateDirectories: true)
+        let memo = handoffsFolder.appendingPathComponent("\(session.id).md")
+        try "an earlier run's memo".write(to: memo, atomically: true, encoding: .utf8)
+        coordinator.stopSession(session.id)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: memo.path))
+    }
+
+    /// A memo that cannot be written closes the new session it was for. That session never reached
+    /// the user, so it leaves no card under Earlier.
+    func testAMemoThatCannotBeWrittenLeavesNoEarlierCard() throws {
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink)
+        defer { stopAll(coordinator) }
+        // A file where the memos' folder goes, so the memo cannot be written.
+        try FileManager.default.createDirectory(at: handoffsFolder.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "not a folder".write(to: handoffsFolder, atomically: true, encoding: .utf8)
+
+        let s1 = try coordinator.newSession(cwd: folder, agent: .claude, mode: .new)
+        XCTAssertThrowsError(try coordinator.handoff(from: s1.id, to: .codex, goal: "anything")) { error in
+            XCTAssertTrue(error.localizedDescription.contains("could not be written"), error.localizedDescription)
+        }
+
+        XCTAssertEqual(coordinator.store.sessions.map(\.id), [s1.id])
+        XCTAssertEqual(coordinator.restorables.map(\.linkcId), [])
+        XCTAssertFalse(sink.titles.contains { $0.contains("handoff memo") },
+                       "no memo was written, so there is none to fail to delete: \(sink.titles)")
     }
 
     /// A launch that fails leaves no memo behind, and says which agent could not start.
