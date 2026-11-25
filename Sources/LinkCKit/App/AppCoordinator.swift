@@ -311,13 +311,19 @@ public final class AppCoordinator {
     /// A session's action line, read from its terminal by the app, for `projects.json`. Asked only
     /// of a session working or waiting on a permission.
     public var sessionAction: ((Session) -> String?)?
+    /// The readings the app keeps of other agents' plans (Codex's, read off the main actor), published
+    /// beside Claude's own in `projects.json`.
+    public var agentUsage: (() -> [AgentUsage])?
     /// Every live session's row title as the app's sidebar resolves it (conversation title, held task,
     /// or the agent's numbered name), keyed by session id, for `projects.json`.
     public var sessionTitles: (() -> [String: String])?
     /// Sidebar project paths (`SidebarState.projectOrder`), folded into the known-projects list.
     private let sidebarProjects: @MainActor @Sendable () -> [String]
+    /// Each live session's first-hand detail, read off the main actor by its agent's reader.
+    let liveDetails: LiveDetailSampler
     /// Last contents written to `knownProjectsFile`, so a rewrite only happens when they change.
     private var lastPublishedProjects: [KnownProject]?
+    private var lastPublishedLimits: [String: [KnownLimit]]?
     /// How many times `projects.json` was written this run — test seam for rewrite-on-change.
     private(set) var knownProjectsWriteCount = 0
     /// Where the `linkc` command leaves its requests; nil turns the command off.
@@ -374,6 +380,7 @@ public final class AppCoordinator {
         sweepClock: any Clock<Duration> = ContinuousClock(),
         mcpWorkspaces: @escaping @MainActor @Sendable () -> Set<String> = { [] },
         knownProjectsFile: KnownProjectsFile? = nil,
+        liveReaders: [AgentKind: any SessionLiveReader] = [:],
         sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] },
         openRequests: OpenRequestStore? = nil,
         handoffRequests: OpenRequestStore? = nil,
@@ -418,6 +425,7 @@ public final class AppCoordinator {
         self.sweepClock = sweepClock
         self.mcpWorkspaces = mcpWorkspaces
         self.knownProjectsFile = knownProjectsFile
+        self.liveDetails = LiveDetailSampler(readers: liveReaders)
         self.sidebarProjects = sidebarProjects
         self.openRequests = openRequests
         self.handoffRequests = handoffRequests
@@ -560,6 +568,7 @@ public final class AppCoordinator {
             usageReaders: MCPServer.defaultUsageReaders(),
             mcpWorkspaces: { MCPWorkspaceRegistry.applicationSupport.liveWorkspaces() },
             knownProjectsFile: .applicationSupport,
+            liveReaders: AppCoordinator.liveReaders(),
             sidebarProjects: sidebarProjects,
             openRequests: .applicationSupport,
             handoffRequests: .handoffApplicationSupport,
@@ -740,6 +749,7 @@ public final class AppCoordinator {
         taskEvents.retain(only: watched)
         inboxWatcher?.watch(workspaces: watched)
         sampleAgentStates()
+        refreshLiveDetails(liveSessions)
         // After the sampling, so the file holds the states it just settled.
         publishKnownProjects(sidebar: sidebar, mcpFolders: mcpFolders)
         for folder in serverOnlyFolders.sorted() {
@@ -789,14 +799,17 @@ public final class AppCoordinator {
                                                            CacheClock.expiry(
                                                                for: session,
                                                                reported: sessionStatuses.status(for: session.id)?.cacheExpiresAt)
-                                                       })
+                                                       },
+                                                       live: { self.liveDetail(for: $0) })
+        let limits = KnownProjectsPublisher.limits(from: [claudeUsage].compactMap { $0 } + (agentUsage?() ?? []), now: now())
         // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
         // contents next changed, and every MCP server would report linkC as not running.
-        if lastPublishedProjects == projects,
+        if lastPublishedProjects == projects, lastPublishedLimits == limits,
            FileManager.default.fileExists(atPath: knownProjectsFile.url.path) { return }
         do {
-            try knownProjectsFile.write(projects)
+            try knownProjectsFile.write(projects, limits: limits)
             lastPublishedProjects = projects
+            lastPublishedLimits = limits
             knownProjectsWriteCount += 1
         } catch {
             NSLog("[linkC] projects.json — %@", String(describing: error))

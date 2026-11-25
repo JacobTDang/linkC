@@ -250,3 +250,37 @@ final class ProcessSnooperTests: XCTestCase {
         XCTAssertEqual(found?.pid, process.processIdentifier)
     }
 }
+
+final class ProcessSnooperOpenFilesTests: XCTestCase {
+    /// An agent behind a wrapper holds its session file open in a grandchild of the terminal's
+    /// process: the file is found from the top of the tree, and a file nobody opened is not.
+    func testAFileAGrandchildHoldsOpenIsFoundFromTheTop() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-openfiles-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let held = dir.appendingPathComponent("held.jsonl")
+        let other = dir.appendingPathComponent("other.jsonl")
+        try Data().write(to: held)
+        try Data().write(to: other)
+        let ready = dir.appendingPathComponent("ready")
+
+        // The outer shell holds nothing; its child opens the file, says so, and waits.
+        let outer = Process()
+        outer.executableURL = URL(fileURLWithPath: "/bin/sh")
+        outer.arguments = ["-c", "/bin/sh -c 'exec 4>>\"$1\"; : > \"$2\"; exec sleep 30' inner \"$0\" \"$1\" & wait", held.path, ready.path]
+        try outer.run()
+        defer { outer.terminate(); kill(-outer.processIdentifier, SIGTERM) }
+        let deadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: ready.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+
+        let open = ProcessSnooper.openFilePaths(inProcessTreeOf: outer.processIdentifier)
+
+        let real = { (url: URL) in ProcessSnooper.canonicalPath(url.path) ?? url.path }
+        XCTAssertTrue(open.contains(real(held)), "\(open)")
+        XCTAssertFalse(open.contains(real(other)))
+    }
+
+    func testAProcessThatIsGoneHoldsNothing() {
+        XCTAssertEqual(ProcessSnooper.openFilePaths(inProcessTreeOf: -1), [])
+    }
+}

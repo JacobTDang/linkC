@@ -138,6 +138,82 @@ final class KnownProjectsPublisherTests: XCTestCase {
         XCTAssertEqual(open.map(\.cacheEstimate), [nil, true, nil], "an exact expiry leaves the flag out")
     }
 
+    /// What a session's agent reports first-hand goes on its row: how full its context is.
+    func testEachSessionCarriesItsContextUse() throws {
+        let path = "/tmp/linkc-pub-context-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "S1", cwd: path, title: "full", state: .ready, agentKind: .claude),
+            Session(id: "S2", cwd: path, title: "unknown", state: .ready, agentKind: .agy),
+        ]
+
+        let projects = KnownProjectsPublisher.projects(
+            sidebar: [], mcpFolders: [], sessions: sessions,
+            live: { $0.id == "S1" ? SessionLiveDetail(contextPercent: 83) : SessionLiveDetail() })
+
+        let open = try XCTUnwrap(projects.first).sessions
+        XCTAssertEqual(open.map(\.contextPercent), [83, nil])
+    }
+
+    /// A session at work carries the step its agent reports; one at rest does not, as its action line
+    /// does not. Running subagents' names and steps show either way: a session whose own turn ended
+    /// can still be running them.
+    func testOnlyASessionAtWorkCarriesItsStepButSubagentsShowAtRestToo() throws {
+        let path = "/tmp/linkc-pub-step-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "S1", cwd: path, title: "busy", state: .working, agentKind: .codex),
+            Session(id: "S2", cwd: path, title: "done", state: .finished, agentKind: .codex),
+        ]
+        let detail = SessionLiveDetail(
+            contextPercent: 30, step: "$ swift test",
+            subagents: [KnownProject.OpenSession.Subagent(name: "Survey the readers", step: "Reading Foo.swift")])
+
+        let projects = KnownProjectsPublisher.projects(sidebar: [], mcpFolders: [], sessions: sessions, live: { _ in detail })
+
+        let open = try XCTUnwrap(projects.first).sessions
+        XCTAssertEqual(open.map(\.subagentSteps?.count), [1, 1])
+        XCTAssertEqual(open[0].step, "$ swift test")
+        XCTAssertEqual(open[0].subagentSteps, [KnownProject.OpenSession.Subagent(name: "Survey the readers", step: "Reading Foo.swift")])
+        XCTAssertNil(open[1].step)
+        XCTAssertEqual(open[1].subagentSteps, [KnownProject.OpenSession.Subagent(name: "Survey the readers", step: "Reading Foo.swift")])
+        XCTAssertEqual(open[1].contextPercent, 30, "context use is shown at rest too")
+    }
+
+    // MARK: - Plan limits
+
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// A fresh reading's windows with a percent, rounded, under the agent's name.
+    func testAFreshReadingsLimitsArePublishedUnderItsAgent() {
+        let codex = AgentUsage(agent: .codex, windows: [
+            UsageWindow(label: "5h", usedPercent: 73.6, tokens: nil, resetsAt: now.addingTimeInterval(3600)),
+            UsageWindow(label: "7d", usedPercent: 12, tokens: nil, resetsAt: nil),
+        ], planType: nil, observedAt: now.addingTimeInterval(-60), unavailableReason: nil)
+
+        XCTAssertEqual(KnownProjectsPublisher.limits(from: [codex], now: now), ["codex": [
+            KnownLimit(label: "5h", percent: 74, resets: now.addingTimeInterval(3600).formatted(.iso8601)),
+            KnownLimit(label: "7d", percent: 12, resets: nil),
+        ]])
+    }
+
+    /// Only a figure that is still true is published: no percent, a window that already reset, and a
+    /// reading older than an hour say nothing.
+    func testOnlyLimitsThatAreStillTrueArePublished() {
+        let windows = [
+            UsageWindow(label: "tokens", usedPercent: nil, tokens: 1200, resetsAt: nil),
+            UsageWindow(label: "5h", usedPercent: 90, tokens: nil, resetsAt: now.addingTimeInterval(-1)),
+            UsageWindow(label: "7d", usedPercent: 40, tokens: nil, resetsAt: now.addingTimeInterval(86_400)),
+        ]
+        let fresh = AgentUsage(agent: .claude, windows: windows, planType: nil,
+                               observedAt: now.addingTimeInterval(-60), unavailableReason: nil)
+        let stale = AgentUsage(agent: .codex, windows: windows, planType: nil,
+                               observedAt: now.addingTimeInterval(-AgentUsage.staleAfter - 1), unavailableReason: nil)
+        let unknown = AgentUsage.unavailable(.agy, reason: "no records")
+
+        XCTAssertEqual(KnownProjectsPublisher.limits(from: [fresh, stale, unknown], now: now), ["claude": [
+            KnownLimit(label: "7d", percent: 40, resets: now.addingTimeInterval(86_400).formatted(.iso8601)),
+        ]])
+    }
+
     func testEndedSessionIsLeftOut() {
         let path = "/tmp/linkc-pub-ended-\(UUID().uuidString)"
         let sessions = [
