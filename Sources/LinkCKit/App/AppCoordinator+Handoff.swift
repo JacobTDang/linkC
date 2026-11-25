@@ -151,6 +151,8 @@ extension AppCoordinator {
     /// is fine; one that cannot be deleted is said.
     func removeHandoffMemo(of session: Session) {
         let memo = URL(fileURLWithPath: session.cwd).appendingPathComponent(HandoffComposer.sessionMemoPath(for: session.id))
+        // Most sessions had no handoff, and a folder whose `.linkc/handoffs` is no folder can hold none.
+        guard FileManager.default.fileExists(atPath: memo.path) else { return }
         do {
             try FileManager.default.removeItem(at: memo)
         } catch CocoaError.fileNoSuchFile {

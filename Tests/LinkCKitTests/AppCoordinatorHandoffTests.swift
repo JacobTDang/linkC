@@ -22,7 +22,8 @@ final class AppCoordinatorHandoffTests: XCTestCase {
     private func makeCoordinator(models: AgentModelSettings = .seeded,
                                   modelLists: [AgentKind: AgentModelList] = [:],
                                   missingAgents: Set<AgentKind> = [],
-                                  now: @escaping @MainActor @Sendable () -> Date = Date.init) -> AppCoordinator {
+                                  now: @escaping @MainActor @Sendable () -> Date = Date.init,
+                                  sink: any NotificationSink = NullSink()) -> AppCoordinator {
         // Each agent's stand-in records the argv it was started with, then waits like an idle agent.
         let argvDir = tempDir.path
         for kind in AgentKind.allCases {
@@ -43,7 +44,7 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         return AppCoordinator(
             terminals: TerminalSessionManager(),
             hookServer: HookServer.forTesting(),
-            notifications: NotificationManager(sink: NullSink(), now: { Date() }),
+            notifications: NotificationManager(sink: sink, now: { Date() }),
             claudePath: agentScript(.claude).path,
             settingsDir: settingsDir,
             userSettingsURL: tempDir.appendingPathComponent("user-settings.json"),
@@ -89,6 +90,14 @@ final class AppCoordinatorHandoffTests: XCTestCase {
 
     private struct NullSink: NotificationSink {
         func deliver(id: String, title: String, body: String) {}
+    }
+
+    /// The titles of the notifications posted.
+    private final class RecordingSink: NotificationSink, @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [String] = []
+        func deliver(id: String, title: String, body: String) { lock.lock(); stored.append(title); lock.unlock() }
+        var titles: [String] { lock.lock(); defer { lock.unlock() }; return stored }
     }
 
     private func stopAll(_ coordinator: AppCoordinator) {
@@ -254,7 +263,8 @@ final class AppCoordinatorHandoffTests: XCTestCase {
     /// A memo that cannot be written closes the new session it was for. That session never reached
     /// the user, so it leaves no card under Earlier.
     func testAMemoThatCannotBeWrittenLeavesNoEarlierCard() throws {
-        let coordinator = makeCoordinator()
+        let sink = RecordingSink()
+        let coordinator = makeCoordinator(sink: sink)
         defer { stopAll(coordinator) }
         // A file where the memos' folder goes, so the memo cannot be written.
         try FileManager.default.createDirectory(at: handoffsFolder.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -267,6 +277,8 @@ final class AppCoordinatorHandoffTests: XCTestCase {
 
         XCTAssertEqual(coordinator.store.sessions.map(\.id), [s1.id])
         XCTAssertEqual(coordinator.restorables.map(\.linkcId), [])
+        XCTAssertFalse(sink.titles.contains { $0.contains("handoff memo") },
+                       "no memo was written, so there is none to fail to delete: \(sink.titles)")
     }
 
     /// A launch that fails leaves no memo behind, and says which agent could not start.

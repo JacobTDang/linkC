@@ -36,7 +36,8 @@ extension AppCoordinator {
                     break
                 case .refused(let reason), .uncheckable(let reason):
                     do {
-                        try requests.withdraw(request.id)
+                        // One its sender already gave up on is owed no answer.
+                        guard try requests.withdraw(request.id) else { continue }
                         try requests.answer(request.id, with: .refused(reason))
                     } catch {
                         NSLog("[linkC] %@ request %@ could not be refused — %@",
