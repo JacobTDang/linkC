@@ -112,7 +112,8 @@ extension AppCoordinator {
         do {
             try HandoffComposer.writeHandoff(workspacePath: folder, content: memo, at: memoPath)
         } catch {
-            stopSession(newSession.id)
+            terminals.terminate(newSession.id)
+            cleanup(sessionId: newSession.id, end: .abandoned)
             throw LinkCError.process("the handoff memo \(memoPath) could not be written, so the new session was closed — \(error)")
         }
 
@@ -142,5 +143,23 @@ extension AppCoordinator {
             throw LinkCError.process("could not read the tasks \(session.agentKind.displayName) carries — \(error)")
         }
         return carried.last?.prompt
+    }
+
+    /// Deletes the memo a handoff wrote for `session`, now that the session it was for has ended:
+    /// it holds a stretch of terminal output the project has no use for after that. The path comes
+    /// from the session's folder and id, so a memo written before linkC restarted goes too. No memo
+    /// is fine; one that cannot be deleted is said.
+    func removeHandoffMemo(of session: Session) {
+        let memo = URL(fileURLWithPath: session.cwd).appendingPathComponent(HandoffComposer.sessionMemoPath(for: session.id))
+        // Most sessions had no handoff, and a folder whose `.linkc/handoffs` is no folder can hold none.
+        guard FileManager.default.fileExists(atPath: memo.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: memo)
+        } catch CocoaError.fileNoSuchFile {
+            return
+        } catch {
+            NSLog("[linkC] could not delete the handoff memo %@ — %@", memo.path, String(describing: error))
+            notifications.postLocal(title: "linkC: could not delete a handoff memo", body: "\(memo.path) — \(error)")
+        }
     }
 }
