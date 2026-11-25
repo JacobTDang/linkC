@@ -118,7 +118,8 @@ public enum Router {
         settings: AgentModelSettings,
         limits: [RouterLimit],
         usageTight: Set<AgentKind>,
-        activeInFolder: Set<AgentKind>
+        activeInFolder: Set<AgentKind>,
+        refusals: [AgentKind: String] = [:]
     ) throws -> RouterDecision {
         let kind = classify(prompt)
         let tier = tier(for: kind, prompt: prompt)
@@ -127,7 +128,9 @@ public enum Router {
         var candidates: [AgentKind] = []
         var skipped: [(agent: AgentKind, why: String)] = []
         for agent in installed where agent != .shell && agent != .freebuff {
-            if agent == .cursor {
+            if let refusal = refusals[agent] {
+                skipped.append((agent, refusal))
+            } else if agent == .cursor {
                 skipped.append((agent, "never routed: it takes no tier"))
             } else if settings.model(for: agent, tier: tier) == nil {
                 skipped.append((agent, "no \(tier.rawValue) model"))
@@ -169,12 +172,19 @@ public enum Router {
         case .ordinary:
             reasonParts.append("implementation → \(chosen.rawValue) \(tier.rawValue)")
         }
+        if kind == .webResearch, browse.isEmpty {
+            for skip in skipped where browseAgents.contains(skip.agent) {
+                reasonParts.append("\(skip.agent.rawValue) skipped (\(skip.why))")
+            }
+        }
         // Why each agent that would have come first was passed over. Cursor is never routed to, so
         // it is not named here.
         let order = browse.isEmpty ? installed : browseAgents.filter(installed.contains)
         for agent in order.prefix(while: { $0 != chosen }) where agent != .cursor {
             if let skip = skipped.first(where: { $0.agent == agent }) {
-                reasonParts.append("\(agent.rawValue) skipped (\(skip.why))")
+                if kind != .webResearch || !browseAgents.contains(agent) {
+                    reasonParts.append("\(agent.rawValue) skipped (\(skip.why))")
+                }
             } else if !withHeadroom.isEmpty, usageTight.contains(agent), pool.contains(agent) {
                 reasonParts.append("\(agent.rawValue) skipped (usage tight)")
             }

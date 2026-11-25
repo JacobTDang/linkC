@@ -2253,13 +2253,71 @@ public final class MCPServer: Sendable {
                 tight.insert(agent)
             }
         }
+        let tier = Router.tier(for: Router.classify(prompt), prompt: prompt)
+        var refusals: [AgentKind: String] = [:]
+        for agent in installed {
+            if let refusal = routingRefusal(
+                agent: agent, tier: tier, settings: settings, destRoot: destRoot) {
+                refusals[agent] = refusal
+            }
+        }
         let open = agentsOpen(in: destRoot)
         let decision = try Router.route(
             prompt: prompt, installed: installed, settings: settings,
-            limits: limits, usageTight: tight, activeInFolder: open.agents)
+            limits: limits, usageTight: tight, activeInFolder: open.agents, refusals: refusals)
         let reason = open.problem.map { "\(decision.reason); no tie-break, the open sessions could not be read: \($0)" }
             ?? decision.reason
         return (decision, reason)
+    }
+
+    /// Why delegation would refuse this agent's configured tier model. Routing checks this before
+    /// choosing so a stale or paid model does not prevent a later candidate from taking the task.
+    private func routingRefusal(
+        agent: AgentKind, tier: ModelTier, settings: AgentModelSettings, destRoot: String
+    ) -> String? {
+        guard let model = settings.model(for: agent, tier: tier) else { return nil }
+        if agent == .opencode, !OpenCodeFreeModels.isFree(model) {
+            return "\(model) (\(tier.rawValue) tier) is not free — OpenCode runs free models only"
+        }
+        if agent == .kilo, !KiloFreeModels.isFree(model) {
+            return "\(model) (\(tier.rawValue) tier) is not free — Kilo runs free models only"
+        }
+        if agent == .crush, !CrushFreeModels.isFree(model) {
+            return "\(model) (\(tier.rawValue) tier) is not free — Crush runs free models only"
+        }
+        if ModelListParser.listedAgents.contains(agent) {
+            do {
+                if let offered = ModelListCache.liveModels(for: agent, lists: try modelLists()),
+                   !offered.contains(where: { $0.id.caseInsensitiveCompare(model) == .orderedSame }) {
+                    return "\(tier.rawValue) tier is set to \(model), which \(agent.rawValue) no longer offers"
+                }
+            } catch {
+                return "could not read the live model lists — \(error)"
+            }
+        }
+        if agent == .opencode {
+            do {
+                guard try openCodeModels(destRoot).contains(where: {
+                    $0.caseInsensitiveCompare(model) == .orderedSame
+                }) else {
+                    return "\(tier.rawValue) tier model \(model) is not among the models OpenCode lists — free models come and go"
+                }
+            } catch {
+                return "could not check \(tier.rawValue) tier model \(model) against the models OpenCode lists — \(error)"
+            }
+        }
+        if agent == .kilo {
+            do {
+                guard try kiloModels(destRoot).contains(where: {
+                    $0.caseInsensitiveCompare(model) == .orderedSame
+                }) else {
+                    return "\(tier.rawValue) tier model \(model) is not among the models Kilo lists — free models come and go"
+                }
+            } catch {
+                return "could not check \(tier.rawValue) tier model \(model) against the models Kilo lists — \(KiloLogin.reporting(String(describing: error)))"
+            }
+        }
+        return nil
     }
 
     /// The agents with a session open in `folder`, from the app's project list, leaving out the

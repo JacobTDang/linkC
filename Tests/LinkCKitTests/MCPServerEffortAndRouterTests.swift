@@ -26,6 +26,10 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
         settings: AgentModelSettings = .seeded,
         installed: Set<AgentKind> = [.claude, .codex, .cursor, .agy, .grok, .opencode, .kilo, .crush],
         callerSession: String? = nil,
+        openCodeModels: @escaping @Sendable (String) throws -> [String] = { _ in [
+            "opencode/deepseek-v4.1-flash-free", "opencode/big-pickle", "opencode/nemotron-3.5-super-vl-free"
+        ] },
+        kiloModels: @escaping @Sendable (String) throws -> [String] = { _ in [] },
         lists: @escaping @Sendable () throws -> [AgentKind: AgentModelList] = TestModelLists.none
     ) -> MCPServer {
         MCPServer(
@@ -37,10 +41,8 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
             sessionResolver: { callerSession },
             usageReaders: [:],
             isAgentInstalled: { installed.contains($0) },
-            openCodeModels: { _ in [
-                "opencode/deepseek-v4.1-flash-free", "opencode/big-pickle", "opencode/nemotron-3.5-super-vl-free"
-            ] },
-            kiloModels: { _ in [] },
+            openCodeModels: openCodeModels,
+            kiloModels: kiloModels,
             modelLists: lists,
             knownProjects: knownProjects)
     }
@@ -195,5 +197,41 @@ final class MCPServerEffortAndRouterTests: XCTestCase {
         ])
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.text.contains("omit tier"), result.text)
+    }
+
+    func testAutoRouteSkipsAnAgentWhoseTierModelIsNoLongerListed() throws {
+        let result = try call(server(installed: [.agy, .codex], lists: TestModelLists.agy), "linkc_delegate_task", [
+            "prompt": "Redesign the architecture for task delivery",
+        ])
+        XCTAssertFalse(result.isError, result.text)
+        let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
+        XCTAssertEqual(task.toAgent, .codex)
+        XCTAssertTrue(result.text.contains("agy skipped (deep tier is set to gemini-3.1-pro-high, which agy no longer offers)"), result.text)
+    }
+
+    func testAutoRouteSkipsOpenCodeWhenItsFreeModelDisappeared() throws {
+        let result = try call(server(
+            installed: [.opencode, .codex],
+            openCodeModels: { _ in ["opencode/other-free"] }
+        ), "linkc_delegate_task", ["prompt": "Browse the docs for this API"])
+        XCTAssertFalse(result.isError, result.text)
+        let task = try XCTUnwrap(try InboxStore(workspaceRoot: tempDir.path).openTasks().first)
+        XCTAssertEqual(task.toAgent, .codex)
+        XCTAssertTrue(result.text.contains("opencode skipped (light tier model"), result.text)
+        XCTAssertTrue(result.text.contains("is not among the models OpenCode lists"), result.text)
+    }
+
+    func testAutoRouteReportsEveryModelRefusalWhenNoCandidateRemains() throws {
+        var settings = AgentModelSettings.seeded
+        settings.setModel("kilo/paid", for: .kilo, tier: .deep)
+        let result = try call(server(
+            settings: settings,
+            installed: [.agy, .kilo],
+            kiloModels: { _ in ["kilo/other:free"] },
+            lists: TestModelLists.agy
+        ), "linkc_delegate_task", ["prompt": "Redesign the architecture for task delivery"])
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.text.contains("agy skipped (deep tier is set to gemini-3.1-pro-high, which agy no longer offers)"), result.text)
+        XCTAssertTrue(result.text.contains("kilo skipped (kilo/paid (deep tier) is not free"), result.text)
     }
 }
