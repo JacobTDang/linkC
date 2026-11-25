@@ -547,12 +547,49 @@ final class SharedBrowserTests: XCTestCase {
         let browser = makeBrowser()
         let lease = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))
         try pin(lease, to: "T1")
+        launcher.publishesPort = 50001
+        let other = try await XCTUnwrapAsync(await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/other"))
 
         browser.stopAll()
 
-        XCTAssertEqual(launcher.processes[0].isRunning, false)
-        XCTAssertEqual(launcher.detached, [["/bin/agent-browser", "--session", lease.sessionName, "close", "--json"]])
+        XCTAssertEqual(launcher.processes.map(\.isRunning), [false, false])
+        XCTAssertEqual(Set(launcher.detached), [["/bin/agent-browser", "--session", lease.sessionName, "close", "--json"],
+                                                ["/bin/agent-browser", "--session", other.sessionName, "close", "--json"]])
         XCTAssertFalse(targetFileExists(lease))
+    }
+
+    /// Nothing runs after linkC quits, so a Chrome still starting is stopped before `stopAll`
+    /// returns, not by the start that was cancelled.
+    func testQuittingWhileAChromeStartsStopsItAtOnce() async throws {
+        let browser = makeBrowser()
+        _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/running")
+        launcher.publishesPort = nil
+        var runningAfterQuit: [Bool]?
+        clock.onSleep = { [launcher] in
+            guard runningAfterQuit == nil, launcher!.processes.count == 2 else { return }
+            browser.stopAll()
+            runningAfterQuit = launcher!.processes.map(\.isRunning)
+        }
+
+        let lease = await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project")
+
+        XCTAssertEqual(runningAfterQuit, [false, false])
+        XCTAssertNil(lease)
+        XCTAssertEqual(launcher.launches.count, 2)
+    }
+
+    /// A Chrome told to stop that has not exited is killed at quit.
+    func testQuittingKillsAChromeThatHasNotStoppedYet() async throws {
+        launcher.ignoresStop = true
+        let browser = makeBrowser()
+        _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+        browser.release(sessionId: "S1")
+        await browser.settle()
+
+        browser.stopAll()
+
+        XCTAssertEqual(launcher.processes[0].killCount, 1)
+        XCTAssertEqual(launcher.processes[0].isRunning, false)
     }
 }
 

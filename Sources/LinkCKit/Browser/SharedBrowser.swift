@@ -73,6 +73,8 @@ public final class SharedBrowser {
     /// Chromes told to stop that had not exited then, per project. One still running holds the
     /// profile's lock, so the project's next start waits for it.
     private var stopping: [String: [UUID: any SharedBrowserProcess]] = [:]
+    /// The Chrome each starting project launched, until its start ends: quitting stops it.
+    private var launching: [String: any SharedBrowserProcess] = [:]
     private var members: [String: Member] = [:]
     private var repositories: [String: String] = [:]
     private var failedStarts: [String: Date] = [:]
@@ -184,7 +186,9 @@ public final class SharedBrowser {
         }
     }
 
-    /// Stops every Chrome and every session's daemon, for quitting: nothing waits.
+    /// Stops every Chrome and every session's daemon, for quitting: nothing waits, and nothing runs
+    /// after linkC quits, so a Chrome still starting is stopped here too, and one that was told to
+    /// stop and has not exited is killed.
     public func stopAll() {
         for instance in instances.values {
             switch instance {
@@ -193,6 +197,10 @@ public final class SharedBrowser {
             }
         }
         instances.removeAll()
+        for process in launching.values { process.stop() }
+        launching.removeAll()
+        for process in stopping.values.flatMap(\.values) where process.isRunning { process.kill() }
+        stopping.removeAll()
         for member in members.values where member.instance != nil {
             if let command = daemonCloseCommand(for: member) {
                 do {
@@ -391,6 +399,7 @@ public final class SharedBrowser {
     }
 
     private func start(project: String) async -> Running? {
+        defer { launching.removeValue(forKey: project) }
         do {
             var running = try await launchChrome(for: project)
             guard case .starting? = instances[project] else {
@@ -479,6 +488,7 @@ public final class SharedBrowser {
         }
         let id = UUID()
         let process: any SharedBrowserProcess
+        try Task.checkCancellation()
         do {
             process = try launcher.launch(
                 executable: chromePath,
@@ -489,6 +499,7 @@ public final class SharedBrowser {
         } catch {
             throw StartFailure.other(error.localizedDescription)
         }
+        launching[project] = process
         do {
             let port = try await waitForPort(in: portFile, of: process, log: log)
             return Running(id: id, process: process, port: port, known: [])
