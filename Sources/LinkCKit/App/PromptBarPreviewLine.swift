@@ -1,8 +1,13 @@
 import SwiftUI
 
 /// The line under the prompt bar: the pick, a pick waiting for a second Enter, why the task cannot
-/// open, or that it is opening or opened. Nothing while idle. Drawn from the app's colours.
+/// open, or that it is opening or opened. It is always one line high, empty while idle, so the
+/// terminal below never resizes as the user types; the tooltip holds what a long line cuts off.
+/// Drawn from the app's colours.
 public struct PromptBarPreviewLine: View {
+    /// One line of the line's 11 pt text.
+    public static let height: CGFloat = 14
+
     /// The colours the line draws in.
     public struct Palette: Sendable {
         /// The arrow and the reason.
@@ -34,24 +39,26 @@ public struct PromptBarPreviewLine: View {
     }
 
     public var body: some View {
+        content
+            .font(.system(size: 11))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, minHeight: Self.height, maxHeight: Self.height, alignment: .leading)
+            .help(line.text)
+    }
+
+    @ViewBuilder private var content: some View {
         switch line {
         case .idle:
-            EmptyView()
+            Color.clear
         case .pick(let pick):
             pickText(pick, lead: Text(verbatim: "→ ").foregroundStyle(palette.quiet))
-                .modifier(LineStyle(help: pick.text))
         case .confirm(let pick):
             pickText(pick, lead: Text(verbatim: "Enter again to open ").foregroundStyle(palette.accent))
-                .modifier(LineStyle(help: line.text))
         case .error(let message):
-            // A refusal names each agent and why: it wraps rather than lose the specifics.
-            Text(message)
-                .foregroundStyle(palette.error)
-                .modifier(LineStyle(help: message, lines: 3))
+            Text(message).foregroundStyle(palette.error)
         case .opening(let message), .opened(let message):
-            Text(message)
-                .foregroundStyle(palette.secondary)
-                .modifier(LineStyle(help: message))
+            Text(message).foregroundStyle(palette.secondary)
         }
     }
 
@@ -63,19 +70,5 @@ public struct PromptBarPreviewLine: View {
             .foregroundStyle(palette.secondary)
         let reason = Text(verbatim: " — \(pick.reason)").foregroundStyle(palette.quiet)
         return Text("\(lead)\(agent)\(model)\(reason)")
-    }
-}
-
-private struct LineStyle: ViewModifier {
-    let help: String
-    var lines = 1
-
-    func body(content: Content) -> some View {
-        content
-            .font(.system(size: 11))
-            .lineLimit(lines)
-            .truncationMode(.tail)
-            .fixedSize(horizontal: false, vertical: true)
-            .help(help)
     }
 }
