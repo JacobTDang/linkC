@@ -417,7 +417,7 @@ public final class TerminalSession {
     }
 
     /// Prepend Homebrew's bin dirs to `PATH` if absent, preserving everything else in order.
-    private static func pathEnsuringHomebrew(_ current: String?) -> String {
+    static func pathEnsuringHomebrew(_ current: String?) -> String {
         let homebrew = ["/opt/homebrew/bin", "/usr/local/bin"]
         var entries = (current ?? "").split(separator: ":").map(String.init)
         for dir in homebrew.reversed() where !entries.contains(dir) {

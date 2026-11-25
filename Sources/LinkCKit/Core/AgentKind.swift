@@ -251,23 +251,22 @@ public struct AgentDescriptor: Sendable {
     /// Build CLI arguments for launching the specified agent in `mode`. For Codex, `sessionId`
     /// also names the session to linkC's tool server: Codex serves every terminal's MCP servers
     /// from one shared daemon, so the server can't find its session by walking up the process
-    /// tree. The override goes before `resume`, like every other flag.
+    /// tree. `browser`'s variables go to the user's own agent-browser server the same way. The
+    /// overrides go before `resume`, like every other flag.
     public static func arguments(
         for kind: AgentKind,
         mode: LaunchMode,
         sessionId: String? = nil,
-        browserServerName: String? = nil,
-        browserEnvironment: [String: String] = [:]
+        browser: SharedBrowserLease? = nil
     ) -> [String] {
         let desc = descriptor(for: kind)
         var args = desc.yoloFlags
         if kind == .codex, let sessionId {
             args += ["-c", "mcp_servers.\(MCPRegistrar.serverName).env.LINKC_SESSION=\"\(sessionId)\""]
         }
-        if kind == .codex, let browserServerName {
-            for key in browserEnvironment.keys.sorted() {
-                guard let value = browserEnvironment[key] else { continue }
-                args += ["-c", "mcp_servers.\(browserServerName).env.\(key)=\"\(value)\""]
+        if kind == .codex, let browser {
+            for (key, value) in browser.environment.sorted(by: { $0.key < $1.key }) {
+                args += ["-c", "mcp_servers.\(browser.server.name).env.\(key)=\"\(value)\""]
             }
         }
         switch mode {
@@ -334,14 +333,26 @@ public struct AgentDescriptor: Sendable {
         }
     }
 
-    /// Browser variables inherited by MCP servers launched from the terminal. Codex receives
-    /// overrides in argv; OpenCode and Kilo receive them in their inline server entry.
-    public static func browserTerminalEnvironment(
-        for kind: AgentKind, browserEnvironment: [String: String]
-    ) -> [String: String] {
+    /// How a session's shared-browser variables reach its agent-browser server.
+    public enum BrowserDelivery: Sendable, Equatable {
+        /// In the terminal's environment, which the agent hands to the servers it starts.
+        case terminalEnvironment
+        /// As `-c mcp_servers.<server>.env.<KEY>=…` overrides: Codex gives its servers only their
+        /// entry's own `env`.
+        case codexOverrides
+        /// In the server's entry in the inline config (`OPENCODE_CONFIG_CONTENT`, `KILO_CONFIG_CONTENT`).
+        case inlineConfig
+    }
+
+    /// Nil for an agent whose servers cannot get them: cursor-agent (Cursor, Grok) and Freebuff start
+    /// their MCP servers with only HOME, LOGNAME, PATH, SHELL, TERM, USER (and TMPDIR), and passing them
+    /// through their config would mean rewriting the user's own server entry.
+    public static func browserDelivery(for kind: AgentKind) -> BrowserDelivery? {
         switch kind {
-        case .codex, .opencode, .kilo, .shell: return [:]
-        default: return browserEnvironment
+        case .claude, .agy, .crush: return .terminalEnvironment
+        case .codex: return .codexOverrides
+        case .opencode, .kilo: return .inlineConfig
+        case .cursor, .grok, .freebuff, .shell: return nil
         }
     }
 

@@ -6,20 +6,15 @@ extension AppCoordinator {
     /// with the session's model — OpenCode's TUI takes no model flag — and linkC's tool server, so
     /// the tools are there even when registering in `opencode.json` failed. The server entry carries
     /// no session id: OpenCode hands its own environment, `LINKC_SESSION` included, to the servers
-    /// it starts. A value already in linkC's environment is merged into, not replaced.
-    func openCodeEnvironment(
-        model: String?, browserServerName: String? = nil, browserEnvironment: [String: String] = [:]
-    ) throws -> [String: String] {
+    /// it starts. A value already in linkC's environment is merged into, not replaced. `browser` gives
+    /// the user's own agent-browser server the session's shared-browser variables.
+    func openCodeEnvironment(model: String?, browser: SharedBrowserLease? = nil) throws -> [String: String] {
         var env = AgentDescriptor.environment(for: .opencode, home: FileManager.default.homeDirectoryForCurrentUser)
-        let inherited = try browserServerName.map {
-            try MCPRegistrar.inheritedConfigIncludingBrowser(
-                inherited: ProcessInfo.processInfo.environment[AgentDescriptor.openCodeConfigContentKey],
-                agent: .opencode, home: userHome ?? FileManager.default.homeDirectoryForCurrentUser, serverName: $0)
-        } ?? ProcessInfo.processInfo.environment[AgentDescriptor.openCodeConfigContentKey]
         env[AgentDescriptor.openCodeConfigContentKey] = try MCPRegistrar.openCodeConfigContent(
-            inherited: inherited,
+            inherited: ProcessInfo.processInfo.environment[AgentDescriptor.openCodeConfigContentKey],
             binaryPath: MCPRegistrar.defaultBinaryPath(),
-            model: model, browserServerName: browserServerName, browserEnvironment: browserEnvironment)
+            model: model,
+            browser: browser)
         return env
     }
 

@@ -39,7 +39,7 @@ struct SettingsScreen: View {
 
                     SettingRow(
                         title: "Shared browser",
-                        detail: "Share one headless Chrome between this project's agent sessions."
+                        detail: "Share one headless Chrome between the agent sessions of each repository."
                     ) {
                         Toggle("", isOn: Binding(
                             get: { model.preferences.sharedBrowserEnabled },

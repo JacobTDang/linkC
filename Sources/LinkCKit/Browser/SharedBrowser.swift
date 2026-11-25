@@ -1,224 +1,561 @@
 import CryptoKit
+import Darwin
 import Foundation
 
-@MainActor
-public protocol SharedBrowserProcess: AnyObject {
-    func stop()
-}
+/// One session's share of a project's browser: the port of its Chrome and the agent-browser
+/// session its MCP server attaches as, pinned to a tab of its own.
+public struct SharedBrowserLease: Equatable, Sendable {
+    public let port: Int
+    public let sessionName: String
+    /// The agent's own agent-browser server, which the variables are for.
+    public let server: AgentBrowserServer
 
-@MainActor
-public protocol SharedBrowserLaunching: AnyObject {
-    func isExecutable(_ path: String) -> Bool
-    func launch(executable: String, arguments: [String], profileDirectory: URL) throws -> any SharedBrowserProcess
-}
-
-@MainActor
-public protocol SharedBrowserTabClosing: AnyObject {
-    func closePinnedTab(port: Int, sessionName: String) throws
-}
-
-@MainActor
-public final class LiveSharedBrowserTabCloser: SharedBrowserTabClosing {
-    private let executable: String
-
-    public init(
-        executable: String = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/bin/agent-browser").path
-    ) {
-        self.executable = executable
-    }
-
-    public func closePinnedTab(port: Int, sessionName: String) throws {
-        guard FileManager.default.isExecutableFile(atPath: executable) else {
-            throw LinkCError.process("agent-browser is not installed at \(executable)")
-        }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = [
-            "--cdp", String(port), "--session", sessionName, "--pin-tab", "tab", "close", "--json"
-        ]
-        process.standardOutput = FileHandle.nullDevice
-        let errorPipe = Pipe()
-        process.standardError = errorPipe
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let detail = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw LinkCError.process(detail.isEmpty ? "agent-browser could not close the pinned tab" : detail)
-        }
+    public var environment: [String: String] {
+        ["AGENT_BROWSER_CDP": String(port), "AGENT_BROWSER_PIN_TAB": "1", "AGENT_BROWSER_SESSION": sessionName]
     }
 }
 
-@MainActor
-public final class LiveSharedBrowserProcess: SharedBrowserProcess {
-    private let process: Process
-
-    init(_ process: Process) { self.process = process }
-
-    public func stop() {
-        if process.isRunning { process.terminate() }
-    }
-}
-
-@MainActor
-public final class LiveSharedBrowserLauncher: SharedBrowserLaunching {
-    public init() {}
-
-    public func isExecutable(_ path: String) -> Bool {
-        FileManager.default.isExecutableFile(atPath: path)
-    }
-
-    public func launch(
-        executable: String, arguments: [String], profileDirectory: URL
-    ) throws -> any SharedBrowserProcess {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        return LiveSharedBrowserProcess(process)
-    }
-}
-
-/// Owns one headless Chrome per canonical project and gives every linkC session its own pinned tab.
+/// Owns one headless Chrome per repository and gives every linkC session its own pinned tab in it.
+///
+/// A session is counted before anything external runs, and uncounted before its tabs are closed,
+/// so a start or an end that lands while another is waiting sees the right number. Every wait —
+/// for Chrome's port, for a closed tab, for agent-browser — is an `await`; nothing here blocks the
+/// main thread.
 @MainActor
 public final class SharedBrowser {
     public static let chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    /// How long a new Chrome has to publish its DevTools port.
+    nonisolated static let portTimeout: TimeInterval = 5
+    /// How long after a failed start a project's next session tries again.
+    static let retryDelay: TimeInterval = 60
 
-    private struct Instance {
+    private struct Running: Sendable {
+        let id: UUID
         let process: any SharedBrowserProcess
         let port: Int
-        var sessions: Set<String>
+        /// The page targets seen at the last look, so a new one can be told from an old one.
+        var known: Set<String>
+    }
+
+    private enum Instance {
+        case starting(Task<Running?, Never>)
+        case running(Running)
+    }
+
+    /// A session holding, or waiting for, a share. `project` is nil until its folder is resolved,
+    /// `instance` until its Chrome is up.
+    private struct Member {
+        let sessionName: String
+        var project: String?
+        var instance: UUID?
+        var cli: [String] = []
+        var owned: Set<String> = []
     }
 
     private let applicationSupport: URL
+    private let agentBrowserHome: URL
     private let chromePath: String
     private let launcher: any SharedBrowserLaunching
-    private let tabCloser: any SharedBrowserTabClosing
+    private let devTools: any SharedBrowserDevTools
+    private let processes: any SharedBrowserProcessInspecting
+    private let runner: any ProcessRunner
+    private let executableSearchPath: [String]
+    private let discover: @Sendable (AgentKind, String) throws -> AgentBrowserServer?
+    private let resolveRepository: @Sendable (String) async throws -> String
     private let now: () -> Date
-    private let sleep: (TimeInterval) -> Void
+    private let sleep: (TimeInterval) async throws -> Void
+    private let nonce: () -> String
     private let report: (String) -> Void
+
     private var instances: [String: Instance] = [:]
-    private var sessionProjects: [String: String] = [:]
-    private var reportedFailures: Set<String> = []
+    private var members: [String: Member] = [:]
+    private var repositories: [String: String] = [:]
+    private var failedStarts: [String: Date] = [:]
+    private var reportedKinds: Set<String> = []
+    private var cleanups: [UUID: Task<Void, Never>] = [:]
+    private var tracking = false
 
     public init(
         applicationSupport: URL,
+        agentBrowserHome: URL,
         chromePath: String = SharedBrowser.chromePath,
         launcher: any SharedBrowserLaunching = LiveSharedBrowserLauncher(),
-        tabCloser: any SharedBrowserTabClosing = LiveSharedBrowserTabCloser(),
+        devTools: any SharedBrowserDevTools = LiveSharedBrowserDevTools(),
+        processes: any SharedBrowserProcessInspecting = LiveSharedBrowserProcesses(),
+        runner: any ProcessRunner = LiveProcessRunner(),
+        executableSearchPath: [String],
+        discover: @escaping @Sendable (AgentKind, String) throws -> AgentBrowserServer?,
+        resolveRepository: @escaping @Sendable (String) async throws -> String,
         now: @escaping () -> Date = Date.init,
-        sleep: @escaping (TimeInterval) -> Void = Thread.sleep(forTimeInterval:),
-        report: @escaping (String) -> Void = { _ in }
+        sleep: @escaping (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
+        nonce: @escaping () -> String = { String(UUID().uuidString.prefix(8)).lowercased() },
+        report: @escaping (String) -> Void
     ) {
         self.applicationSupport = applicationSupport
+        self.agentBrowserHome = agentBrowserHome
         self.chromePath = chromePath
         self.launcher = launcher
-        self.tabCloser = tabCloser
+        self.devTools = devTools
+        self.processes = processes
+        self.runner = runner
+        self.executableSearchPath = executableSearchPath
+        self.discover = discover
+        self.resolveRepository = resolveRepository
         self.now = now
         self.sleep = sleep
+        self.nonce = nonce
         self.report = report
     }
 
-    public nonisolated static func sessionEnvironment(port: Int, sessionId: String) -> [String: String] {
-        [
-            "AGENT_BROWSER_CDP": String(port),
-            "AGENT_BROWSER_PIN_TAB": "1",
-            "AGENT_BROWSER_SESSION": "linkc-\(sessionId)"
-        ]
+    // MARK: - Sessions
+
+    /// A share of `cwd`'s repository browser for a session of `agent`, starting that Chrome when
+    /// none runs. Nil — and Chrome is never started — when the agent has no agent-browser server,
+    /// when its config cannot be read, or when Chrome cannot start; each failure is reported once
+    /// per kind. A session released while this waits gets nil.
+    public func lease(sessionId: String, agent: AgentKind, cwd: String) async -> SharedBrowserLease? {
+        let name = "linkc-\(sessionId)-\(nonce())"
+        members[sessionId] = Member(sessionName: name)
+        func stillWanted() -> Bool { members[sessionId]?.sessionName == name }
+
+        let discover = self.discover
+        let server: AgentBrowserServer?
+        do {
+            server = try await Task.detached { try discover(agent, cwd) }.value
+        } catch {
+            members.removeValue(forKey: sessionId)
+            reportOnce("config:\(agent.rawValue)", "\(error.localizedDescription). \(agent.displayName) started without the shared browser.")
+            return nil
+        }
+        guard stillWanted() else { return nil }
+        guard let server else {
+            members.removeValue(forKey: sessionId)
+            return nil
+        }
+
+        let project = await repository(of: cwd)
+        guard stillWanted() else { return nil }
+        members[sessionId]?.project = project
+        members[sessionId]?.cli = server.cliPrefix
+
+        let running = await instance(for: project)
+        guard stillWanted() else {
+            stopIfUnused(project)
+            return nil
+        }
+        guard let running else {
+            members.removeValue(forKey: sessionId)
+            return nil
+        }
+        members[sessionId]?.instance = running.id
+        return SharedBrowserLease(port: running.port, sessionName: name, server: server)
     }
 
-    public func environment(projectPath: String, sessionId: String) -> [String: String]? {
-        let project = ProjectPath.canonical(projectPath)
-        if var instance = instances[project] {
-            instance.sessions.insert(sessionId)
-            instances[project] = instance
-            sessionProjects[sessionId] = project
-            return Self.sessionEnvironment(port: instance.port, sessionId: sessionId)
+    /// Ends `sessionId`'s share — only the one named `sessionName`, when given, so a late caller
+    /// cannot end a newer share of a relaunched session. It is uncounted at once; the last one out
+    /// stops Chrome. Its tabs, its agent-browser daemon and the tab agent-browser remembers for it
+    /// are cleaned up after.
+    public func release(sessionId: String, sessionName: String? = nil) {
+        guard let current = members[sessionId], sessionName == nil || current.sessionName == sessionName,
+              let member = members.removeValue(forKey: sessionId) else { return }
+        guard let project = member.project else { return }
+        guard let instanceID = member.instance else {
+            stopIfUnused(project)
+            return
         }
-        do {
-            let instance = try start(project: project, sessionId: sessionId)
-            instances[project] = instance
-            sessionProjects[sessionId] = project
-            return Self.sessionEnvironment(port: instance.port, sessionId: sessionId)
-        } catch {
-            if reportedFailures.insert(project).inserted {
-                report("Shared browser unavailable: \(error.localizedDescription). This session started without browser sharing.")
+        var port: Int?
+        if case .running(let running)? = instances[project], running.id == instanceID {
+            if holders(of: project, instance: instanceID).isEmpty {
+                instances.removeValue(forKey: project)
+                running.process.stop()
+            } else {
+                port = running.port
             }
+        }
+        let id = UUID()
+        cleanups[id] = Task { [weak self] in
+            await self?.cleanUp(member, project: project, instanceID: instanceID, port: port)
+            self?.cleanups.removeValue(forKey: id)
+        }
+    }
+
+    /// Stops every Chrome and every session's daemon, for quitting: nothing waits.
+    public func stopAll() {
+        for instance in instances.values {
+            switch instance {
+            case .running(let running): running.process.stop()
+            case .starting(let task): task.cancel()
+            }
+        }
+        instances.removeAll()
+        for member in members.values where member.instance != nil {
+            if let command = daemonCloseCommand(for: member) {
+                do {
+                    try launcher.runDetached(executable: command[0], arguments: Array(command.dropFirst()))
+                } catch {
+                    NSLog("[linkC browser] could not stop agent-browser session %@ — %@", member.sessionName, String(describing: error))
+                }
+            }
+            removeTargetFile(of: member)
+        }
+        members.removeAll()
+    }
+
+    /// Notes which page targets each session opened: the one agent-browser has it pinned to now
+    /// (`tab_new` moves the pin), and any new one nobody is pinned to when it is the only session in
+    /// that browser. Called on the coordinator's sweep; a call while one runs returns at once.
+    public func trackTabs() async {
+        guard !tracking else { return }
+        tracking = true
+        defer { tracking = false }
+        for (project, instance) in instances {
+            guard case .running(let running) = instance, !holders(of: project, instance: running.id).isEmpty else { continue }
+            let pages: [String]
+            do {
+                pages = try await devTools.pageTargets(port: running.port)
+            } catch {
+                reportOnce("tabs", "linkC could not list the shared browser's tabs for \(project) — \(error.localizedDescription)")
+                continue
+            }
+            guard case .running(var current)? = instances[project], current.id == running.id else { continue }
+            let open = Set(pages)
+            let holding = holders(of: project, instance: running.id)
+            var pinned: Set<String> = []
+            for sessionId in holding {
+                guard let name = members[sessionId]?.sessionName, let target = pinnedTarget(of: name), open.contains(target) else { continue }
+                members[sessionId]?.owned.insert(target)
+                pinned.insert(target)
+            }
+            if holding.count == 1, let only = holding.first {
+                members[only]?.owned.formUnion(open.subtracting(current.known).subtracting(pinned))
+            }
+            current.known = open
+            instances[project] = .running(current)
+        }
+    }
+
+    /// Test seam: waits for every release's cleanup to finish.
+    func settle() async {
+        while let next = cleanups.values.first {
+            await next.value
+        }
+    }
+
+    /// Stops `project`'s running Chrome when no session holds or waits for it.
+    private func stopIfUnused(_ project: String) {
+        guard case .running(let running)? = instances[project], holders(of: project, instance: running.id).isEmpty else { return }
+        instances.removeValue(forKey: project)
+        running.process.stop()
+    }
+
+    private func holders(of project: String, instance: UUID) -> [String] {
+        members.filter { $0.value.project == project && ($0.value.instance == instance || $0.value.instance == nil) }
+            .map(\.key).sorted()
+    }
+
+    private func cleanUp(_ member: Member, project: String, instanceID: UUID, port: Int?) async {
+        if let port {
+            var tabs = member.owned
+            if let pinned = pinnedTarget(of: member.sessionName) { tabs.insert(pinned) }
+            for tab in tabs.sorted() {
+                guard case .running(let running)? = instances[project], running.id == instanceID else { break }
+                do {
+                    try await devTools.closeTarget(tab, port: port)
+                } catch {
+                    reportOnce("tab-close", "linkC could not close a tab of the shared browser for \(project) — \(error.localizedDescription)")
+                }
+            }
+        }
+        await stopDaemon(of: member)
+        removeTargetFile(of: member)
+    }
+
+    // MARK: - agent-browser's own state
+
+    private func targetFile(of name: String) -> URL {
+        agentBrowserHome.appendingPathComponent("\(name).target")
+    }
+
+    /// The target agent-browser has `name` pinned to, from its `<session>.target`; nil when the
+    /// session never used the browser.
+    private func pinnedTarget(of name: String) -> String? {
+        let file = targetFile(of: name)
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        do {
+            let object = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any]
+            return object?["targetId"] as? String
+        } catch {
+            reportOnce("target-file", "linkC could not read agent-browser's \(file.path) — \(error.localizedDescription)")
             return nil
         }
     }
 
-    public func release(sessionId: String) {
-        guard let project = sessionProjects.removeValue(forKey: sessionId), var instance = instances[project] else { return }
+    private func removeTargetFile(of member: Member) {
+        let file = targetFile(of: member.sessionName)
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
         do {
-            try tabCloser.closePinnedTab(port: instance.port, sessionName: "linkc-\(sessionId)")
+            try FileManager.default.removeItem(at: file)
         } catch {
-            if reportedFailures.insert("tab:\(project)").inserted {
-                report("Shared browser tab cleanup failed: \(error.localizedDescription)")
+            reportOnce("target-file", "linkC could not remove agent-browser's \(file.path) — \(error.localizedDescription)")
+        }
+    }
+
+    /// `agent-browser --session <name> close --json`, run through the server's own command. Nil when
+    /// that command is not found; the reason is reported.
+    private func daemonCloseCommand(for member: Member) -> [String]? {
+        guard let program = member.cli.first else { return nil }
+        let executable: String
+        if program.hasPrefix("/") {
+            executable = program
+        } else if let found = executableSearchPath.lazy.map({ ($0 as NSString).appendingPathComponent(program) })
+            .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            executable = found
+        } else {
+            reportOnce("daemon", "linkC could not stop agent-browser's session \(member.sessionName): \(program) was not found on the PATH (\(executableSearchPath.joined(separator: ":")))")
+            return nil
+        }
+        return [executable] + member.cli.dropFirst() + ["--session", member.sessionName, "close", "--json"]
+    }
+
+    private func stopDaemon(of member: Member) async {
+        guard let command = daemonCloseCommand(for: member) else { return }
+        do {
+            let result = try await runner.runCapturing(command[0], args: Array(command.dropFirst()), cwd: nil, timeout: 15)
+            guard result.status == 0 else {
+                // With --json agent-browser writes its error to stdout.
+                let said = [result.stdout, result.stderr]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                reportOnce("daemon", "agent-browser could not stop session \(member.sessionName) (status \(result.status)): \(said.isEmpty ? "it said nothing" : String(said.prefix(600)))")
+                return
+            }
+        } catch {
+            reportOnce("daemon", "agent-browser could not stop session \(member.sessionName) — \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Chrome
+
+    /// The running Chrome for `project`: the one up, the one starting, or a new one. Nil within a
+    /// minute of a failed start, and when this start fails.
+    private func instance(for project: String) async -> Running? {
+        if case .running(let running)? = instances[project] {
+            if running.process.isRunning { return running }
+            chromeExited(project: project, id: running.id, status: nil)
+        }
+        if case .starting(let task)? = instances[project] { return await task.value }
+        if let failedAt = failedStarts[project], now().timeIntervalSince(failedAt) < Self.retryDelay {
+            NSLog("[linkC browser] %@: not starting Chrome again yet; the last start failed %.0f s ago",
+                  project, now().timeIntervalSince(failedAt))
+            return nil
+        }
+        let task = Task { await self.start(project: project) }
+        instances[project] = .starting(task)
+        return await task.value
+    }
+
+    private func start(project: String) async -> Running? {
+        do {
+            var running = try await launchChrome(for: project)
+            guard case .starting? = instances[project] else {
+                running.process.stop()
+                return nil
+            }
+            do {
+                running.known = Set(try await devTools.pageTargets(port: running.port))
+            } catch {
+                reportOnce("tabs", "linkC could not list the shared browser's tabs for \(project) — \(error.localizedDescription)")
+            }
+            failedStarts.removeValue(forKey: project)
+            instances[project] = .running(running)
+            return running
+        } catch is CancellationError {
+            instances.removeValue(forKey: project)
+            return nil
+        } catch {
+            instances.removeValue(forKey: project)
+            failedStarts[project] = now()
+            let failure = error as? StartFailure ?? .other(error.localizedDescription)
+            reportOnce("start:\(failure.kind)", "\(failure.message(project: project)) Sessions there start without the shared browser for now.")
+            return nil
+        }
+    }
+
+    private enum StartFailure: Error {
+        case chromeMissing(String)
+        case inUse(pid: Int32)
+        case leftoverWouldNotStop(pid: Int32)
+        case exited(log: String)
+        case noPort
+        case other(String)
+
+        var kind: String {
+            switch self {
+            case .chromeMissing: return "chrome-missing"
+            case .inUse: return "in-use"
+            case .leftoverWouldNotStop: return "leftover"
+            case .exited: return "exited"
+            case .noPort: return "no-port"
+            case .other: return "other"
             }
         }
-        instance.sessions.remove(sessionId)
-        if instance.sessions.isEmpty {
-            instance.process.stop()
-            instances.removeValue(forKey: project)
-        } else {
-            instances[project] = instance
+
+        func message(project: String) -> String {
+            switch self {
+            case .chromeMissing(let path):
+                return "Google Chrome is not installed at \(path)."
+            case .inUse(let pid):
+                return "The shared browser profile for \(project) is held by another program's Chrome (pid \(pid))."
+            case .leftoverWouldNotStop(let pid):
+                return "A Chrome a previous linkC left running for \(project) (pid \(pid)) did not stop."
+            case .exited(let log):
+                return "Google Chrome exited before it published its DevTools port for \(project)\(log.isEmpty ? "." : ": \(log)")"
+            case .noPort:
+                return "Google Chrome did not publish a DevTools port for \(project) within \(Int(SharedBrowser.portTimeout)) seconds."
+            case .other(let reason):
+                return "Google Chrome could not start for \(project) — \(reason)."
+            }
         }
     }
 
-    public func stopAll() {
-        for instance in instances.values { instance.process.stop() }
-        instances.removeAll()
-        sessionProjects.removeAll()
-    }
-
-    private func start(project: String, sessionId: String) throws -> Instance {
-        guard launcher.isExecutable(chromePath) else {
-            throw LinkCError.process("Google Chrome is not installed at \(chromePath)")
-        }
-        let profile = profileDirectory(for: project)
+    private func launchChrome(for project: String) async throws -> Running {
+        guard launcher.isExecutable(chromePath) else { throw StartFailure.chromeMissing(chromePath) }
+        let profile = Self.profileDirectory(for: project, in: applicationSupport)
+        let portFile = profile.appendingPathComponent("DevToolsActivePort")
+        let log = Self.logFile(for: project, in: applicationSupport)
         do {
             try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
-            let portFile = profile.appendingPathComponent("DevToolsActivePort")
-            try? FileManager.default.removeItem(at: portFile)
-            let args = [
-                "--headless=new", "--remote-debugging-port=0", "--user-data-dir=\(profile.path)",
-                "--no-first-run", "--no-default-browser-check"
-            ]
-            let process = try launcher.launch(executable: chromePath, arguments: args, profileDirectory: profile)
-            do {
-                let port = try waitForPort(at: portFile)
-                return Instance(process: process, port: port, sessions: [sessionId])
-            } catch {
-                process.stop()
-                throw error
-            }
-        } catch let error as LinkCError {
-            throw error
         } catch {
-            throw LinkCError.process("Google Chrome could not start — \(error.localizedDescription)")
+            throw StartFailure.other("could not create \(profile.path): \(error.localizedDescription)")
+        }
+        try await stopLeftover(in: profile)
+        if FileManager.default.fileExists(atPath: portFile.path) {
+            do {
+                try FileManager.default.removeItem(at: portFile)
+            } catch {
+                throw StartFailure.other("could not remove the old \(portFile.path): \(error.localizedDescription)")
+            }
+        }
+        let id = UUID()
+        let process: any SharedBrowserProcess
+        do {
+            process = try launcher.launch(
+                executable: chromePath,
+                arguments: ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=\(profile.path)",
+                            "--no-first-run", "--no-default-browser-check"],
+                log: log,
+                onExit: { [weak self] status in self?.chromeExited(project: project, id: id, status: status) })
+        } catch {
+            throw StartFailure.other(error.localizedDescription)
+        }
+        do {
+            let port = try await waitForPort(in: portFile, of: process, log: log)
+            return Running(id: id, process: process, port: port, known: [])
+        } catch {
+            process.stop()
+            throw error
         }
     }
 
-    private func waitForPort(at file: URL) throws -> Int {
-        let deadline = now().addingTimeInterval(5)
-        repeat {
+    private func waitForPort(in file: URL, of process: any SharedBrowserProcess, log: URL) async throws -> Int {
+        let deadline = now().addingTimeInterval(Self.portTimeout)
+        while true {
             if let text = try? String(contentsOf: file, encoding: .utf8),
                let first = text.split(whereSeparator: \.isNewline).first,
                let port = Int(first), (1...65_535).contains(port) {
                 return port
             }
-            sleep(0.05)
-        } while now() < deadline
-        throw LinkCError.process("Google Chrome did not publish a DevTools port within 5 seconds")
+            guard process.isRunning else { throw StartFailure.exited(log: Self.lastLine(of: log)) }
+            guard now() < deadline else { throw StartFailure.noPort }
+            try await sleep(0.05)
+        }
     }
 
-    private func profileDirectory(for project: String) -> URL {
-        let digest = SHA256.hash(data: Data(project.utf8)).map { String(format: "%02x", $0) }.joined()
-        return applicationSupport.appendingPathComponent("browser", isDirectory: true)
-            .appendingPathComponent(digest, isDirectory: true)
+    private static func lastLine(of log: URL) -> String {
+        guard let text = try? String(contentsOf: log, encoding: .utf8) else { return "" }
+        return text.split(whereSeparator: \.isNewline).last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { String($0.prefix(300)) } ?? ""
+    }
+
+    /// A linkC that crashed leaves its Chrome running under launchd, holding the profile's
+    /// `SingletonLock`, and a second Chrome on that profile aborts. That leftover — Chrome named in
+    /// the lock, on this profile, with launchd as its parent — is stopped. A Chrome on this profile
+    /// whose parent is alive belongs to someone else and is left alone.
+    private func stopLeftover(in profile: URL) async throws {
+        let lock = profile.appendingPathComponent("SingletonLock")
+        guard let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: lock.path),
+              let pidText = destination.split(separator: "-").last, let pid = Int32(pidText),
+              let arguments = processes.arguments(of: pid),
+              arguments.contains("--user-data-dir=\(profile.path)") else { return }
+        guard processes.parent(of: pid) == 1 else { throw StartFailure.inUse(pid: pid) }
+        NSLog("[linkC browser] stopping the Chrome a previous linkC left running on %@ (pid %d)", profile.path, pid)
+        for signal in [SIGTERM, SIGKILL] {
+            processes.signal(pid, signal)
+            for _ in 0..<50 {
+                if processes.arguments(of: pid) == nil { return }
+                try? await sleep(0.1)
+            }
+        }
+        throw StartFailure.leftoverWouldNotStop(pid: pid)
+    }
+
+    private func chromeExited(project: String, id: UUID, status: Int32?) {
+        guard case .running(let running)? = instances[project], running.id == id else { return }
+        instances.removeValue(forKey: project)
+        let how = status.map { " (exit status \($0))" } ?? ""
+        reportOnce("chrome-stopped", "The shared browser for \(project) stopped\(how). Sessions already open there lose the browser; the next session starts a new one.")
+    }
+
+    private func reportOnce(_ kind: String, _ message: String) {
+        NSLog("[linkC browser] %@", message)
+        if reportedKinds.insert(kind).inserted { report(message) }
+    }
+
+    // MARK: - Repositories
+
+    private func repository(of cwd: String) async -> String {
+        if let known = repositories[cwd] { return known }
+        let root: String
+        do {
+            root = try await resolveRepository(cwd)
+        } catch {
+            root = ProjectPath.canonical(cwd)
+            reportOnce("repository", "linkC could not find the repository of \(cwd), so its sessions share a browser with that folder only — \(error.localizedDescription)")
+        }
+        repositories[cwd] = root
+        return root
+    }
+
+    /// The folder every checkout of `cwd`'s repository shares a browser under: the parent of git's
+    /// common folder, so a linked worktree and a subfolder give the main checkout. Outside a
+    /// repository, the folder itself. Throws when git cannot answer for a folder inside one.
+    public nonisolated static func repositoryRoot(of cwd: String, runner: any ProcessRunner, git: String?) async throws -> String {
+        let folder = ProjectPath.canonical(cwd)
+        guard GitClient.isRepository(URL(fileURLWithPath: folder)) else { return folder }
+        guard let git else { throw LinkCError.process("git was not found in \(GitClient.candidatePaths.joined(separator: ", "))") }
+        let result = try await runner.runCapturing(
+            git, args: ["-C", folder, "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd: nil, timeout: 10)
+        let common = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard result.status == 0, !common.isEmpty else {
+            throw LinkCError.process("git rev-parse --git-common-dir failed in \(folder): \(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        let url = URL(fileURLWithPath: common)
+        return ProjectPath.canonical(url.lastPathComponent == ".git" ? url.deletingLastPathComponent().path : url.path)
+    }
+
+    static func profileDirectory(for project: String, in applicationSupport: URL) -> URL {
+        browserFolder(in: applicationSupport).appendingPathComponent(digest(of: project), isDirectory: true)
+    }
+
+    static func logFile(for project: String, in applicationSupport: URL) -> URL {
+        browserFolder(in: applicationSupport).appendingPathComponent("\(digest(of: project)).log")
+    }
+
+    private static func browserFolder(in applicationSupport: URL) -> URL {
+        applicationSupport.appendingPathComponent("browser", isDirectory: true)
+    }
+
+    private static func digest(of project: String) -> String {
+        SHA256.hash(data: Data(project.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }
