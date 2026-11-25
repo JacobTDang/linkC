@@ -2162,6 +2162,9 @@ public final class MCPServer: Sendable {
         // Read once per request: a stable view of the mapping for the whole handler,
         // never cached across calls — the next request reads whatever is on disk then.
         let settings = modelSettings()
+        // The lists and CLI listings this request reads, each at most once, whether routing or
+        // delegation asks first.
+        let sources = tierModelSources(destRoot: destRoot)
 
         // `to` omitted or "auto" → pure Router picks agent, tier and effort. An explicit `to`
         // keeps today's behaviour. When routing, tier/model/effort from the caller are refused
@@ -2198,7 +2201,8 @@ public final class MCPServer: Sendable {
                     isError: true)
             }
             do {
-                let route = try routeTask(prompt: prompt, settings: settings, destStore: destStore, destRoot: destRoot)
+                let route = try routeTask(
+                    prompt: prompt, settings: settings, sources: sources, destStore: destStore, destRoot: destRoot)
                 let decision = route.decision
                 toAgent = decision.agent
                 routeReason = route.reason
@@ -2211,7 +2215,7 @@ public final class MCPServer: Sendable {
                     id: id, caller: caller, args: routed, destStore: destStore, destRoot: destRoot,
                     crossProject: crossProject, isQuestion: isQuestion,
                     toAgent: toAgent, prompt: prompt, files: files, force: force,
-                    verification: verification, settings: settings, routeReason: routeReason)
+                    verification: verification, settings: settings, sources: sources, routeReason: routeReason)
             } catch {
                 return toolResultResponse(id: id, text: "Error: \(error.localizedDescription)", isError: true)
             }
@@ -2234,13 +2238,14 @@ public final class MCPServer: Sendable {
             id: id, caller: caller, args: args, destStore: destStore, destRoot: destRoot,
             crossProject: crossProject, isQuestion: isQuestion,
             toAgent: toAgent, prompt: prompt, files: files, force: force,
-            verification: verification, settings: settings, routeReason: nil)
+            verification: verification, settings: settings, sources: sources, routeReason: nil)
     }
 
     /// Gathers live limits, usage and the agents open in the folder, then asks the pure `Router` for
     /// an agent/tier/effort. The reason says so when the folder's open sessions could not be read.
     private func routeTask(
-        prompt: String, settings: AgentModelSettings, destStore: InboxStore, destRoot: String
+        prompt: String, settings: AgentModelSettings, sources: TierModelSources,
+        destStore: InboxStore, destRoot: String
     ) throws -> (decision: RouterDecision, reason: String) {
         let installed = AgentKind.peers.filter { isAgentInstalled($0) }
         guard !installed.isEmpty else {
@@ -2259,17 +2264,29 @@ public final class MCPServer: Sendable {
             }
         }
         let tier = Router.tier(for: Router.classify(prompt), prompt: prompt)
+        // Every agent is checked against the free-model rules and the cached lists, which cost
+        // nothing. An agent's own CLI is asked only about the agent the router picks: when it
+        // refuses, that agent is skipped and the router picks again.
         var refusals: [AgentKind: String] = [:]
         for agent in installed {
             if let refusal = tierModelRefusal(
-                agent: agent, tier: tier, settings: settings, destRoot: destRoot, lists: modelLists) {
+                agent: agent, tier: tier, settings: settings, sources: sources, consultingFolderListing: false) {
                 refusals[agent] = refusal.message
             }
         }
         let open = agentsOpen(in: destRoot)
-        let decision = try Router.route(
-            prompt: prompt, installed: installed, settings: settings,
-            limits: limits, usageTight: tight, activeInFolder: open.agents, refusals: refusals)
+        func pick() throws -> RouterDecision {
+            try Router.route(
+                prompt: prompt, installed: installed, settings: settings,
+                limits: limits, usageTight: tight, activeInFolder: open.agents, refusals: refusals)
+        }
+        var decision = try pick()
+        while let refusal = tierModelRefusal(
+            agent: decision.agent, tier: decision.tier, settings: settings, sources: sources,
+            consultingFolderListing: true) {
+            refusals[decision.agent] = refusal.message
+            decision = try pick()
+        }
         let reason = open.problem.map { "\(decision.reason); no tie-break, the open sessions could not be read: \($0)" }
             ?? decision.reason
         return (decision, reason)
@@ -2308,6 +2325,7 @@ public final class MCPServer: Sendable {
         force: Bool,
         verification: Verification?,
         settings: AgentModelSettings,
+        sources: TierModelSources,
         routeReason: String?
     ) throws -> Data? {
         let modelArg: String?
@@ -2348,13 +2366,7 @@ public final class MCPServer: Sendable {
 
         // The cache is read only by a check that needs it: a model named by hand, or a tier of
         // an agent whose models come from its CLI. A missing file reads as "nothing listed yet".
-        var readLists: [AgentKind: AgentModelList]?
-        func lists() throws -> [AgentKind: AgentModelList] {
-            if let readLists { return readLists }
-            let read = try modelLists()
-            readLists = read
-            return read
-        }
+        let lists = sources.modelLists
         let listsUnreadable: (Error) -> String = { "Error: could not read the live model lists — \($0)" }
 
         let tier: ModelTier?
@@ -2462,7 +2474,7 @@ public final class MCPServer: Sendable {
         // A tier whose model the agent would refuse or no longer lists would start a worker the CLI
         // rejects. Refused now; an agent never listed (or whose last listing failed) is not blocked.
         if let tier, let refusal = tierModelRefusal(
-            agent: toAgent, tier: tier, settings: settings, destRoot: destRoot, lists: lists) {
+            agent: toAgent, tier: tier, settings: settings, sources: sources, consultingFolderListing: true) {
             return toolResultResponse(id: id, text: refusal.delegationError, isError: true)
         }
 

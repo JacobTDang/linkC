@@ -1,8 +1,10 @@
+import os
 import XCTest
 @testable import LinkCKit
 
 /// Routing and delegation judge a tier's configured model with one check: they give the same
-/// reason for an unusable model and treat a model id the same way, case included.
+/// reason for an unusable model and treat a model id the same way, case included. An agent's own
+/// CLI is asked what it lists only for the agent a task is going to, and once.
 final class MCPServerTierModelRefusalTests: XCTestCase {
     private var tempDir: URL!
 
@@ -16,6 +18,25 @@ final class MCPServerTierModelRefusalTests: XCTestCase {
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: tempDir)
         try super.tearDownWithError()
+    }
+
+    /// Counts the times a stand-in for an agent's CLI is run.
+    private final class RunCount: Sendable {
+        private let runs = OSAllocatedUnfairLock(initialState: 0)
+        var value: Int { runs.withLock { $0 } }
+        func run() { runs.withLock { $0 += 1 } }
+        func counting(_ listing: [String]) -> @Sendable (String) throws -> [String] {
+            { _ in
+                self.run()
+                return listing
+            }
+        }
+    }
+
+    private let seeded = AgentModelSettings.seeded
+    /// What an agent's CLI lists when every tier's model is still on offer.
+    private func listing(of agent: AgentKind) -> [String] {
+        ModelTier.allCases.compactMap { seeded.model(for: agent, tier: $0) }
     }
 
     private struct Crashed: Error, CustomStringConvertible {
@@ -138,5 +159,67 @@ final class MCPServerTierModelRefusalTests: XCTestCase {
         let tasks = try InboxStore(workspaceRoot: tempDir.path).openTasks()
         XCTAssertEqual(tasks.count, 3)
         XCTAssertEqual(tasks.filter { $0.prompt == "Fix the typo in the changelog" }.map(\.toAgent), [.opencode])
+    }
+
+    /// A task Claude wins does not start the OpenCode or Kilo CLI, whose listing can take a minute.
+    func testRoutingRunsNoFolderListingWhenClaudeWins() throws {
+        let openCode = RunCount(), kilo = RunCount()
+        let server = server(
+            settings: seeded, installed: [.claude, .codex, .opencode, .kilo],
+            openCodeModels: openCode.counting(listing(of: .opencode)), kiloModels: kilo.counting(listing(of: .kilo)))
+
+        let result = try call(server, ["prompt": "Fix the typo in README"])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try InboxStore(workspaceRoot: tempDir.path).openTasks().map(\.toAgent), [.claude])
+        XCTAssertEqual(openCode.value, 0)
+        XCTAssertEqual(kilo.value, 0)
+    }
+
+    /// OpenCode picked: its CLI lists models once for routing and delegation together, and Kilo's not at all.
+    func testTheAgentRoutingPicksIsListedExactlyOnce() throws {
+        let openCode = RunCount(), kilo = RunCount()
+        let server = server(
+            settings: seeded, installed: [.opencode, .kilo, .codex],
+            openCodeModels: openCode.counting(listing(of: .opencode)), kiloModels: kilo.counting(listing(of: .kilo)))
+
+        let result = try call(server, ["prompt": "Browse the docs for this API"])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try InboxStore(workspaceRoot: tempDir.path).openTasks().map(\.toAgent), [.opencode])
+        XCTAssertEqual(openCode.value, 1)
+        XCTAssertEqual(kilo.value, 0)
+    }
+
+    /// The agent picked is refused by its own listing: it is skipped and the router picks again, and
+    /// no agent's CLI is run twice.
+    func testAnAgentItsOwnListingRefusesIsSkippedAndTheRouterPicksAgain() throws {
+        let openCode = RunCount(), kilo = RunCount()
+        let server = server(
+            settings: seeded, installed: [.opencode, .kilo],
+            openCodeModels: openCode.counting(["opencode/other-free"]), kiloModels: kilo.counting(listing(of: .kilo)))
+
+        let result = try call(server, ["prompt": "Implement the login form and add unit tests"])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(try InboxStore(workspaceRoot: tempDir.path).openTasks().map(\.toAgent), [.kilo])
+        XCTAssertTrue(
+            result.text.contains("opencode skipped (opencode/big-pickle (opencode tier standard) is not among the models OpenCode lists"),
+            result.text)
+        XCTAssertEqual(openCode.value, 1)
+        XCTAssertEqual(kilo.value, 1)
+    }
+
+    /// Every agent listing its models from the app's cache is one read of the cache, not one each.
+    func testRoutingReadsTheCachedModelListsOnce() throws {
+        let reads = RunCount()
+        let server = server(
+            settings: seeded, installed: [.claude, .agy, .grok, .opencode, .kilo, .crush],
+            lists: { reads.run(); return [:] })
+
+        let result = try call(server, ["prompt": "Fix the typo in README"])
+
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(reads.value, 1)
     }
 }

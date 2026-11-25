@@ -13,17 +13,61 @@ struct TierModelRefusal: Equatable {
     }
 }
 
+/// What one request reads to judge tier models, each read at most once: the app's cached model
+/// lists, and what an agent's own CLI lists in the folder. A CLI listing starts a process that can
+/// take most of a minute, so a request that has asked for one, a failure included, never asks again.
+/// Routing and the delegation that follows it share one, so the agent routing picked is listed once.
+final class TierModelSources {
+    private let readLists: () throws -> [AgentKind: AgentModelList]
+    private let listFolder: (AgentKind) throws -> [String]
+    private var lists: Result<[AgentKind: AgentModelList], any Error>?
+    private var folderListings: [AgentKind: Result<[String], any Error>] = [:]
+
+    init(
+        readLists: @escaping () throws -> [AgentKind: AgentModelList],
+        listFolder: @escaping (AgentKind) throws -> [String]
+    ) {
+        self.readLists = readLists
+        self.listFolder = listFolder
+    }
+
+    /// The cached lists, read on first use.
+    func modelLists() throws -> [AgentKind: AgentModelList] {
+        if let lists { return try lists.get() }
+        let read = Result { try readLists() }
+        lists = read
+        return try read.get()
+    }
+
+    /// The models `agent`'s CLI lists in the folder, fetched on first use.
+    func folderModels(of agent: AgentKind) throws -> [String] {
+        if let listed = folderListings[agent] { return try listed.get() }
+        let listed = Result { try listFolder(agent) }
+        folderListings[agent] = listed
+        return try listed.get()
+    }
+}
+
 extension MCPServer {
+    /// The reads one request makes to judge tier models, for the project whose folder is `destRoot`.
+    func tierModelSources(destRoot: String) -> TierModelSources {
+        TierModelSources(readLists: modelLists) { agent in
+            try (agent == .kilo ? self.kiloModels : self.openCodeModels)(destRoot)
+        }
+    }
+
     /// Whether `agent`'s model for `tier` is one a task can run on: free where the agent runs free
-    /// models only, still offered by the agent's cached list, and still among what its own CLI lists
-    /// in `destRoot`. Routing and delegation both ask this, so a model is judged the same way, case
-    /// included, whichever path asks. Nil when it is usable or the tier has no model.
+    /// models only, still offered by the agent's cached list, and, when `consultingFolderListing`,
+    /// still among what its own CLI lists. That last check runs the CLI, so a caller still choosing
+    /// among agents leaves it off and asks it only of the agent it chose. Routing and delegation both
+    /// ask this, so a model is judged the same way, case included, whichever path asks. Nil when it
+    /// is usable or the tier has no model.
     func tierModelRefusal(
         agent: AgentKind,
         tier: ModelTier,
         settings: AgentModelSettings,
-        destRoot: String,
-        lists: () throws -> [AgentKind: AgentModelList]
+        sources: TierModelSources,
+        consultingFolderListing: Bool
     ) -> TierModelRefusal? {
         guard let model = settings.model(for: agent, tier: tier) else { return nil }
         let isFree: ((String) -> Bool)?
@@ -40,7 +84,7 @@ extension MCPServer {
         }
         if ModelListParser.listedAgents.contains(agent) {
             do {
-                if let offered = ModelListCache.liveModels(for: agent, lists: try lists()),
+                if let offered = ModelListCache.liveModels(for: agent, lists: try sources.modelLists()),
                    !offered.contains(where: { $0.id.caseInsensitiveCompare(model) == .orderedSame }) {
                     return TierModelRefusal(
                         message: "\(agent.rawValue)'s \(tier.rawValue) tier is set to \(model), which \(agent.rawValue) no longer offers",
@@ -50,9 +94,9 @@ extension MCPServer {
                 return TierModelRefusal(message: "could not read the live model lists — \(error)", remedy: nil)
             }
         }
-        guard agent == .opencode || agent == .kilo else { return nil }
+        guard consultingFolderListing, agent == .opencode || agent == .kilo else { return nil }
         do {
-            let offered = try (agent == .kilo ? kiloModels : openCodeModels)(destRoot)
+            let offered = try sources.folderModels(of: agent)
             guard offered.contains(where: { $0.caseInsensitiveCompare(model) == .orderedSame }) else {
                 return TierModelRefusal(
                     message: "\(model) (\(agent.rawValue) tier \(tier.rawValue)) is not among the models \(agent.displayName) lists — free models come and go",
