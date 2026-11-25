@@ -317,17 +317,78 @@ final class LiveDetailSamplerTests: XCTestCase {
         XCTAssertEqual(reader.reads, 2)
     }
 
-    /// A read that failed is tried again on the next pass, though its record has not changed.
-    func testAReadThatFailedIsDoneAgain() async throws {
+    /// A failed read costs what a good one does, and a record that has not changed fails the same
+    /// way: it is not done again on every pass, and the failure is said once.
+    func testAReadThatFailedIsNotDoneAgainWhileItsRecordIsUnchanged() async throws {
+        let logged = Lines()
         let reader = Counting(file: try record("one").path)
         reader.failNext()
-        let sampler = LiveDetailSampler(readers: [.codex: reader], log: { _ in })
+        let sampler = LiveDetailSampler(readers: [.codex: reader], log: { logged.append($0) })
 
+        for _ in 0..<3 { await sampler.refresh([session("S1", .codex)])?.value }
+
+        XCTAssertEqual(reader.reads, 1)
+        XCTAssertNil(sampler.detail(for: "S1"), "the failure still stands: no figure")
+        XCTAssertEqual(logged.all.count, 1)
+    }
+
+    func testAFailedReadIsDoneAgainWhenItsRecordChanges() async throws {
+        let url = try record("one")
+        let reader = Counting(file: url.path)
+        reader.failNext()
+        let sampler = LiveDetailSampler(readers: [.codex: reader], log: { _ in })
         await sampler.refresh([session("S1", .codex)])?.value
+
+        try "one, and more".write(to: url, atomically: false, encoding: .utf8)
         await sampler.refresh([session("S1", .codex)])?.value
 
         XCTAssertEqual(reader.reads, 2)
         XCTAssertEqual(sampler.detail(for: "S1")?.contextPercent, 2)
+    }
+
+    /// A record that stays as it is may have failed for a reason that has passed (a locked database
+    /// that is free now): it is tried again after a minute.
+    func testAFailedReadIsDoneAgainAfterAMinute() async throws {
+        let clock = Clock()
+        let reader = Counting(file: try record("one").path)
+        reader.failNext()
+        let sampler = LiveDetailSampler(readers: [.codex: reader], log: { _ in }, now: { clock.now })
+        await sampler.refresh([session("S1", .codex)])?.value
+
+        clock.advance(seconds: 59)
+        await sampler.refresh([session("S1", .codex)])?.value
+        XCTAssertEqual(reader.reads, 1, "59 seconds on, it stands")
+
+        clock.advance(seconds: 2)
+        await sampler.refresh([session("S1", .codex)])?.value
+        XCTAssertEqual(reader.reads, 2)
+        XCTAssertEqual(sampler.detail(for: "S1")?.contextPercent, 2)
+    }
+
+    /// Names one file, counts its reads, and reads one part of its record and not the other.
+    private final class CountingPartial: SessionLiveReader, @unchecked Sendable {
+        private let file: String
+        private let lock = NSLock()
+        private var count = 0
+        init(file: String) { self.file = file }
+        var reads: Int { lock.lock(); defer { lock.unlock() }; return count }
+        func sources(of target: LiveSessionTarget) throws -> [String] { [file] }
+        func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
+            lock.lock(); count += 1; lock.unlock()
+            throw PartialLiveRead(detail: SessionLiveDetail(contextPercent: 50), failures: [Failing.Broken()])
+        }
+    }
+
+    /// A part read is held as a failed one is: what it found stands, and it is not done again.
+    func testAPartReadIsNotDoneAgainWhileItsRecordIsUnchanged() async throws {
+        let reader = CountingPartial(file: try record("one").path)
+        let sampler = LiveDetailSampler(readers: [.cursor: reader], log: { _ in })
+
+        await sampler.refresh([session("S1", .cursor)])?.value
+        await sampler.refresh([session("S1", .cursor)])?.value
+
+        XCTAssertEqual(reader.reads, 1)
+        XCTAssertEqual(sampler.detail(for: "S1"), SessionLiveDetail(contextPercent: 50))
     }
 
     /// A reader that names no file, as one that found no record does, is read every pass.
