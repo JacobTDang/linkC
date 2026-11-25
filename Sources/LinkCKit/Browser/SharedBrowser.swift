@@ -265,7 +265,8 @@ public final class SharedBrowser {
     }
 
     /// Notes which sessions each tab may belong to (`Running.track`): the tab agent-browser has a
-    /// session pinned to now (`tab_new` moves the pin), a popup by the tab that opened it. Called on
+    /// session pinned to now (`tab_new` moves the pin), a popup by the tab that opened it. Once a
+    /// session has a page of its own, closes the blank page Chrome opened at launch, once. Called on
     /// the coordinator's sweep; a call while one runs returns at once.
     public func trackTabs() async {
         guard !tracking else { return }
@@ -287,9 +288,10 @@ public final class SharedBrowser {
             let open = Set(pages.map(\.id))
             let livePins = sessionPins.filter { open.contains($0.value) }
             var blankToClose: String?
+            // A blank page a session is pinned to now, or ever was, has an owner: `track` records
+            // every live pin as ownership, so that check covers both.
             if let blank = current.initialBlank,
                current.owners[blank] == nil,
-               !livePins.values.contains(blank),
                livePins.values.contains(where: { $0 != blank }) {
                 current.initialBlank = nil
                 blankToClose = blank

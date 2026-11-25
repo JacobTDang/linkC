@@ -630,7 +630,8 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertTrue(devTools.closed.isEmpty)
     }
 
-    /// The initial blank stays open while one session is pinned there and another has its own page.
+    /// The initial blank stays open while one session is pinned there and another has its own page:
+    /// being pinned there makes it that session's page.
     func testTheInitialBlankPagePinnedByASessionStaysOpen() async throws {
         let browser = makeBrowser()
         devTools.pages = ["boot"]
