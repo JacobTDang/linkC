@@ -138,6 +138,22 @@ final class KnownProjectsPublisherTests: XCTestCase {
         XCTAssertEqual(open.map(\.cacheEstimate), [nil, true, nil], "an exact expiry leaves the flag out")
     }
 
+    /// What a session's agent reports first-hand goes on its row: how full its context is.
+    func testEachSessionCarriesItsContextUse() throws {
+        let path = "/tmp/linkc-pub-context-\(UUID().uuidString)"
+        let sessions = [
+            Session(id: "S1", cwd: path, title: "full", state: .ready, agentKind: .claude),
+            Session(id: "S2", cwd: path, title: "unknown", state: .ready, agentKind: .agy),
+        ]
+
+        let projects = KnownProjectsPublisher.projects(
+            sidebar: [], mcpFolders: [], sessions: sessions,
+            live: { $0.id == "S1" ? SessionLiveDetail(contextPercent: 83) : SessionLiveDetail() })
+
+        let open = try XCTUnwrap(projects.first).sessions
+        XCTAssertEqual(open.map(\.contextPercent), [83, nil])
+    }
+
     func testEndedSessionIsLeftOut() {
         let path = "/tmp/linkc-pub-ended-\(UUID().uuidString)"
         let sessions = [

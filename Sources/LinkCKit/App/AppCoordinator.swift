@@ -770,7 +770,8 @@ public final class AppCoordinator {
                                                            CacheClock.expiry(
                                                                for: session,
                                                                reported: sessionStatuses.status(for: session.id)?.cacheExpiresAt)
-                                                       })
+                                                       },
+                                                       live: { self.liveDetail(for: $0) })
         // Also when the file is gone: a deleted `projects.json` would otherwise stay deleted until the
         // contents next changed, and every MCP server would report linkC as not running.
         if lastPublishedProjects == projects,

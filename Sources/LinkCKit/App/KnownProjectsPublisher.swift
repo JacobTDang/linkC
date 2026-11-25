@@ -1,5 +1,15 @@
 import Foundation
 
+/// What linkC reads first-hand about a live session from its agent's own reports and files, for its
+/// row in `projects.json`. Each field is nil where the agent reports nothing.
+public struct SessionLiveDetail: Equatable, Sendable {
+    public var contextPercent: Int?
+
+    public init(contextPercent: Int? = nil) {
+        self.contextPercent = contextPercent
+    }
+}
+
 /// Builds the known-projects list the app writes to `projects.json` (spec 2026-11-11 cross-project §4).
 public enum KnownProjectsPublisher {
     /// Sidebar projects ∪ MCP folders ∪ live sessions' folders, canonical.
@@ -12,10 +22,12 @@ public enum KnownProjectsPublisher {
     /// anything else → .busy. Each session also carries what its row shows; `action` reads the action
     /// line of a session working or waiting on a permission, and is never asked of another.
     /// `liveModel` is the model a session runs now where its agent reports one, else its launch model.
+    /// `live` is what its agent reports first-hand (`SessionLiveDetail`).
     public static func projects(
         sidebar: [String], mcpFolders: Set<String>, sessions: [Session], action: (Session) -> String? = { _ in nil },
         subagents: (Session) -> Int = { _ in 0 }, liveModel: (Session) -> String? = { _ in nil },
-        title: (Session) -> String? = { _ in nil }, cache: (Session) -> CacheExpiry? = { _ in nil }
+        title: (Session) -> String? = { _ in nil }, cache: (Session) -> CacheExpiry? = { _ in nil },
+        live: (Session) -> SessionLiveDetail = { _ in SessionLiveDetail() }
     ) -> [KnownProject] {
         let (paths, liveByPath) = resolve(sidebar: sidebar, mcpFolders: mcpFolders, sessions: sessions)
         return paths.sorted().map { path in
@@ -26,6 +38,7 @@ public enum KnownProjectsPublisher {
                         ? ShownActivity(activity: action(session), state: session.state) : nil
                     let running = subagents(session)
                     let cold = cache(session)
+                    let detail = live(session)
                     return KnownProject.OpenSession(
                         id: session.id,
                         agent: session.agentKind.rawValue,
@@ -38,7 +51,8 @@ public enum KnownProjectsPublisher {
                         action: shown?.text,
                         subagents: running > 0 ? running : nil,
                         cacheExpiresAt: cold?.at.formatted(.iso8601),
-                        cacheEstimate: cold?.isEstimate == true ? true : nil
+                        cacheEstimate: cold?.isEstimate == true ? true : nil,
+                        contextPercent: detail.contextPercent
                     )
                 }
             return KnownProject(path: path, sessions: open)

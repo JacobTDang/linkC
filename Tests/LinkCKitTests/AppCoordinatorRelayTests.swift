@@ -4851,6 +4851,22 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertNil(open.cacheEstimate)
     }
 
+    /// A Claude session's status line says how full its context window is; the sweep publishes it.
+    @MainActor
+    func testSweepPublishesTheContextUseTheStatusLineReports() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let session = coordinator.store.create(cwd: tempDir.path, title: "long", id: "L1", agentKind: .claude)
+        coordinator.store.updateState(id: session.id, to: .ready)
+        coordinator.sessionStatuses.accept(
+            sessionId: "L1", body: Data(#"{"context_window":{"context_window_size":200000,"used_percentage":72}}"#.utf8))
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.read().first?.sessions.first?.contextPercent, 72)
+    }
+
     @MainActor
     func testProjectsFileIsRewrittenOnlyWhenContentsChange() async throws {
         let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))

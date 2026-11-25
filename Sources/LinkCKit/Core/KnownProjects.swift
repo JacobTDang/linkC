@@ -34,10 +34,15 @@ public struct KnownProject: Codable, Equatable, Sendable {
         /// True when `cacheExpiresAt` is worked out from the provider's cache lifetime rather than
         /// reported by the agent; absent when reported.
         public let cacheEstimate: Bool?
+        /// How full the session's context is, 0–100, as its agent reports it: of the context window,
+        /// for every agent that reports one today. Absent when the agent reports nothing, and in a
+        /// file an older app wrote.
+        public let contextPercent: Int?
 
         public init(id: String, agent: String, activity: Activity, title: String? = nil, state: String? = nil,
                     since: String? = nil, model: String? = nil, worker: Bool? = nil, action: String? = nil,
-                    subagents: Int? = nil, cacheExpiresAt: String? = nil, cacheEstimate: Bool? = nil) {
+                    subagents: Int? = nil, cacheExpiresAt: String? = nil, cacheEstimate: Bool? = nil,
+                    contextPercent: Int? = nil) {
             self.id = id
             self.agent = agent
             self.activity = activity
@@ -50,6 +55,7 @@ public struct KnownProject: Codable, Equatable, Sendable {
             self.subagents = subagents
             self.cacheExpiresAt = cacheExpiresAt
             self.cacheEstimate = cacheEstimate
+            self.contextPercent = contextPercent
         }
 
         public var agentKind: AgentKind? { AgentKind(rawValue: agent) }
