@@ -275,6 +275,57 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertTrue(processes.signals.isEmpty)
     }
 
+    // MARK: - A Chrome still stopping
+
+    /// The last session out stops Chrome without waiting. A session opened right after finds that
+    /// Chrome still holding the profile's lock, as linkC's own child: the start waits for it to
+    /// exit, rather than calling it another program's and locking the project out for a minute.
+    func testANewSessionRightAfterTheLastEndedWaitsForTheStoppingChrome() async throws {
+        launcher.holdsLock = processes
+        launcher.ignoresStop = true
+        let browser = makeBrowser()
+        _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+        browser.release(sessionId: "S1")
+        await browser.settle()
+        XCTAssertEqual(launcher.processes[0].isRunning, true, "told to stop; nothing waited")
+        var sleeps = 0
+        clock.onSleep = { [launcher] in
+            sleeps += 1
+            if sleeps == 3 { launcher!.processes[0].exit(status: 0) }
+        }
+
+        let lease = await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project")
+
+        XCTAssertEqual(lease?.port, 43117)
+        XCTAssertEqual(launcher.launches.count, 2)
+        XCTAssertEqual(launcher.processes[0].killCount, 0, "it exited in time")
+        XCTAssertTrue(notices.isEmpty, notices.joined(separator: "\n"))
+    }
+
+    /// One that has not exited five seconds later is killed, and the start goes on.
+    func testAStoppingChromeThatDoesNotExitIsKilledAfterFiveSeconds() async throws {
+        launcher.holdsLock = processes
+        launcher.ignoresStop = true
+        var events: [String] = []
+        var killedAt: Date?
+        launcher.events = { [clock] in
+            events.append($0)
+            if $0.hasPrefix("kill") { killedAt = clock!.time }
+        }
+        let browser = makeBrowser()
+        _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+        browser.release(sessionId: "S1")
+        await browser.settle()
+        let stoppedAt = clock.time
+
+        let lease = await browser.lease(sessionId: "S2", agent: .claude, cwd: "/tmp/project")
+
+        XCTAssertEqual(lease?.port, 43117)
+        XCTAssertEqual(events, ["launch", "stop 1001", "kill 1001", "launch"])
+        XCTAssertEqual(try XCTUnwrap(killedAt).timeIntervalSince(stoppedAt), SharedBrowser.stopTimeout, accuracy: 0.1)
+        XCTAssertTrue(notices.isEmpty, notices.joined(separator: "\n"))
+    }
+
     // MARK: - Chrome dying
 
     func testAChromeThatExitsIsDroppedAndTheNextSessionStartsANewOne() async throws {

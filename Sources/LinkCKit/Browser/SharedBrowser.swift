@@ -28,6 +28,8 @@ public final class SharedBrowser {
     nonisolated static let portTimeout: TimeInterval = 5
     /// How long after a failed start a project's next session tries again.
     static let retryDelay: TimeInterval = 60
+    /// How long a start waits for the project's own Chrome that was told to stop, before killing it.
+    nonisolated static let stopTimeout: TimeInterval = 5
 
     private struct Running: Sendable {
         let id: UUID
@@ -68,6 +70,9 @@ public final class SharedBrowser {
     private let report: (String) -> Void
 
     private var instances: [String: Instance] = [:]
+    /// Chromes told to stop that had not exited then, per project. One still running holds the
+    /// profile's lock, so the project's next start waits for it.
+    private var stopping: [String: [UUID: any SharedBrowserProcess]] = [:]
     private var members: [String: Member] = [:]
     private var repositories: [String: String] = [:]
     private var failedStarts: [String: Date] = [:]
@@ -167,7 +172,7 @@ public final class SharedBrowser {
         if case .running(let running)? = instances[project], running.id == instanceID {
             if holders(of: project, instance: instanceID).isEmpty {
                 instances.removeValue(forKey: project)
-                running.process.stop()
+                stop(running, project: project)
             } else {
                 port = running.port
             }
@@ -245,7 +250,38 @@ public final class SharedBrowser {
     private func stopIfUnused(_ project: String) {
         guard case .running(let running)? = instances[project], holders(of: project, instance: running.id).isEmpty else { return }
         instances.removeValue(forKey: project)
-        running.process.stop()
+        stop(running, project: project)
+    }
+
+    private func stop(_ running: Running, project: String) {
+        stop(running.process, id: running.id, project: project)
+    }
+
+    /// Asks a Chrome to quit without waiting; until it exits, the project's next start waits for it.
+    private func stop(_ process: any SharedBrowserProcess, id: UUID, project: String) {
+        process.stop()
+        if process.isRunning { stopping[project, default: [:]][id] = process }
+    }
+
+    /// Waits for `project`'s own Chromes that were told to stop and have not exited: a new Chrome on
+    /// their profile would abort, and their lock names linkC as the parent, which reads as another
+    /// program's. One still running after `stopTimeout` is killed.
+    private func awaitStopping(in project: String) async throws {
+        func stillRunning() -> [any SharedBrowserProcess] {
+            stopping[project] = stopping[project]?.filter { $0.value.isRunning }
+            if stopping[project]?.isEmpty == true { stopping.removeValue(forKey: project) }
+            return stopping[project].map { Array($0.values) } ?? []
+        }
+        guard !stillRunning().isEmpty else { return }
+        let deadline = now().addingTimeInterval(Self.stopTimeout)
+        while !stillRunning().isEmpty, now() < deadline { try await sleep(0.05) }
+        let stuck = stillRunning()
+        guard !stuck.isEmpty else { return }
+        NSLog("[linkC browser] %@: the Chrome linkC stopped had not exited after %.0f s; killing it", project, Self.stopTimeout)
+        for process in stuck { process.kill() }
+        let killDeadline = now().addingTimeInterval(1)
+        while !stillRunning().isEmpty, now() < killDeadline { try await sleep(0.05) }
+        guard stillRunning().isEmpty else { throw StartFailure.ownWouldNotStop }
     }
 
     private func holders(of project: String, instance: UUID) -> [String] {
@@ -358,7 +394,7 @@ public final class SharedBrowser {
         do {
             var running = try await launchChrome(for: project)
             guard case .starting? = instances[project] else {
-                running.process.stop()
+                stop(running, project: project)
                 return nil
             }
             do {
@@ -385,6 +421,7 @@ public final class SharedBrowser {
         case chromeMissing(String)
         case inUse(pid: Int32)
         case leftoverWouldNotStop(pid: Int32)
+        case ownWouldNotStop
         case exited(log: String)
         case noPort
         case other(String)
@@ -394,6 +431,7 @@ public final class SharedBrowser {
             case .chromeMissing: return "chrome-missing"
             case .inUse: return "in-use"
             case .leftoverWouldNotStop: return "leftover"
+            case .ownWouldNotStop: return "own-stuck"
             case .exited: return "exited"
             case .noPort: return "no-port"
             case .other: return "other"
@@ -408,6 +446,8 @@ public final class SharedBrowser {
                 return "The shared browser profile for \(project) is held by another program's Chrome (pid \(pid))."
             case .leftoverWouldNotStop(let pid):
                 return "A Chrome a previous linkC left running for \(project) (pid \(pid)) did not stop."
+            case .ownWouldNotStop:
+                return "The shared browser linkC stopped for \(project) did not exit, even when killed."
             case .exited(let log):
                 return "Google Chrome exited before it published its DevTools port for \(project)\(log.isEmpty ? "." : ": \(log)")"
             case .noPort:
@@ -428,6 +468,7 @@ public final class SharedBrowser {
         } catch {
             throw StartFailure.other("could not create \(profile.path): \(error.localizedDescription)")
         }
+        try await awaitStopping(in: project)
         try await stopLeftover(in: profile)
         if FileManager.default.fileExists(atPath: portFile.path) {
             do {
@@ -452,7 +493,7 @@ public final class SharedBrowser {
             let port = try await waitForPort(in: portFile, of: process, log: log)
             return Running(id: id, process: process, port: port, known: [])
         } catch {
-            process.stop()
+            stop(process, id: id, project: project)
             throw error
         }
     }
@@ -500,6 +541,8 @@ public final class SharedBrowser {
     }
 
     private func chromeExited(project: String, id: UUID, status: Int32?) {
+        stopping[project]?.removeValue(forKey: id)
+        if stopping[project]?.isEmpty == true { stopping.removeValue(forKey: project) }
         guard case .running(let running)? = instances[project], running.id == id else { return }
         instances.removeValue(forKey: project)
         let how = status.map { " (exit status \($0))" } ?? ""
