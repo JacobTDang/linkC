@@ -208,4 +208,45 @@ final class RouterTests: XCTestCase {
         XCTAssertEqual(d.agent, .opencode)
         XCTAssertNil(d.effort)
     }
+
+    /// The agents a task at a tier could go to: installed, routable, with a model for the tier, not
+    /// limited and not refused. Shell, Freebuff and Cursor never are.
+    func testEligibleAgentsAreTheOnesTheRouterCouldPick() {
+        let eligible = Router.eligible(
+            tier: .standard,
+            installed: [.claude, .codex, .cursor, .agy, .freebuff, .opencode, .shell],
+            settings: settings,
+            limits: [RouterLimit(agent: .claude, pool: nil)],
+            refusals: [.agy: "agy refused"])
+        XCTAssertEqual(eligible, [.codex, .opencode])
+    }
+
+    /// A decision says what the task is and why agents were passed over, apart from the headline,
+    /// so a caller can show them without the agent, tier and effort it shows already.
+    func testADecisionCarriesItsSummaryAndNotes() throws {
+        let d = try route(
+            "Implement a feature",
+            installed: [.claude, .codex],
+            limited: [RouterLimit(agent: .claude, pool: nil)])
+        XCTAssertEqual(d.summary, "implementation")
+        XCTAssertEqual(d.notes, ["claude skipped (limited)"])
+
+        let research = try route("Browse the docs for this API", installed: [.agy, .claude], refusals: [.agy: "agy refused"])
+        XCTAssertEqual(research.summary, "web research (no browse-capable agent free)")
+        XCTAssertEqual(research.notes, ["agy skipped (agy refused)"])
+    }
+
+    /// The refusal names the tier and why each agent was skipped. Its message leaves out the MCP
+    /// tool's `to` remedy, which only that tool's caller can follow.
+    func testARefusalKeepsItsMessageApartFromTheToolsRemedy() {
+        XCTAssertThrowsError(try route(
+            "Implement a feature",
+            installed: [.claude],
+            limited: [RouterLimit(agent: .claude, pool: nil)]
+        )) { error in
+            let refusal = error as? RouterRefusal
+            XCTAssertEqual(refusal?.message, "no installed agent is free to take this task at standard — claude skipped (limited)")
+            XCTAssertEqual(refusal?.tier, .standard)
+        }
+    }
 }
