@@ -159,14 +159,14 @@ extension MCPRegistrar {
     /// and would make a second server of it.
     static func codexAgentBrowserServer(in text: String, file: String) throws -> AgentBrowserServer? {
         for table in codexTables(in: text) {
-            guard table.path.count == 2, table.path[0].key == "mcp_servers" else { continue }
+            guard table.path.count == 2, table.path[0] == "mcp_servers" else { continue }
             let body = table.body.joined(separator: "\n")
             guard codexValue("enabled", in: body) != "false" else { continue }
             let command = codexValue("command", in: body).map(codexStrings) ?? []
             let args = codexValue("args", in: body).map(codexStrings) ?? []
             let commandLine = command + args
             guard commandLine.contains(where: AgentBrowserServer.namesAgentBrowser) else { continue }
-            let name = table.path[1].key
+            let name = table.path[1]
             guard isBareKey(name) else {
                 throw LinkCError.process(
                     "Codex's agent-browser server in \(file) is named \"\(name)\", which needs quotes; linkC can pass the browser only to a server named with letters, digits, - and _. Rename it, for example to [mcp_servers.agent-browser]")
@@ -176,8 +176,7 @@ extension MCPRegistrar {
         return nil
     }
 
-    private struct TomlKey { let key: String; let quoted: Bool }
-    private struct TomlTable { let path: [TomlKey]; var body: [String] }
+    private struct TomlTable { let path: [String]; var body: [String] }
 
     /// Each `[table]` header in `text`, with the comment-free lines that follow it. Array-of-table
     /// headers (`[[…]]`) end a table but are not one.
@@ -217,20 +216,20 @@ extension MCPRegistrar {
     }
 
     /// The dotted key of a table header, each part bare or quoted; nil when it is not one.
-    private static func tomlKeyPath(_ header: String) -> [TomlKey]? {
-        var keys: [TomlKey] = []
+    private static func tomlKeyPath(_ header: String) -> [String]? {
+        var keys: [String] = []
         var rest = header.trimmingCharacters(in: .whitespaces)[...]
         while !rest.isEmpty {
             if let quote = rest.first, quote == "\"" || quote == "'" {
                 rest.removeFirst()
                 guard let close = rest.firstIndex(of: quote) else { return nil }
-                keys.append(TomlKey(key: String(rest[..<close]), quoted: true))
+                keys.append(String(rest[..<close]))
                 rest = rest[rest.index(after: close)...]
             } else {
                 let end = rest.firstIndex(of: ".") ?? rest.endIndex
                 let key = rest[..<end].trimmingCharacters(in: .whitespaces)
                 guard isBareKey(key) else { return nil }
-                keys.append(TomlKey(key: key, quoted: false))
+                keys.append(key)
                 rest = rest[end...]
             }
             rest = rest.drop(while: { $0 == " " || $0 == "\t" })

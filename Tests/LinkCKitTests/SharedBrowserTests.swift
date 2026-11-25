@@ -694,6 +694,32 @@ final class SharedBrowserTests: XCTestCase {
         XCTAssertTrue(notices.first?.contains("agent-browser") == true, notices.first ?? "no notice")
     }
 
+    /// An agent-browser missing from the PATH and one that fails to close are two problems, and the
+    /// first does not hide the second.
+    func testAMissingAgentBrowserAndAFailedCloseAreEachShown() async throws {
+        runner.result = ProcessResult(status: 1, stdout: #"{"success":false,"error":"daemon socket refused"}"#, stderr: "")
+        let browser = SharedBrowser(
+            applicationSupport: support, agentBrowserHome: agentBrowserHome, chromePath: "/Applications/Google Chrome",
+            launcher: launcher, devTools: devTools, processes: processes, runner: runner, executableSearchPath: [],
+            discover: { agent, _ in
+                AgentBrowserServer(name: "browser", commandLine: [agent == .claude ? "agent-browser" : "/bin/agent-browser", "mcp"])
+            },
+            resolveRepository: { $0 }, now: { Date() }, sleep: { _ in }, nonce: { "n" },
+            report: { [weak self] in self?.notices.append($0) })
+        _ = await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project")
+        _ = await browser.lease(sessionId: "S2", agent: .codex, cwd: "/tmp/project")
+        _ = await browser.lease(sessionId: "S3", agent: .codex, cwd: "/tmp/project")
+
+        for session in ["S1", "S2"] {
+            browser.release(sessionId: session)
+            await browser.settle()
+        }
+
+        XCTAssertEqual(notices.count, 2, notices.joined(separator: "\n"))
+        XCTAssertTrue(notices.first?.contains("was not found on the PATH") == true, notices.first ?? "none")
+        XCTAssertTrue(notices.last?.contains("daemon socket refused") == true, notices.last ?? "none")
+    }
+
     func testQuittingStopsEveryChromeAndEverySessionsDaemon() async throws {
         let browser = makeBrowser()
         let lease = try await XCTUnwrapAsync(await browser.lease(sessionId: "S1", agent: .claude, cwd: "/tmp/project"))

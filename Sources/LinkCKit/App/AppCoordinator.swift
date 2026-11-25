@@ -62,7 +62,7 @@ public final class AppCoordinator {
     /// server registration. nil writes none of them. Only the production initializer passes the real
     /// home — the test suite used to add each of its temp folders to the developer's own config, over
     /// ten thousand entries, and rewrite every agent's MCP config on each run.
-    let userHome: URL?
+    private let userHome: URL?
     private let sharedBrowser: SharedBrowser?
     private let sharedBrowserEnabled: @MainActor @Sendable () -> Bool
     /// Sessions waiting for their shared browser before their terminal starts.

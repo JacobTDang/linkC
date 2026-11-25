@@ -423,7 +423,7 @@ public final class SharedBrowser {
             .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
             executable = found
         } else {
-            reportOnce("daemon", "linkC could not stop agent-browser's session \(member.sessionName): \(program) was not found on the PATH (\(executableSearchPath.joined(separator: ":")))")
+            reportOnce("daemon-missing", "linkC could not stop agent-browser's session \(member.sessionName): \(program) was not found on the PATH (\(executableSearchPath.joined(separator: ":")))")
             return nil
         }
         return [executable] + member.cli.dropFirst() + ["--session", member.sessionName, "close", "--json"]
@@ -439,11 +439,11 @@ public final class SharedBrowser {
                 let said = [result.stdout, result.stderr]
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
                     .joined(separator: " ")
-                reportOnce("daemon", "agent-browser could not stop session \(member.sessionName) (status \(result.status)): \(said.isEmpty ? "it said nothing" : String(said.prefix(600)))")
+                reportOnce("daemon-close", "agent-browser could not stop session \(member.sessionName) (status \(result.status)): \(said.isEmpty ? "it said nothing" : String(said.prefix(600)))")
                 return
             }
         } catch {
-            reportOnce("daemon", "agent-browser could not stop session \(member.sessionName) — \(error.localizedDescription)")
+            reportOnce("daemon-close", "agent-browser could not stop session \(member.sessionName) — \(error.localizedDescription)")
         }
     }
 
