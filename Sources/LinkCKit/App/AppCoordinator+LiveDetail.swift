@@ -7,6 +7,10 @@ extension AppCoordinator {
         [
             .codex: CodexRolloutReader(),
             .opencode: OpenCodeLiveReader(home: home),
+            // Grok is Cursor's CLI with a folder of its own: the same chat store and transcripts.
+            .cursor: CursorSessionReader(),
+            .grok: CursorSessionReader(),
+            .agy: AgySessionReader(),
         ]
     }
 

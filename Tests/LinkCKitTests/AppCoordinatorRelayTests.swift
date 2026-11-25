@@ -4961,6 +4961,14 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(open.step, "$ make")
     }
 
+    /// Every agent whose own records linkC can read has its reader; the rest have none, and publish
+    /// nothing first-hand.
+    @MainActor
+    func testTheAppReadsTheRecordsOfEveryAgentThatKeepsThem() {
+        let readers = AppCoordinator.liveReaders(home: tempDir)
+        XCTAssertEqual(Set(readers.keys), [.codex, .opencode, .cursor, .grok, .agy])
+    }
+
     /// The agent's own conversation id linkC passed it (OpenCode's) reaches its reader.
     @MainActor
     func testTheReaderIsHandedTheConversationIdLinkCPassedTheAgent() async throws {
