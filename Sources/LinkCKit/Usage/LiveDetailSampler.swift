@@ -31,20 +31,32 @@ public final class LiveDetailSampler: @unchecked Sendable {
     /// Whether the caller runs on a sampler's read queue.
     static var isOnReadQueue: Bool { DispatchQueue.getSpecific(key: readQueueKey) != nil }
 
+    /// How long a listing of a process tree's open files stands: a record a session's process opens
+    /// later, a new chat or rollout, is found within this.
+    static let openFilesAge: TimeInterval = 10
+    /// The same failure is said again only once this has passed, even when reads work in between:
+    /// one that comes and goes would otherwise be said on every return.
+    static let repeatAfter: TimeInterval = 10 * 60
+
     private let readers: [AgentKind: any SessionLiveReader]
     private let queue: DispatchQueue
     private let log: @Sendable (String) -> Void
+    private let now: @Sendable () -> Date
+    private let listOpenFiles: @Sendable (pid_t) -> [String]
+
+    // Under `lock`.
     private let lock = NSLock()
     private var details: [String: SessionLiveDetail] = [:]
-    /// Each session's last failure said, and when. The same failure is said again only once
-    /// `repeatAfter` has passed, even when reads work in between: one that comes and goes would
-    /// otherwise be said on every return.
+    /// Each session's last failure said, and when.
     private var lastFailure: [String: (said: String, at: Date)] = [:]
-    static let repeatAfter: TimeInterval = 10 * 60
     private var inFlight: Task<Void, Never>?
+
+    // On the queue alone.
     /// Each session's last good read, with what it read: while its target is the same and the
-    /// stamps of its reader's files have not moved, it stands. Used on the queue alone.
+    /// stamps of its reader's files have not moved, it stands.
     private var lastRead: [String: LastRead] = [:]
+    /// Each session's process tree's open files, and when they were listed.
+    private var openFilesSeen: [String: (pid: pid_t, at: Date, files: [String])] = [:]
 
     private struct LastRead {
         let target: LiveSessionTarget
@@ -52,14 +64,6 @@ public final class LiveDetailSampler: @unchecked Sendable {
         let stamps: [FileStamp?]
         let detail: SessionLiveDetail
     }
-
-    private let now: @Sendable () -> Date
-    private let listOpenFiles: @Sendable (pid_t) -> [String]
-    /// Each session's process tree's open files, and when they were listed. Used on the queue alone.
-    private var openFilesSeen: [String: (pid: pid_t, at: Date, files: [String])] = [:]
-    /// How long a listing of a process tree's open files stands: a record a session's process opens
-    /// later, a new chat or rollout, is found within this.
-    static let openFilesAge: TimeInterval = 10
 
     /// `openFiles` lists the files a process tree holds open; `now` is the clock.
     public init(readers: [AgentKind: any SessionLiveReader],
@@ -75,7 +79,7 @@ public final class LiveDetailSampler: @unchecked Sendable {
     }
 
     /// The last read's detail for the session; nil before one landed, for an agent with no reader,
-    /// and after a read that failed.
+    /// and after a read that failed outright. After a partial read, what it did read.
     public func detail(for sessionId: String) -> SessionLiveDetail? {
         lock.lock()
         defer { lock.unlock() }
