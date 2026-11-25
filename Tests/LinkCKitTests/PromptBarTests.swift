@@ -296,6 +296,22 @@ final class PromptBarTests: XCTestCase {
         XCTAssertEqual(pick(bar)?.reason.hasSuffix("; Codex can't take this: no light model"), true, "\(String(describing: pick(bar)?.reason))")
     }
 
+    /// Shift-Tab moves the other way: from the router's own pick to the last agent that could take the task.
+    func testShiftTabCyclesBackward() async {
+        let clock = ManualClock()
+        let bar = makeBar(installed: [.claude, .codex, .opencode], clock: clock)
+        bar.text = Self.implement
+        await settle(bar, clock)
+        var seen = [pick(bar)?.agent]
+        for _ in 0..<3 {
+            await bar.cycleAgent(backward: true)?.value
+            seen.append(pick(bar)?.agent)
+        }
+
+        XCTAssertEqual(seen, [.claude, .opencode, .codex, .claude])
+        XCTAssertNil(bar.override, "back round to the router's own pick")
+    }
+
     /// Esc empties the bar: the text, the agent picked by hand, and the line.
     func testEscClearsTheTextTheOverrideAndTheLine() async {
         let clock = ManualClock()

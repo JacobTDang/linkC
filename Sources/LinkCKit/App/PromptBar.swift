@@ -144,12 +144,13 @@ public final class PromptBar {
     }
 
     /// Tab: the pick moves to the next agent that could take the task, and from the last back to the
-    /// router's own.
+    /// router's own. Shift-Tab (`backward`) moves the other way.
     @discardableResult
-    public func cycleAgent() -> Task<Void, Never>? {
+    public func cycleAgent(backward: Bool = false) -> Task<Void, Never>? {
         guard !isOpening, !eligible.isEmpty else { return nil }
-        let current = override ?? routerChoice
-        let next = eligible[((current.flatMap(eligible.firstIndex(of:)) ?? -1) + 1) % eligible.count]
+        let count = eligible.count
+        let current = (override ?? routerChoice).flatMap(eligible.firstIndex(of:)) ?? (backward ? 0 : -1)
+        let next = eligible[(current + (backward ? count - 1 : 1)) % count]
         override = next == routerChoice ? nil : next
         return startPreview(after: nil)
     }

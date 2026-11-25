@@ -2,8 +2,8 @@ import SwiftUI
 import LinkCKit
 
 /// The prompt bar under a project's tab strip: type a task, see which agent, model and effort the router
-/// picks for it, and Enter opens that session here. Tab picks the next agent that could take it; Esc
-/// clears. ⌘K puts the cursor in the field.
+/// picks for it, and Enter opens that session here. Tab picks the next agent that could take it and
+/// Shift-Tab the previous one; Esc clears. ⌘K puts the cursor in the field.
 struct PromptBarView: View {
     @Bindable var bar: PromptBar
     /// The project on screen, which the session opens in: the pick is read again when it changes.
@@ -14,7 +14,7 @@ struct PromptBarView: View {
     var body: some View {
         PromptBarField(
             text: $bar.text, line: bar.line, isOpening: bar.isOpening, focusRequest: focusRequest,
-            onSubmit: { bar.submit() }, onTab: { bar.cycleAgent() != nil }, onEscape: { bar.clear() })
+            onSubmit: { bar.submit() }, onTab: { bar.cycleAgent(backward: $0) != nil }, onEscape: { bar.clear() })
             .onChange(of: project) { _, _ in bar.projectChanged() }
     }
 }
@@ -26,8 +26,9 @@ struct PromptBarField: View {
     let isOpening: Bool
     let focusRequest: Int
     let onSubmit: () -> Void
-    /// Moves the pick to the next agent; false when there is none to move to, and Tab moves focus as usual.
-    let onTab: () -> Bool
+    /// Moves the pick to the next agent, or the previous one for Shift-Tab; false when there is none
+    /// to move to, and the key moves focus as usual.
+    let onTab: (_ backward: Bool) -> Bool
     let onEscape: () -> Void
 
     @FocusState private var focused: Bool
@@ -46,7 +47,10 @@ struct PromptBarField: View {
                     .focused($focused)
                     .disabled(isOpening)
                     .onSubmit(onSubmit)
-                    .onKeyPress(.tab) { onTab() ? .handled : .ignored }
+                    // Both reach the field before its editor moves focus. Shift-Tab arrives as backtab
+                    // (U+0019), which `.tab` does not match.
+                    .onKeyPress(.tab) { onTab(false) ? .handled : .ignored }
+                    .onKeyPress(KeyEquivalent("\u{19}")) { onTab(true) ? .handled : .ignored }
                     // The first Esc clears the bar; one on an empty bar leaves it.
                     .onKeyPress(.escape) {
                         let wasEmpty = text.isEmpty
