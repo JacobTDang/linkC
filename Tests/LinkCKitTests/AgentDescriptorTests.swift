@@ -79,6 +79,34 @@ final class AgentDescriptorTests: XCTestCase {
         XCTAssertEqual(AgentDescriptor.arguments(for: .agy, mode: .new, sessionId: "S-1"), ["--dangerously-skip-permissions"])
     }
 
+    func testCodexPassesSharedBrowserEnvironmentToItsConfiguredServer() {
+        let browser = SharedBrowser.sessionEnvironment(port: 43117, sessionId: "S-1")
+        let args = AgentDescriptor.arguments(
+            for: .codex, mode: .new, sessionId: "S-1", browserServerName: "agent-browser",
+            browserEnvironment: browser)
+        for (key, value) in browser {
+            XCTAssertTrue(args.contains("mcp_servers.agent-browser.env.\(key)=\"\(value)\""), "\(key)")
+        }
+    }
+
+    func testNonCodexAgentsUseTerminalEnvironmentAndSettingsOffUsesNone() {
+        let browser = SharedBrowser.sessionEnvironment(port: 43117, sessionId: "S-1")
+        for kind in [AgentKind.claude, .agy, .cursor, .grok, .freebuff, .crush] {
+            XCTAssertEqual(AgentDescriptor.browserTerminalEnvironment(for: kind, browserEnvironment: browser), browser, "\(kind)")
+        }
+        for kind in [AgentKind.codex, .opencode, .kilo, .shell] {
+            XCTAssertEqual(AgentDescriptor.browserTerminalEnvironment(for: kind, browserEnvironment: browser), [:], "\(kind)")
+        }
+        for kind in AgentKind.allCases where kind != .codex {
+            XCTAssertEqual(AgentDescriptor.arguments(
+                for: kind, mode: .new, sessionId: "S-1", browserServerName: "agent-browser",
+                browserEnvironment: browser), AgentDescriptor.arguments(for: kind, mode: .new, sessionId: "S-1"), "\(kind)")
+        }
+        XCTAssertEqual(AgentDescriptor.arguments(
+            for: .codex, mode: .new, sessionId: "S-1", browserServerName: nil,
+            browserEnvironment: [:]), codexFlags + ["-c", "mcp_servers.linkc-multiplier.env.LINKC_SESSION=\"S-1\""])
+    }
+
     /// Codex opens on an "update available" prompt when a newer release is out. linkC types a
     /// worker's task into the terminal once it is ready, and the Enter that ends it chose "Update
     /// now": Codex updated itself and exited before the task began (0.163.0, 2026-10-19). Every

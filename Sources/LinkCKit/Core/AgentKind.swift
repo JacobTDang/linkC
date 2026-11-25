@@ -252,11 +252,23 @@ public struct AgentDescriptor: Sendable {
     /// also names the session to linkC's tool server: Codex serves every terminal's MCP servers
     /// from one shared daemon, so the server can't find its session by walking up the process
     /// tree. The override goes before `resume`, like every other flag.
-    public static func arguments(for kind: AgentKind, mode: LaunchMode, sessionId: String? = nil) -> [String] {
+    public static func arguments(
+        for kind: AgentKind,
+        mode: LaunchMode,
+        sessionId: String? = nil,
+        browserServerName: String? = nil,
+        browserEnvironment: [String: String] = [:]
+    ) -> [String] {
         let desc = descriptor(for: kind)
         var args = desc.yoloFlags
         if kind == .codex, let sessionId {
             args += ["-c", "mcp_servers.\(MCPRegistrar.serverName).env.LINKC_SESSION=\"\(sessionId)\""]
+        }
+        if kind == .codex, let browserServerName {
+            for key in browserEnvironment.keys.sorted() {
+                guard let value = browserEnvironment[key] else { continue }
+                args += ["-c", "mcp_servers.\(browserServerName).env.\(key)=\"\(value)\""]
+            }
         }
         switch mode {
         case .new:
@@ -319,6 +331,17 @@ public struct AgentDescriptor: Sendable {
             return [kiloAutoUpdateKey: "1"]
         default:
             return [:]
+        }
+    }
+
+    /// Browser variables inherited by MCP servers launched from the terminal. Codex receives
+    /// overrides in argv; OpenCode and Kilo receive them in their inline server entry.
+    public static func browserTerminalEnvironment(
+        for kind: AgentKind, browserEnvironment: [String: String]
+    ) -> [String: String] {
+        switch kind {
+        case .codex, .opencode, .kilo, .shell: return [:]
+        default: return browserEnvironment
         }
     }
 

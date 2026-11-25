@@ -7,6 +7,55 @@ public struct MCPRegistrar: Sendable {
     /// The name linkC's tool server is registered under in every agent's config.
     public static let serverName = "linkc-multiplier"
 
+    /// Finds the user's name for the agent-browser server instead of assuming a registration key.
+    static func agentBrowserServerName(for agent: AgentKind, home: URL) -> String? {
+        switch agent {
+        case .codex:
+            let file = home.appendingPathComponent(".codex/config.toml")
+            guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+            let pattern = #"(?ms)^\[mcp_servers\.([^\]]+)\]\s*(.*?)(?=^\[|\z)"#
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+            let ns = text as NSString
+            for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+                let body = ns.substring(with: match.range(at: 2))
+                if body.contains("agent-browser") { return ns.substring(with: match.range(at: 1)) }
+            }
+            return nil
+        case .opencode, .kilo:
+            let file = agent == .opencode ? openCodeConfigFile(home: home) : kiloConfigFile(home: home)
+            guard let root = try? readJSONObject(at: file), let mcp = root["mcp"] as? [String: Any] else { return nil }
+            return mcp.keys.sorted().first { name in
+                guard let entry = mcp[name] as? [String: Any] else { return false }
+                if let command = entry["command"] as? [String] { return command.contains { $0.contains("agent-browser") } }
+                if let command = entry["command"] as? String { return command.contains("agent-browser") }
+                return false
+            }
+        default:
+            return nil
+        }
+    }
+
+    /// Seeds inline OpenCode-style config with the user's whole browser server entry, so adding
+    /// an environment map never turns a partial inline object into a replacement entry.
+    static func inheritedConfigIncludingBrowser(
+        inherited: String?, agent: AgentKind, home: URL, serverName: String
+    ) throws -> String? {
+        let file = agent == .opencode ? openCodeConfigFile(home: home) : kiloConfigFile(home: home)
+        guard let disk = try? readJSONObject(at: file),
+              let diskMCP = disk["mcp"] as? [String: Any], let browser = diskMCP[serverName] else { return inherited }
+        var root: [String: Any] = [:]
+        if let inherited, !inherited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let parsed = try JSONSerialization.jsonObject(with: Data(inherited.utf8)) as? [String: Any] else {
+                throw LinkCError.process("inline config is not a JSON object")
+            }
+            root = parsed
+        }
+        var mcp = try mcpTable(in: root, of: "inline config")
+        mcp[serverName] = browser
+        root["mcp"] = mcp
+        return String(decoding: try JSONSerialization.data(withJSONObject: root), as: UTF8.self)
+    }
+
     /// The JSON object in `configFile`; an empty one when the file is missing or holds only
     /// whitespace. Anything else that is not a JSON object — comments, a trailing comma, a
     /// half-written file — throws, so no caller ever replaces a file it could not read.
@@ -231,13 +280,18 @@ public struct MCPRegistrar: Sendable {
     /// given, `model` as the session's model, on top level and on every agent that runs on it (a
     /// user-global `agent.build.model` would otherwise beat the top-level one). One line.
     /// Throws when `inherited` is not a JSON object.
-    public static func openCodeConfigContent(inherited: String?, binaryPath: String, model: String?) throws -> String {
+    public static func openCodeConfigContent(
+        inherited: String?, binaryPath: String, model: String?, browserServerName: String? = nil,
+        browserEnvironment: [String: String] = [:]
+    ) throws -> String {
         try inlineOpenCodeStyleConfigContent(
             inherited: inherited,
             source: "\(AgentDescriptor.openCodeConfigContentKey) in linkC's environment",
             entry: openCodeEntry(binaryPath: binaryPath),
             model: model,
-            agents: AgentDescriptor.openCodeAgents)
+            agents: AgentDescriptor.openCodeAgents,
+            browserServerName: browserServerName,
+            browserEnvironment: browserEnvironment)
     }
 
     /// `KILO_CONFIG_CONTENT` for a terminal linkC starts Kilo in — same shape as OpenCode's inline
@@ -245,14 +299,19 @@ public struct MCPRegistrar: Sendable {
     /// Kilo takes an agent's own `model` ahead of the pick it persisted and the top-level `model`, so
     /// `model` is on every agent as well as on top level, and `smallModel` replaces Kilo's own small
     /// model, which is not free. Both must be free ids: the caller checks.
-    public static func kiloConfigContent(inherited: String?, binaryPath: String, model: String, smallModel: String) throws -> String {
+    public static func kiloConfigContent(
+        inherited: String?, binaryPath: String, model: String, smallModel: String,
+        browserServerName: String? = nil, browserEnvironment: [String: String] = [:]
+    ) throws -> String {
         try inlineOpenCodeStyleConfigContent(
             inherited: inherited,
             source: "\(AgentDescriptor.kiloConfigContentKey) in linkC's environment",
             entry: kiloEntry(binaryPath: binaryPath),
             model: model,
             smallModel: smallModel,
-            agents: AgentDescriptor.kiloAgents)
+            agents: AgentDescriptor.kiloAgents,
+            browserServerName: browserServerName,
+            browserEnvironment: browserEnvironment)
     }
 
     /// Shared JSON builder for OpenCode-style inline config: `mcp`, and the model pinned when given — on
@@ -263,7 +322,9 @@ public struct MCPRegistrar: Sendable {
         entry: [String: Any],
         model: String?,
         smallModel: String? = nil,
-        agents: [String]
+        agents: [String],
+        browserServerName: String? = nil,
+        browserEnvironment: [String: String] = [:]
     ) throws -> String {
         var root: [String: Any] = [:]
         if let inherited, !inherited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -280,6 +341,12 @@ public struct MCPRegistrar: Sendable {
         }
         var mcp = try mcpTable(in: root, of: source)
         mcp[serverName] = entry
+        if let browserServerName, var browser = mcp[browserServerName] as? [String: Any] {
+            var environment = browser["environment"] as? [String: String] ?? [:]
+            environment.merge(browserEnvironment) { _, linkC in linkC }
+            browser["environment"] = environment
+            mcp[browserServerName] = browser
+        }
         root["mcp"] = mcp
         if let model {
             root["model"] = model

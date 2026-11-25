@@ -2,6 +2,20 @@ import XCTest
 @testable import LinkCKit
 
 final class MCPRegistrarTests: XCTestCase {
+    func testInlineOpenCodeBrowserEnvironmentKeepsTheUsersServerEntry() throws {
+        let inherited = #"{"mcp":{"browser-tools":{"type":"local","command":["/custom/agent-browser","mcp"],"enabled":false}}}"#
+        let browser = SharedBrowser.sessionEnvironment(port: 43117, sessionId: "S1")
+        let content = try MCPRegistrar.openCodeConfigContent(
+            inherited: inherited, binaryPath: "/bin/linkc-mcp", model: nil,
+            browserServerName: "browser-tools", browserEnvironment: browser)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
+        let mcp = try XCTUnwrap(root["mcp"] as? [String: Any])
+        let entry = try XCTUnwrap(mcp["browser-tools"] as? [String: Any])
+        XCTAssertEqual(entry["command"] as? [String], ["/custom/agent-browser", "mcp"])
+        XCTAssertEqual(entry["enabled"] as? Bool, false)
+        XCTAssertEqual(entry["environment"] as? [String: String], browser)
+    }
+
     var tempDir: URL!
 
     override func setUpWithError() throws {

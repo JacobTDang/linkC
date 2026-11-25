@@ -254,6 +254,8 @@ final class AppModel {
                 claudePath: preflight.claudePath,
                 terminals: terminals,
                 modelSettings: { prefs.agentModels },
+                sharedBrowserEnabled: { prefs.sharedBrowserEnabled },
+                reportSharedBrowserFailure: { [weak self] message in self?.surface(error: message) },
                 sidebarProjects: { [weak self] in self?.sidebarState.projectOrder ?? [] },
                 isWatching: { [weak self] id in
                     guard let self, NSApp.isActive else { return false }

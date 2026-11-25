@@ -54,6 +54,7 @@ public final class AppPreferences {
     private enum Keys {
         static let hotKey = "hotKeyPreset"
         static let usageFooter = "showsUsageFooter"
+        static let sharedBrowser = "sharedBrowserEnabled"
         static let linkCApps = "linkCApps"
         static let linkCAppsUnreadable = "linkCApps.unreadable"
         static let discordProjects = "discordWebhookProjects"
@@ -66,6 +67,10 @@ public final class AppPreferences {
 
     public var showsUsageFooter: Bool {
         didSet { defaults.set(showsUsageFooter, forKey: Keys.usageFooter) }
+    }
+
+    public var sharedBrowserEnabled: Bool {
+        didSet { defaults.set(sharedBrowserEnabled, forKey: Keys.sharedBrowser) }
     }
 
     /// Tier → model per agent. Backed by `models.json`, not UserDefaults: `linkc-mcp` is a
@@ -112,6 +117,7 @@ public final class AppPreferences {
         self.hotKeyPreset = defaults.string(forKey: Keys.hotKey)
             .flatMap(HotKeyPreset.init(rawValue:)) ?? .none
         self.showsUsageFooter = defaults.object(forKey: Keys.usageFooter) as? Bool ?? true
+        self.sharedBrowserEnabled = defaults.object(forKey: Keys.sharedBrowser) as? Bool ?? true
         self.agentModels = modelStore.load()
         var apps: [LinkCAppSetting] = []
         if let data = defaults.data(forKey: Keys.linkCApps) {

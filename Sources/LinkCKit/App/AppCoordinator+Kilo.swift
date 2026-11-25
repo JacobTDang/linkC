@@ -10,7 +10,9 @@ extension AppCoordinator {
     /// checked free here, so no Kilo session is ever started on anything else. The server entry
     /// carries no session id: Kilo hands its own environment, `LINKC_SESSION` included, to the
     /// servers it starts. A value already in linkC's environment is merged into, not replaced.
-    func kiloEnvironment(model: String?) throws -> [String: String] {
+    func kiloEnvironment(
+        model: String?, browserServerName: String? = nil, browserEnvironment: [String: String] = [:]
+    ) throws -> [String: String] {
         guard let model else {
             throw LinkCError.process("a Kilo session needs a model, and none was given")
         }
@@ -21,11 +23,16 @@ extension AppCoordinator {
             throw LinkCError.process("\(id) is not a free Kilo model")
         }
         var env = AgentDescriptor.environment(for: .kilo, home: FileManager.default.homeDirectoryForCurrentUser)
+        let inherited = try browserServerName.map {
+            try MCPRegistrar.inheritedConfigIncludingBrowser(
+                inherited: ProcessInfo.processInfo.environment[AgentDescriptor.kiloConfigContentKey],
+                agent: .kilo, home: userHome ?? FileManager.default.homeDirectoryForCurrentUser, serverName: $0)
+        } ?? ProcessInfo.processInfo.environment[AgentDescriptor.kiloConfigContentKey]
         env[AgentDescriptor.kiloConfigContentKey] = try MCPRegistrar.kiloConfigContent(
-            inherited: ProcessInfo.processInfo.environment[AgentDescriptor.kiloConfigContentKey],
+            inherited: inherited,
             binaryPath: MCPRegistrar.defaultBinaryPath(),
             model: model,
-            smallModel: smallModel)
+            smallModel: smallModel, browserServerName: browserServerName, browserEnvironment: browserEnvironment)
         return env
     }
 

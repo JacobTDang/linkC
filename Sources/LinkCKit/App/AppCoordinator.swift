@@ -62,7 +62,9 @@ public final class AppCoordinator {
     /// server registration. nil writes none of them. Only the production initializer passes the real
     /// home — the test suite used to add each of its temp folders to the developer's own config, over
     /// ten thousand entries, and rewrite every agent's MCP config on each run.
-    private let userHome: URL?
+    let userHome: URL?
+    private let sharedBrowser: SharedBrowser?
+    private let sharedBrowserEnabled: @MainActor @Sendable () -> Bool
     /// Where Crush's per-session config folders are made, and the user's own to copy from. Nil when linkC
     /// has no home folder for Crush's config: a Crush launch then fails loud, never runs unpinned.
     let crushSessions: CrushSessionConfig?
@@ -354,6 +356,8 @@ public final class AppCoordinator {
         agentPathResolver: (@Sendable (AgentKind) -> String?)? = nil,
         claudeJsonURL: URL? = nil,
         userHome: URL? = nil,
+        sharedBrowser: SharedBrowser? = nil,
+        sharedBrowserEnabled: @escaping @MainActor @Sendable () -> Bool = { false },
         crushDirectories: CrushDirectories? = nil,
         defaults: UserDefaults? = nil,
         verifier: any TaskVerifier = VerificationRunner(),
@@ -395,6 +399,8 @@ public final class AppCoordinator {
         self.agentPathResolver = agentPathResolver
         self.claudeJsonURL = claudeJsonURL
         self.userHome = userHome
+        self.sharedBrowser = sharedBrowser
+        self.sharedBrowserEnabled = sharedBrowserEnabled
         if let directories = crushDirectories ?? userHome.map({ CrushDirectories.standard(home: $0, environment: ProcessInfo.processInfo.environment) }) {
             self.crushSessions = CrushSessionConfig(user: directories, root: settingsDir.appendingPathComponent("crush-sessions", isDirectory: true))
         } else {
@@ -534,20 +540,29 @@ public final class AppCoordinator {
         claudePath: String,
         terminals: TerminalSessionManager,
         modelSettings: @escaping @MainActor @Sendable () -> AgentModelSettings = { AgentModelStore.applicationSupport.load() },
+        sharedBrowserEnabled: @escaping @MainActor @Sendable () -> Bool = { true },
+        reportSharedBrowserFailure: @escaping @MainActor (String) -> Void = { _ in },
         sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] },
         isWatching: @escaping @MainActor @Sendable (String) -> Bool
     ) {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let linkCDir = support.appendingPathComponent("linkC", isDirectory: true)
+        let notifications = NotificationManager()
+        let browser = SharedBrowser(applicationSupport: linkCDir, report: { message in
+            notifications.postLocal(title: "linkC: shared browser unavailable", body: message)
+            reportSharedBrowserFailure(message)
+        })
         self.init(
             terminals: terminals,
             hookServer: HookServer(port: 0, statusLineCacheURL: HookServer.defaultStatusLineCacheURL()),
-            notifications: NotificationManager(),
+            notifications: notifications,
             claudePath: claudePath,
             settingsDir: linkCDir,
             userSettingsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/settings.json"),
             manifestDir: linkCDir,
             userHome: FileManager.default.homeDirectoryForCurrentUser,
+            sharedBrowser: browser,
+            sharedBrowserEnabled: sharedBrowserEnabled,
             defaults: .standard,
             modelSettings: modelSettings,
             modelListRefresher: ModelListRefresher(authRunner: ModelListRefresher.liveAuthRunner),
@@ -818,6 +833,7 @@ public final class AppCoordinator {
         modelListRefresher?.stop()
         hookServer.stop()
         statusLines.sweep()
+        sharedBrowser?.stopAll()
         if let knownProjectsFile {
             do {
                 try knownProjectsFile.remove()
@@ -944,6 +960,7 @@ public final class AppCoordinator {
     func cleanup(sessionId: String, end: SessionEnd) {
         let ending = store.session(id: sessionId)
         let wasWorker = ending?.isWorker ?? false
+        sharedBrowser?.release(sessionId: sessionId)
         // A model-task worker (model set, no tier) whose process ends by itself while still
         // `.starting` fails those tasks at once: waiting the queue out would only respawn the same
         // rejected model every pass. A session the user closed, or a launch that threw, rejected
@@ -1246,14 +1263,26 @@ public final class AppCoordinator {
             let executable: String
             let args: [String]
             var env: [String: String] = ["LINKC_SESSION": session.id]
+            let browserServerName = userHome.flatMap { MCPRegistrar.agentBrowserServerName(for: agent, home: $0) }
+            let canReceiveBrowser = ![AgentKind.shell].contains(agent)
+                && (agent != .codex && agent != .opencode && agent != .kilo || browserServerName != nil)
+            let browserEnvironment = sharedBrowserEnabled() && canReceiveBrowser
+                ? sharedBrowser?.environment(projectPath: cwd, sessionId: session.id) ?? [:]
+                : [:]
+            env.merge(AgentDescriptor.browserTerminalEnvironment(
+                for: agent, browserEnvironment: browserEnvironment)) { _, browser in browser }
             if agent == .grok {
                 env.merge(try grokEnvironment()) { _, grok in grok }
             }
             if agent == .opencode {
-                env.merge(try openCodeEnvironment(model: model)) { _, openCode in openCode }
+                env.merge(try openCodeEnvironment(
+                    model: model, browserServerName: browserServerName,
+                    browserEnvironment: browserEnvironment)) { _, openCode in openCode }
             }
             if agent == .kilo {
-                env.merge(try kiloEnvironment(model: model)) { _, kilo in kilo }
+                env.merge(try kiloEnvironment(
+                    model: model, browserServerName: browserServerName,
+                    browserEnvironment: browserEnvironment)) { _, kilo in kilo }
             }
             if agent == .crush {
                 env.merge(try crushEnvironment(sessionId: session.id, cwd: cwd, model: model)) { _, crush in crush }
@@ -1310,7 +1339,9 @@ public final class AppCoordinator {
                     throw LinkCError.process("Executable for \(agent.pillText) not found")
                 }
                 executable = resolved
-                args = AgentDescriptor.arguments(for: agent, mode: mode, sessionId: session.id)
+                args = AgentDescriptor.arguments(
+                    for: agent, mode: mode, sessionId: session.id,
+                    browserServerName: browserServerName, browserEnvironment: browserEnvironment)
                     + (model.map { AgentModelCatalog.launchArguments(model: $0, for: agent) } ?? [])
                     + (openCode.map { OpenCodeConversations.launchArguments(conversationId: $0.id) } ?? [])
             }

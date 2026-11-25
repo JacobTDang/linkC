@@ -7,12 +7,19 @@ extension AppCoordinator {
     /// the tools are there even when registering in `opencode.json` failed. The server entry carries
     /// no session id: OpenCode hands its own environment, `LINKC_SESSION` included, to the servers
     /// it starts. A value already in linkC's environment is merged into, not replaced.
-    func openCodeEnvironment(model: String?) throws -> [String: String] {
+    func openCodeEnvironment(
+        model: String?, browserServerName: String? = nil, browserEnvironment: [String: String] = [:]
+    ) throws -> [String: String] {
         var env = AgentDescriptor.environment(for: .opencode, home: FileManager.default.homeDirectoryForCurrentUser)
+        let inherited = try browserServerName.map {
+            try MCPRegistrar.inheritedConfigIncludingBrowser(
+                inherited: ProcessInfo.processInfo.environment[AgentDescriptor.openCodeConfigContentKey],
+                agent: .opencode, home: userHome ?? FileManager.default.homeDirectoryForCurrentUser, serverName: $0)
+        } ?? ProcessInfo.processInfo.environment[AgentDescriptor.openCodeConfigContentKey]
         env[AgentDescriptor.openCodeConfigContentKey] = try MCPRegistrar.openCodeConfigContent(
-            inherited: ProcessInfo.processInfo.environment[AgentDescriptor.openCodeConfigContentKey],
+            inherited: inherited,
             binaryPath: MCPRegistrar.defaultBinaryPath(),
-            model: model)
+            model: model, browserServerName: browserServerName, browserEnvironment: browserEnvironment)
         return env
     }
 
