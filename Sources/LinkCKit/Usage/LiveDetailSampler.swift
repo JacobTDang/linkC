@@ -36,13 +36,20 @@ public final class LiveDetailSampler: @unchecked Sendable {
     private let log: @Sendable (String) -> Void
     private let lock = NSLock()
     private var details: [String: SessionLiveDetail] = [:]
-    /// Each session's last failure said, so a read that fails every pass says it once.
-    private var lastFailure: [String: String] = [:]
+    /// Each session's last failure said, and when. The same failure is said again only once
+    /// `repeatAfter` has passed, even when reads work in between: one that comes and goes would
+    /// otherwise be said on every return.
+    private var lastFailure: [String: (said: String, at: Date)] = [:]
+    static let repeatAfter: TimeInterval = 10 * 60
     private var inFlight: Task<Void, Never>?
 
+    private let now: @Sendable () -> Date
+
     public init(readers: [AgentKind: any SessionLiveReader],
-                log: @escaping @Sendable (String) -> Void = { NSLog("[linkC] %@", $0) }) {
+                log: @escaping @Sendable (String) -> Void = { NSLog("[linkC] %@", $0) },
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.readers = readers
+        self.now = now
         self.queue = DispatchQueue(label: "linkc.live-detail", qos: .utility)
         self.queue.setSpecific(key: Self.readQueueKey, value: ())
         self.log = log
@@ -99,13 +106,14 @@ public final class LiveDetailSampler: @unchecked Sendable {
             switch result {
             case .success(let detail):
                 details[id] = detail
-                lastFailure[id] = nil
             case .failure(let error):
                 // An old figure would misstate the session now: it goes.
                 details[id] = nil
                 let failure = "session \(id)'s own records could not be read — \(error)"
-                if lastFailure[id] != failure { said.append(failure) }
-                lastFailure[id] = failure
+                let now = now()
+                if let last = lastFailure[id], last.said == failure, now.timeIntervalSince(last.at) < Self.repeatAfter { continue }
+                said.append(failure)
+                lastFailure[id] = (failure, now)
             }
         }
         inFlight = nil

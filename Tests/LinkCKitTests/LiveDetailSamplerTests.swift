@@ -112,6 +112,56 @@ final class LiveDetailSamplerTests: XCTestCase {
         XCTAssertFalse(LiveDetailSampler.isOnReadQueue)
     }
 
+    /// A clock the test moves.
+    private final class Clock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        var now: Date { lock.lock(); defer { lock.unlock() }; return stored }
+        func advance(minutes: Double) { lock.lock(); stored += minutes * 60; lock.unlock() }
+    }
+
+    /// Fails with the reason it is given, or reads when it has none.
+    private final class Flapping: SessionLiveReader, @unchecked Sendable {
+        struct Broken: Error, CustomStringConvertible { let description: String }
+        private let lock = NSLock()
+        private var reason: String?
+        func fail(_ reason: String?) { lock.lock(); self.reason = reason; lock.unlock() }
+        func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
+            lock.lock(); let reason = reason; lock.unlock()
+            if let reason { throw Broken(description: reason) }
+            return SessionLiveDetail(contextPercent: 10)
+        }
+    }
+
+    /// A failure that comes and goes is said again only when it changes, or once ten minutes have
+    /// passed since it was said; a read that works in between does not make it new.
+    func testAFailureThatComesAndGoesIsSaidAgainOnlyWhenItChangesOrTenMinutesPass() async {
+        let logged = Lines()
+        let clock = Clock()
+        let reader = Flapping()
+        let sampler = LiveDetailSampler(readers: [.codex: reader], log: { logged.append($0) }, now: { clock.now })
+        func pass(_ reason: String?) async {
+            reader.fail(reason)
+            await sampler.refresh([session("S1", .codex)])?.value
+        }
+
+        await pass("torn")
+        await pass(nil)
+        await pass("torn")
+        clock.advance(minutes: 9)
+        await pass(nil)
+        await pass("torn")
+        XCTAssertEqual(logged.all.count, 1, logged.all.joined(separator: "\n"))
+
+        await pass("gone")
+        await pass("torn")
+        XCTAssertEqual(logged.all.count, 3, "a different failure is said")
+
+        clock.advance(minutes: 10)
+        await pass("torn")
+        XCTAssertEqual(logged.all.count, 4, "ten minutes on, the same failure is said again")
+    }
+
     /// An ended session's detail goes with it.
     func testASessionNoLongerLiveIsForgotten() async {
         let sampler = LiveDetailSampler(readers: [.codex: Fixed(detail: SessionLiveDetail(contextPercent: 1))])
