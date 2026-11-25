@@ -13,6 +13,8 @@ Also imports skills from:
 - Active Claude plugins (superpowers, frontend-design, skill-creator, etc.)
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import json
