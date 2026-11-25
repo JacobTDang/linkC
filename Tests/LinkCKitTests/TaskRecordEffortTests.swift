@@ -45,4 +45,16 @@ final class TaskRecordEffortTests: XCTestCase {
         XCTAssertEqual(task.effort, .low)
         XCTAssertEqual(try inbox.task(id: task.id)?.effort, .low)
     }
+
+    /// A task that names an effort goes only to a session launched at that effort; one that names
+    /// none, as rows written before efforts did, goes to any session that otherwise fits.
+    func testASessionCarriesOnlyTasksAtItsOwnEffort() {
+        let session = Session(id: "w", cwd: "/p", title: "w", agentKind: .claude, modelTier: .deep, effort: .high)
+        let atHigh = TaskRecord(fromAgent: .codex, tier: .deep, effort: .high, toAgent: .claude, prompt: "x")
+        let atXhigh = TaskRecord(fromAgent: .codex, tier: .deep, effort: .xhigh, toAgent: .claude, prompt: "x")
+        let unset = TaskRecord(fromAgent: .codex, tier: .deep, toAgent: .claude, prompt: "x")
+        XCTAssertTrue(session.canCarry(atHigh))
+        XCTAssertFalse(session.canCarry(atXhigh))
+        XCTAssertTrue(session.canCarry(unset))
+    }
 }

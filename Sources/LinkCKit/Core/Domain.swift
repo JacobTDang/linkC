@@ -117,6 +117,10 @@ public struct Session: Sendable, Identifiable, Equatable {
     /// relay can trust this when it picks an assignee.
     public var model: String?
     public var modelTier: ModelTier?
+    /// The reasoning effort this session was launched for: its task's, or its tier's from Settings.
+    /// Set once at launch, like `modelTier`, so the relay only hands it tasks at that effort. linkC
+    /// passes it to the CLI where the agent, and for agy the model, takes it (`AgyEffort`).
+    public var effort: ReasoningEffort?
     /// A session linkC started to carry a delegated task, not one the user opened. Closed once it
     /// has been idle since its tasks ended (`WorkerReaper.completionGrace`) or with no task for
     /// `WorkerReaper.idleGrace`; typing into it makes it the user's.
@@ -133,6 +137,7 @@ public struct Session: Sendable, Identifiable, Equatable {
         agentKind: AgentKind = .claude,
         model: String? = nil,
         modelTier: ModelTier? = nil,
+        effort: ReasoningEffort? = nil,
         isWorker: Bool = false
     ) {
         self.id = id
@@ -145,20 +150,22 @@ public struct Session: Sendable, Identifiable, Equatable {
         self.agentKind = agentKind
         self.model = model
         self.modelTier = modelTier
+        self.effort = effort
         self.isWorker = isWorker
     }
 }
 
 extension Session {
     /// Whether the relay may hand `task` to this session: the same agent kind, the pinned tier
-    /// when the task names one, the same model when the task names one, and, for a task pinned
-    /// to a session, only that session. A task written before tiers has none and keeps the rule
+    /// when the task names one, the same model when the task names one, the same effort when the
+    /// task names one, and, for a task pinned to a session, only that session. A task written before tiers has none and keeps the rule
     /// that any session of its kind will do. Never the session that delegated it, whose terminal
     /// is mid-turn. Whether the session is idle and in the right workspace is the caller's to check.
     func canCarry(_ task: TaskRecord) -> Bool {
         agentKind == task.toAgent && id != task.fromSessionId
             && (task.tier == nil || modelTier == task.tier)
             && (task.model == nil || model == task.model)
+            && (task.effort == nil || effort == task.effort)
             && (task.targetSessionId == nil || id == task.targetSessionId)
     }
 }

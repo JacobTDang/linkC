@@ -656,7 +656,7 @@ extension AppCoordinator {
                 return false
             }
         }
-        let launchKey = "\(task.toAgent.rawValue)|\(task.tier?.rawValue ?? "")|\(task.model ?? "")"
+        let launchKey = "\(task.toAgent.rawValue)|\(task.tier?.rawValue ?? "")|\(task.model ?? "")|\(task.effort?.rawValue ?? "")"
         guard launched.insert(launchKey).inserted else {
             NSLog("[linkC relay] dispatchTasks: task %@ waits for the next pass to start its %@ worker",
                   task.shortId, task.toAgent.displayName)

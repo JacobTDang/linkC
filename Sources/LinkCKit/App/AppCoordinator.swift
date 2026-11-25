@@ -1248,7 +1248,7 @@ public final class AppCoordinator {
             throw LinkCError.process("\(model) is not a free Crush model")
         }
         let session = store.create(cwd: cwd, title: title, id: id ?? UUID().uuidString, agentKind: agent,
-                                   model: model, modelTier: modelTier,
+                                   model: model, modelTier: modelTier, effort: launchEffort,
                                    claudeSessionId: conversationId, isWorker: asWorker)
         do {
             let terminal = terminals.makeSession(id: session.id, cwd: cwd, title: title, agentKind: agent, select: false)
