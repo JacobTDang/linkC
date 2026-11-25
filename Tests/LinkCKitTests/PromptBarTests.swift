@@ -239,7 +239,61 @@ final class PromptBarTests: XCTestCase {
 
         XCTAssertEqual(seen, [.codex, .opencode, .codex, .opencode])
         XCTAssertEqual(bar.override, .opencode)
-        XCTAssertEqual(pick(bar)?.text, "→ OpenCode · opencode/big-pickle — implementation; your pick")
+        XCTAssertEqual(pick(bar)?.text, "→ OpenCode · opencode/big-pickle — your pick: OpenCode")
+    }
+
+    /// An agent picked by hand is judged on its own: the router's wording, written for a choice among
+    /// every installed agent, would say no browse-capable agent is free while agy is.
+    func testAnAgentPickedByHandSaysItIsYourPick() async {
+        let clock = ManualClock()
+        let bar = makeBar(installed: [.agy, .codex], lists: TestModelLists.agy, clock: clock)
+        bar.text = "Browse the docs for this API"
+        await settle(bar, clock)
+        XCTAssertEqual(pick(bar)?.agent, .agy)
+
+        await bar.cycleAgent()?.value
+
+        XCTAssertEqual(bar.override, .codex)
+        XCTAssertEqual(pick(bar)?.reason, "your pick: Codex")
+        XCTAssertEqual(pick(bar)?.text, "→ Codex · gpt-5.6-luna · low — your pick: Codex")
+    }
+
+    /// The CLI of an agent picked by hand refuses its model on Enter: nothing opens, and the line names
+    /// that agent and its own refusal, not "no installed agent is free".
+    func testAnAgentPickedByHandThatCannotTakeTheTaskSaysWhy() async {
+        let clock = ManualClock()
+        let launches = Launches()
+        let bar = makeBar(installed: [.codex, .opencode], clock: clock, listing: ["opencode/other-free"], launches: launches)
+        bar.text = Self.implement
+        await settle(bar, clock)
+        await bar.cycleAgent()?.value
+        XCTAssertEqual(bar.override, .opencode)
+
+        await bar.submit()?.value
+
+        XCTAssertEqual(launches.all, [])
+        XCTAssertEqual(bar.line, .error(
+            "OpenCode can't take this: opencode/big-pickle (opencode tier standard) is not among the models OpenCode lists — free models come and go"))
+    }
+
+    /// A new preview that no longer lists the agent picked by hand drops it: the line goes back to the
+    /// router's pick and says why the hand pick went.
+    func testAnAgentPickedByHandIsDroppedWhenItCanNoLongerTakeTheTask() async {
+        var settings = AgentModelSettings.seeded
+        settings.setModel("", for: .codex, tier: .light)
+        let clock = ManualClock()
+        let bar = makeBar(installed: [.claude, .codex], settings: settings, clock: clock)
+        bar.text = Self.implement
+        await settle(bar, clock)
+        await bar.cycleAgent()?.value
+        XCTAssertEqual(bar.override, .codex)
+
+        bar.text = "Browse the docs for this API"
+        await settle(bar, clock)
+
+        XCTAssertNil(bar.override)
+        XCTAssertEqual(pick(bar)?.agent, .claude)
+        XCTAssertEqual(pick(bar)?.reason.hasSuffix("; Codex can't take this: no light model"), true, "\(String(describing: pick(bar)?.reason))")
     }
 
     /// Esc empties the bar: the text, the agent picked by hand, and the line.

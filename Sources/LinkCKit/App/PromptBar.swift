@@ -23,6 +23,11 @@ public struct PromptBarPick: Equatable, Sendable {
     public var text: String {
         "→ \(agent.shortName) · \(model)" + (effort.map { " · \($0.rawValue)" } ?? "") + " — \(reason)"
     }
+
+    /// The same pick, with `note` added to its reason.
+    func noting(_ note: String) -> PromptBarPick {
+        PromptBarPick(agent: agent, tier: tier, model: model, effort: effort, reason: "\(reason); \(note)")
+    }
 }
 
 /// What the line under the prompt bar says.
@@ -232,6 +237,7 @@ public final class PromptBar {
         case .success(let read):
             eligible = read.eligible
             routerChoice = read.routerChoice
+            override = read.override
             switch read.shown {
             case .success(let pick): line = .pick(pick)
             case .failure(let error): line = .error(Self.message(for: error))
@@ -261,11 +267,12 @@ public final class PromptBar {
         }
     }
 
-    /// One preview: the agents the task could go to, the router's own pick, and what the line shows —
-    /// the agent picked by hand when there is one.
+    /// One preview: the agents the task could go to, the router's own pick, the agent picked by hand
+    /// while it can still take the task, and what the line shows — that agent when there is one.
     private struct PreviewRead: Sendable {
         let eligible: [AgentKind]
         let routerChoice: AgentKind?
+        let override: AgentKind?
         let shown: Result<PromptBarPick, any Error>
     }
 
@@ -274,16 +281,26 @@ public final class PromptBar {
             let sources = request.sources
             let context = try TaskRouting.gather(
                 prompt: request.prompt, settings: request.settings, sources: sources, inputs: request.inputs)
+            let eligible = context.eligible(settings: request.settings)
             let routed = Result {
                 try pick(request, context: context, sources: sources, only: nil, consultingFolderListing: false)
             }
-            let shown = only == nil ? routed : Result {
-                try pick(request, context: context, sources: sources, only: only, consultingFolderListing: false)
-            }
             let routerChoice: AgentKind?
             if case .success(let pick) = routed { routerChoice = pick.agent } else { routerChoice = nil }
-            return PreviewRead(
-                eligible: context.eligible(settings: request.settings), routerChoice: routerChoice, shown: shown)
+            guard let only else {
+                return PreviewRead(eligible: eligible, routerChoice: routerChoice, override: nil, shown: routed)
+            }
+            // The agent picked by hand can no longer take the task: the router's pick shows, saying why.
+            if let why = TaskRouting.handPickRefusal(only, context: context, settings: request.settings) {
+                let dropped = HandPickRefusal(agent: only, why: why).message
+                return PreviewRead(
+                    eligible: eligible, routerChoice: routerChoice, override: nil,
+                    shown: routed.map { $0.noting(dropped) })
+            }
+            let shown = Result {
+                try pick(request, context: context, sources: sources, only: only, consultingFolderListing: false)
+            }
+            return PreviewRead(eligible: eligible, routerChoice: routerChoice, override: only, shown: shown)
         }
     }
 
@@ -311,7 +328,7 @@ public final class PromptBar {
         let id = decision.agent == .opencode
             ? OpenCodeGo.model(for: configured, listed: try sources.modelLists()[.opencode]?.models ?? [])
             : configured
-        let reason = ([decision.summary] + decision.notes + (only == nil ? [] : ["your pick"])).joined(separator: "; ")
+        let reason = ([decision.summary] + decision.notes).joined(separator: "; ")
         return PromptBarPick(
             agent: decision.agent, tier: decision.tier, model: try modelName(id, agent: decision.agent, sources: sources),
             effort: decision.effort, reason: reason)

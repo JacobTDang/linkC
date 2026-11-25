@@ -35,6 +35,15 @@ struct RouteContext: Sendable {
     }
 }
 
+/// The agent the user picked by hand cannot take the task: `message` names it and says why.
+struct HandPickRefusal: LocalizedError, Sendable, Equatable {
+    let agent: AgentKind
+    let why: String
+
+    var message: String { "\(agent.shortName) can't take this: \(why)" }
+    var errorDescription: String? { message }
+}
+
 /// The router's pick, and the reason the MCP tool reports for it.
 struct RoutedTask: Sendable {
     let decision: RouterDecision
@@ -81,10 +90,11 @@ enum TaskRouting {
             openProblem: open.problem, tier: tier, refusals: refusals)
     }
 
-    /// Picks an agent, tier and effort from `context`; `only` limits the choice to that one agent. With
-    /// `consultingFolderListing`, the agent picked is checked against what its own CLI lists in the folder
-    /// (OpenCode and Kilo have one): when it refuses, that agent is skipped and the router picks again.
-    /// Without it, no CLI runs.
+    /// Picks an agent, tier and effort from `context`. `only` is an agent the user picked by hand: it is
+    /// judged on its own, its reason is "your pick", and when it cannot take the task a `HandPickRefusal`
+    /// says why. With `consultingFolderListing`, the agent picked is checked against what its own CLI
+    /// lists in the folder (OpenCode and Kilo have one): when it refuses, the router skips that agent and
+    /// picks again, and an agent picked by hand is refused. Without it, no CLI runs.
     static func pick(
         prompt: String,
         context: RouteContext,
@@ -93,11 +103,15 @@ enum TaskRouting {
         only: AgentKind? = nil,
         consultingFolderListing: Bool
     ) throws -> RoutedTask {
-        let installed = only.map { agent in context.installed.filter { $0 == agent } } ?? context.installed
+        if let only {
+            return try pick(
+                byHand: only, context: context, settings: settings, sources: sources,
+                consultingFolderListing: consultingFolderListing)
+        }
         var refusals = context.refusals
         func route() throws -> RouterDecision {
             try Router.route(
-                prompt: prompt, installed: installed, settings: settings, limits: context.limits,
+                prompt: prompt, installed: context.installed, settings: settings, limits: context.limits,
                 usageTight: context.usageTight, activeInFolder: context.activeInFolder, refusals: refusals)
         }
         var decision = try route()
@@ -111,5 +125,33 @@ enum TaskRouting {
             "\(decision.reason); no tie-break, the open sessions could not be read: \($0)"
         } ?? decision.reason
         return RoutedTask(decision: decision, reason: reason)
+    }
+
+    /// Why `agent`, picked by hand, cannot take the task `context` was read for, as the cached lists and
+    /// the free-model rules judge it, or nil when it can.
+    static func handPickRefusal(_ agent: AgentKind, context: RouteContext, settings: AgentModelSettings) -> String? {
+        guard context.installed.contains(agent) else { return "not installed" }
+        return Router.skipReason(
+            for: agent, tier: context.tier, settings: settings, limits: context.limits, refusals: context.refusals)
+    }
+
+    private static func pick(
+        byHand agent: AgentKind, context: RouteContext, settings: AgentModelSettings, sources: TierModelSources,
+        consultingFolderListing: Bool
+    ) throws -> RoutedTask {
+        if let why = handPickRefusal(agent, context: context, settings: settings) {
+            throw HandPickRefusal(agent: agent, why: why)
+        }
+        if consultingFolderListing, let refusal = TierModelRefusal.check(
+            agent: agent, tier: context.tier, settings: settings, sources: sources, consultingFolderListing: true) {
+            throw HandPickRefusal(agent: agent, why: refusal.message)
+        }
+        let effort = settings.tierEffort(for: agent, tier: context.tier)
+        let summary = "your pick: \(agent.shortName)"
+        let reason = ([summary] + (effort.map { ["effort \($0.rawValue)"] } ?? [])).joined(separator: "; ")
+        return RoutedTask(
+            decision: RouterDecision(
+                agent: agent, tier: context.tier, effort: effort, reason: reason, summary: summary, notes: []),
+            reason: reason)
     }
 }

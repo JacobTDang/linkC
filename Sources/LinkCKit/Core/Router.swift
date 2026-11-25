@@ -218,6 +218,20 @@ public enum Router {
         screen(tier: tier, installed: installed, settings: settings, limits: limits, refusals: refusals).candidates
     }
 
+    /// Why `agent` cannot take a task at `tier`, as `route` would say it skipped the agent, or nil when
+    /// it can.
+    public static func skipReason(
+        for agent: AgentKind,
+        tier: ModelTier,
+        settings: AgentModelSettings,
+        limits: [RouterLimit],
+        refusals: [AgentKind: String] = [:]
+    ) -> String? {
+        let screened = screen(tier: tier, installed: [agent], settings: settings, limits: limits, refusals: refusals)
+        guard !screened.candidates.contains(agent) else { return nil }
+        return screened.skipped.first?.why ?? "never routed to"
+    }
+
     /// Splits the installed agents into those that can take a task at `tier` and those skipped, with
     /// why. Every routed task carries a tier. Cursor takes none, so a task routed to it would be
     /// refused at delegation: it is never a candidate. Shell and Freebuff are not routed to.
