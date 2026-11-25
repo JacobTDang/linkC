@@ -55,13 +55,25 @@ extension AppCoordinator {
                 continue
             }
             let result = act(request)
-            do {
-                try requests.answer(request.id, with: result)
-            } catch {
-                NSLog("[linkC] open request %@: the answer could not be written — %@", request.id, String(describing: error))
+            // A session waiting for its shared browser may still fail to start: answered once it has.
+            guard result.ok, let sessionId = result.sessionId else {
+                write(result, to: request, in: requests)
+                continue
+            }
+            whenStarted(sessionId) { [weak self] failure in
+                let started = failure.map { OpenResult.refused("\(request.agent.displayName) could not start: \($0)") } ?? result
+                self?.write(started, to: request, in: requests)
             }
         }
         requests.removeStaleResults(olderThan: Self.openAnswerMaxAge, now: now())
+    }
+
+    private func write(_ result: OpenResult, to request: OpenRequest, in requests: OpenRequestStore) {
+        do {
+            try requests.answer(request.id, with: result)
+        } catch {
+            NSLog("[linkC] open request %@: the answer could not be written — %@", request.id, String(describing: error))
+        }
     }
 
     /// Why `request` is too old to act on, or nil while it is fresh.

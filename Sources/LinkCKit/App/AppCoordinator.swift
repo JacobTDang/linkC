@@ -67,6 +67,8 @@ public final class AppCoordinator {
     private let sharedBrowserEnabled: @MainActor @Sendable () -> Bool
     /// Sessions waiting for their shared browser before their terminal starts.
     private var browserStarts: [String: Task<Void, Never>] = [:]
+    /// What runs once each of those starts has ended: given nil when it started, else why not.
+    private var startWaiters: [String: [(String?) -> Void]] = [:]
     /// Where Crush's per-session config folders are made, and the user's own to copy from. Nil when linkC
     /// has no home folder for Crush's config: a Crush launch then fails loud, never runs unpinned.
     let crushSessions: CrushSessionConfig?
@@ -884,7 +886,10 @@ public final class AppCoordinator {
         modelListRefresher?.stop()
         hookServer.stop()
         statusLines.sweep()
-        for start in browserStarts.values { start.cancel() }
+        for (sessionId, start) in browserStarts {
+            start.cancel()
+            finishStart(sessionId, failure: "linkC quit before it started")
+        }
         browserStarts.removeAll()
         sharedBrowser?.stopAll()
         if let knownProjectsFile {
@@ -1017,6 +1022,7 @@ public final class AppCoordinator {
         let ending = store.session(id: sessionId)
         let wasWorker = ending?.isWorker ?? false
         browserStarts.removeValue(forKey: sessionId)?.cancel()
+        finishStart(sessionId, failure: "it ended before it started")
         sharedBrowser?.release(sessionId: sessionId)
         // A model-task worker (model set, no tier) whose process ends by itself while still
         // `.starting` fails those tasks at once: waiting the queue out would only respawn the same
@@ -1138,6 +1144,18 @@ public final class AppCoordinator {
                               effort: effort, select: false, asWorker: asWorker)
     }
 
+    /// Runs `then` once `sessionId`'s start has ended, at once when it is not waiting for its shared
+    /// browser: with nil when it started, else why it did not. A start that fails after that wait
+    /// cannot reach `newSession`'s caller, which has its session by then.
+    func whenStarted(_ sessionId: String, _ then: @escaping (String?) -> Void) {
+        guard browserStarts[sessionId] != nil else { return then(nil) }
+        startWaiters[sessionId, default: []].append(then)
+    }
+
+    private func finishStart(_ sessionId: String, failure: String?) {
+        for waiter in startWaiters.removeValue(forKey: sessionId) ?? [] { waiter(failure) }
+    }
+
     @discardableResult
     public func newSession(
         cwd: String, agent: AgentKind = .claude, mode: LaunchMode = .new, tier: ModelTier? = nil,
@@ -1252,9 +1270,10 @@ public final class AppCoordinator {
 
     /// Spawn a session in `cwd` with the given agent and mode, wire its terminal, select it when
     /// `select` is true, and record it (live, no `endedAt`) in the manifest. The single launch path
-    /// for both new sessions and restores. Selection waits for a successful start, so a failed
-    /// launch never moves what is on screen. Fails loud: a launch error prunes any partial state
-    /// and rethrows.
+    /// for both new sessions and restores. A session that starts at once is selected once it has, so
+    /// a failed launch never moves what is on screen; one that waits for its shared browser is
+    /// selected at once, and its terminal starts when the browser is ready (`whenStarted`). Fails
+    /// loud: a launch error prunes any partial state and rethrows.
     @discardableResult
     private func launch(
         cwd: String,
@@ -1455,7 +1474,7 @@ public final class AppCoordinator {
             }
             let baseEnvironment = env
             // The rest of the launch, once the session's browser is known; nil runs it without one.
-            func start(browser: SharedBrowserLease?) throws {
+            func start(browser: SharedBrowserLease?, select: Bool) throws {
                 var env = baseEnvironment
                 if let browser {
                     switch AgentDescriptor.browserDelivery(for: agent) {
@@ -1487,10 +1506,13 @@ public final class AppCoordinator {
             // A session that can use the shared browser starts once its Chrome's port is known. The
             // wait is an `await`: the session is listed meanwhile, and nothing blocks the main thread.
             guard AgentDescriptor.browserDelivery(for: agent) != nil, sharedBrowserEnabled(), let sharedBrowser else {
-                try start(browser: nil)
+                try start(browser: nil, select: select)
                 return session
             }
             recordLive()
+            // On screen at once, though its terminal starts only with the browser; not selected again
+            // then, as the user may have moved on.
+            if select { terminals.select(session.id) }
             browserStarts[session.id] = Task { [weak self] in
                 let browser = await sharedBrowser.lease(sessionId: session.id, agent: agent, cwd: cwd)
                 guard let self, !Task.isCancelled, self.terminals.session(id: session.id) === terminal else {
@@ -1501,10 +1523,12 @@ public final class AppCoordinator {
                 }
                 self.browserStarts.removeValue(forKey: session.id)
                 do {
-                    try start(browser: browser)
+                    try start(browser: browser, select: false)
+                    self.finishStart(session.id, failure: nil)
                 } catch {
                     NSLog("[linkC] launch: %@ could not start — %@", title, String(describing: error))
                     self.notifications.postLocal(title: "linkC: \(title) could not start", body: error.localizedDescription)
+                    self.finishStart(session.id, failure: error.localizedDescription)
                     self.cleanup(sessionId: session.id, end: .launchFailed)
                 }
             }

@@ -53,7 +53,8 @@ final class AppCoordinatorSharedBrowserTests: XCTestCase {
 
     private func makeCoordinator(
         browser: SharedBrowser? = nil, enabled: Bool = true,
-        sink: AppCoordinatorKiloTests.RecordingSink = .init()
+        sink: AppCoordinatorKiloTests.RecordingSink = .init(),
+        openRequests: OpenRequestStore? = nil
     ) -> AppCoordinator {
         let settingsDir = tempDir.appendingPathComponent("settings")
         return AppCoordinator(
@@ -71,6 +72,7 @@ final class AppCoordinatorSharedBrowserTests: XCTestCase {
             modelLists: TestModelLists.none,
             deliverySettle: 0,
             turnEndQuietPeriod: 0.0,
+            openRequests: openRequests,
             isWatching: { _ in false }
         )
     }
@@ -119,6 +121,77 @@ final class AppCoordinatorSharedBrowserTests: XCTestCase {
         XCTAssertEqual(env[1], "PIN=1")
         XCTAssertTrue(env[2].hasPrefix("SESSION=linkc-\(session.id)-"), env[2])
         XCTAssertEqual(coordinator.terminals.session(id: session.id)?.isRunning, true)
+    }
+
+    /// A new session is on screen at once; only its terminal waits for the browser.
+    func testANewSessionIsSelectedAtOnceWhileItsBrowserStarts() async throws {
+        launcher.publishesPort = nil
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+
+        let session = try coordinator.newSession(cwd: tempDir.path, agent: .agy, mode: .new)
+        let background = try coordinator.newSession(cwd: tempDir.path, agent: .agy, mode: .new, select: false)
+
+        XCTAssertEqual(coordinator.terminals.selectedId, session.id)
+        XCTAssertNotEqual(coordinator.terminals.selectedId, background.id)
+        XCTAssertEqual(coordinator.terminals.session(id: session.id)?.isRunning, false)
+    }
+
+    /// Selected while it waited, it is not selected again when it starts: the user may have moved on.
+    func testASessionThatStartsAfterItsBrowserDoesNotTakeTheScreenBack() async throws {
+        launcher.publishesPort = nil
+        let coordinator = makeCoordinator()
+        defer { coordinator.shutdown() }
+        let waiting = try coordinator.newSession(cwd: tempDir.path, agent: .agy, mode: .new)
+        let other = try coordinator.newSession(cwd: tempDir.path, agent: .cursor, mode: .new)
+        XCTAssertEqual(coordinator.terminals.selectedId, other.id)
+        try await waitUntil("Chrome is launched") { launcher.launches.count == 1 }
+
+        launcher.publish(port: 43117)
+        _ = try await launched("env", waiting.id, count: 3)
+
+        XCTAssertEqual(coordinator.terminals.selectedId, other.id)
+    }
+
+    /// An open request is answered once its session has started, so an agent that cannot start
+    /// after the browser wait is reported as such, not as opened.
+    func testAnOpenRequestWhoseStartFailsAfterTheBrowserWaitIsAnsweredWithTheFailure() async throws {
+        let broken = tempDir.appendingPathComponent("not-executable")
+        try Data("x".utf8).write(to: broken)
+        agentPath = broken.path
+        let requests = OpenRequestStore(directory: tempDir.appendingPathComponent("open-requests"))
+        let coordinator = makeCoordinator(openRequests: requests)
+        defer { coordinator.shutdown() }
+        let sent = OpenRequest(agent: .agy, folder: ProjectPath.canonical(tempDir.path), prompt: nil, tier: nil, task: nil, createdAt: Date())
+        try requests.submit(sent)
+
+        coordinator.handleOpenRequests()
+
+        try await waitUntil("the request is answered") { (try? requests.result(for: sent.id)) != nil }
+        let answer = try XCTUnwrap(requests.result(for: sent.id))
+        XCTAssertFalse(answer.ok, answer.message)
+        XCTAssertTrue(answer.message.contains("not-executable"), answer.message)
+    }
+
+    func testAnOpenRequestIsAnsweredOpenedOnceItsSessionHasStarted() async throws {
+        launcher.publishesPort = nil
+        let requests = OpenRequestStore(directory: tempDir.appendingPathComponent("open-requests"))
+        let coordinator = makeCoordinator(openRequests: requests)
+        defer { coordinator.shutdown() }
+        let sent = OpenRequest(agent: .agy, folder: ProjectPath.canonical(tempDir.path), prompt: nil, tier: nil, task: nil, createdAt: Date())
+        try requests.submit(sent)
+
+        coordinator.handleOpenRequests()
+        try await waitUntil("Chrome is launched") { launcher.launches.count == 1 }
+        XCTAssertNil(try requests.result(for: sent.id), "not answered while the browser starts")
+
+        launcher.publish(port: 43117)
+
+        try await waitUntil("the request is answered") { (try? requests.result(for: sent.id)) != nil }
+        let answer = try XCTUnwrap(requests.result(for: sent.id))
+        XCTAssertTrue(answer.ok, answer.message)
+        let session = try XCTUnwrap(answer.sessionId)
+        XCTAssertEqual(coordinator.terminals.session(id: session)?.isRunning, true)
     }
 
     func testCodexGetsTheVariablesAsOverridesOnItsOwnServer() async throws {
