@@ -140,19 +140,23 @@ private struct AgentCardRow: View {
                 .font(.system(size: 8.5, weight: card.look.needsYou ? .heavy : .regular))
                 .foregroundStyle(card.look.tint.color)
                 .frame(width: 10)
-            Text(card.summary)
-                .font(.system(size: 11))
-                .foregroundStyle(card.look.needsYou ? card.look.tint.color : Theme.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .smoothShimmer(isWorking: card.isWorking)
-            // Set apart from what the session does, and never truncated away by it.
+            if !card.summary.isEmpty {
+                Text(card.summary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(card.look.needsYou ? card.look.tint.color : Theme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .smoothShimmer(isWorking: card.isWorking)
+            }
+            // Set apart from what the session does, and never truncated away by it. Alone, it is the
+            // line a session at work shimmers on.
             if !card.worktree.isEmpty {
                 Text(card.worktree)
                     .font(.system(size: 10.5))
                     .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
                     .layoutPriority(1)
+                    .smoothShimmer(isWorking: card.isWorking && card.summary.isEmpty)
             }
             Spacer(minLength: 4)
             Text(card.age(at: now))

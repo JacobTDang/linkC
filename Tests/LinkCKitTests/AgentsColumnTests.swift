@@ -19,6 +19,11 @@ final class AgentsColumnTests: XCTestCase {
                                  subagents: subagents, cacheExpiresAt: cacheExpiresAt, cacheEstimate: cacheEstimate)
     }
 
+    /// A session the app published without a title.
+    private func untitled(_ id: String, agent: String, state: String = "ready") -> KnownProject.OpenSession {
+        KnownProject.OpenSession(id: id, agent: agent, activity: .idle, title: nil, state: state)
+    }
+
     private func column(_ sessions: [KnownProject.OpenSession], selected: String? = nil, in path: String = "/repo") -> AgentsColumn {
         AgentsColumn.build(projects: [KnownProject(path: path, sessions: sessions)],
                            roots: [path: .repo(path)], selectedId: selected ?? sessions[0].id)
@@ -136,6 +141,14 @@ final class AgentsColumnTests: XCTestCase {
         XCTAssertEqual(titles, ["permission", "error", "waiting", "working a", "working b", "starting", "done", "ready"])
     }
 
+    /// Ties sort by what the card's title says: an untitled card's is its raw agent name, as in the mod.
+    func testAnUntitledCardSortsByItsRawAgentName() {
+        // "codex" sorts before "Codex"; the agent's display name would tie them, and the id would put A first.
+        let ids = column([session("A", title: "Codex"), untitled("B", agent: "codex")]).cards.map(\.id)
+
+        XCTAssertEqual(ids, ["B", "A"])
+    }
+
     func testTheHeaderCountsWhatNeedsYouAndEveryCard() {
         let sessions = [
             session("1", state: "waitingPermission"),
@@ -172,13 +185,21 @@ final class AgentsColumnTests: XCTestCase {
         XCTAssertEqual(AgentCard.modelLabel("opencode/big-pickle"), "opencode/big-pickle")
     }
 
-    /// The model as a person names it; without one, the agent; a worker says so.
+    /// The model as a person names it; without one, the agent as the list names it; a worker says so.
     func testTheSubtitleNamesTheModelOrTheAgentAndAWorker() throws {
         XCTAssertEqual(try card(session("A", agent: "agy", model: "gemini-3.8-flash-medium", worker: true)).subtitle,
                        "gemini-3.8 flash medium · worker")
         XCTAssertEqual(try card(session("A", agent: "claude", model: "claude-opus-5-5")).subtitle, "Opus 5.5")
-        XCTAssertEqual(try card(session("A", agent: "codex")).subtitle, "Codex")
+        XCTAssertEqual(try card(session("A", agent: "codex")).subtitle, "codex")
         XCTAssertEqual(try card(session("A", agent: "newcomer")).subtitle, "newcomer")
+    }
+
+    /// An untitled card is titled by its raw agent name, as in the mod, and its subtitle does not say it twice.
+    func testAnUntitledCardIsTitledByItsRawAgentName() throws {
+        let card = try card(untitled("A", agent: "codex"))
+
+        XCTAssertEqual(card.title, "codex")
+        XCTAssertEqual(card.subtitle, "")
     }
 
     func testTheCacheClockRoundsDownAndMarksAGuessTheLastMinuteAndACold() throws {
@@ -288,7 +309,8 @@ final class AgentsColumnTests: XCTestCase {
         let summary = { (id: String) in cards.first { $0.id == id }.map { "\($0.summary) | \($0.worktree)" } }
 
         XCTAssertEqual(summary("A"), "Running the suite | fix")
-        XCTAssertEqual(summary("B"), "… | fix")
+        // The worktree alone, as the mod shows it: no "…" before it.
+        XCTAssertEqual(summary("B"), " | fix")
         XCTAssertEqual(summary("C"), "needs permission | fix")
         XCTAssertEqual(summary("ANCHOR"), "ready | ")
     }
@@ -308,7 +330,7 @@ final class AgentsColumnTests: XCTestCase {
         XCTAssertEqual(try tint("working"), .working)
         XCTAssertEqual(try tint("finished"), .done)
         XCTAssertEqual(try tint("ready"), .muted)
-        XCTAssertEqual(try tint("starting"), .muted)
+        XCTAssertEqual(try tint("starting"), .attention)
     }
 
     // MARK: - Redraws

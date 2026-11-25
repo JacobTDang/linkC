@@ -25,7 +25,7 @@ public struct AgentCardLook: Equatable, Sendable {
         case .error: return AgentCardLook(glyph: "✗", label: "error", tint: .error, rank: 1)
         case .waitingIdle: return AgentCardLook(glyph: "●", label: "waiting for you", tint: .attention, rank: 2)
         case .working: return AgentCardLook(glyph: "●", label: "working", tint: .working, rank: workingRank)
-        case .starting: return AgentCardLook(glyph: "◌", label: "starting", tint: .muted, rank: 4)
+        case .starting: return AgentCardLook(glyph: "◌", label: "starting", tint: .attention, rank: 4)
         case .finished: return AgentCardLook(glyph: "✓", label: "done", tint: .done, rank: 5)
         case .ready: return AgentCardLook(glyph: "○", label: "ready", tint: .muted, rank: 6)
         // The list holds live sessions only; an ended one would read as idle.
@@ -118,9 +118,9 @@ public struct AgentCard: Equatable, Sendable, Identifiable {
         return line.isEmpty && atWork ? "…" : line
     }
 
-    /// The second line without its worktree, which a view sets apart.
+    /// The second line without its worktree, which a view sets apart. A worktree shows alone.
     public var summary: String {
-        words.isEmpty && atWork ? "…" : words
+        words.isEmpty && atWork && worktree.isEmpty ? "…" : words
     }
 
     public var id: String { session.id }
@@ -135,7 +135,8 @@ public struct AgentCard: Equatable, Sendable, Identifiable {
         return [who, session.worker == true ? "worker" : nil].compactMap { $0 }.joined(separator: " · ")
     }
 
-    private var agentName: String { session.agentKind?.shortName ?? session.agent }
+    /// The agent as the list names it (`codex`), as the mod shows it.
+    private var agentName: String { session.agent }
 
     /// Whole minutes left, rounded down, so a cache never reads warm after it went cold.
     public func cache(at now: Date) -> AgentCacheLabel? {
