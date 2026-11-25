@@ -3,6 +3,10 @@ import Foundation
 /// Each live session's first-hand detail, read off the main actor by its agent's `SessionLiveReader`
 /// and kept for the next `projects.json` publish. The sweep asks for a read; one runs at a time,
 /// and the publisher takes whatever the last one found.
+///
+/// A read blocks: on sqlite3, which may take seconds, and on files. It runs on a serial queue of
+/// the sampler's own, never on a thread of the Swift concurrency pool, which it would tie up (as
+/// `LiveProcessRunner.runCapturing` keeps its waits off that pool, D19a).
 public final class LiveDetailSampler: @unchecked Sendable {
     /// A live session, as the main actor sees it when it asks for a read.
     public struct Session: Equatable, Sendable {
@@ -22,7 +26,13 @@ public final class LiveDetailSampler: @unchecked Sendable {
         }
     }
 
+    private static let readQueueKey = DispatchSpecificKey<Void>()
+
+    /// Whether the caller runs on a sampler's read queue.
+    static var isOnReadQueue: Bool { DispatchQueue.getSpecific(key: readQueueKey) != nil }
+
     private let readers: [AgentKind: any SessionLiveReader]
+    private let queue: DispatchQueue
     private let log: @Sendable (String) -> Void
     private let lock = NSLock()
     private var details: [String: SessionLiveDetail] = [:]
@@ -33,6 +43,8 @@ public final class LiveDetailSampler: @unchecked Sendable {
     public init(readers: [AgentKind: any SessionLiveReader],
                 log: @escaping @Sendable (String) -> Void = { NSLog("[linkC] %@", $0) }) {
         self.readers = readers
+        self.queue = DispatchQueue(label: "linkc.live-detail", qos: .utility)
+        self.queue.setSpecific(key: Self.readQueueKey, value: ())
         self.log = log
     }
 
@@ -44,27 +56,38 @@ public final class LiveDetailSampler: @unchecked Sendable {
         return details[sessionId]
     }
 
-    /// Reads every session whose agent has a reader, off the main actor, and forgets the rest. Does
-    /// nothing while a read still runs. The task is returned so a test can wait for it.
+    /// Reads every session whose agent has a reader, on the sampler's queue, and forgets the rest.
+    /// Does nothing while a read still runs. The task, which only waits for the queue, is returned
+    /// so a test can wait for it.
     @discardableResult
     public func refresh(_ sessions: [Session]) -> Task<Void, Never>? {
         lock.lock()
         defer { lock.unlock() }
         guard inFlight == nil else { return nil }
-        let readers = readers
-        let task = Task.detached(priority: .utility) { [weak self] in
-            var read: [String: Result<SessionLiveDetail, Error>] = [:]
-            for session in sessions {
-                guard let reader = readers[session.agent] else { continue }
-                let target = LiveSessionTarget(
-                    sessionId: session.id, agent: session.agent, cwd: session.cwd, agentSessionId: session.agentSessionId,
-                    openFiles: session.pid.map { ProcessSnooper.openFilePaths(inProcessTreeOf: $0) } ?? [])
-                read[session.id] = Result { try reader.read(target) }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                self.queue.async {
+                    self.pass(sessions)
+                    continuation.resume()
+                }
             }
-            self?.land(read, live: Set(sessions.map(\.id)))
         }
         inFlight = task
         return task
+    }
+
+    /// One read of every session, on the queue.
+    private func pass(_ sessions: [Session]) {
+        var read: [String: Result<SessionLiveDetail, Error>] = [:]
+        for session in sessions {
+            guard let reader = readers[session.agent] else { continue }
+            let target = LiveSessionTarget(
+                sessionId: session.id, agent: session.agent, cwd: session.cwd, agentSessionId: session.agentSessionId,
+                openFiles: session.pid.map { ProcessSnooper.openFilePaths(inProcessTreeOf: $0) } ?? [])
+            read[session.id] = Result { try reader.read(target) }
+        }
+        land(read, live: Set(sessions.map(\.id)))
     }
 
     private func land(_ read: [String: Result<SessionLiveDetail, Error>], live: Set<String>) {

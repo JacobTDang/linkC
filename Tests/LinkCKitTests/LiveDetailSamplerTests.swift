@@ -88,6 +88,30 @@ final class LiveDetailSamplerTests: XCTestCase {
         XCTAssertNil(sampler.detail(for: "S1"))
     }
 
+    /// Records where each read ran.
+    private final class WhereItRan: SessionLiveReader, @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [Bool] = []
+        var onReadQueue: [Bool] { lock.lock(); defer { lock.unlock() }; return stored }
+        func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {
+            let here = LiveDetailSampler.isOnReadQueue
+            lock.lock(); stored.append(here); lock.unlock()
+            return SessionLiveDetail()
+        }
+    }
+
+    /// A read blocks on sqlite3 and on files: it runs on the sampler's own serial queue, never on a
+    /// thread of the Swift concurrency pool, which it would tie up.
+    func testReadsRunOnTheSamplersOwnQueue() async {
+        let reader = WhereItRan()
+        let sampler = LiveDetailSampler(readers: [.codex: reader])
+
+        await sampler.refresh([session("S1", .codex), session("S2", .codex)])?.value
+
+        XCTAssertEqual(reader.onReadQueue, [true, true])
+        XCTAssertFalse(LiveDetailSampler.isOnReadQueue)
+    }
+
     /// An ended session's detail goes with it.
     func testASessionNoLongerLiveIsForgotten() async {
         let sampler = LiveDetailSampler(readers: [.codex: Fixed(detail: SessionLiveDetail(contextPercent: 1))])
