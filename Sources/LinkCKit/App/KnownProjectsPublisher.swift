@@ -59,6 +59,25 @@ public enum KnownProjectsPublisher {
         }
     }
 
+    /// Each agent's plan limits for `projects.json`, keyed by `AgentKind.rawValue`: the windows of a
+    /// fresh reading that give a percent and have not reset by `now`. A reading older than
+    /// `AgentUsage.staleAfter`, or one with no such window, gives none: a figure that may no longer
+    /// be true is not published as current.
+    public static func limits(from usages: [AgentUsage], now: Date) -> [String: [KnownLimit]] {
+        var limits: [String: [KnownLimit]] = [:]
+        for usage in usages {
+            guard let observedAt = usage.observedAt, now.timeIntervalSince(observedAt) <= AgentUsage.staleAfter else { continue }
+            let windows = usage.windows.compactMap { window -> KnownLimit? in
+                guard let percent = window.usedPercent else { return nil }
+                if let resetsAt = window.resetsAt, resetsAt <= now { return nil }
+                return KnownLimit(label: window.label, percent: Int(percent.rounded()),
+                                  resets: window.resetsAt?.formatted(.iso8601))
+            }
+            if !windows.isEmpty { limits[usage.agent.rawValue] = windows }
+        }
+        return limits
+    }
+
     /// The project paths, and each one's live sessions. Each session's folder is canonicalized once, not
     /// once for every project.
     private static func resolve(

@@ -53,7 +53,8 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         manifestDir: URL? = nil,
         models: AgentModelSettings = .seeded,
         defaults: UserDefaults? = nil,
-        userHome: URL? = nil
+        userHome: URL? = nil,
+        knownProjectsFile: KnownProjectsFile? = nil
     ) -> AppCoordinator {
         let scriptURL = tempDir.appendingPathComponent("mock_agent.sh")
         if !FileManager.default.fileExists(atPath: scriptURL.path) {
@@ -89,6 +90,7 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
             // make dispatch tests wait for real. Zero here; production keeps the default.
             deliverySettle: 0,
             turnEndQuietPeriod: 0.0,
+            knownProjectsFile: knownProjectsFile,
             isWatching: { _ in false }
         )
         return coordinator
@@ -1729,6 +1731,24 @@ final class AppCoordinatorIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.claudeUsage?.windows.first { $0.label == "5h" }?.usedPercent, 66)
         let cached = try await cachedStatusLine()
         XCTAssertEqual(cached, body, "the report is cached where the test said, not in the user's folder")
+    }
+
+    /// Claude's plan limits, as its status line reports them, go beside the projects.
+    func testClaudesStatusLineLimitsArePublished() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        try coordinator.start()
+        defer { coordinator.shutdown() }
+        let resets = Int(Date().timeIntervalSince1970) + 7200
+        let body = Data(#"{"session_id":"c1","rate_limits":{"five_hour":{"used_percentage":66,"resets_at":\#(resets)}}}"#.utf8)
+        try await postStatusLine(body, to: coordinator)
+        let arrived = try await waitUntil { coordinator.claudeUsage?.windows.count == 1 }
+        XCTAssertTrue(arrived, "the reading must reach the coordinator")
+
+        await coordinator.runSweepTickForTests()
+
+        let resetsAt = Date(timeIntervalSince1970: TimeInterval(resets)).formatted(.iso8601)
+        XCTAssertEqual(try file.readLimits(), ["claude": [KnownLimit(label: "5h", percent: 66, resets: resetsAt)]])
     }
 
     /// The headless coordinator keeps its state under the workspace folder it is given, the

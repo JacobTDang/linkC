@@ -154,6 +154,42 @@ final class KnownProjectsPublisherTests: XCTestCase {
         XCTAssertEqual(open.map(\.contextPercent), [83, nil])
     }
 
+    // MARK: - Plan limits
+
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// A fresh reading's windows with a percent, rounded, under the agent's name.
+    func testAFreshReadingsLimitsArePublishedUnderItsAgent() {
+        let codex = AgentUsage(agent: .codex, windows: [
+            UsageWindow(label: "5h", usedPercent: 73.6, tokens: nil, resetsAt: now.addingTimeInterval(3600)),
+            UsageWindow(label: "7d", usedPercent: 12, tokens: nil, resetsAt: nil),
+        ], planType: nil, observedAt: now.addingTimeInterval(-60), unavailableReason: nil)
+
+        XCTAssertEqual(KnownProjectsPublisher.limits(from: [codex], now: now), ["codex": [
+            KnownLimit(label: "5h", percent: 74, resets: now.addingTimeInterval(3600).formatted(.iso8601)),
+            KnownLimit(label: "7d", percent: 12, resets: nil),
+        ]])
+    }
+
+    /// Only a figure that is still true is published: no percent, a window that already reset, and a
+    /// reading older than an hour say nothing.
+    func testOnlyLimitsThatAreStillTrueArePublished() {
+        let windows = [
+            UsageWindow(label: "tokens", usedPercent: nil, tokens: 1200, resetsAt: nil),
+            UsageWindow(label: "5h", usedPercent: 90, tokens: nil, resetsAt: now.addingTimeInterval(-1)),
+            UsageWindow(label: "7d", usedPercent: 40, tokens: nil, resetsAt: now.addingTimeInterval(86_400)),
+        ]
+        let fresh = AgentUsage(agent: .claude, windows: windows, planType: nil,
+                               observedAt: now.addingTimeInterval(-60), unavailableReason: nil)
+        let stale = AgentUsage(agent: .codex, windows: windows, planType: nil,
+                               observedAt: now.addingTimeInterval(-AgentUsage.staleAfter - 1), unavailableReason: nil)
+        let unknown = AgentUsage.unavailable(.agy, reason: "no records")
+
+        XCTAssertEqual(KnownProjectsPublisher.limits(from: [fresh, stale, unknown], now: now), ["claude": [
+            KnownLimit(label: "7d", percent: 40, resets: now.addingTimeInterval(86_400).formatted(.iso8601)),
+        ]])
+    }
+
     func testEndedSessionIsLeftOut() {
         let path = "/tmp/linkc-pub-ended-\(UUID().uuidString)"
         let sessions = [

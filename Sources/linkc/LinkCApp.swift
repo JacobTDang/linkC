@@ -290,6 +290,8 @@ final class AppModel {
             // another session.
             coordinator.sessionAction = { [weak self] in self?.currentActivity($0) }
             coordinator.sessionTitles = { [weak self] in self?.sessionTitles ?? [:] }
+            // Codex's plan reading, which the app keeps, goes to projects.json beside Claude's.
+            coordinator.agentUsage = { [weak self] in [self?.codexUsage].compactMap { $0 } }
             coordinator.panelSweep = { [weak self] in
                 await self?.sampleShells()
                 self?.sampleSidebar()

@@ -4867,6 +4867,43 @@ final class AppCoordinatorRelayTests: XCTestCase {
         XCTAssertEqual(try file.read().first?.sessions.first?.contextPercent, 72)
     }
 
+    /// The app's readings of other agents' plans (Codex's) go beside the projects.
+    @MainActor
+    func testSweepPublishesThePlanLimitsTheAppReads() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        let resets = Date().addingTimeInterval(3600)
+        coordinator.agentUsage = {
+            [AgentUsage(agent: .codex, windows: [UsageWindow(label: "5h", usedPercent: 81, tokens: nil, resetsAt: resets)],
+                        planType: nil, observedAt: Date(), unavailableReason: nil)]
+        }
+
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(try file.readLimits(), ["codex": [KnownLimit(label: "5h", percent: 81, resets: resets.formatted(.iso8601))]])
+    }
+
+    /// A limit that moves rewrites the file, though no session changed.
+    @MainActor
+    func testAMovedLimitRewritesTheProjectsFile() async throws {
+        let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))
+        let coordinator = makeCoordinator(knownProjectsFile: file)
+        defer { coordinator.shutdown() }
+        var percent = 50.0
+        coordinator.agentUsage = {
+            [AgentUsage(agent: .codex, windows: [UsageWindow(label: "7d", usedPercent: percent, tokens: nil, resetsAt: nil)],
+                        planType: nil, observedAt: Date(), unavailableReason: nil)]
+        }
+
+        await coordinator.runSweepTickForTests()
+        percent = 51
+        await coordinator.runSweepTickForTests()
+
+        XCTAssertEqual(coordinator.knownProjectsWriteCount, 2)
+        XCTAssertEqual(try file.readLimits()["codex"]?.first?.percent, 51)
+    }
+
     @MainActor
     func testProjectsFileIsRewrittenOnlyWhenContentsChange() async throws {
         let file = KnownProjectsFile(url: tempDir.appendingPathComponent("projects.json"))

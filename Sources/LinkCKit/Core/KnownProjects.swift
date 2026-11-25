@@ -74,6 +74,22 @@ public struct KnownProject: Codable, Equatable, Sendable {
     public var name: String { URL(fileURLWithPath: path).lastPathComponent }
 }
 
+/// One plan limit an agent reports, as `projects.json` lists it under `limits`, keyed by agent.
+public struct KnownLimit: Codable, Equatable, Sendable {
+    /// The window, as the agent's usage reader names it: `5h`, `7d`.
+    public let label: String
+    /// How much of it is used, 0–100.
+    public let percent: Int
+    /// When it resets, ISO 8601; absent when the agent does not say.
+    public let resets: String?
+
+    public init(label: String, percent: Int, resets: String?) {
+        self.label = label
+        self.percent = percent
+        self.resets = resets
+    }
+}
+
 public enum KnownProjectsError: Error, Equatable, LocalizedError {
     /// No file: the app is not running (it removes the file when it quits) or has never run.
     case linkCNotRunning
@@ -106,9 +122,21 @@ public struct KnownProjectsFile: Sendable {
 
     private struct Stored: Codable {
         let projects: [KnownProject]
+        /// Each agent's plan limits, keyed by `AgentKind.rawValue`; absent when none is known, and in
+        /// a file an older app wrote.
+        let limits: [String: [KnownLimit]]?
     }
 
     public func read() throws -> [KnownProject] {
+        try stored().projects
+    }
+
+    /// Each agent's plan limits, keyed by `AgentKind.rawValue`; empty when the file lists none.
+    public func readLimits() throws -> [String: [KnownLimit]] {
+        try stored().limits ?? [:]
+    }
+
+    private func stored() throws -> Stored {
         let data: Data
         do {
             data = try Data(contentsOf: url)
@@ -118,18 +146,18 @@ public struct KnownProjectsFile: Sendable {
             throw KnownProjectsError.unreadable(path: url.path, reason: error.localizedDescription)
         }
         do {
-            return try JSONDecoder().decode(Stored.self, from: data).projects
+            return try JSONDecoder().decode(Stored.self, from: data)
         } catch {
             throw KnownProjectsError.unreadable(path: url.path, reason: String(describing: error))
         }
     }
 
     /// Replaces the file in one step, so a reader never sees half of it.
-    public func write(_ projects: [KnownProject]) throws {
+    public func write(_ projects: [KnownProject], limits: [String: [KnownLimit]] = [:]) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(Stored(projects: projects)).write(to: url, options: .atomic)
+        try encoder.encode(Stored(projects: projects, limits: limits.isEmpty ? nil : limits)).write(to: url, options: .atomic)
     }
 
     /// Removes the file; a file already gone is fine.
