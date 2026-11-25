@@ -44,12 +44,16 @@ public final class LiveDetailSampler: @unchecked Sendable {
     private var inFlight: Task<Void, Never>?
 
     private let now: @Sendable () -> Date
+    private let openFiles: @Sendable (pid_t) -> [String]
 
+    /// `openFiles` lists the files a process tree holds open; `now` is the clock.
     public init(readers: [AgentKind: any SessionLiveReader],
                 log: @escaping @Sendable (String) -> Void = { NSLog("[linkC] %@", $0) },
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                now: @escaping @Sendable () -> Date = { Date() },
+                openFiles: @escaping @Sendable (pid_t) -> [String] = { ProcessSnooper.openFilePaths(inProcessTreeOf: $0) }) {
         self.readers = readers
         self.now = now
+        self.openFiles = openFiles
         self.queue = DispatchQueue(label: "linkc.live-detail", qos: .utility)
         self.queue.setSpecific(key: Self.readQueueKey, value: ())
         self.log = log
@@ -91,7 +95,7 @@ public final class LiveDetailSampler: @unchecked Sendable {
             guard let reader = readers[session.agent] else { continue }
             let target = LiveSessionTarget(
                 sessionId: session.id, agent: session.agent, cwd: session.cwd, agentSessionId: session.agentSessionId,
-                openFiles: session.pid.map { ProcessSnooper.openFilePaths(inProcessTreeOf: $0) } ?? [])
+                openFiles: reader.readsOpenFiles ? session.pid.map(openFiles) ?? [] : [])
             read[session.id] = Result { try reader.read(target) }
         }
         land(read, live: Set(sessions.map(\.id)))

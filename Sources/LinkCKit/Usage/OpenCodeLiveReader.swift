@@ -26,6 +26,9 @@ public struct OpenCodeLiveReader: SessionLiveReader {
             modelsFile: home.appendingPathComponent(".cache/opencode/models.json"))
     }
 
+    /// The conversation is found by the id linkC passes OpenCode, never by an open file.
+    public var readsOpenFiles: Bool { false }
+
     /// An empty detail when linkC knows no conversation id, OpenCode has recorded no database yet,
     /// or the conversation has no request to count. Throws when what OpenCode recorded cannot be read.
     public func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail {

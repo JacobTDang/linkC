@@ -162,6 +162,45 @@ final class LiveDetailSamplerTests: XCTestCase {
         XCTAssertEqual(logged.all.count, 4, "ten minutes on, the same failure is said again")
     }
 
+    /// Counts the process trees looked into, and says each holds one made-up file.
+    private final class Trees: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [pid_t] = []
+        var looked: [pid_t] { lock.lock(); defer { lock.unlock() }; return stored }
+        func openFiles(_ pid: pid_t) -> [String] {
+            lock.lock(); stored.append(pid); lock.unlock()
+            return ["/made/up/open-\(pid)"]
+        }
+    }
+
+    private func session(_ id: String, _ agent: AgentKind, pid: pid_t) -> LiveDetailSampler.Session {
+        LiveDetailSampler.Session(id: id, agent: agent, cwd: "/p", agentSessionId: nil, pid: pid)
+    }
+
+    /// The reader is handed the files its session's process tree holds open.
+    func testTheReaderIsHandedTheFilesItsSessionsProcessTreeHoldsOpen() async {
+        let trees = Trees()
+        let recording = Recording()
+        let sampler = LiveDetailSampler(readers: [.codex: recording], openFiles: { trees.openFiles($0) })
+
+        await sampler.refresh([session("S1", .codex, pid: 41)])?.value
+
+        XCTAssertEqual(recording.targets.map(\.openFiles), [["/made/up/open-41"]])
+    }
+
+    /// OpenCode is found by the conversation id linkC passes it, never by an open file: its
+    /// session's process tree is not looked into.
+    func testAReaderThatUsesNoOpenFileHasNoProcessTreeLookedInto() async {
+        let trees = Trees()
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("linkc-none-\(UUID().uuidString)")
+        let reader = OpenCodeLiveReader(database: missing.appendingPathComponent("opencode.db"), modelsFile: missing.appendingPathComponent("models.json"))
+        let sampler = LiveDetailSampler(readers: [.opencode: reader], openFiles: { trees.openFiles($0) })
+
+        await sampler.refresh([session("S1", .opencode, pid: 41)])?.value
+
+        XCTAssertEqual(trees.looked, [])
+    }
+
     /// An ended session's detail goes with it.
     func testASessionNoLongerLiveIsForgotten() async {
         let sampler = LiveDetailSampler(readers: [.codex: Fixed(detail: SessionLiveDetail(contextPercent: 1))])

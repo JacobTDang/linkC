@@ -26,7 +26,14 @@ public struct LiveSessionTarget: Equatable, Sendable {
 /// on, its running subagents. Runs off the main actor; a field the files don't record stays nil.
 /// Throws when a record it found cannot be read, so the failure is said rather than shown as nothing.
 public protocol SessionLiveReader: Sendable {
+    /// Whether a read uses `LiveSessionTarget.openFiles`: the session's process tree is looked
+    /// into only for a reader that does.
+    var readsOpenFiles: Bool { get }
     func read(_ target: LiveSessionTarget) throws -> SessionLiveDetail
+}
+
+extension SessionLiveReader {
+    public var readsOpenFiles: Bool { true }
 }
 
 extension SessionLiveDetail {
