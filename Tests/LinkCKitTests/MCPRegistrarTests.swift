@@ -2,6 +2,20 @@ import XCTest
 @testable import LinkCKit
 
 final class MCPRegistrarTests: XCTestCase {
+    func testDiscoversTheUsersBrowserServerNamesFromCommands() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let codex = home.appendingPathComponent(".codex/config.toml")
+        let openCode = MCPRegistrar.openCodeConfigFile(home: home)
+        try FileManager.default.createDirectory(at: codex.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: openCode.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("[mcp_servers.browser-tools]\ncommand = \"/custom/agent-browser\"\nargs = [\"mcp\"]\n".utf8).write(to: codex)
+        try Data(#"{"mcp":{"web":{"type":"local","command":["agent-browser","mcp"]}}}"#.utf8).write(to: openCode)
+
+        XCTAssertEqual(MCPRegistrar.agentBrowserServerName(for: .codex, home: home), "browser-tools")
+        XCTAssertEqual(MCPRegistrar.agentBrowserServerName(for: .opencode, home: home), "web")
+    }
+
     func testInlineOpenCodeBrowserEnvironmentKeepsTheUsersServerEntry() throws {
         let inherited = #"{"mcp":{"browser-tools":{"type":"local","command":["/custom/agent-browser","mcp"],"enabled":false}}}"#
         let browser = SharedBrowser.sessionEnvironment(port: 43117, sessionId: "S1")
