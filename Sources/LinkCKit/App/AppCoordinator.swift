@@ -330,8 +330,6 @@ public final class AppCoordinator {
     private var handoffRequestWatcher: FolderWatcher?
     /// Prompts the `linkc` command asked for, by session id, waiting for their agent to be ready (`typeOpeningPrompts`).
     var openingPrompts: [String: OpeningPrompt] = [:]
-    /// Each handoff session's memo, by session id, deleted when that session ends (`cleanup`).
-    var handoffMemos: [String: URL] = [:]
     /// What the last relay pass found in each workspace, so choosing the next interval reads
     /// nothing. Internal: the relay writes it (see `AppCoordinator+Relay.swift`).
     var relayWork = RelayWork()
@@ -1001,7 +999,7 @@ public final class AppCoordinator {
         limitScans.removeValue(forKey: sessionId)
         limitHolds.removeValue(forKey: sessionId)
         limitHeldModelTasks.removeValue(forKey: sessionId)
-        removeHandoffMemo(of: sessionId)
+        if let ending { removeHandoffMemo(of: ending) }
         if wasWorker || end == .abandoned {
             // A worker was linkC's, not the user's: its report is in the task record. A session
             // abandoned before it reached the user was never theirs either. Neither leaves

@@ -142,6 +142,25 @@ final class MCPServerHandoffTests: XCTestCase {
         XCTAssertFalse(res.isError, res.text)
     }
 
+    /// linkC took the request (it withdraws before acting) but had not answered when the wait ended:
+    /// the session may still open, so the tool must not call retrying safe.
+    func testARequestLinkCTookButHasNotAnsweredMayStillOpenASession() throws {
+        let world = World()
+        let store = requestStore!
+        let deadline = world.start.addingTimeInterval(MCPServer.HandoffAnswerWait.standard.timeout)
+        world.onNow = { world in
+            guard world.clock >= deadline, let request = store.pending().first else { return }
+            _ = try? store.withdraw(request.id)
+        }
+        let res = try mcpCall(makeServer(store: store, wait: wait(world, store: store, pollInterval: 10)),
+                              "linkc_handoff", ["to": "codex"])
+
+        XCTAssertTrue(res.isError)
+        XCTAssertTrue(res.text.contains("linkC took the handoff but did not answer"), res.text)
+        XCTAssertTrue(res.text.contains("may still open"), res.text)
+        XCTAssertFalse(res.text.contains("safe"), res.text)
+    }
+
     /// Giving up, a request that could not be withdrawn may still open a session: the tool says so.
     func testAFailedWithdrawIsReported() throws {
         let world = World()

@@ -236,6 +236,21 @@ final class AppCoordinatorHandoffTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: handoffsFolder.path), ["\(s3.id).md"])
     }
 
+    /// A memo written before linkC restarted is still the session's: it goes when that session ends,
+    /// though this run of linkC never wrote it.
+    func testAMemoFromBeforeARestartGoesWhenItsSessionEnds() throws {
+        let coordinator = makeCoordinator()
+        defer { stopAll(coordinator) }
+
+        let session = try coordinator.newSession(cwd: folder, agent: .codex, mode: .new)
+        try FileManager.default.createDirectory(at: handoffsFolder, withIntermediateDirectories: true)
+        let memo = handoffsFolder.appendingPathComponent("\(session.id).md")
+        try "an earlier run's memo".write(to: memo, atomically: true, encoding: .utf8)
+        coordinator.stopSession(session.id)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: memo.path))
+    }
+
     /// A memo that cannot be written closes the new session it was for. That session never reached
     /// the user, so it leaves no card under Earlier.
     func testAMemoThatCannotBeWrittenLeavesNoEarlierCard() throws {

@@ -110,7 +110,7 @@ extension AppCoordinator {
         // leaves nothing behind.
         let memoPath = HandoffComposer.sessionMemoPath(for: newSession.id)
         do {
-            handoffMemos[newSession.id] = try HandoffComposer.writeHandoff(workspacePath: folder, content: memo, at: memoPath)
+            try HandoffComposer.writeHandoff(workspacePath: folder, content: memo, at: memoPath)
         } catch {
             terminals.terminate(newSession.id)
             cleanup(sessionId: newSession.id, end: .abandoned)
@@ -145,11 +145,12 @@ extension AppCoordinator {
         return carried.last?.prompt
     }
 
-    /// Deletes the memo a handoff wrote for `sessionId`, now that the session it was for has ended:
-    /// it holds a stretch of terminal output the project has no use for after that. A memo already
-    /// gone is fine; one that cannot be deleted is said.
-    func removeHandoffMemo(of sessionId: String) {
-        guard let memo = handoffMemos.removeValue(forKey: sessionId) else { return }
+    /// Deletes the memo a handoff wrote for `session`, now that the session it was for has ended:
+    /// it holds a stretch of terminal output the project has no use for after that. The path comes
+    /// from the session's folder and id, so a memo written before linkC restarted goes too. No memo
+    /// is fine; one that cannot be deleted is said.
+    func removeHandoffMemo(of session: Session) {
+        let memo = URL(fileURLWithPath: session.cwd).appendingPathComponent(HandoffComposer.sessionMemoPath(for: session.id))
         do {
             try FileManager.default.removeItem(at: memo)
         } catch CocoaError.fileNoSuchFile {
