@@ -154,9 +154,9 @@ final class AppModel {
         get { errorFlash.text }
         set { errorFlash.show(newValue) }
     }
-    /// Start-up notices waiting for the panel to open (see `start()`). More than one can queue
-    /// (bundled-mod failure and an update-swap notice) so neither is overwritten.
-    private var pendingUpdateNotice: String?
+    /// Start-up notices waiting for the panel to open (see `start()`). Holds the joined text for
+    /// every notice queued before the panel is visible (mod install failure, update-swap, …).
+    private var pendingStartNotice: String?
     /// Whether the menu-bar panel itself is currently on screen — not a torn-off window. Feeds
     /// `onScreenSessionId` and the coordinator's watch probe, and gates the usage-refresh timer — no
     /// panel, no polling. The coordinator's sweep follows the panel or any window: `syncSweepVisibility()`.
@@ -171,8 +171,8 @@ final class AppModel {
             if !panelVisible {
                 flushStateToDisk()
             } else if !oldValue {
-                if let notice = pendingUpdateNotice {
-                    pendingUpdateNotice = nil
+                if let notice = pendingStartNotice {
+                    pendingStartNotice = nil
                     lastError = notice
                 }
                 // Not a sweep tick behind: sample what changed while the panel was hidden.
@@ -226,18 +226,13 @@ final class AppModel {
     }
 
     /// Show a start-up notice in the error bar, or queue it until the panel opens. Appends when
-    /// another notice is already pending so a mod failure and an update-swap notice both surface.
+    /// another notice is already pending so a mod failure and an update-swap notice both surface
+    /// on ErrorBar's single line (joined with a middle dot).
     private func enqueueStartNotice(_ message: String) {
         if panelVisible {
-            if let existing = lastError, !existing.isEmpty {
-                lastError = existing + "\n" + message
-            } else {
-                lastError = message
-            }
-        } else if let existing = pendingUpdateNotice, !existing.isEmpty {
-            pendingUpdateNotice = existing + "\n" + message
+            lastError = StartNoticeText.joining(lastError, message)
         } else {
-            pendingUpdateNotice = message
+            pendingStartNotice = StartNoticeText.joining(pendingStartNotice, message)
         }
     }
     /// Refreshes usage while the panel is visible; hook events cover the rest of the time.
