@@ -20,13 +20,26 @@ public struct PromptBarPick: Equatable, Sendable {
     }
 
     /// The preview line: "→ Codex · gpt-5.6-sol · medium — implementation".
-    public var text: String {
-        "→ \(agent.shortName) · \(model)" + (effort.map { " · \($0.rawValue)" } ?? "") + " — \(reason)"
+    public var text: String { "→ \(choice) — \(reason)" }
+
+    /// The agent, model and effort: "Codex · gpt-5.6-sol · medium".
+    public var choice: String {
+        "\(agent.shortName) · \(model)" + (effort.map { " · \($0.rawValue)" } ?? "")
     }
 
     /// The same pick, with `note` added to its reason.
     func noting(_ note: String) -> PromptBarPick {
         PromptBarPick(agent: agent, tier: tier, model: model, effort: effort, reason: "\(reason); \(note)")
+    }
+
+    /// The same pick, giving `reason` instead.
+    func because(_ reason: String) -> PromptBarPick {
+        PromptBarPick(agent: agent, tier: tier, model: model, effort: effort, reason: reason)
+    }
+
+    /// Whether `other` opens the same session: the same agent, tier, model and effort, whatever the reason.
+    func opensLike(_ other: PromptBarPick) -> Bool {
+        agent == other.agent && tier == other.tier && model == other.model && effort == other.effort
     }
 }
 
@@ -35,10 +48,25 @@ public enum PromptBarLine: Equatable, Sendable {
     /// Nothing typed, or the typing has not paused yet for a first pick.
     case idle
     case pick(PromptBarPick)
+    /// Enter found a pick other than the one on the line, as when the previewed agent's own CLI
+    /// refused its model: nothing opened, and a second Enter opens this one.
+    case confirm(PromptBarPick)
     /// Why the task cannot open: the router's own refusal, or the launch's error.
     case error(String)
     /// Enter was pressed and the session is on its way.
     case opening(String)
+    /// The session opened: "Opened Codex — implementation".
+    case opened(String)
+
+    /// The whole line, as its tooltip shows it.
+    public var text: String {
+        switch self {
+        case .idle: return ""
+        case .pick(let pick): return pick.text
+        case .confirm(let pick): return "Enter again to open \(pick.choice) — \(pick.reason)"
+        case .error(let message), .opening(let message), .opened(let message): return message
+        }
+    }
 }
 
 /// A session the prompt bar asks for: the user's own, of `agent` in `folder`, on `tier`'s model and
@@ -101,6 +129,9 @@ public final class PromptBar {
     private var routerChoice: AgentKind?
     /// Bumped by every change that makes a preview being read out of date.
     private var generation = 0
+    /// The pick a first Enter showed in place of the one previewed, for this prompt in this folder: a
+    /// second Enter opens it. Any change drops it.
+    @ObservationIgnored private var confirming: (pick: PromptBarPick, prompt: String, folder: String)?
 
     @ObservationIgnored private let services: Services
     @ObservationIgnored private let clock: any Clock<Duration>
@@ -142,8 +173,10 @@ public final class PromptBar {
         }
     }
 
-    /// Enter: opens the pick. The picked agent's own CLI is asked about its model first, off the main
-    /// thread; a refusal opens nothing and says why.
+    /// Enter: opens the pick on the line. The picked agent's own CLI is asked about its model first, off
+    /// the main thread; a refusal opens nothing and says why. When that leaves another agent to take the
+    /// task, or the line showed no pick yet, nothing opens either: the line shows the pick Enter found
+    /// and why, and a second Enter opens it.
     @discardableResult
     public func submit() -> Task<Void, Never>? {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -154,29 +187,50 @@ public final class PromptBar {
         }
         previewWork?.cancel()
         generation += 1
-        let agent = override ?? routerChoice
+        let shown: PromptBarPick?
+        if case .pick(let pick) = line { shown = pick } else { shown = nil }
+        let confirmed = confirming.flatMap { $0.prompt == prompt && $0.folder == folder ? $0.pick : nil }
+        confirming = nil
+        let agent = confirmed?.agent ?? override ?? routerChoice
         line = .opening(agent.map { "Opening \($0.shortName)…" } ?? "Opening…")
+        if let confirmed {
+            open(confirmed, prompt: prompt, folder: folder)
+            return Task {}
+        }
         let request = request(prompt: prompt, folder: folder)
         let only = override
         return Task {
-            let outcome = await Task.detached {
-                Result { try Self.route(request, only: only, consultingFolderListing: true) }
-            }.value
+            let outcome = await Task.detached { Result { try Self.route(request, only: only) } }.value
             switch outcome {
             case .failure(let error):
                 line = .error(Self.message(for: error))
-            case .success(let pick):
-                do {
-                    let id = try services.open(PromptBarLaunch(
-                        folder: folder, agent: pick.agent, tier: pick.tier, effort: pick.effort, prompt: prompt))
-                    line = .idle
-                    override = nil
-                    text = ""
-                    onOpened?(id)
-                } catch {
-                    line = .error(Self.message(for: error))
+            case .success(let found):
+                if let shown, found.pick.opensLike(shown) {
+                    open(found.pick, prompt: prompt, folder: folder)
+                    return
                 }
+                // Why the pick moved: the previewed agent's own CLI refused it, when that is what happened.
+                let refused = shown.flatMap { shown in
+                    found.listingRefusals[shown.agent].map { AgentRefusal(agent: shown.agent, why: $0).message }
+                }
+                let pick = refused.map { found.pick.because($0) } ?? found.pick
+                confirming = (pick, prompt, folder)
+                line = .confirm(pick)
             }
+        }
+    }
+
+    private func open(_ pick: PromptBarPick, prompt: String, folder: String) {
+        do {
+            let id = try services.open(PromptBarLaunch(
+                folder: folder, agent: pick.agent, tier: pick.tier, effort: pick.effort, prompt: prompt))
+            override = nil
+            // Emptying the text resets the rest.
+            text = ""
+            line = .opened("Opened \(pick.agent.shortName) — \(pick.reason)")
+            onOpened?(id)
+        } catch {
+            line = .error(Self.message(for: error))
         }
     }
 
@@ -195,16 +249,23 @@ public final class PromptBar {
         previewWork?.cancel()
         previewWork = nil
         generation += 1
+        confirming = nil
         eligible = []
         routerChoice = nil
         line = .idle
     }
 
-    /// Reads the pick for the text as it is, after `delay` when given. A newer change cancels it.
+    /// Reads the pick for the text as it is, after `delay` when given. A newer change cancels it, and
+    /// drops a pick waiting for a second Enter.
     @discardableResult
     private func startPreview(after delay: Duration?) -> Task<Void, Never> {
         previewWork?.cancel()
         generation += 1
+        confirming = nil
+        switch line {
+        case .confirm, .opened: line = .idle
+        case .idle, .pick, .error, .opening: break
+        }
         let generation = generation
         let clock = clock
         let task = Task {
@@ -292,7 +353,7 @@ public final class PromptBar {
             }
             // The agent picked by hand can no longer take the task: the router's pick shows, saying why.
             if let why = TaskRouting.handPickRefusal(only, context: context, settings: request.settings) {
-                let dropped = HandPickRefusal(agent: only, why: why).message
+                let dropped = AgentRefusal(agent: only, why: why).message
                 return PreviewRead(
                     eligible: eligible, routerChoice: routerChoice, override: nil,
                     shown: routed.map { $0.noting(dropped) })
@@ -304,13 +365,21 @@ public final class PromptBar {
         }
     }
 
-    nonisolated private static func route(
-        _ request: RouteRequest, only: AgentKind?, consultingFolderListing: Bool
-    ) throws -> PromptBarPick {
+    /// What Enter found: the pick, after asking its agent's own CLI, and the agents that CLI check refused.
+    private struct EnterRead: Sendable {
+        let pick: PromptBarPick
+        let listingRefusals: [AgentKind: String]
+    }
+
+    nonisolated private static func route(_ request: RouteRequest, only: AgentKind?) throws -> EnterRead {
         let sources = request.sources
         let context = try TaskRouting.gather(
             prompt: request.prompt, settings: request.settings, sources: sources, inputs: request.inputs)
-        return try pick(request, context: context, sources: sources, only: only, consultingFolderListing: consultingFolderListing)
+        let routed = try TaskRouting.pick(
+            prompt: request.prompt, context: context, settings: request.settings, sources: sources,
+            only: only, consultingFolderListing: true)
+        return EnterRead(
+            pick: try pick(request, decision: routed.decision, sources: sources), listingRefusals: routed.listingRefusals)
     }
 
     nonisolated private static func pick(
@@ -320,6 +389,12 @@ public final class PromptBar {
         let decision = try TaskRouting.pick(
             prompt: request.prompt, context: context, settings: request.settings, sources: sources,
             only: only, consultingFolderListing: consultingFolderListing).decision
+        return try pick(request, decision: decision, sources: sources)
+    }
+
+    nonisolated private static func pick(
+        _ request: RouteRequest, decision: RouterDecision, sources: TierModelSources
+    ) throws -> PromptBarPick {
         guard let configured = request.settings.model(for: decision.agent, tier: decision.tier) else {
             throw LinkCError.process(
                 "no model configured for \(decision.agent.rawValue) tier \(decision.tier.rawValue) — set it in linkC's Settings > Models")

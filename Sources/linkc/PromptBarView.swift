@@ -100,7 +100,17 @@ private struct PreviewLine: View {
             Text(message)
                 .foregroundStyle(Theme.statusError)
                 .modifier(LineStyle(help: message, lines: 3))
-        case .opening(let message):
+        case .confirm(let pick):
+            let prompt = Text(verbatim: "Enter again to open ").foregroundStyle(Theme.accent)
+            let agent = Text(verbatim: pick.agent.shortName)
+                .foregroundStyle(Theme.agentColor(pick.agent))
+                .fontWeight(.semibold)
+            let model = Text(verbatim: " · \(pick.model)" + (pick.effort.map { " · \($0.rawValue)" } ?? ""))
+                .foregroundStyle(Theme.textSecondary)
+            let reason = Text(verbatim: " — \(pick.reason)").foregroundStyle(Theme.textTertiary)
+            Text("\(prompt)\(agent)\(model)\(reason)")
+                .modifier(LineStyle(help: line.text))
+        case .opening(let message), .opened(let message):
             Text(message)
                 .foregroundStyle(Theme.textSecondary)
                 .modifier(LineStyle(help: message))

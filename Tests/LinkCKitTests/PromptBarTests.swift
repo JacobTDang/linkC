@@ -369,7 +369,79 @@ final class PromptBarTests: XCTestCase {
         XCTAssertEqual(launches.all.map(\.agent), [.codex])
         XCTAssertEqual(bar.text, "")
         XCTAssertNil(bar.override)
-        XCTAssertEqual(bar.line, .idle)
+        XCTAssertEqual(bar.line, .opened("Opened Codex — your pick: Codex"))
+    }
+
+    /// Enter finds the previewed agent's CLI refusing its model and another agent free: nothing opens
+    /// yet. The line shows the new pick and why, and a second Enter opens it without asking again.
+    func testADifferentAgentAtEnterWaitsForASecondEnter() async {
+        let clock = ManualClock()
+        let listings = Count()
+        let launches = Launches()
+        let bar = makeBar(
+            installed: [.codex, .opencode], clock: clock, listings: listings, listing: ["opencode/other-free"],
+            launches: launches)
+        bar.text = "Browse the docs for this API"
+        await settle(bar, clock)
+        XCTAssertEqual(pick(bar)?.agent, .opencode)
+
+        await bar.submit()?.value
+
+        let refusal = "opencode/deepseek-v4.1-flash-free (opencode tier light) is not among the models OpenCode lists — free models come and go"
+        let codex = PromptBarPick(
+            agent: .codex, tier: .light, model: "gpt-5.6-luna", effort: .low, reason: "OpenCode can't take this: \(refusal)")
+        XCTAssertEqual(launches.all, [])
+        XCTAssertEqual(bar.line, .confirm(codex))
+        XCTAssertEqual(bar.line.text, "Enter again to open Codex · gpt-5.6-luna · low — OpenCode can't take this: \(refusal)")
+        XCTAssertEqual(bar.text, "Browse the docs for this API")
+
+        await bar.submit()?.value
+
+        XCTAssertEqual(launches.all, [PromptBarLaunch(
+            folder: folder, agent: .codex, tier: .light, effort: .low, prompt: "Browse the docs for this API")])
+        XCTAssertEqual(listings.value, 1, "the second Enter opens what the first one checked")
+        XCTAssertEqual(bar.line, .opened("Opened Codex — OpenCode can't take this: \(refusal)"))
+        XCTAssertEqual(bar.text, "")
+    }
+
+    /// An edit after the new pick was shown drops it: Enter then reads the pick again.
+    func testAnEditDropsThePickWaitingForASecondEnter() async {
+        let clock = ManualClock()
+        let listings = Count()
+        let launches = Launches()
+        let bar = makeBar(
+            installed: [.codex, .opencode], clock: clock, listings: listings, listing: ["opencode/other-free"],
+            launches: launches)
+        bar.text = "Browse the docs for this API"
+        await settle(bar, clock)
+        await bar.submit()?.value
+        guard case .confirm = bar.line else { return XCTFail("expected a pick to confirm, the line is \(bar.line)") }
+
+        bar.text = "Browse the docs for this API now"
+        XCTAssertEqual(bar.line, .idle, "the pick waiting for Enter goes with the edit")
+        await settle(bar, clock)
+        await bar.submit()?.value
+
+        XCTAssertEqual(launches.all, [])
+        XCTAssertEqual(listings.value, 2)
+        guard case .confirm = bar.line else { return XCTFail("expected a pick to confirm, the line is \(bar.line)") }
+    }
+
+    /// Enter before any pick has shown opens nothing: the line shows the pick, and a second Enter opens it.
+    func testEnterBeforeThePreviewShowsThePickFirst() async {
+        let clock = ManualClock()
+        let launches = Launches()
+        let bar = makeBar(installed: [.codex], clock: clock, launches: launches)
+        bar.text = Self.implement
+
+        await bar.submit()?.value
+        XCTAssertEqual(launches.all, [])
+        XCTAssertEqual(bar.line, .confirm(PromptBarPick(
+            agent: .codex, tier: .standard, model: "gpt-5.6-sol", effort: .medium, reason: "implementation")))
+
+        await bar.submit()?.value
+        XCTAssertEqual(launches.all.map(\.agent), [.codex])
+        XCTAssertEqual(bar.line, .opened("Opened Codex — implementation"))
     }
 
     func testWithNoProjectOnScreenEnterSaysSo() async {

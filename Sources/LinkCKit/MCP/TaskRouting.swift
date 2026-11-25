@@ -35,8 +35,9 @@ struct RouteContext: Sendable {
     }
 }
 
-/// The agent the user picked by hand cannot take the task: `message` names it and says why.
-struct HandPickRefusal: LocalizedError, Sendable, Equatable {
+/// An agent the user saw on the line, picked by hand or by the router, cannot take the task: `message`
+/// names it and says why.
+struct AgentRefusal: LocalizedError, Sendable, Equatable {
     let agent: AgentKind
     let why: String
 
@@ -49,6 +50,8 @@ struct RoutedTask: Sendable {
     let decision: RouterDecision
     /// `decision.reason`, and why there was no tie-break when the folder's open sessions could not be read.
     let reason: String
+    /// The agents the router picked first whose own CLI then refused the tier's model, and why.
+    var listingRefusals: [AgentKind: String] = [:]
 }
 
 /// Routes a prompt from what `RouteInputs` reads. The MCP tool's auto-route and the prompt bar both
@@ -91,7 +94,7 @@ enum TaskRouting {
     }
 
     /// Picks an agent, tier and effort from `context`. `only` is an agent the user picked by hand: it is
-    /// judged on its own, its reason is "your pick", and when it cannot take the task a `HandPickRefusal`
+    /// judged on its own, its reason is "your pick", and when it cannot take the task a `AgentRefusal`
     /// says why. With `consultingFolderListing`, the agent picked is checked against what its own CLI
     /// lists in the folder (OpenCode and Kilo have one): when it refuses, the router skips that agent and
     /// picks again, and an agent picked by hand is refused. Without it, no CLI runs.
@@ -115,16 +118,18 @@ enum TaskRouting {
                 usageTight: context.usageTight, activeInFolder: context.activeInFolder, refusals: refusals)
         }
         var decision = try route()
+        var listingRefusals: [AgentKind: String] = [:]
         while consultingFolderListing, let refusal = TierModelRefusal.check(
             agent: decision.agent, tier: decision.tier, settings: settings, sources: sources,
             consultingFolderListing: true) {
             refusals[decision.agent] = refusal.message
+            listingRefusals[decision.agent] = refusal.message
             decision = try route()
         }
         let reason = context.openProblem.map {
             "\(decision.reason); no tie-break, the open sessions could not be read: \($0)"
         } ?? decision.reason
-        return RoutedTask(decision: decision, reason: reason)
+        return RoutedTask(decision: decision, reason: reason, listingRefusals: listingRefusals)
     }
 
     /// Why `agent`, picked by hand, cannot take the task `context` was read for, as the cached lists and
@@ -140,11 +145,11 @@ enum TaskRouting {
         consultingFolderListing: Bool
     ) throws -> RoutedTask {
         if let why = handPickRefusal(agent, context: context, settings: settings) {
-            throw HandPickRefusal(agent: agent, why: why)
+            throw AgentRefusal(agent: agent, why: why)
         }
         if consultingFolderListing, let refusal = TierModelRefusal.check(
             agent: agent, tier: context.tier, settings: settings, sources: sources, consultingFolderListing: true) {
-            throw HandPickRefusal(agent: agent, why: refusal.message)
+            throw AgentRefusal(agent: agent, why: refusal.message)
         }
         let effort = settings.tierEffort(for: agent, tier: context.tier)
         let summary = "your pick: \(agent.shortName)"
