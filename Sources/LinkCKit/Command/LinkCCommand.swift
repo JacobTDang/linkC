@@ -107,6 +107,9 @@ public enum LinkCCommand {
         return (agent, own ?? ancestorSession())
     }
 
+    /// How long the command waits for linkC's answer.
+    public static let answerTimeout: TimeInterval = 20
+
     /// What running the command needs from the outside world.
     public struct Environment {
         public var store: OpenRequestStore
@@ -118,7 +121,7 @@ public enum LinkCCommand {
         public var launchLinkC: () throws -> Void
         public var now: () -> Date
         public var sleep: (TimeInterval) -> Void
-        public var timeout: TimeInterval = 20
+        public var timeout: TimeInterval = LinkCCommand.answerTimeout
         public var pollInterval: TimeInterval = 0.1
 
         public init(store: OpenRequestStore, folder: String, caller: @escaping () -> (agent: AgentKind, sessionId: String?)?,
@@ -164,51 +167,18 @@ public enum LinkCCommand {
                 return (1, message)
             }
         }
-        func finish(_ answer: OpenResult) -> (status: Int32, output: String) {
-            do {
-                try env.store.removeResult(for: request.id)
-            } catch {
-                let note = " (its answer file could not be removed — \(error))"
-                return answer.ok ? (0, answer.message + note) : (1, "linkc: " + answer.message + note)
-            }
-            return answer.ok ? (0, answer.message) : (1, "linkc: \(answer.message)")
-        }
-        let deadline = env.now().addingTimeInterval(env.timeout)
-        // No interval leaves no time to wait: one look, then give up.
-        let pollLimit = env.pollInterval > 0 ? Int(env.timeout / env.pollInterval) + 1 : 0
-        var polls = 0
-        while true {
-            let answer: OpenResult?
-            do {
-                answer = try env.store.result(for: request.id)
-            } catch {
-                return (1, "linkc: linkC's answer could not be read — \(error)")
-            }
-            if let answer {
-                return finish(answer)
-            }
-            if env.now() >= deadline || polls >= pollLimit {
-                var withdrawalError: Error?
-                do {
-                    try env.store.withdraw(request.id)
-                } catch {
-                    withdrawalError = error
-                }
-                do {
-                    if let answer = try env.store.result(for: request.id) {
-                        return finish(answer)
-                    }
-                } catch {
-                    let note = withdrawalError.map { " (and the request could not be withdrawn — \($0))" } ?? ""
-                    return (1, "linkc: linkC's answer could not be read — \(error)\(note)")
-                }
-                if let withdrawalError {
-                    return (1, "linkc: linkC did not answer within \(Int(env.timeout)) seconds, and the request could not be withdrawn — \(withdrawalError)")
-                }
-                return (1, "linkc: linkC did not answer within \(Int(env.timeout)) seconds. Is it running?")
-            }
-            env.sleep(env.pollInterval)
-            polls += 1
+        switch env.store.awaitAnswer(to: request.id, timeout: env.timeout, pollInterval: env.pollInterval,
+                                     now: env.now, sleep: env.sleep) {
+        case .answered(let answer, let leftover):
+            let note = leftover.map { " (its answer file could not be removed — \($0))" } ?? ""
+            return answer.ok ? (0, answer.message + note) : (1, "linkc: " + answer.message + note)
+        case .unreadable(let error, let withdrawal):
+            let note = withdrawal.map { " (and the request could not be withdrawn — \($0))" } ?? ""
+            return (1, "linkc: linkC's answer could not be read — \(error)\(note)")
+        case .unanswered(let withdrawal?):
+            return (1, "linkc: linkC did not answer within \(Int(env.timeout)) seconds, and the request could not be withdrawn — \(withdrawal)")
+        case .unanswered(nil):
+            return (1, "linkc: linkC did not answer within \(Int(env.timeout)) seconds. Is it running?")
         }
     }
 }
