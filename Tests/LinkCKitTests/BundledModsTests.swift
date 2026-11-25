@@ -135,7 +135,7 @@ final class BundledModsTests: XCTestCase {
         let victim = root.appendingPathComponent("victim.txt")
         try Data("alive".utf8).write(to: victim)
 
-        for hostile in ["../victim.txt", "/tmp/abs-victim", ""] {
+        for hostile in ["../victim.txt", "/tmp/abs-victim", "", ".", "./"] {
             let poisoned = try JSONEncoder().encode(["README.md", hostile])
             try poisoned.write(to: modRoot.appendingPathComponent(".linkc-shipped.json"))
 
@@ -158,6 +158,123 @@ final class BundledModsTests: XCTestCase {
                 "safe"
             )
         }
+    }
+
+    func testDotEntryDoesNotDeleteModFolder() throws {
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "safe"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let modRoot = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let typesFile = modRoot.appendingPathComponent(".claude-plugin/types/generated.d.ts")
+        try FileManager.default.createDirectory(
+            at: typesFile.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("generated".utf8).write(to: typesFile)
+        try JSONEncoder().encode(["README.md", "."])
+            .write(to: modRoot.appendingPathComponent(".linkc-shipped.json"))
+
+        XCTAssertThrowsError(
+            try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: modRoot.path))
+        XCTAssertEqual(try String(contentsOf: typesFile, encoding: .utf8), "generated")
+    }
+
+    func testEngineTypesWithoutTrailingSlashIsNotPruned() throws {
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "v1"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let modRoot = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let typesFile = modRoot.appendingPathComponent(".claude-plugin/types/generated.d.ts")
+        try FileManager.default.createDirectory(
+            at: typesFile.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("generated".utf8).write(to: typesFile)
+        try JSONEncoder().encode(["README.md", ".claude-plugin/types"])
+            .write(to: modRoot.appendingPathComponent(".linkc-shipped.json"))
+
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "v2"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        XCTAssertEqual(try String(contentsOf: typesFile, encoding: .utf8), "generated")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: typesFile.deletingLastPathComponent().path),
+            "engine types directory must survive a slash-less manifest entry"
+        )
+    }
+
+    func testEngineTypesCaseInsensitiveIsNotPruned() throws {
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "v1"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let modRoot = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let typesFile = modRoot.appendingPathComponent(".claude-plugin/types/generated.d.ts")
+        try FileManager.default.createDirectory(
+            at: typesFile.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("generated".utf8).write(to: typesFile)
+        try JSONEncoder().encode(["README.md", ".claude-plugin/Types/generated.d.ts"])
+            .write(to: modRoot.appendingPathComponent(".linkc-shipped.json"))
+
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "v2"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        XCTAssertEqual(try String(contentsOf: typesFile, encoding: .utf8), "generated")
+    }
+
+    func testDirectoryManifestEntryIsNotRemovedRecursively() throws {
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "safe"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let modRoot = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let userdata = modRoot.appendingPathComponent("userdata", isDirectory: true)
+        try FileManager.default.createDirectory(at: userdata, withIntermediateDirectories: true)
+        let keep = userdata.appendingPathComponent("keep.txt")
+        try Data("user".utf8).write(to: keep)
+        try JSONEncoder().encode(["README.md", "userdata/"])
+            .write(to: modRoot.appendingPathComponent(".linkc-shipped.json"))
+
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "safe"])
+        // May reject the trailing-slash entry or skip the directory — either way userdata stays.
+        _ = try? BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: userdata.path))
+        XCTAssertEqual(try String(contentsOf: keep, encoding: .utf8), "user")
+    }
+
+    func testManifestPathThroughSymlinkIsRejected() throws {
+        try writeBundleMod(name: "linkc-agents", files: ["README.md": "safe"])
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let modRoot = installRoot.appendingPathComponent("linkc-agents", isDirectory: true)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let victim = outside.appendingPathComponent("victim.txt")
+        try Data("alive".utf8).write(to: victim)
+        let link = modRoot.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        try JSONEncoder().encode(["README.md", "link/victim.txt"])
+            .write(to: modRoot.appendingPathComponent(".linkc-shipped.json"))
+
+        XCTAssertThrowsError(
+            try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+        )
+        XCTAssertEqual(try String(contentsOf: victim, encoding: .utf8), "alive")
+    }
+
+    func testDoubleDotInFilenameIsAllowed() throws {
+        try writeBundleMod(
+            name: "linkc-agents",
+            files: ["lib/a..b.js": "ok"]
+        )
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+
+        let installed = installRoot.appendingPathComponent("linkc-agents/lib/a..b.js")
+        XCTAssertEqual(try String(contentsOf: installed, encoding: .utf8), "ok")
+
+        // A later launch reloads the manifest — must not treat ".." inside a component as hostile.
+        try BundledMods(bundleModsDirectory: bundleMods, installDirectory: installRoot).install()
+        XCTAssertEqual(try String(contentsOf: installed, encoding: .utf8), "ok")
     }
 
     func testFileDroppedFromBundleIsRemoved() throws {
