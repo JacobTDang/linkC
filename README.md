@@ -26,9 +26,13 @@ corner to resize it. To open it from the keyboard, pick a shortcut in **Settings
 The sidebar groups sessions and terminals by project, with sections for **Projects**,
 **Terminals**, **Servers**, **Cloud**, **Usage** and **Earlier**. Start an agent from a project's
 **+** menu — **New session**, **Continue last** and **Resume…** all read the agent's own history,
-so they find sessions you started outside linkC too. Sessions and terminals that end move to
-**Earlier**; click one to start it again. Quitting linkC asks first if anything is still running,
-and quitting stops it.
+so they find sessions you started outside linkC too. Right-click a live session and choose
+**Hand off to** to pass its work to another agent: pick an agent, then one of its model tiers
+(labelled with its configured model) or **Default**. linkC opens a new session in the same folder on
+that model, writes a handoff memo to `.linkc/handoffs/<new session id>.md` (goal, git status summary
+and recent terminal output) and types an opening prompt telling it to read the memo and continue.
+The original session keeps running. Sessions and terminals that end move to **Earlier**; click one
+to start it again. Quitting linkC asks first if anything is still running, and quitting stops it.
 
 ![A Claude Code session in its terminal, next to the project sidebar](docs/images/session.png)
 
@@ -113,6 +117,7 @@ hand off work and share context with each other:
 | Tool | Purpose |
 |---|---|
 | `linkc_delegate_task` | Give a task to another agent, with an optional model tier or one of the agent's listed models, and optional verification. With `project`, the task goes to an agent in another project. |
+| `linkc_handoff` | Hand off the calling session to another agent, with an optional model tier, specific model, or explicit goal. linkC opens the new session in a window of its own, writes the memo to `.linkc/handoffs/<new session id>.md` and types an opening prompt to continue. |
 | `linkc_ask` | Ask an agent in another project a question. The answer, at most 1,000 characters, comes back to the session that asked. |
 | `linkc_list_projects` | List the other projects linkC knows, with each open session's agent and whether it is idle or busy. |
 | `linkc_start_task` | Accept a task that linkC delivered. |

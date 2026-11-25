@@ -443,6 +443,30 @@ private struct SessionRow: View {
         }
         .hairlineSweep(isWorking: row.status.tone == .working)
         .draggable(LinkCTerminalDrag(id: row.id))
+        .contextMenu {
+            Menu("Hand off to") {
+                ForEach(AgentKind.allCases.filter { $0 != .shell }, id: \.self) { kind in
+                    Menu(kind.displayName) {
+                        if kind != .cursor && kind != .freebuff {
+                            ForEach(ModelTier.resolutionOrder, id: \.self) { tier in
+                                let label: String = {
+                                    if let modelId = model.preferences.agentModels.model(for: kind, tier: tier), !modelId.isEmpty {
+                                        return "\(tier.label) (\(modelId))"
+                                    }
+                                    return tier.label
+                                }()
+                                Button(label) {
+                                    model.handoff(from: row.id, to: kind, tier: tier)
+                                }
+                            }
+                        }
+                        Button("Default") {
+                            model.handoff(from: row.id, to: kind, tier: nil)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

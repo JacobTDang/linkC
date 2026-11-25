@@ -169,6 +169,26 @@ public final class MCPServer: Sendable {
             timeout: 5, interval: 0.1, sleep: { Thread.sleep(forTimeInterval: $0) })
     }
 
+    /// How long `linkc_handoff` waits for linkC to answer, and how it passes the time: as long as the
+    /// `linkc` command waits, since linkC acts on both the same way.
+    public struct HandoffAnswerWait: Sendable {
+        public var timeout: TimeInterval
+        public var pollInterval: TimeInterval
+        public var now: @Sendable () -> Date
+        public var sleep: @Sendable (TimeInterval) -> Void
+
+        public init(timeout: TimeInterval = LinkCCommand.answerTimeout, pollInterval: TimeInterval = 0.1,
+                    now: @escaping @Sendable () -> Date = { Date() },
+                    sleep: @escaping @Sendable (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }) {
+            self.timeout = timeout
+            self.pollInterval = pollInterval
+            self.now = now
+            self.sleep = sleep
+        }
+
+        public static let standard = HandoffAnswerWait()
+    }
+
     public let workspaceRoot: String
     public let store: BlackboardStore
     public let inboxStore: InboxStore
@@ -210,6 +230,9 @@ public final class MCPServer: Sendable {
     /// The app's list of known projects, which a `project` argument names one of (spec 2026-11-11
     /// cross-project §4).
     public let knownProjects: KnownProjectsFile
+    /// Where `linkc_handoff` leaves its requests for linkC.
+    public let handoffRequests: OpenRequestStore
+    public let handoffAnswerWait: HandoffAnswerWait
 
     /// Tools an unidentified caller may still use.
     public static let readOnlyTools: Set<String> = [
@@ -267,7 +290,9 @@ public final class MCPServer: Sendable {
         modelLists: @escaping @Sendable () throws -> [AgentKind: AgentModelList] = {
             try ModelListCache.applicationSupport.read()
         },
-        knownProjects: KnownProjectsFile = .applicationSupport
+        knownProjects: KnownProjectsFile = .applicationSupport,
+        handoffRequests: OpenRequestStore = .handoffApplicationSupport,
+        handoffAnswerWait: HandoffAnswerWait = .standard
     ) {
         self.workspaceRoot = (workspaceRoot as NSString).standardizingPath
         self.store = store ?? BlackboardStore(workspaceRoot: workspaceRoot)
@@ -285,6 +310,8 @@ public final class MCPServer: Sendable {
         self.kiloModels = kiloModels
         self.modelLists = modelLists
         self.knownProjects = knownProjects
+        self.handoffRequests = handoffRequests
+        self.handoffAnswerWait = handoffAnswerWait
     }
 
     /// The project a tool's `project` argument names, or nil when the call has none and so acts on
@@ -768,6 +795,20 @@ public final class MCPServer: Sendable {
                 "name": "linkc_my_tasks",
                 "description": "List open tasks assigned to you, then open tasks you delegated, one line each.",
                 "inputSchema": ["type": "object", "properties": [:]]
+            ],
+            [
+                "name": "linkc_handoff",
+                "description": "Hand off this session's context to another agent and/or model. Composes a handoff memo and opens a new session continuing this work.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "to": ["type": "string", "description": "Target agent kind (\(AgentKind.peerList))"],
+                        "tier": ["type": "string", "description": "Model tier for the target agent: light, standard or deep. Pass tier or model, not both."],
+                        "model": ["type": "string", "description": "Specific model id for the target agent. Pass tier or model, not both."],
+                        "goal": ["type": "string", "description": "Explicit goal to continue toward in the handoff memo and opening prompt."]
+                    ],
+                    "required": ["to"]
+                ]
             ]
         ]
         return successResponse(id: id, result: ["tools": tools])
@@ -1476,6 +1517,9 @@ public final class MCPServer: Sendable {
                 text += delegatedLines.isEmpty ? "_None._\n" : delegatedLines.joined(separator: "\n") + "\n"
                 return toolResultResponse(id: id, text: text)
 
+            case "linkc_handoff":
+                return try handleHandoff(id: id, args: args)
+
             default:
                 return errorResponse(id: id, code: -32601, message: "Unknown tool: \(name)")
             }
@@ -1857,6 +1901,147 @@ public final class MCPServer: Sendable {
             guard waited < closeAnswerWait.timeout else { return nil }
             closeAnswerWait.sleep(closeAnswerWait.interval)
             waited += closeAnswerWait.interval
+        }
+    }
+
+    /// Why OpenCode or Kilo would not run the model a handoff to it picks, or nil when its CLI lists
+    /// that model in this folder now: their free models come and go, so the CLI is asked each time, as
+    /// `linkc_delegate_task` asks it. With no model or tier, the agent runs its default tier's model.
+    private func cliListRefusal(for agent: AgentKind, model: String?, tier: ModelTier?) -> String? {
+        let checked: String
+        let named: String
+        if let model {
+            checked = model
+            named = model
+        } else {
+            let settings = modelSettings()
+            let launchTier = tier ?? settings.defaultTier(for: agent)
+            guard let tierModel = settings.model(for: agent, tier: launchTier) else {
+                return "no model configured for \(agent.rawValue) tier \(launchTier.rawValue) — set it in linkC settings."
+            }
+            checked = tierModel
+            named = "\(tierModel) (\(agent.rawValue) tier \(launchTier.rawValue))"
+        }
+        let offered: [String]
+        do {
+            offered = try (agent == .kilo ? kiloModels : openCodeModels)(workspaceRoot)
+        } catch {
+            let reason = agent == .kilo ? KiloLogin.reporting(String(describing: error)) : String(describing: error)
+            return "could not check \(named) against the models \(agent.displayName) lists — \(reason)"
+        }
+        guard offered.contains(where: { $0.caseInsensitiveCompare(checked) == .orderedSame }) else {
+            return "\(named) is not among the models \(agent.displayName) lists — free models come and go; pick another."
+        }
+        return nil
+    }
+
+    private func handleHandoff(id: Any?, args: [String: Any]) throws -> Data? {
+        guard let sourceSessionId = callerSessionId(), !sourceSessionId.isEmpty else {
+            return toolResultResponse(id: id, text: "Error: No active calling session found (LINKC_SESSION is not set).", isError: true)
+        }
+        guard let toStr = args["to"] as? String, !toStr.isEmpty else {
+            return toolResultResponse(id: id, text: "Error: Missing required argument 'to'.", isError: true)
+        }
+        guard let toAgent = AgentKind(rawValue: toStr.lowercased()) else {
+            return toolResultResponse(id: id, text: "Error: Unknown agent '\(toStr)'. Supported agents: \(AgentKind.peerList).", isError: true)
+        }
+        guard toAgent != .shell else {
+            return toolResultResponse(id: id, text: "Error: Cannot hand off to shell. Target an AI agent (\(AgentKind.peerList)).", isError: true)
+        }
+
+        let modelArg: String?
+        if let raw = args["model"] {
+            guard let text = raw as? String else {
+                return toolResultResponse(id: id, text: "Error: model must be a string.", isError: true)
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            modelArg = trimmed.isEmpty ? nil : trimmed
+        } else {
+            modelArg = nil
+        }
+
+        let tierArg: String?
+        if let raw = args["tier"] {
+            guard let text = raw as? String else {
+                return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            tierArg = trimmed.isEmpty ? nil : trimmed
+        } else {
+            tierArg = nil
+        }
+
+        if modelArg != nil, tierArg != nil {
+            return toolResultResponse(id: id, text: "Error: pass tier or model, not both", isError: true)
+        }
+
+        let tier: ModelTier?
+        if let tierArg {
+            guard let parsed = ModelTier(rawValue: tierArg.lowercased()) else {
+                return toolResultResponse(id: id, text: "Error: tier must be light, standard or deep.", isError: true)
+            }
+            tier = parsed
+        } else {
+            tier = nil
+        }
+
+        let goalArg: String?
+        if let raw = args["goal"] {
+            guard let text = raw as? String else {
+                return toolResultResponse(id: id, text: "Error: goal must be a string.", isError: true)
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            goalArg = trimmed.isEmpty ? nil : trimmed
+        } else {
+            goalArg = nil
+        }
+
+        if toAgent == .opencode || toAgent == .kilo,
+           let refusal = cliListRefusal(for: toAgent, model: modelArg, tier: tier) {
+            return toolResultResponse(id: id, text: "Error: \(refusal)", isError: true)
+        }
+
+        let request = OpenRequest(
+            agent: toAgent,
+            folder: ProjectPath.canonical(workspaceRoot),
+            prompt: nil,
+            tier: tier,
+            task: nil,
+            model: modelArg,
+            handoffFrom: sourceSessionId,
+            goal: goalArg,
+            createdAt: Date()
+        )
+
+        do {
+            try handoffRequests.submit(request)
+        } catch {
+            return toolResultResponse(id: id, text: "Error: the handoff request could not be written — \(error)", isError: true)
+        }
+
+        let wait = handoffAnswerWait
+        switch handoffRequests.awaitAnswer(to: request.id, timeout: wait.timeout, pollInterval: wait.pollInterval,
+                                           now: wait.now, sleep: wait.sleep) {
+        case .answered(let answer, let leftover):
+            let note = leftover.map { " (its answer file could not be removed — \($0))" } ?? ""
+            guard answer.ok else {
+                return toolResultResponse(id: id, text: answer.message + note, isError: true)
+            }
+            let session = answer.sessionId.map { " New session: \($0)." } ?? ""
+            return toolResultResponse(id: id, text: answer.message + session + note)
+        case .unreadable(let error, let withdrawal):
+            let note = withdrawal.map { " (and the request could not be withdrawn, so linkC may still act on it — \($0))" } ?? ""
+            return toolResultResponse(id: id, text: "Error: linkC's answer to the handoff could not be read — \(error)\(note)", isError: true)
+        case .unanswered(let withdrawal?):
+            return toolResultResponse(
+                id: id,
+                text: "Error: linkC did not answer the handoff within \(Int(wait.timeout)) seconds, and the request could not be withdrawn, so linkC may still act on it — \(withdrawal)",
+                isError: true)
+        case .unanswered(nil):
+            return toolResultResponse(
+                id: id,
+                text: "Error: linkC did not answer the handoff within \(Int(wait.timeout)) seconds. A linkC older than this tool never reads handoff requests; update linkC and try again.",
+                isError: true)
         }
     }
 

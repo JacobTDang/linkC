@@ -322,8 +322,12 @@ public final class AppCoordinator {
     private(set) var knownProjectsWriteCount = 0
     /// Where the `linkc` command leaves its requests; nil turns the command off.
     let openRequests: OpenRequestStore?
+    /// Where `linkc_handoff` leaves its requests; nil turns handoff requests off.
+    let handoffRequests: OpenRequestStore?
     /// Wakes a pass when the `linkc` command leaves a request.
     private var openRequestWatcher: FolderWatcher?
+    /// Wakes a pass when `linkc_handoff` leaves a request.
+    private var handoffRequestWatcher: FolderWatcher?
     /// Prompts the `linkc` command asked for, by session id, waiting for their agent to be ready (`typeOpeningPrompts`).
     var openingPrompts: [String: OpeningPrompt] = [:]
     /// What the last relay pass found in each workspace, so choosing the next interval reads
@@ -372,6 +376,7 @@ public final class AppCoordinator {
         knownProjectsFile: KnownProjectsFile? = nil,
         sidebarProjects: @escaping @MainActor @Sendable () -> [String] = { [] },
         openRequests: OpenRequestStore? = nil,
+        handoffRequests: OpenRequestStore? = nil,
         openCodeModels: @escaping OpenCodeModelLister = { folder in
             try await Task.detached {
                 try MCPServer.listOpenCodeModels(in: folder, timeout: AppCoordinator.openCodeModelListingTimeout)
@@ -415,6 +420,7 @@ public final class AppCoordinator {
         self.knownProjectsFile = knownProjectsFile
         self.sidebarProjects = sidebarProjects
         self.openRequests = openRequests
+        self.handoffRequests = handoffRequests
         self.openCodeModels = openCodeModels
         self.kiloModels = kiloModels
         self.openCodeConversations = openCodeConversations
@@ -556,6 +562,7 @@ public final class AppCoordinator {
             knownProjectsFile: .applicationSupport,
             sidebarProjects: sidebarProjects,
             openRequests: .applicationSupport,
+            handoffRequests: .handoffApplicationSupport,
             openCodeConversations: .live(timeout: AppCoordinator.openCodeModelListingTimeout),
             isWatching: isWatching
         )
@@ -660,6 +667,17 @@ public final class AppCoordinator {
                       openRequests.directory.path, String(describing: error))
             }
         }
+        if let handoffRequests {
+            do {
+                try handoffRequests.prepare()
+                handoffRequestWatcher = try FolderWatcher(directory: handoffRequests.directory) { [weak self] in
+                    Task { @MainActor in self?.sweepTicker?.wake() }
+                }
+            } catch {
+                NSLog("[linkC] the handoff request folder %@ can't be watched; requests are read on each sweep — %@",
+                      handoffRequests.directory.path, String(describing: error))
+            }
+        }
         // The ticker sleeps before its first pass. A folder where only an MCP server runs, or a sidebar
         // project with no session yet, may already hold tasks queued while linkC was not running, and the
         // `linkc` command may have left a request (it can be what launched linkC): serve them now, not an
@@ -668,7 +686,8 @@ public final class AppCoordinator {
         if knownProjectsFile != nil
             || !mcpWorkspaces().isEmpty
             || !sidebarProjects().isEmpty
-            || openRequests.map({ !$0.pending().isEmpty }) == true {
+            || openRequests.map({ !$0.pending().isEmpty }) == true
+            || handoffRequests.map({ !$0.pending().isEmpty }) == true {
             ticker.wake()
         }
         if let modelListRefresher {
@@ -820,6 +839,8 @@ public final class AppCoordinator {
         inboxWatcher = nil
         openRequestWatcher?.stop()
         openRequestWatcher = nil
+        handoffRequestWatcher?.stop()
+        handoffRequestWatcher = nil
         modelListRefresher?.stop()
         hookServer.stop()
         statusLines.sweep()
