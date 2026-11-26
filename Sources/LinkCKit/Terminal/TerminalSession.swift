@@ -455,14 +455,20 @@ public final class LinkCTerminalView: LocalProcessTerminalView {
     private var synchronizedOutput = SynchronizedOutputFilter()
     private weak var observedWindow: NSWindow?
 
+    /// The most image data one terminal keeps. Agent CLIs draw pictures here, and one process
+    /// holds many terminals, so SwiftTerm's 320 MB default per terminal is too much.
+    static let imageCacheLimitBytes = 64 * 1024 * 1024
+
     public override init(frame: NSRect) {
         Self.installScrollWheelOverride
         super.init(frame: frame)
+        getTerminal().options.kittyImageCacheLimitBytes = Self.imageCacheLimitBytes
     }
 
     public required init?(coder: NSCoder) {
         Self.installScrollWheelOverride
         super.init(coder: coder)
+        getTerminal().options.kittyImageCacheLimitBytes = Self.imageCacheLimitBytes
     }
 
     private typealias ScrollWheelIMP = @convention(c) (AnyObject, Selector, NSEvent) -> Void
