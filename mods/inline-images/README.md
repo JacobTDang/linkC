@@ -11,10 +11,12 @@ choice is kept across sessions.
 ## How it works
 
 A picture is drawn with the terminal surface's `Image` element, which takes PNG bytes up to 2 MiB.
-A PNG under that size is drawn as it is. Anything else (JPEG, HEIC, WebP, a bigger PNG) is converted
-with macOS's `sips`, its longest side at 1600 px and then smaller until it fits, and kept in the
-mod's data folder, so the next draw reads it from there. A picture that cannot be converted shows a
-red line under its row saying why.
+A PNG under that size and at most 1600 px on its longest side is drawn as it is. Anything else
+(JPEG, HEIC, WebP, a bigger PNG) is converted with macOS's `sips`, its longest side at 1600 px and
+then smaller until it fits, and kept in the mod's data folder, so the next draw reads it from there.
+Only the newest version of each picture is kept. The row shows at once with a dim line while `sips`
+runs, and the picture replaces that line when it is ready. A picture that cannot be converted shows
+a red line under its row saying why.
 
 The picture is as wide as the terminal allows, up to 120 columns and one column per 8 px, and at
 most 40 rows tall.

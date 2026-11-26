@@ -12,7 +12,10 @@ const PICTURE_TOOLS = new Set(['Read', 'SendUserMessage', 'SendUserFile'])
 // An Image takes at most 2 MiB of PNG bytes.
 const PNG_LIMIT = 2 * 1024 * 1024
 // Longest side of a converted picture, then smaller tries while it is too big.
-const SIDES = [1600, 1200, 900, 600]
+// A picture with a longer side is converted even when it is a small PNG: the
+// terminal refuses one over 10000 px, and decoding a huge one costs memory.
+const LARGEST = 1600
+const SIDES = [LARGEST, 1200, 900, 600]
 // A terminal cell is about 2.1 times taller than wide, and about 8 px across.
 const CELL_ASPECT = 2.1
 const PIXELS_PER_COLUMN = 8
@@ -31,14 +34,19 @@ type Call = {
 // result already holds them.
 type Wanted = { path: string; png?: string }
 
-type Shown = { path: string; picture: Picture } | { path: string; error: string }
+// What a row draws for one picture: the picture, the line saying it is being
+// converted, or why it cannot be shown.
+type Look = { picture: Picture } | { isConverting: true } | { error: string }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
+const messageOf = (failure: unknown) =>
+  failure instanceof Error ? failure.message : String(failure)
+
 function wanted(call: Call): Wanted[] {
   const { output } = call
-  if (call.isRunning || call.isErrored || !isRecord(output)) {
+  if (!PICTURE_TOOLS.has(call.tool) || call.isRunning || call.isErrored || !isRecord(output)) {
     return []
   }
   if (call.tool === 'Read') {
@@ -62,8 +70,9 @@ function wanted(call: Call): Wanted[] {
     .map(one => ({ path: one.path as string }))
 }
 
-// Width and height from a PNG's IHDR chunk, which every PNG starts with.
-function pngSize(png: string): { width: number; height: number } {
+// Width and height from a PNG's IHDR chunk, which every PNG starts with, or
+// undefined when the bytes are not a PNG.
+function pngSize(png: string): { width: number; height: number } | undefined {
   const head = atob(png.slice(0, 32))
   const word = (at: number) =>
     ((head.charCodeAt(at) << 24) |
@@ -71,11 +80,21 @@ function pngSize(png: string): { width: number; height: number } {
       (head.charCodeAt(at + 2) << 8) |
       head.charCodeAt(at + 3)) >>>
     0
-  if (head.length < 24 || !head.startsWith('\x89PNG')) {
-    throw new Error('the picture is not a PNG')
+  if (head.length < 24 || !head.startsWith('\x89PNG\r\n\x1a\n')) {
+    return undefined
   }
 
   return { width: word(16), height: word(20) }
+}
+
+// The PNG as it is, when the terminal can draw it without converting it.
+function drawable(png: string): Picture | undefined {
+  const size = pngSize(png)
+  if (size === undefined || Math.max(size.width, size.height) > LARGEST) {
+    return undefined
+  }
+
+  return { png, ...size }
 }
 
 function fnv1a(text: string): string {
@@ -109,56 +128,110 @@ async function pixelSize($: EngineInterface, path: string): Promise<number> {
   return Math.max(width, height)
 }
 
-async function readPng($: EngineInterface, path: string): Promise<Picture> {
-  const { base64 } = (await $.fs.read(path, { as: 'bytes' })) as { base64: string }
+async function readBytes($: EngineInterface, path: string): Promise<string> {
+  return ((await $.fs.read(path, { as: 'bytes' })) as { base64: string }).base64
+}
 
-  return { png: base64, ...pngSize(base64) }
+// Where the converted copy of one version of a picture is kept. Every version
+// of the same picture starts with the same hash of its path.
+async function cachePath($: EngineInterface, path: string, stat: { size: number; mtimeMs: number }) {
+  const folder = `${(await $.process.hookEnv()).CLAUDE_PLUGIN_DATA}/png`
+  const name = path.split('/').pop()?.replace(/\.[^.]*$/, '') || 'picture'
+  const version = fnv1a(`${stat.size}|${stat.mtimeMs}`)
+
+  return { folder, out: `${folder}/${fnv1a(path)}-${version}-${name}.png` }
 }
 
 // Turns any picture sips reads (JPEG, HEIC, WebP, GIF, big PNGs) into a PNG
-// under 2 MiB in the mod's data folder, kept there for the next draw.
-async function convert($: EngineInterface, path: string, id: string): Promise<Picture> {
-  const folder = `${(await $.process.hookEnv()).CLAUDE_PLUGIN_DATA}/png`
-  const name = path.split('/').pop()?.replace(/\.[^.]*$/, '') ?? 'picture'
-  const out = `${folder}/${fnv1a(id)}-${name}.png`
-  if (await $.fs.exists(out)) {
-    return readPng($, out)
-  }
+// under 2 MiB at `out`. sips writes beside it, and only a whole PNG that fits
+// is moved into place, so a cut-short run never leaves a broken one there.
+// Earlier versions of the same picture are then removed.
+async function convert($: EngineInterface, path: string, folder: string, out: string) {
   await run($, ['mkdir', '-p', folder], folder)
   const side = await pixelSize($, path)
-  for (const most of SIDES) {
-    const fit = side > most ? ['-Z', String(most)] : []
-    await run($, ['sips', '-s', 'format', 'png', ...fit, path, '--out', out], path)
-    if ((await $.fs.stat(out)).size <= PNG_LIMIT) {
-      return readPng($, out)
+  const tries = side > LARGEST ? SIDES : [undefined, ...SIDES.filter(most => most < side)]
+  const temp = `${folder}/.${Math.random().toString(36).slice(2)}.png`
+  try {
+    for (const most of tries) {
+      const fit = most === undefined ? [] : ['-Z', String(most)]
+      await run($, ['sips', '-s', 'format', 'png', ...fit, path, '--out', temp], path)
+      if ((await $.fs.stat(temp)).size <= PNG_LIMIT) {
+        await run($, ['mv', '-f', temp, out], out)
+        await prune($, folder, out)
+
+        return
+      }
     }
+  } finally {
+    await run($, ['rm', '-f', temp], temp)
   }
-  await run($, ['rm', '-f', out], out)
-  throw new Error(`${path} is still over 2 MB as a PNG at ${SIDES.at(-1)} px`)
+  throw new Error(`${path} is still over 2 MB as a PNG at ${tries.at(-1) ?? side} px`)
 }
 
-// Conversions in flight or done since this load, by path, size and time.
-const pictures = new Map<string, Promise<Picture>>()
+async function prune($: EngineInterface, folder: string, out: string) {
+  const kept = out.slice(folder.length + 1)
+  const picture = `${kept.split('-')[0]}-`
+  const stale = (await $.fs.list(folder))
+    .filter(entry => entry.name.startsWith(picture) && entry.name !== kept)
+    .map(entry => `${folder}/${entry.name}`)
+  if (stale.length > 0) {
+    await run($, ['rm', '-f', ...stale], folder)
+  }
+}
 
-async function pictureOf($: EngineInterface, want: Wanted): Promise<Picture> {
-  if (want.png !== undefined) {
-    return { png: want.png, ...pngSize(want.png) }
+// Conversions since this load, by cache path: running, or failed and why. A
+// finished one is in the cache folder, and nothing of it is held here.
+const conversions = new Map<string, { error?: string }>()
+
+// Converts after the drawing has answered, so the row never waits on sips,
+// then has the rows drawn again.
+function startConverting($: EngineInterface, path: string, folder: string, out: string) {
+  conversions.set(out, {})
+  $.clock.after(0, () => {
+    convert($, path, folder, out)
+      .then(
+        () => conversions.delete(out),
+        failure => conversions.set(out, { error: messageOf(failure) }),
+      )
+      .finally(() => $.ui.invalidate('ui.render'))
+  })
+}
+
+async function look($: EngineInterface, want: Wanted): Promise<Look> {
+  const given = want.png === undefined ? undefined : drawable(want.png)
+  if (given) {
+    return { picture: given }
   }
   const stat = await $.fs.stat(want.path)
-  const isSmallPng = /\.png$/i.test(want.path) && stat.size <= PNG_LIMIT
-  if (isSmallPng) {
-    return readPng($, want.path)
+  if (/\.png$/i.test(want.path) && stat.size <= PNG_LIMIT) {
+    const asItIs = drawable(await readBytes($, want.path))
+    if (asItIs) {
+      return { picture: asItIs }
+    }
   }
-  const id = `${want.path}|${stat.size}|${stat.mtimeMs}`
-  const known = pictures.get(id)
-  if (known) {
-    return known
+  const { folder, out } = await cachePath($, want.path, stat)
+  const conversion = conversions.get(out)
+  if (conversion?.error !== undefined) {
+    return { error: conversion.error }
   }
-  const made = convert($, want.path, id)
-  pictures.set(id, made)
-  made.catch(() => pictures.delete(id))
+  if (conversion) {
+    return { isConverting: true }
+  }
+  if (await $.fs.exists(out)) {
+    if ((await $.fs.stat(out)).size <= PNG_LIMIT) {
+      const png = await readBytes($, out)
+      const size = pngSize(png)
+      if (size === undefined) {
+        throw new Error(`the cached copy ${out} is not a PNG`)
+      }
 
-  return made
+      return { picture: { png, ...size } }
+    }
+    await run($, ['rm', '-f', out], out)
+  }
+  startConverting($, want.path, folder, out)
+
+  return { isConverting: true }
 }
 
 // The box of cells the picture fills: as wide as the room allows, never
@@ -225,7 +298,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || !PICTURE_TOOLS.has(e.props.tool)) {
+    if (e.surface !== 'terminal') {
       return next(e)
     }
     const list = wanted(e.props)
@@ -233,16 +306,13 @@ export const register: Register = on => {
       return next(e)
     }
     const row = await next(e)
-    const shown: Shown[] = await Promise.all(
-      list.map(async want => {
-        try {
-          return { path: want.path, picture: await pictureOf($, want) }
-        } catch (failure) {
-          const error = failure instanceof Error ? failure.message : String(failure)
-
-          return { path: want.path, error }
-        }
-      }),
+    const looks = await Promise.all(
+      list.map(want =>
+        look($, want).then(
+          (one): Look & { path: string } => ({ ...one, path: want.path }),
+          failure => ({ path: want.path, error: messageOf(failure) }),
+        ),
+      ),
     )
     const { Box, Image, Text } = $.ui.resolve(e)
     const room = e.viewport?.columns ?? 80
@@ -250,7 +320,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {row}
-        {shown.map(one =>
+        {looks.map(one =>
           'picture' in one ? (
             <Box paddingLeft={2}>
               <Image
@@ -259,9 +329,13 @@ export const register: Register = on => {
                 alt={`[image] ${one.path} (this terminal can't draw pictures)`}
               />
             </Box>
-          ) : (
+          ) : 'error' in one ? (
             <Text color="error">
               {'  '}inline-images: {one.error}
+            </Text>
+          ) : (
+            <Text dimColor>
+              {'  '}[image] {one.path} (converting to draw it here)
             </Text>
           ),
         )}
