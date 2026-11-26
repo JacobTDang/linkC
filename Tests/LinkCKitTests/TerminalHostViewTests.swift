@@ -110,6 +110,13 @@ final class TerminalHostViewTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === field)
     }
 
+    /// Agent CLIs draw pictures in linkC's terminals, and one process holds many terminals: each
+    /// keeps a smaller image cache than SwiftTerm's 320 MB default.
+    func testATerminalViewCapsItsImageCache() {
+        let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        XCTAssertEqual(view.getTerminal().options.kittyImageCacheLimitBytes, 64 * 1024 * 1024)
+    }
+
     func testATerminalViewReportsBecomingFirstResponder() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
         let view = LinkCTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))

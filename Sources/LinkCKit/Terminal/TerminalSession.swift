@@ -164,11 +164,24 @@ public final class TerminalSession {
         }
     }
 
-    /// Launch `executable` in the PTY. Inherits the app's environment (scrubbed of Claude Code
-    /// session markers), overlays `env`, forces `TERM=xterm-256color`, and guarantees Homebrew
-    /// is on `PATH` (a Finder-launched GUI app otherwise inherits a minimal PATH that lacks
-    /// node and claude's other dependencies). `execName` overrides argv[0] — dev terminals
-    /// pass "-zsh"-style names so the shell runs as a login shell.
+    /// What a session's process starts with: the inherited environment scrubbed of Claude Code
+    /// session markers, then the terminal's own capabilities, then the session's `overlay`
+    /// (which wins), with `TERM=xterm-256color` forced and Homebrew guaranteed on `PATH` (a
+    /// Finder-launched GUI app otherwise inherits a minimal PATH that lacks node and claude's
+    /// other dependencies). SwiftTerm speaks the kitty graphics protocol, but Claude Code only
+    /// draws pictures in a terminal that names itself kitty, Ghostty or iTerm2, so it is told.
+    static func sessionEnvironment(inherited: [String: String], overlay: [String: String]) -> [String: String] {
+        var environment = scrubbedEnvironment(inherited)
+        environment["CLAUDE_CODE_FORCE_TERMINAL_IMAGES"] = "1"
+        for (key, value) in overlay { environment[key] = value }
+        environment["TERM"] = "xterm-256color"
+        environment["PATH"] = pathEnsuringHomebrew(environment["PATH"])
+        return environment
+    }
+
+    /// Launch `executable` in the PTY with `sessionEnvironment` (`env` overlaid).
+    /// `execName` overrides argv[0] — dev terminals pass "-zsh"-style names so the shell runs
+    /// as a login shell.
     public func start(executable: String, args: [String], env: [String: String], execName: String? = nil) throws {
         // Fail loud BEFORE forking: SwiftTerm forks even for a nonexistent executable (the exec
         // failure happens asynchronously inside the child), which would manufacture a session
@@ -181,10 +194,7 @@ public final class TerminalSession {
         guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw LinkCError.process("cannot start session: folder \(cwd) no longer exists")
         }
-        var environment = Self.scrubbedEnvironment(ProcessInfo.processInfo.environment)
-        for (key, value) in env { environment[key] = value }
-        environment["TERM"] = "xterm-256color"
-        environment["PATH"] = Self.pathEnsuringHomebrew(environment["PATH"])
+        let environment = Self.sessionEnvironment(inherited: ProcessInfo.processInfo.environment, overlay: env)
 
         let environmentArray = environment.map { "\($0.key)=\($0.value)" }
         terminalView.startProcess(
@@ -445,14 +455,20 @@ public final class LinkCTerminalView: LocalProcessTerminalView {
     private var synchronizedOutput = SynchronizedOutputFilter()
     private weak var observedWindow: NSWindow?
 
+    /// The most image data one terminal keeps. Agent CLIs draw pictures here, and one process
+    /// holds many terminals, so SwiftTerm's 320 MB default per terminal is too much.
+    static let imageCacheLimitBytes = 64 * 1024 * 1024
+
     public override init(frame: NSRect) {
         Self.installScrollWheelOverride
         super.init(frame: frame)
+        getTerminal().options.kittyImageCacheLimitBytes = Self.imageCacheLimitBytes
     }
 
     public required init?(coder: NSCoder) {
         Self.installScrollWheelOverride
         super.init(coder: coder)
+        getTerminal().options.kittyImageCacheLimitBytes = Self.imageCacheLimitBytes
     }
 
     private typealias ScrollWheelIMP = @convention(c) (AnyObject, Selector, NSEvent) -> Void

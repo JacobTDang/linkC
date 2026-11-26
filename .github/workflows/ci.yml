@@ -84,6 +84,10 @@ jobs:
         with:
           cache-name: package
 
+      # On macOS, whose rsync is the one build-app.sh ships the mods with.
+      - name: Test the mod bundling
+        run: ./scripts/test-bundle-mods.sh
+
       - name: Build and sign the .app bundle
         run: ./build-app.sh
 

@@ -357,10 +357,15 @@ is active, and that session's tab is selected. Click a notification to jump to i
 
 5. Allow the notification permission when macOS asks for it.
 
-linkC ships its Claude Code mod (`linkc-agents`) inside the app and, on launch, installs it to
-`~/Library/Application Support/linkC/mods/linkc-agents`. To load it in every Claude Code session,
-set `env.CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` to that folder (separate several
+linkC ships its Claude Code mods (`linkc-agents`, and [`inline-images`](mods/inline-images), which
+draws pictures in the chat) inside the app and, on launch, installs each to
+`~/Library/Application Support/linkC/mods/<mod>`. To load them in every Claude Code session, set
+`env.CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` to those folders (separate several
 plugin folders with `:`).
+
+linkC's terminals tell Claude Code they can draw pictures (`CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`):
+SwiftTerm speaks the kitty graphics protocol, but Claude Code only draws pictures in a terminal
+that names itself kitty, Ghostty or iTerm2.
 
 ### Updating a running copy
 
